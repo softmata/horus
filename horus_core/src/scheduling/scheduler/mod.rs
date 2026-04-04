@@ -210,10 +210,19 @@ pub struct Scheduler {
     /// All internal timing operations use this clock. Users access it via horus::now() etc.
     pub(super) clock: Arc<dyn crate::core::clock::Clock>,
 
-    /// Dependency graph for deterministic execution ordering.
-    /// Built at finalize_and_init() from nodes' publisher/subscriber metadata.
-    /// None in normal mode — only used when .deterministic(true) is set.
+    /// Dependency graph built from nodes' publisher/subscriber topic metadata.
+    /// Drives the ready-dispatch executor for automatic parallelism (default mode)
+    /// and sequential step execution (deterministic mode).
+    /// Built at finalize_and_init() after init(), rebuilt once after first tick if
+    /// new topic registrations are detected.
     pub(super) dependency_graph: Option<super::dependency_graph::DependencyGraph>,
+
+    /// TopicNodeRegistry version when the dependency graph was last built.
+    /// Compared after the first tick to detect new registrations and trigger rebuild.
+    graph_registry_version: u64,
+
+    /// Whether the first tick cycle has completed (for one-time graph rebuild).
+    first_tick_done: bool,
 
     /// Deferred configuration applied once at `run()` time via `finalize_config()`.
     /// Builder methods mutate this; `finalize_config()` applies it before the tick loop.
@@ -318,6 +327,8 @@ impl Scheduler {
             },
             clock: Arc::new(crate::core::clock::WallClock::new()),
             dependency_graph: None,
+            graph_registry_version: 0,
+            first_tick_done: false,
             rt: RtState {
                 capabilities: Some(caps),
                 degradations: Vec::new(),
@@ -1680,6 +1691,45 @@ impl Scheduler {
         }
     }
 
+    /// Build (or rebuild) the dependency graph from TopicNodeRegistry metadata.
+    ///
+    /// Called after init() and optionally after the first tick cycle if new
+    /// topic registrations were detected. The graph drives the ready-dispatch
+    /// executor (default mode) or sequential step execution (deterministic mode).
+    fn build_dependency_graph(&mut self) {
+        match super::dependency_graph::DependencyGraph::build(&self.nodes) {
+            Ok(graph) => {
+                let mode = if self.pending_config.timing.deterministic_order {
+                    "deterministic"
+                } else {
+                    "ready-dispatch"
+                };
+                if graph.has_topic_metadata() {
+                    print_line(&format!(
+                        "Dependency graph ({} mode): {} nodes, {} steps from topic metadata",
+                        mode,
+                        graph.node_count(),
+                        graph.step_count()
+                    ));
+                } else {
+                    print_line(&format!(
+                        "Dependency graph ({} mode): {} steps from .order() tiers (no topic metadata yet)",
+                        mode,
+                        graph.step_count()
+                    ));
+                }
+                self.dependency_graph = Some(graph);
+            }
+            Err(e) => {
+                print_line(&format!(
+                    "WARNING: Dependency graph error: {}. Falling back to sequential.",
+                    e
+                ));
+                self.dependency_graph = None;
+            }
+        }
+    }
+
     /// Apply deferred configuration and initialize all nodes.
     ///
     /// Called lazily on first `tick_once()` or at the start of `run()`.
@@ -1691,33 +1741,20 @@ impl Scheduler {
         self.finalize_config();
         self.adjust_tick_period_for_node_rates();
 
-        // Build dependency graph for deterministic mode
-        if self.pending_config.timing.deterministic_order {
-            match super::dependency_graph::DependencyGraph::build(&self.nodes) {
-                Ok(graph) => {
-                    if graph.has_topic_metadata() {
-                        print_line(&format!(
-                            "Deterministic mode: {} execution steps from topic dependencies",
-                            graph.step_count()
-                        ));
-                    } else {
-                        print_line(&format!(
-                            "Deterministic mode: {} execution steps from .order() tiers (no pub/sub metadata)",
-                            graph.step_count()
-                        ));
-                    }
-                    self.dependency_graph = Some(graph);
-                }
-                Err(e) => {
-                    print_line(&format!(
-                        "WARNING: Dependency graph error: {}. Falling back to sequential.",
-                        e
-                    ));
-                }
-            }
-        }
-
+        // Initialize all nodes first — init() may call send()/recv() which
+        // registers topics with TopicNodeRegistry. The dependency graph needs
+        // this metadata, so we build it AFTER init.
         self.initialize_filtered_nodes(None);
+
+        // Build dependency graph from topic metadata (always, not just deterministic mode).
+        // The graph drives the ready-dispatch executor for automatic parallelism.
+        // In deterministic mode, same graph but executed sequentially within steps.
+        self.build_dependency_graph();
+
+        // Record the registry version at graph-build time so we can detect
+        // new topic registrations after the first tick cycle.
+        self.graph_registry_version =
+            crate::communication::topic_node_registry().version();
 
         // Register param change callback — routes RuntimeParams changes to node callbacks.
         // The callback is registered once at init. When params.set() is called (from any
@@ -1786,32 +1823,35 @@ impl Scheduler {
         self.tick.last_instant = Instant::now();
         self.reinit_pending_nodes();
 
+        // tick_once() always executes sequentially (reproducibility over wall-time).
+        // The dependency graph determines ORDER, not parallelism.
+        // Phase 2 rebuild: check for new topic registrations after first tick.
+        if self.first_tick_done && self.graph_registry_version > 0 {
+            let current_version = crate::communication::topic_node_registry().version();
+            if current_version != self.graph_registry_version {
+                self.build_dependency_graph();
+                self.graph_registry_version = current_version;
+            }
+        }
+
         if let Some(ref graph) = self.dependency_graph {
-            // Deterministic mode: execute by dependency steps.
-            // Each step contains independent nodes (no data dependencies between them).
-            // Steps execute sequentially (barrier between steps ensures producer-before-consumer).
-            //
-            // Within a step, nodes execute sequentially on the main thread in tick_once() mode.
-            // In run() mode, the RT executor pool dispatches independent nodes to separate
-            // threads for true parallelism. tick_once() prioritizes reproducibility over
-            // wall-time performance — simulation/testing don't need real-time speed.
             let steps: Vec<Vec<usize>> = graph.steps().to_vec();
             for step in &steps {
                 for &node_idx in step {
                     if self.execute_single_node(node_idx, node_filter) {
                         return Err(crate::horus_internal!(
-                            "Fatal node failure during deterministic tick"
+                            "Fatal node failure during tick_once"
                         ));
                     }
                 }
-                // Advance SimClock by dt after each step (barrier point)
+                // Advance SimClock in deterministic mode
                 if self.pending_config.timing.deterministic_order {
                     let dt = self.tick.period;
                     self.clock.advance(dt);
                 }
             }
         } else {
-            // Normal mode: sequential by priority (existing behavior)
+            // No graph — sequential by priority
             self.nodes.sort_by_key(|r| r.priority);
             let num_nodes = self.nodes.len();
             for i in 0..num_nodes {
@@ -1821,6 +1861,10 @@ impl Scheduler {
                     ));
                 }
             }
+        }
+
+        if !self.first_tick_done {
+            self.first_tick_done = true;
         }
 
         if self.check_safety_monitors() {
@@ -3419,15 +3463,16 @@ impl Scheduler {
         }
     }
 
-    /// Execute a single node: tick + profiling + budget + deadline + failure handling.
-    /// Returns true if the scheduler should stop (fatal failure).
-    fn execute_single_node(&mut self, i: usize, node_filter: Option<&[&str]>) -> bool {
-        // Skip stopped nodes
+    /// Check if node `i` should tick this cycle.
+    ///
+    /// Returns false if the node is stopped, unhealthy, paused, rate-limited,
+    /// filtered out, or not initialized. Used by both sequential and
+    /// ready-dispatch execution paths.
+    fn should_tick_node(&mut self, i: usize, node_filter: Option<&[&str]>) -> bool {
         if self.nodes[i].is_stopped {
             return false;
         }
 
-        // Skip Unhealthy/Isolated nodes (watchdog has marked them for skipping)
         {
             use super::types::NodeHealthState;
             let health = self.nodes[i].health_state.load();
@@ -3439,171 +3484,169 @@ impl Scheduler {
             }
         }
 
-        // Auto-unpause nodes that were paused by Miss::Skip
-        // (they skip exactly one tick, then resume)
+        // Auto-unpause nodes paused by Miss::Skip (skip one tick, then resume)
         if self.nodes[i].is_paused {
             self.nodes[i].is_paused = false;
             return false;
         }
 
-        let (should_run, should_tick) = {
-            let registered = &self.nodes[i];
-            let name = registered.name.as_ref();
-            let should_run = node_filter.is_none_or(|filter| filter.contains(&name));
+        let registered = &self.nodes[i];
+        let name = registered.name.as_ref();
+        let should_run = node_filter.is_none_or(|filter| filter.contains(&name));
 
-            // Check rate limiting (skip in deterministic mode — tick_once controls timing)
-            let should_tick = if self.pending_config.timing.deterministic_order {
-                true // deterministic mode: always tick (SimClock handles timing)
-            } else if let Some(rate_hz) = registered.rate_hz {
-                let current_time = Instant::now();
-                if let Some(last_tick) = registered.last_tick {
-                    let elapsed_secs = (current_time - last_tick).as_secs_f64();
-                    let period_secs = if rate_hz > 0.0 { 1.0 / rate_hz } else { 0.0 };
-                    elapsed_secs >= period_secs
-                } else {
-                    true
-                }
-            } else {
-                true
-            };
-
-            (should_run, should_tick)
-        };
-
-        if !should_tick {
+        if !should_run || !registered.initialized {
             return false;
         }
 
-        // Update last tick time if rate limited
+        // Rate limiting (skip in deterministic mode — SimClock controls timing)
+        if !self.pending_config.timing.deterministic_order {
+            if let Some(rate_hz) = registered.rate_hz {
+                if let Some(last_tick) = registered.last_tick {
+                    let elapsed_secs = (Instant::now() - last_tick).as_secs_f64();
+                    let period_secs = if rate_hz > 0.0 { 1.0 / rate_hz } else { 0.0 };
+                    if elapsed_secs < period_secs {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Pre-tick setup for node `i`: recording, replay injection, watchdog.
+    ///
+    /// Must be called sequentially (needs &mut self for replay state).
+    /// After this, the node is ready for `NodeRunner::run_tick()`.
+    fn prepare_node_tick(&mut self, i: usize) {
+        // Update last tick time for rate limiting
         if self.nodes[i].rate_hz.is_some() {
             self.nodes[i].last_tick = Some(Instant::now());
         }
 
-        if should_run && self.nodes[i].initialized {
-            // Feed watchdog for RT nodes
-            if self.nodes[i].is_rt_node {
-                if let Some(ref monitor) = self.monitor.safety {
-                    monitor.feed_watchdog(&self.nodes[i].name);
-                }
+        // Feed watchdog for RT nodes
+        if self.nodes[i].is_rt_node {
+            if let Some(ref monitor) = self.monitor.safety {
+                monitor.feed_watchdog(&self.nodes[i].name);
             }
+        }
 
-            // Begin recording tick (before node execution)
-            {
-                if let Some(ref mut recorder) = self.nodes[i].recorder {
-                    recorder.begin_tick(self.tick.current);
-                }
-            }
+        // Begin recording tick
+        if let Some(ref mut recorder) = self.nodes[i].recorder {
+            recorder.begin_tick(self.tick.current);
+        }
 
-            // Capture inputs from subscriber topics (for recording)
-            {
-                let RegisteredNode {
-                    node: _,
-                    ref mut recorder,
-                    ref name,
-                    ..
-                } = self.nodes[i];
-                if let Some(recorder) = recorder.as_mut() {
-                    if recorder.is_active_tick() {
-                        let subscribers =
-                            crate::communication::topic_node_registry().subscribers_for_node(name);
-                        if !subscribers.is_empty() {
-                            let topics_dir = crate::memory::platform::shm_topics_dir();
-                            for sub in &subscribers {
-                                let topic_path = topics_dir.join(&sub.topic_name);
-                                if let Some(slot_read) =
-                                    crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                                {
-                                    recorder.record_input(&sub.topic_name, slot_read.payload);
-                                }
+        // Capture inputs from subscriber topics (for recording)
+        {
+            let RegisteredNode {
+                node: _,
+                ref mut recorder,
+                ref name,
+                ..
+            } = self.nodes[i];
+            if let Some(recorder) = recorder.as_mut() {
+                if recorder.is_active_tick() {
+                    let subscribers =
+                        crate::communication::topic_node_registry().subscribers_for_node(name);
+                    if !subscribers.is_empty() {
+                        let topics_dir = crate::memory::platform::shm_topics_dir();
+                        for sub in &subscribers {
+                            let topic_path = topics_dir.join(&sub.topic_name);
+                            if let Some(slot_read) =
+                                crate::communication::read_latest_slot_bytes(&topic_path, 0)
+                            {
+                                recorder.record_input(&sub.topic_name, slot_read.payload);
                             }
                         }
                     }
                 }
             }
+        }
 
-            // Replay: if this node has a replayer, advance it and feed the
-            // recorded (or overridden) outputs into the node's recorder so
-            // that diff/export tools can compare replay results.
-            //
-            // Replay: advance replayer, feed outputs into recorder AND inject
-            // into shared-memory topics so live subscriber nodes see replay data.
-            {
-                let node_name = self.nodes[i].name.clone();
-                let replay_outputs: Option<Vec<(String, Vec<u8>)>> =
-                    self.replay.as_mut().and_then(|replay| {
-                        let replayer = replay.nodes.get_mut(node_name.as_ref())?;
-                        let node_overrides = replay.overrides.get(node_name.as_ref());
-                        let snapshot = replayer.current_snapshot()?;
-                        let outputs: Vec<(String, Vec<u8>)> = snapshot
-                            .outputs
-                            .iter()
-                            .map(|(topic, data)| {
-                                let output_data = node_overrides
-                                    .and_then(|ovr| ovr.get(topic))
-                                    .unwrap_or(data)
-                                    .clone();
-                                (topic.clone(), output_data)
-                            })
-                            .collect();
-                        replayer.advance();
-                        Some(outputs)
-                    });
-                if let Some(outputs) = replay_outputs {
-                    for (topic, data) in &outputs {
-                        // Inject into shared-memory topic so live subscriber nodes see it
-                        let shm_dir = crate::memory::platform::shm_topics_dir();
-                        let topic_path = shm_dir.join(format!("horus_{}", topic));
-                        if topic_path.exists() {
-                            crate::communication::write_topic_slot_bytes(&topic_path, data);
-                        }
+        // Replay: advance replayer, inject outputs into SHM and recorder
+        {
+            let node_name = self.nodes[i].name.clone();
+            let replay_outputs: Option<Vec<(String, Vec<u8>)>> =
+                self.replay.as_mut().and_then(|replay| {
+                    let replayer = replay.nodes.get_mut(node_name.as_ref())?;
+                    let node_overrides = replay.overrides.get(node_name.as_ref());
+                    let snapshot = replayer.current_snapshot()?;
+                    let outputs: Vec<(String, Vec<u8>)> = snapshot
+                        .outputs
+                        .iter()
+                        .map(|(topic, data)| {
+                            let output_data = node_overrides
+                                .and_then(|ovr| ovr.get(topic))
+                                .unwrap_or(data)
+                                .clone();
+                            (topic.clone(), output_data)
+                        })
+                        .collect();
+                    replayer.advance();
+                    Some(outputs)
+                });
+            if let Some(outputs) = replay_outputs {
+                for (topic, data) in &outputs {
+                    let shm_dir = crate::memory::platform::shm_topics_dir();
+                    let topic_path = shm_dir.join(format!("horus_{}", topic));
+                    if topic_path.exists() {
+                        crate::communication::write_topic_slot_bytes(&topic_path, data);
                     }
-                    // Also feed into recorder for diff/export tools
-                    if let Some(ref mut recorder) = self.nodes[i].recorder {
-                        for (topic, data) in outputs {
-                            recorder.record_output(&topic, data);
-                        }
+                }
+                if let Some(ref mut recorder) = self.nodes[i].recorder {
+                    for (topic, data) in outputs {
+                        recorder.record_output(&topic, data);
                     }
                 }
             }
+        }
+    }
 
-            let (tick_start, tick_duration, tick_result) = {
-                let registered = &mut self.nodes[i];
-                if let Some(ref mut context) = registered.context {
-                    context.start_tick();
+    /// Run a single node's tick with full context setup.
+    ///
+    /// Sets up clock/node context, calls `NodeRunner::run_tick()`, clears context.
+    /// Returns (tick_start, duration, result) for `process_tick_result()`.
+    fn run_node_tick(&mut self, i: usize) -> Option<(Instant, Duration, std::thread::Result<()>)> {
+        let registered = &mut self.nodes[i];
+        let context = registered.context.as_mut()?;
+        context.start_tick();
 
-                    // Set node context for hlog!() macro
-                    let tick_number = context.metrics().total_ticks();
-                    set_node_context(&registered.name, tick_number);
+        let tick_number = context.metrics().total_ticks();
+        set_node_context(&registered.name, tick_number);
 
-                    // Set tick context for horus::now(), horus::dt(), horus::rng() etc.
-                    let clock_ref: &dyn crate::core::clock::Clock = &*self.clock;
-                    let node_dt = registered
-                        .rate_hz
-                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
-                        .unwrap_or(self.tick.period);
-                    let sim_time = self.clock.elapsed();
-                    let tick_start_ci = self.clock.now();
-                    set_tick_context(
-                        &registered.name,
-                        tick_number,
-                        clock_ref,
-                        node_dt,
-                        sim_time,
-                        tick_start_ci,
-                        registered.tick_budget,
-                    );
+        let clock_ref: &dyn crate::core::clock::Clock = &*self.clock;
+        let node_dt = registered
+            .rate_hz
+            .map(|hz| Duration::from_secs_f64(1.0 / hz))
+            .unwrap_or(self.tick.period);
+        let sim_time = self.clock.elapsed();
+        let tick_start_ci = self.clock.now();
+        set_tick_context(
+            &registered.name,
+            tick_number,
+            clock_ref,
+            node_dt,
+            sim_time,
+            tick_start_ci,
+            registered.tick_budget,
+        );
 
-                    // Execute node tick via NodeRunner (timing + panic isolation)
-                    let tr = super::primitives::NodeRunner::run_tick(&mut registered.node);
+        let tr = super::primitives::NodeRunner::run_tick(&mut registered.node);
 
-                    clear_tick_context();
-                    clear_node_context();
-                    (tr.tick_start, tr.duration, tr.result)
-                } else {
-                    return false;
-                }
-            };
+        clear_tick_context();
+        clear_node_context();
+        Some((tr.tick_start, tr.duration, tr.result))
+    }
 
+    /// Execute a single node: check → prepare → tick → process.
+    /// Convenience wrapper that combines all phases sequentially.
+    /// Returns true if the scheduler should stop (fatal failure).
+    fn execute_single_node(&mut self, i: usize, node_filter: Option<&[&str]>) -> bool {
+        if !self.should_tick_node(i, node_filter) {
+            return false;
+        }
+        self.prepare_node_tick(i);
+        if let Some((tick_start, tick_duration, tick_result)) = self.run_node_tick(i) {
             return self.process_tick_result(i, tick_start, tick_duration, tick_result);
         }
         false
@@ -4032,19 +4075,311 @@ impl Scheduler {
         false
     }
 
-    /// Execute main-thread (BestEffort) nodes sequentially in priority order.
+    /// Execute main-thread (BestEffort) nodes using the dependency graph.
     ///
     /// RT, Compute, and Event nodes are handled by their dedicated executors.
     /// Only BestEffort nodes remain in `self.nodes` for main-thread execution.
+    ///
+    /// Two-phase graph build:
+    ///   - Phase 1: graph built after init() in finalize_and_init()
+    ///   - Phase 2: after first tick cycle, if TopicNodeRegistry has new
+    ///     registrations (from send/recv calls during tick), rebuild once.
+    ///
+    /// Execution strategy depends on mode:
+    ///   - Default: ready-dispatch (parallel, per-node dependency tracking)
+    ///   - Deterministic: sequential within steps, SimClock advances between steps
+    ///   - No graph: sequential by .order() priority (fallback)
     async fn execute_nodes(&mut self, node_filter: Option<&[&str]>) {
-        // Sort by priority
-        self.nodes.sort_by_key(|r| r.priority);
-
-        let num_nodes = self.nodes.len();
-        for i in 0..num_nodes {
-            if self.execute_single_node(i, node_filter) {
-                return; // Fatal failure — scheduler stopping
+        // Phase 2: rebuild graph once after first tick if topology changed.
+        // send()/recv() during the first tick register topics that weren't
+        // visible at init() time. One rebuild captures them; then locked.
+        if self.first_tick_done && self.graph_registry_version > 0 {
+            let current_version = crate::communication::topic_node_registry().version();
+            if current_version != self.graph_registry_version {
+                self.build_dependency_graph();
+                self.graph_registry_version = current_version;
             }
+        }
+
+        if let Some(ref graph) = self.dependency_graph {
+            if self.pending_config.timing.deterministic_order {
+                // Deterministic mode: sequential within steps, SimClock between steps
+                let steps: Vec<Vec<usize>> = graph.steps().to_vec();
+                for step in &steps {
+                    for &node_idx in step {
+                        if self.execute_single_node(node_idx, node_filter) {
+                            return;
+                        }
+                    }
+                    let dt = self.tick.period;
+                    self.clock.advance(dt);
+                }
+            } else if self.nodes.len() > 1 {
+                // Ready-dispatch mode: parallel execution driven by dependency graph.
+                // Nodes run as soon as all their predecessors complete.
+                self.execute_ready_dispatch(node_filter);
+            } else {
+                // Single node — no dispatch overhead
+                if !self.nodes.is_empty() {
+                    self.execute_single_node(0, node_filter);
+                }
+            }
+        } else {
+            // No graph (cycle detected or build failed) — sequential fallback
+            self.nodes.sort_by_key(|r| r.priority);
+            let num_nodes = self.nodes.len();
+            for i in 0..num_nodes {
+                if self.execute_single_node(i, node_filter) {
+                    return;
+                }
+            }
+        }
+
+        if !self.first_tick_done {
+            self.first_tick_done = true;
+        }
+    }
+
+    /// Ready-dispatch executor: runs BestEffort nodes with optimal parallelism.
+    ///
+    /// Each node starts the instant its last dependency finishes — no barriers,
+    /// no wasted thread time. Algorithm:
+    ///
+    /// 1. Copy dep_counts from graph into mutable pending array
+    /// 2. Seed ready queue with all nodes that have zero dependencies
+    /// 3. Workers pull from ready queue, run prepare + tick
+    /// 4. On completion, decrement successors' pending counts
+    /// 5. Any successor hitting zero is immediately dispatched
+    /// 6. Repeat until all nodes complete
+    ///
+    /// Uses crossbeam::scope for safe parallel execution with borrowed data.
+    fn execute_ready_dispatch(&mut self, node_filter: Option<&[&str]>) {
+        let graph = match self.dependency_graph {
+            Some(ref g) => g,
+            None => return,
+        };
+
+        let n = self.nodes.len();
+        if n == 0 {
+            return;
+        }
+
+        let successors: Vec<Vec<usize>> = graph.successors().to_vec();
+        let initial_dep_counts: Vec<usize> = graph.dep_counts().to_vec();
+
+        // Determine which nodes should tick this cycle.
+        // Nodes that are skipped (stopped, rate-limited, etc.) need their
+        // successors' pending counts adjusted as if they completed.
+        let mut should_tick = vec![false; n];
+        for i in 0..n {
+            should_tick[i] = self.should_tick_node(i, node_filter);
+        }
+
+        // Prepare all ticking nodes sequentially (needs &mut self for replay, recording)
+        for i in 0..n {
+            if should_tick[i] {
+                self.prepare_node_tick(i);
+            }
+        }
+
+        // Set up per-node context info needed during tick.
+        // We pre-compute this sequentially because it reads from self.clock.
+        struct NodeTickContext {
+            tick_number: u64,
+            node_name: std::sync::Arc<str>,
+            node_dt: Duration,
+            sim_time: Duration,
+            tick_start_ci: crate::core::clock::ClockInstant,
+            tick_budget: Option<Duration>,
+        }
+
+        let mut tick_contexts: Vec<Option<NodeTickContext>> = Vec::with_capacity(n);
+        for i in 0..n {
+            if should_tick[i] {
+                let registered = &mut self.nodes[i];
+                if let Some(ref mut context) = registered.context {
+                    context.start_tick();
+                    let tick_number = context.metrics().total_ticks();
+                    let node_dt = registered
+                        .rate_hz
+                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
+                        .unwrap_or(self.tick.period);
+                    tick_contexts.push(Some(NodeTickContext {
+                        tick_number,
+                        node_name: registered.name.clone(),
+                        node_dt,
+                        sim_time: self.clock.elapsed(),
+                        tick_start_ci: self.clock.now(),
+                        tick_budget: registered.tick_budget,
+                    }));
+                } else {
+                    tick_contexts.push(None);
+                    should_tick[i] = false;
+                }
+            } else {
+                tick_contexts.push(None);
+            }
+        }
+
+        // Adjusted pending counts: skip non-ticking nodes by treating them as
+        // already completed (their successors don't wait for them).
+        let mut pending: Vec<std::sync::atomic::AtomicUsize> = Vec::with_capacity(n);
+        for i in 0..n {
+            let count = initial_dep_counts[i];
+            pending.push(std::sync::atomic::AtomicUsize::new(count));
+        }
+
+        // Propagate skipped nodes: if a node won't tick, decrement its successors
+        for i in 0..n {
+            if !should_tick[i] {
+                for &succ in &successors[i] {
+                    pending[succ].fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Channel for ready-dispatch coordination
+        let (ready_tx, ready_rx) = crossbeam::channel::unbounded::<usize>();
+
+        // Seed: all ticking nodes with adjusted pending == 0
+        for i in 0..n {
+            if should_tick[i]
+                && pending[i].load(std::sync::atomic::Ordering::Relaxed) == 0
+            {
+                let _ = ready_tx.send(i);
+            }
+        }
+
+        // Count how many nodes need to complete
+        let total_to_tick: usize = should_tick.iter().filter(|&&b| b).count();
+        if total_to_tick == 0 {
+            return;
+        }
+
+        // Results collected from parallel ticks
+        struct TickOutput {
+            index: usize,
+            tick_start: Instant,
+            duration: Duration,
+            result: std::thread::Result<()>,
+        }
+
+        // SAFETY wrappers for raw pointers that need to cross thread boundaries.
+        // crossbeam::scope guarantees all threads join before the borrow ends,
+        // so the pointed-to data is alive for the entire scope.
+        struct SendNodePtr(*mut super::types::RegisteredNode);
+        unsafe impl Send for SendNodePtr {}
+        unsafe impl Sync for SendNodePtr {}
+
+        struct SendClockPtr(*const dyn crate::core::clock::Clock);
+        unsafe impl Send for SendClockPtr {}
+        unsafe impl Sync for SendClockPtr {}
+
+        let (results_tx, results_rx) = crossbeam::channel::unbounded::<TickOutput>();
+
+        // Determine worker count: min(total_to_tick, available_parallelism)
+        let num_workers = total_to_tick.min(
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(4),
+        );
+
+        let nodes_ptr = SendNodePtr(self.nodes.as_mut_ptr());
+        let clock_ptr = SendClockPtr(&*self.clock as *const dyn crate::core::clock::Clock);
+        let completed = std::sync::atomic::AtomicUsize::new(0);
+
+        crossbeam::scope(|s| {
+            for _ in 0..num_workers {
+                let ready_rx = &ready_rx;
+                let ready_tx = &ready_tx;
+                let pending = &pending;
+                let successors = &successors;
+                let should_tick = &should_tick;
+                let tick_contexts = &tick_contexts;
+                let completed = &completed;
+                let results_tx = &results_tx;
+                let nodes_ptr = &nodes_ptr;
+                let clock_ptr = &clock_ptr;
+
+                s.spawn(move |_| {
+                    loop {
+                        if completed.load(std::sync::atomic::Ordering::Acquire)
+                            >= total_to_tick
+                        {
+                            break;
+                        }
+
+                        let i = match ready_rx.recv_timeout(Duration::from_millis(1)) {
+                            Ok(i) => i,
+                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+                        };
+
+                        // Set up thread-local node context for this tick
+                        if let Some(ref ctx) = tick_contexts[i] {
+                            set_node_context(&ctx.node_name, ctx.tick_number);
+                            // SAFETY: clock_ptr points to self.clock which lives for
+                            // the entire crossbeam scope.
+                            let clock_ref: &dyn crate::core::clock::Clock =
+                                unsafe { &*clock_ptr.0 };
+                            set_tick_context(
+                                &ctx.node_name,
+                                ctx.tick_number,
+                                clock_ref,
+                                ctx.node_dt,
+                                ctx.sim_time,
+                                ctx.tick_start_ci,
+                                ctx.tick_budget,
+                            );
+                        }
+
+                        // SAFETY: Each node index is dispatched exactly once.
+                        // No two threads access the same node simultaneously.
+                        let node_ref = unsafe { &mut *nodes_ptr.0.add(i) };
+                        let tr = super::primitives::NodeRunner::run_tick(&mut node_ref.node);
+
+                        clear_tick_context();
+                        clear_node_context();
+
+                        let _ = results_tx.send(TickOutput {
+                            index: i,
+                            tick_start: tr.tick_start,
+                            duration: tr.duration,
+                            result: tr.result,
+                        });
+
+                        // Notify successors: decrement their pending count.
+                        // When a successor's count hits zero, dispatch it.
+                        for &succ in &successors[i] {
+                            if !should_tick[succ] {
+                                continue;
+                            }
+                            let prev = pending[succ]
+                                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                            if prev == 1 {
+                                let _ = ready_tx.send(succ);
+                            }
+                        }
+
+                        completed
+                            .fetch_add(1, std::sync::atomic::Ordering::Release);
+                    }
+                });
+            }
+        })
+        .expect("ready-dispatch crossbeam scope panicked");
+
+        // Drop the send-side so results_rx doesn't block
+        drop(results_tx);
+
+        // Process all tick results sequentially (needs &mut self for profiling etc.)
+        for output in results_rx.try_iter() {
+            self.process_tick_result(
+                output.index,
+                output.tick_start,
+                output.duration,
+                output.result,
+            );
         }
     }
 }

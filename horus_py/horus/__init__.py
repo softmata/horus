@@ -421,7 +421,7 @@ class Node:
                  shutdown: Optional[Callable[['Node'], None]] = None,
                  on_error: Optional[Callable[['Node', Exception], None]] = None,
                  # Scheduling config (maps 1:1 to Rust NodeBuilder)
-                 order: int = 100,
+                 order: int = 0,
                  budget: Optional[float] = None,
                  deadline: Optional[float] = None,
                  on_miss: Optional[str] = None,

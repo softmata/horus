@@ -226,6 +226,10 @@ pub struct TopicAssociation {
 pub struct TopicNodeRegistry {
     /// topic_name → Vec<(node_name, role)>
     topics: RwLock<HashMap<String, Vec<TopicAssociation>>>,
+    /// Monotonic version counter, bumped on every register/unregister.
+    /// The scheduler uses this to detect topology changes and rebuild
+    /// the dependency graph when needed.
+    version: AtomicU64,
 }
 
 static GLOBAL_TOPIC_NODE_REGISTRY: OnceLock<TopicNodeRegistry> = OnceLock::new();
@@ -239,7 +243,15 @@ impl TopicNodeRegistry {
     fn new() -> Self {
         Self {
             topics: RwLock::new(HashMap::new()),
+            version: AtomicU64::new(0),
         }
+    }
+
+    /// Current topology version. Bumped on every register/unregister.
+    /// The scheduler compares this to its last-built version to know
+    /// whether the dependency graph needs rebuilding.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
     }
 
     /// Register that a node uses a topic with the given role.
@@ -265,6 +277,7 @@ impl TopicNodeRegistry {
                 (NodeTopicRole::Publisher, NodeTopicRole::Subscriber)
                 | (NodeTopicRole::Subscriber, NodeTopicRole::Publisher) => {
                     existing.role = NodeTopicRole::Both;
+                    self.version.fetch_add(1, Ordering::Release);
                 }
                 _ => {} // Same role or already Both
             }
@@ -274,6 +287,7 @@ impl TopicNodeRegistry {
                 role,
                 type_name: type_name.to_string(),
             });
+            self.version.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -282,7 +296,11 @@ impl TopicNodeRegistry {
     pub fn unregister(&self, topic_name: &str, node_name: &str) {
         let mut topics = self.topics.write().unwrap_or_else(|e| e.into_inner());
         if let Some(entries) = topics.get_mut(topic_name) {
+            let before = entries.len();
             entries.retain(|a| a.node_name != node_name);
+            if entries.len() != before {
+                self.version.fetch_add(1, Ordering::Release);
+            }
             if entries.is_empty() {
                 topics.remove(topic_name);
             }

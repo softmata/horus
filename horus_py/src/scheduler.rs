@@ -749,7 +749,7 @@ impl PyScheduler {
         Ok(PyNodeBuilder {
             scheduler: slf,
             node,
-            order: 100,
+            order: 0,
             rate_hz: None,
             rt: false,
             failure_policy: None,
@@ -764,7 +764,7 @@ impl PyScheduler {
     }
 
     /// Add a node to the scheduler.
-    #[pyo3(signature = (node, order=100, rate=None, rt=false, failure_policy=None, on_miss=None, budget=None, deadline=None))]
+    #[pyo3(signature = (node, order=0, rate=None, rt=false, failure_policy=None, on_miss=None, budget=None, deadline=None))]
     #[allow(clippy::too_many_arguments)]
     fn add(
         &self,
@@ -1455,7 +1455,7 @@ mod tests {
     #[test]
     fn node_params_all_defaults() {
         let params = NodeParams {
-            order: 100,
+            order: 0,
             rate_hz: None,
             rt: false,
             failure_policy: None,
@@ -1467,7 +1467,7 @@ mod tests {
             pinned_core: None,
             watchdog_seconds: None,
         };
-        assert_eq!(params.order, 100);
+        assert_eq!(params.order, 0);
         assert!(params.rate_hz.is_none());
         assert!(params.budget_seconds.is_none());
         assert!(params.deadline_seconds.is_none());

@@ -103,7 +103,9 @@ use std::time::Duration;
 pub struct NodeRegistration {
     /// The node to add (either regular or RT)
     pub(crate) node: NodeKind,
-    /// Execution order (lower = earlier, default: 100)
+    /// Execution order tiebreaker for independent nodes (lower = earlier, default: 0).
+    /// With the dependency graph, ordering is automatic from topic metadata.
+    /// This value only matters for nodes with no topic relationship.
     pub(crate) order: u32,
     /// Node-specific tick rate in Hz (None = use scheduler global rate)
     pub(crate) rate_hz: Option<f64>,
@@ -149,7 +151,7 @@ impl NodeRegistration {
     pub fn new(node: Box<dyn Node>) -> Self {
         Self {
             node: NodeKind::new(node),
-            order: 100, // Default to medium priority
+            order: 0, // Default: no preference (graph handles ordering from topics)
             rate_hz: None,
             is_rt: false,
             tick_budget: None,
@@ -947,7 +949,7 @@ mod tests {
     #[test]
     fn test_new_defaults() {
         let reg = NodeRegistration::new(stub("test"));
-        assert_eq!(reg.order, 100);
+        assert_eq!(reg.order, 0);
         assert!(reg.rate_hz.is_none());
         assert!(!reg.is_rt);
         assert!(reg.tick_budget.is_none());
@@ -2165,7 +2167,7 @@ mod tests {
         let mut reg = NodeRegistration::new(stub("minimal"));
         reg.validate().unwrap();
 
-        assert_eq!(reg.order, 100);
+        assert_eq!(reg.order, 0);
         assert!(reg.rate_hz.is_none());
         assert!(!reg.is_rt);
         assert!(reg.tick_budget.is_none());
@@ -2189,7 +2191,7 @@ mod tests {
             .unwrap();
 
         let node = &scheduler.nodes[0];
-        assert_eq!(node.priority, 100);
+        assert_eq!(node.priority, 0);
         assert!(!node.is_rt_node);
         assert!(node.rate_hz.is_none());
         assert!(node.tick_budget.is_none());

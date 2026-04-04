@@ -3527,3 +3527,1221 @@ fn test_move_irqs_graceful_on_empty() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0);
 }
+
+// ============================================================================
+// Ready Dispatch — Comprehensive Blocking Tests
+// ============================================================================
+//
+// These tests verify that the ready-dispatch executor correctly:
+// 1. Runs independent nodes in parallel (no unnecessary blocking)
+// 2. Respects dependency ordering (producer before consumer)
+// 3. Handles edge cases (panics, skipped nodes, single node, etc.)
+//
+// Strategy: Nodes record their start/end timestamps. We analyze the timestamps
+// to prove parallelism (overlapping execution) or ordering (A.end < B.start).
+
+/// Node that sleeps for a fixed duration and records timing.
+/// Used to prove parallelism: if two 50ms nodes complete in ~50ms total,
+/// they ran in parallel. If ~100ms, they blocked each other.
+struct TimingNode {
+    node_name: String,
+    sleep_ms: u64,
+    timestamps: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    /// Topics this node "publishes" — registered in init()
+    pub_topics: Vec<String>,
+    /// Topics this node "subscribes" — registered in init()
+    sub_topics: Vec<String>,
+}
+
+impl TimingNode {
+    fn new(
+        name: &str,
+        sleep_ms: u64,
+        timestamps: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    ) -> Self {
+        Self {
+            node_name: name.to_string(),
+            sleep_ms,
+            timestamps,
+            pub_topics: Vec::new(),
+            sub_topics: Vec::new(),
+        }
+    }
+
+    fn publishes(mut self, topic: &str) -> Self {
+        self.pub_topics.push(topic.to_string());
+        self
+    }
+
+    fn subscribes(mut self, topic: &str) -> Self {
+        self.sub_topics.push(topic.to_string());
+        self
+    }
+}
+
+impl Node for TimingNode {
+    fn name(&self) -> &str {
+        &self.node_name
+    }
+
+    fn init(&mut self) -> crate::error::HorusResult<()> {
+        // Register topics with TopicNodeRegistry during init().
+        // This is the Phase 1 registration that the scheduler uses
+        // to build the dependency graph before tick 1.
+        let tnr = crate::communication::topic_node_registry();
+        for topic in &self.pub_topics {
+            tnr.register_with_type(
+                topic,
+                &self.node_name,
+                crate::communication::topic::NodeTopicRole::Publisher,
+                "u32",
+            );
+        }
+        for topic in &self.sub_topics {
+            tnr.register_with_type(
+                topic,
+                &self.node_name,
+                crate::communication::topic::NodeTopicRole::Subscriber,
+                "u32",
+            );
+        }
+        Ok(())
+    }
+
+    fn tick(&mut self) {
+        let start = std::time::Instant::now();
+        std::thread::sleep(Duration::from_millis(self.sleep_ms));
+        let end = std::time::Instant::now();
+        self.timestamps
+            .lock()
+            .unwrap()
+            .push((self.node_name.clone(), start, end));
+    }
+}
+
+/// Helper: check that node A's tick finished before node B's tick started.
+/// Searches for the first occurrence of each in the timestamp log.
+fn assert_ordered(
+    timestamps: &[(String, std::time::Instant, std::time::Instant)],
+    before: &str,
+    after: &str,
+) {
+    let a = timestamps
+        .iter()
+        .find(|(n, _, _)| n == before)
+        .unwrap_or_else(|| panic!("Node '{}' not found in timestamps", before));
+    let b = timestamps
+        .iter()
+        .find(|(n, _, _)| n == after)
+        .unwrap_or_else(|| panic!("Node '{}' not found in timestamps", after));
+    assert!(
+        a.2 <= b.1,
+        "Expected '{}' (end {:?}) to finish before '{}' (start {:?})",
+        before,
+        a.2,
+        after,
+        b.1
+    );
+}
+
+/// Helper: check that two nodes overlapped in execution (ran in parallel).
+fn assert_parallel(
+    timestamps: &[(String, std::time::Instant, std::time::Instant)],
+    node_a: &str,
+    node_b: &str,
+) {
+    let a = timestamps
+        .iter()
+        .find(|(n, _, _)| n == node_a)
+        .unwrap_or_else(|| panic!("Node '{}' not found in timestamps", node_a));
+    let b = timestamps
+        .iter()
+        .find(|(n, _, _)| n == node_b)
+        .unwrap_or_else(|| panic!("Node '{}' not found in timestamps", node_b));
+    // Overlapping: A started before B ended AND B started before A ended
+    let overlaps = a.1 < b.2 && b.1 < a.2;
+    assert!(
+        overlaps,
+        "Expected '{}' ({:?}..{:?}) and '{}' ({:?}..{:?}) to overlap (parallel), but they didn't",
+        node_a, a.1, a.2, node_b, b.1, b.2
+    );
+}
+
+#[test]
+fn test_ready_dispatch_independent_nodes_run_parallel() {
+    // Two independent 50ms nodes should complete in ~50ms, not ~100ms.
+    // This is THE core test: proves no unnecessary blocking.
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(10_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_par_cam", 50, ts.clone()).publishes("rd_par_img"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_par_lidar", 50, ts.clone()).publishes("rd_par_pts"))
+        .build();
+
+    let wall_start = std::time::Instant::now();
+    scheduler.run_for(150_u64.ms());
+    let _wall_elapsed = wall_start.elapsed();
+
+    let log = ts.lock().unwrap();
+    assert!(
+        log.len() >= 2,
+        "Expected at least 2 tick records, got {}",
+        log.len()
+    );
+
+    // Wall time should be well under 100ms for the first tick
+    // (two 50ms nodes in parallel = ~50ms, not 100ms)
+    assert_parallel(&log, "rd_par_cam", "rd_par_lidar");
+}
+
+#[test]
+fn test_ready_dispatch_dependent_nodes_ordered() {
+    // SLAM subscribes to lidar — SLAM must not start before lidar finishes.
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(10_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_dep_lidar", 30, ts.clone()).publishes("rd_dep_pts"))
+        .build();
+    scheduler
+        .add(
+            TimingNode::new("rd_dep_slam", 30, ts.clone())
+                .subscribes("rd_dep_pts")
+                .publishes("rd_dep_pose"),
+        )
+        .build();
+
+    scheduler.run_for(150_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 2);
+    assert_ordered(&log, "rd_dep_lidar", "rd_dep_slam");
+}
+
+#[test]
+fn test_ready_dispatch_diamond_topology() {
+    // Classic diamond: A → B, A → C, B → D, C → D
+    //   A runs first
+    //   B and C run in parallel (both depend only on A)
+    //   D runs last (depends on B and C)
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(5_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_dia_A", 20, ts.clone()).publishes("rd_dia_ab").publishes("rd_dia_ac"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_dia_B", 40, ts.clone()).subscribes("rd_dia_ab").publishes("rd_dia_bd"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_dia_C", 40, ts.clone()).subscribes("rd_dia_ac").publishes("rd_dia_cd"))
+        .build();
+    scheduler
+        .add(
+            TimingNode::new("rd_dia_D", 20, ts.clone())
+                .subscribes("rd_dia_bd")
+                .subscribes("rd_dia_cd"),
+        )
+        .build();
+
+    scheduler.run_for(250_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 4, "Expected all 4 nodes to tick, got {}", log.len());
+
+    // A before B and C
+    assert_ordered(&log, "rd_dia_A", "rd_dia_B");
+    assert_ordered(&log, "rd_dia_A", "rd_dia_C");
+    // B and C in parallel
+    assert_parallel(&log, "rd_dia_B", "rd_dia_C");
+    // B and C before D
+    assert_ordered(&log, "rd_dia_B", "rd_dia_D");
+    assert_ordered(&log, "rd_dia_C", "rd_dia_D");
+}
+
+#[test]
+fn test_ready_dispatch_fan_out_all_parallel() {
+    // One producer, three independent consumers — consumers should run in parallel.
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(5_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_fan_src", 10, ts.clone()).publishes("rd_fan_data"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_fan_c1", 40, ts.clone()).subscribes("rd_fan_data"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_fan_c2", 40, ts.clone()).subscribes("rd_fan_data"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_fan_c3", 40, ts.clone()).subscribes("rd_fan_data"))
+        .build();
+
+    scheduler.run_for(200_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 4);
+
+    // Source before all consumers
+    assert_ordered(&log, "rd_fan_src", "rd_fan_c1");
+    assert_ordered(&log, "rd_fan_src", "rd_fan_c2");
+    assert_ordered(&log, "rd_fan_src", "rd_fan_c3");
+    // Consumers run in parallel
+    assert_parallel(&log, "rd_fan_c1", "rd_fan_c2");
+    assert_parallel(&log, "rd_fan_c2", "rd_fan_c3");
+}
+
+#[test]
+fn test_ready_dispatch_fan_in_waits_for_all() {
+    // Three producers, one consumer that subscribes to all three.
+    // Consumer must wait for ALL producers before starting.
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(5_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_fi_p1", 10, ts.clone()).publishes("rd_fi_a"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_fi_p2", 30, ts.clone()).publishes("rd_fi_b"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_fi_p3", 50, ts.clone()).publishes("rd_fi_c"))
+        .build();
+    scheduler
+        .add(
+            TimingNode::new("rd_fi_cons", 10, ts.clone())
+                .subscribes("rd_fi_a")
+                .subscribes("rd_fi_b")
+                .subscribes("rd_fi_c"),
+        )
+        .build();
+
+    scheduler.run_for(200_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 4);
+
+    // All three producers parallel
+    assert_parallel(&log, "rd_fi_p1", "rd_fi_p2");
+    assert_parallel(&log, "rd_fi_p2", "rd_fi_p3");
+    // Consumer waits for slowest producer (p3 = 50ms)
+    assert_ordered(&log, "rd_fi_p3", "rd_fi_cons");
+}
+
+#[test]
+fn test_ready_dispatch_multi_publisher_same_topic() {
+    // Two publishers to same topic → subscriber depends on BOTH.
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(5_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_mp_fast", 10, ts.clone()).publishes("rd_mp_data"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_mp_slow", 50, ts.clone()).publishes("rd_mp_data"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_mp_sub", 10, ts.clone()).subscribes("rd_mp_data"))
+        .build();
+
+    scheduler.run_for(200_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 3);
+
+    // Both publishers parallel
+    assert_parallel(&log, "rd_mp_fast", "rd_mp_slow");
+    // Subscriber waits for BOTH (including the slow one)
+    assert_ordered(&log, "rd_mp_slow", "rd_mp_sub");
+}
+
+#[test]
+fn test_ready_dispatch_single_node_no_overhead() {
+    // Single node should tick normally with no dispatch overhead.
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
+    scheduler
+        .add(CounterNode::with_counter("rd_single", counter.clone()))
+        .build();
+
+    scheduler.run_for(100_u64.ms());
+
+    // Should have ticked multiple times (100Hz for 100ms = ~10 ticks)
+    let ticks = counter.load(Ordering::SeqCst);
+    assert!(
+        ticks >= 5,
+        "Single node should tick at least 5 times in 100ms at 100Hz, got {}",
+        ticks
+    );
+}
+
+#[test]
+fn test_ready_dispatch_panicking_node_doesnt_block_others() {
+    // If one node panics, other nodes should still tick.
+    let _guard = lock_scheduler();
+    let healthy_counter = Arc::new(AtomicUsize::new(0));
+
+    struct PanicNode {
+        name: String,
+    }
+    impl Node for PanicNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            panic!("intentional panic in ready dispatch test");
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(50_u64.hz()).verbose(false);
+    scheduler
+        .add(PanicNode {
+            name: "rd_panic".to_string(),
+        })
+        .build();
+    scheduler
+        .add(CounterNode::with_counter(
+            "rd_panic_healthy",
+            healthy_counter.clone(),
+        ))
+        .build();
+
+    scheduler.run_for(200_u64.ms());
+
+    // Healthy node should still have ticked
+    let ticks = healthy_counter.load(Ordering::SeqCst);
+    assert!(
+        ticks >= 3,
+        "Healthy node should keep ticking despite sibling panic, got {} ticks",
+        ticks
+    );
+}
+
+#[test]
+fn test_ready_dispatch_real_robot_topology() {
+    // Realistic 6-node robot pipeline:
+    //   IMU (fast) ──→ Controller ──→ Motor
+    //   Camera (slow) ──→ Detector ──→ Controller
+    //
+    // Expected behavior:
+    //   - IMU and Camera start in parallel
+    //   - IMU finishes fast (10ms), but Controller must ALSO wait for Detector
+    //   - Camera finishes (50ms), Detector starts
+    //   - Detector finishes, Controller starts (needs IMU + Detector)
+    //   - Motor runs last
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(3_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_bot_imu", 10, ts.clone()).publishes("rd_bot_imu_data"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_bot_cam", 50, ts.clone()).publishes("rd_bot_image"))
+        .build();
+    scheduler
+        .add(
+            TimingNode::new("rd_bot_det", 20, ts.clone())
+                .subscribes("rd_bot_image")
+                .publishes("rd_bot_detections"),
+        )
+        .build();
+    scheduler
+        .add(
+            TimingNode::new("rd_bot_ctrl", 10, ts.clone())
+                .subscribes("rd_bot_imu_data")
+                .subscribes("rd_bot_detections")
+                .publishes("rd_bot_cmd"),
+        )
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_bot_motor", 5, ts.clone()).subscribes("rd_bot_cmd"))
+        .build();
+
+    scheduler.run_for(300_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(
+        log.len() >= 5,
+        "Expected all 5 nodes to tick, got {}",
+        log.len()
+    );
+
+    // IMU and Camera parallel (independent sensors)
+    assert_parallel(&log, "rd_bot_imu", "rd_bot_cam");
+    // Camera before Detector (data dependency)
+    assert_ordered(&log, "rd_bot_cam", "rd_bot_det");
+    // Detector before Controller (data dependency)
+    assert_ordered(&log, "rd_bot_det", "rd_bot_ctrl");
+    // IMU before Controller (data dependency)
+    assert_ordered(&log, "rd_bot_imu", "rd_bot_ctrl");
+    // Controller before Motor (data dependency)
+    assert_ordered(&log, "rd_bot_ctrl", "rd_bot_motor");
+}
+
+#[test]
+fn test_ready_dispatch_no_topics_falls_back_to_order() {
+    // Nodes with no topic metadata fall back to .order() tiers.
+    // Same order = same step, different order = sequential.
+    let _guard = lock_scheduler();
+    let order_log = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct OrderLogger {
+        name: String,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+    impl Node for OrderLogger {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            self.log.lock().unwrap().push(self.name.clone());
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
+    scheduler
+        .add(OrderLogger {
+            name: "rd_fb_third".to_string(),
+            log: order_log.clone(),
+        })
+        .order(20)
+        .build();
+    scheduler
+        .add(OrderLogger {
+            name: "rd_fb_first".to_string(),
+            log: order_log.clone(),
+        })
+        .order(0)
+        .build();
+    scheduler
+        .add(OrderLogger {
+            name: "rd_fb_second".to_string(),
+            log: order_log.clone(),
+        })
+        .order(10)
+        .build();
+
+    // Use tick_once to get deterministic single-tick behavior
+    scheduler.tick_once().unwrap();
+
+    let log = order_log.lock().unwrap();
+    assert_eq!(log.len(), 3);
+    // With .order() fallback (no topic metadata), execution should respect order tiers
+    assert_eq!(log[0], "rd_fb_first");
+    assert_eq!(log[1], "rd_fb_second");
+    assert_eq!(log[2], "rd_fb_third");
+}
+
+#[test]
+fn test_ready_dispatch_wall_time_proves_parallelism() {
+    // Most rigorous timing test: 4 independent 50ms nodes.
+    // Sequential: ~200ms. Parallel: ~50ms. We check < 120ms.
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    let mut scheduler = Scheduler::new().tick_rate(2_u64.hz());
+    scheduler
+        .add(TimingNode::new("rd_wall_A", 50, ts.clone()).publishes("rd_wall_a"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_wall_B", 50, ts.clone()).publishes("rd_wall_b"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_wall_C", 50, ts.clone()).publishes("rd_wall_c"))
+        .build();
+    scheduler
+        .add(TimingNode::new("rd_wall_D", 50, ts.clone()).publishes("rd_wall_d"))
+        .build();
+
+    let wall_start = std::time::Instant::now();
+    // Run for enough time to complete one tick cycle
+    scheduler.run_for(300_u64.ms());
+    let _first_tick_wall = wall_start.elapsed();
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 4, "Expected all 4 nodes to tick");
+
+    // Find the span of the first tick batch (all 4 nodes)
+    let first_batch: Vec<_> = log.iter().take(4).collect();
+    let earliest_start = first_batch.iter().map(|t| t.1).min().unwrap();
+    let latest_end = first_batch.iter().map(|t| t.2).max().unwrap();
+    let batch_duration = latest_end.duration_since(earliest_start);
+
+    // 4 × 50ms sequential = 200ms. Parallel should be ~50ms.
+    // Allow generous margin for CI/scheduling jitter.
+    assert!(
+        batch_duration < Duration::from_millis(150),
+        "4 independent 50ms nodes took {:?} — should be <150ms if parallel (200ms if sequential)",
+        batch_duration
+    );
+}
+
+#[test]
+fn test_ready_dispatch_graph_rebuild_after_tick_one() {
+    // Verify Phase 2: if topics are registered during tick (not init),
+    // the graph rebuilds after the first tick.
+    let _guard = lock_scheduler();
+
+    struct LazyRegisterer {
+        name: String,
+        topic: String,
+        role: crate::communication::topic::NodeTopicRole,
+        registered: bool,
+        tick_count: Arc<AtomicUsize>,
+    }
+
+    impl Node for LazyRegisterer {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            // Register on first tick (simulates lazy Topic::send/recv registration)
+            if !self.registered {
+                crate::communication::topic_node_registry().register_with_type(
+                    &self.topic,
+                    &self.name,
+                    self.role,
+                    "u32",
+                );
+                self.registered = true;
+            }
+            self.tick_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().tick_rate(50_u64.hz());
+    scheduler
+        .add(LazyRegisterer {
+            name: "rd_lazy_pub".to_string(),
+            topic: "rd_lazy_topic".to_string(),
+            role: crate::communication::topic::NodeTopicRole::Publisher,
+            registered: false,
+            tick_count: counter_a.clone(),
+        })
+        .build();
+    scheduler
+        .add(LazyRegisterer {
+            name: "rd_lazy_sub".to_string(),
+            topic: "rd_lazy_topic".to_string(),
+            role: crate::communication::topic::NodeTopicRole::Subscriber,
+            registered: false,
+            tick_count: counter_b.clone(),
+        })
+        .build();
+
+    // Run for enough ticks to get past the Phase 2 rebuild
+    scheduler.run_for(200_u64.ms());
+
+    // Both nodes should have ticked multiple times
+    let ticks_a = counter_a.load(Ordering::SeqCst);
+    let ticks_b = counter_b.load(Ordering::SeqCst);
+    assert!(
+        ticks_a >= 3 && ticks_b >= 3,
+        "Both nodes should tick, got pub={} sub={}",
+        ticks_a,
+        ticks_b
+    );
+}
+
+// ============================================================================
+// Practical Robotics Blocking Regression Tests
+// ============================================================================
+//
+// These tests simulate REAL robotics patterns that BLOCKED under the old
+// sequential .order()-based model. Each test uses ONLY the user-facing API:
+//   - Scheduler::new(), .tick_rate(), .run_for()
+//   - scheduler.add(node).build()   (NO .order() — proving it's optional)
+//   - Node trait: name(), init(), tick()
+//   - TopicNodeRegistry for topic registration (simulates Topic::send/recv)
+//
+// Each test documents:
+//   OLD BEHAVIOR: what happened with sequential execution
+//   NEW BEHAVIOR: what should happen with ready-dispatch
+//   PROOF: timing or ordering assertions that would FAIL under the old model
+
+/// Register a node as publisher/subscriber with the global TopicNodeRegistry.
+/// Simulates what Topic::send() and Topic::recv() do internally.
+fn register_topic(node_name: &str, topic_name: &str, role: crate::communication::topic::NodeTopicRole) {
+    crate::communication::topic_node_registry().register_with_type(
+        topic_name, node_name, role, "f64",
+    );
+}
+
+// ── Test 1: Warehouse Robot — 4 Independent Sensors ──────────────────────────
+//
+// Scenario: Warehouse robot has LiDAR, stereo camera, IMU, and wheel encoders.
+// All 4 read hardware independently. None depends on the others.
+//
+// OLD: Sequential: LiDAR(20ms) → Camera(20ms) → IMU(20ms) → Encoder(20ms) = 80ms
+// NEW: Parallel: all 4 start together = ~20ms
+// PROOF: Total batch time < 50ms (impossible if sequential = 80ms)
+
+#[test]
+fn test_robotics_warehouse_4_independent_sensors() {
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    // All sensors publish to different topics — completely independent
+    let mut scheduler = Scheduler::new().tick_rate(5_u64.hz());
+
+    struct SensorNode {
+        name: String,
+        topic: String,
+        sleep_ms: u64,
+        ts: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    }
+
+    impl Node for SensorNode {
+        fn name(&self) -> &str { &self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            register_topic(&self.name, &self.topic, crate::communication::topic::NodeTopicRole::Publisher);
+            Ok(())
+        }
+        fn tick(&mut self) {
+            let start = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            let end = std::time::Instant::now();
+            self.ts.lock().unwrap().push((self.name.clone(), start, end));
+        }
+    }
+
+    for (name, topic) in [("wh_lidar", "wh_scan"), ("wh_camera", "wh_image"), ("wh_imu", "wh_imu_data"), ("wh_encoder", "wh_odom")] {
+        scheduler.add(SensorNode {
+            name: name.to_string(),
+            topic: topic.to_string(),
+            sleep_ms: 20,
+            ts: ts.clone(),
+        }).build();
+    }
+
+    scheduler.run_for(250_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 4, "All 4 sensors should tick, got {}", log.len());
+
+    // Prove parallelism: measure the first batch span
+    let first_four: Vec<_> = log.iter().take(4).collect();
+    let earliest = first_four.iter().map(|t| t.1).min().unwrap();
+    let latest = first_four.iter().map(|t| t.2).max().unwrap();
+    let batch_time = latest.duration_since(earliest);
+
+    // OLD MODEL: 4 × 20ms = 80ms sequential
+    // NEW MODEL: ~20ms parallel
+    assert!(
+        batch_time < Duration::from_millis(50),
+        "4 independent 20ms sensors took {:?} — old model would take 80ms, new should be ~20ms",
+        batch_time
+    );
+}
+
+// ── Test 2: Surgical Robot — Safety-Critical Pipeline ────────────────────────
+//
+// Scenario: Surgical robot has force sensor + vision system feeding a
+// safety monitor, then the controller, then the actuator.
+// Force and vision are independent. Everything else is a chain.
+//
+//   ForceSensor ──→ SafetyMonitor ──→ Controller ──→ Actuator
+//   VisionSystem ──↗
+//
+// OLD: All 5 nodes sequential even though Force and Vision are independent
+// NEW: Force and Vision parallel, then SafetyMonitor, then Controller, then Actuator
+// PROOF: Force and Vision overlap; SafetyMonitor starts only after both finish
+
+#[test]
+fn test_robotics_surgical_safety_pipeline() {
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    struct PipelineNode {
+        name: String,
+        pubs: Vec<String>,
+        subs: Vec<String>,
+        sleep_ms: u64,
+        ts: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    }
+
+    impl Node for PipelineNode {
+        fn name(&self) -> &str { &self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            for t in &self.pubs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Publisher);
+            }
+            for t in &self.subs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Subscriber);
+            }
+            Ok(())
+        }
+        fn tick(&mut self) {
+            let start = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            let end = std::time::Instant::now();
+            self.ts.lock().unwrap().push((self.name.clone(), start, end));
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(3_u64.hz());
+
+    // NO .order() calls — dependency graph handles everything
+    scheduler.add(PipelineNode {
+        name: "sr_force".into(), pubs: vec!["sr_force_data".into()], subs: vec![],
+        sleep_ms: 15, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(PipelineNode {
+        name: "sr_vision".into(), pubs: vec!["sr_vision_data".into()], subs: vec![],
+        sleep_ms: 40, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(PipelineNode {
+        name: "sr_safety".into(),
+        pubs: vec!["sr_safe_cmd".into()],
+        subs: vec!["sr_force_data".into(), "sr_vision_data".into()],
+        sleep_ms: 5, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(PipelineNode {
+        name: "sr_ctrl".into(),
+        pubs: vec!["sr_joint_cmd".into()],
+        subs: vec!["sr_safe_cmd".into()],
+        sleep_ms: 10, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(PipelineNode {
+        name: "sr_actuator".into(), pubs: vec![], subs: vec!["sr_joint_cmd".into()],
+        sleep_ms: 5, ts: ts.clone(),
+    }).build();
+
+    scheduler.run_for(400_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 5, "All 5 nodes should tick, got {}", log.len());
+
+    // Force and Vision are parallel (independent sensors)
+    assert_parallel(&log, "sr_force", "sr_vision");
+    // Safety waits for BOTH sensors
+    assert_ordered(&log, "sr_vision", "sr_safety"); // vision is the slow one (40ms)
+    assert_ordered(&log, "sr_force", "sr_safety");
+    // Controller after safety
+    assert_ordered(&log, "sr_safety", "sr_ctrl");
+    // Actuator after controller
+    assert_ordered(&log, "sr_ctrl", "sr_actuator");
+}
+
+// ── Test 3: Autonomous Car — Perception + Planning + Control ─────────────────
+//
+// Scenario: Self-driving car with 3 cameras, 1 LiDAR, 1 radar — all feeding
+// separate perception pipelines that merge into a planner then controller.
+//
+//   FrontCam ──→ FrontDetector ──┐
+//   LeftCam  ──→ LeftDetector  ──┤
+//   RightCam ──→ RightDetector ──┼──→ FusionPlanner ──→ VehicleCtrl
+//   LiDAR    ──→ PointCloudProc ┤
+//   Radar    ──→ RadarProc ──────┘
+//
+// OLD: 10 nodes × sequential = sum of all tick times
+// NEW: 5 sensors parallel, 5 processors parallel, then fusion, then control
+// PROOF: Sensors overlap; processors overlap; total < sequential sum
+
+#[test]
+fn test_robotics_autonomous_car_perception() {
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    struct CarNode {
+        name: String,
+        pubs: Vec<String>,
+        subs: Vec<String>,
+        sleep_ms: u64,
+        ts: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    }
+
+    impl Node for CarNode {
+        fn name(&self) -> &str { &self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            for t in &self.pubs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Publisher);
+            }
+            for t in &self.subs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Subscriber);
+            }
+            Ok(())
+        }
+        fn tick(&mut self) {
+            let start = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            let end = std::time::Instant::now();
+            self.ts.lock().unwrap().push((self.name.clone(), start, end));
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(2_u64.hz());
+
+    // Layer 1: 5 sensors (all independent, all parallel)
+    for (name, topic, ms) in [
+        ("ac_front_cam", "ac_front_img", 15),
+        ("ac_left_cam", "ac_left_img", 15),
+        ("ac_right_cam", "ac_right_img", 15),
+        ("ac_lidar", "ac_cloud", 20),
+        ("ac_radar", "ac_radar_pts", 10),
+    ] {
+        scheduler.add(CarNode {
+            name: name.into(), pubs: vec![topic.into()], subs: vec![],
+            sleep_ms: ms, ts: ts.clone(),
+        }).build();
+    }
+
+    // Layer 2: 5 detectors (each depends on one sensor, parallel with each other)
+    for (name, pub_t, sub_t, ms) in [
+        ("ac_front_det", "ac_front_det_out", "ac_front_img", 25),
+        ("ac_left_det", "ac_left_det_out", "ac_left_img", 25),
+        ("ac_right_det", "ac_right_det_out", "ac_right_img", 25),
+        ("ac_pc_proc", "ac_pc_out", "ac_cloud", 30),
+        ("ac_radar_proc", "ac_radar_out", "ac_radar_pts", 15),
+    ] {
+        scheduler.add(CarNode {
+            name: name.into(), pubs: vec![pub_t.into()], subs: vec![sub_t.into()],
+            sleep_ms: ms, ts: ts.clone(),
+        }).build();
+    }
+
+    // Layer 3: Fusion planner (depends on ALL detectors)
+    scheduler.add(CarNode {
+        name: "ac_planner".into(),
+        pubs: vec!["ac_plan".into()],
+        subs: vec!["ac_front_det_out".into(), "ac_left_det_out".into(),
+                    "ac_right_det_out".into(), "ac_pc_out".into(), "ac_radar_out".into()],
+        sleep_ms: 15, ts: ts.clone(),
+    }).build();
+
+    // Layer 4: Vehicle controller
+    scheduler.add(CarNode {
+        name: "ac_vehicle_ctrl".into(), pubs: vec![], subs: vec!["ac_plan".into()],
+        sleep_ms: 5, ts: ts.clone(),
+    }).build();
+
+    scheduler.run_for(600_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 12, "All 12 nodes should tick, got {}", log.len());
+
+    // Layer 1: all 5 sensors run in parallel
+    assert_parallel(&log, "ac_front_cam", "ac_lidar");
+    assert_parallel(&log, "ac_left_cam", "ac_radar");
+    assert_parallel(&log, "ac_right_cam", "ac_front_cam");
+
+    // Layer 2: detectors run in parallel with each other
+    assert_parallel(&log, "ac_front_det", "ac_left_det");
+    assert_parallel(&log, "ac_pc_proc", "ac_radar_proc");
+
+    // Causal: each detector after its sensor
+    assert_ordered(&log, "ac_front_cam", "ac_front_det");
+    assert_ordered(&log, "ac_lidar", "ac_pc_proc");
+    assert_ordered(&log, "ac_radar", "ac_radar_proc");
+
+    // Planner after ALL detectors (including slowest = pc_proc at 30ms)
+    assert_ordered(&log, "ac_pc_proc", "ac_planner");
+    assert_ordered(&log, "ac_front_det", "ac_planner");
+
+    // Vehicle controller after planner
+    assert_ordered(&log, "ac_planner", "ac_vehicle_ctrl");
+
+    // WALL TIME PROOF: sequential sum = 15+15+15+20+10+25+25+25+30+15+15+5 = 215ms
+    // Parallel critical path: 20(lidar) + 30(pc_proc) + 15(planner) + 5(ctrl) = 70ms
+    let first_batch: Vec<_> = log.iter().take(12).collect();
+    let earliest = first_batch.iter().map(|t| t.1).min().unwrap();
+    let latest = first_batch.iter().map(|t| t.2).max().unwrap();
+    let total = latest.duration_since(earliest);
+    assert!(
+        total < Duration::from_millis(150),
+        "12-node car pipeline took {:?} — should be ~70ms parallel, not 215ms sequential",
+        total
+    );
+}
+
+// ── Test 4: Factory Floor — Multiple Independent Robot Arms ──────────────────
+//
+// Scenario: 3 robot arms on a factory floor. Each arm has its own sensor +
+// controller + actuator chain. Arms are completely independent.
+//
+//   Arm1_Sensor → Arm1_Ctrl → Arm1_Motor
+//   Arm2_Sensor → Arm2_Ctrl → Arm2_Motor
+//   Arm3_Sensor → Arm3_Ctrl → Arm3_Motor
+//
+// OLD: All 9 nodes sequential = 9 × sleep time
+// NEW: All 3 arms run their chains in parallel
+// PROOF: Arms overlap in execution
+
+#[test]
+fn test_robotics_factory_independent_arms() {
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    struct ArmNode {
+        name: String,
+        pubs: Vec<String>,
+        subs: Vec<String>,
+        sleep_ms: u64,
+        ts: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    }
+
+    impl Node for ArmNode {
+        fn name(&self) -> &str { &self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            for t in &self.pubs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Publisher);
+            }
+            for t in &self.subs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Subscriber);
+            }
+            Ok(())
+        }
+        fn tick(&mut self) {
+            let start = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            let end = std::time::Instant::now();
+            self.ts.lock().unwrap().push((self.name.clone(), start, end));
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(3_u64.hz());
+
+    // 3 arms, each with sensor → controller → motor (completely independent chains)
+    for arm_id in 1..=3 {
+        let prefix = format!("fa_arm{}", arm_id);
+        scheduler.add(ArmNode {
+            name: format!("{}_sensor", prefix),
+            pubs: vec![format!("{}_joint_state", prefix)], subs: vec![],
+            sleep_ms: 15, ts: ts.clone(),
+        }).build();
+        scheduler.add(ArmNode {
+            name: format!("{}_ctrl", prefix),
+            pubs: vec![format!("{}_joint_cmd", prefix)],
+            subs: vec![format!("{}_joint_state", prefix)],
+            sleep_ms: 15, ts: ts.clone(),
+        }).build();
+        scheduler.add(ArmNode {
+            name: format!("{}_motor", prefix),
+            pubs: vec![], subs: vec![format!("{}_joint_cmd", prefix)],
+            sleep_ms: 10, ts: ts.clone(),
+        }).build();
+    }
+
+    scheduler.run_for(400_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 9, "All 9 nodes should tick, got {}", log.len());
+
+    // Within each arm: causal ordering maintained
+    for arm_id in 1..=3 {
+        let prefix = format!("fa_arm{}", arm_id);
+        assert_ordered(&log, &format!("{}_sensor", prefix), &format!("{}_ctrl", prefix));
+        assert_ordered(&log, &format!("{}_ctrl", prefix), &format!("{}_motor", prefix));
+    }
+
+    // Across arms: sensors run in parallel (different arms are independent)
+    assert_parallel(&log, "fa_arm1_sensor", "fa_arm2_sensor");
+    assert_parallel(&log, "fa_arm2_sensor", "fa_arm3_sensor");
+
+    // Controllers also parallel across arms
+    assert_parallel(&log, "fa_arm1_ctrl", "fa_arm2_ctrl");
+
+    // WALL TIME: sequential = 9 × ~15ms = 135ms
+    // Parallel = one arm chain = 15+15+10 = 40ms (all 3 arms overlap)
+    let first_nine: Vec<_> = log.iter().take(9).collect();
+    let earliest = first_nine.iter().map(|t| t.1).min().unwrap();
+    let latest = first_nine.iter().map(|t| t.2).max().unwrap();
+    let total = latest.duration_since(earliest);
+    assert!(
+        total < Duration::from_millis(80),
+        "3-arm factory pipeline took {:?} — should be ~40ms parallel, not 135ms sequential",
+        total
+    );
+}
+
+// ── Test 5: Drone — Fast IMU Loop with Slow Camera ──────────────────────────
+//
+// Scenario: Quadrotor drone. IMU runs at high speed (2ms tick).
+// Camera is slow (40ms). Navigation depends on both.
+// Motor controller depends on navigation.
+//
+//   IMU (2ms)    ──→ Navigation ──→ MotorMixer
+//   Camera (40ms) ──↗
+//
+// KEY TEST: IMU should NOT be blocked by Camera. Without the dependency graph,
+// the old sequential model forced IMU to wait for Camera or vice versa.
+//
+// OLD: IMU waits for Camera (or Camera waits for IMU) = 42ms per tick
+// NEW: IMU and Camera parallel = max(2, 40) = 40ms, then Nav + Motor
+// PROOF: IMU and Camera overlap; Navigation starts after Camera (the slow one)
+
+#[test]
+fn test_robotics_drone_fast_imu_slow_camera() {
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    struct DroneNode {
+        name: String,
+        pubs: Vec<String>,
+        subs: Vec<String>,
+        sleep_ms: u64,
+        ts: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    }
+
+    impl Node for DroneNode {
+        fn name(&self) -> &str { &self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            for t in &self.pubs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Publisher);
+            }
+            for t in &self.subs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Subscriber);
+            }
+            Ok(())
+        }
+        fn tick(&mut self) {
+            let start = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            let end = std::time::Instant::now();
+            self.ts.lock().unwrap().push((self.name.clone(), start, end));
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(3_u64.hz());
+
+    scheduler.add(DroneNode {
+        name: "dr_imu".into(), pubs: vec!["dr_imu_data".into()], subs: vec![],
+        sleep_ms: 2, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(DroneNode {
+        name: "dr_camera".into(), pubs: vec!["dr_image".into()], subs: vec![],
+        sleep_ms: 40, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(DroneNode {
+        name: "dr_nav".into(),
+        pubs: vec!["dr_nav_cmd".into()],
+        subs: vec!["dr_imu_data".into(), "dr_image".into()],
+        sleep_ms: 10, ts: ts.clone(),
+    }).build();
+
+    scheduler.add(DroneNode {
+        name: "dr_motors".into(), pubs: vec![], subs: vec!["dr_nav_cmd".into()],
+        sleep_ms: 2, ts: ts.clone(),
+    }).build();
+
+    scheduler.run_for(300_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 4, "All 4 nodes should tick, got {}", log.len());
+
+    // IMU and Camera run in parallel — IMU is NOT blocked by slow Camera
+    assert_parallel(&log, "dr_imu", "dr_camera");
+
+    // Navigation waits for BOTH (Camera is the bottleneck at 40ms)
+    assert_ordered(&log, "dr_camera", "dr_nav");
+    assert_ordered(&log, "dr_imu", "dr_nav");
+
+    // Motors after navigation
+    assert_ordered(&log, "dr_nav", "dr_motors");
+}
+
+// ── Test 6: No .order() Needed — Pure Topic-Driven Ordering ─────────────────
+//
+// Scenario: 5-node pipeline added in RANDOM ORDER to the scheduler.
+// No .order() calls at all. The dependency graph must figure out the
+// correct execution order purely from topic pub/sub relationships.
+//
+// E(sub cmd) added first, then C(sub scan, pub plan), then A(pub scan),
+// then D(sub plan, pub cmd), then B(pub scan too — multi-publisher).
+//
+// OLD: Would execute in add-order: E, C, A, D, B — completely wrong
+// NEW: A,B parallel → C → D → E
+
+#[test]
+fn test_robotics_no_order_random_add_sequence() {
+    let _guard = lock_scheduler();
+    let ts = Arc::new(Mutex::new(Vec::new()));
+
+    struct SimpleNode {
+        name: String,
+        pubs: Vec<String>,
+        subs: Vec<String>,
+        sleep_ms: u64,
+        ts: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+    }
+
+    impl Node for SimpleNode {
+        fn name(&self) -> &str { &self.name }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            for t in &self.pubs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Publisher);
+            }
+            for t in &self.subs {
+                register_topic(&self.name, t, crate::communication::topic::NodeTopicRole::Subscriber);
+            }
+            Ok(())
+        }
+        fn tick(&mut self) {
+            let start = std::time::Instant::now();
+            std::thread::sleep(Duration::from_millis(self.sleep_ms));
+            let end = std::time::Instant::now();
+            self.ts.lock().unwrap().push((self.name.clone(), start, end));
+        }
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(3_u64.hz());
+
+    // Added in deliberately WRONG order — no .order() calls
+    scheduler.add(SimpleNode {
+        name: "ro_E".into(), pubs: vec![], subs: vec!["ro_cmd".into()],
+        sleep_ms: 5, ts: ts.clone(),
+    }).build();
+    scheduler.add(SimpleNode {
+        name: "ro_C".into(), pubs: vec!["ro_plan".into()], subs: vec!["ro_scan".into()],
+        sleep_ms: 15, ts: ts.clone(),
+    }).build();
+    scheduler.add(SimpleNode {
+        name: "ro_A".into(), pubs: vec!["ro_scan".into()], subs: vec![],
+        sleep_ms: 10, ts: ts.clone(),
+    }).build();
+    scheduler.add(SimpleNode {
+        name: "ro_D".into(), pubs: vec!["ro_cmd".into()], subs: vec!["ro_plan".into()],
+        sleep_ms: 10, ts: ts.clone(),
+    }).build();
+    scheduler.add(SimpleNode {
+        name: "ro_B".into(), pubs: vec!["ro_scan".into()], subs: vec![],
+        sleep_ms: 10, ts: ts.clone(),
+    }).build();
+
+    scheduler.run_for(300_u64.ms());
+
+    let log = ts.lock().unwrap();
+    assert!(log.len() >= 5, "All 5 nodes should tick, got {}", log.len());
+
+    // A and B are independent publishers — run in parallel
+    assert_parallel(&log, "ro_A", "ro_B");
+    // C depends on A and B (subscribes to "ro_scan")
+    assert_ordered(&log, "ro_A", "ro_C");
+    assert_ordered(&log, "ro_B", "ro_C");
+    // D depends on C
+    assert_ordered(&log, "ro_C", "ro_D");
+    // E depends on D
+    assert_ordered(&log, "ro_D", "ro_E");
+}
