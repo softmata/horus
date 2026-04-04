@@ -13,7 +13,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
-use horus_library::messages::detection::BoundingBox2D;
+use horus_robotics::messages::detection::BoundingBox2D;
 
 // ============================================
 // BoundingBox2D

@@ -3,6 +3,7 @@
 // This module provides time-related messages for simulation time,
 // replay synchronization, and external time source references.
 
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// Get current timestamp in nanoseconds since UNIX epoch.
@@ -57,7 +58,7 @@ pub const SOURCE_REPLAY: u8 = 2;
 /// topic.send(clock);
 /// ```
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Clock {
     /// Current simulation/replay time in nanoseconds
     pub clock_ns: u64,
@@ -159,7 +160,7 @@ impl Clock {
 /// topic.send(tref);
 /// ```
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct TimeReference {
     /// External reference time in nanoseconds
     pub time_ref_ns: u64,
@@ -382,7 +383,7 @@ mod tests {
 /// }
 /// ```
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct SimSync {
     /// Simulation step number (monotonically increasing)
     pub step: u64,
@@ -447,7 +448,7 @@ impl SimSync {
 /// rate_pub.send(RateRequest::new("imu", 100.0, 50.0, 200.0));
 /// ```
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct RateRequest {
     /// Topic name being negotiated (null-terminated, max 31 chars)
     pub topic_name: [u8; 32],

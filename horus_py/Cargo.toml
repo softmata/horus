@@ -25,7 +25,9 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.27", features = ["abi3-py39", "num-bigint", "num-complex"] }
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
-horus_library = { path = "../horus_library", features = ["wait"] }
+horus_types = { path = "../horus_types" }
+horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
+horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git", features = ["wait"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

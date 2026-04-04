@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn roundtrip_cmd_vel() {
-        use horus_library::CmdVel;
+        use horus_robotics::CmdVel;
         let t = unique_topic("cmd_vel");
         let pub_ = publisher_cmd_vel_new(&t).unwrap();
         let sub = subscriber_cmd_vel_new(&t).unwrap();
@@ -38,7 +38,7 @@ mod tests {
 
     #[test]
     fn roundtrip_twist() {
-        use horus_library::Twist;
+        use horus_types::Twist;
         let t = unique_topic("twist");
         let pub_ = publisher_twist_new(&t).unwrap();
         let sub = subscriber_twist_new(&t).unwrap();
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn roundtrip_pose2d() {
-        use horus_library::Pose2D;
+        use horus_types::Pose2D;
         let t = unique_topic("pose2d");
         let pub_ = publisher_pose2d_new(&t).unwrap();
         let sub = subscriber_pose2d_new(&t).unwrap();
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn roundtrip_imu() {
-        use horus_library::Imu;
+        use horus_robotics::Imu;
         let t = unique_topic("imu");
         let pub_ = publisher_imu_new(&t).unwrap();
         let sub = subscriber_imu_new(&t).unwrap();
@@ -93,7 +93,8 @@ mod tests {
 
     #[test]
     fn roundtrip_nav_goal() {
-        use horus_library::{NavGoal, Pose2D};
+        use horus_robotics::NavGoal;
+        use horus_types::Pose2D;
         let t = unique_topic("nav_goal");
         let pub_ = publisher_nav_goal_new(&t).unwrap();
         let sub = subscriber_nav_goal_new(&t).unwrap();
@@ -115,7 +116,7 @@ mod tests {
 
     #[test]
     fn roundtrip_heartbeat() {
-        use horus_library::Heartbeat;
+        use horus_types::Heartbeat;
         let t = unique_topic("heartbeat");
         let pub_ = publisher_heartbeat_new(&t).unwrap();
         let sub = subscriber_heartbeat_new(&t).unwrap();
@@ -134,7 +135,7 @@ mod tests {
 
     #[test]
     fn roundtrip_emergency_stop() {
-        use horus_library::EmergencyStop;
+        use horus_types::EmergencyStop;
         let t = unique_topic("estop");
         let pub_ = publisher_emergency_stop_new(&t).unwrap();
         let sub = subscriber_emergency_stop_new(&t).unwrap();
@@ -161,7 +162,7 @@ mod tests {
 
     #[test]
     fn multiple_sends_recv_in_order() {
-        use horus_library::CmdVel;
+        use horus_robotics::CmdVel;
         let t = unique_topic("order");
         let pub_ = publisher_cmd_vel_new(&t).unwrap();
         let sub = subscriber_cmd_vel_new(&t).unwrap();

@@ -413,7 +413,7 @@ pub unsafe extern "C" fn horus_publisher_cmd_vel_new(name: *const c_char) -> *mu
 pub unsafe extern "C" fn horus_publisher_cmd_vel_destroy(pub_: *mut HorusPublisher) {
     if !pub_.is_null() {
         drop(Box::from_raw(
-            pub_ as *mut topic_ffi::FfiPublisher<horus_library::CmdVel>,
+            pub_ as *mut topic_ffi::FfiPublisher<horus_robotics::CmdVel>,
         ));
     }
 }
@@ -427,11 +427,11 @@ pub unsafe extern "C" fn horus_publisher_cmd_vel_send(
     if pub_.is_null() || msg.is_null() {
         return;
     }
-    let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<horus_library::CmdVel>);
+    let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<horus_robotics::CmdVel>);
     let msg = &*msg;
     topic_ffi::publisher_cmd_vel_send(
         pub_,
-        horus_library::CmdVel {
+        horus_robotics::CmdVel {
             timestamp_ns: msg.timestamp_ns,
             linear: msg.linear,
             angular: msg.angular,
@@ -457,7 +457,7 @@ pub unsafe extern "C" fn horus_subscriber_cmd_vel_new(name: *const c_char) -> *m
 pub unsafe extern "C" fn horus_subscriber_cmd_vel_destroy(sub: *mut HorusSubscriber) {
     if !sub.is_null() {
         drop(Box::from_raw(
-            sub as *mut topic_ffi::FfiSubscriber<horus_library::CmdVel>,
+            sub as *mut topic_ffi::FfiSubscriber<horus_robotics::CmdVel>,
         ));
     }
 }
@@ -471,7 +471,7 @@ pub unsafe extern "C" fn horus_subscriber_cmd_vel_recv(
     if sub.is_null() || out.is_null() {
         return 0;
     }
-    let sub = &*(sub as *const topic_ffi::FfiSubscriber<horus_library::CmdVel>);
+    let sub = &*(sub as *const topic_ffi::FfiSubscriber<horus_robotics::CmdVel>);
     match topic_ffi::subscriber_cmd_vel_recv(sub) {
         Some(msg) => {
             (*out).timestamp_ns = msg.timestamp_ns;
@@ -489,7 +489,7 @@ pub unsafe extern "C" fn horus_subscriber_cmd_vel_has_msg(sub: *const HorusSubsc
     if sub.is_null() {
         return false;
     }
-    let sub = &*(sub as *const topic_ffi::FfiSubscriber<horus_library::CmdVel>);
+    let sub = &*(sub as *const topic_ffi::FfiSubscriber<horus_robotics::CmdVel>);
     topic_ffi::subscriber_cmd_vel_has_msg(sub)
 }
 
@@ -584,89 +584,89 @@ macro_rules! impl_pod_topic_c_api {
 
 // Generate C API for ALL Pod message types (55 total, excluding CmdVel which has hand-written C API)
 // Core 10 (already had Rust FFI)
-impl_pod_topic_c_api!(laser_scan, horus_library::LaserScan);
-impl_pod_topic_c_api!(imu, horus_library::Imu);
-impl_pod_topic_c_api!(odometry, horus_library::Odometry);
-impl_pod_topic_c_api!(joint_state, horus_library::JointState);
-impl_pod_topic_c_api!(twist, horus_library::Twist);
-impl_pod_topic_c_api!(pose2d, horus_library::Pose2D);
-impl_pod_topic_c_api!(transform_stamped, horus_library::TransformStamped);
-impl_pod_topic_c_api!(nav_goal, horus_library::NavGoal);
-impl_pod_topic_c_api!(heartbeat, horus_library::Heartbeat);
-impl_pod_topic_c_api!(emergency_stop, horus_library::EmergencyStop);
+impl_pod_topic_c_api!(laser_scan, horus_robotics::LaserScan);
+impl_pod_topic_c_api!(imu, horus_robotics::Imu);
+impl_pod_topic_c_api!(odometry, horus_robotics::Odometry);
+impl_pod_topic_c_api!(joint_state, horus_robotics::JointState);
+impl_pod_topic_c_api!(twist, horus_types::Twist);
+impl_pod_topic_c_api!(pose2d, horus_types::Pose2D);
+impl_pod_topic_c_api!(transform_stamped, horus_types::TransformStamped);
+impl_pod_topic_c_api!(nav_goal, horus_robotics::NavGoal);
+impl_pod_topic_c_api!(heartbeat, horus_types::Heartbeat);
+impl_pod_topic_c_api!(emergency_stop, horus_types::EmergencyStop);
 // Sensor (7)
-impl_pod_topic_c_api!(range_sensor, horus_library::RangeSensor);
-impl_pod_topic_c_api!(battery_state, horus_library::BatteryState);
-impl_pod_topic_c_api!(nav_sat_fix, horus_library::NavSatFix);
-impl_pod_topic_c_api!(magnetic_field, horus_library::MagneticField);
-impl_pod_topic_c_api!(temperature, horus_library::Temperature);
-impl_pod_topic_c_api!(fluid_pressure, horus_library::FluidPressure);
-impl_pod_topic_c_api!(illuminance, horus_library::Illuminance);
+impl_pod_topic_c_api!(range_sensor, horus_robotics::RangeSensor);
+impl_pod_topic_c_api!(battery_state, horus_robotics::BatteryState);
+impl_pod_topic_c_api!(nav_sat_fix, horus_robotics::NavSatFix);
+impl_pod_topic_c_api!(magnetic_field, horus_robotics::MagneticField);
+impl_pod_topic_c_api!(temperature, horus_robotics::Temperature);
+impl_pod_topic_c_api!(fluid_pressure, horus_robotics::FluidPressure);
+impl_pod_topic_c_api!(illuminance, horus_robotics::Illuminance);
 // Control (6)
-impl_pod_topic_c_api!(motor_command, horus_library::MotorCommand);
+impl_pod_topic_c_api!(motor_command, horus_robotics::MotorCommand);
 impl_pod_topic_c_api!(
     differential_drive_command,
-    horus_library::DifferentialDriveCommand
+    horus_robotics::DifferentialDriveCommand
 );
-impl_pod_topic_c_api!(servo_command, horus_library::ServoCommand);
-impl_pod_topic_c_api!(pid_config, horus_library::PidConfig);
-impl_pod_topic_c_api!(trajectory_point, horus_library::TrajectoryPoint);
-impl_pod_topic_c_api!(joint_command, horus_library::JointCommand);
+impl_pod_topic_c_api!(servo_command, horus_robotics::ServoCommand);
+impl_pod_topic_c_api!(pid_config, horus_robotics::PidConfig);
+impl_pod_topic_c_api!(trajectory_point, horus_robotics::TrajectoryPoint);
+impl_pod_topic_c_api!(joint_command, horus_robotics::JointCommand);
 // Geometry (9)
-impl_pod_topic_c_api!(point3, horus_library::Point3);
-impl_pod_topic_c_api!(vector3, horus_library::Vector3);
-impl_pod_topic_c_api!(quaternion, horus_library::Quaternion);
-impl_pod_topic_c_api!(pose3d, horus_library::Pose3D);
-impl_pod_topic_c_api!(pose_stamped, horus_library::PoseStamped);
-impl_pod_topic_c_api!(pose_with_covariance, horus_library::PoseWithCovariance);
-impl_pod_topic_c_api!(twist_with_covariance, horus_library::TwistWithCovariance);
-impl_pod_topic_c_api!(accel, horus_library::Accel);
-impl_pod_topic_c_api!(accel_stamped, horus_library::AccelStamped);
+impl_pod_topic_c_api!(point3, horus_types::Point3);
+impl_pod_topic_c_api!(vector3, horus_types::Vector3);
+impl_pod_topic_c_api!(quaternion, horus_types::Quaternion);
+impl_pod_topic_c_api!(pose3d, horus_types::Pose3D);
+impl_pod_topic_c_api!(pose_stamped, horus_types::PoseStamped);
+impl_pod_topic_c_api!(pose_with_covariance, horus_types::PoseWithCovariance);
+impl_pod_topic_c_api!(twist_with_covariance, horus_types::TwistWithCovariance);
+impl_pod_topic_c_api!(accel, horus_types::Accel);
+impl_pod_topic_c_api!(accel_stamped, horus_types::AccelStamped);
 // Detection (4)
-impl_pod_topic_c_api!(bounding_box_2d, horus_library::BoundingBox2D);
-impl_pod_topic_c_api!(bounding_box_3d, horus_library::BoundingBox3D);
-impl_pod_topic_c_api!(detection, horus_library::Detection);
-impl_pod_topic_c_api!(detection_3d, horus_library::Detection3D);
+impl_pod_topic_c_api!(bounding_box_2d, horus_robotics::BoundingBox2D);
+impl_pod_topic_c_api!(bounding_box_3d, horus_robotics::BoundingBox3D);
+impl_pod_topic_c_api!(detection, horus_robotics::Detection);
+impl_pod_topic_c_api!(detection_3d, horus_robotics::Detection3D);
 // Vision (3 — CompressedImage has Vec)
-impl_pod_topic_c_api!(camera_info, horus_library::CameraInfo);
-impl_pod_topic_c_api!(region_of_interest, horus_library::RegionOfInterest);
-impl_pod_topic_c_api!(stereo_info, horus_library::StereoInfo);
+impl_pod_topic_c_api!(camera_info, horus_robotics::CameraInfo);
+impl_pod_topic_c_api!(region_of_interest, horus_robotics::RegionOfInterest);
+impl_pod_topic_c_api!(stereo_info, horus_robotics::StereoInfo);
 // Navigation (5 — OccupancyGrid/CostMap have Vec)
-impl_pod_topic_c_api!(goal_result, horus_library::GoalResult);
-impl_pod_topic_c_api!(waypoint, horus_library::Waypoint);
-impl_pod_topic_c_api!(nav_path, horus_library::NavPath);
-impl_pod_topic_c_api!(velocity_obstacle, horus_library::VelocityObstacle);
-impl_pod_topic_c_api!(path_plan, horus_library::PathPlan);
+impl_pod_topic_c_api!(goal_result, horus_robotics::GoalResult);
+impl_pod_topic_c_api!(waypoint, horus_robotics::Waypoint);
+impl_pod_topic_c_api!(nav_path, horus_robotics::NavPath);
+impl_pod_topic_c_api!(velocity_obstacle, horus_robotics::VelocityObstacle);
+impl_pod_topic_c_api!(path_plan, horus_robotics::PathPlan);
 // Diagnostics (4)
-impl_pod_topic_c_api!(diagnostic_status, horus_library::DiagnosticStatus);
-impl_pod_topic_c_api!(resource_usage, horus_library::ResourceUsage);
-impl_pod_topic_c_api!(node_heartbeat, horus_library::NodeHeartbeat);
-impl_pod_topic_c_api!(safety_status, horus_library::SafetyStatus);
+impl_pod_topic_c_api!(diagnostic_status, horus_types::DiagnosticStatus);
+impl_pod_topic_c_api!(resource_usage, horus_types::ResourceUsage);
+impl_pod_topic_c_api!(node_heartbeat, horus_types::NodeHeartbeat);
+impl_pod_topic_c_api!(safety_status, horus_types::SafetyStatus);
 // Force/Tactile (5 — TactileArray has Vec)
-impl_pod_topic_c_api!(wrench_stamped, horus_library::WrenchStamped);
-impl_pod_topic_c_api!(force_command, horus_library::ForceCommand);
-impl_pod_topic_c_api!(contact_info, horus_library::ContactInfo);
-impl_pod_topic_c_api!(haptic_feedback, horus_library::HapticFeedback);
-impl_pod_topic_c_api!(impedance_parameters, horus_library::ImpedanceParameters);
+impl_pod_topic_c_api!(wrench_stamped, horus_robotics::WrenchStamped);
+impl_pod_topic_c_api!(force_command, horus_robotics::ForceCommand);
+impl_pod_topic_c_api!(contact_info, horus_robotics::ContactInfo);
+impl_pod_topic_c_api!(haptic_feedback, horus_robotics::HapticFeedback);
+impl_pod_topic_c_api!(impedance_parameters, horus_robotics::ImpedanceParameters);
 // Tracking/Segmentation (3)
-impl_pod_topic_c_api!(tracked_object, horus_library::TrackedObject);
-impl_pod_topic_c_api!(tracking_header, horus_library::TrackingHeader);
-impl_pod_topic_c_api!(segmentation_mask, horus_library::SegmentationMask);
+impl_pod_topic_c_api!(tracked_object, horus_robotics::TrackedObject);
+impl_pod_topic_c_api!(tracking_header, horus_robotics::TrackingHeader);
+impl_pod_topic_c_api!(segmentation_mask, horus_robotics::SegmentationMask);
 // Landmark (3)
-impl_pod_topic_c_api!(landmark, horus_library::Landmark);
-impl_pod_topic_c_api!(landmark_3d, horus_library::Landmark3D);
-impl_pod_topic_c_api!(landmark_array, horus_library::LandmarkArray);
+impl_pod_topic_c_api!(landmark, horus_robotics::Landmark);
+impl_pod_topic_c_api!(landmark_3d, horus_robotics::Landmark3D);
+impl_pod_topic_c_api!(landmark_array, horus_robotics::LandmarkArray);
 // Input (2)
-impl_pod_topic_c_api!(keyboard_input, horus_library::KeyboardInput);
-impl_pod_topic_c_api!(joystick_input, horus_library::JoystickInput);
+impl_pod_topic_c_api!(keyboard_input, horus_robotics::KeyboardInput);
+impl_pod_topic_c_api!(joystick_input, horus_robotics::JoystickInput);
 // Audio (1)
-impl_pod_topic_c_api!(audio_frame, horus_library::AudioFrame);
+impl_pod_topic_c_api!(audio_frame, horus_robotics::AudioFrame);
 // Clock (2)
-impl_pod_topic_c_api!(clock, horus_library::Clock);
-impl_pod_topic_c_api!(time_reference, horus_library::TimeReference);
+impl_pod_topic_c_api!(clock, horus_types::Clock);
+impl_pod_topic_c_api!(time_reference, horus_types::TimeReference);
 // Perception (2)
-impl_pod_topic_c_api!(point_field, horus_library::PointField);
-impl_pod_topic_c_api!(plane_detection, horus_library::PlaneDetection);
+impl_pod_topic_c_api!(point_field, horus_robotics::PointField);
+impl_pod_topic_c_api!(plane_detection, horus_robotics::PlaneDetection);
 
 // ─── JsonWireMessage Topic C API ─────────────────────────────────────────────
 

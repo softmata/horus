@@ -4,9 +4,7 @@
 
 use crate::errors::to_py_err;
 use horus_core::core::DurationExt;
-use horus_library::transform_frame::{
-    timestamp_now, Transform, TransformFrame, TransformFrameConfig,
-};
+use horus_tf::{timestamp_now, Transform, TransformFrame, TransformFrameConfig};
 use pyo3::prelude::*;
 
 /// Python wrapper for Transform

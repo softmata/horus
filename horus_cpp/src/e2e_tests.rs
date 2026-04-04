@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn e2e_pub_sub_pipeline() {
-        use horus_library::CmdVel;
+        use horus_robotics::CmdVel;
 
         let topic = format!("e2e.pipeline.{}", std::process::id());
 
@@ -116,7 +116,8 @@ mod tests {
 
     #[test]
     fn e2e_multiple_message_types() {
-        use horus_library::{CmdVel, Pose2D, Twist};
+        use horus_robotics::CmdVel;
+        use horus_types::{Pose2D, Twist};
 
         let pid = std::process::id();
 
@@ -330,7 +331,7 @@ mod tests {
         let pub_ = publisher_emergency_stop_new(&topic).unwrap();
         let sub = subscriber_emergency_stop_new(&topic).unwrap();
 
-        let msg = horus_library::EmergencyStop {
+        let msg = horus_types::EmergencyStop {
             timestamp_ns: 999,
             engaged: 1,
             source: [0u8; 32],

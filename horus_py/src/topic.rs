@@ -24,40 +24,36 @@
 use horus::communication::Topic;
 use horus::memory::TensorHandle;
 use horus_core::memory::{DepthImage, Image, PointCloud};
-use horus_library::messages::audio::AudioFrame;
-use horus_library::messages::clock::{Clock, TimeReference};
-use horus_library::messages::cmd_vel::CmdVel;
-use horus_library::messages::control::{
+use horus_types::{
+    Accel, AccelStamped, Clock, DiagnosticReport, DiagnosticStatus, DiagnosticValue, EmergencyStop,
+    GenericMessage, Heartbeat, NodeHeartbeat, Point3, Pose2D, Pose3D, PoseStamped,
+    PoseWithCovariance, Quaternion, ResourceUsage, SafetyStatus, TimeReference, TransformStamped,
+    Twist, TwistWithCovariance, Vector3,
+};
+use horus_robotics::CmdVel;
+use horus_robotics::messages::audio::AudioFrame;
+use horus_robotics::messages::control::{
     DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand, TrajectoryPoint,
 };
-use horus_library::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
-use horus_library::messages::diagnostics::{
-    DiagnosticReport, DiagnosticStatus, DiagnosticValue, EmergencyStop, Heartbeat, NodeHeartbeat,
-    ResourceUsage, SafetyStatus,
-};
-use horus_library::messages::force::{
+use horus_robotics::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
+use horus_robotics::messages::force::{
     ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
 };
-use horus_library::messages::geometry::{
-    Accel, AccelStamped, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
-    TransformStamped, Twist, TwistWithCovariance, Vector3,
-};
-use horus_library::messages::joystick_msg::JoystickInput;
-use horus_library::messages::keyboard_input_msg::KeyboardInput;
-use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
-use horus_library::messages::navigation::{
+use horus_robotics::messages::joystick_msg::JoystickInput;
+use horus_robotics::messages::keyboard_input_msg::KeyboardInput;
+use horus_robotics::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
+use horus_robotics::messages::navigation::{
     CostMap, GoalResult, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
     VelocityObstacles, Waypoint,
 };
-use horus_library::messages::perception::{PlaneArray, PlaneDetection, PointField};
-use horus_library::messages::segmentation::SegmentationMask;
-use horus_library::messages::sensor::{
+use horus_robotics::messages::perception::{PlaneArray, PlaneDetection, PointField};
+use horus_robotics::messages::segmentation::SegmentationMask;
+use horus_robotics::messages::sensor::{
     BatteryState, FluidPressure, Illuminance, Imu, JointState, LaserScan, MagneticField, NavSatFix,
     Odometry, RangeSensor, Temperature,
 };
-use horus_library::messages::tracking::{TrackedObject, TrackingHeader};
-use horus_library::messages::vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
-use horus_library::messages::GenericMessage;
+use horus_robotics::messages::tracking::{TrackedObject, TrackingHeader};
+use horus_robotics::messages::vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};

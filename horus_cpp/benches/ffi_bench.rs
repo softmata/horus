@@ -40,7 +40,7 @@ fn bench_tick_once_1_node(c: &mut Criterion) {
 fn bench_topic_send_cmd_vel(c: &mut Criterion) {
     let topic = format!("bench.cmd_vel.{}", std::process::id());
     let pub_ = publisher_cmd_vel_new(&topic).unwrap();
-    let msg = horus_library::CmdVel {
+    let msg = horus_robotics::CmdVel {
         timestamp_ns: 0,
         linear: 0.5,
         angular: 0.1,
@@ -57,7 +57,7 @@ fn bench_topic_send_recv_cmd_vel(c: &mut Criterion) {
     let topic = format!("bench.roundtrip.{}", std::process::id());
     let pub_ = publisher_cmd_vel_new(&topic).unwrap();
     let sub = subscriber_cmd_vel_new(&topic).unwrap();
-    let msg = horus_library::CmdVel {
+    let msg = horus_robotics::CmdVel {
         timestamp_ns: 0,
         linear: 0.5,
         angular: 0.1,

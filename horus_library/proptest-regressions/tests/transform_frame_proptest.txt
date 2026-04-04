@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc d318ee7855d32457bf65a2cfa7b528cc249085e1d02d5793adecc78853812b24 # shrinks to tf = Transform { translation: [2.4566510106227587e-277, 2.7958953966777386e-71, 5.8336955256248e-240], rotation: [0.8973805428603532, 0.4412574773254812, 5.015123281616e-312, 1.0057866438305571e-7] }, vec = [1000000.0, 6.706232568825368e-190, 2.041864180250153e-283]

@@ -1,8 +1,8 @@
 //! FFI wrappers for TransformFrame coordinate system.
 //!
-//! Wraps horus_library::TransformFrame for C++ access to the TF tree.
+//! Wraps horus_tf::TransformFrame for C++ access to the TF tree.
 
-use horus_library::transform_frame::{Transform, TransformFrame, TransformFrameConfig};
+use horus_tf::{Transform, TransformFrame, TransformFrameConfig};
 
 /// Opaque TransformFrame wrapper.
 pub struct FfiTransformFrame {

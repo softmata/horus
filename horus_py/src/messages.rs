@@ -16,38 +16,35 @@
 //! msg = topic.recv()  # Returns CmdVel backed by Rust POD
 //! ```
 
-use horus_library::messages::clock::{Clock, TimeReference};
-use horus_library::messages::cmd_vel::CmdVel;
-use horus_library::messages::control::{
+use horus_types::{
+    Accel, AccelStamped, Clock, DiagnosticReport, DiagnosticStatus, DiagnosticValue, EmergencyStop,
+    Heartbeat, NodeHeartbeat, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
+    ResourceUsage, SafetyStatus, TimeReference, TransformStamped, Twist, TwistWithCovariance,
+    Vector3,
+};
+use horus_robotics::CmdVel;
+use horus_robotics::messages::control::{
     DifferentialDriveCommand, JointCommand, MotorCommand, PidConfig, ServoCommand, TrajectoryPoint,
 };
-use horus_library::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
-use horus_library::messages::diagnostics::{
-    DiagnosticReport, DiagnosticStatus, DiagnosticValue, EmergencyStop, Heartbeat, NodeHeartbeat,
-    ResourceUsage, SafetyStatus,
-};
-use horus_library::messages::force::{
+use horus_robotics::messages::detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
+use horus_robotics::messages::force::{
     ContactInfo, ForceCommand, HapticFeedback, ImpedanceParameters, TactileArray, WrenchStamped,
 };
-use horus_library::messages::geometry::{
-    Accel, AccelStamped, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
-    TransformStamped, Twist, TwistWithCovariance, Vector3,
-};
-use horus_library::messages::joystick_msg::JoystickInput;
-use horus_library::messages::keyboard_input_msg::KeyboardInput;
-use horus_library::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
-use horus_library::messages::navigation::{
+use horus_robotics::messages::joystick_msg::JoystickInput;
+use horus_robotics::messages::keyboard_input_msg::KeyboardInput;
+use horus_robotics::messages::landmark::{Landmark, Landmark3D, LandmarkArray};
+use horus_robotics::messages::navigation::{
     CostMap, GoalResult, GoalStatus, NavGoal, NavPath, OccupancyGrid, PathPlan, VelocityObstacle,
     VelocityObstacles, Waypoint,
 };
-use horus_library::messages::perception::{PlaneArray, PlaneDetection, PointField};
-use horus_library::messages::segmentation::SegmentationMask;
-use horus_library::messages::sensor::{
+use horus_robotics::messages::perception::{PlaneArray, PlaneDetection, PointField};
+use horus_robotics::messages::segmentation::SegmentationMask;
+use horus_robotics::messages::sensor::{
     BatteryState, FluidPressure, Illuminance, Imu, JointState, LaserScan, MagneticField, NavSatFix,
     Odometry, RangeSensor, Temperature,
 };
-use horus_library::messages::tracking::{TrackedObject, TrackingHeader};
-use horus_library::messages::vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
+use horus_robotics::messages::tracking::{TrackedObject, TrackingHeader};
+use horus_robotics::messages::vision::{CameraInfo, CompressedImage, RegionOfInterest, StereoInfo};
 use pyo3::prelude::*;
 
 // ============================================================================
@@ -4037,10 +4034,10 @@ impl PyDiagnosticStatus {
     #[pyo3(signature = (level=0, code=0, message="", component="", timestamp_ns=0))]
     fn new(level: u8, code: u32, message: &str, component: &str, timestamp_ns: u64) -> Self {
         let status_level = match level {
-            1 => horus_library::messages::diagnostics::StatusLevel::Warn,
-            2 => horus_library::messages::diagnostics::StatusLevel::Error,
-            3 => horus_library::messages::diagnostics::StatusLevel::Fatal,
-            _ => horus_library::messages::diagnostics::StatusLevel::Ok,
+            1 => horus_types::diagnostics::StatusLevel::Warn,
+            2 => horus_types::diagnostics::StatusLevel::Error,
+            3 => horus_types::diagnostics::StatusLevel::Fatal,
+            _ => horus_types::diagnostics::StatusLevel::Ok,
         };
         let mut ds = DiagnosticStatus::new(status_level, code, message).with_component(component);
         if timestamp_ns != 0 {
@@ -4677,7 +4674,7 @@ impl PyContactInfo {
     #[pyo3(signature = (state=0, contact_force=0.0, confidence=0.0, timestamp_ns=0))]
     fn new(state: u8, contact_force: f64, confidence: f32, timestamp_ns: u64) -> Self {
         let mut ci = ContactInfo::new(
-            horus_library::messages::force::ContactState::NoContact,
+            horus_robotics::messages::force::ContactState::NoContact,
             contact_force,
         );
         ci.state = state;
@@ -6538,7 +6535,7 @@ impl PyPlaneDetection {
         ny: f64,
         nz: f64,
     ) -> Self {
-        use horus_library::messages::geometry::{Point3, Vector3};
+        use horus_types::{Point3, Vector3};
         Self {
             inner: PlaneDetection::new(
                 [a, b, c, d],
@@ -8211,7 +8208,7 @@ pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // Audio Types
 // ============================================================================
 
-use horus_library::messages::AudioFrame;
+use horus_robotics::messages::audio::AudioFrame;
 
 /// AudioFrame — audio data from a microphone or audio source.
 ///

@@ -1744,9 +1744,11 @@ dependencies = [
  "criterion",
  "cxx",
  "cxx-build",
+ "horus-robotics",
+ "horus-tf",
  "horus_core",
  "horus_cpp_macros",
- "horus_library",
+ "horus_types",
  "paste",
  "serde",
  "serde_json",
@@ -1760,24 +1762,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "trybuild",
-]
-
-[[package]]
-name = "horus_library"
-version = "0.2.0"
-dependencies = [
- "bincode",
- "bytemuck",
- "horus_core",
- "horus_macros",
- "loom",
- "proptest",
- "rmp-serde",
- "serde",
- "serde_arrays",
- "serde_json",
- "softmata-core",
- "tokio",
 ]
 
 [[package]]
@@ -1875,8 +1859,10 @@ dependencies = [
  "chrono",
  "ctrlc",
  "horus",
+ "horus-robotics",
+ "horus-tf",
  "horus_core",
- "horus_library",
+ "horus_types",
  "lazy_static",
  "parking_lot",
  "pyo3",
@@ -4691,16 +4677,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
-
-[[package]]
 name = "signature"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5140,9 +5116,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
- "signal-hook-registry",
  "socket2 0.6.3",
  "tokio-macros",
  "windows-sys 0.61.2",
