@@ -50,11 +50,21 @@ pub struct PeerTable {
 }
 
 impl PeerTable {
-    /// Create with default settings: 3 missed announcements, 1s discovery interval.
+    /// Create with platform-appropriate settings.
+    ///
+    /// Native Linux: 3 missed × 1s interval = 3s timeout.
+    /// WSL2: 6 missed × 1s interval = 6s timeout (virtualized networking adds jitter).
     pub fn new() -> Self {
+        let miss_threshold = std::env::var("HORUS_NET_DISCOVERY_MISSES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| {
+                if super::config::is_wsl2() { 6 } else { 3 }
+            });
+
         Self {
             peers: HashMap::new(),
-            miss_threshold: 3,
+            miss_threshold,
             discovery_interval_secs: 1.0,
         }
     }

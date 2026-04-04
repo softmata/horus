@@ -52,11 +52,36 @@ pub struct SafetyConfig {
     pub on_link_lost: String,
 }
 
+/// Detect if running inside WSL2 (Windows Subsystem for Linux).
+/// WSL2's virtualized network adapter adds 50-200ms jitter to UDP,
+/// causing false heartbeat timeouts with native 50ms intervals.
+pub(crate) fn is_wsl2() -> bool {
+    // WSL2 sets "microsoft" in the kernel version string
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
+}
+
 impl Default for SafetyConfig {
     fn default() -> Self {
+        let wsl = is_wsl2();
+
+        // Environment overrides take precedence, then WSL2 defaults, then native defaults.
+        // WSL2's virtualized networking adds significant jitter — use relaxed timeouts
+        // to avoid false "link lost" spam.
+        let heartbeat_ms = std::env::var("HORUS_NET_HEARTBEAT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(if wsl { 200 } else { 50 });
+
+        let missed_threshold = std::env::var("HORUS_NET_MISSED_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(if wsl { 5 } else { 3 });
+
         Self {
-            heartbeat_ms: 50,
-            missed_threshold: 3,
+            heartbeat_ms,
+            missed_threshold,
             on_link_lost: "warn".into(),
         }
     }

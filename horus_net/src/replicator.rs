@@ -110,6 +110,12 @@ impl Replicator {
         // Build heartbeat from config
         let hb_interval = Duration::from_millis(config.safety.heartbeat_ms);
         let hb_action = LinkLostAction::from_str(&config.safety.on_link_lost);
+        if crate::config::is_wsl2() {
+            eprintln!(
+                "[horus_net] WSL2 detected — using relaxed timeouts (heartbeat {}ms, {} missed threshold)",
+                config.safety.heartbeat_ms, config.safety.missed_threshold
+            );
+        }
         let heartbeat = SafetyHeartbeat::with_config(
             peer_id,
             hb_interval,
