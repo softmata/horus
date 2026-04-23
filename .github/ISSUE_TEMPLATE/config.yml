@@ -1,10 +1,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security Vulnerability
-    url: https://gitlab.com/softmata/horus/-/issues/new?confidential=true&label_name[]=security
-    about: Please report security vulnerabilities through a confidential GitLab issue
+    url: https://github.com/softmata/horus/security/advisories/new
+    about: Please report security vulnerabilities through a private GitHub security advisory
   - name: Questions and Discussions
-    url: https://gitlab.com/softmata/horus/-/issues
+    url: https://github.com/softmata/horus/issues
     about: Ask questions and discuss ideas with the community
   - name: Documentation
     url: https://docs.horusrobotics.dev

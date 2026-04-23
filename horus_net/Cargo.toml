@@ -20,7 +20,7 @@ libc = "0.2"
 
 [dev-dependencies]
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
 serde = { workspace = true }
 bincode = "1.3"
 

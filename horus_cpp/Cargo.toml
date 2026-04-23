@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "C++ bindings for the HORUS robotics framework — zero-copy shared memory IPC, deterministic scheduling, real-time safety via CXX FFI"
-repository = "https://gitlab.com/softmata/horus"
+repository = "https://github.com/softmata/horus"
 homepage = "https://horusrobotics.dev"
 keywords = ["robotics", "cpp", "ffi", "real-time", "horus"]
 categories = ["science::robotics", "api-bindings"]
@@ -16,8 +16,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 horus_core = { path = "../horus_core", default-features = false }
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
-horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git" }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
+horus-tf = { git = "https://github.com/softmata/horus-tf.git" }
 horus_cpp_macros = { path = "../horus_cpp_macros" }
 cxx = "1.0"
 paste = "1.0"

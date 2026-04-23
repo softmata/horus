@@ -85,4 +85,4 @@ If you have questions about this CLA, please open an issue on GitHub or contact 
 **Effective Date:** 2025-01-01
 
 **HORUS Project**
-https://gitlab.com/softmata/horus
+https://github.com/softmata/horus

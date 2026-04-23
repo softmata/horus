@@ -3,7 +3,7 @@
 #
 # One-line install:
 #   curl -fsSL https://horusrobotics.dev/install | bash
-#   curl -fsSL https://gitlab.com/softmata/horus/-/raw/release/install.sh | bash
+#   curl -fsSL https://github.com/softmata/horus/raw/release/install.sh | bash
 #
 # Flow:
 #   1. Detect OS and architecture
@@ -161,8 +161,8 @@ if [ "$OS" = "windows" ]; then
 else
     ASSET_EXT="tar.gz"
 fi
-# GitLab generic package registry URL for release assets
-RELEASE_URL="https://gitlab.com/${REPO}/-/releases/permalink/latest/downloads/${ASSET_NAME}.${ASSET_EXT}"
+# GitHub release asset URL
+RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.${ASSET_EXT}"
 
 info "Checking for pre-built binary..."
 
@@ -204,7 +204,7 @@ else
     # Clone
     info "Cloning release branch..."
     CLONE_DIR=$(mktemp -d)
-    git clone --depth 1 --branch "$BRANCH" "https://gitlab.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1
+    git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1
     ok "Source cloned"
 
     # Build — cargo shows its own progress
@@ -224,7 +224,7 @@ else
         if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
             echo ""
             fail "Build failed"
-            echo "    Report issues: https://gitlab.com/${REPO}/issues"
+            echo "    Report issues: https://github.com/${REPO}/issues"
             exit 1
         fi
     fi
@@ -238,7 +238,7 @@ else
         ok "Built and installed in ${build_elapsed}s"
     else
         fail "Build succeeded but binary not found"
-        echo "    Report issues: https://gitlab.com/${REPO}/issues"
+        echo "    Report issues: https://github.com/${REPO}/issues"
         exit 1
     fi
 

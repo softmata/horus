@@ -41,7 +41,7 @@ filter_unconventional = true
 split_commits = false
 # regex for preprocessing the commit messages
 commit_preprocessors = [
-  { pattern = '\(#([0-9]+)\)', replace = "([#${1}](https://gitlab.com/softmata/horus/-/merge_requests/${1}))" },
+  { pattern = '\(#([0-9]+)\)', replace = "([#${1}](https://github.com/softmata/horus/pull/${1}))" },
 ]
 # regex for parsing and grouping commits
 commit_parsers = [

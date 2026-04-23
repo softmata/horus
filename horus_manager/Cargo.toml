@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 description = "CLI tool for the HORUS robotics framework — project scaffolding, build/run/test, package management, monitoring, deployment, and 46+ commands for Rust, Python, and C++ robotics projects"
 authors = ["HORUS Team"]
-repository = "https://gitlab.com/softmata/horus"
+repository = "https://github.com/softmata/horus"
 homepage = "https://horusrobotics.dev"
 documentation = "https://docs.horusrobotics.dev"
 keywords = ["robotics", "cli", "build-tool", "horus", "ros"]
@@ -30,7 +30,7 @@ path = "src/bin/ci_test_node.rs"
 [dependencies]
 horus_core = { path = "../horus_core" }
 horus_types = { path = "../horus_types" }
-horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git" }
+horus-tf = { git = "https://github.com/softmata/horus-tf.git" }
 horus_sys = { path = "../horus_sys" }
 clap = { version = "4.4", features = ["derive"] }
 clap_complete = "4.4"

@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "Python bindings for the HORUS robotics framework — nodes, topics, scheduler, and message types accessible from Python with sub-microsecond IPC performance"
-repository = "https://gitlab.com/softmata/horus"
+repository = "https://github.com/softmata/horus"
 homepage = "https://horusrobotics.dev"
 documentation = "https://docs.horusrobotics.dev/python/api"
 keywords = ["robotics", "python", "bindings", "horus", "pyo3"]
@@ -26,8 +26,8 @@ pyo3 = { version = "0.27", features = ["abi3-py39", "num-bigint", "num-complex"]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
-horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git", features = ["wait"] }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
+horus-tf = { git = "https://github.com/softmata/horus-tf.git", features = ["wait"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

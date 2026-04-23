@@ -4,10 +4,10 @@ Thank you for your interest in contributing to HORUS! This document provides gui
 
 ## Getting Started
 
-1. **Fork the repository** on GitLab
+1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://gitlab.com/your-username/horus.git
+   git clone https://github.com/your-username/horus.git
    cd horus
    ```
 3. **Create a branch from `dev`** for your feature:

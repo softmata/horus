@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "Core runtime for the HORUS robotics framework — deterministic scheduler, zero-copy IPC topics, real-time node lifecycle, safety monitoring, and shared memory transport"
-repository = "https://gitlab.com/softmata/horus"
+repository = "https://github.com/softmata/horus"
 homepage = "https://horusrobotics.dev"
 documentation = "https://docs.horusrobotics.dev"
 keywords = ["robotics", "scheduler", "ipc", "real-time", "deterministic"]
@@ -65,8 +65,8 @@ tempfile = "3.0"
 loom = "0.7"
 proptest = "1.4"
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
-horus-tf = { git = "https://gitlab.com/softmata/horus-tf.git" }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
+horus-tf = { git = "https://github.com/softmata/horus-tf.git" }
 
 [lints]
 workspace = true

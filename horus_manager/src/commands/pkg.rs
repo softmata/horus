@@ -3792,7 +3792,7 @@ my-pkg = "1.0.0"
     fn test_git_detection_logic() {
         let test_cases = vec![
             ("https://github.com/user/repo", true),
-            ("https://gitlab.com/user/repo.git", true),
+            ("https://github.com/user/repo.git", true),
             ("git://example.com/repo", true),
             ("http://example.com/repo", false),
             ("simple-name", false),
@@ -5624,7 +5624,7 @@ lidar = "rplidar-a2"
             ("https://github.com/user/repo.git", "repo"),
             ("https://github.com/user/my-long-name.git", "my-long-name"),
             ("git://example.com/project", "project"),
-            ("https://gitlab.com/group/sub/deep-repo.git", "deep-repo"),
+            ("https://github.com/group/sub/deep-repo.git", "deep-repo"),
         ];
 
         for (url, expected) in cases {

@@ -100,12 +100,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, valu
 # horus-robotics and horus-tf are git deps that reference horus_core via relative
 # path (path = "../horus/horus_core"). When used as git deps in this workspace,
 # we need to patch their transitive dependency to point to our local horus_core.
-[patch."https://gitlab.com/softmata/horus-robotics.git"]
+[patch."https://github.com/softmata/horus-robotics.git"]
 horus_core = { path = "horus_core" }
 horus_types = { path = "horus_types" }
 horus_macros = { path = "horus_macros" }
 
-[patch."https://gitlab.com/softmata/horus-tf.git"]
+[patch."https://github.com/softmata/horus-tf.git"]
 horus_core = { path = "horus_core" }
 horus_macros = { path = "horus_macros" }
 

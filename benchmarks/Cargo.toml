@@ -88,7 +88,7 @@ required-features = ["iceoryx2"]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://gitlab.com/softmata/horus-robotics.git" }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
 bytemuck = { version = "1.24", features = ["derive"] }
 serde.workspace = true
 serde_json = "1.0"
