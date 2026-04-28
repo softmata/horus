@@ -185,7 +185,8 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
 else
     # --- Slow path: build from source ---
     rm -rf "$TMPDIR"
-    warn "No pre-built binary for ${OS}-${ARCH}, building from source..."
+    warn "No pre-built binary for ${OS}-${ARCH} — building from source (~3-5 min)"
+    info "Older releases ship source-only; future tagged releases will include binaries."
     echo ""
 
     # Dependencies
