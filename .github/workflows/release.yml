@@ -4,15 +4,25 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # Allow manually triggering a "dry-run" build that exercises the matrix
+  # without creating/updating a GitHub Release. Useful for validating the
+  # workflow before cutting a tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to associate the artifacts with (leave blank for dry-run)'
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build-release:
-    name: Build Release
+    name: Build ${{ matrix.asset_name }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -23,6 +33,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact_name: horus
             asset_name: horus-linux-arm64
+            cross_link: aarch64-linux-gnu-gcc
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: horus
@@ -39,40 +50,73 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Linux build deps mirror install.sh's install_build_deps() for ubuntu/debian.
+      # Missing any of these has historically caused horus_manager build failures
+      # in CI even though `cargo check --no-default-features` worked locally.
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            libudev-dev \
+            libasound2-dev \
+            libclang-dev
+
+      # macOS deps via Homebrew. pkg-config is the only one not pre-installed.
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (Linux ARM64)
+      - name: Install cross-compile linker (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          # Tell Cargo which linker to use for the aarch64 target. Without this
+          # `cargo build --target aarch64-unknown-linux-gnu` falls back to the
+          # x86_64 cc and links against the wrong libc.
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Cargo build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p horus_manager
+        run: cargo build --release --target ${{ matrix.target }} -p horus_manager --no-default-features
 
       - name: Strip binary (Unix)
         if: runner.os != 'Windows'
-        run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          else
+            strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          fi
 
       - name: Create archive (Unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
-          mv ${{ matrix.asset_name }}.tar.gz ../../../
+          tar czf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
 
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -DestinationPath "${{ matrix.asset_name }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" `
+                           -DestinationPath "${{ matrix.asset_name }}.zip"
 
       - name: Upload archive (Unix)
         if: runner.os != 'Windows'
@@ -80,6 +124,8 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: ./${{ matrix.asset_name }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload archive (Windows)
         if: runner.os == 'Windows'
@@ -87,11 +133,30 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: ./${{ matrix.asset_name }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # Smoke-test the binary on its native runner before uploading. Catches
+      # link-time issues (missing dlopen targets, wrong libc) that compile
+      # cleanly but fail at runtime. We skip aarch64-linux because the runner
+      # is x86_64 and qemu setup is overkill for a smoke test.
+      - name: Smoke test (--version)
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./target/${{ matrix.target }}/release/${{ matrix.artifact_name }} --version
+          else
+            ./target/${{ matrix.target }}/release/${{ matrix.artifact_name }} --version
+          fi
 
   create-release:
     name: Create GitHub Release
     needs: build-release
     runs-on: ubuntu-latest
+    # Only create a Release when this workflow was triggered by a tag push,
+    # not by a manual dry-run dispatch with no tag input.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
     permissions:
       contents: write
     steps:
@@ -101,10 +166,27 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create Release
+      - name: Compute checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz *.zip 2>/dev/null > SHA256SUMS || true
+          cat SHA256SUMS
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create / update Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
+            artifacts/SHA256SUMS
