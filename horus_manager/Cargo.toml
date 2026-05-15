@@ -73,7 +73,7 @@ notify = "7.0"
 num_cpus = "1.16"
 schemars = { version = "0.8", optional = true }
 
-rand = "0.8"
+rand = "0.9"
 memmap2 = "0.9"
 
 # Package signing

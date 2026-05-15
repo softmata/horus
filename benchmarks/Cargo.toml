@@ -97,7 +97,7 @@ anyhow = "1.0"
 libc = "0.2"
 zenoh = { version = "1.0", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
-rand = "0.8"
+rand = "0.9"
 chrono = { workspace = true }
 num_cpus = "1.16"
 iceoryx2 = { version = "0.8", optional = true }
