@@ -906,6 +906,7 @@ jobs:
   # Summary job
   integration-success:
     name: Integration Tests Success
+    permissions: {}
     needs: [ipc-integration, cli-integration, runtime-integration]
     runs-on: ubuntu-latest
     if: always()
