@@ -667,6 +667,51 @@ impl TensorPool {
         // Find a free slot
         let slot_id = self.find_free_slot()?;
 
+        // ── Data-region reclaim for the shared mmap bump allocator ──────────
+        // `MmapBackend::free()` is a no-op — the bump pointer never rewinds —
+        // so a naive alloc-after-release bumps a fresh offset every cycle and
+        // the data region grows without bound (this was the "Image pool leak":
+        // alloc/release of a fixed-size image eventually exhausts the region).
+        //
+        // When a *freed* slot is popped whose prior backing region still fits
+        // the new request, reuse that region instead of bumping. The region at
+        // `slot.offset` is physically `align_up(prev_size)` bytes and was only
+        // ever handed to this slot (the bump allocator never reissues an
+        // offset), so while the slot sits on the free stack no other allocation
+        // can hold it — reuse is exclusive and memory-safe. The data was already
+        // scrubbed by `return_slot`, so the reused region reads back as zeros.
+        //
+        // Only the shared mmap backend qualifies: CUDA backends `free()` and
+        // re-`alloc()` real device memory, so they must take the normal path.
+        // The capacity check is conservative (compares against the *last*
+        // logical size, not the largest ever), which can fall back to a bump
+        // for grow-after-shrink patterns — always correct, never over-reads.
+        if self.backend.is_shared() {
+            let slot = self.slot_mut(slot_id);
+            let prev_size = slot.size;
+            if prev_size > 0
+                && aligned_size <= Self::align_up(prev_size as usize, self.config.slot_alignment)
+            {
+                let reused_offset = slot.offset;
+                // Bump the generation (ABA / stale-descriptor protection) exactly
+                // as the bump path does, so old Tensor handles are rejected.
+                let generation_u64 = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
+                slot.size = size;
+                slot.owner_pid.store(std::process::id(), Ordering::Release);
+                slot.refcount.store(1, Ordering::Release);
+                slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
+                return Ok(Tensor::new(
+                    self.pool_id,
+                    slot_id,
+                    generation_u64,
+                    reused_offset,
+                    shape,
+                    dtype,
+                    device,
+                ));
+            }
+        }
+
         // Allocate from data region via backend — if this fails, return the slot
         // to the free list to prevent permanent slot leak.
         let alloc_result = self.backend.alloc(aligned_size);
@@ -3184,6 +3229,66 @@ mod tests {
             stats.used_bytes, prev_used,
             "Bump allocator: used_bytes stays the same after release"
         );
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// Regression: alloc/release cycles of a fixed-size tensor must NOT exhaust
+    /// the data region. The mmap backend's `free()` is a no-op, so before
+    /// per-slot region reuse a fixed-size allocator returned an error after
+    /// `pool_size / alloc_size` cycles — the "Image pool leak"
+    /// (`cpp_full_api_test.cpp::Pool.ImageAllocReleaseCycleLeakFree`).
+    #[test]
+    fn test_alloc_release_cycle_reuses_data_region() {
+        let config = TensorPoolConfig {
+            pool_size: 256 * 1024, // only ~4 × 64KB fit without reuse
+            max_slots: 8,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9613, config).expect("Failed to create pool");
+
+        let shape = [64u64 * 1024]; // 64KB; region exhausts after 4 cycles w/o reuse
+        let mut peak_used = 0usize;
+        for i in 0..100 {
+            let t = pool.alloc(&shape, TensorDtype::U8, Device::cpu()).unwrap_or_else(|e| {
+                panic!("alloc cycle {i} failed (data-region leak regressed): {e}")
+            });
+            peak_used = peak_used.max(pool.stats().used_bytes);
+            pool.release(&t);
+        }
+
+        // Reuse keeps the bump pointer at a single allocation's worth, not 100×.
+        assert!(
+            peak_used <= 128 * 1024,
+            "data region grew unbounded across reuse cycles: used {peak_used} bytes"
+        );
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// A reused slot whose new request EXCEEDS its prior region must fall back
+    /// to a fresh bump-allocated region (conservative reuse is still correct).
+    #[test]
+    fn test_alloc_release_cycle_grow_falls_back_to_bump() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 8,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9614, config).expect("Failed to create pool");
+
+        // Small alloc, release, then a larger alloc reusing the same slot must
+        // still yield a valid, correctly-sized, writable region.
+        let small = pool.alloc(&[64], TensorDtype::U8, Device::cpu()).unwrap();
+        pool.release(&small);
+        let big = pool.alloc(&[4096], TensorDtype::U8, Device::cpu()).unwrap();
+        assert_eq!(pool.data_slice(&big).unwrap().len(), 4096);
+        // Writing the full region must not corrupt anything / panic.
+        pool.data_slice_mut(&big).unwrap().fill(0xAB);
+        assert!(pool.data_slice(&big).unwrap().iter().all(|&b| b == 0xAB));
+        pool.release(&big);
 
         std::fs::remove_file(&pool.shm_path).ok();
     }
