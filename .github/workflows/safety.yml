@@ -73,12 +73,9 @@ jobs:
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 
-      # Run MIRI on horus_library Pod types (landmark, tracking, detection, segmentation)
-      - name: MIRI - horus_library Pod types
-        run: |
-          cargo miri test -p horus_library -- landmark:: tracking:: detection:: segmentation::
-        env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+      # NOTE: the landmark/tracking/detection/segmentation Pod types moved to the
+      # external horus-robotics repo when horus_library was decomposed (commit
+      # 7b430279); their MIRI coverage lives in that repo's CI, not this workspace.
 
   asan:
     name: AddressSanitizer - Memory Error Detection

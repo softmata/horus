@@ -1,0 +1,28 @@
+# cargo-audit configuration (https://github.com/rustsec/rustsec/tree/main/cargo-audit).
+#
+# The CI `audit` job runs `cargo audit` against this file. Any advisory NOT in
+# the ignore list below fails CI — so a newly introduced vulnerable dependency
+# is caught at PR time. The entries here are TRIAGED, not dismissed: each names
+# why it is tolerated and what would let us remove it. Re-review on every bump.
+#
+# Tracking: softmata-brain insight 1313 (security triage, 2026-06-15).
+
+[advisories]
+ignore = [
+    # rsa 0.9.x — "Marvin Attack" key-recovery timing sidechannel.
+    # No fixed upstream version exists. `rsa` is not reachable in any horus
+    # build tree (`cargo tree -i rsa` is empty — it sits in Cargo.lock via an
+    # optional/transitive path that no enabled feature pulls in). Remove this
+    # entry if `rsa` is dropped from the lockfile or an upstream fix ships.
+    "RUSTSEC-2023-0071",
+
+    # pyo3 0.27 — out-of-bounds read in `nth`/`nth_back` for PyList/PyTuple
+    # iterators. The fix is pyo3 >= 0.29, a breaking major upgrade across the
+    # whole horus_py binding layer (+ pythonize). Tracked as a migration
+    # roadmap; remove once horus_py is on pyo3 >= 0.29.
+    "RUSTSEC-2026-0176",
+
+    # pyo3 0.27 — missing `Sync` bound on `PyCFunction::new_closure` closures.
+    # Same pyo3 0.29 migration as above.
+    "RUSTSEC-2026-0177",
+]
