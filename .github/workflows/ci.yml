@@ -155,14 +155,25 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-bin
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked
 
       - name: Run Security Audit
         run: |
-          # Run audit and report issues (don't fail on warnings)
-          cargo audit --ignore RUSTSEC-2021-0140 --ignore RUSTSEC-2026-0002 || echo "Security audit found issues (non-blocking)"
-        continue-on-error: true
+          # Triaged advisory ignore-list lives in .cargo/audit.toml (each entry
+          # explains why it is tolerated and what would let us remove it).
+          # A NEW vulnerable dependency outside that list fails CI on main.
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            cargo audit
+          else
+            cargo audit || echo "::warning::Security audit found issues (non-blocking on this branch — strict on main)"
+          fi
 
   doc:
     name: Documentation
@@ -247,10 +258,9 @@ jobs:
         env:
           RUST_LOG: loom=debug
 
-      - name: Loom — TransformFrame seqlock (horus_library)
-        run: cargo test -p horus_library --test loom_seqlock -- --nocapture
-        env:
-          RUST_LOG: loom=debug
+      # NOTE: the TransformFrame seqlock loom test moved to the external
+      # horus-tf repo when horus_library was decomposed (commit 7b430279).
+      # It is exercised by horus-tf's own CI, not this workspace.
 
   test-quality:
     name: Test Quality Guard
@@ -318,10 +328,9 @@ jobs:
              [[ "${{ needs.test.result }}" == "success" ]] && \
              [[ "${{ needs.doc.result }}" == "success" ]] && \
              [[ "${{ needs.loom.result }}" == "success" ]] && \
+             [[ "${{ needs.security.result }}" == "success" ]] && \
              [[ "${{ needs.test-quality.result }}" == "success" ]]; then
             echo "All core checks passed!"
-            # Security is informational (has continue-on-error)
-            echo "Security audit: ${{ needs.security.result }}"
             exit 0
           else
             echo "Some checks failed"

@@ -267,7 +267,7 @@ impl CoreNode for PyNodeAdapter {
 ///
 /// Example:
 ///     scheduler.node(motor).order(0).rate(1000).on_miss(Miss.SAFE_MODE).build()
-#[pyclass(name = "Miss", module = "horus._horus")]
+#[pyclass(from_py_object, name = "Miss", module = "horus._horus")]
 #[derive(Debug, Clone, Copy)]
 pub struct PyMiss;
 

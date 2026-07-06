@@ -8,7 +8,7 @@ use horus_tf::{timestamp_now, Transform, TransformFrame, TransformFrameConfig};
 use pyo3::prelude::*;
 
 /// Python wrapper for Transform
-#[pyclass(name = "Transform")]
+#[pyclass(from_py_object, name = "Transform")]
 #[derive(Clone)]
 pub struct PyTransform {
     inner: Transform,
@@ -160,7 +160,7 @@ impl PyTransform {
 }
 
 /// Python wrapper for TransformFrameConfig
-#[pyclass(name = "TransformFrameConfig")]
+#[pyclass(from_py_object, name = "TransformFrameConfig")]
 #[derive(Clone)]
 pub struct PyTransformFrameConfig {
     inner: TransformFrameConfig,

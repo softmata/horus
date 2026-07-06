@@ -105,11 +105,9 @@ fn main() {
 
         let total_ticks: u64 = counters.iter().map(|c| c.load(Ordering::Relaxed)).sum();
         let ticks_per_node = total_ticks / node_count as u64;
-        let us_per_tick = if ticks_per_node > 0 {
-            elapsed.as_micros() as u64 / ticks_per_node
-        } else {
-            0
-        };
+        let us_per_tick = (elapsed.as_micros() as u64)
+            .checked_div(ticks_per_node)
+            .unwrap_or(0);
         let us_per_node_per_tick = if ticks_per_node > 0 && node_count > 0 {
             (elapsed.as_micros() as u64 * node_count as u64) / total_ticks
         } else {

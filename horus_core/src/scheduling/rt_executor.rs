@@ -477,15 +477,11 @@ impl RtExecutor {
 
             // Move hardware interrupts off RT cores (prevents IRQ jitter)
             match horus_sys::rt::move_irqs_off_cpus(&rt_cpus) {
-                Ok(n) if n > 0 => {
-                    if monitors.verbose {
-                        print_line(&format!("[RT] Moved {} IRQs off core(s) {:?}", n, rt_cpus));
-                    }
+                Ok(n) if n > 0 && monitors.verbose => {
+                    print_line(&format!("[RT] Moved {} IRQs off core(s) {:?}", n, rt_cpus));
                 }
-                Err(e) => {
-                    if monitors.verbose {
-                        print_line(&format!("[RT] Could not move IRQs: {}", e));
-                    }
+                Err(e) if monitors.verbose => {
+                    print_line(&format!("[RT] Could not move IRQs: {}", e));
                 }
                 _ => {}
             }

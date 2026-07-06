@@ -71,8 +71,9 @@ sync-all.sh
 *.swo
 *~
 
-# Cargo local config
-.cargo/
+# Cargo local config (ignore contents, but track the cargo-audit triage list)
+.cargo/*
+!.cargo/audit.toml
 
 # Claude Code
 .claude/

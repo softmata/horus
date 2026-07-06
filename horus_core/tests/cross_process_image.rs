@@ -350,11 +350,7 @@ fn cross_process_image_stress() {
         "Cross-process Image stress: child received {}/{} images ({}%)",
         received,
         msg_count,
-        if msg_count > 0 {
-            received * 100 / msg_count
-        } else {
-            0
-        }
+        (received * 100).checked_div(msg_count).unwrap_or(0)
     );
 }
 

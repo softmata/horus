@@ -14,7 +14,7 @@ fn lock_poisoned<T>(_: std::sync::PoisonError<T>) -> PyErr {
 }
 
 /// Python wrapper for NodeState
-#[pyclass(name = "NodeState", module = "horus._horus")]
+#[pyclass(from_py_object, name = "NodeState", module = "horus._horus")]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PyNodeState {
     #[pyo3(get)]
@@ -85,7 +85,7 @@ impl From<&CoreNodeState> for PyNodeState {
 }
 
 /// Python wrapper for NodeInfo
-#[pyclass(name = "NodeInfo", module = "horus._horus")]
+#[pyclass(from_py_object, name = "NodeInfo", module = "horus._horus")]
 #[derive(Clone)]
 pub struct PyNodeInfo {
     pub inner: Arc<Mutex<CoreNodeInfo>>,

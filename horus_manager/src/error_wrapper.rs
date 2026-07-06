@@ -1032,28 +1032,27 @@ pub fn preflight_check(language: &str) -> Vec<Diagnostic> {
 
     // ── Toolchain checks ────────────────────────────────────────────────
     match language {
-        "rust" => {
+        "rust"
             if std::process::Command::new("cargo")
                 .arg("--version")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
-                .is_err()
-            {
-                issues.push(
-                    Diagnostic::new(
-                        "preflight",
-                        "H060",
-                        "Rust toolchain not found",
-                        "Rust toolchain not installed. Install with:\n  \
-                         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
-                    )
-                    .with_fix(Fix::Command {
-                        command: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-                            .into(),
-                    }),
-                );
-            }
+                .is_err() =>
+        {
+            issues.push(
+                Diagnostic::new(
+                    "preflight",
+                    "H060",
+                    "Rust toolchain not found",
+                    "Rust toolchain not installed. Install with:\n  \
+                     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+                )
+                .with_fix(Fix::Command {
+                    command: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+                        .into(),
+                }),
+            );
         }
         "python" => {
             let has_python = ["python3", "python"].iter().any(|cmd| {

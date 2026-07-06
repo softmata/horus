@@ -161,6 +161,11 @@ pub struct FfiNodeBuilder {
 }
 
 /// Accumulated node configuration (FFI-safe, no lifetime references).
+///
+/// `Default` yields an empty-name placeholder node with no rate/budget/deadline,
+/// `Warn` miss policy, `BestEffort` class, and `order: 0` (no scheduling
+/// preference — the dependency graph handles ordering).
+#[derive(Default)]
 pub struct NodeConfig {
     pub name: String,
     pub rate_hz: Option<f64>,
@@ -182,28 +187,6 @@ pub struct NodeConfig {
     pub safe_state_callback: Option<extern "C" fn()>,
     /// C++ on_shutdown callback — called when scheduler stops.
     pub shutdown_callback: Option<extern "C" fn()>,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            rate_hz: None,
-            budget_us: None,
-            deadline_us: None,
-            miss_policy: 0,
-            execution_class: 0,
-            event_topic: None,
-            order: 0, // Default: no preference (dependency graph handles ordering)
-            pinned_core: None,
-            os_priority: None,
-            watchdog_us: None,
-            tick_callback: None,
-            init_callback: None,
-            safe_state_callback: None,
-            shutdown_callback: None,
-        }
-    }
 }
 
 /// FFI-safe miss policy enum.

@@ -1,0 +1,23 @@
+# cargo-audit configuration (https://github.com/rustsec/rustsec/tree/main/cargo-audit).
+#
+# The CI `audit` job runs `cargo audit` against this file. Any advisory NOT in
+# the ignore list below fails CI — so a newly introduced vulnerable dependency
+# is caught at PR time. The entries here are TRIAGED, not dismissed: each names
+# why it is tolerated and what would let us remove it. Re-review on every bump.
+#
+# Tracking: softmata-brain insight 1313 (security triage, 2026-06-15).
+
+[advisories]
+ignore = [
+    # rsa 0.9.x — "Marvin Attack" key-recovery timing sidechannel.
+    # No fixed upstream version exists. `rsa` is not reachable in any horus
+    # build tree (`cargo tree -i rsa` is empty — it sits in Cargo.lock via an
+    # optional/transitive path that no enabled feature pulls in). Remove this
+    # entry if `rsa` is dropped from the lockfile or an upstream fix ships.
+    "RUSTSEC-2023-0071",
+
+    # NOTE (2026-07-06): the two pyo3 0.27 advisories (RUSTSEC-2026-0176 OOB read,
+    # RUSTSEC-2026-0177 missing Sync bound) were REMOVED from this list — horus_py
+    # is now migrated to pyo3 0.29 (+ pythonize 0.29), which fixes both. Dependabot
+    # alerts #25-#28 are resolved by that bump, not ignored.
+]
