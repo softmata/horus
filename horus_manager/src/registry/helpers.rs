@@ -1915,7 +1915,7 @@ impl RegistryClient {
 /// Generate an Ed25519 signing keypair for package signing
 pub fn generate_signing_keypair() -> Result<()> {
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand::RngCore;
 
     let keys_dir = crate::paths::keys_dir()?;
     fs::create_dir_all(&keys_dir)?;
@@ -1929,7 +1929,13 @@ pub fn generate_signing_keypair() -> Result<()> {
         return Ok(());
     }
 
-    let signing_key = SigningKey::generate(&mut OsRng);
+    // ed25519-dalek 2.x `generate()` requires a rand_core 0.6 CSPRNG, which the
+    // workspace rand 0.9 ecosystem no longer provides. Seed the key from 32 bytes
+    // drawn from rand 0.9's ThreadRng (a ChaCha-based CSPRNG auto-seeded from OS
+    // entropy) and build it via the infallible `from_bytes`.
+    let mut secret = [0u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    let signing_key = SigningKey::from_bytes(&secret);
     let verifying_key = signing_key.verifying_key();
 
     // Write secret key (64 bytes: 32 secret + 32 public)

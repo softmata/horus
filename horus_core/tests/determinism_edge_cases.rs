@@ -35,7 +35,7 @@ impl Node for OutputNode {
         let tick = horus_core::core::tick_context::ctx_tick();
         let rng_val = horus_core::core::tick_context::ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         self.outputs.lock().unwrap().push(tick ^ rng_val);
     }

@@ -122,7 +122,7 @@ impl Node for DeterministicNode {
         let dt = horus_core::core::tick_context::ctx_dt();
         let rng_val = horus_core::core::tick_context::ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         self.counter += 1;
         let output = self.counter ^ rng_val ^ (dt.as_nanos() as u64);

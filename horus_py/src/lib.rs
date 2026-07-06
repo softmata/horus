@@ -157,7 +157,7 @@ fn time_budget_remaining() -> f64 {
 fn time_rng_float() -> f64 {
     horus_core::core::tick_context::ctx_with_rng(|rng| {
         use rand::Rng;
-        rng.gen::<f64>()
+        rng.random::<f64>()
     })
 }
 

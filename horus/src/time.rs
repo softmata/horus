@@ -193,7 +193,7 @@ pub fn budget_remaining() -> Duration {
 ///
 /// ```rust,ignore
 /// fn tick(&mut self) {
-///     let noise: f64 = horus::rng(|r| r.gen_range(-0.01..0.01));
+///     let noise: f64 = horus::rng(|r| r.random_range(-0.01..0.01));
 ///     self.measurement += noise;
 /// }
 /// ```
@@ -372,14 +372,14 @@ mod tests {
         set_tick_context("ctrl", 42, &clock, 1_u64.ms(), 42_u64.ms(), start, None);
         let v1 = rng(|r| {
             use rand::Rng;
-            r.gen::<u64>()
+            r.random::<u64>()
         });
         clear_tick_context();
 
         set_tick_context("ctrl", 42, &clock, 1_u64.ms(), 42_u64.ms(), start, None);
         let v2 = rng(|r| {
             use rand::Rng;
-            r.gen::<u64>()
+            r.random::<u64>()
         });
         clear_tick_context();
 
@@ -392,7 +392,7 @@ mod tests {
         // Should not panic
         let _ = rng(|r| {
             use rand::Rng;
-            r.gen::<f64>()
+            r.random::<f64>()
         });
     }
 }

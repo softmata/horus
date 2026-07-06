@@ -1238,10 +1238,11 @@ fn test_temp_dir_guard_nonexistent_path_no_panic() {
 #[test]
 fn test_verify_signature_valid() {
     use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
+    use rand::RngCore;
 
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let signing_key = SigningKey::from_bytes(&seed);
     let verifying_key = signing_key.verifying_key();
 
     let data = b"package tarball contents";
@@ -1260,10 +1261,11 @@ fn test_verify_signature_valid() {
 #[test]
 fn test_verify_signature_invalid() {
     use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
+    use rand::RngCore;
 
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let signing_key = SigningKey::from_bytes(&seed);
     let verifying_key = signing_key.verifying_key();
 
     let data = b"package tarball contents";
@@ -1309,11 +1311,13 @@ fn test_verify_signature_missing_key_file() {
 #[test]
 fn test_verify_signature_wrong_key() {
     use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
+    use rand::RngCore;
 
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
-    let other_key = SigningKey::generate(&mut csprng);
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let signing_key = SigningKey::from_bytes(&seed);
+    rand::rng().fill_bytes(&mut seed);
+    let other_key = SigningKey::from_bytes(&seed);
 
     let data = b"package data";
     let signature = signing_key.sign(data);
@@ -1410,9 +1414,11 @@ fn test_empty_tarball_extracts_nothing() {
 fn test_signing_keypair_roundtrip_with_verify() {
     // Simulate generate_signing_keypair() format + verify_package_signature() compatibility
     use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
+    use rand::RngCore;
 
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let signing_key = SigningKey::from_bytes(&seed);
     let verifying_key = signing_key.verifying_key();
 
     let tmp = TempDir::new().unwrap();

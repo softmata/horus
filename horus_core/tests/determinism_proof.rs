@@ -73,7 +73,7 @@ impl Node for ControllerNode {
         // Use framework RNG for noise
         let noise = horus_core::core::tick_context::ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
 
         // Combine into a deterministic output
@@ -227,7 +227,7 @@ fn deterministic_rng_is_reproducible() {
         fn tick(&mut self) {
             let v = horus_core::core::tick_context::ctx_with_rng(|rng| {
                 use rand::Rng;
-                rng.gen::<u64>()
+                rng.random::<u64>()
             });
             self.values.lock().unwrap().push(v);
         }

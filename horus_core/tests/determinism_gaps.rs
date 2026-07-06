@@ -305,7 +305,7 @@ fn ctx_functions_inside_tick() {
             let budget = horus_core::core::tick_context::ctx_budget_remaining();
             let rng_val = horus_core::core::tick_context::ctx_with_rng(|rng| {
                 use rand::Rng;
-                rng.gen::<f64>()
+                rng.random::<f64>()
             });
 
             self.results.lock().unwrap().push(format!(
@@ -388,7 +388,7 @@ fn ctx_functions_outside_tick_safe() {
 
     let rng_val = horus_core::core::tick_context::ctx_with_rng(|rng| {
         use rand::Rng;
-        rng.gen::<f64>()
+        rng.random::<f64>()
     });
     assert!(
         (0.0..1.0).contains(&rng_val),
@@ -420,7 +420,7 @@ fn deterministic_output_from_multiple_threads() {
                             let tick = horus_core::core::tick_context::ctx_tick();
                             let rng = horus_core::core::tick_context::ctx_with_rng(|r| {
                                 use rand::Rng;
-                                r.gen::<u64>()
+                                r.random::<u64>()
                             });
                             self.out.lock().unwrap().push(tick ^ rng);
                         }
@@ -531,7 +531,7 @@ fn run_deterministic(ticks: usize) -> Vec<u64> {
                 let t = horus_core::core::tick_context::ctx_tick();
                 let r = horus_core::core::tick_context::ctx_with_rng(|rng| {
                     use rand::Rng;
-                    rng.gen::<u64>()
+                    rng.random::<u64>()
                 });
                 let dt = horus_core::core::tick_context::ctx_dt().as_nanos() as u64;
                 self.out.lock().unwrap().push(t ^ r ^ dt);

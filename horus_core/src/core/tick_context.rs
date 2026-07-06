@@ -239,7 +239,7 @@ pub fn ctx_with_rng<R>(f: impl FnOnce(&mut SmallRng) -> R) -> R {
         drop(borrow);
         // Fallback: entropy-seeded RNG
         thread_local! {
-            static FALLBACK_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_entropy());
+            static FALLBACK_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_os_rng());
         }
         FALLBACK_RNG.with(|rng| f(&mut rng.borrow_mut()))
     })
@@ -341,7 +341,7 @@ mod tests {
         );
         let val1 = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         clear_tick_context();
 
@@ -357,7 +357,7 @@ mod tests {
         );
         let val2 = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         clear_tick_context();
 
@@ -380,7 +380,7 @@ mod tests {
         );
         let val1 = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         clear_tick_context();
 
@@ -395,7 +395,7 @@ mod tests {
         );
         let val2 = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         clear_tick_context();
 
@@ -413,14 +413,14 @@ mod tests {
         set_tick_context("node_a", 100, &clock, 1_u64.ms(), 100_u64.ms(), start, None);
         let val1 = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         clear_tick_context();
 
         set_tick_context("node_b", 100, &clock, 1_u64.ms(), 100_u64.ms(), start, None);
         let val2 = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         clear_tick_context();
 
@@ -436,7 +436,7 @@ mod tests {
         // Should not panic, returns entropy-seeded value
         let val = ctx_with_rng(|rng| {
             use rand::Rng;
-            rng.gen::<u64>()
+            rng.random::<u64>()
         });
         let _ = val; // just verify it doesn't panic
     }
