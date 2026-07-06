@@ -1079,6 +1079,16 @@ mod tests {
         h
     }
 
+    /// Like `make_header` but models an in-memory (non-SHM-backed) topic so
+    /// `detect_optimal_backend` exercises the heap/intra topology tree rather
+    /// than the `shm_backed` (creator_pid != 0) short-circuit that always routes
+    /// to SHM backends. `init()` unconditionally stamps the creator PID.
+    fn make_inmem_header(type_size: u32, type_align: u32, is_pod: bool, capacity: u32) -> TopicHeader {
+        let mut h = make_header(type_size, type_align, is_pod, capacity);
+        h.creator_pid = 0;
+        h
+    }
+
     // ── Constants ───────────────────────────────────────────────────────
 
     #[test]
@@ -1538,7 +1548,7 @@ mod tests {
 
     #[test]
     fn detect_optimal_backend_same_thread_pod_is_direct_channel() {
-        let h = make_header(8, 8, true, 16);
+        let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
         assert_eq!(h.detect_optimal_backend(), BackendMode::DirectChannel);
@@ -1546,7 +1556,7 @@ mod tests {
 
     #[test]
     fn detect_optimal_backend_same_thread_non_pod_is_spsc_intra() {
-        let h = make_header(8, 8, false, 16);
+        let h = make_inmem_header(8, 8, false, 16);
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
@@ -1554,7 +1564,7 @@ mod tests {
 
     #[test]
     fn detect_optimal_backend_single_producer_only() {
-        let h = make_header(8, 8, true, 16);
+        let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
         // 1P, 0C → SpscIntra (anticipating single consumer)
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
@@ -1562,14 +1572,14 @@ mod tests {
 
     #[test]
     fn detect_optimal_backend_single_consumer_only() {
-        let h = make_header(8, 8, true, 16);
+        let h = make_inmem_header(8, 8, true, 16);
         h.register_consumer().unwrap();
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
     }
 
     #[test]
     fn detect_optimal_backend_cross_thread_spsc_intra() {
-        let h = make_header(8, 8, true, 16);
+        let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
         let header_ptr = &h as *const TopicHeader as usize;
         std::thread::spawn(move || {
@@ -1586,7 +1596,7 @@ mod tests {
 
     #[test]
     fn detect_optimal_backend_spmc_intra() {
-        let h = make_header(8, 8, true, 16);
+        let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
 
         let header_ptr = &h as *const TopicHeader as usize;
@@ -1603,12 +1613,16 @@ mod tests {
         }
         assert_eq!(h.pub_count(), 1);
         assert!(h.sub_count() >= 2);
-        assert_eq!(h.detect_optimal_backend(), BackendMode::SpmcIntra);
+        // 1P → multiple consumers resolves to FanoutIntra (broadcast: each
+        // subscriber gets its own SPSC channel). SpmcIntra was intentionally
+        // dropped for this topology because its shared tail lets one fast
+        // consumer drain the ring and starve the others.
+        assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutIntra);
     }
 
     #[test]
     fn detect_optimal_backend_mpsc_intra() {
-        let h = make_header(8, 8, true, 16);
+        let h = make_inmem_header(8, 8, true, 16);
         h.register_consumer().unwrap();
 
         let header_ptr = &h as *const TopicHeader as usize;

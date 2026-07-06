@@ -4576,6 +4576,11 @@ fn header_with_topology(
         slot += 1;
     }
 
+    // These fixtures model in-memory (non-SHM-backed) topics, so
+    // `detect_optimal_backend` exercises the topology decision tree rather than
+    // the `shm_backed` (creator_pid != 0) short-circuit that always routes to
+    // SHM backends. `init()` unconditionally stamps the creator PID, so clear it.
+    h.creator_pid = 0;
     h
 }
 
