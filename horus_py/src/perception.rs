@@ -20,7 +20,7 @@ use horus_robotics::messages::detection::BoundingBox2D;
 // ============================================
 
 /// 2D bounding box (x, y, width, height)
-#[pyclass(name = "BoundingBox2D")]
+#[pyclass(from_py_object, name = "BoundingBox2D")]
 #[derive(Debug, Clone)]
 pub struct PyBoundingBox2D {
     pub x: f32,
@@ -146,7 +146,7 @@ impl PyBoundingBox2D {
 const DETECTION_BYTE_SIZE: usize = 72;
 
 /// 2D object detection result
-#[pyclass(name = "Detection")]
+#[pyclass(from_py_object, name = "Detection")]
 #[derive(Debug, Clone)]
 pub struct PyDetection {
     bbox: PyBoundingBox2D,
@@ -367,7 +367,7 @@ impl PyDetection {
 // ============================================
 
 /// 3D point (x, y, z)
-#[pyclass(name = "PointXYZ")]
+#[pyclass(from_py_object, name = "PointXYZ")]
 #[derive(Debug, Clone, Copy)]
 pub struct PyPointXYZ {
     pub x: f32,
@@ -434,7 +434,7 @@ impl PyPointXYZ {
 // ============================================
 
 /// 3D point with RGB color
-#[pyclass(name = "PointXYZRGB")]
+#[pyclass(from_py_object, name = "PointXYZRGB")]
 #[derive(Debug, Clone, Copy)]
 pub struct PyPointXYZRGB {
     pub x: f32,
@@ -510,7 +510,7 @@ impl PyPointXYZRGB {
 // ============================================
 
 /// 2D landmark/keypoint for pose estimation
-#[pyclass(name = "Landmark")]
+#[pyclass(from_py_object, name = "Landmark")]
 #[derive(Debug, Clone, Copy)]
 pub struct PyLandmark {
     pub x: f32,
@@ -577,7 +577,7 @@ impl PyLandmark {
 // ============================================
 
 /// List of detections with batch operations
-#[pyclass(name = "DetectionList")]
+#[pyclass(from_py_object, name = "DetectionList")]
 #[derive(Debug, Clone)]
 pub struct PyDetectionList {
     detections: Vec<PyDetection>,
@@ -761,7 +761,7 @@ impl PyCOCOPose {
 // ============================================
 
 /// Tracked object with ID and velocity
-#[pyclass(name = "TrackedObject")]
+#[pyclass(from_py_object, name = "TrackedObject")]
 #[derive(Debug, Clone)]
 pub struct PyTrackedObject {
     bbox: PyBoundingBox2D,

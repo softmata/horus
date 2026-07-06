@@ -16,13 +16,8 @@ ignore = [
     # entry if `rsa` is dropped from the lockfile or an upstream fix ships.
     "RUSTSEC-2023-0071",
 
-    # pyo3 0.27 — out-of-bounds read in `nth`/`nth_back` for PyList/PyTuple
-    # iterators. The fix is pyo3 >= 0.29, a breaking major upgrade across the
-    # whole horus_py binding layer (+ pythonize). Tracked as a migration
-    # roadmap; remove once horus_py is on pyo3 >= 0.29.
-    "RUSTSEC-2026-0176",
-
-    # pyo3 0.27 — missing `Sync` bound on `PyCFunction::new_closure` closures.
-    # Same pyo3 0.29 migration as above.
-    "RUSTSEC-2026-0177",
+    # NOTE (2026-07-06): the two pyo3 0.27 advisories (RUSTSEC-2026-0176 OOB read,
+    # RUSTSEC-2026-0177 missing Sync bound) were REMOVED from this list — horus_py
+    # is now migrated to pyo3 0.29 (+ pythonize 0.29), which fixes both. Dependabot
+    # alerts #25-#28 are resolved by that bump, not ignored.
 ]

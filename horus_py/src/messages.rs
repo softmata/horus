@@ -61,7 +61,7 @@ use pyo3::prelude::*;
 /// Examples:
 ///     cmd = CmdVel(1.5, 0.3)
 ///     cmd = CmdVel(linear=0.5, angular=0.0)
-#[pyclass(name = "CmdVel")]
+#[pyclass(from_py_object, name = "CmdVel")]
 #[derive(Clone)]
 pub struct PyCmdVel {
     pub(crate) inner: CmdVel,
@@ -145,7 +145,7 @@ impl PyCmdVel {
 /// Examples:
 ///     pose = Pose2D(1.0, 2.0, 0.5)
 ///     pose = Pose2D(x=0, y=0, theta=3.14)
-#[pyclass(name = "Pose2D")]
+#[pyclass(from_py_object, name = "Pose2D")]
 #[derive(Clone)]
 pub struct PyPose2D {
     pub(crate) inner: Pose2D,
@@ -259,7 +259,7 @@ impl PyPose2D {
 ///     imu = Imu(0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 ///     imu = Imu(accel_x=1.0, accel_y=0.0, accel_z=9.81,
 ///               gyro_x=0.0, gyro_y=0.0, gyro_z=0.1)
-#[pyclass(name = "Imu")]
+#[pyclass(from_py_object, name = "Imu")]
 #[derive(Clone)]
 pub struct PyImu {
     pub(crate) inner: Imu,
@@ -412,7 +412,7 @@ impl PyImu {
 ///     odom = Odometry(x=1.0, y=2.0, theta=0.5)
 ///     odom = Odometry(x=1.0, y=2.0, theta=0.5,
 ///                     linear_velocity=0.5, angular_velocity=0.1)
-#[pyclass(name = "Odometry")]
+#[pyclass(from_py_object, name = "Odometry")]
 #[derive(Clone)]
 pub struct PyOdometry {
     pub(crate) inner: Odometry,
@@ -551,7 +551,7 @@ impl PyOdometry {
 ///         range_max=10.0,
 ///         ranges=[1.0, 1.1, 1.2, ...]
 ///     )
-#[pyclass(name = "LaserScan")]
+#[pyclass(from_py_object, name = "LaserScan")]
 #[derive(Clone)]
 pub struct PyLaserScan {
     pub(crate) inner: LaserScan,
@@ -702,7 +702,7 @@ impl PyLaserScan {
 /// Examples:
 ///     pose = Pose3D(1.0, 2.0, 3.0)
 ///     pose = Pose3D(1.0, 2.0, 3.0, 0, 0, 0.707, 0.707)
-#[pyclass(name = "Pose3D")]
+#[pyclass(from_py_object, name = "Pose3D")]
 #[derive(Clone)]
 pub struct PyPose3D {
     pub(crate) inner: Pose3D,
@@ -868,7 +868,7 @@ impl PyPose3D {
 ///
 /// Examples:
 ///     js = JointState(names=["shoulder", "elbow"], positions=[0.5, 1.2])
-#[pyclass(name = "JointState")]
+#[pyclass(from_py_object, name = "JointState")]
 #[derive(Clone)]
 pub struct PyJointState {
     pub(crate) inner: JointState,
@@ -982,7 +982,7 @@ impl PyJointState {
 ///
 /// Examples:
 ///     clk = Clock(clock_ns=1000000000, sim_speed=2.0, source=1)
-#[pyclass(name = "Clock")]
+#[pyclass(from_py_object, name = "Clock")]
 #[derive(Clone)]
 pub struct PyClock {
     pub(crate) inner: Clock,
@@ -1135,7 +1135,7 @@ impl PyClock {
 ///
 /// Examples:
 ///     tref = TimeReference(time_ref_ns=1000000000, source="gps", offset_ns=-500)
-#[pyclass(name = "TimeReference")]
+#[pyclass(from_py_object, name = "TimeReference")]
 #[derive(Clone)]
 pub struct PyTimeReference {
     pub(crate) inner: TimeReference,
@@ -1231,7 +1231,7 @@ impl PyTimeReference {
 /// Examples:
 ///     twist = Twist(linear_x=1.0, angular_z=0.5)
 ///     twist = Twist(1.0, 0.0, 0.0, 0.0, 0.0, 0.5)
-#[pyclass(name = "Twist")]
+#[pyclass(from_py_object, name = "Twist")]
 #[derive(Clone)]
 pub struct PyTwist {
     pub(crate) inner: Twist,
@@ -1377,7 +1377,7 @@ impl PyTwist {
 ///
 /// Examples:
 ///     v = Vector3(1.0, 2.0, 3.0)
-#[pyclass(name = "Vector3")]
+#[pyclass(from_py_object, name = "Vector3")]
 #[derive(Clone)]
 pub struct PyVector3 {
     pub(crate) inner: Vector3,
@@ -1480,7 +1480,7 @@ impl PyVector3 {
 ///
 /// Examples:
 ///     p = Point3(1.0, 2.0, 3.0)
-#[pyclass(name = "Point3")]
+#[pyclass(from_py_object, name = "Point3")]
 #[derive(Clone)]
 pub struct PyPoint3 {
     pub(crate) inner: Point3,
@@ -1560,7 +1560,7 @@ impl PyPoint3 {
 /// Examples:
 ///     q = Quaternion()          # Identity (0, 0, 0, 1)
 ///     q = Quaternion(0, 0, 0.707, 0.707)
-#[pyclass(name = "Quaternion")]
+#[pyclass(from_py_object, name = "Quaternion")]
 #[derive(Clone)]
 pub struct PyQuaternion {
     pub(crate) inner: Quaternion,
@@ -1664,7 +1664,7 @@ impl PyQuaternion {
 ///
 /// Examples:
 ///     tf = TransformStamped(tx=1.0, ty=2.0, tz=0.0)
-#[pyclass(name = "TransformStamped")]
+#[pyclass(from_py_object, name = "TransformStamped")]
 #[derive(Clone)]
 pub struct PyTransformStamped {
     pub(crate) inner: TransformStamped,
@@ -1810,7 +1810,7 @@ impl PyTransformStamped {
 ///
 /// Examples:
 ///     ps = PoseStamped(x=1.0, y=2.0, frame_id="map")
-#[pyclass(name = "PoseStamped")]
+#[pyclass(from_py_object, name = "PoseStamped")]
 #[derive(Clone)]
 pub struct PyPoseStamped {
     pub(crate) inner: PoseStamped,
@@ -1955,7 +1955,7 @@ impl PyPoseStamped {
 ///     covariance: 36-element list (row-major 6x6)
 ///     frame_id: Coordinate frame name
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "PoseWithCovariance")]
+#[pyclass(from_py_object, name = "PoseWithCovariance")]
 #[derive(Clone)]
 pub struct PyPoseWithCovariance {
     pub(crate) inner: PoseWithCovariance,
@@ -2119,7 +2119,7 @@ impl PyPoseWithCovariance {
 ///     covariance: 36-element list (row-major 6x6)
 ///     frame_id: Coordinate frame name
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "TwistWithCovariance")]
+#[pyclass(from_py_object, name = "TwistWithCovariance")]
 #[derive(Clone)]
 pub struct PyTwistWithCovariance {
     pub(crate) inner: TwistWithCovariance,
@@ -2270,7 +2270,7 @@ impl PyTwistWithCovariance {
 ///     linear_x/y/z: Linear acceleration in m/s²
 ///     angular_x/y/z: Angular acceleration in rad/s²
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "Accel")]
+#[pyclass(from_py_object, name = "Accel")]
 #[derive(Clone)]
 pub struct PyAccel {
     pub(crate) inner: Accel,
@@ -2384,7 +2384,7 @@ impl PyAccel {
 // ============================================================================
 
 /// 3D acceleration with coordinate frame
-#[pyclass(name = "AccelStamped")]
+#[pyclass(from_py_object, name = "AccelStamped")]
 #[derive(Clone)]
 pub struct PyAccelStamped {
     pub(crate) inner: AccelStamped,
@@ -2530,7 +2530,7 @@ impl PyAccelStamped {
 /// Examples:
 ///     cmd = MotorCommand(motor_id=0, target=1.5)
 ///     cmd = MotorCommand(motor_id=0, mode=1, target=3.14)
-#[pyclass(name = "MotorCommand")]
+#[pyclass(from_py_object, name = "MotorCommand")]
 #[derive(Clone)]
 pub struct PyMotorCommand {
     pub(crate) inner: MotorCommand,
@@ -2688,7 +2688,7 @@ impl PyMotorCommand {
 ///     speed: Movement speed 0-1 (f32)
 ///     enable: Torque enable (bool)
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "ServoCommand")]
+#[pyclass(from_py_object, name = "ServoCommand")]
 #[derive(Clone)]
 pub struct PyServoCommand {
     pub(crate) inner: ServoCommand,
@@ -2809,7 +2809,7 @@ impl PyServoCommand {
 ///     max_acceleration: Maximum acceleration in rad/s²
 ///     enable: Enable motors (bool)
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "DifferentialDriveCommand")]
+#[pyclass(from_py_object, name = "DifferentialDriveCommand")]
 #[derive(Clone)]
 pub struct PyDifferentialDriveCommand {
     pub(crate) inner: DifferentialDriveCommand,
@@ -2927,7 +2927,7 @@ impl PyDifferentialDriveCommand {
 ///     integral_limit, output_limit: Limits
 ///     anti_windup: Enable anti-windup (bool)
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "PidConfig")]
+#[pyclass(from_py_object, name = "PidConfig")]
 #[derive(Clone)]
 pub struct PyPidConfig {
     pub(crate) inner: PidConfig,
@@ -3089,7 +3089,7 @@ impl PyPidConfig {
 ///     orientation: [qx, qy, qz, qw] list
 ///     angular_velocity: [wx, wy, wz] list
 ///     time_from_start: Time in seconds
-#[pyclass(name = "TrajectoryPoint")]
+#[pyclass(from_py_object, name = "TrajectoryPoint")]
 #[derive(Clone)]
 pub struct PyTrajectoryPoint {
     pub(crate) inner: TrajectoryPoint,
@@ -3237,7 +3237,7 @@ impl PyTrajectoryPoint {
 ///     efforts: List of effort/torque commands (Nm)
 ///     modes: List of control modes (0=position, 1=velocity, 2=effort)
 ///     timestamp_ns: Timestamp in nanoseconds
-#[pyclass(name = "JointCommand")]
+#[pyclass(from_py_object, name = "JointCommand")]
 #[derive(Clone)]
 pub struct PyJointCommand {
     pub(crate) inner: JointCommand,
@@ -3355,7 +3355,7 @@ impl PyJointCommand {
 // ============================================================================
 
 /// Range sensor reading (ultrasonic, infrared, etc.)
-#[pyclass(name = "RangeSensor")]
+#[pyclass(from_py_object, name = "RangeSensor")]
 #[derive(Clone)]
 pub struct PyRangeSensor {
     pub(crate) inner: RangeSensor,
@@ -3456,7 +3456,7 @@ impl PyRangeSensor {
 // ============================================================================
 
 /// Battery status message
-#[pyclass(name = "BatteryState")]
+#[pyclass(from_py_object, name = "BatteryState")]
 #[derive(Clone)]
 pub struct PyBatteryState {
     pub(crate) inner: BatteryState,
@@ -3564,7 +3564,7 @@ impl PyBatteryState {
 // ============================================================================
 
 /// GPS/GNSS position data
-#[pyclass(name = "NavSatFix")]
+#[pyclass(from_py_object, name = "NavSatFix")]
 #[derive(Clone)]
 pub struct PyNavSatFix {
     pub(crate) inner: NavSatFix,
@@ -3698,7 +3698,7 @@ impl PyNavSatFix {
 // ============================================================================
 
 /// Magnetometer data (3-axis magnetic field)
-#[pyclass(name = "MagneticField")]
+#[pyclass(from_py_object, name = "MagneticField")]
 #[derive(Clone)]
 pub struct PyMagneticField {
     pub(crate) inner: MagneticField,
@@ -3768,7 +3768,7 @@ impl PyMagneticField {
 // ============================================================================
 
 /// Temperature sensor reading
-#[pyclass(name = "Temperature")]
+#[pyclass(from_py_object, name = "Temperature")]
 #[derive(Clone)]
 pub struct PyTemperature {
     pub(crate) inner: Temperature,
@@ -3828,7 +3828,7 @@ impl PyTemperature {
 // ============================================================================
 
 /// Fluid pressure sensor reading (barometer, etc.)
-#[pyclass(name = "FluidPressure")]
+#[pyclass(from_py_object, name = "FluidPressure")]
 #[derive(Clone)]
 pub struct PyFluidPressure {
     pub(crate) inner: FluidPressure,
@@ -3888,7 +3888,7 @@ impl PyFluidPressure {
 // ============================================================================
 
 /// Illuminance sensor reading (light level in Lux)
-#[pyclass(name = "Illuminance")]
+#[pyclass(from_py_object, name = "Illuminance")]
 #[derive(Clone)]
 pub struct PyIlluminance {
     pub(crate) inner: Illuminance,
@@ -3948,7 +3948,7 @@ impl PyIlluminance {
 // ============================================================================
 
 /// System heartbeat message
-#[pyclass(name = "Heartbeat")]
+#[pyclass(from_py_object, name = "Heartbeat")]
 #[derive(Clone)]
 pub struct PyHeartbeat {
     pub(crate) inner: Heartbeat,
@@ -4022,7 +4022,7 @@ impl PyHeartbeat {
 // ============================================================================
 
 /// Diagnostic status message
-#[pyclass(name = "DiagnosticStatus")]
+#[pyclass(from_py_object, name = "DiagnosticStatus")]
 #[derive(Clone)]
 pub struct PyDiagnosticStatus {
     pub(crate) inner: DiagnosticStatus,
@@ -4156,7 +4156,7 @@ impl PyDiagnosticStatus {
 // ============================================================================
 
 /// Emergency stop message — critical safety signal
-#[pyclass(name = "EmergencyStop")]
+#[pyclass(from_py_object, name = "EmergencyStop")]
 #[derive(Clone)]
 pub struct PyEmergencyStop {
     pub(crate) inner: EmergencyStop,
@@ -4252,7 +4252,7 @@ impl PyEmergencyStop {
 // ============================================================================
 
 /// System resource usage message
-#[pyclass(name = "ResourceUsage")]
+#[pyclass(from_py_object, name = "ResourceUsage")]
 #[derive(Clone)]
 pub struct PyResourceUsage {
     pub(crate) inner: ResourceUsage,
@@ -4390,7 +4390,7 @@ impl PyResourceUsage {
 // ============================================================================
 
 /// Force/torque sensor reading (wrench with reference frame)
-#[pyclass(name = "WrenchStamped")]
+#[pyclass(from_py_object, name = "WrenchStamped")]
 #[derive(Clone)]
 pub struct PyWrenchStamped {
     pub(crate) inner: WrenchStamped,
@@ -4523,7 +4523,7 @@ impl PyWrenchStamped {
 // ============================================================================
 
 /// Force control command
-#[pyclass(name = "ForceCommand")]
+#[pyclass(from_py_object, name = "ForceCommand")]
 #[derive(Clone)]
 pub struct PyForceCommand {
     pub(crate) inner: ForceCommand,
@@ -4662,7 +4662,7 @@ impl PyForceCommand {
 // ============================================================================
 
 /// Contact detection information
-#[pyclass(name = "ContactInfo")]
+#[pyclass(from_py_object, name = "ContactInfo")]
 #[derive(Clone)]
 pub struct PyContactInfo {
     pub(crate) inner: ContactInfo,
@@ -4759,7 +4759,7 @@ impl PyContactInfo {
 // ============================================================================
 
 /// Navigation goal (target pose with tolerances)
-#[pyclass(name = "NavGoal")]
+#[pyclass(from_py_object, name = "NavGoal")]
 #[derive(Clone)]
 pub struct PyNavGoal {
     pub(crate) inner: NavGoal,
@@ -4912,7 +4912,7 @@ impl PyNavGoal {
 // ============================================================================
 
 /// Navigation goal result/feedback
-#[pyclass(name = "GoalResult")]
+#[pyclass(from_py_object, name = "GoalResult")]
 #[derive(Clone)]
 pub struct PyGoalResult {
     pub(crate) inner: GoalResult,
@@ -5018,7 +5018,7 @@ impl PyGoalResult {
 // ============================================================================
 
 /// Path plan with waypoints
-#[pyclass(name = "PathPlan")]
+#[pyclass(from_py_object, name = "PathPlan")]
 #[derive(Clone)]
 pub struct PyPathPlan {
     pub(crate) inner: PathPlan,
@@ -5099,7 +5099,7 @@ impl PyPathPlan {
 // ============================================================================
 
 /// Joystick input event
-#[pyclass(name = "JoystickInput")]
+#[pyclass(from_py_object, name = "JoystickInput")]
 #[derive(Clone)]
 pub struct PyJoystickInput {
     pub(crate) inner: JoystickInput,
@@ -5223,7 +5223,7 @@ impl PyJoystickInput {
 // ============================================================================
 
 /// Keyboard input event
-#[pyclass(name = "KeyboardInput")]
+#[pyclass(from_py_object, name = "KeyboardInput")]
 #[derive(Clone)]
 pub struct PyKeyboardInput {
     pub(crate) inner: KeyboardInput,
@@ -5301,7 +5301,7 @@ impl PyKeyboardInput {
 // ============================================================================
 
 /// 2D bounding box for object detection
-#[pyclass(name = "BoundingBox2D")]
+#[pyclass(from_py_object, name = "BoundingBox2D")]
 #[derive(Clone)]
 pub struct PyBoundingBox2DMsg {
     pub(crate) inner: BoundingBox2D,
@@ -5409,7 +5409,7 @@ impl PyBoundingBox2DMsg {
 // ============================================================================
 
 /// 3D bounding box for 3D object detection
-#[pyclass(name = "BoundingBox3D")]
+#[pyclass(from_py_object, name = "BoundingBox3D")]
 #[derive(Clone)]
 pub struct PyBoundingBox3D {
     pub(crate) inner: BoundingBox3D,
@@ -5548,7 +5548,7 @@ impl PyBoundingBox3D {
 // ============================================================================
 
 /// 2D object detection result
-#[pyclass(name = "Detection")]
+#[pyclass(from_py_object, name = "Detection")]
 #[derive(Clone)]
 pub struct PyDetectionMsg {
     pub(crate) inner: Detection,
@@ -5652,7 +5652,7 @@ impl PyDetectionMsg {
 // ============================================================================
 
 /// 3D object detection result
-#[pyclass(name = "Detection3D")]
+#[pyclass(from_py_object, name = "Detection3D")]
 #[derive(Clone)]
 pub struct PyDetection3D {
     pub(crate) inner: Detection3D,
@@ -5778,7 +5778,7 @@ impl PyDetection3D {
 // ============================================================================
 
 /// Segmentation mask header (semantic, instance, or panoptic)
-#[pyclass(name = "SegmentationMask")]
+#[pyclass(from_py_object, name = "SegmentationMask")]
 #[derive(Clone)]
 pub struct PySegmentationMask {
     pub(crate) inner: SegmentationMask,
@@ -5909,7 +5909,7 @@ impl PySegmentationMask {
 // ============================================================================
 
 /// Tracked object with ID, velocity, and state
-#[pyclass(name = "TrackedObject")]
+#[pyclass(from_py_object, name = "TrackedObject")]
 #[derive(Clone)]
 pub struct PyTrackedObjectMsg {
     pub(crate) inner: TrackedObject,
@@ -6054,7 +6054,7 @@ impl PyTrackedObjectMsg {
 // ============================================================================
 
 /// Header for tracking frame data
-#[pyclass(name = "TrackingHeader")]
+#[pyclass(from_py_object, name = "TrackingHeader")]
 #[derive(Clone)]
 pub struct PyTrackingHeader {
     pub(crate) inner: TrackingHeader,
@@ -6133,7 +6133,7 @@ impl PyTrackingHeader {
 // ============================================================================
 
 /// 2D landmark/keypoint for pose estimation
-#[pyclass(name = "Landmark")]
+#[pyclass(from_py_object, name = "Landmark")]
 #[derive(Clone)]
 pub struct PyLandmarkMsg {
     pub(crate) inner: Landmark,
@@ -6214,7 +6214,7 @@ impl PyLandmarkMsg {
 // ============================================================================
 
 /// 3D landmark/keypoint for pose estimation
-#[pyclass(name = "Landmark3D")]
+#[pyclass(from_py_object, name = "Landmark3D")]
 #[derive(Clone)]
 pub struct PyLandmark3D {
     pub(crate) inner: Landmark3D,
@@ -6316,7 +6316,7 @@ impl PyLandmark3D {
 // ============================================================================
 
 /// Landmark array header for pose estimation (COCO, MediaPipe, etc.)
-#[pyclass(name = "LandmarkArray")]
+#[pyclass(from_py_object, name = "LandmarkArray")]
 #[derive(Clone)]
 pub struct PyLandmarkArray {
     pub(crate) inner: LandmarkArray,
@@ -6431,7 +6431,7 @@ impl PyLandmarkArray {
 // ============================================================================
 
 /// Point cloud field descriptor
-#[pyclass(name = "PointField")]
+#[pyclass(from_py_object, name = "PointField")]
 #[derive(Clone)]
 pub struct PyPointField {
     pub(crate) inner: PointField,
@@ -6512,7 +6512,7 @@ impl PyPointField {
 // ============================================================================
 
 /// Detected plane in 3D space
-#[pyclass(name = "PlaneDetection")]
+#[pyclass(from_py_object, name = "PlaneDetection")]
 #[derive(Clone)]
 pub struct PyPlaneDetection {
     pub(crate) inner: PlaneDetection,
@@ -6622,7 +6622,7 @@ impl PyPlaneDetection {
 // ============================================================================
 
 /// Array of up to 16 detected planes
-#[pyclass(name = "PlaneArray")]
+#[pyclass(from_py_object, name = "PlaneArray")]
 #[derive(Clone)]
 pub struct PyPlaneArray {
     pub(crate) inner: PlaneArray,
@@ -6696,7 +6696,7 @@ impl PyPlaneArray {
 // CompressedImage — Vision compressed image
 // ============================================================================
 
-#[pyclass(name = "CompressedImage")]
+#[pyclass(from_py_object, name = "CompressedImage")]
 #[derive(Clone)]
 pub struct PyCompressedImage {
     pub(crate) inner: CompressedImage,
@@ -6770,7 +6770,7 @@ impl PyCompressedImage {
 // CameraInfo — Camera calibration
 // ============================================================================
 
-#[pyclass(name = "CameraInfo")]
+#[pyclass(from_py_object, name = "CameraInfo")]
 #[derive(Clone)]
 pub struct PyCameraInfo {
     pub(crate) inner: CameraInfo,
@@ -6855,7 +6855,7 @@ impl PyCameraInfo {
 // RegionOfInterest — Vision ROI
 // ============================================================================
 
-#[pyclass(name = "RegionOfInterest")]
+#[pyclass(from_py_object, name = "RegionOfInterest")]
 #[derive(Clone)]
 pub struct PyRegionOfInterest {
     pub(crate) inner: RegionOfInterest,
@@ -6932,7 +6932,7 @@ impl PyRegionOfInterest {
 // StereoInfo — Stereo camera pair
 // ============================================================================
 
-#[pyclass(name = "StereoInfo")]
+#[pyclass(from_py_object, name = "StereoInfo")]
 #[derive(Clone)]
 pub struct PyStereoInfo {
     pub(crate) inner: StereoInfo,
@@ -7015,7 +7015,7 @@ impl PyStereoInfo {
 // ImpedanceParameters — Impedance control (Pod)
 // ============================================================================
 
-#[pyclass(name = "ImpedanceParameters")]
+#[pyclass(from_py_object, name = "ImpedanceParameters")]
 #[derive(Clone)]
 pub struct PyImpedanceParameters {
     pub(crate) inner: ImpedanceParameters,
@@ -7121,7 +7121,7 @@ impl PyImpedanceParameters {
 // HapticFeedback — Haptic feedback command (Pod)
 // ============================================================================
 
-#[pyclass(name = "HapticFeedback")]
+#[pyclass(from_py_object, name = "HapticFeedback")]
 #[derive(Clone)]
 pub struct PyHapticFeedback {
     pub(crate) inner: HapticFeedback,
@@ -7239,7 +7239,7 @@ impl PyHapticFeedback {
 // DiagnosticValue — Diagnostic key-value pair (Pod)
 // ============================================================================
 
-#[pyclass(name = "DiagnosticValue")]
+#[pyclass(from_py_object, name = "DiagnosticValue")]
 #[derive(Clone)]
 pub struct PyDiagnosticValue {
     pub(crate) inner: DiagnosticValue,
@@ -7301,7 +7301,7 @@ impl PyDiagnosticValue {
 // DiagnosticReport — Diagnostic report (Pod)
 // ============================================================================
 
-#[pyclass(name = "DiagnosticReport")]
+#[pyclass(from_py_object, name = "DiagnosticReport")]
 #[derive(Clone)]
 pub struct PyDiagnosticReport {
     pub(crate) inner: DiagnosticReport,
@@ -7414,7 +7414,7 @@ impl PyDiagnosticReport {
 // NodeHeartbeat — Node health heartbeat (Pod)
 // ============================================================================
 
-#[pyclass(name = "NodeHeartbeat")]
+#[pyclass(from_py_object, name = "NodeHeartbeat")]
 #[derive(Clone)]
 pub struct PyNodeHeartbeat {
     pub(crate) inner: NodeHeartbeat,
@@ -7513,7 +7513,7 @@ impl PyNodeHeartbeat {
 // SafetyStatus — Safety system status (Pod)
 // ============================================================================
 
-#[pyclass(name = "SafetyStatus")]
+#[pyclass(from_py_object, name = "SafetyStatus")]
 #[derive(Clone)]
 pub struct PySafetyStatus {
     pub(crate) inner: SafetyStatus,
@@ -7624,7 +7624,7 @@ impl PySafetyStatus {
 // Waypoint — Navigation waypoint (Pod)
 // ============================================================================
 
-#[pyclass(name = "Waypoint")]
+#[pyclass(from_py_object, name = "Waypoint")]
 #[derive(Clone)]
 pub struct PyWaypoint {
     pub(crate) inner: Waypoint,
@@ -7718,7 +7718,7 @@ impl PyWaypoint {
 // NavPath — Navigation path (Pod)
 // ============================================================================
 
-#[pyclass(name = "NavPath")]
+#[pyclass(from_py_object, name = "NavPath")]
 #[derive(Clone)]
 pub struct PyNavPath {
     pub(crate) inner: NavPath,
@@ -7805,7 +7805,7 @@ impl PyNavPath {
 // VelocityObstacle — Dynamic obstacle (Pod)
 // ============================================================================
 
-#[pyclass(name = "VelocityObstacle")]
+#[pyclass(from_py_object, name = "VelocityObstacle")]
 #[derive(Clone)]
 pub struct PyVelocityObstacle {
     pub(crate) inner: VelocityObstacle,
@@ -7885,7 +7885,7 @@ impl PyVelocityObstacle {
 // VelocityObstacles — Array of velocity obstacles (Pod)
 // ============================================================================
 
-#[pyclass(name = "VelocityObstacles")]
+#[pyclass(from_py_object, name = "VelocityObstacles")]
 #[derive(Clone)]
 pub struct PyVelocityObstacles {
     pub(crate) inner: VelocityObstacles,
@@ -7943,7 +7943,7 @@ impl PyVelocityObstacles {
 // OccupancyGrid — Navigation occupancy grid (serde-based)
 // ============================================================================
 
-#[pyclass(name = "OccupancyGrid")]
+#[pyclass(from_py_object, name = "OccupancyGrid")]
 #[derive(Clone)]
 pub struct PyOccupancyGrid {
     pub(crate) inner: OccupancyGrid,
@@ -8034,7 +8034,7 @@ impl PyOccupancyGrid {
 // CostMap — Navigation cost map (serde-based)
 // ============================================================================
 
-#[pyclass(name = "CostMap")]
+#[pyclass(from_py_object, name = "CostMap")]
 #[derive(Clone)]
 pub struct PyCostMap {
     pub(crate) inner: CostMap,
@@ -8220,16 +8220,19 @@ use horus_robotics::messages::audio::AudioFrame;
 ///     frame_id: Sensor identifier string (default: "")
 ///
 /// Examples:
-///     # Mono microphone at 16kHz
-///     frame = AudioFrame(sample_rate=16000, samples=[0.1, 0.2, 0.3])
 ///
-///     # Stereo at 48kHz
-///     frame = AudioFrame(sample_rate=48000, channels=2, samples=interleaved_data)
+/// ```python
+/// # Mono microphone at 16kHz
+/// frame = AudioFrame(sample_rate=16000, samples=[0.1, 0.2, 0.3])
 ///
-///     # Access data
-///     samples = frame.samples    # list of valid samples
-///     duration = frame.duration_ms
-#[pyclass(name = "AudioFrame")]
+/// # Stereo at 48kHz
+/// frame = AudioFrame(sample_rate=48000, channels=2, samples=interleaved_data)
+///
+/// # Access data
+/// samples = frame.samples    # list of valid samples
+/// duration = frame.duration_ms
+/// ```
+#[pyclass(from_py_object, name = "AudioFrame")]
 #[derive(Clone)]
 pub struct PyAudioFrame {
     pub(crate) inner: AudioFrame,
@@ -8364,12 +8367,14 @@ impl PyAudioFrame {
 ///     rows: Number of taxel rows (default: 0)
 ///     cols: Number of taxel columns (default: 0)
 ///
-/// Example::
+/// Example:
 ///
-///     tactile = TactileArray(rows=4, cols=4)
-///     tactile.set_force(1, 2, 3.5)
-///     print(tactile.get_force(1, 2))
-#[pyclass(name = "TactileArray")]
+/// ```python
+/// tactile = TactileArray(rows=4, cols=4)
+/// tactile.set_force(1, 2, 3.5)
+/// print(tactile.get_force(1, 2))
+/// ```
+#[pyclass(from_py_object, name = "TactileArray")]
 #[derive(Clone)]
 pub struct PyTactileArray {
     pub(crate) inner: TactileArray,

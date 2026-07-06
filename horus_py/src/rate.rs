@@ -10,16 +10,18 @@ use horus_core::core::timer::Rate;
 /// Unlike ``time.sleep(1/hz)``, Rate compensates for execution time drift
 /// to maintain accurate target frequency over many iterations.
 ///
-/// Example::
+/// Example:
 ///
-///     from horus import Rate
+/// ```python
+/// from horus import Rate
 ///
-///     rate = Rate(30)  # 30 Hz
-///     while running:
-///         do_work()
-///         rate.sleep()  # sleeps just enough to maintain 30 Hz
+/// rate = Rate(30)  # 30 Hz
+/// while running:
+///     do_work()
+///     rate.sleep()  # sleeps just enough to maintain 30 Hz
 ///
-///     print(f"Actual: {rate.actual_hz():.1f} Hz")
+/// print(f"Actual: {rate.actual_hz():.1f} Hz")
+/// ```
 ///
 /// Note: ``sleep()`` blocks the calling thread. In multi-threaded Python code,
 /// the GIL is NOT released during sleep. Use in dedicated background threads.

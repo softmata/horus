@@ -12,13 +12,15 @@ use crate::errors::to_py_err;
 /// Loads defaults from ``.horus/config/params.yaml`` or built-in defaults.
 /// Values are auto-converted between Python and JSON types.
 ///
-/// Example::
+/// Example:
 ///
-///     p = Params()
-///     kp = p["pid_kp"]          # KeyError if missing
-///     kp = p.get("pid_kp", 1.0) # default if missing
-///     p["pid_kp"] = 2.5
-///     p.save()
+/// ```python
+/// p = Params()
+/// kp = p["pid_kp"]          # KeyError if missing
+/// kp = p.get("pid_kp", 1.0) # default if missing
+/// p["pid_kp"] = 2.5
+/// p.save()
+/// ```
 #[pyclass(name = "Params")]
 pub struct PyParams {
     inner: RuntimeParams,

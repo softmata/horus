@@ -180,7 +180,7 @@ pub fn make_dlpack_capsule(
             }
             return Err(PyRuntimeError::new_err("Failed to create DLPack capsule"));
         }
-        Ok(Py::from_owned_ptr(py, capsule))
+        Ok(Bound::from_owned_ptr(py, capsule).unbind())
     }
 }
 

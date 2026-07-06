@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 /// All fields from the Rust config are exposed. Use builder methods
 /// like `.watchdog()`, `.blackbox()` on the Scheduler, or construct
 /// a config and pass it to `Scheduler(config=cfg)`.
-#[pyclass(name = "SchedulerConfig", module = "horus._horus")]
+#[pyclass(from_py_object, name = "SchedulerConfig", module = "horus._horus")]
 #[derive(Clone, Debug)]
 pub struct PySchedulerConfig {
     // --- Timing ---
