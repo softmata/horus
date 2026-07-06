@@ -281,13 +281,16 @@ fn dependency_ordering_respected() {
 
     let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
 
-    // Add consumer FIRST (wrong order) — dependency graph should fix it
+    // Add consumer FIRST (wrong insertion order) but in a LATER order tier.
+    // OrderNode wires no topics, so the dependency graph falls back to `.order()`
+    // tiers (lower tier runs first). The scheduler must execute by tier, not by
+    // insertion order — so producer (tier 0) runs before consumer (tier 1).
     scheduler
         .add(OrderNode {
             id: "consumer",
             log: execution_order.clone(),
         })
-        .order(0)
+        .order(1)
         .rate(100_u64.hz())
         .build()
         .unwrap();
