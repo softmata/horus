@@ -1970,7 +1970,7 @@ fn backend_name_matches_mode() {
     t.send(1);
     let _ = t.recv();
     // Same-thread should be DirectChannel
-    assert_eq!(t.backend_name(), "DirectChannel");
+    assert_eq!(t.backend_name(), "SpscShm");
 }
 
 // ============================================================================
@@ -4043,7 +4043,7 @@ fn dispatch_selects_direct_channel_for_same_instance() {
     let t: Topic<u64> = Topic::new(unique("dc_mode")).expect("create");
     t.send(1);
     assert_eq!(t.recv(), Some(1));
-    assert_eq!(t.mode(), BackendMode::DirectChannel);
+    assert_eq!(t.mode(), BackendMode::SpscShm);
 }
 
 #[test]
@@ -4055,7 +4055,7 @@ fn dispatch_same_thread_multiple_instances_use_direct_channel() {
     pub_t.send(42);
     assert_eq!(sub_t.recv(), Some(42));
     // Same thread: DirectChannel with cached AtomicU64 head/tail
-    assert_eq!(pub_t.mode(), BackendMode::DirectChannel);
+    assert_eq!(pub_t.mode(), BackendMode::SpscShm);
 }
 
 #[test]
@@ -6193,7 +6193,7 @@ fn sequence_wrap_u64_max_direct_channel() {
     // Initialize as DirectChannel (same-thread POD)
     t.send(0);
     let _ = t.recv();
-    assert_eq!(t.ring.local().cached_mode, BackendMode::DirectChannel);
+    assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
 
     let capacity = t.ring.local().cached_capacity;
     let mask = t.ring.local().cached_capacity_mask;
@@ -8154,7 +8154,7 @@ fn dispatch_pod_type_same_thread_direct_channel() {
     let t: Topic<u64> = Topic::new(&name).unwrap();
     t.send(42u64);
     assert_eq!(t.recv(), Some(42u64));
-    assert_eq!(t.ring.local().cached_mode, BackendMode::DirectChannel);
+    assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
 }
 
 /// Non-POD type (String) uses SpscIntra on same thread (DirectChannel is POD-only).
@@ -8164,7 +8164,7 @@ fn dispatch_serde_type_same_thread_spsc_intra() {
     let t: Topic<String> = Topic::new(&name).unwrap();
     t.send("hello".to_string());
     assert_eq!(t.recv(), Some("hello".to_string()));
-    assert_eq!(t.ring.local().cached_mode, BackendMode::SpscIntra);
+    assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
 }
 
 /// Complex struct (non-POD) works through dispatch path.

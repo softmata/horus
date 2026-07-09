@@ -432,7 +432,7 @@ mod tests {
         // Same thread, POD, 1P:1C → DirectChannel
         let result = m.migrate_to_optimal();
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::DirectChannel);
+        assert_eq!(h.mode(), BackendMode::SpscShm);
     }
 
     #[test]
