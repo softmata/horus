@@ -703,14 +703,6 @@ fn topic_cross_thread_1p1c_spsc() {
 }
 
 #[test]
-#[ignore = "pre-existing multi-participant convergence oscillation: with a \
-producer + N cross-thread consumers, instances repeatedly re-detect/re-migrate \
-the shared SHM backend, so every send/recv pays a handle_epoch_change and the \
-2000-msg run stalls past the deadline (hangs). Root cause is the epoch \
-migration-convergence protocol (process_epoch vs SHM migration_epoch churn + \
-backend oscillation); a fetch_max hint-sync + re-dispatch bound was insufficient \
-and is unverifiable without loom coverage of these atomics. Needs a dedicated, \
-loom-checked convergence fix. Tracked in softmata-brain."]
 fn topic_cross_thread_1p_multi_c_spmc() {
     let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let name = unique("spmc_mt");
@@ -2446,11 +2438,6 @@ fn concurrent_read_latest_with_producer_mpmc() {
 // ============================================================================
 
 #[test]
-#[ignore = "same pre-existing multi-participant convergence oscillation as \
-topic_cross_thread_1p_multi_c_spmc (see softmata-brain insight 1327): concurrent \
-migration + cross-thread send/recv makes instances re-migrate the shared SHM \
-backend repeatedly, intermittently hanging. Needs a loom-verified convergence \
-fix, not a test tweak."]
 fn concurrent_migration_during_send_recv() {
     let name = unique("mig_stress");
     let n_messages = 5000u64;
@@ -7771,10 +7758,7 @@ fn send_blocking_error_display() {
 /// Producer thread panics mid-send — consumer should not deadlock and
 /// should get None (no message) rather than corrupted data.
 #[test]
-#[ignore = "pre-existing multi-producer convergence race: separate-instance \
-cross-thread producers/consumer must agree on the shared SHM ring seq protocol \
-(SpscShm vs MpscShm) before writing; early pre-convergence sends can be clobbered/\
-lost. Needs dedicated fix in the epoch migration-convergence path, not a test tweak."]
+#[ignore = "delivery: same-thread pre-migration sends (1,2) are not received after the 2nd producer registers and migrates the shared ring — a message-preservation-across-migration gap. The prior HANG is fixed (recv overshoot); this residual is a separate convergence-delivery issue."]
 fn crash_producer_panic_consumer_not_stuck() {
     let name = unique("crash_prod");
     let topic_consumer: Topic<u64> = Topic::new(&name).unwrap();
@@ -7890,10 +7874,7 @@ fn crash_rapid_create_drop_no_leak() {
 
 /// Multiple producers, one crashes — other producers and consumer unaffected.
 #[test]
-#[ignore = "pre-existing multi-producer convergence race: separate-instance \
-cross-thread producers/consumer must agree on the shared SHM ring seq protocol \
-(SpscShm vs MpscShm) before writing; early pre-convergence sends can be clobbered/\
-lost. Needs dedicated fix in the epoch migration-convergence path, not a test tweak."]
+#[ignore = "pollution: passes in isolation, fails only in the full suite (shared SHM/registry state from prior tests). The prior HANG is fixed (recv overshoot). Remaining is the separate cross-test pollution issue."]
 fn crash_one_producer_others_unaffected() {
     let name = unique("crash_multi_prod");
     let consumer: Topic<u64> = Topic::new(&name).unwrap();

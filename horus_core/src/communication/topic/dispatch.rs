@@ -1578,11 +1578,22 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // Bounded retry: with N consumers, CAS fails at most N-1 times per message.
     // 8 retries covers up to 8 competing consumers; if all fail, return None
     // and let the caller retry on next poll (avoids unbounded spinning).
+    // Ring occupancy (head - tail) is always in [0, capacity]. A computed value
+    // ABOVE capacity means `tail` has overshot `head` — the wrapping_sub wrapped
+    // around — so the slots ahead were never written by the producer. Reading
+    // them would return Some forever, spinning a multi-consumer drain loop into a
+    // hang (observed with N racing consumers when tail races past head). Treat
+    // both empty (== 0) and overshoot (> capacity) as drained.
+    let cap = mask.wrapping_add(1);
+    let drained = |head: u64, tail: u64| -> bool {
+        let avail = head.wrapping_sub(tail);
+        avail == 0 || avail > cap
+    };
     for _attempt in 0..8 {
         let tail = header.tail.load(Ordering::Acquire);
-        if local.local_head.wrapping_sub(tail) == 0 {
+        if drained(local.local_head, tail) {
             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-            if local.local_head.wrapping_sub(tail) == 0 {
+            if drained(local.local_head, tail) {
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     topic.check_migration_periodic();
@@ -1811,10 +1822,19 @@ pub(super) fn recv_shm_spmc_serde<
     let mask = local.cached_capacity_mask;
     let slot_size = local.slot_size;
 
+    // Occupancy (head - tail) is in [0, capacity]; a value above capacity means
+    // `tail` overshot `head` (wrapping_sub wrapped) — treat as drained so racing
+    // consumers never CAS-claim a never-written slot and spin forever. See
+    // recv_shm_spmc_pod for the full rationale.
+    let cap = mask.wrapping_add(1);
+    let drained = |head: u64, tail: u64| -> bool {
+        let avail = head.wrapping_sub(tail);
+        avail == 0 || avail > cap
+    };
     let tail = header.tail.load(Ordering::Acquire);
-    if local.local_head.wrapping_sub(tail) == 0 {
+    if drained(local.local_head, tail) {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if local.local_head.wrapping_sub(tail) == 0 {
+        if drained(local.local_head, tail) {
             housekeep_epoch!(local, topic);
             return None;
         }
