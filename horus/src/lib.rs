@@ -7,6 +7,16 @@
 //!
 //! ```rust,no_run
 //! use horus::prelude::*;
+//! use serde::{Serialize, Deserialize};
+//!
+//! // Any Serialize + Deserialize type is a valid Topic message. Ready-made
+//! // robotics messages (CmdVel, Imu, …) live in the `horus_robotics` crate; here
+//! // we define one inline to keep the Quick Start self-contained.
+//! #[derive(Clone, Serialize, Deserialize)]
+//! struct CmdVel { linear: f32, angular: f32 }
+//! impl CmdVel {
+//!     fn new(linear: f32, angular: f32) -> Self { Self { linear, angular } }
+//! }
 //!
 //! pub struct MyNode {
 //!     cmd_pub: Topic<CmdVel>,
