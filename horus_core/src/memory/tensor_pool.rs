@@ -1408,9 +1408,18 @@ impl TensorPool {
     /// The Treiber pop (CAS on the generation-tagged head) guarantees that
     /// exactly one thread/process wins each slot, so the slot returned is
     /// exclusively owned by the caller — no second mechanism can hand it out.
-    /// `owner_pid` is recorded before `flags` is set to `SLOT_ALLOCATED` so that
-    /// a crash immediately after the claim leaves a dead-owner ALLOCATED slot
-    /// (reclaimable by `reclaim_dead_slots`) rather than an unrecoverable orphan.
+    /// `owner_pid` is recorded before `flags = SLOT_ALLOCATED` so that once the
+    /// slot is marked ALLOCATED it is always attributable to a (possibly-dead)
+    /// owner and thus reclaimable by `reclaim_dead_slots`.
+    ///
+    /// Crash-recovery caveat: there is a ~2-instruction window between winning
+    /// the pop CAS and the `flags` store where the slot is off the stack yet
+    /// still reads `SLOT_FREE`. A process that crashes exactly there leaks that
+    /// one slot permanently — `reclaim_dead_slots` only scans ALLOCATED slots,
+    /// and the previous linear flags-scan (which self-healed off-stack FREE
+    /// slots) was removed because it was the source of the 1333 double-alloc.
+    /// This is an accepted trade: a single-slot leak on a crash in a nanosecond
+    /// window, versus active data corruption on every contended alloc.
     fn pop_and_claim(&self) -> Option<u32> {
         let header = self.header();
         loop {
