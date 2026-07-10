@@ -6,6 +6,16 @@ use horus_core::communication::Topic;
 use horus_core::core::Node;
 use serde::{Deserialize, Serialize};
 
+/// Serializes tests that create Topics on the SHARED module-level `topics!`
+/// descriptors (`MOTOR_CMD` / `ENCODER_FB` have FIXED names, so if two such
+/// tests run concurrently they open the same SHM segment and steal each other's
+/// messages — a spurious `recv() == None`). Tests that only read `.name()` don't
+/// need this; only those that actually send/recv on the shared topics do.
+fn macro_topic_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn test_scenario_1_basic_pub_sub() {
     // Scenario 1: Basic Publish and Subscribe
@@ -30,11 +40,14 @@ fn test_scenario_1_basic_pub_sub() {
 
 #[test]
 fn test_scenario_2_multiple_subscribers() {
-    // Scenario 2: Multiple Subscribers (competing consumers)
-    // Given: One publisher, three subscribers on same topic
-    // When: Publisher sends multiple messages
-    // Then: Messages are distributed among subscribers (competing consumer semantics)
-    // Note: HORUS Topics use point-to-point messaging, not broadcast
+    // Scenario 2: Multiple Subscribers (broadcast pub/sub)
+    // Given: One publisher, three subscribers on the same topic
+    // When: The publisher sends N messages
+    // Then: EVERY subscriber independently receives ALL N messages, in order.
+    // HORUS multi-subscriber topics are broadcast (ROS 2-style pub/sub, backed by
+    // the FanoutShm broadcast ring) — NOT a competing-consumer work queue. (This
+    // test previously asserted competing-consumer semantics and had always failed;
+    // fixed to assert the actual, verified broadcast behavior.)
 
     let topic = format!("test_multi_sub_{}", std::process::id());
 
@@ -43,48 +56,35 @@ fn test_scenario_2_multiple_subscribers() {
     let sub2 = Topic::<i32>::new(&topic).expect("Failed to create subscriber 2");
     let sub3 = Topic::<i32>::new(&topic).expect("Failed to create subscriber 3");
 
-    // Send 3 messages
+    // Send 3 messages.
     pub_hub.send(100);
     pub_hub.send(200);
     pub_hub.send(300);
 
-    // Collect messages from all subscribers (competing consumer semantics)
-    let mut received = Vec::new();
-    if let Some(msg) = sub1.recv() {
-        received.push(msg);
-    }
-    if let Some(msg) = sub2.recv() {
-        received.push(msg);
-    }
-    if let Some(msg) = sub3.recv() {
-        received.push(msg);
-    }
-    // Try receiving any remaining messages
-    if let Some(msg) = sub1.recv() {
-        received.push(msg);
-    }
-    if let Some(msg) = sub2.recv() {
-        received.push(msg);
-    }
-    if let Some(msg) = sub3.recv() {
-        received.push(msg);
-    }
+    // Each subscriber drains its own view of the stream. Under broadcast every
+    // subscriber must see the full [100, 200, 300] sequence.
+    let drain = |sub: &Topic<i32>| {
+        let mut v = Vec::new();
+        for _ in 0..16 {
+            match sub.recv() {
+                Some(m) => v.push(m),
+                None => break,
+            }
+        }
+        v
+    };
 
-    // Verify at least the 3 messages were received (distributed among subscribers)
-    assert!(
-        received.len() >= 3,
-        "Should receive all 3 messages among subscribers, got {} messages: {:?}",
-        received.len(),
-        received
-    );
-
-    // Verify the correct values were received
-    received.sort();
-    assert!(
-        received.contains(&100) && received.contains(&200) && received.contains(&300),
-        "All message values should be received: {:?}",
-        received
-    );
+    for (name, got) in [
+        ("sub1", drain(&sub1)),
+        ("sub2", drain(&sub2)),
+        ("sub3", drain(&sub3)),
+    ] {
+        assert_eq!(
+            got,
+            vec![100, 200, 300],
+            "{name} (broadcast) must receive every message in order, got {got:?}"
+        );
+    }
 }
 
 #[test]
@@ -469,6 +469,7 @@ impl horus_core::Node for MotorDriverNode {
 
 #[test]
 fn test_topics_macro_with_nodes_pub_sub() {
+    let _g = macro_topic_lock(); // shares MOTOR_CMD/ENCODER_FB with other tests
     // Full user-perspective test:
     // 1. Define topics with topics! macro (done above)
     // 2. Create nodes using Topic::publish/subscribe
@@ -535,6 +536,7 @@ fn test_topics_macro_with_nodes_pub_sub() {
 
 #[test]
 fn test_topics_macro_type_safety_compile_time() {
+    let _g = macro_topic_lock(); // shares MOTOR_CMD/ENCODER_FB with other tests
     // This test verifies that the topics! macro produces correctly-typed descriptors.
     // If the types were wrong, this test wouldn't compile at all.
 
