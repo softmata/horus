@@ -132,8 +132,20 @@ impl Node for CounterNode {
 /// The Discord user's exact scenario:
 /// RT node at 1kHz + slow compute node sleeping 100ms.
 /// The RT node must maintain its tick rate regardless.
+
+/// Serializes these tests. They all share the process-global "default" SHM
+/// namespace and each calls cleanup_stale_shm(), which wipes it — so running
+/// them in parallel (the default within a test binary) lets one test's cleanup
+/// destroy another's live scheduler/event state (e.g. an event node then ticks
+/// 0 times). Holding this lock for the whole test body serializes them.
+fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn test_rt_isolation_under_compute_load() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     let (rt_node, rt_count, rt_timestamps) = RtTimingNode::new("rt_controller");
@@ -204,6 +216,7 @@ fn test_rt_isolation_under_compute_load() {
 /// Verify that compute nodes run in parallel (not sequentially).
 #[test]
 fn test_compute_nodes_run_parallel() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     // Two slow compute nodes, each sleeping 30ms
@@ -236,6 +249,7 @@ fn test_compute_nodes_run_parallel() {
 /// Verify that RT + compute together works correctly.
 #[test]
 fn test_mixed_rt_and_compute_nodes() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     let (rt_node, rt_count, _) = RtTimingNode::new("mixed_rt");
@@ -271,6 +285,7 @@ fn test_mixed_rt_and_compute_nodes() {
 /// Sequential mode should still work exactly as before (no RT/compute split).
 #[test]
 fn test_sequential_mode_unchanged() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     let (node_a, count_a) = CounterNode::new("seq_a");
@@ -304,6 +319,7 @@ fn test_sequential_mode_unchanged() {
 /// Verifies all groups run simultaneously, RT maintains timing, and shutdown is clean.
 #[test]
 fn test_full_system_rt_and_compute_groups() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     // RT group: fast controller (500Hz) + slower sensor (100Hz)
@@ -397,6 +413,7 @@ fn test_full_system_rt_and_compute_groups() {
 /// Publish N messages, verify node ticks exactly N times.
 #[test]
 fn test_event_node_ticks_on_publish() {
+    let _serial = serial_guard();
     use horus_core::core::NodeInfo;
 
     cleanup_stale_shm();
@@ -441,6 +458,7 @@ fn test_event_node_ticks_on_publish() {
 /// Event node should NOT tick when no data is published.
 #[test]
 fn test_event_node_no_tick_without_data() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     let (event_node, event_count) = CounterNode::new("evt_idle");
@@ -466,6 +484,7 @@ fn test_event_node_no_tick_without_data() {
 /// Event node works alongside RT and BestEffort nodes in the same scheduler.
 #[test]
 fn test_event_node_alongside_rt_and_besteffort() {
+    let _serial = serial_guard();
     use horus_core::core::NodeInfo;
 
     cleanup_stale_shm();
@@ -597,6 +616,7 @@ impl Node for BlockingIoNode {
 ///   3. Async I/O node still executes its ticks (at least 1 in 500ms)
 #[test]
 fn test_async_io_isolation_from_rt_and_compute() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     // RT node at 1kHz for jitter analysis
@@ -689,6 +709,7 @@ fn test_async_io_isolation_from_rt_and_compute() {
 /// on the tokio pool and not serialize each other.
 #[test]
 fn test_async_io_nodes_run_concurrently() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     // Two async I/O nodes, each sleeping 100ms
@@ -729,6 +750,7 @@ fn test_async_io_nodes_run_concurrently() {
 /// Proves the full 4-group architecture works correctly.
 #[test]
 fn test_all_execution_groups_simultaneously() {
+    let _serial = serial_guard();
     use horus_core::core::NodeInfo;
 
     cleanup_stale_shm();
@@ -800,6 +822,7 @@ fn test_all_execution_groups_simultaneously() {
 /// Verify that scheduler.stop() triggers clean shutdown of all groups.
 #[test]
 fn test_clean_shutdown_all_groups() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     let (rt_node, rt_count, _) = RtTimingNode::new("shutdown_rt");
@@ -832,6 +855,7 @@ fn test_clean_shutdown_all_groups() {
 /// rates within the same RT thread. Verifies the timing wheel handles multi-rate.
 #[test]
 fn test_multi_rate_rt_timing_accuracy() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     let (node_1khz, count_1khz, _) = RtTimingNode::new("rt_1khz");
@@ -911,6 +935,7 @@ fn test_multi_rate_rt_timing_accuracy() {
 /// while low-order nodes continue unimpeded.
 #[test]
 fn test_compute_load_shedding() {
+    let _serial = serial_guard();
     cleanup_stale_shm();
 
     // Fast high-priority node (order 10) — should never be shed
