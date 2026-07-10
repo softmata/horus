@@ -59,8 +59,14 @@ use super::seqlock::{seqlock_consume, seqlock_publish};
 /// Maximum publishers and subscribers per SHM fanout topic.
 pub(crate) const MAX_FANOUT_ENDPOINTS: usize = 16;
 
-/// Magic number for FanoutShmMeta validation: "FANOUT\0\0"
-pub(crate) const FANOUT_MAGIC: u64 = 0x0000_5455_4F4E_4146;
+/// Magic number for FanoutShmMeta validation: "FANOUT\0" + layout version byte.
+///
+/// The final byte is a LAYOUT VERSION and MUST be bumped whenever the on-SHM
+/// channel layout changes, so a region written by an older binary is rejected
+/// (clean magic mismatch → SpscShm fallback in `init_shm_backend`) rather than
+/// silently reinterpreted with the new strides. v2 added the per-slot version
+/// array (each channel grew by `capacity * 8` bytes for the seqlock stamps).
+pub(crate) const FANOUT_MAGIC: u64 = 0x0200_5455_4F4E_4146;
 
 /// Offset of FanoutShmMeta in the SHM file (page-aligned, after TopicHeader).
 pub(crate) const FANOUT_META_OFFSET: usize = 4096;
