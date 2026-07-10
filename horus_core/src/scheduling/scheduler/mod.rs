@@ -2198,6 +2198,19 @@ impl Scheduler {
                 // BestEffort nodes remain on the main thread
                 self.nodes = groups.main_nodes;
 
+                // CRITICAL: the dependency graph was built in finalize_and_init()
+                // from the FULL node set (before this class-partition). Now that
+                // RT/Compute/Event/AsyncIo/GPU nodes have moved to their own
+                // executors, `self.nodes` is smaller, so the graph's node indices
+                // (successors/dep_counts, sized to the old count) no longer match
+                // and the ready-dispatch executor would index out of bounds and
+                // panic — hanging the scheduler (a stopped control loop on a
+                // robot). Rebuild the graph from the reduced main-node set so its
+                // indices are consistent with `self.nodes`.
+                self.build_dependency_graph();
+                self.graph_registry_version =
+                    crate::communication::topic_node_registry().version();
+
                 // Create live SHM registry and register all nodes
                 let arc_registry = match super::registry::SchedulerRegistry::open(&self.scheduler_name) {
                     Ok(reg) => {
