@@ -2531,6 +2531,30 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return None;
         }
 
+        // Role==Both (same-instance send+recv) uses the DirectChannel-local fast
+        // path (LocalState head/tail over `cached_data_ptr`) regardless of the
+        // negotiated backend, including SHM-backed ones. The SHM header's
+        // sequence_or_head is never advanced on that path, so read the local
+        // counters here — otherwise read_latest reads a stale/uninitialized SHM
+        // slot (returning a phantom value after the data was drained).
+        {
+            let local = self.local();
+            if local.role == TopicRole::Both {
+                if local.local_tail >= local.local_head {
+                    return None;
+                }
+                let mask = local.cached_capacity_mask;
+                let idx = (local.local_head.wrapping_sub(1) & mask) as usize;
+                // SAFETY: idx is masked in-bounds; the slot in [tail, head) was
+                // written by send() and is initialized. T: Copy — bitwise read.
+                let msg = unsafe {
+                    let base = local.cached_data_ptr as *const T;
+                    simd_aware_read(base.add(idx))
+                };
+                return Some(msg);
+            }
+        }
+
         // Check heap backends first — DirectChannel and intra-process rings track
         // head/tail independently from the SHM header, so we must query them directly
         // rather than relying on header.sequence_or_head as a gatekeeper.
@@ -2607,6 +2631,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Get the number of pending messages
     pub fn pending_count(&self) -> u64 {
+        // Role==Both (same-instance send+recv) uses the DirectChannel-local fast
+        // path in send()/recv() (LocalState head/tail over `cached_data_ptr`),
+        // regardless of the negotiated backend — including SHM-backed ones after
+        // the shm_backed change. The SHM header's head/tail are NEVER advanced on
+        // that path, so we must read the local counters here or report phantom
+        // pending messages (breaking has_message()/pending_count() after a drain).
+        let local = self.local();
+        if local.role == TopicRole::Both {
+            return local.local_head.wrapping_sub(local.local_tail);
+        }
         // Check heap-backed ring first; fall back to SHM header
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
@@ -2624,10 +2658,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendStorage::MpscIntra(ring) => ring.pending_count(),
             BackendStorage::FanoutIntra(ring) => ring.pending_count(),
             _ => {
-                // ShmData, Uninitialized: use SHM header
+                // ShmData, Uninitialized: use SHM header.
                 let header = self.header();
                 let head = header.sequence_or_head.load(Ordering::Acquire);
-                let tail = header.tail.load(Ordering::Acquire);
+                // The SPSC-SHM consumer batches its read position into
+                // `header.tail` (flushed every ~32 messages), so `header.tail`
+                // can lag this consumer's true cursor `local_tail` — making
+                // pending_count report phantom messages that were already
+                // drained. Use whichever position is further ahead. For
+                // multi-consumer SHM the shared `header.tail` advances via CAS
+                // and is already >= local_tail, so this is a no-op there.
+                let tail = header
+                    .tail
+                    .load(Ordering::Acquire)
+                    .max(self.local().local_tail);
                 head.saturating_sub(tail)
             }
         }
