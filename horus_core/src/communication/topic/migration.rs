@@ -449,10 +449,11 @@ mod tests {
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
         let m = BackendMigrator::new(&h);
-        // Same thread, non-POD, 1P:1C → SpscIntra
+        // Same thread, non-POD, 1P:1C → SpscShm (real topics are shm_backed
+        // regardless of pod-ness; SHM supports serde via send_shm_sp_serde).
         let result = m.migrate_to_optimal();
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::SpscIntra);
+        assert_eq!(h.mode(), BackendMode::SpscShm);
     }
 
     // ── is_optimal ──────────────────────────────────────────────────────

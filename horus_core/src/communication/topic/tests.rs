@@ -7759,7 +7759,7 @@ fn send_blocking_error_display() {
 /// Producer thread panics mid-send — consumer should not deadlock and
 /// should get None (no message) rather than corrupted data.
 #[test]
-#[ignore = "narrow residual: same-thread pre-migration sends (1,2) are lost across the migration drain when a 2nd (cross-thread) producer registers. Distinct from the HANG (fixed: recv overshoot) and the multi-producer delivery race (fixed: reliable process_epoch propagation). A clone+drain preservation edge tracked in softmata-brain insight 1327."]
+#[ignore = "VERIFIED root cause (softmata-brain 1327): sp->mp ready-flag protocol conversion gap. Messages buffered under SpscShm are written via send_shm_sp_pod, which sets only header.sequence_or_head and NO per-slot ready flags. When a 2nd producer forces migration to MpscShm, the consumer reads via recv_shm_mpsc_pod, which gates on cached_seq_ptr[idx]==tail+1 -- flags SpscShm never wrote -- so the buffered messages become permanently unreadable. Distinct from the HANG (fixed: recv overshoot) and the delivery race (fixed: process_epoch propagation). Fix = backfill ready flags for [tail,head) during perform_migration to a per-slot-ready backend; deferred because it is a migration-hot-path change that must clear the loom gate (model concurrent sp->mp with buffered msgs) before shipping."]
 fn crash_producer_panic_consumer_not_stuck() {
     let name = unique("crash_prod");
     let topic_consumer: Topic<u64> = Topic::new(&name).unwrap();
