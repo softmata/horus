@@ -1229,6 +1229,9 @@ fn migration_epoch_visible_across_clones() {
     t1.check_migration_now();
 
     // Now both should be on the same backend — send/recv should work.
+    // Drain any messages left in the shared ring from the migration dance
+    // (e.g. the init send) so the assertion reads the value we publish next.
+    while t2.recv().is_some() {}
     t1.send(42);
     assert_eq!(t2.recv(), Some(42));
 }
@@ -5995,17 +5998,18 @@ fn housekeeping_epoch_check_fires_at_4096_interval() {
     let name = unique("hkeep_epoch");
     let t: Topic<u64> = Topic::new(&name).expect("create");
 
-    // Initialize as DirectChannel
+    // Real topics are SHM-backed (SpscShm); the msg_counter housekeeping is
+    // backend-agnostic (send and recv each increment it).
     t.send(0);
     let _ = t.recv();
-    assert_eq!(t.ring.local().cached_mode, BackendMode::DirectChannel);
+    assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
 
     // Reset counter for clean measurement
     t.ring.local().msg_counter = 0;
 
     // Send+recv in tight loop to accumulate msg_counter.
-    // DC-local: both send and recv increment msg_counter.
-    // Ring capacity for u64 DC = 512, so send+recv in lock-step.
+    // Both send and recv increment msg_counter; sent and received in lock-step
+    // so the single-slot ring never fills.
     for i in 0..2048u64 {
         t.send(i);
         let _ = t.recv();
