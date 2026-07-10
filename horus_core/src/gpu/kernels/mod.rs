@@ -397,6 +397,11 @@ mod tests {
     use crate::gpu::cuda_ffi;
 
     #[test]
+    #[ignore = "requires the CUDA kernels build artifact (libhorus_kernels.so). \
+                cuda_ffi::is_available() only reports the CUDA runtime, not whether \
+                the horus kernels were compiled, so this cannot distinguish \
+                'not built' (skip) from 'built but broken' (fail) in a headless/CI \
+                env. Run with --ignored where the kernels build step has run."]
     fn test_kernels_load() {
         if !cuda_ffi::is_available() {
             eprintln!("CUDA not available, skipping");

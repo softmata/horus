@@ -442,6 +442,7 @@ mod tests {
 
     #[test]
     fn find_nodes_empty_dir_returns_empty() {
+        let _guard = crate::shm::env_lock();
         std::env::set_var(
             "HORUS_NAMESPACE",
             format!("test_nodes_empty_{}", std::process::id()),
@@ -453,6 +454,7 @@ mod tests {
 
     #[test]
     fn find_nodes_with_valid_presence_file() {
+        let _guard = crate::shm::env_lock();
         let ns = format!("test_nodes_valid_{}", std::process::id());
         std::env::set_var("HORUS_NAMESPACE", &ns);
         let nodes_dir = crate::shm::shm_nodes_dir();
@@ -504,6 +506,7 @@ mod tests {
 
     #[test]
     fn find_nodes_skips_dead_pid() {
+        let _guard = crate::shm::env_lock();
         let ns = format!("test_nodes_dead_{}", std::process::id());
         std::env::set_var("HORUS_NAMESPACE", &ns);
         let nodes_dir = crate::shm::shm_nodes_dir();
@@ -529,6 +532,7 @@ mod tests {
 
     #[test]
     fn find_nodes_skips_non_json_files() {
+        let _guard = crate::shm::env_lock();
         let ns = format!("test_nodes_nonjson_{}", std::process::id());
         std::env::set_var("HORUS_NAMESPACE", &ns);
         let nodes_dir = crate::shm::shm_nodes_dir();
@@ -548,6 +552,7 @@ mod tests {
 
     #[test]
     fn find_topics_empty_returns_empty() {
+        let _guard = crate::shm::env_lock();
         std::env::set_var(
             "HORUS_NAMESPACE",
             format!("test_topics_empty_{}", std::process::id()),
@@ -559,6 +564,7 @@ mod tests {
 
     #[test]
     fn find_topics_discovers_meta_files() {
+        let _guard = crate::shm::env_lock();
         let ns = format!("test_topics_meta_{}", std::process::id());
         std::env::set_var("HORUS_NAMESPACE", &ns);
 
@@ -579,6 +585,7 @@ mod tests {
 
     #[test]
     fn find_topics_checks_creator_liveness() {
+        let _guard = crate::shm::env_lock();
         let ns = format!("test_topics_alive_{}", std::process::id());
         std::env::set_var("HORUS_NAMESPACE", &ns);
         let dir = crate::shm::shm_topics_dir();

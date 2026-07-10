@@ -254,6 +254,7 @@ mod tests {
 
     #[test]
     fn shm_create_and_basic_rw() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_basic");
         let size = 4096;
         let region = ShmRegion::new(&name, size).expect("Failed to create SHM region");
@@ -277,6 +278,7 @@ mod tests {
 
     #[test]
     fn shm_zero_initialized() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_zeroed");
         let region = ShmRegion::new(&name, 4096).expect("Failed to create SHM");
         for (i, &byte) in region.as_slice().iter().enumerate() {
@@ -286,6 +288,7 @@ mod tests {
 
     #[test]
     fn shm_as_slice_rw() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_slice");
         let size = 256;
         let mut region = ShmRegion::new(&name, size).expect("create");
@@ -304,6 +307,7 @@ mod tests {
 
     #[test]
     fn shm_concurrent_creation_race() {
+        let _guard = crate::shm::env_lock();
         use std::sync::{Arc, Barrier};
 
         let name = unique_name("sys_concurrent");
@@ -340,6 +344,7 @@ mod tests {
 
     #[test]
     fn shm_drop_owner_removes_file() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_drop");
         let path;
         {
@@ -352,6 +357,7 @@ mod tests {
 
     #[test]
     fn shm_non_owner_drop_does_not_remove_file() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_nonowner_drop");
         let region1 = ShmRegion::new(&name, 4096).expect("create owner");
         let path = region1.backing_path().to_path_buf();
@@ -370,6 +376,7 @@ mod tests {
 
     #[test]
     fn shm_same_name_gets_same_region() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_reopen");
         let size = 4096;
 
@@ -390,6 +397,7 @@ mod tests {
 
     #[test]
     fn shm_flock_alive_while_region_exists() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_flock_alive");
         let region = ShmRegion::new(&name, 4096).expect("create");
         assert!(
@@ -400,6 +408,7 @@ mod tests {
 
     #[test]
     fn shm_flock_forget_keeps_lock() {
+        let _guard = crate::shm::env_lock();
         let name = unique_name("sys_flock_forget");
         let region = ShmRegion::new(&name, 4096).expect("create");
         let path = region.backing_path().to_path_buf();
@@ -417,6 +426,7 @@ mod tests {
 
     #[test]
     fn shm_file_permissions_owner_only() {
+        let _guard = crate::shm::env_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let name = unique_name("sys_perms");

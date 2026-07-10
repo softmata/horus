@@ -50,7 +50,9 @@ fn sanitize_namespace(ns: &str) -> String {
 ///
 /// Priority:
 /// 1. `HORUS_NAMESPACE` env var (set by horus_manager when launching node graphs)
-/// 2. Auto-generated from session ID + user ID (`sid{SID}_uid{UID}`) on all platforms
+/// 2. Otherwise the fixed shared namespace `"default"` (ROS 2 domain-0 model:
+///    every process on the machine shares one namespace). Multi-robot isolation
+///    is opt-in — set `HORUS_NAMESPACE` (or a launch-config `namespace`) per robot.
 pub fn generate_namespace() -> String {
     // Check for explicit override first (for isolation when needed)
     if let Ok(ns) = std::env::var("HORUS_NAMESPACE") {
@@ -655,12 +657,26 @@ pub(crate) fn format_bytes_compact(bytes: u64) -> String {
 // Tests
 // ============================================================================
 
+/// Serializes tests that touch process-global SHM state — the `HORUS_NAMESPACE`
+/// env var, the `OnceLock`-cached `shm_namespace()`, and the shared `/dev/shm`
+/// paths derived from them. Multiple crate modules' tests (`shm`, `discover`)
+/// share this one lock, because they all read/write the same cached namespace
+/// dir; without it they race under `--test-threads>1` (one test's
+/// `remove_dir_all` wipes a dir another is reading). Poisoning is irrelevant to
+/// test setup, so a poisoned lock is recovered rather than propagated.
+#[cfg(test)]
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_shm_paths_are_valid() {
+        let _guard = env_lock();
         let base = shm_base_dir();
         assert!(!base.as_os_str().is_empty());
 
@@ -673,6 +689,7 @@ mod tests {
 
     #[test]
     fn test_shm_base_dir_starts_with_horus_underscore() {
+        let _guard = env_lock();
         let base = shm_base_dir();
         let dir_name = base
             .file_name()
@@ -752,6 +769,7 @@ mod tests {
 
     #[test]
     fn test_dir_size_bytes_and_file_count() {
+        let _guard = env_lock();
         use std::io::Write;
         let tmp =
             std::env::temp_dir().join(format!("horus_sys_test_dir_size_{}", std::process::id()));
@@ -776,6 +794,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_flock_stale_no_holder() {
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join(format!("horus_sys_flock_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -791,6 +810,7 @@ mod tests {
 
     #[test]
     fn test_write_and_list_topic_meta_roundtrip() {
+        let _guard = env_lock();
         std::env::set_var(
             "HORUS_NAMESPACE",
             format!("test_meta_{}", std::process::id()),
@@ -821,6 +841,7 @@ mod tests {
 
     #[test]
     fn test_remove_topic_meta_deletes_file() {
+        let _guard = env_lock();
         std::env::set_var(
             "HORUS_NAMESPACE",
             format!("test_rm_meta_{}", std::process::id()),
@@ -836,12 +857,14 @@ mod tests {
 
     #[test]
     fn test_remove_topic_meta_idempotent() {
+        let _guard = env_lock();
         // Removing a non-existent meta should not panic
         remove_topic_meta("nonexistent_topic_xyz");
     }
 
     #[test]
     fn test_list_topic_metas_empty_dir() {
+        let _guard = env_lock();
         // list_topic_metas on a dir with no .meta files should return empty
         // (may find files from other tests sharing the cached namespace, so just verify no panic)
         let metas = list_topic_metas();
@@ -851,6 +874,7 @@ mod tests {
 
     #[test]
     fn test_list_topic_metas_skips_malformed_json() {
+        let _guard = env_lock();
         // Write directly to the actual topics dir (OnceLock-cached namespace)
         let dir = shm_topics_dir();
         std::fs::create_dir_all(&dir).unwrap();
@@ -868,6 +892,7 @@ mod tests {
 
     #[test]
     fn test_topic_meta_name_sanitized_in_filename() {
+        let _guard = env_lock();
         std::env::set_var(
             "HORUS_NAMESPACE",
             format!("test_sanitize_{}", std::process::id()),
@@ -882,19 +907,18 @@ mod tests {
     // ── Namespace generation tests ──────────────────────────────────
 
     #[test]
-    fn test_namespace_format_matches_sid_uid_pattern() {
-        // Without HORUS_NAMESPACE env var, should match sid{N}_uid{N}
+    fn test_namespace_defaults_to_shared_when_unset() {
+        // Contract (ROS 2 domain-0 model): with no HORUS_NAMESPACE override the
+        // namespace is the fixed shared "default". Isolation is opt-in via the
+        // env var / launch-config namespace (see test_namespace_env_var_override).
+        let _guard = env_lock();
         std::env::remove_var("HORUS_NAMESPACE");
-        let ns = generate_namespace();
-        assert!(
-            ns.starts_with("sid") && ns.contains("_uid"),
-            "auto-generated namespace should be sid{{N}}_uid{{N}}, got '{}'",
-            ns
-        );
+        assert_eq!(generate_namespace(), "default");
     }
 
     #[test]
     fn test_namespace_env_var_override() {
+        let _guard = env_lock();
         std::env::set_var("HORUS_NAMESPACE", "my_custom_ns");
         let ns = generate_namespace();
         assert_eq!(ns, "my_custom_ns");
@@ -903,6 +927,7 @@ mod tests {
 
     #[test]
     fn test_namespace_env_var_sanitized() {
+        let _guard = env_lock();
         std::env::set_var("HORUS_NAMESPACE", "my-robot/v1!");
         let ns = generate_namespace();
         assert_eq!(ns, "my_robot_v1_");
@@ -911,10 +936,13 @@ mod tests {
 
     #[test]
     fn test_namespace_empty_env_var_falls_back() {
+        // An empty (or whitespace/all-separator) override must not yield an empty
+        // namespace — it falls back to the shared "default".
+        let _guard = env_lock();
         std::env::set_var("HORUS_NAMESPACE", "");
         let ns = generate_namespace();
-        assert!(!ns.is_empty(), "empty env var should fall back to auto-gen");
-        assert!(ns.starts_with("sid"), "should auto-generate sid format");
+        assert!(!ns.is_empty(), "empty env var must not yield an empty namespace");
+        assert_eq!(ns, "default", "empty override falls back to shared default");
         std::env::remove_var("HORUS_NAMESPACE");
     }
 
@@ -922,6 +950,7 @@ mod tests {
 
     #[test]
     fn test_subdirs_are_children_of_base() {
+        let _guard = env_lock();
         let base = shm_base_dir();
         assert!(shm_topics_dir().starts_with(&base));
         assert!(shm_nodes_dir().starts_with(&base));
@@ -931,6 +960,7 @@ mod tests {
 
     #[test]
     fn test_logs_path_inside_namespace() {
+        let _guard = env_lock();
         let logs = shm_logs_path();
         let base = shm_base_dir();
         assert!(
@@ -952,6 +982,7 @@ mod tests {
 
     #[test]
     fn test_scheduler_dir_inside_namespace() {
+        let _guard = env_lock();
         let sched = shm_scheduler_dir();
         let base = shm_base_dir();
         assert!(
@@ -963,6 +994,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_flock_alive_with_shared_lock() {
+        let _guard = env_lock();
         use std::os::unix::io::AsRawFd;
 
         let tmp =

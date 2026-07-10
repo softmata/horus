@@ -308,8 +308,17 @@ mod tests {
 
         let elapsed = end.elapsed_since(&start).unwrap();
         eprintln!("GPU memset 64MB took: {:?}", elapsed);
-        // Should be measurable (>0) but fast (<100ms)
-        assert!(elapsed < Duration::from_millis(100));
+        // Event timing must produce a positive measurement (timing works) and a
+        // non-pathological one. The upper bound is deliberately loose: this is
+        // GPU-event time between two stream events, so it inflates under
+        // concurrent GPU load from other tests — a tight bound (was 100ms for a
+        // ~120µs op) flaps under a parallel run. 5s still catches a hang or
+        // broken timing while tolerating contention.
+        assert!(elapsed > Duration::ZERO, "event timing returned zero elapsed");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "GPU 64MB memset event time {elapsed:?} is pathological (expected ~µs)"
+        );
 
         cuda_ffi::mem_free(dptr).unwrap();
     }
