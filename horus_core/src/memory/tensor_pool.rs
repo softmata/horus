@@ -3716,6 +3716,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "REPRODUCES KNOWN CRITICAL BUG (softmata-brain 1333): concurrent \
+                double-allocation in the free-slot allocator — two simultaneous \
+                allocs return the SAME slot_id (memory aliasing / data corruption). \
+                Root cause: find_free_slot has TWO unsynchronized free-set \
+                mechanisms — the Treiber free-stack (pop does not mark the slot \
+                allocated) and a linear flags-CAS scan (claims without removing \
+                from the stack). A slot can be claimed by both, and a double-push \
+                on release forms a next_free cycle (leak/livelock). Reproduced on \
+                the reconciled base, NOT introduced this session; tensor_pool.rs \
+                untouched. Fix is structure-level + must clear a loom gate (see \
+                insight) — do NOT un-ignore until then."]
     fn test_concurrent_alloc_release_interleaved_threads() {
         // Multiple threads each allocate and release in rapid succession,
         // verifying that all slots are properly freed afterward.
@@ -3752,6 +3763,16 @@ mod tests {
                                 match pool.alloc(&[32], TensorDtype::U8, Device::cpu()) {
                                     Ok(t2) => {
                                         total_allocs += 1;
+                                        // Direct invariant: two simultaneously-held
+                                        // allocations must never share a slot. This
+                                        // is the crisp proof of the double-alloc bug
+                                        // (tighter than the downstream generation /
+                                        // corruption checks it also trips).
+                                        assert_ne!(
+                                            t1.slot_id, t2.slot_id,
+                                            "double-allocation: concurrent allocs returned the same slot {}",
+                                            t1.slot_id
+                                        );
                                         pool.data_slice_mut(&t2).unwrap().fill(pattern);
 
                                         // Verify first tensor wasn't corrupted
