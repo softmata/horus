@@ -496,18 +496,26 @@ impl TensorPool {
         let max_slots = self.config.max_slots as u32;
         let slot_alignment = self.config.slot_alignment as u32;
 
-        // Initialize all slots as free BEFORE writing the magic.
-        // This ensures that by the time another process sees POOL_MAGIC,
-        // the slot metadata is already valid.
+        // Initialize all slots as free BEFORE writing the magic, and link them
+        // ALL onto the free stack. The free stack is the single source of truth
+        // for "which slots are free": a slot is on the stack XOR allocated. This
+        // is what lets `pop_and_claim` be the sole allocation path (no second
+        // flags-scan mechanism that could hand out an already-stacked slot — the
+        // 1333 double-allocation bug). Init is single-threaded (before the magic
+        // is visible), so the stack is built with plain stores, no CAS.
         let max_slots_usize = self.config.max_slots;
+        let mut stack_head = INVALID_SLOT;
         for i in 0..max_slots_usize {
             let slot = self.slot_mut(i as u32);
             slot.refcount.store(0, Ordering::Release);
             slot.flags.store(SLOT_FREE, Ordering::Release);
             slot.generation.store(0, Ordering::Release);
+            slot.owner_pid.store(0, Ordering::Release);
             slot.offset = 0;
             slot.size = 0;
-            slot.next_free.store(INVALID_SLOT, Ordering::Release);
+            // Link this slot on top of the free stack being built.
+            slot.next_free.store(stack_head, Ordering::Release);
+            stack_head = i as u32;
         }
 
         // Initialize header fields (except magic — written last as the
@@ -519,9 +527,10 @@ impl TensorPool {
         header.max_slots = max_slots;
         header.slot_alignment = slot_alignment;
         header.next_alloc_offset.store(0, Ordering::Release);
+        // Publish the pre-populated free stack (generation 0, top = last slot).
         header
             .free_stack_head
-            .store(INVALID_SLOT as u64, Ordering::Release);
+            .store(pack_tagged_head(0, stack_head), Ordering::Release);
 
         // Write magic LAST — this is the "initialization complete" signal.
         // Use volatile write + flush to ensure cross-process visibility.
@@ -1371,67 +1380,67 @@ impl TensorPool {
     }
 
     fn find_free_slot(&self) -> HorusResult<u32> {
-        // Try to pop from free stack first (Treiber stack with ABA prevention
-        // via generation counter in upper 32 bits of tagged head)
-        let header = self.header();
-
-        loop {
-            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
-            let (generation, slot_id) = unpack_tagged_head(tagged_head);
-            if slot_id != INVALID_SLOT {
-                let slot = self.slot(slot_id);
-                let next = slot.next_free.load(Ordering::Acquire);
-
-                let new_tagged = pack_tagged_head(generation.wrapping_add(1), next);
-                if header
-                    .free_stack_head
-                    .compare_exchange_weak(
-                        tagged_head,
-                        new_tagged,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    return Ok(slot_id);
-                }
-                continue;
-            }
-            break;
+        // The free stack is the SINGLE source of truth for free slots (all slots
+        // are pushed at init; a slot is on the stack XOR allocated). Popping is
+        // the sole allocation path — there is deliberately no second "linear
+        // flags-scan" claim, which previously let a slot be handed out by both
+        // paths at once (softmata-brain 1333: concurrent double-allocation).
+        if let Some(slot_id) = self.pop_and_claim() {
+            return Ok(slot_id);
         }
 
-        // No free slots in stack, search linearly
-        for i in 0..self.config.max_slots {
-            let slot = self.slot(i as u32);
-            let flags = slot.flags.load(Ordering::Acquire);
-
-            if flags == SLOT_FREE {
-                // Try to claim this slot
-                if slot
-                    .flags
-                    .compare_exchange(
-                        SLOT_FREE,
-                        SLOT_ALLOCATED,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    return Ok(i as u32);
-                }
+        // Stack empty. A slot may be held by a dead process (owner crashed while
+        // it was allocated) — reclaim those and retry once.
+        if self.reclaim_dead_slots() > 0 {
+            if let Some(slot_id) = self.pop_and_claim() {
+                return Ok(slot_id);
             }
-        }
-
-        // Last resort: try to reclaim slots from dead processes
-        let reclaimed = self.reclaim_dead_slots();
-        if reclaimed > 0 {
-            // Retry — reclaimed slots were pushed to the free stack
-            return self.find_free_slot_inner();
         }
 
         Err(HorusError::Memory(
             "No free tensor slots available".to_string().into(),
         ))
+    }
+
+    /// Pop one slot from the free stack and claim it. Returns `None` when the
+    /// stack is empty.
+    ///
+    /// The Treiber pop (CAS on the generation-tagged head) guarantees that
+    /// exactly one thread/process wins each slot, so the slot returned is
+    /// exclusively owned by the caller — no second mechanism can hand it out.
+    /// `owner_pid` is recorded before `flags` is set to `SLOT_ALLOCATED` so that
+    /// a crash immediately after the claim leaves a dead-owner ALLOCATED slot
+    /// (reclaimable by `reclaim_dead_slots`) rather than an unrecoverable orphan.
+    fn pop_and_claim(&self) -> Option<u32> {
+        let header = self.header();
+        loop {
+            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
+            let (generation, slot_id) = unpack_tagged_head(tagged_head);
+            if slot_id == INVALID_SLOT {
+                return None;
+            }
+            let slot = self.slot(slot_id);
+            let next = slot.next_free.load(Ordering::Acquire);
+
+            let new_tagged = pack_tagged_head(generation.wrapping_add(1), next);
+            if header
+                .free_stack_head
+                .compare_exchange_weak(
+                    tagged_head,
+                    new_tagged,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                // Won the pop — `slot_id` is removed from the stack and ours alone.
+                slot.owner_pid
+                    .store(std::process::id(), Ordering::Release);
+                slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
+                return Some(slot_id);
+            }
+            // Lost the CAS (concurrent pop/push) — retry.
+        }
     }
 
     /// Reclaim tensor slots owned by processes that no longer exist.
@@ -1500,39 +1509,6 @@ impl TensorPool {
         horus_sys::process::ProcessHandle::from_pid(pid).is_alive()
     }
 
-    /// Inner find_free_slot without the reclaim fallback (used for retry after reclaim).
-    fn find_free_slot_inner(&self) -> HorusResult<u32> {
-        let header = self.header();
-
-        loop {
-            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
-            let (generation, slot_id) = unpack_tagged_head(tagged_head);
-            if slot_id != INVALID_SLOT {
-                let slot = self.slot(slot_id);
-                let next = slot.next_free.load(Ordering::Acquire);
-
-                let new_tagged = pack_tagged_head(generation.wrapping_add(1), next);
-                if header
-                    .free_stack_head
-                    .compare_exchange_weak(
-                        tagged_head,
-                        new_tagged,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    return Ok(slot_id);
-                }
-                continue;
-            }
-            break;
-        }
-
-        Err(HorusError::Memory(
-            "No free tensor slots available".to_string().into(),
-        ))
-    }
 
     fn return_slot(&self, slot_id: u32) {
         let header = self.header();
@@ -3716,17 +3692,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "REPRODUCES KNOWN CRITICAL BUG (softmata-brain 1333): concurrent \
-                double-allocation in the free-slot allocator — two simultaneous \
-                allocs return the SAME slot_id (memory aliasing / data corruption). \
-                Root cause: find_free_slot has TWO unsynchronized free-set \
-                mechanisms — the Treiber free-stack (pop does not mark the slot \
-                allocated) and a linear flags-CAS scan (claims without removing \
-                from the stack). A slot can be claimed by both, and a double-push \
-                on release forms a next_free cycle (leak/livelock). Reproduced on \
-                the reconciled base, NOT introduced this session; tensor_pool.rs \
-                untouched. Fix is structure-level + must clear a loom gate (see \
-                insight) — do NOT un-ignore until then."]
     fn test_concurrent_alloc_release_interleaved_threads() {
         // Multiple threads each allocate and release in rapid succession,
         // verifying that all slots are properly freed afterward.
