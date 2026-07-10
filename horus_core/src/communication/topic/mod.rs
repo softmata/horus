@@ -1280,8 +1280,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             (BackendStorage::MpscIntra(_), BackendMode::MpscIntra) => true,
             (BackendStorage::FanoutIntra(_), BackendMode::FanoutIntra) => true,
             (BackendStorage::FanoutShm(_), BackendMode::FanoutShm) => true,
+            // FanoutShm has its OWN storage variant (a separate ShmFanoutRing),
+            // so it is NOT represented by the shared `ShmData` variant. Excluding
+            // it here forces `initialize_backend` to call `init_shm_backend`,
+            // which actually creates the fanout ring. Without this exclusion a
+            // topic already on a ShmData backend (e.g. SpscShm) that migrates to
+            // FanoutShm would keep its ShmData storage while the dispatch fn ptr
+            // expects FanoutShm — hitting the `expected FanoutShm variant`
+            // debug_unreachable in send/recv.
             (BackendStorage::ShmData, _)
-                if mode.is_cross_process() || mode == BackendMode::Unknown =>
+                if (mode.is_cross_process() && mode != BackendMode::FanoutShm)
+                    || mode == BackendMode::Unknown =>
             {
                 true
             }
