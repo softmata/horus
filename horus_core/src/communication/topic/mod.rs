@@ -1150,6 +1150,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             self.initialize_backend();
             registry::notify_epoch_change(&self.name, stable_epoch);
+            self.process_epoch.fetch_max(stable_epoch, Ordering::Release);
         }
 
         let migrator = BackendMigrator::new(header);
@@ -1162,6 +1163,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         // Notify all same-process Topics of the epoch change
                         registry::notify_epoch_change(&self.name, new_epoch);
+                        self.process_epoch.fetch_max(new_epoch, Ordering::Release);
                         break;
                     }
                     MigrationResult::AlreadyInProgress | MigrationResult::LockContention => {
@@ -1182,6 +1184,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                             local.cached_epoch = new_epoch;
                             Self::sync_local(local, header, true);
                             registry::notify_epoch_change(&self.name, new_epoch);
+                            self.process_epoch.fetch_max(new_epoch, Ordering::Release);
                         }
                         if migrator.is_optimal() {
                             break;
@@ -2109,6 +2112,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Re-read actual epoch from SHM (_hint_epoch may be from process_epoch)
         let actual_epoch = header.migration_epoch.load(Ordering::Acquire);
         local.cached_epoch = actual_epoch;
+        // Sync the process-local epoch hint UP to the authoritative SHM epoch.
+        // The epoch guards compare `process_epoch` against `cached_epoch`, but
+        // `notify_epoch_change` only best-effort updates `process_epoch` (a
+        // non-blocking try_lock that SKIPS on contention), so it can lag the SHM
+        // `migration_epoch`. If a consumer's `process_epoch` lags, its guard stops
+        // firing and it never re-syncs to a producer's migration — reading a stale
+        // backend and dropping ALL messages (observed: multi-producer -> 1-consumer
+        // delivering 0). fetch_max never regresses a concurrent migrator's higher
+        // value, preserving `process_epoch <= migration_epoch`.
+        self.process_epoch.fetch_max(actual_epoch, Ordering::Release);
         Self::sync_local(local, header, true);
 
         // If slot_size grew (auto-grow from another process), grow our mmap to match.
@@ -2151,6 +2164,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         local.local_tail = header_post.tail.load(Ordering::Acquire);
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);
+        self.process_epoch.fetch_max(actual_epoch, Ordering::Release);
     }
 
     /// Get the topic name
@@ -2488,6 +2502,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             self.local().cached_epoch = new_epoch;
             self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
             registry::notify_epoch_change(&self.name, new_epoch);
+            self.process_epoch.fetch_max(new_epoch, Ordering::Release);
         }
         result
     }

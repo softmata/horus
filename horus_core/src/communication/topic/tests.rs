@@ -7758,7 +7758,7 @@ fn send_blocking_error_display() {
 /// Producer thread panics mid-send — consumer should not deadlock and
 /// should get None (no message) rather than corrupted data.
 #[test]
-#[ignore = "delivery: same-thread pre-migration sends (1,2) are not received after the 2nd producer registers and migrates the shared ring — a message-preservation-across-migration gap. The prior HANG is fixed (recv overshoot); this residual is a separate convergence-delivery issue."]
+#[ignore = "narrow residual: same-thread pre-migration sends (1,2) are lost across the migration drain when a 2nd (cross-thread) producer registers. Distinct from the HANG (fixed: recv overshoot) and the multi-producer delivery race (fixed: reliable process_epoch propagation). A clone+drain preservation edge tracked in softmata-brain insight 1327."]
 fn crash_producer_panic_consumer_not_stuck() {
     let name = unique("crash_prod");
     let topic_consumer: Topic<u64> = Topic::new(&name).unwrap();
@@ -7874,7 +7874,6 @@ fn crash_rapid_create_drop_no_leak() {
 
 /// Multiple producers, one crashes — other producers and consumer unaffected.
 #[test]
-#[ignore = "pollution: passes in isolation, fails only in the full suite (shared SHM/registry state from prior tests). The prior HANG is fixed (recv overshoot). Remaining is the separate cross-test pollution issue."]
 fn crash_one_producer_others_unaffected() {
     let name = unique("crash_multi_prod");
     let consumer: Topic<u64> = Topic::new(&name).unwrap();
