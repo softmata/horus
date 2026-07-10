@@ -25,7 +25,7 @@ use horus_core::types::{Device, TensorDtype};
 /// on the next cycle.
 #[test]
 fn test_tensor_pool_alloc_returns_error_when_full() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Create a very small pool: 4 slots, 64KB total data
     let config = TensorPoolConfig {
@@ -87,7 +87,7 @@ fn test_tensor_pool_alloc_returns_error_when_full() {
 /// planner to generate dangerous trajectories.
 #[test]
 fn test_ring_buffer_overflow_no_corruption() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = common::unique("exhaust.ring.overflow");
     let topic = Topic::<u64>::new(&name).expect("create topic");
@@ -162,7 +162,7 @@ fn test_ring_buffer_overflow_no_corruption() {
 /// of messages overflows the ring, the controller must not act on old data.
 #[test]
 fn test_ring_buffer_read_latest_after_overflow() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = common::unique("exhaust.ring.latest");
     // u64 is Copy, so read_latest works

@@ -30,7 +30,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 macro_rules! serial_setup {
     () => {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        cleanup_stale_shm();
+        let _shm_guard = cleanup_stale_shm();
     };
 }
 

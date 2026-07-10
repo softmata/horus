@@ -77,7 +77,7 @@ impl Node for HeavyAllocNode {
 
 #[test]
 fn test_50_mixed_nodes_all_classes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let total_ticks = Arc::new(AtomicU64::new(0));
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
@@ -154,7 +154,7 @@ fn test_50_mixed_nodes_all_classes() {
 
 #[test]
 fn test_rapid_start_stop_10_cycles() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let start = std::time::Instant::now();
 
@@ -192,7 +192,7 @@ fn test_rapid_start_stop_10_cycles() {
 
 #[test]
 fn test_simultaneous_panics_with_ignore_policy() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let healthy_ticks = Arc::new(AtomicU64::new(0));
     let panic_ticks = Arc::new(AtomicU64::new(0));
@@ -243,7 +243,7 @@ fn test_simultaneous_panics_with_ignore_policy() {
 
 #[test]
 fn test_memory_pressure_large_allocs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let mut sched = Scheduler::new().tick_rate(50_u64.hz());
@@ -274,7 +274,7 @@ fn test_memory_pressure_large_allocs() {
 
 #[test]
 fn test_mixed_failure_policies() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let healthy_ticks = Arc::new(AtomicU64::new(0));
 
@@ -330,7 +330,7 @@ fn test_mixed_failure_policies() {
 
 #[test]
 fn test_deterministic_consistent_ordering() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Track tick ORDER across 3 nodes via global sequence counter
     let global_seq = Arc::new(AtomicU64::new(0));
@@ -420,7 +420,7 @@ fn test_deterministic_consistent_ordering() {
 
 #[test]
 fn test_best_effort_not_starved_by_10_rt() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let be_ticks = Arc::new(AtomicU64::new(0));
     let rt_total = Arc::new(AtomicU64::new(0));
@@ -470,7 +470,7 @@ fn test_best_effort_not_starved_by_10_rt() {
 
 #[test]
 fn test_stale_topic_data_between_cycles() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     use horus_core::communication::Topic;
 

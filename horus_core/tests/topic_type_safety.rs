@@ -20,7 +20,7 @@ fn unique_topic(suffix: &str) -> String {
 /// The second open should fail with "Type size mismatch".
 #[test]
 fn test_pod_type_size_mismatch_detected() {
-    common::cleanup_stale_shm();
+    let _shm_guard = common::cleanup_stale_shm();
 
     let name = unique_topic("mismatch");
 
@@ -46,7 +46,7 @@ fn test_pod_type_size_mismatch_detected() {
 /// same name and verify recv works.
 #[test]
 fn test_same_pod_type_reopens() {
-    common::cleanup_stale_shm();
+    let _shm_guard = common::cleanup_stale_shm();
 
     let name = unique_topic("same_type");
 
@@ -68,7 +68,7 @@ fn test_same_pod_type_reopens() {
 /// the type size check is skipped and both opens should succeed.
 #[test]
 fn test_non_pod_skips_size_check() {
-    common::cleanup_stale_shm();
+    let _shm_guard = common::cleanup_stale_shm();
 
     let name = unique_topic("non_pod");
 

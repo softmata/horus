@@ -212,7 +212,7 @@ fn ipc_pod_integrity_5000_msgs() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("ipc_imu");
     let count = 5000u64;
 
@@ -342,7 +342,7 @@ fn ipc_late_joiner_misses_early_messages() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("ipc_late");
     let total_msgs = 3000u64;
 
@@ -442,7 +442,7 @@ fn ipc_fanout_1pub_4sub_processes() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("ipc_fanout");
     let count = 2000u64;
 
@@ -572,7 +572,7 @@ fn ipc_bidirectional_both_send_and_recv() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("ipc_bidir");
     let count = 1000u64;
 
@@ -658,7 +658,7 @@ fn ipc_rapid_process_churn() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("ipc_churn");
 
     // Parent creates the topic
@@ -824,7 +824,7 @@ fn ipc_serde_pointcloud_cross_process() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("ipc_pointcloud");
     let count = 500u64;
 

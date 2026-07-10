@@ -31,7 +31,7 @@ use common::cleanup_stale_shm;
 /// perfectly functional node, leading to data loss.
 #[test]
 fn test_safety_monitor_intent_healthy_nodes_remain_healthy() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_count_a = Arc::new(AtomicU64::new(0));
     let tick_count_b = Arc::new(AtomicU64::new(0));
@@ -125,7 +125,7 @@ fn test_safety_monitor_intent_healthy_nodes_remain_healthy() {
 /// silently produce garbage outputs that could damage hardware.
 #[test]
 fn test_safety_monitor_intent_error_node_degrades() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let good_count = Arc::new(AtomicU64::new(0));
 
@@ -198,7 +198,7 @@ fn test_safety_monitor_intent_error_node_degrades() {
 /// complete cleanly and have accessible profile/safety data after shutdown.
 #[test]
 fn test_safety_monitor_intent_timing_report_on_shutdown() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct SimpleNode {
         name: &'static str,
@@ -267,7 +267,7 @@ fn test_safety_monitor_intent_timing_report_on_shutdown() {
 /// stayed within their worst-case execution time.
 #[test]
 fn test_safety_monitor_intent_budget_tracking() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_count = Arc::new(AtomicU64::new(0));
 

@@ -70,7 +70,7 @@ impl Node for TopicPublisher {
 
 #[test]
 fn test_topic_send_triggers_event_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("evt_send_trigger");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -116,7 +116,7 @@ fn test_topic_send_triggers_event_node() {
 
 #[test]
 fn test_event_no_tick_without_topic_send() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("evt_no_send");
     let event_ticks = Arc::new(AtomicU64::new(0));

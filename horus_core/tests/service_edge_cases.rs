@@ -108,7 +108,7 @@ fn test_service_error_display_messages() {
 
 #[test]
 fn test_client_timeout_no_server() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Create client — NO server is started for EdgeTimeout
     let mut client = ServiceClient::<EdgeTimeout>::new().unwrap();
@@ -143,7 +143,7 @@ fn test_client_timeout_no_server() {
 
 #[test]
 fn test_async_client_check_returns_none_without_server() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // AsyncServiceClient::check() should return Ok(None) when no response
     // has arrived yet. With no server running, check() will keep returning
@@ -203,7 +203,7 @@ fn test_async_client_check_returns_none_without_server() {
 
 #[test]
 fn test_async_client_pending_expires_after_timeout() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // No server started — the pending call will never get a response
     let mut client = AsyncServiceClient::<EdgeAsyncExp>::new().unwrap();
@@ -285,7 +285,7 @@ fn test_response_ok_true_but_no_payload() {
 
 #[test]
 fn test_two_clients_responses_isolated() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Server doubles the input
     let _server = ServiceServerBuilder::<EdgeIsoA>::new()
@@ -375,7 +375,7 @@ fn test_two_clients_responses_isolated() {
 
 #[test]
 fn test_two_clients_concurrent_isolation() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<EdgeIsoB>::new()
         .on_request(|req| {

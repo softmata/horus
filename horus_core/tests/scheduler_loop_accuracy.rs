@@ -36,7 +36,7 @@ fn pid() -> u32 {
 
 #[test]
 fn test_run_for_exits_within_tolerance() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let ticks = Arc::new(AtomicU64::new(0));
     let node = TickCounter {
         name: format!("rf_{}", pid()),
@@ -69,7 +69,7 @@ fn test_run_for_exits_within_tolerance() {
 
 #[test]
 fn test_priority_ordering_preserved() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let first_ticks = Arc::new(AtomicU64::new(0));
     let second_ticks = Arc::new(AtomicU64::new(0));
     let third_ticks = Arc::new(AtomicU64::new(0));
@@ -117,7 +117,7 @@ fn test_priority_ordering_preserved() {
 
 #[test]
 fn test_set_node_rate() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let ticks = Arc::new(AtomicU64::new(0));
     let node = TickCounter {
         name: format!("setrate_{}", pid()),
@@ -147,7 +147,7 @@ fn test_set_node_rate() {
 
 #[test]
 fn test_empty_scheduler_run_for_exits() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
     let start = Instant::now();
     sched.run_for(Duration::from_millis(100)).unwrap();

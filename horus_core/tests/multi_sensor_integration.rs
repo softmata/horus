@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 /// incorrect commands and the robot crashes.
 #[test]
 fn test_5_sensors_concurrent_no_crosstalk() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Each sensor publishes its own ID as the u64 value.
     // After 50 ticks, each subscriber must have received ONLY its sensor's ID.
@@ -146,7 +146,7 @@ fn test_5_sensors_concurrent_no_crosstalk() {
 /// 4x more than a 50Hz node over the same time window.
 #[test]
 fn test_multi_rate_proportional_ticks() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let fast_ticks = Arc::new(AtomicU64::new(0));
     let medium_ticks = Arc::new(AtomicU64::new(0));
@@ -254,7 +254,7 @@ fn test_multi_rate_proportional_ticks() {
 /// the SLAM algorithm produces a corrupted map.
 #[test]
 fn test_sensor_timestamps_monotonic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     const NODE_COUNT: usize = 3;
     const TICK_COUNT: usize = 100;

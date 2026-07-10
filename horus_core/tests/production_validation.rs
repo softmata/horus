@@ -119,7 +119,7 @@ impl Node for SoakActuatorNode {
 #[test]
 #[ignore]
 fn soak_30s_no_leaks_no_drift() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("soak_imu");
     let cmd_topic = unique("soak_cmd");
@@ -251,7 +251,7 @@ impl Node for JitterProbeNode {
 #[test]
 #[ignore]
 fn jitter_histogram_100hz_under_load() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let target_hz = 100u64;
     let target_period_us = 1_000_000 / target_hz; // 10,000 μs
@@ -404,7 +404,7 @@ fn crash_recovery_kill9_and_reconnect() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("crash_topic");
 
     // Parent opens topic as consumer
@@ -562,7 +562,7 @@ fn scale_10_processes_3pub_7sub() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("scale_topic");
     let msgs_per_pub = 500u64;
     let exe = std::env::current_exe().unwrap();
@@ -776,7 +776,7 @@ impl Node for PipelineActuatorNode {
 #[test]
 #[ignore]
 fn robot_pipeline_sensor_process_actuate_10s() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let imu_topic = unique("pipe_imu");
     let cmd_topic = unique("pipe_cmd");
@@ -957,7 +957,7 @@ fn run_deterministic_session(n_ticks: usize) -> (Vec<u64>, Vec<u64>) {
 #[test]
 #[ignore]
 fn determinism_proof_identical_runs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let n_ticks = 1000;
     println!("Running deterministic session 1 ({} ticks)...", n_ticks);
@@ -965,7 +965,7 @@ fn determinism_proof_identical_runs() {
 
     // Small delay between runs to ensure independent SHM state
     std::thread::sleep(Duration::from_millis(100));
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     println!("Running deterministic session 2 ({} ticks)...", n_ticks);
     let (sent2, recv2) = run_deterministic_session(n_ticks);

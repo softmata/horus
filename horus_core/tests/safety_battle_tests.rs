@@ -154,7 +154,7 @@ impl Node for OscillatingNode {
 /// degradation accumulates enough misses to issue Kill.
 #[test]
 fn test_budget_enforce_preempts_degradation_pipeline() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let mut scheduler = Scheduler::new()
@@ -198,7 +198,7 @@ fn test_budget_enforce_preempts_degradation_pipeline() {
 /// Warn→ReduceRate→Isolate→Kill pipeline after enough consecutive misses.
 #[test]
 fn test_degradation_kills_deadline_only_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let mut scheduler = Scheduler::new()
@@ -247,7 +247,7 @@ fn test_degradation_kills_deadline_only_node() {
 /// - TimingEnforcer detects deadline miss → recorded in safety monitor
 #[test]
 fn test_budget_and_deadline_both_active() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let mut scheduler = Scheduler::new()
@@ -302,7 +302,7 @@ fn test_budget_and_deadline_both_active() {
 /// Node B triggers BudgetPolicy::EmergencyStop. Scheduler must halt.
 #[test]
 fn test_estop_from_budget_while_sibling_degraded() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_count = Arc::new(AtomicU64::new(0));
     let bomb_count = Arc::new(AtomicU64::new(0));
@@ -359,7 +359,7 @@ fn test_estop_from_budget_while_sibling_degraded() {
 /// All must stop.
 #[test]
 fn test_all_degradation_stages_halt_on_estop() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -440,7 +440,7 @@ fn test_all_degradation_stages_halt_on_estop() {
 /// without panic, deadlock, or interference between enforcement actions."
 #[test]
 fn test_10_simultaneous_budget_violations() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..10).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -483,7 +483,7 @@ fn test_10_simultaneous_budget_violations() {
 /// scheduler survives with 0 live nodes and shuts down cleanly."
 #[test]
 fn test_20_sequential_degradation_kills() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..20).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -547,7 +547,7 @@ fn test_20_sequential_degradation_kills() {
 /// killed nodes don't drag healthy ones down."
 #[test]
 fn test_cascade_kill_healthy_survivors() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let healthy_counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
@@ -626,7 +626,7 @@ fn test_cascade_kill_healthy_survivors() {
 /// proving independent degradation state machines per-node."
 #[test]
 fn test_staggered_stall_different_kill_times() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_points = [1u64, 10, 20, 30, 40];
     let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
@@ -677,7 +677,7 @@ fn test_50_rapid_kill_cycles() {
     let start = std::time::Instant::now();
 
     for cycle in 0..50 {
-        cleanup_stale_shm();
+        let _shm_guard = cleanup_stale_shm();
         let count = Arc::new(AtomicU64::new(0));
         let mut scheduler = Scheduler::new()
             .tick_rate(100_u64.hz())
@@ -719,7 +719,7 @@ fn test_50_rapid_kill_cycles() {
 /// INTENT: "Scheduler with ALL nodes killed still shuts down cleanly."
 #[test]
 fn test_scheduler_survives_all_nodes_killed() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -758,7 +758,7 @@ fn test_scheduler_survives_all_nodes_killed() {
 /// The is_stopped guard at execute_single_node() line 2832 must hold."
 #[test]
 fn test_killed_node_tick_never_called_again() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let killed_at = Arc::new(AtomicU64::new(0));
@@ -799,7 +799,7 @@ fn test_killed_node_tick_never_called_again() {
 /// stable degradation state without infinite thrashing."
 #[test]
 fn test_oscillating_node_degradation_stability() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
 
@@ -844,7 +844,7 @@ fn test_oscillating_node_degradation_stability() {
 /// Zero budget, 1ns budget, and very large budget all handled gracefully."
 #[test]
 fn test_extreme_budget_values_no_panic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -930,7 +930,7 @@ fn test_extreme_budget_values_no_panic() {
 /// and another that sleeps well over 2x to prove it IS stopped.
 #[test]
 fn test_budget_enforce_threshold_is_strict_greater_than() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let over_count = Arc::new(AtomicU64::new(0));
     let under_count = Arc::new(AtomicU64::new(0));

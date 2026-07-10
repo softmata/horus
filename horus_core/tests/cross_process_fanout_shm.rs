@@ -143,7 +143,7 @@ fn cross_process_fanout_2p1s() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_fanout_2p1s");
 
     // Parent: create topic as subscriber first
@@ -225,7 +225,7 @@ fn cross_process_fanout_1p2s() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_fanout_1p2s");
 
     // Spawn 2 child subscribers first
@@ -287,7 +287,7 @@ fn cross_process_fanout_2p2s() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_fanout_2p2s");
 
     // Spawn 2 subscriber children first

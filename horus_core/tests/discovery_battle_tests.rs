@@ -67,7 +67,7 @@ fn parse_child_u64(stdout: &str, prefix: &str) -> u64 {
 /// Test: Two threads publishing to the same topic → pub_count == 2.
 #[test]
 fn two_publishers_same_topic_count_is_two() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic1: Topic<Imu> = Topic::new("pubcount_test").expect("create topic");
     topic1.send(Imu::default());
@@ -96,7 +96,7 @@ fn two_publishers_same_topic_count_is_two() {
 /// Test: One publisher + one subscriber → pub_count=1, sub_count=1.
 #[test]
 fn publisher_and_subscriber_both_counted() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pub_topic: Topic<Imu> = Topic::new("pubsub_count_test").expect("create pub topic");
     pub_topic.send(Imu::default());
@@ -117,7 +117,7 @@ fn publisher_and_subscriber_both_counted() {
 /// Test: Cross-process pub count — Python publisher + Rust publisher on same topic.
 #[test]
 fn cross_process_pub_count() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python child: creates a Topic and publishes for 3s
     let child = spawn_python_child(
@@ -169,7 +169,7 @@ print(f"CHILD_SENT:{sent}")
 /// Rust parent publishing in the default namespace.
 #[test]
 fn different_namespaces_no_cross_talk() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python child: set HORUS_NAMESPACE to an isolated namespace, try to recv
     let child = spawn_python_child(
@@ -219,7 +219,7 @@ print(f"CHILD_RECEIVED:{received}")
 /// Test: Two processes with the SAME HORUS_NAMESPACE CAN see each other's topics.
 #[test]
 fn same_namespace_sees_messages() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let shared_ns = format!("ns_shared_test_{}", std::process::id());
 

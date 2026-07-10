@@ -32,7 +32,7 @@ use common::cleanup_stale_shm;
 /// means a safety-critical node could see stale data.
 #[test]
 fn test_scheduler_intent_deterministic_tick_ordering() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_sequence = Arc::new(Mutex::new(Vec::<String>::new()));
 
@@ -121,7 +121,7 @@ fn test_scheduler_intent_deterministic_tick_ordering() {
 /// declared rate within reasonable tolerance.
 #[test]
 fn test_scheduler_intent_rate_respected() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_count = Arc::new(AtomicU64::new(0));
 
@@ -177,7 +177,7 @@ fn test_scheduler_intent_rate_respected() {
 /// called, resources leak and hardware may be left in an unsafe state.
 #[test]
 fn test_scheduler_intent_shutdown_called_on_stop() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct ShutdownTracker {
         name: String,
@@ -258,7 +258,7 @@ fn test_scheduler_intent_shutdown_called_on_stop() {
 /// does not flow, the entire system is broken.
 #[test]
 fn test_scheduler_intent_node_data_flows_between_ticks() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = common::unique("intent.dataflow");
     let received_values = Arc::new(Mutex::new(Vec::<u64>::new()));

@@ -66,7 +66,7 @@ impl Node for ImageConsumer {
 
 #[test]
 fn test_image_topic_auto_registers_in_registry() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let cam_count = Arc::new(AtomicU64::new(0));
     let consumer_count = Arc::new(AtomicU64::new(0));

@@ -42,7 +42,7 @@ impl Node for StaleTestNode {
 
 #[test]
 fn test_freshness_warn_does_not_stop_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let safe = Arc::new(AtomicBool::new(false));
@@ -81,7 +81,7 @@ fn test_freshness_warn_does_not_stop_node() {
 
 #[test]
 fn test_freshness_safe_state_triggers() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let safe = Arc::new(AtomicBool::new(false));
@@ -112,7 +112,7 @@ fn test_freshness_safe_state_triggers() {
 
 #[test]
 fn test_freshness_stop_kills_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let safe = Arc::new(AtomicBool::new(false));
@@ -248,7 +248,7 @@ fn test_log_file_drain_writes_to_disk() {
 
 #[test]
 fn test_scheduler_with_params_compiles_and_runs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let params = horus_core::params::RuntimeParams::new().unwrap();
 

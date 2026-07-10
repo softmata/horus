@@ -128,7 +128,7 @@ impl Node for MotorDriverNode {
 #[test]
 #[ignore]
 fn story_imu_to_controller_to_motor() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let imu_topic = unique("imu.data");
     let cmd_topic = unique("cmd_vel");
 
@@ -257,7 +257,7 @@ impl Node for CountingRecvNode {
 #[test]
 #[ignore]
 fn story_two_schedulers_shared_topic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let imu_topic = unique("shared.imu");
 
     let published = Arc::new(AtomicU64::new(0));
@@ -386,7 +386,7 @@ impl Node for OrderTrackerNode {
 #[test]
 #[ignore]
 fn story_execution_order_respected() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -488,7 +488,7 @@ impl Node for HealthyNode {
 #[test]
 #[ignore]
 fn story_budget_violation_degrades_not_crashes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let healthy_ticks = Arc::new(AtomicU64::new(0));
     let hc = healthy_ticks.clone();
@@ -628,10 +628,10 @@ fn run_deterministic_cmdvel(n_ticks: usize) -> Vec<(f32, f32)> {
 #[test]
 #[ignore]
 fn story_deterministic_mode_with_real_cmdvel() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let run1 = run_deterministic_cmdvel(500);
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let run2 = run_deterministic_cmdvel(500);
 
     println!("=== STORY: Deterministic CmdVel ===");
@@ -671,7 +671,7 @@ impl Node for PanickingNode {
 #[test]
 #[ignore]
 fn story_node_panic_doesnt_kill_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let healthy_ticks = Arc::new(AtomicU64::new(0));
     let hc = healthy_ticks.clone();
@@ -748,7 +748,7 @@ impl Node for BestEffortLoggerNode {
 #[test]
 #[ignore]
 fn story_mixed_execution_classes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let rt_ticks = Arc::new(AtomicU64::new(0));
     let compute_ticks = Arc::new(AtomicU64::new(0));

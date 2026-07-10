@@ -54,7 +54,7 @@ impl Node for EventPanicNode {
 
 #[test]
 fn test_event_burst_notifications() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -107,7 +107,7 @@ fn test_event_burst_notifications() {
 
 #[test]
 fn test_event_paused_node_no_tick() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -132,7 +132,7 @@ fn test_event_paused_node_no_tick() {
 
 #[test]
 fn test_event_fatal_policy_stops_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -178,7 +178,7 @@ fn test_event_fatal_policy_stops_scheduler() {
 
 #[test]
 fn test_event_restart_recovery() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();

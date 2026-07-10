@@ -269,7 +269,7 @@ impl Node for SafetyMonitor {
 
 #[test]
 fn test_10_node_robot_runs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<Arc<AtomicU64>> = (0..10).map(|_| Arc::new(AtomicU64::new(0))).collect();
 

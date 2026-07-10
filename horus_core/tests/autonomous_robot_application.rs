@@ -876,7 +876,7 @@ fn cleanup_test_topics() {
 
 #[test]
 fn test_autonomous_robot_complete_system() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     cleanup_test_topics();
 
     // Generic wrapper to count node ticks
@@ -1059,7 +1059,7 @@ fn test_autonomous_robot_complete_system() {
 
 #[test]
 fn test_robot_performance_metrics() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Clean up any stale shared memory from previous tests

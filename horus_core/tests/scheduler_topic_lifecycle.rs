@@ -132,7 +132,7 @@ impl Node for ActuatorNode {
 
 #[test]
 fn test_full_pipeline_lifecycle() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("lc_sensor");
     let cmd_topic = unique("lc_cmd");
@@ -198,7 +198,7 @@ fn test_full_pipeline_lifecycle() {
 
 #[test]
 fn test_topic_survives_full_lifecycle() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("lc_survive");
     let ticks = Arc::new(AtomicU64::new(0));

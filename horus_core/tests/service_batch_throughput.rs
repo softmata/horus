@@ -18,7 +18,7 @@ service! { BatchAdd { request { a: i64, b: i64 } response { sum: i64 } } }
 
 #[test]
 fn test_batch_drain_processes_multiple_requests_per_cycle() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<BatchAdd>::new()
         .on_request(|req| Ok(BatchAddResponse { sum: req.a + req.b }))

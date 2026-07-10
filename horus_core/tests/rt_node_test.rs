@@ -148,7 +148,7 @@ impl Node for LoggingNode {
 
 #[test]
 fn test_rt_node_basic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let motor = MotorControlNode::new("motor_ctrl");
@@ -180,7 +180,7 @@ fn test_rt_node_basic() {
 
 #[test]
 fn test_rt_node_priority_ordering() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let motor = Arc::new(AtomicU64::new(0));
     let sensor = Arc::new(AtomicU64::new(0));
     let logger = Arc::new(AtomicU64::new(0));
@@ -229,7 +229,7 @@ fn test_rt_node_priority_ordering() {
 
 #[test]
 fn test_rt_node_with_safety_critical_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
     let motor = MotorControlNode::new("critical_motor");

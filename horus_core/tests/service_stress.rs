@@ -28,7 +28,7 @@ service! { StressId { request { v: u64 } response { r: u64 } } }
 
 #[test]
 fn test_8_concurrent_clients() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<StressAdd>::new()
         .on_request(|req| Ok(StressAddResponse { sum: req.a + req.b }))
@@ -135,7 +135,7 @@ fn test_request_id_uniqueness_8_threads() {
 
 #[test]
 fn test_rapid_fire_200_calls() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<StressRapid>::new()
         .on_request(|req| Ok(StressRapidResponse { echo: req.seq }))
@@ -179,7 +179,7 @@ fn test_rapid_fire_200_calls() {
 
 #[test]
 fn test_slow_handler_other_clients_succeed() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Server handler takes 100ms per request
     let _server = ServiceServerBuilder::<StressSlow>::new()
@@ -241,7 +241,7 @@ service! { StressAsync { request { seq: u64 } response { echo: u64 } } }
 
 #[test]
 fn test_async_10_concurrent_pending() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<StressAsync>::new()
         .on_request(|req| Ok(StressAsyncResponse { echo: req.seq }))
@@ -282,7 +282,7 @@ fn test_async_10_concurrent_pending() {
 
 #[test]
 fn test_20_clients_resource_bounded() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<StressRapid>::new()
         .on_request(|req| Ok(StressRapidResponse { echo: req.seq }))
@@ -320,7 +320,7 @@ service! { StressRetry { request { attempt: u64 } response { ok: bool } } }
 
 #[test]
 fn test_call_resilient_retries() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let call_count = Arc::new(AtomicU64::new(0));
     let cc = call_count.clone();

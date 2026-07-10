@@ -79,7 +79,7 @@ fn test_node_state_transitions() {
 
 #[test]
 fn test_node_state_transitions_via_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (node, transitions) = LifecycleTracker::new("sched_lifecycle");
 
@@ -156,7 +156,7 @@ impl Node for ErrorTriggerNode {
 
 #[test]
 fn test_node_error_triggers_on_error() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Panic after 3 successful ticks (on tick index 3).
     let (node, tick_count, errors) = ErrorTriggerNode::new("err_node", 3);
@@ -265,7 +265,7 @@ fn test_node_safe_state_entered() {
 
 #[test]
 fn test_node_safe_state_with_stall_and_watchdog() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // A node that stalls (long sleep) to trigger the watchdog.
     struct StallNode {

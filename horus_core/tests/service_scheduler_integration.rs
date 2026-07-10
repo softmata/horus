@@ -87,7 +87,7 @@ impl Node for CounterNode {
 
 #[test]
 fn service_server_node_initializes_in_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let handled = Arc::new(AtomicU64::new(0));
 
@@ -111,7 +111,7 @@ fn service_server_node_initializes_in_scheduler() {
 
 #[test]
 fn service_server_runs_alongside_other_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let handled = Arc::new(AtomicU64::new(0));
     let counter_ticks = Arc::new(AtomicU64::new(0));
@@ -147,7 +147,7 @@ fn service_server_runs_alongside_other_nodes() {
 
 #[test]
 fn service_call_from_separate_thread_during_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let handled = Arc::new(AtomicU64::new(0));
     let handled_clone = handled.clone();
@@ -183,7 +183,7 @@ fn service_call_from_separate_thread_during_scheduler() {
 
 #[test]
 fn service_server_with_watchdog() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let handled = Arc::new(AtomicU64::new(0));
 
@@ -259,7 +259,7 @@ impl Node for ServiceCallerNode {
 
 #[test]
 fn test_node_calls_service_from_tick() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Start standalone service server
     let _server = ServiceServerBuilder::<SchedAdd>::new()
@@ -352,7 +352,7 @@ impl Node for EchoCallerNode {
 
 #[test]
 fn test_two_nodes_call_same_service_per_client_routing() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<SchedEcho2>::new()
         .on_request(|req| Ok(SchedEcho2Response { echo: req.val }))
@@ -417,7 +417,7 @@ fn test_two_nodes_call_same_service_per_client_routing() {
 
 #[test]
 fn test_service_call_from_compute_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<SchedAdd>::new()
         .on_request(|req| Ok(SchedAddResponse { sum: req.a + req.b }))
@@ -506,7 +506,7 @@ impl Node for ErrorCheckNode {
 
 #[test]
 fn test_service_error_in_scheduled_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // NOTE: No server started — client should get timeout/error
     let got_error = Arc::new(AtomicBool::new(false));

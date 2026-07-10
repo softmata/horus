@@ -63,7 +63,7 @@ fn counter(name: &str, sleep_us: u64) -> (CounterNode, Arc<AtomicU64>) {
 
 #[test]
 fn test_robot_matrix_4_configs_11_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let running = Arc::new(AtomicBool::new(true));
     let mut all_counts: Vec<(&str, Arc<AtomicU64>)> = Vec::new();
@@ -279,7 +279,7 @@ fn test_robot_matrix_4_configs_11_nodes() {
 
 #[test]
 fn test_concurrent_scheduler_shutdown_no_deadlock() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let running = Arc::new(AtomicBool::new(true));
     let mut threads = Vec::new();
@@ -323,7 +323,7 @@ fn test_concurrent_scheduler_shutdown_no_deadlock() {
 
 #[test]
 fn test_mixed_rt_and_besteffort_coexistence() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let rt_count = Arc::new(AtomicU64::new(0));
     let be_count = Arc::new(AtomicU64::new(0));
@@ -461,7 +461,7 @@ impl Node for ActuatorWithTopic {
 
 #[test]
 fn test_topic_auto_detection_in_registry() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_count = Arc::new(AtomicU64::new(0));
     let proc_count = Arc::new(AtomicU64::new(0));

@@ -101,7 +101,7 @@ impl Node for EventNode {
 
 #[test]
 fn test_50_nodes_startup_shutdown() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let counts: Vec<Arc<AtomicU64>> = (0..50).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new();
@@ -160,7 +160,7 @@ fn test_50_nodes_startup_shutdown() {
 
 #[test]
 fn test_50_rt_nodes_priority_order() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let counts: Vec<Arc<AtomicU64>> = (0..50).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new();
@@ -191,7 +191,7 @@ fn test_50_rt_nodes_priority_order() {
 
 #[test]
 fn test_sustained_high_rate_1_second() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new().tick_rate(200_u64.hz()); // 200Hz = 5ms period
@@ -217,7 +217,7 @@ fn test_sustained_high_rate_1_second() {
 
 #[test]
 fn test_cascading_failures_restart() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let counts: Vec<Arc<AtomicU64>> = (0..10).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new();
@@ -248,7 +248,7 @@ fn test_cascading_failures_restart() {
 
 #[test]
 fn test_cascading_failures_mixed_policies() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let fatal_count = Arc::new(AtomicU64::new(0));
     let restart_count = Arc::new(AtomicU64::new(0));
     let skip_count = Arc::new(AtomicU64::new(0));
@@ -311,7 +311,7 @@ fn test_cascading_failures_mixed_policies() {
 
 #[test]
 fn test_sustained_load_shedding() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let critical_counts: Vec<Arc<AtomicU64>> =
         (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let bg_counts: Vec<Arc<AtomicU64>> = (0..3).map(|_| Arc::new(AtomicU64::new(0))).collect();
@@ -357,7 +357,7 @@ fn test_sustained_load_shedding() {
 
 #[test]
 fn test_all_executors_simultaneously() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let rt_count = Arc::new(AtomicU64::new(0));
     let compute_count = Arc::new(AtomicU64::new(0));
     let async_count = Arc::new(AtomicU64::new(0));
@@ -443,7 +443,7 @@ fn test_all_executors_simultaneously() {
 fn test_rapid_start_stop_cycles() {
     // 20 rapid create/add/run/shutdown cycles to check for resource leaks
     for cycle in 0..20 {
-        cleanup_stale_shm();
+        let _shm_guard = cleanup_stale_shm();
         let count = Arc::new(AtomicU64::new(0));
 
         let mut scheduler = Scheduler::new();
@@ -463,7 +463,7 @@ fn test_rapid_start_stop_cycles() {
 
 #[test]
 fn test_burst_event_notifications() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -513,7 +513,7 @@ fn test_burst_event_notifications() {
 
 #[test]
 fn test_20_parallel_compute_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let counts: Vec<Arc<AtomicU64>> = (0..20).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new();

@@ -191,7 +191,7 @@ fn build_scenario(stall_after: u64) -> (Scheduler, ScenarioCounters) {
 /// continue accumulating ticks.
 #[test]
 fn test_safety_scenario_runaway_motor_killed() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Motor stalls starting at tick 3 — gives it a few healthy ticks
     // before the 100ms sleeps begin. With kill_after=20 (default),
@@ -281,7 +281,7 @@ fn test_safety_scenario_runaway_motor_killed() {
 /// were alive at the instant of kill.
 #[test]
 fn test_safety_scenario_healthy_nodes_survive_sibling_kill() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Motor stalls starting at tick 3
     let (mut scheduler, counters) = build_scenario(3);

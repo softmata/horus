@@ -90,7 +90,7 @@ impl Node for ImuSubNode {
 #[test]
 #[ignore]
 fn three_schedulers_1khz_100hz_10hz_shared_imu() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic = unique("ms_imu_3sched");
     let published = Arc::new(AtomicU64::new(0));
@@ -329,7 +329,7 @@ impl Node for SimMotorNode {
 #[test]
 #[ignore]
 fn bidirectional_cmdvel_imu_feedback_loop() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let imu_topic = unique("ms_bidir_imu");
     let cmd_topic = unique("ms_bidir_cmd");
@@ -439,7 +439,7 @@ fn bidirectional_cmdvel_imu_feedback_loop() {
 #[test]
 #[ignore]
 fn scheduler_stop_topics_survive() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic = unique("ms_stop_survive");
     let phase1_recv = Arc::new(AtomicU64::new(0));
@@ -600,7 +600,7 @@ impl Node for DetCmdVelPubNode {
 #[test]
 #[ignore]
 fn deterministic_alongside_normal_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic = unique("ms_det_normal");
     let normal_recv = Arc::new(AtomicU64::new(0));
@@ -660,7 +660,7 @@ fn deterministic_alongside_normal_scheduler() {
     let nr_count = normal_recv.load(Ordering::Relaxed);
 
     // Run 2: same deterministic config, verify identical output
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let log2 = Arc::new(std::sync::Mutex::new(Vec::new()));
     {
         let t = unique("ms_det_normal2"); // fresh topic

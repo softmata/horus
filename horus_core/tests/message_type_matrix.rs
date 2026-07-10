@@ -27,7 +27,7 @@ const TYPE_ENV: &str = "HORUS_MSGTYPE_TYPE";
 #[test]
 #[ignore]
 fn roundtrip_cmdvel() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("msg_cmdvel");
     let t: Topic<CmdVel> = Topic::new(&name).unwrap();
 
@@ -59,7 +59,7 @@ fn roundtrip_cmdvel() {
 #[test]
 #[ignore]
 fn roundtrip_imu() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("msg_imu");
     let t: Topic<Imu> = Topic::new(&name).unwrap();
 
@@ -131,7 +131,7 @@ fn roundtrip_imu() {
 #[test]
 #[ignore]
 fn roundtrip_jointstate() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("msg_joints");
     let t: Topic<JointState> = Topic::new(&name).unwrap();
 
@@ -198,7 +198,7 @@ fn roundtrip_jointstate() {
 #[test]
 #[ignore]
 fn roundtrip_laserscan() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("msg_lidar");
     let t: Topic<LaserScan> = Topic::new(&name).unwrap();
 
@@ -247,7 +247,7 @@ fn roundtrip_laserscan() {
 #[test]
 #[ignore]
 fn roundtrip_batterystate() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("msg_battery");
     let t: Topic<BatteryState> = Topic::new(&name).unwrap();
 
@@ -289,7 +289,7 @@ fn roundtrip_batterystate() {
 #[test]
 #[ignore]
 fn extreme_values_survive_transport() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("msg_extreme");
     let t: Topic<Imu> = Topic::new(&name).unwrap();
 
@@ -411,7 +411,7 @@ fn cross_process_imu() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("msg_xproc_imu");
 
     // Child starts first (consumer), then parent sends
@@ -469,7 +469,7 @@ fn cross_process_cmdvel() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("msg_xproc_cmdvel");
 
     let mut child = spawn_msg_child("cross_process_cmdvel", &topic, "cmdvel");
@@ -611,7 +611,7 @@ impl Node for MixedSubscriber {
 #[test]
 #[ignore]
 fn mixed_sensor_suite_simultaneous() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let imu_n = unique("mix_imu");
     let cmd_n = unique("mix_cmd");
     let bat_n = unique("mix_bat");

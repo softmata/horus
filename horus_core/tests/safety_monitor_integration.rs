@@ -53,7 +53,7 @@ impl Node for FastCounterNode {
 
 #[test]
 fn test_multiple_watchdogs_expire_simultaneously() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Watchdog auto-registers all RT nodes as critical
     let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
@@ -78,7 +78,7 @@ fn test_multiple_watchdogs_expire_simultaneously() {
 
 #[test]
 fn test_concurrent_budget_check_and_add_critical() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Watchdog auto-registers all RT nodes as critical
     let mut scheduler = Scheduler::new().watchdog(500_u64.ms());

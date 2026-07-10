@@ -353,7 +353,7 @@ fn xps_3_process_pipeline_with_schedulers() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("xps_pipeline");
     let dur = 3000u64; // 3 seconds
 
@@ -453,7 +453,7 @@ fn xps_6_process_broadcast_mixed_rates() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("xps_6proc");
     let dur = 3000u64;
 
@@ -728,7 +728,7 @@ fn xps_bidirectional_2_processes_with_schedulers() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("xps_bidir");
     let dur = 3000u64;
 

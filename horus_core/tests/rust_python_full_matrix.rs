@@ -163,7 +163,7 @@ fn full_matrix_3_rust_2_python_all_types() {
         println!("✓ SKIPPED (no horus python)");
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let _ = std::fs::remove_dir_all(result_dir());
     let _ = std::fs::create_dir_all(result_dir());
 

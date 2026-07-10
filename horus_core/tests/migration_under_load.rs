@@ -92,7 +92,7 @@ impl Node for SubNode {
 /// Assert: messages still flow after migration, no data loss.
 #[test]
 fn migration_third_handle_during_scheduler_run() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("mig_third_handle");
     let pub_count = Arc::new(AtomicU64::new(0));
@@ -160,7 +160,7 @@ fn migration_third_handle_during_scheduler_run() {
 /// migrate to SpscIntra or higher. Assert: messages flow despite migration.
 #[test]
 fn migration_compute_class_forces_cross_thread() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("mig_compute");
     let pub_count = Arc::new(AtomicU64::new(0));
@@ -216,7 +216,7 @@ fn migration_compute_class_forces_cross_thread() {
 /// Assert: no panic, no hang, counters show continuous operation.
 #[test]
 fn migration_under_1khz_load() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("mig_1khz");
     let pub_count = Arc::new(AtomicU64::new(0));
@@ -282,7 +282,7 @@ fn migration_under_1khz_load() {
 /// subscriber should see values from both pre- and post-migration.
 #[test]
 fn migration_preserves_data_continuity() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("mig_continuity");
     let latest_received = Arc::new(AtomicU64::new(0));

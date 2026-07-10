@@ -41,7 +41,7 @@ impl Node for B {
 }
 #[test]
 fn test_frame_can() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let c = Arc::new(AtomicU64::new(0));
     let tf = Arc::new(TransformFrame::medium());
     let _ = tf.register_frame("world", None);

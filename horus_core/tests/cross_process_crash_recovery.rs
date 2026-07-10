@@ -130,7 +130,7 @@ fn test_consumer_survives_producer_crash() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("crash_survive");
 
     // Start consumer first
@@ -183,7 +183,7 @@ fn test_topic_reusable_after_crash() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("crash_reuse");
 
     // First producer: sends 20 messages then crashes
@@ -216,7 +216,7 @@ fn test_parent_consumer_child_producer_crash() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("crash_parent_cons");
 
     // Parent creates topic as consumer
@@ -266,7 +266,7 @@ fn test_multi_producer_kill_one_others_continue() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("crash_multi_prod");
 
     // Parent is consumer
@@ -337,7 +337,7 @@ fn test_cross_process_high_volume_integrity() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("crash_hv_int");
 
     // Parent as consumer
@@ -396,7 +396,7 @@ fn test_crash_then_new_producer_clean_data() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("crash_then_new");
 
     // Phase 1: Crash producer sends 30 then crashes

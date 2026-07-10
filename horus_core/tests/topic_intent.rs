@@ -27,7 +27,7 @@ use common::cleanup_stale_shm;
 /// incorrect state estimation and dangerous control decisions.
 #[test]
 fn test_topic_intent_no_data_loss_under_normal_load() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = common::unique("intent.no_loss");
     let topic = Topic::<u64>::new(&name).expect("create topic");
@@ -101,7 +101,7 @@ fn test_topic_intent_no_data_loss_under_normal_load() {
 /// We test with u64 which is Copy.
 #[test]
 fn test_topic_intent_latest_value_always_available() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = common::unique("intent.latest");
     let topic = Topic::<u64>::new(&name).expect("create topic");
@@ -159,7 +159,7 @@ fn test_topic_intent_latest_value_always_available() {
 /// non-consuming reads suitable for fan-out patterns.
 #[test]
 fn test_topic_intent_multiple_subscribers_all_receive() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = common::unique("intent.multi_sub");
 
@@ -222,7 +222,7 @@ fn test_topic_intent_multiple_subscribers_all_receive() {
 /// independent data, and each topic only returns its own type.
 #[test]
 fn test_topic_intent_type_safety_enforced() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name_u64 = common::unique("intent.typed.u64");
     let name_string = common::unique("intent.typed.string");

@@ -35,7 +35,7 @@ use common::cleanup_stale_shm;
 /// The scheduler must exit run_for() cleanly and all nodes must be shut down.
 #[test]
 fn test_estop_stops_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let node_a_count = Arc::new(AtomicU64::new(0));
     let node_b_count = Arc::new(AtomicU64::new(0));
@@ -173,7 +173,7 @@ fn test_estop_stops_scheduler() {
 /// The stalling node ticks at most a few times before the e-stop fires.
 #[test]
 fn test_estop_flag_checked_by_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_count = Arc::new(AtomicU64::new(0));
     let observer_count = Arc::new(AtomicU64::new(0));

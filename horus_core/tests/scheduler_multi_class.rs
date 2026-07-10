@@ -63,7 +63,7 @@ impl Node for CounterNode {
 /// tick at least once. Event node is triggered mid-run via `notify_event`.
 #[test]
 fn test_all_execution_classes_coexist() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (be_node, be_count) = CounterNode::new("mc_besteffort");
     let (compute_node, compute_count) = CounterNode::new("mc_compute");
@@ -163,7 +163,7 @@ fn test_all_execution_classes_coexist() {
 /// but beta did NOT.
 #[test]
 fn test_tick_for_selective() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (alpha_node, alpha_count) = CounterNode::new("alpha");
     let (beta_node, beta_count) = CounterNode::new("beta");
@@ -210,7 +210,7 @@ fn test_tick_for_selective() {
 /// additional ticks.
 #[test]
 fn test_tick_once_all_vs_tick_for_filtered() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (alpha_node, alpha_count) = CounterNode::new("tf_alpha");
     let (beta_node, beta_count) = CounterNode::new("tf_beta");
@@ -280,7 +280,7 @@ fn test_tick_once_all_vs_tick_for_filtered() {
 /// (counter > 5). Assert run_for returns without hanging.
 #[test]
 fn test_scheduler_run_for_completes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (node, count) = CounterNode::new("runfor_node");
 

@@ -21,7 +21,7 @@ use common::{cleanup_stale_shm, unique};
 #[test]
 #[ignore]
 fn image_roundtrip_640x480() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("tp_image");
 
     let topic: Topic<Image> = Topic::new(&name).expect("create image topic");
@@ -110,7 +110,7 @@ fn image_roundtrip_640x480() {
 #[test]
 #[ignore]
 fn pointcloud_roundtrip_1000_points() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("tp_pointcloud");
 
     let topic: Topic<PointCloud> = Topic::new(&name).expect("create pointcloud topic");
@@ -180,7 +180,7 @@ fn pointcloud_roundtrip_1000_points() {
 #[test]
 #[ignore]
 fn depthimage_roundtrip_320x240() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("tp_depth");
 
     let topic: Topic<DepthImage> = Topic::new(&name).expect("create depth topic");
@@ -251,7 +251,7 @@ fn depthimage_roundtrip_320x240() {
 #[test]
 #[ignore]
 fn mixed_tensor_and_pod_topics() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     use horus_core::core::{DurationExt, Node};
     use horus_core::scheduling::Scheduler;

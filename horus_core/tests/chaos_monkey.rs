@@ -89,7 +89,7 @@ impl Node for LazyRecvNode {
 #[test]
 #[ignore]
 fn chaos_lazy_topics_in_init() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let base = unique("chaos_lazy");
     let ticks = Arc::new(AtomicU64::new(0));
     let recv = Arc::new(AtomicU64::new(0));
@@ -148,7 +148,7 @@ impl Node for ParamReadingNode {
 #[test]
 #[ignore]
 fn chaos_params_changed_mid_run() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let params = Arc::new(RuntimeParams::new().unwrap());
     params.set("chaos.kp", 1.0f64).unwrap();
 
@@ -253,7 +253,7 @@ impl Node for TfInTickNode {
 #[test]
 #[ignore]
 fn chaos_tf_in_topic_callback() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tf = Arc::new(TransformFrame::medium());
     tf.register_frame("world", None).unwrap();
     tf.register_frame("sensor", Some("world")).unwrap();
@@ -305,7 +305,7 @@ action! { OuterAct { goal { x: f64 } feedback { p: f32 } result { ok: bool } } }
 #[test]
 #[ignore]
 fn chaos_service_inside_action() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Service server
     let _svc = ServiceServerBuilder::<InnerSvc>::new()
@@ -456,7 +456,7 @@ impl Node for FiftyTopicNode {
 #[test]
 #[ignore]
 fn chaos_50_topics_mixed_types() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let prefix = unique("chaos_50");
     let sent = Arc::new(AtomicU64::new(0));
     let recv = Arc::new(AtomicU64::new(0));
@@ -514,7 +514,7 @@ fn chaos_50_topics_mixed_types() {
 #[test]
 #[ignore]
 fn chaos_4_schedulers_one_topic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("chaos_4sched");
     let total_recv = Arc::new(AtomicU64::new(0));
     let running = Arc::new(AtomicBool::new(true));
@@ -647,7 +647,7 @@ impl Node for SelfTalkNode {
 #[test]
 #[ignore]
 fn chaos_self_send_recv_same_tick() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let echoed = Arc::new(AtomicU64::new(0));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz()).deterministic(true);
@@ -679,7 +679,7 @@ fn chaos_self_send_recv_same_tick() {
 #[test]
 #[ignore]
 fn chaos_everything_at_once() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tf = Arc::new(TransformFrame::medium());
     tf.register_frame("world", None).unwrap();

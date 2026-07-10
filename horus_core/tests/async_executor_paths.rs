@@ -75,7 +75,7 @@ impl Node for AsyncFailInitNode {
 
 #[test]
 fn test_async_panic_handled() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -100,7 +100,7 @@ fn test_async_panic_handled() {
 
 #[test]
 fn test_async_mixed_success_failure() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let ok_count = Arc::new(AtomicU64::new(0));
     let panic_count = Arc::new(AtomicU64::new(0));
 
@@ -143,7 +143,7 @@ fn test_async_mixed_success_failure() {
 
 #[test]
 fn test_async_skip_policy() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -173,7 +173,7 @@ fn test_async_skip_policy() {
 
 #[test]
 fn test_async_paused_node_skipped() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -194,7 +194,7 @@ fn test_async_paused_node_skipped() {
 
 #[test]
 fn test_async_uninitialized_node_skipped() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -218,7 +218,7 @@ fn test_async_uninitialized_node_skipped() {
 
 #[test]
 fn test_async_restart_failure() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();

@@ -221,7 +221,7 @@ fn two_schedulers_parent_publishes_child_subscribes() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_uni");
 
@@ -280,7 +280,7 @@ fn two_schedulers_bidirectional() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_a = unique("multi_sched_a");
     let topic_b = unique("multi_sched_b");
@@ -525,7 +525,7 @@ fn rate_mismatch_1khz_parent_100hz_child() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_rate");
 
@@ -582,7 +582,7 @@ fn typed_message_cross_process() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_typed");
 
@@ -650,7 +650,7 @@ fn sustained_cross_process_communication() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_sustained");
 
@@ -706,7 +706,7 @@ fn fast_publisher_slow_subscriber() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_fast_slow");
 
@@ -924,7 +924,7 @@ fn child_crash_parent_survives() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_crash");
 
@@ -980,7 +980,7 @@ fn multi_writer_cross_process() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_mw");
 
@@ -1053,7 +1053,7 @@ fn three_process_pipeline() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("pipeline_sensor");
     let cmd_topic = unique("pipeline_cmd");
@@ -1138,7 +1138,7 @@ fn late_join_subscriber() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_late");
 
@@ -1306,7 +1306,7 @@ fn rt_scheduler_cross_process() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_rt");
 
@@ -1363,7 +1363,7 @@ fn large_message_cross_process() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("multi_sched_large");
 

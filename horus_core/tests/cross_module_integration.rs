@@ -37,7 +37,7 @@ struct TestTwist {
 /// nodes, the robot cannot function.
 #[test]
 fn test_scheduler_topics_nodes_full_pipeline() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = common::unique("cross.pipeline");
     let received_values = Arc::new(Mutex::new(Vec::<[f64; 3]>::new()));
@@ -149,7 +149,7 @@ fn test_scheduler_topics_nodes_full_pipeline() {
 /// catch_unwind to isolate panicking nodes.
 #[test]
 fn test_node_error_does_not_crash_other_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let healthy_a_ticks = Arc::new(AtomicU64::new(0));
     let healthy_b_ticks = Arc::new(AtomicU64::new(0));
@@ -257,7 +257,7 @@ service! { CrossModuleAdd { request { a: i64, b: i64 } response { sum: i64 } } }
 /// the scheduler must not deadlock or interfere.
 #[test]
 fn test_scheduler_with_services_inline() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let service_result = Arc::new(Mutex::new(None::<i64>));

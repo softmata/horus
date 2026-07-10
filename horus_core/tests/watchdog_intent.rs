@@ -31,7 +31,7 @@ use common::cleanup_stale_shm;
 /// nodes, leading to sensor data loss and degraded autonomy.
 #[test]
 fn test_watchdog_intent_healthy_no_warnings() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count_a = Arc::new(AtomicU64::new(0));
     let count_b = Arc::new(AtomicU64::new(0));
@@ -128,7 +128,7 @@ fn test_watchdog_intent_healthy_no_warnings() {
 /// deadline misses in safety_stats (since budget auto-derives deadline).
 #[test]
 fn test_watchdog_intent_slow_node_detected() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let fast_count = Arc::new(AtomicU64::new(0));
 

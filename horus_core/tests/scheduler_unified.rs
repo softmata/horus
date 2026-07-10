@@ -146,7 +146,7 @@ fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn test_rt_isolation_under_compute_load() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (rt_node, rt_count, rt_timestamps) = RtTimingNode::new("rt_controller");
     let (slow_node, compute_count) = SlowComputeNode::new("heavy_compute", 50);
@@ -217,7 +217,7 @@ fn test_rt_isolation_under_compute_load() {
 #[test]
 fn test_compute_nodes_run_parallel() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Two slow compute nodes, each sleeping 30ms
     let (node_a, count_a) = SlowComputeNode::new("compute_a", 30);
@@ -250,7 +250,7 @@ fn test_compute_nodes_run_parallel() {
 #[test]
 fn test_mixed_rt_and_compute_nodes() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (rt_node, rt_count, _) = RtTimingNode::new("mixed_rt");
     let (compute_node, compute_count) = CounterNode::new("mixed_compute");
@@ -286,7 +286,7 @@ fn test_mixed_rt_and_compute_nodes() {
 #[test]
 fn test_sequential_mode_unchanged() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (node_a, count_a) = CounterNode::new("seq_a");
     let (node_b, count_b) = CounterNode::new("seq_b");
@@ -320,7 +320,7 @@ fn test_sequential_mode_unchanged() {
 #[test]
 fn test_full_system_rt_and_compute_groups() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // RT group: fast controller (500Hz) + slower sensor (100Hz)
     let (rt_fast, rt_fast_count, _) = RtTimingNode::new("rt_controller_500hz");
@@ -416,7 +416,7 @@ fn test_event_node_ticks_on_publish() {
     let _serial = serial_guard();
     use horus_core::core::NodeInfo;
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (event_node, event_count) = CounterNode::new("evt_sensor");
 
@@ -459,7 +459,7 @@ fn test_event_node_ticks_on_publish() {
 #[test]
 fn test_event_node_no_tick_without_data() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (event_node, event_count) = CounterNode::new("evt_idle");
 
@@ -487,7 +487,7 @@ fn test_event_node_alongside_rt_and_besteffort() {
     let _serial = serial_guard();
     use horus_core::core::NodeInfo;
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (rt_node, rt_count, _) = RtTimingNode::new("mixed_rt_node");
     let (be_node, be_count) = CounterNode::new("mixed_be_node");
@@ -617,7 +617,7 @@ impl Node for BlockingIoNode {
 #[test]
 fn test_async_io_isolation_from_rt_and_compute() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // RT node at 1kHz for jitter analysis
     let (rt_node, rt_count, rt_timestamps) = RtTimingNode::new("iso_rt_1khz");
@@ -710,7 +710,7 @@ fn test_async_io_isolation_from_rt_and_compute() {
 #[test]
 fn test_async_io_nodes_run_concurrently() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Two async I/O nodes, each sleeping 100ms
     let (io_a, count_a) = BlockingIoNode::new("async_a_100ms", 100);
@@ -753,7 +753,7 @@ fn test_all_execution_groups_simultaneously() {
     let _serial = serial_guard();
     use horus_core::core::NodeInfo;
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // RT group
     let (rt_node, rt_count, _) = RtTimingNode::new("all_rt");
@@ -823,7 +823,7 @@ fn test_all_execution_groups_simultaneously() {
 #[test]
 fn test_clean_shutdown_all_groups() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (rt_node, rt_count, _) = RtTimingNode::new("shutdown_rt");
     let (compute_node, compute_count) = CounterNode::new("shutdown_compute");
@@ -856,7 +856,7 @@ fn test_clean_shutdown_all_groups() {
 #[test]
 fn test_multi_rate_rt_timing_accuracy() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let (node_1khz, count_1khz, _) = RtTimingNode::new("rt_1khz");
     let (node_100hz, count_100hz, _) = RtTimingNode::new("rt_100hz");
@@ -936,7 +936,7 @@ fn test_multi_rate_rt_timing_accuracy() {
 #[test]
 fn test_compute_load_shedding() {
     let _serial = serial_guard();
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Fast high-priority node (order 10) — should never be shed
     let (fast_hi, count_hi) = CounterNode::new("fast_hi_10");

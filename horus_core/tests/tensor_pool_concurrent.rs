@@ -27,7 +27,7 @@ fn small_pool_config() -> TensorPoolConfig {
 
 #[test]
 fn test_concurrent_alloc_release_no_panic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9700 + (std::process::id() % 100);
     let pool = Arc::new(TensorPool::new(pool_id, small_pool_config()).unwrap());
@@ -84,7 +84,7 @@ fn test_concurrent_alloc_release_no_panic() {
 
 #[test]
 fn test_concurrent_alloc_all_threads_succeed() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9710 + (std::process::id() % 100);
     let pool = Arc::new(TensorPool::new(pool_id, small_pool_config()).unwrap());
@@ -139,7 +139,7 @@ fn test_concurrent_alloc_all_threads_succeed() {
 
 #[test]
 fn test_slot_reuse_after_release() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9720 + (std::process::id() % 100);
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();
@@ -161,7 +161,7 @@ fn test_slot_reuse_after_release() {
 
 #[test]
 fn test_single_slot_pool() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9730 + (std::process::id() % 100);
     let config = TensorPoolConfig {
@@ -194,7 +194,7 @@ fn test_single_slot_pool() {
 
 #[test]
 fn test_data_integrity_after_write() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9740 + (std::process::id() % 100);
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();

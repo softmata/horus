@@ -209,7 +209,7 @@ fn cross_process_registry_readable() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sched_name = format!("xproc_reg_{}", std::process::id());
 
@@ -283,7 +283,7 @@ fn cross_process_transform_pod_topic() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = format!("xproc_tf_{}", std::process::id());
 

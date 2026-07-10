@@ -25,7 +25,7 @@ fn unique_topic(suffix: &str) -> String {
 /// consumer ticks — every single one must arrive intact.
 #[test]
 fn test_topic_stress_rapid_send_recv_10k() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("stress.rapid10k");
     let topic = Topic::<u64>::new(&name).expect("create topic");
@@ -83,7 +83,7 @@ fn test_topic_stress_rapid_send_recv_10k() {
 /// diagnostics) active simultaneously — none may interfere with each other.
 #[test]
 fn test_topic_stress_multiple_topics_concurrent() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_count = 10;
     let msgs_per_topic = 100u64;
@@ -174,7 +174,7 @@ struct LargePayload {
 
 #[test]
 fn test_topic_stress_large_message_serde() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("stress.large_msg");
     let topic = Topic::<LargePayload>::new(&name).expect("create large-message topic");
@@ -221,7 +221,7 @@ fn test_topic_stress_large_message_serde() {
 /// No message may be skipped, duplicated, or corrupted.
 #[test]
 fn test_topic_stress_alternating_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("stress.alternate");
     let topic = Topic::<u64>::new(&name).expect("create topic");
@@ -263,7 +263,7 @@ fn test_topic_stress_alternating_send_recv() {
 /// gets the oldest unread data up to ring capacity.
 #[test]
 fn test_topic_stress_overwrite_ring_buffer() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("stress.overwrite");
     // Default capacity for u64 is 512. Send 1000 messages without consuming.

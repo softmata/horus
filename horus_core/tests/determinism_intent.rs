@@ -33,7 +33,7 @@ use common::cleanup_stale_shm;
 /// are unreliable.
 #[test]
 fn test_determinism_intent_same_input_same_output() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct CounterNode {
         name: String,
@@ -63,7 +63,7 @@ fn test_determinism_intent_same_input_same_output() {
     scheduler_a.run_for(500_u64.ms()).unwrap();
     let ticks_a = count_a.load(Ordering::SeqCst);
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Run B — identical configuration
     let count_b = Arc::new(AtomicU64::new(0));
@@ -114,7 +114,7 @@ fn test_determinism_intent_same_input_same_output() {
 /// from reality. Exactly one tick per call is the contract.
 #[test]
 fn test_determinism_intent_tick_once_is_deterministic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count_x = Arc::new(AtomicU64::new(0));
     let count_y = Arc::new(AtomicU64::new(0));
@@ -185,7 +185,7 @@ fn test_determinism_intent_tick_once_is_deterministic() {
 /// behavior is unpredictable. The order must be identical every time.
 #[test]
 fn test_determinism_intent_ordering_stable_across_runs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct OrderRecorder {
         name: String,
@@ -234,7 +234,7 @@ fn test_determinism_intent_ordering_stable_across_runs() {
     }
     let order_1: Vec<String> = log_1.lock().unwrap().clone();
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Run 2: identical configuration, record tick order again
     let log_2 = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -308,7 +308,7 @@ fn test_determinism_intent_ordering_stable_across_runs() {
 /// the shared memory transport preserves data integrity.
 #[test]
 fn test_determinism_intent_no_data_race_in_topic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = common::unique("determinism.norace");
     let received = Arc::new(Mutex::new(Vec::<u64>::new()));

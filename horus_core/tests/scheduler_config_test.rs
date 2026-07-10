@@ -58,7 +58,7 @@ impl Node for TestNode {
 
 #[test]
 fn test_standard_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let (sensor, sensor_ticks) = TestNode::new("sensor1");
@@ -86,7 +86,7 @@ fn test_standard_config() {
 
 #[test]
 fn test_safety_critical_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
     let (monitor_node, monitor_ticks) = TestNode::new("safety_monitor");
@@ -112,7 +112,7 @@ fn test_safety_critical_config() {
 
 #[test]
 fn test_high_performance_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 
     let (fast_sensor, fast_sensor_ticks) = TestNode::new("fast_sensor");
@@ -138,7 +138,7 @@ fn test_high_performance_config() {
 
 #[test]
 fn test_space_robot_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let (nav_node, nav_ticks) = TestNode::new("navigation");
@@ -164,7 +164,7 @@ fn test_space_robot_config() {
 
 #[test]
 fn test_custom_exotic_robot_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new()
         .watchdog(500_u64.ms())
         .tick_rate(500_u64.hz());
@@ -192,7 +192,7 @@ fn test_custom_exotic_robot_config() {
 
 #[test]
 fn test_execution_classes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Test BestEffort nodes (main thread)
     {
         let mut scheduler = Scheduler::new();
@@ -240,7 +240,7 @@ fn test_execution_classes() {
 
 #[test]
 fn test_swarm_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let (comm_node, comm_ticks) = TestNode::new("swarm_comm");
@@ -263,7 +263,7 @@ fn test_swarm_config() {
 
 #[test]
 fn test_soft_robotics_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let (pressure_node, pressure_ticks) = TestNode::new("pressure_sensor");
@@ -286,7 +286,7 @@ fn test_soft_robotics_config() {
 
 #[test]
 fn test_high_performance_optimizer_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 
     let (perf_sensor, perf_sensor_ticks) = TestNode::new("perf_sensor");
@@ -316,7 +316,7 @@ fn test_high_performance_optimizer_nodes() {
 
 #[test]
 fn test_deploy_preset() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new()
         .watchdog(500_u64.ms())
         .tick_rate(100_u64.hz());
@@ -357,7 +357,7 @@ fn test_deploy_preset() {
 
 #[test]
 fn test_hard_rt_preset() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // require_rt() verifies system capabilities and enables all RT features.
     // On CI without RT support it panics — that's expected, so we skip the
     // full run in that case. But we no longer wrap this in catch_unwind +
@@ -410,7 +410,7 @@ fn test_hard_rt_preset() {
 
 #[test]
 fn test_auto_derive_tick_rate_from_fastest_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // If we set tick_rate(10) but add a node at 500Hz,
     // the scheduler should auto-bump to at least 500Hz
     let mut scheduler = Scheduler::new().tick_rate(10_u64.hz());
@@ -457,7 +457,7 @@ fn test_auto_derive_tick_rate_from_fastest_node() {
 
 #[test]
 fn test_node_rate_via_builder_only() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
     let (node_a, a_ticks) = TestNode::new("node_a");
@@ -504,7 +504,7 @@ fn test_node_rate_via_builder_only() {
 
 #[test]
 fn test_preset_chaining() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Builder methods return Self so they can be chained
     let mut scheduler = Scheduler::new()
         .watchdog(500_u64.ms())

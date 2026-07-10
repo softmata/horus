@@ -144,7 +144,7 @@ fn main() {
 #[test]
 #[ignore]
 fn real_rust_projects_ipc() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tmpdir = tempfile::TempDir::new().unwrap();
     let pub_dir = tmpdir.path().join("imu_publisher");
@@ -322,7 +322,7 @@ horus.run(sub, duration=5.0, tick_rate=100)
 #[test]
 #[ignore]
 fn real_rust_python_cross_language_ipc() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tmpdir = tempfile::TempDir::new().unwrap();
     let result_file = tmpdir.path().join("py_result.txt");
@@ -491,7 +491,7 @@ horus.run(pub, duration=3.0, tick_rate=100)
 #[test]
 #[ignore]
 fn real_python_to_rust_ipc() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tmpdir = tempfile::TempDir::new().unwrap();
     let py_script = tmpdir.path().join("py_publisher.py");

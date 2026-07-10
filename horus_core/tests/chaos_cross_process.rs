@@ -123,7 +123,7 @@ fn xp_5_processes_imu_broadcast() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("xp_5proc_imu");
     let count = 2000u64;
 
@@ -282,7 +282,7 @@ fn xp_3_process_pipeline_imu_ctrl_motor() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("xp_pipeline");
     let count = 1000u64;
 
@@ -411,7 +411,7 @@ fn xp_crash_and_reconnect() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic = unique("xp_crash");
 
     let result_dir = std::env::temp_dir().join("horus_chaos_xp");
@@ -543,7 +543,7 @@ fn xp_10_processes_chaos() {
         }
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let base = unique("xp_10chaos");
     let count = 500u64;
 

@@ -32,7 +32,7 @@ unsafe impl bytemuck::Zeroable for TypeB {}
 
 #[test]
 fn type_mismatch_rejected_same_process() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("type_safety");
 
     // Create topic with TypeA
@@ -63,7 +63,7 @@ fn type_mismatch_rejected_same_process() {
 
 #[test]
 fn same_type_accepted() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("type_ok");
 
     let t1: Topic<TypeA> = Topic::new(&name).expect("first open");

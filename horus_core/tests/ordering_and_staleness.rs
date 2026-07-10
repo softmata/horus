@@ -29,7 +29,7 @@ use std::time::Instant;
 /// target, potentially hitting obstacles.
 #[test]
 fn test_spsc_fifo_ordering_1000_messages() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = common::unique("order.fifo1k");
     let topic = Topic::<u64>::new(&name).expect("create topic");
@@ -91,7 +91,7 @@ fn test_spsc_fifo_ordering_1000_messages() {
 /// state estimator diverges and the robot loses its pose estimate.
 #[test]
 fn test_timestamp_monotonic_per_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     const NODE_COUNT: usize = 3;
     const TICK_COUNT: usize = 100;
@@ -217,7 +217,7 @@ fn test_timestamp_monotonic_per_node() {
 /// and collide with new obstacles.
 #[test]
 fn test_stale_data_detectable_by_timestamp_age() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = common::unique("order.stale");
     let last_publish_time = Arc::new(Mutex::new(None::<Instant>));

@@ -18,7 +18,7 @@ fn unique_topic(suffix: &str) -> String {
 /// name and verify the new topic works correctly for send/recv.
 #[test]
 fn test_topic_recreate_after_drop() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("lifecycle.recreate");
 
@@ -56,7 +56,7 @@ fn test_topic_recreate_after_drop() {
 /// For each type, create a topic, send a value, recv it, and assert equality.
 #[test]
 fn test_topic_send_recv_basic_types() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // u32
     {
@@ -101,7 +101,7 @@ fn test_topic_send_recv_basic_types() {
 /// Test 3: Send 100 messages in order, recv all 100, assert FIFO ordering.
 #[test]
 fn test_topic_multiple_messages_fifo_order() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("lifecycle.fifo");
     let topic = Topic::<u64>::new(&name).expect("create fifo topic");
@@ -133,7 +133,7 @@ fn test_topic_multiple_messages_fifo_order() {
 /// Test 4: recv on a topic with no messages sent should return None.
 #[test]
 fn test_topic_recv_returns_none_when_empty() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("lifecycle.empty");
     let topic = Topic::<u64>::new(&name).expect("create empty topic");
@@ -161,7 +161,7 @@ fn test_topic_recv_returns_none_when_empty() {
 /// Uses batched send/recv to stay within the ring buffer's default capacity.
 #[test]
 fn test_topic_high_throughput_same_thread() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let name = unique_topic("lifecycle.throughput");
     let topic = Topic::<u64>::new(&name).expect("create throughput topic");
@@ -215,7 +215,7 @@ fn test_topic_high_throughput_same_thread() {
 /// fields match after roundtrip.
 #[test]
 fn test_topic_pod_message_roundtrip() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     use horus_robotics::CmdVel;
 

@@ -123,7 +123,7 @@ fn cross_process_service_add_roundtrip() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Parent: start server
     let _server = ServiceServerBuilder::<XProcAdd>::new()
@@ -171,7 +171,7 @@ fn cross_process_service_multiple_calls() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<XProcAdd>::new()
         .on_request(|req| Ok(XProcAddResponse { sum: req.a + req.b }))
@@ -235,7 +235,7 @@ fn cross_process_service_echo_string() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<XProcEcho>::new()
         .on_request(|req| {

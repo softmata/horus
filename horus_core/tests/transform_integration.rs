@@ -227,7 +227,7 @@ fn cross_scheduler_transform_sharing() {
     use horus_core::core::{DurationExt, Node};
     use horus_core::scheduling::Scheduler;
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tf = Arc::new(TransformFrame::medium());
     tf.register_frame("world", None).unwrap();

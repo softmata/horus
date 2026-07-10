@@ -50,7 +50,7 @@ impl Node for TickCounterNode {
 
 #[test]
 fn test_new_creates_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -72,7 +72,7 @@ fn test_new_creates_scheduler() {
 
 #[test]
 fn test_new_detects_capabilities() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     let caps = scheduler.capabilities();
@@ -87,7 +87,7 @@ fn test_new_detects_capabilities() {
 
 #[test]
 fn test_new_records_degradations_gracefully() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let degradations = scheduler.degradations();
     assert_eq!(
@@ -104,7 +104,7 @@ fn test_new_records_degradations_gracefully() {
 
 #[test]
 fn test_status_returns_formatted_string() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -124,7 +124,7 @@ fn test_status_returns_formatted_string() {
 
 #[test]
 fn test_status_shows_capabilities() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -144,7 +144,7 @@ fn test_status_shows_capabilities() {
 
 #[test]
 fn test_new_no_blackbox_by_default() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     assert!(
@@ -155,7 +155,7 @@ fn test_new_no_blackbox_by_default() {
 
 #[test]
 fn test_status_no_blackbox_by_default() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -172,7 +172,7 @@ fn test_status_no_blackbox_by_default() {
 
 #[test]
 fn test_failure_policies_enabled_by_default() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -194,7 +194,7 @@ fn test_failure_policies_enabled_by_default() {
 
 #[test]
 fn test_status_shows_budget_enforcement() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 

@@ -120,7 +120,7 @@ impl Node for ControllerNode {
 
 #[test]
 fn three_node_pipeline_data_flows_end_to_end() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("pipeline_sensor");
     let processed_topic = unique("pipeline_processed");
@@ -202,7 +202,7 @@ fn three_node_pipeline_data_flows_end_to_end() {
 
 #[test]
 fn pipeline_ordering_ensures_sensor_before_processor() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("pipeline_sensor");
     let processed_topic = unique("pipeline_processed");
@@ -250,7 +250,7 @@ fn pipeline_ordering_ensures_sensor_before_processor() {
 
 #[test]
 fn tick_once_processes_pipeline_synchronously() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("pipeline_sensor");
     let processed_topic = unique("pipeline_processed");
@@ -312,7 +312,7 @@ fn tick_once_processes_pipeline_synchronously() {
 
 #[test]
 fn pipeline_with_watchdog_completes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topic = unique("pipeline_sensor");
 

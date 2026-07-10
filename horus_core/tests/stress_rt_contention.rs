@@ -192,7 +192,7 @@ impl std::fmt::Display for JitterReport {
 /// on schedule despite heavy CPU contention on competing cores.
 #[test]
 fn stress_rt_1khz_under_cpu_contention() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_count = Arc::new(AtomicU64::new(0));
     let timestamps = Arc::new(Mutex::new(Vec::with_capacity(6000)));
@@ -274,7 +274,7 @@ fn stress_rt_1khz_under_cpu_contention() {
 /// that the jitter measurement infrastructure works correctly.
 #[test]
 fn stress_rt_1khz_baseline_no_contention() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_count = Arc::new(AtomicU64::new(0));
     let timestamps = Arc::new(Mutex::new(Vec::with_capacity(4000)));
@@ -319,7 +319,7 @@ fn stress_rt_1khz_baseline_no_contention() {
 /// even with saturated CPUs.
 #[test]
 fn stress_rt_multi_rate_under_contention() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count_1khz = Arc::new(AtomicU64::new(0));
     let count_500hz = Arc::new(AtomicU64::new(0));
@@ -428,7 +428,7 @@ fn stress_rt_multi_rate_under_contention() {
 /// by heavy compute nodes on the main thread.
 #[test]
 fn stress_rt_isolation_from_compute_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let rt_count = Arc::new(AtomicU64::new(0));
     let rt_ts = Arc::new(Mutex::new(Vec::with_capacity(6000)));

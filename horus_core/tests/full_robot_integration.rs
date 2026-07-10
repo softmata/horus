@@ -190,7 +190,7 @@ impl Node for LidarProcessorNode {
 #[test]
 #[ignore]
 fn full_robot_3_schedulers_service_action_tf() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let imu_topic = unique("robot_imu");
     let cmd_topic = unique("robot_cmd");

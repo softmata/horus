@@ -38,7 +38,7 @@ use common::cleanup_stale_shm;
 /// attempting to tick it indefinitely.
 #[test]
 fn test_graduated_kill_stops_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_count = Arc::new(AtomicU64::new(0));
     let healthy_count = Arc::new(AtomicU64::new(0));
@@ -149,7 +149,7 @@ fn test_graduated_kill_stops_node() {
 /// the killed node's tick.
 #[test]
 fn test_killed_node_not_ticked_again() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_count = Arc::new(AtomicU64::new(0));
     let healthy_count = Arc::new(AtomicU64::new(0));
@@ -259,7 +259,7 @@ fn test_killed_node_not_ticked_again() {
 /// at full speed with no controller.
 #[test]
 fn test_kill_calls_shutdown() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let shutdown_called = Arc::new(AtomicBool::new(false));
     let tick_count = Arc::new(AtomicU64::new(0));

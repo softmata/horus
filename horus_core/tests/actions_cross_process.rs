@@ -88,7 +88,7 @@ fn cross_process_action_goal_lifecycle() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Build action server
     let server = ActionServerBuilder::<XProcNav>::new()

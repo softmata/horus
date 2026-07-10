@@ -520,7 +520,7 @@ fn matrix_sweep_all_combinations() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let msg_types = ["small", "large", "serde"];
     let topologies = [
@@ -560,7 +560,7 @@ fn matrix_sweep_all_combinations() {
                     continue;
                 }
 
-                cleanup_stale_shm();
+                let _shm_guard = cleanup_stale_shm();
 
                 let (recv, corrupt) = match proc_model {
                     "same_thread" => test_same_thread(msg_type, n_pubs, n_subs, count),

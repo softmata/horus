@@ -127,7 +127,7 @@ impl Node for FailInitNode {
 
 #[test]
 fn test_compute_single_node_no_crossbeam() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -151,7 +151,7 @@ fn test_compute_single_node_no_crossbeam() {
 
 #[test]
 fn test_compute_parallel_execution() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let counts: Vec<Arc<AtomicU64>> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
     let mut scheduler = Scheduler::new();
@@ -191,7 +191,7 @@ fn test_compute_parallel_execution() {
 
 #[test]
 fn test_load_shedding_activates() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let critical_count = Arc::new(AtomicU64::new(0));
     let background_count = Arc::new(AtomicU64::new(0));
 
@@ -233,7 +233,7 @@ fn test_load_shedding_activates() {
 
 #[test]
 fn test_load_shedding_cooldown_deactivates() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let critical_count = Arc::new(AtomicU64::new(0));
     let background_count = Arc::new(AtomicU64::new(0));
 
@@ -275,7 +275,7 @@ fn test_load_shedding_cooldown_deactivates() {
 
 #[test]
 fn test_non_sheddable_ticks_during_shedding() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let non_sheddable_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
@@ -302,7 +302,7 @@ fn test_non_sheddable_ticks_during_shedding() {
 
 #[test]
 fn test_compute_paused_node_skipped() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     // We can't directly pause a node, but we can verify that the scheduler
@@ -326,7 +326,7 @@ fn test_compute_paused_node_skipped() {
 
 #[test]
 fn test_compute_uninitialized_node_skipped() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -351,7 +351,7 @@ fn test_compute_uninitialized_node_skipped() {
 
 #[test]
 fn test_compute_skip_policy() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -380,7 +380,7 @@ fn test_compute_skip_policy() {
 
 #[test]
 fn test_compute_restart_failure() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -409,7 +409,7 @@ fn test_compute_restart_failure() {
 
 #[test]
 fn test_compute_panic_downcasting() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let str_count = Arc::new(AtomicU64::new(0));
     let string_count = Arc::new(AtomicU64::new(0));
     let unknown_count = Arc::new(AtomicU64::new(0));

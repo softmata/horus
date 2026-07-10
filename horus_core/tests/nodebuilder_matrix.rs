@@ -131,7 +131,7 @@ impl Node for CmdVelPubNode {
 #[test]
 #[ignore]
 fn rate_alone_auto_derives_rt() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let tc = ticks.clone();
@@ -177,7 +177,7 @@ fn rate_alone_auto_derives_rt() {
 #[test]
 #[ignore]
 fn rate_with_explicit_budget() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let slow_ticks = Arc::new(AtomicU64::new(0));
     let healthy_ticks = Arc::new(AtomicU64::new(0));
@@ -239,7 +239,7 @@ fn rate_with_explicit_budget() {
 #[test]
 #[ignore]
 fn budget_alone_becomes_rt() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let tc = ticks.clone();
@@ -283,7 +283,7 @@ fn budget_alone_becomes_rt() {
 #[test]
 #[ignore]
 fn four_execution_classes_coexist() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic = unique("nb_event_topic");
     let rt_ticks = Arc::new(AtomicU64::new(0));
@@ -414,7 +414,7 @@ fn four_execution_classes_coexist() {
 #[test]
 #[ignore]
 fn order_fairness_20_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counters: Vec<Arc<AtomicU64>> = (0..20).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -467,7 +467,7 @@ fn order_fairness_20_nodes() {
 #[test]
 #[ignore]
 fn failure_policy_panic_isolation() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let panic_ticks = Arc::new(AtomicU64::new(0));
     let healthy_ticks = Arc::new(AtomicU64::new(0));
@@ -538,7 +538,7 @@ impl Node for OrderLogNode {
 #[test]
 #[ignore]
 fn execution_order_deterministic() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -603,7 +603,7 @@ fn execution_order_deterministic() {
 #[test]
 #[ignore]
 fn default_node_no_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
 

@@ -234,7 +234,7 @@ fn test_recording_inputs_and_outputs() {
 
 #[test]
 fn test_deterministic_scheduler_recording_reproducible() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Run 1
     let ticks1 = Arc::new(AtomicU64::new(0));
@@ -1085,7 +1085,7 @@ fn test_with_capacity_and_timestamp_preserves_values() {
 
 #[test]
 fn test_scheduler_with_recording_produces_files() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let mut sched = Scheduler::new()
@@ -1136,7 +1136,7 @@ fn test_scheduler_with_recording_produces_files() {
 
 #[test]
 fn test_scheduler_recording_manager_finds_session() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let mut sched = Scheduler::new()
@@ -1588,7 +1588,7 @@ fn spawn_python_child(script: &str) -> std::process::Child {
 /// Python publishes Imu, Rust reads from the same Topic and builds a recording.
 #[test]
 fn test_cross_process_recording_captures_python_data() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1648,7 +1648,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Cross-process recording save/load roundtrip.
 #[test]
 fn test_cross_process_recording_save_load_roundtrip() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tmp = TestTempDir::new("xproc_roundtrip");
 
     let child = spawn_python_child(
@@ -1710,7 +1710,7 @@ while time.time() < deadline:
 /// Test: add_replay loads a recording and the scheduler can tick through it.
 #[test]
 fn test_add_replay_loads_and_ticks() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tmp = TestTempDir::new("add_replay");
 
     // Create a node recording with 10 ticks
@@ -1741,7 +1741,7 @@ fn test_add_replay_loads_and_ticks() {
 /// Test: with_override stores override data in replay state.
 #[test]
 fn test_with_override_stores_data() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tmp = TestTempDir::new("override_test");
 
     // Create a recording file so add_replay can load it
@@ -1773,7 +1773,7 @@ fn test_with_override_stores_data() {
 /// Test: replay_from loads a SchedulerRecording and creates a scheduler.
 #[test]
 fn test_replay_from_loads_scheduler_recording() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tmp = TestTempDir::new("replay_from");
 
     // Create a node recording
@@ -1821,7 +1821,7 @@ fn test_replay_from_loads_scheduler_recording() {
 /// Test: Recording with no publisher produces empty inputs, not errors.
 #[test]
 fn test_recording_with_no_publisher_has_empty_inputs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut recording = NodeRecording::new("lonely", "l001", "no_pub");
     for t in 0..10u64 {

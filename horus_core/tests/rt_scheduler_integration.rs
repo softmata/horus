@@ -61,7 +61,7 @@ impl Node for CriticalControlNode {
 
 #[test]
 fn test_scheduler_with_rt_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let motor = CriticalControlNode::new("motor_control", 50);
@@ -88,7 +88,7 @@ fn test_scheduler_with_rt_nodes() {
 
 #[test]
 fn test_scheduler_with_safety_critical_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
 
     let flight = CriticalControlNode::new("flight_control", 80);
@@ -116,7 +116,7 @@ fn test_scheduler_with_safety_critical_config() {
 
 #[test]
 fn test_mixed_rt_and_normal_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     let rt_crit = CriticalControlNode::new("rt_critical", 50);
@@ -157,7 +157,7 @@ fn test_mixed_rt_and_normal_nodes() {
 
 #[test]
 fn test_watchdog_functionality() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let mut scheduler = Scheduler::new().watchdog(500_u64.ms());
 
     let node = CriticalControlNode::new("watchdog_monitored", 10);
@@ -177,7 +177,7 @@ fn test_watchdog_functionality() {
 
 #[test]
 fn test_high_performance_rt_config() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Configure for high-performance racing robot at 10kHz
     let mut scheduler = Scheduler::new().tick_rate(10000_u64.hz());
 

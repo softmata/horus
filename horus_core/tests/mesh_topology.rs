@@ -126,7 +126,7 @@ impl Node for FlexNode {
 /// ```
 #[test]
 fn twelve_node_dag() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Topic names
     let scan = unique("dag_scan");
@@ -362,7 +362,7 @@ fn twelve_node_dag() {
 /// Tests MPMC backend with many producers.
 #[test]
 fn star_topology_10_publishers_1_subscriber() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("star_hub");
 
@@ -434,7 +434,7 @@ fn identity_fn(_offset: u64) -> fn(u64) -> u64 {
 /// Tests fan-out (A→B, A→C) and fan-in (B→D, C→D).
 #[test]
 fn diamond_topology_fan_out_fan_in() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let a_to_bc = unique("diamond_a");
     let b_to_d = unique("diamond_b");

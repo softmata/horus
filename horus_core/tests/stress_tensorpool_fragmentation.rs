@@ -86,7 +86,7 @@ impl CycleStats {
 /// 60 seconds, running each to exhaustion and measuring consistency.
 #[test]
 fn stress_tensorpool_repeated_lifecycle_60s() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let test_duration = Duration::from_secs(60);
     let start = Instant::now();
@@ -191,7 +191,7 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
 
         // Clean up ALL SHM files (including tensor pool) before next cycle
         drop(pool); // ensure mmap is unmapped before deleting backing file
-        cleanup_stale_shm();
+        let _shm_guard = cleanup_stale_shm();
         cleanup_tensor_shm();
 
         all_stats.push(stats);
@@ -245,7 +245,7 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
 /// Verifies no corruption, panics, or data races under contention.
 #[test]
 fn stress_tensorpool_multithread_exhaust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9860 + (std::process::id() % 100);
     let config = TensorPoolConfig {
@@ -367,7 +367,7 @@ fn stress_tensorpool_multithread_exhaust() {
 /// after a fragmented free pattern.
 #[test]
 fn stress_tensorpool_alternating_free_pattern() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9900 + (std::process::id() % 100);
     let config = TensorPoolConfig {
@@ -457,7 +457,7 @@ fn stress_tensorpool_alternating_free_pattern() {
 /// how the free-stack handles high-frequency recycling.
 #[test]
 fn stress_tensorpool_rapid_slot_churn() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let pool_id = 9950 + (std::process::id() % 50);
     let config = TensorPoolConfig {

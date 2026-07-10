@@ -95,7 +95,7 @@ impl Node for FastNode {
 
 #[test]
 fn test_miss_warn_continues_ticking() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks, _safe) = SlowNode::new("rt_warn", Duration::from_millis(5));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
@@ -123,7 +123,7 @@ fn test_miss_warn_continues_ticking() {
 
 #[test]
 fn test_miss_skip_still_ticks() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks, _safe) = SlowNode::new("rt_skip", Duration::from_millis(5));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
@@ -153,7 +153,7 @@ fn test_miss_skip_still_ticks() {
 
 #[test]
 fn test_miss_safe_mode_calls_enter_safe_state() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node sleeps 5ms, deadline is 1ms — deadline MISS triggers SafeMode action
     // Note: Miss policy is triggered by DEADLINE miss (not budget violation).
     // Budget violations are tracked for stats only. Deadline is checked by
@@ -192,7 +192,7 @@ fn test_miss_safe_mode_calls_enter_safe_state() {
 
 #[test]
 fn test_miss_stop_halts_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node sleeps 5ms, deadline is 1ms → DeadlineAction::EmergencyStop
     // sets running.store(false) which causes the scheduler to exit early
     let (node, ticks, _safe) = SlowNode::new("rt_stop", Duration::from_millis(5));
@@ -237,7 +237,7 @@ fn test_miss_stop_halts_scheduler() {
 
 #[test]
 fn test_budget_violation_node_still_runs() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node that slightly exceeds budget (2ms sleep vs 1ms budget)
     let (node, ticks, _safe) = SlowNode::new("rt_budget_viol", Duration::from_millis(2));
 
@@ -266,7 +266,7 @@ fn test_budget_violation_node_still_runs() {
 
 #[test]
 fn test_within_budget_no_issues() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks) = FastNode::new("rt_fast");
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
@@ -295,7 +295,7 @@ fn test_within_budget_no_issues() {
 
 #[test]
 fn test_on_miss_default_is_warn() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks, _safe) = SlowNode::new("rt_default", Duration::from_millis(5));
 
     let mut sched = Scheduler::new().tick_rate(100_u64.hz());
@@ -323,7 +323,7 @@ fn test_on_miss_default_is_warn() {
 
 #[test]
 fn test_deadline_exceeded_with_high_frequency_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // 1kHz node that sleeps 2ms — will always miss the 1ms period
     let (node, ticks, _safe) = SlowNode::new("rt_deadline", Duration::from_millis(2));
 

@@ -15,7 +15,7 @@ use horus_core::memory::{CostMap, OccupancyGrid};
 
 #[test]
 fn test_occupancy_grid_create_and_dimensions() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let grid = OccupancyGrid::new(200, 150, 0.05).expect("alloc");
     assert_eq!(grid.width(), 200);
@@ -37,7 +37,7 @@ fn test_occupancy_grid_create_and_dimensions() {
 
 #[test]
 fn test_occupancy_grid_set_get_cell() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut grid = OccupancyGrid::new(50, 40, 0.1).expect("alloc");
 
@@ -80,7 +80,7 @@ fn test_occupancy_grid_set_get_cell() {
 
 #[test]
 fn test_occupancy_grid_world_to_grid_roundtrip() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut grid = OccupancyGrid::new(100, 100, 0.1).expect("alloc");
     // Set origin at (5.0, 10.0)
@@ -122,7 +122,7 @@ fn test_occupancy_grid_world_to_grid_roundtrip() {
 
 #[test]
 fn test_occupancy_grid_free_occupied_unknown() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut grid = OccupancyGrid::new(10, 10, 0.1).expect("alloc");
     grid.set_origin(0.0, 0.0, 0.0);
@@ -181,7 +181,7 @@ fn test_occupancy_grid_free_occupied_unknown() {
 
 #[test]
 fn test_occupancy_grid_fill_and_reset() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut grid = OccupancyGrid::new(20, 15, 0.1).expect("alloc");
 
@@ -228,7 +228,7 @@ fn test_occupancy_grid_fill_and_reset() {
 
 #[test]
 fn test_costmap_create_and_dual_layers() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut costmap = CostMap::new(30, 25, 0.05, 0.3).expect("alloc");
     assert_eq!(costmap.width(), 30);
@@ -272,7 +272,7 @@ fn test_costmap_create_and_dual_layers() {
 
 #[test]
 fn test_costmap_clone_drops_correctly() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut costmap = CostMap::new(10, 10, 0.1, 0.5).expect("alloc");
     costmap.set_occupancy(3, 4, 80);
@@ -317,7 +317,7 @@ fn test_costmap_clone_drops_correctly() {
 
 #[test]
 fn test_occupancy_grid_clone_data_independent() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let mut grid = OccupancyGrid::new(10, 10, 0.1).expect("alloc");
     grid.set_cell(5, 5, 75);

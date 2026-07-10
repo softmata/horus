@@ -104,7 +104,7 @@ impl Node for HealthyNode {
 
 #[test]
 fn test_watchdog_healthy_nodes_tick_normally() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks) = HealthyNode::new("wd_healthy");
 
     let mut sched = Scheduler::new()
@@ -127,7 +127,7 @@ fn test_watchdog_healthy_nodes_tick_normally() {
 
 #[test]
 fn test_watchdog_stalled_node_scheduler_completes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node stalls after 3 ticks — hangs forever in tick()
     // Watchdog timeout is 100ms — should detect the stall
     let (node, ticks, _safe) = StallAfterNode::new("wd_stall", 3);
@@ -168,7 +168,7 @@ fn test_watchdog_stalled_node_scheduler_completes() {
 
 #[test]
 fn test_watchdog_stalled_node_doesnt_block_others() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (stalling_node, stall_ticks, _safe) = StallAfterNode::new("wd_staller", 2);
     let (healthy_node, healthy_ticks) = HealthyNode::new("wd_healthy_peer");
 
@@ -219,7 +219,7 @@ fn test_watchdog_stalled_node_doesnt_block_others() {
 
 #[test]
 fn test_watchdog_with_budget_violations() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node sleeps 5ms with 1ms budget — budget violations every tick
     let name = format!("wd_budget_{}", std::process::id());
     let ticks = Arc::new(AtomicU64::new(0));
@@ -270,7 +270,7 @@ fn test_watchdog_with_budget_violations() {
 
 #[test]
 fn test_safety_state_normal_for_healthy_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, _ticks) = HealthyNode::new("wd_state_normal");
 
     let mut sched = Scheduler::new()
@@ -290,7 +290,7 @@ fn test_safety_state_normal_for_healthy_scheduler() {
 
 #[test]
 fn test_no_watchdog_runs_normally() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks) = HealthyNode::new("no_wd");
 
     // No .watchdog() call — should work fine
@@ -312,7 +312,7 @@ fn test_no_watchdog_runs_normally() {
 
 #[test]
 fn test_watchdog_short_timeout_detects_slow_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node sleeps 10ms per tick, watchdog is 20ms
     // If node is on RT thread and ticks at 100Hz (10ms period),
     // the 10ms sleep should keep it within the 20ms watchdog
@@ -361,7 +361,7 @@ fn test_watchdog_short_timeout_detects_slow_node() {
 
 #[test]
 fn test_watchdog_with_safe_mode_calls_enter_safe_state() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let (node, ticks, safe) = StallAfterNode::new("wd_safemode", 100); // don't stall, just slow
 
     // Override to be a slow node instead of a stalling one
@@ -427,7 +427,7 @@ fn test_watchdog_with_safe_mode_calls_enter_safe_state() {
 
 #[test]
 fn test_stalled_node_tick_count_stabilizes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node stalls permanently after 2 ticks (200ms sleep each tick after stall)
     let (stall_node, stall_ticks, _safe) = StallAfterNode::new("wd_stabilize", 2);
     let (healthy_node, healthy_ticks) = HealthyNode::new("wd_stabilize_h");
@@ -476,7 +476,7 @@ fn test_stalled_node_tick_count_stabilizes() {
 
 #[test]
 fn test_max_deadline_misses_stops_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct DeadlineViolator {
         name: String,
@@ -534,7 +534,7 @@ fn test_max_deadline_misses_stops_scheduler() {
 
 #[test]
 fn test_enter_safe_state_on_stalled_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Node stalls after 2 ticks (200ms sleep each tick)
     // Watchdog is 50ms → should detect stall quickly
     let (node, ticks, safe) = StallAfterNode::new("wd_safe_stall", 2);

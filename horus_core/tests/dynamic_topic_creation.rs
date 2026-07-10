@@ -143,7 +143,7 @@ impl Node for LazySubscriber {
 /// in init(). Data should flow once the publisher's lazy topic is created.
 #[test]
 fn lazy_publisher_eager_subscriber() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("dyn_lazy_pub");
     let pub_count = Arc::new(AtomicU64::new(0));
@@ -194,7 +194,7 @@ fn lazy_publisher_eager_subscriber() {
 /// Assert: no messages before tick 20, messages flow after.
 #[test]
 fn conditional_topic_creation_after_n_ticks() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("dyn_conditional");
     let pub_count = Arc::new(AtomicU64::new(0));
@@ -253,7 +253,7 @@ fn conditional_topic_creation_after_n_ticks() {
 /// when it creates its handle in tick().
 #[test]
 fn eager_publisher_lazy_subscriber() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique("dyn_lazy_sub");
     let pub_count = Arc::new(AtomicU64::new(0));

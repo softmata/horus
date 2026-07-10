@@ -16,7 +16,7 @@ use common::cleanup_stale_shm;
 
 #[test]
 fn test_cleanup_preserves_current_process() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let base = shm_base_dir();
     let ns = shm_namespace();
@@ -85,7 +85,7 @@ fn test_namespace_unique_per_session() {
 
 #[test]
 fn test_topic_creates_cleanable_shm() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     use horus_core::communication::Topic;
 

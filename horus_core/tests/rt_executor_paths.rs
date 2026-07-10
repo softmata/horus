@@ -149,7 +149,7 @@ impl Node for SimpleRtNode {
 
 #[test]
 fn test_deadline_emergency_stop() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -188,7 +188,7 @@ fn test_deadline_emergency_stop() {
 
 #[test]
 fn test_deadline_skip_pauses_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
     let reference_count = Arc::new(AtomicU64::new(0));
 
@@ -228,7 +228,7 @@ fn test_deadline_skip_pauses_node() {
 
 #[test]
 fn test_rt_panic_str_literal() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -254,7 +254,7 @@ fn test_rt_panic_str_literal() {
 
 #[test]
 fn test_rt_panic_owned_string() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -279,7 +279,7 @@ fn test_rt_panic_owned_string() {
 
 #[test]
 fn test_rt_panic_unknown_type() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -304,7 +304,7 @@ fn test_rt_panic_unknown_type() {
 
 #[test]
 fn test_rt_on_error_callback() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
     let error_count = Arc::new(AtomicU64::new(0));
 
@@ -339,7 +339,7 @@ fn test_rt_on_error_callback() {
 
 #[test]
 fn test_rt_skip_policy_rejection() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -367,7 +367,7 @@ fn test_rt_skip_policy_rejection() {
 
 #[test]
 fn test_rt_restart_failure_deinitializes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let tick_count = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new();

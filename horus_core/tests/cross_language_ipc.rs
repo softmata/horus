@@ -94,7 +94,7 @@ fn parse_child_u64(stdout: &str, prefix: &str) -> u64 {
 /// is retained as it validates the Imu serde cross-process path.
 #[test]
 fn rust_publishes_velocity_python_subscribes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python child subscribes to Imu (serde path, proven to work cross-process)
     // We encode velocity commands in the linear_acceleration field.
@@ -164,7 +164,7 @@ print(f"CHILD_AY:{last_ay}")
 /// Tests the reverse direction: Python → Rust cross-process.
 #[test]
 fn python_publishes_imu_rust_subscribes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -220,7 +220,7 @@ print(f"CHILD_SENT:{sent}")
 /// Python child verifies all 6 axis values survive cross-process SHM.
 #[test]
 fn rust_publishes_imu_python_subscribes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -327,7 +327,7 @@ print(f"CHILD_GZ:{gz}")
 /// This is the most common Python IPC pattern: `node.send("topic", {"key": value})`.
 #[test]
 fn python_publishes_dict_rust_subscribes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -384,7 +384,7 @@ print(f"CHILD_SENT:{sent}")
 /// Rust subscribes. This tests the full Python user API (not just raw Topic).
 #[test]
 fn python_node_scheduler_publishes_rust_subscribes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -448,7 +448,7 @@ print(f"CHILD_SENT:{sent_count[0]}")
 /// The slow publisher shouldn't cause issues for the fast subscriber.
 #[test]
 fn rate_mismatch_python_30hz_rust_1khz() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -503,7 +503,7 @@ print(f"CHILD_SENT:{sent}")
 /// The Rust process must survive without hanging.
 #[test]
 fn python_crash_rust_survives() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -552,7 +552,7 @@ sys.exit(1)  # Simulate crash
 /// Simulates: camera → Python ML model → Rust motor controller.
 #[test]
 fn ml_inference_pipeline_cross_language() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python "inference" node: publishes to "detections" topic
     let child = spawn_python_child(
@@ -620,7 +620,7 @@ print(f"CHILD_SENT:{sent}")
 /// The fast producer shouldn't block; the slow consumer always gets latest.
 #[test]
 fn rate_mismatch_rust_1khz_python_30hz() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python child: polls at 30Hz (slow consumer)
     let child = spawn_python_child(
@@ -678,7 +678,7 @@ print(f"CHILD_RECEIVED:{received}")
 /// Verifies no degradation, memory leaks, or SHM fragmentation over time.
 #[test]
 fn sustained_10s_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -753,7 +753,7 @@ print(f"CHILD_SENT:{sent}")
 /// This tests the zero-copy TensorPool path for large (~921KB) binary payloads.
 #[test]
 fn python_image_to_rust_cross_process() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -838,7 +838,7 @@ print(f"CHILD_SENT:{sent}")
 /// Verifies that tick counts are within 20% of each other (config parity).
 #[test]
 fn scheduler_config_parity() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python child: horus.run(node, rate=100, duration=2)
     let child = spawn_python_child(
@@ -895,7 +895,7 @@ print(f"CHILD_TICKS:{count[0]}")
 /// and publishes back on a different topic. Rust verifies response.
 #[test]
 fn bidirectional_roundtrip_cross_language() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Python child: subscribes to "sensor_out", publishes doubled value to "response_in"
     let child = spawn_python_child(
@@ -980,7 +980,7 @@ print(f"CHILD_PROCESSED:{processed}")
 /// Simulates multiple cameras or ML models feeding into a single Rust coordinator.
 #[test]
 fn multi_python_fan_in() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Child 1: publishes Imu with accel_x in [1.0, 2.0, 3.0, ...]
     let child1 = spawn_python_child(
@@ -1075,7 +1075,7 @@ print(f"CHILD2_SENT:{sent}")
 /// slot layout bug. With the fix (co-located disabled for SHM), this works.
 #[test]
 fn cmdvel_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1136,7 +1136,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes Pose2D (small Pod), Rust subscribes.
 #[test]
 fn pose2d_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1191,7 +1191,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes LaserScan (large serde Pod), Rust subscribes.
 #[test]
 fn laserscan_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1247,7 +1247,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes Odometry (large serde Pod), Rust subscribes.
 #[test]
 fn odometry_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1297,7 +1297,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes Detection (serde, contains String), Rust subscribes.
 #[test]
 fn detection_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1353,7 +1353,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes Twist (serde), Rust subscribes.
 #[test]
 fn twist_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1403,7 +1403,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes JointState (large serde Pod), Rust subscribes.
 #[test]
 fn joint_state_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"
@@ -1453,7 +1453,7 @@ print(f"CHILD_SENT:{sent}")
 /// Test: Python publishes NavGoal (Pod), Rust subscribes.
 #[test]
 fn nav_goal_cross_process_python_to_rust() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let child = spawn_python_child(
         r#"

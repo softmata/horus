@@ -16,7 +16,7 @@ use horus_core::memory::{cleanup_stale_namespaces, shm_base_dir};
 /// remove our own SHM directory.
 #[test]
 fn test_cleanup_stale_namespaces_preserves_current() {
-    common::cleanup_stale_shm();
+    let _shm_guard = common::cleanup_stale_shm();
 
     let base = shm_base_dir();
     // Ensure our SHM dir exists

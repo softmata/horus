@@ -52,7 +52,7 @@ fn rp_all_message_types_rust_to_python() {
         println!("✓ SKIPPED (no horus python)");
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let _ = std::fs::remove_dir_all(result_dir());
 
     let py_code = r#"
@@ -275,7 +275,7 @@ fn rp_python_to_rust_3_types() {
         println!("✓ SKIPPED (no horus python)");
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let _ = std::fs::remove_dir_all(result_dir());
 
     let py_code = r#"
@@ -434,7 +434,7 @@ fn rp_bidirectional_rust_python_schedulers() {
         println!("✓ SKIPPED (no horus python)");
         return;
     }
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let _ = std::fs::remove_dir_all(result_dir());
 
     // Python: publishes CmdVel on "bidir.cmd", subscribes Imu on "bidir.imu"

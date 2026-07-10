@@ -196,7 +196,7 @@ impl Node for PidControllerNode {
 #[test]
 #[ignore]
 fn dc_motor_pid_1khz_position_control() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let cmd_topic = unique("motor_cmd");
     let state_topic = unique("motor_state");
@@ -568,7 +568,7 @@ impl Node for FusionNode {
 #[test]
 #[ignore]
 fn sensor_suite_imu400_lidar10_camera30() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let imu_topic = unique("hw_imu");
     let lidar_topic = unique("hw_lidar");
@@ -740,7 +740,7 @@ impl Node for TimingProbeNode {
 #[test]
 #[ignore]
 fn io_contention_rt_resilience() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let target_hz = 500u64;
     let timestamps = Arc::new(std::sync::Mutex::new(Vec::with_capacity(10000)));
@@ -914,7 +914,7 @@ impl Node for AllocationTrackingNode {
 #[test]
 #[ignore]
 fn memory_pressure_no_hot_path_allocations() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic = unique("mem_pressure");
     let running = Arc::new(AtomicBool::new(true));

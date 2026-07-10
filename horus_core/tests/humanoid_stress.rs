@@ -542,7 +542,7 @@ impl Node for JointPidNode {
 #[test]
 #[ignore]
 fn humanoid_20dof_31_nodes_50_topics() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let prefix = unique("hum");
 

@@ -30,7 +30,7 @@ use common::cleanup_stale_shm;
 /// has a blind spot and cannot tune the system.
 #[test]
 fn test_profiler_intent_collects_timing_data() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct TimedNode {
         name: &'static str,
@@ -114,7 +114,7 @@ fn test_profiler_intent_collects_timing_data() {
 /// gating. (min <= average <= max is a mathematical invariant that must hold.)
 #[test]
 fn test_profiler_intent_percentiles_ordered() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct WorkNode {
         name: &'static str,
@@ -188,7 +188,7 @@ fn test_profiler_intent_percentiles_ordered() {
 /// nodes. This test catches scheduler regressions that inflate per-node overhead.
 #[test]
 fn test_profiler_intent_idle_node_fast_profile() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     struct IdleNode;
 

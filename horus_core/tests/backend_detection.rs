@@ -56,7 +56,7 @@ fn unique(prefix: &str) -> String {
 
 #[test]
 fn test_same_thread_pod_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("st_pod");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
 
@@ -74,7 +74,7 @@ fn test_same_thread_pod_send_recv() {
 
 #[test]
 fn test_same_thread_pod_multiple_messages() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("st_pod_multi");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
 
@@ -99,7 +99,7 @@ fn test_same_thread_pod_multiple_messages() {
 
 #[test]
 fn test_same_thread_pod_read_latest() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("st_latest");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
 
@@ -139,7 +139,7 @@ fn test_same_thread_pod_read_latest() {
 
 #[test]
 fn test_cross_thread_spsc_pod_roundtrip() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("ct_spsc");
     let msg_count = 100u64;
     let received = Arc::new(AtomicU64::new(0));
@@ -191,7 +191,7 @@ fn test_cross_thread_spsc_pod_roundtrip() {
 
 #[test]
 fn test_cross_thread_spmc_multiple_consumers() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("ct_spmc");
     let msg_count = 50u64;
     let consumer_count = 3;
@@ -252,7 +252,7 @@ fn test_cross_thread_spmc_multiple_consumers() {
 
 #[test]
 fn test_cross_thread_mpsc_multiple_producers() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("ct_mpsc");
     let msgs_per_producer = 30u64;
     let producer_count = 3;
@@ -310,7 +310,7 @@ fn test_cross_thread_mpsc_multiple_producers() {
 
 #[test]
 fn test_cross_thread_mpmc() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("ct_mpmc");
     let msgs_per_producer = 20u64;
     let producer_count = 2;
@@ -366,7 +366,7 @@ fn test_cross_thread_mpmc() {
 
 #[test]
 fn test_pod_u64_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("pod_u64");
     let topic: Topic<u64> = Topic::new(&name).unwrap();
     topic.send(42u64);
@@ -375,7 +375,7 @@ fn test_pod_u64_send_recv() {
 
 #[test]
 fn test_pod_f64_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("pod_f64");
     let topic: Topic<f64> = Topic::new(&name).unwrap();
     topic.send(1.23456f64);
@@ -384,7 +384,7 @@ fn test_pod_f64_send_recv() {
 
 #[test]
 fn test_pod_i32_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("pod_i32");
     let topic: Topic<i32> = Topic::new(&name).unwrap();
     topic.send(-42i32);
@@ -393,7 +393,7 @@ fn test_pod_i32_send_recv() {
 
 #[test]
 fn test_pod_struct_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("pod_struct");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
     let msg = PodPoint {
@@ -412,7 +412,7 @@ fn test_pod_struct_send_recv() {
 
 #[test]
 fn test_cross_thread_data_integrity() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("integrity");
     let msg_count = 200u64;
     let corruption_count = Arc::new(AtomicU64::new(0));
@@ -474,7 +474,7 @@ fn test_cross_thread_data_integrity() {
 
 #[test]
 fn test_empty_topic_recv_returns_none() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("empty");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
     assert_eq!(topic.recv(), None, "Empty topic should return None");
@@ -486,7 +486,7 @@ fn test_empty_topic_recv_returns_none() {
 
 #[test]
 fn test_topic_metrics_after_send_recv() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("metrics");
     let topic: Topic<PodPoint> = Topic::new(&name).unwrap();
 

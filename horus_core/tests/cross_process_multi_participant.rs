@@ -193,7 +193,7 @@ fn cross_process_spmc_1_pub_3_sub() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_spmc");
 
     // Parent: create topic as publisher
@@ -255,7 +255,7 @@ fn cross_process_mpsc_3_pub_1_sub() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_mpsc");
 
     // Parent: create topic as subscriber
@@ -344,7 +344,7 @@ fn cross_process_read_latest() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_latest");
 
     let topic: Topic<u64> = Topic::new(&topic_name).expect("parent: Topic::new");
@@ -393,7 +393,7 @@ fn cross_process_multithread_send_child_recv() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("xproc_mt");
 
     let topic: Topic<u64> = Topic::new(&topic_name).expect("parent: Topic::new");

@@ -104,7 +104,7 @@ impl Node for FlakyNode {
 
 #[test]
 fn test_enhanced_scheduler() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     // Create shared counters
     let cpu_counter = Arc::new(AtomicUsize::new(0));
     let io_counter = Arc::new(AtomicUsize::new(0));
@@ -206,7 +206,7 @@ fn test_enhanced_scheduler() {
 fn test_skip_policy_protection() {
     use horus_core::scheduling::FailurePolicy;
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new();

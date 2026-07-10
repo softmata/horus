@@ -347,7 +347,7 @@ fn shm_fanout_latency_percentiles_cross_thread() {
     }
 
     for (label, n_subs) in [("1P2S", 2usize), ("1P4S", 4)] {
-        cleanup_stale_shm();
+        let _shm_guard = cleanup_stale_shm();
 
         let topic_name = unique("lat_xthread");
         let n_messages = 5_000usize;
@@ -661,7 +661,7 @@ fn sustained_million_messages_no_corruption() {
 /// require a robot restart.
 #[test]
 fn late_subscriber_receives_new_messages() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("late_sub");
 
     let pub_topic: Topic<u64> = Topic::new(&name).expect("pub topic");
@@ -706,7 +706,7 @@ fn late_subscriber_receives_new_messages() {
 /// Once the sensor comes up, controllers must start receiving data.
 #[test]
 fn late_publisher_delivers_to_waiting_subscribers() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("late_pub");
 
     // Subscribers exist first
@@ -743,7 +743,7 @@ fn late_publisher_delivers_to_waiting_subscribers() {
 /// between sensor → controller → actuator must continue uninterrupted.
 #[test]
 fn subscriber_drop_others_continue() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("sub_drop");
 
     let pub_topic: Topic<u64> = Topic::new(&name).expect("pub");
@@ -889,7 +889,7 @@ impl Node for RelayNode {
 /// SPMC backend migration for cross-thread fan-out.
 #[test]
 fn estop_reaches_all_motor_controllers() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let estop_topic = unique("estop");
     let n_controllers = 6usize;
@@ -1155,7 +1155,7 @@ fn safety_observer_does_not_degrade_control_throughput() {
 /// - No message loss in the force→control chain (would cause force overshoot)
 #[test]
 fn surgical_robot_6dof_force_control() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let sensor_topics: Vec<String> = (0..6).map(|i| unique(&format!("surg_force_{i}"))).collect();
     let _fused_topic = unique("surg_fused");
@@ -1301,7 +1301,7 @@ fn surgical_robot_6dof_force_control() {
 /// - Actuators must not be starved by safety monitor
 #[test]
 fn autonomous_vehicle_full_stack() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let lidar_topic = unique("av_lidar");
     let camera_topic = unique("av_camera");
@@ -1537,7 +1537,7 @@ fn autonomous_vehicle_full_stack() {
 /// - Base must receive telemetry from ALL drones (missing = blind spot)
 #[test]
 fn drone_swarm_bidirectional_fanout() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let n_drones = 8usize;
     let cmd_topics: Vec<String> = (0..n_drones)
@@ -1665,7 +1665,7 @@ fn drone_swarm_bidirectional_fanout() {
 /// stale data, which in a press brake or injection molder causes defects.
 #[test]
 fn industrial_plc_chain_no_message_loss() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let t_sensor = unique("plc_sensor");
     let t_plc1 = unique("plc_1_out");
@@ -1772,7 +1772,7 @@ fn industrial_plc_chain_no_message_loss() {
 /// fusion). The planner must receive exactly one result from each path.
 #[test]
 fn diamond_no_duplicate_at_merge() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let a_to_b = unique("diamond_a2b");
     let a_to_c = unique("diamond_a2c");
@@ -2167,7 +2167,7 @@ fn concurrent_producers_data_integrity() {
 #[test]
 fn replay_determinism_same_output_sequence() {
     fn run_once() -> Vec<u64> {
-        cleanup_stale_shm();
+        let _shm_guard = cleanup_stale_shm();
 
         let t_sensor = unique("det_sensor");
         let t_ctrl = unique("det_ctrl");
@@ -2651,7 +2651,7 @@ fn fault_kill9_publisher_mid_stream() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let topic_name = unique("fault_kill9");
 
     // Parent creates topic FIRST (subscriber must exist before child publisher)
@@ -2758,7 +2758,7 @@ fn fault_shm_magic_corruption_rejected() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("corrupt_magic");
 
     // Spawn child to create SHM files that will persist after kill
@@ -2833,7 +2833,7 @@ fn fault_shm_magic_corruption_rejected() {
     // All three are acceptable. SIGSEGV would kill the process before we get here.
 
     // Cleanup for other tests
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 }
 
 /// Recovery after SHM corruption: cleanup + re-creation must produce a working topic.
@@ -2855,7 +2855,7 @@ fn fault_shm_recovery_after_corruption() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("corrupt_recover");
 
     // Spawn child to create SHM, kill it to leave orphans
@@ -2901,7 +2901,7 @@ fn fault_shm_recovery_after_corruption() {
     }
 
     // Clean up corrupted files
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Recovery: fresh topic with same name must work
     let t: Topic<u64> =
@@ -2948,7 +2948,7 @@ fn soak_60s_sustained_fanout() {
         }
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let n_pairs = 4usize;
     let soak_duration = Duration::from_secs(60);
@@ -3140,7 +3140,7 @@ fn soak_60s_sustained_fanout() {
 #[test]
 #[ignore] // Long-running — not part of default test suite
 fn soak_lifecycle_churn_30s() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     fn count_fds() -> Option<usize> {
         std::fs::read_dir("/proc/self/fd").ok().map(|d| d.count())
@@ -3209,7 +3209,7 @@ fn soak_lifecycle_churn_30s() {
         "Only {cycles} lifecycles in 30s — too slow, test may not be exercising the path"
     );
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 }
 
 // ============================================================================
@@ -3232,7 +3232,7 @@ fn cleanup_orphaned_shm_after_kill() {
         return;
     }
 
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_names: Vec<String> = (0..5).map(|i| unique(&format!("orphan_{i}"))).collect();
     let names_csv = topic_names.join(",");
@@ -3266,7 +3266,7 @@ fn cleanup_orphaned_shm_after_kill() {
     eprintln!("SHM before kill: {shm_existed_before_kill}, after kill: {shm_exists_after_kill}");
 
     // Cleanup: remove orphaned SHM files
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // Verify cleanup worked
     let topics_dir_after = horus_sys::shm::shm_topics_dir();
@@ -3298,7 +3298,7 @@ fn cleanup_orphaned_shm_after_kill() {
 /// Uses `std::mem::forget` to simulate unclean shutdown (no Drop runs on publisher).
 #[test]
 fn subscriber_survives_publisher_crash() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("pub_crash");
 
     // Subscriber on main thread
@@ -3420,7 +3420,7 @@ fn subscriber_survives_publisher_crash() {
 /// Topics use DirectChannel and may not register as separate SHM participants).
 #[test]
 fn resource_participant_slot_saturation() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
     let name = unique("slot_saturate");
 
     // Try creating many Topic instances on separate threads to fill participant slots.
@@ -3501,7 +3501,7 @@ fn resource_participant_slot_saturation() {
 /// Topic::new() to fail with "Too many open files."
 #[test]
 fn resource_topic_churn_no_fd_leak() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     fn count_fds() -> Option<usize> {
         std::fs::read_dir("/proc/self/fd").ok().map(|d| d.count())
@@ -3519,7 +3519,7 @@ fn resource_topic_churn_no_fd_leak() {
 
         // Periodic cleanup to prevent SHM dir buildup
         if i % 100 == 99 {
-            cleanup_stale_shm();
+            let _shm_guard = cleanup_stale_shm();
         }
     }
 

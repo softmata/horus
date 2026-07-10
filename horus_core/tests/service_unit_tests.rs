@@ -32,7 +32,7 @@ service! { MultiClientA { request { a: i64, b: i64 } response { sum: i64 } } }
 
 #[test]
 fn test_service_basic_roundtrip() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<RapidFire>::new()
         .on_request(|req| Ok(RapidFireResponse { echo: req.seq }))
@@ -55,7 +55,7 @@ fn test_service_basic_roundtrip() {
 
 #[test]
 fn test_service_multiple_sequential_calls() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<ConcurrentAdd>::new()
         .on_request(|req| Ok(ConcurrentAddResponse { sum: req.a + req.b }))
@@ -86,7 +86,7 @@ fn test_service_multiple_sequential_calls() {
 
 #[test]
 fn test_concurrent_multi_client() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<MultiClientA>::new()
         .on_request(|req| Ok(MultiClientAResponse { sum: req.a + req.b }))
@@ -147,7 +147,7 @@ fn test_concurrent_multi_client() {
 
 #[test]
 fn test_fallible_handler_returns_error() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let _server = ServiceServerBuilder::<FallibleSvc>::new()
         .on_request(|req| {
@@ -184,7 +184,7 @@ fn test_fallible_handler_returns_error() {
 
 #[test]
 fn test_rapid_sequential_calls_no_mismatch() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let call_count = Arc::new(AtomicU64::new(0));
     let call_count_clone = call_count.clone();
@@ -223,7 +223,7 @@ fn test_rapid_sequential_calls_no_mismatch() {
 
 #[test]
 fn test_server_stop_clean() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let server = ServiceServerBuilder::<SlowService>::new()
         .on_request(|_req| Ok(SlowServiceResponse { done: true }))
@@ -252,7 +252,7 @@ fn test_request_ids_are_unique_sequential() {
     // This test verifies that ServiceClient generates unique request IDs
     // by making multiple clients and checking their first call's ID is unique.
     // The global NEXT_REQUEST_ID atomic ensures monotonic uniqueness.
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     // We can't directly access NEXT_REQUEST_ID, but we can verify
     // that multiple clients and calls succeed (IDs would collide if broken)

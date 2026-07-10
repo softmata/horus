@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 /// catch_unwind to isolate panicking nodes.
 #[test]
 fn test_node_crash_system_survives() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let lidar_ticks = Arc::new(AtomicU64::new(0));
     let imu_ticks = Arc::new(AtomicU64::new(0));
@@ -128,7 +128,7 @@ fn test_node_crash_system_survives() {
 /// continue processing. The scheduler must not enter an undefined state.
 #[test]
 fn test_multiple_node_crashes_still_stable() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let tick_counts: Vec<Arc<AtomicU64>> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -218,7 +218,7 @@ fn test_multiple_node_crashes_still_stable() {
 /// scan would cause the robot to drive into newly-appeared obstacles.
 #[test]
 fn test_crashed_node_recv_returns_none() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = common::unique("crash.sensor");
     let sensor_ticks = Arc::new(AtomicU64::new(0));

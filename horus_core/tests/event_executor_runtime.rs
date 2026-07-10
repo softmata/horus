@@ -61,7 +61,7 @@ fn unique_topic(prefix: &str) -> String {
 
 #[test]
 fn test_event_node_ticks_on_notification() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_notify");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -113,7 +113,7 @@ fn test_event_node_ticks_on_notification() {
 
 #[test]
 fn test_event_node_no_tick_without_data() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_empty");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -149,7 +149,7 @@ fn test_event_node_no_tick_without_data() {
 
 #[test]
 fn test_event_node_coexists_with_best_effort() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_coexist");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -212,7 +212,7 @@ fn test_event_node_coexists_with_best_effort() {
 
 #[test]
 fn test_event_rapid_burst_no_crash() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_burst");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -271,7 +271,7 @@ fn test_event_rapid_burst_no_crash() {
 
 #[test]
 fn test_event_node_with_rt_node() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_rt");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -331,7 +331,7 @@ fn test_event_node_with_rt_node() {
 
 #[test]
 fn test_event_sustained_2_seconds() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_sustained");
     let event_ticks = Arc::new(AtomicU64::new(0));
@@ -382,7 +382,7 @@ fn test_event_sustained_2_seconds() {
 
 #[test]
 fn test_multiple_event_nodes_independent() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_a = unique_topic("evt_multi_a");
     let topic_b = unique_topic("evt_multi_b");
@@ -444,7 +444,7 @@ fn test_multiple_event_nodes_independent() {
 
 #[test]
 fn test_event_watcher_cleanup_on_drop() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let topic_name = unique_topic("evt_cleanup");
     let event_ticks = Arc::new(AtomicU64::new(0));

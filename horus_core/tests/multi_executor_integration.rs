@@ -87,7 +87,7 @@ fn pid() -> u32 {
 
 #[test]
 fn test_rt_not_starved_by_compute() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let rt_ticks = Arc::new(AtomicU64::new(0));
     let compute_ticks = Arc::new(AtomicU64::new(0));
@@ -149,7 +149,7 @@ fn test_rt_not_starved_by_compute() {
 
 #[test]
 fn test_async_does_not_block_rt() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let rt_ticks = Arc::new(AtomicU64::new(0));
     let async_ticks = Arc::new(AtomicU64::new(0));
@@ -201,7 +201,7 @@ fn test_async_does_not_block_rt() {
 
 #[test]
 fn test_three_execution_classes_coexist() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let rt_ticks = Arc::new(AtomicU64::new(0));
     let compute_ticks = Arc::new(AtomicU64::new(0));
@@ -252,7 +252,7 @@ fn test_three_execution_classes_coexist() {
 
 #[test]
 fn test_compute_rate_limiting() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let node = ComputeCounterNode {
@@ -287,7 +287,7 @@ fn test_compute_rate_limiting() {
 
 #[test]
 fn test_async_rate_limiting() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let node = AsyncCounterNode {
@@ -320,7 +320,7 @@ fn test_async_rate_limiting() {
 
 #[test]
 fn test_best_effort_ticks_at_scheduler_rate() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let ticks = Arc::new(AtomicU64::new(0));
     let node = BestEffortCounterNode {

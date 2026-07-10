@@ -105,7 +105,7 @@ impl Node for ShutdownTracker {
 /// The watchdog should still detect the stalling node under contention.
 #[test]
 fn test_watchdog_under_cpu_contention() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_count = Arc::new(AtomicU64::new(0));
     let healthy_count = Arc::new(AtomicU64::new(0));
@@ -180,7 +180,7 @@ fn test_watchdog_under_cpu_contention() {
 
 #[test]
 fn test_watchdog_with_rt_scheduling() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
 
@@ -226,7 +226,7 @@ fn test_watchdog_with_rt_scheduling() {
 /// cascade to C. This test measures whether the cascade is detected.
 #[test]
 fn test_deadline_cascade_3_nodes() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count_a = Arc::new(AtomicU64::new(0));
     let count_b = Arc::new(AtomicU64::new(0));
@@ -317,7 +317,7 @@ fn test_deadline_cascade_3_nodes() {
 
 #[test]
 fn test_5_node_cascade_chain() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -380,7 +380,7 @@ fn test_5_node_cascade_chain() {
 /// We measure tick count over a known duration to verify the reduction.
 #[test]
 fn test_rate_reduction_measured() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let stall_count = Arc::new(AtomicU64::new(0));
     let healthy_count = Arc::new(AtomicU64::new(0));
@@ -446,7 +446,7 @@ fn test_rate_reduction_measured() {
 /// spurious deadline misses or degradation activations.
 #[test]
 fn test_no_false_positives_sustained() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..5).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -505,7 +505,7 @@ fn test_no_false_positives_sustained() {
 /// Trigger emergency stop and verify all nodes stop quickly.
 #[test]
 fn test_estop_propagation_latency() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let counts: Vec<_> = (0..10).map(|_| Arc::new(AtomicU64::new(0))).collect();
 
@@ -567,7 +567,7 @@ fn test_estop_propagation_latency() {
 
 #[test]
 fn test_estop_20_nodes_all_shutdown() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let shutdown_counts: Vec<_> = (0..20).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let tick_counts: Vec<_> = (0..20).map(|_| Arc::new(AtomicU64::new(0))).collect();
@@ -628,7 +628,7 @@ fn test_estop_20_nodes_all_shutdown() {
 /// node's stall.
 #[test]
 fn test_priority_inversion_detected() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let shared_lock = Arc::new(std::sync::Mutex::new(()));
     let high_count = Arc::new(AtomicU64::new(0));
@@ -729,7 +729,7 @@ fn test_priority_inversion_detected() {
 /// No data races, no panics, no hangs.
 #[test]
 fn test_concurrent_safety_queries() {
-    cleanup_stale_shm();
+    let _shm_guard = cleanup_stale_shm();
 
     let count = Arc::new(AtomicU64::new(0));
     let _running = Arc::new(AtomicBool::new(true));
