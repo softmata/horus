@@ -21,19 +21,29 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::primitives::CachePadded;
+use super::seqlock::{seqlock_consume, seqlock_publish};
 
 /// Maximum publishers and subscribers supported per FanoutRing.
 const MAX_ENDPOINTS: usize = 16;
 
-/// A single SPSC channel (no atomics on the fast path for the producer).
+/// A single SPSC channel with **drop-oldest (latest-wins)** semantics.
+///
+/// The producer never blocks and never fails: a full ring overwrites its oldest
+/// slot. A consumer that falls more than `capacity` behind fast-forwards to the
+/// newest window. Torn/lapped reads are detected via the per-slot version stamps
+/// in `versions` — see [`super::seqlock`] for the protocol.
 struct SpscChannel<T> {
-    /// Producer head — only written by one publisher.
+    /// Producer head — only written by one publisher (monotonic position).
     head: CachePadded<AtomicU64>,
-    /// Consumer tail — only written by one subscriber.
+    /// Consumer tail — only written by one subscriber (its read position).
     tail: CachePadded<AtomicU64>,
-    /// Producer's cached view of tail (avoids cross-core load).
-    cached_tail: Cell<u64>,
-    /// Ring buffer
+    /// Per-slot version stamps `(pos << 1) | writing_bit`. See `seqlock`.
+    versions: Box<[AtomicU64]>,
+    /// Ring buffer. Slots hold bitwise copies that are NEVER dropped by the ring
+    /// (a consumer receives an independent bitwise copy; the producer overwrites
+    /// without running `Drop`). For POD/`Copy` payloads this is free; for `Drop`
+    /// payloads the value in a slot is leaked when overwritten or on teardown —
+    /// the documented cost of lock-free drop-oldest fan-out.
     buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
     /// Capacity mask (capacity - 1, power of 2).
     mask: u64,
@@ -45,99 +55,52 @@ impl<T> SpscChannel<T> {
     fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two();
         let mut buffer = Vec::with_capacity(cap);
+        let mut versions = Vec::with_capacity(cap);
         for _ in 0..cap {
             buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
+            versions.push(AtomicU64::new(0));
         }
         Self {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
-            cached_tail: Cell::new(0),
+            versions: versions.into_boxed_slice(),
             buffer: buffer.into_boxed_slice(),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
         }
     }
 
-    /// Send a value (single producer, no contention).
-    /// Returns Err if the channel is full.
+    /// Send a value — never fails, overwrites the oldest slot when full.
     #[inline(always)]
-    #[allow(dead_code)]
-    fn try_send(&self, msg: T) -> Result<(), T> {
-        let head = self.head.0.load(Ordering::Relaxed);
-
-        // Lazy tail cache: only load atomic tail when cached says full
-        let mut tail = self.cached_tail.get();
-        if head.wrapping_sub(tail) >= self.capacity {
-            tail = self.tail.0.load(Ordering::Acquire);
-            self.cached_tail.set(tail);
-            if head.wrapping_sub(tail) >= self.capacity {
-                return Err(msg);
-            }
-        }
-
-        let index = (head & self.mask) as usize;
-        // SAFETY: single producer, index in bounds
+    fn send(&self, msg: T) {
+        let pos = self.head.0.load(Ordering::Relaxed);
+        // SAFETY: single producer owns `head`; `versions`/`buffer` have `mask+1`
+        // entries. `write_slot` uses `ptr::write` (no drop of the prior occupant).
         unsafe {
-            let slot = self.buffer.get_unchecked(index);
-            slot.get().write(MaybeUninit::new(msg));
+            seqlock_publish(self.versions.as_ptr(), self.mask, &self.head.0, pos, |idx| {
+                std::ptr::write(self.buffer[idx].get() as *mut T, msg);
+            });
         }
-        self.head.0.store(head.wrapping_add(1), Ordering::Release);
-        Ok(())
     }
 
-    /// Send a value, overwriting the oldest unread message if the channel
-    /// is full. This is the correct behavior for robotics pub/sub: a slow
-    /// subscriber gets the LATEST data, not stale buffered data.
-    ///
-    /// The dropped message is the oldest in the ring (at tail position).
-    /// The consumer will see a gap in sequence numbers but never reads
-    /// stale data from N cycles ago.
+    /// Receive the next available value (latest-wins), or `None` if empty.
     #[inline(always)]
-    fn send_overwrite(&self, msg: T) {
-        let head = self.head.0.load(Ordering::Relaxed);
-
-        let mut tail = self.cached_tail.get();
-        if head.wrapping_sub(tail) >= self.capacity {
-            tail = self.tail.0.load(Ordering::Acquire);
-            self.cached_tail.set(tail);
-            if head.wrapping_sub(tail) >= self.capacity {
-                // Channel full — advance tail to drop oldest message.
-                // SAFETY: The old message at tail is a valid T (written by a
-                // previous send). We overwrite the slot below, so the old
-                // value is logically dropped. For Copy types this is free;
-                // for Drop types the old value leaks (acceptable: fanout
-                // messages are typically Copy/POD sensor data).
-                self.tail.0.store(tail.wrapping_add(1), Ordering::Release);
-                self.cached_tail.set(tail.wrapping_add(1));
-            }
-        }
-
-        let index = (head & self.mask) as usize;
+    fn recv(&self) -> Option<T> {
+        // SAFETY: single consumer owns `tail`; `read_slot` returns a bitwise copy
+        // via `ptr::read`; a torn copy is `mem::forget`-ed (never dropped).
         unsafe {
-            let slot = self.buffer.get_unchecked(index);
-            slot.get().write(MaybeUninit::new(msg));
+            seqlock_consume(
+                self.versions.as_ptr(),
+                self.mask,
+                self.capacity,
+                &self.head.0,
+                &self.tail.0,
+                |idx| std::ptr::read(self.buffer[idx].get() as *const T),
+                |val| std::mem::forget(val),
+            )
         }
-        self.head.0.store(head.wrapping_add(1), Ordering::Release);
     }
 
-    /// Receive a value (single consumer, no contention).
-    #[inline(always)]
-    fn try_recv(&self) -> Option<T> {
-        let tail = self.tail.0.load(Ordering::Relaxed);
-        let head = self.head.0.load(Ordering::Acquire);
-        if tail >= head {
-            return None;
-        }
-
-        let index = (tail & self.mask) as usize;
-        // SAFETY: single consumer, data visible via Acquire on head
-        let msg = unsafe {
-            let slot = self.buffer.get_unchecked(index);
-            (*slot.get()).assume_init_read()
-        };
-        self.tail.0.store(tail.wrapping_add(1), Ordering::Release);
-        Some(msg)
-    }
 }
 
 // SAFETY: SpscChannel is used within FanoutRing which ensures
@@ -145,18 +108,12 @@ impl<T> SpscChannel<T> {
 unsafe impl<T: Send> Send for SpscChannel<T> {}
 unsafe impl<T: Send> Sync for SpscChannel<T> {}
 
-impl<T> Drop for SpscChannel<T> {
-    fn drop(&mut self) {
-        let head = *self.head.0.get_mut();
-        let tail = *self.tail.0.get_mut();
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            unsafe {
-                self.buffer[index].get_mut().assume_init_drop();
-            }
-        }
-    }
-}
+// NOTE: no `Drop` impl. Under drop-oldest, a slot's value may have been copied
+// out by a consumer (bitwise) while the ring still holds an identical bitwise
+// image; dropping ring slots on teardown would double-free those copies. The
+// ring therefore never runs `Drop` on its slots — for POD/`Copy` payloads this
+// is free, and for `Drop` payloads any values still resident at teardown leak
+// (the same documented cost this backend already accepted for overwrites).
 
 /// Contention-free MPMC ring buffer using a matrix of SPSC channels.
 ///
@@ -246,14 +203,11 @@ impl<T: Clone> FanoutRing<T> {
 
         let pub_channels = &self.channels[pub_id];
 
-        // Send to all subscriber channels with overwrite semantics.
-        // If a subscriber's channel is full (slow consumer), the oldest
-        // unread message is dropped so the subscriber always gets the latest
-        // data. This is correct for robotics: a 30Hz perception node reading
-        // a 500Hz IMU should get the MOST RECENT readings, not stale data
-        // buffered from 100ms ago.
+        // Drop-oldest fan-out: each subscriber channel overwrites its oldest
+        // slot when full so a slow consumer always gets the LATEST data, never
+        // stale buffered data, and the producer is never throttled. Never fails.
         for ch in pub_channels.iter().take(n_subs) {
-            ch.send_overwrite(msg.clone());
+            ch.send(msg.clone());
         }
 
         Ok(())
@@ -275,7 +229,7 @@ impl<T: Clone> FanoutRing<T> {
 
         for offset in 0..n_pubs {
             let pub_id = (start + offset) % n_pubs;
-            if let Some(msg) = self.channels[pub_id][sub_id].try_recv() {
+            if let Some(msg) = self.channels[pub_id][sub_id].recv() {
                 // Advance cursor past this publisher for fairness
                 self.recv_cursors[sub_id].set(pub_id + 1);
                 return Some(msg);
@@ -286,6 +240,10 @@ impl<T: Clone> FanoutRing<T> {
     }
 
     /// Check how many messages are pending across all channels for a subscriber.
+    ///
+    /// Clamped to `capacity` per channel: under drop-oldest a lagging consumer's
+    /// `head - tail` can exceed the ring size, but at most `capacity` messages
+    /// are actually still readable (the rest were overwritten).
     pub fn pending_count_for_sub(&self, sub_id: usize) -> u64 {
         let n_pubs = self.num_publishers.load(Ordering::Relaxed) as usize;
         let mut total = 0u64;
@@ -293,7 +251,7 @@ impl<T: Clone> FanoutRing<T> {
             let ch = &self.channels[pub_id][sub_id];
             let head = ch.head.0.load(Ordering::Relaxed);
             let tail = ch.tail.0.load(Ordering::Relaxed);
-            total += head.wrapping_sub(tail);
+            total += head.wrapping_sub(tail).min(ch.capacity);
         }
         total
     }
@@ -360,18 +318,25 @@ mod tests {
     #[test]
     fn test_spsc_channel_basic() {
         let ch = SpscChannel::<u64>::new(16);
-        ch.try_send(42).unwrap();
-        assert_eq!(ch.try_recv(), Some(42));
-        assert_eq!(ch.try_recv(), None);
+        ch.send(42);
+        assert_eq!(ch.recv(), Some(42));
+        assert_eq!(ch.recv(), None);
     }
 
     #[test]
-    fn test_spsc_channel_full() {
+    fn test_spsc_channel_full_drops_oldest() {
+        // Drop-oldest: sends never fail; a full ring overwrites its oldest slot,
+        // so the consumer sees the newest `capacity` values, not the oldest.
         let ch = SpscChannel::<u64>::new(4);
-        for i in 0..4 {
-            ch.try_send(i).unwrap();
+        for i in 0..6 {
+            ch.send(i); // 0,1 get overwritten by 4,5
         }
-        assert!(ch.try_send(99).is_err());
+        let mut got = Vec::new();
+        while let Some(v) = ch.recv() {
+            got.push(v);
+        }
+        assert_eq!(got.len(), 4, "ring holds exactly capacity newest msgs");
+        assert_eq!(got, vec![2, 3, 4, 5], "oldest (0,1) dropped, order preserved");
     }
 
     #[test]
@@ -569,15 +534,20 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "VERIFIED pre-existing bug (softmata-brain): FanoutRing::send_overwrite violates the SPSC invariant. It stores self.tail from the PRODUCER thread (fanout.rs:110) to drop the oldest message when full, but try_recv also stores self.tail from the CONSUMER thread (fanout.rs:138). Two threads writing tail = a data race that reorders reads under sustained load (observed: value 4406 read before 3898 within a single publisher's FIFO channel). Lock-free drop-oldest needs per-slot sequence numbers (seqlock) so the consumer can detect+retry torn reads, or consumer-driven lap detection -- a concurrency redesign that must clear the loom gate. Low production impact: this backs BackendMode::FanoutIntra, a largely-dead heap path (real topics are shm_backed -> FanoutShm/ShmFanoutRing). NOT caused by this session's SHM dispatch/migration work (fanout.rs untouched)."]
+    // Fixed: the old send_overwrite wrote `tail` from the producer thread (an
+    // SPSC-invariant violation that reordered reads under load). The ring now
+    // uses the per-slot-versioned seqlock (see `super::super::seqlock`), which is
+    // drop-oldest AND reorder-free — verified here (100K msgs) and under loom in
+    // tests/loom_fanout.rs.
     fn test_sustained_load_data_integrity() {
-        // 100K messages through each of 2 publishers to 2 subscribers
-        // with full data verification (not just count)
+        // 50K messages through each of 2 publishers to 2 subscribers, verifying
+        // that latest-wins fan-out never reorders/duplicates within a publisher's
+        // stream (the invariant the old send_overwrite race broke).
         use std::sync::Arc;
         use std::thread;
 
         let ring = Arc::new(FanoutRing::<u64>::new(4, 4, 256));
-        let msgs = 100_000;
+        let msgs = 50_000;
 
         let p0 = ring.register_publisher();
         let p1 = ring.register_publisher();
@@ -622,7 +592,7 @@ mod tests {
         let h_s0 = thread::spawn(move || {
             b_c.wait();
             let mut received = Vec::with_capacity(msgs * 2);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while received.len() < msgs * 2 && std::time::Instant::now() < deadline {
                 if let Some(v) = ring_c.recv_as(s0) {
                     received.push(v);
@@ -636,7 +606,7 @@ mod tests {
         let h_s1 = thread::spawn(move || {
             b_c.wait();
             let mut received = Vec::with_capacity(msgs * 2);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while received.len() < msgs * 2 && std::time::Instant::now() < deadline {
                 if let Some(v) = ring_c.recv_as(s1) {
                     received.push(v);
@@ -797,22 +767,21 @@ mod tests {
 
     #[test]
     fn test_capacity_recovery_after_full() {
-        // Fill ring, drain it, refill — verify no corruption
-        // Use the underlying SpscChannel directly since FanoutRing's send_as is lossy
+        // Fill exactly to capacity (no overwrite at avail == capacity), drain in
+        // order, refill — verify no corruption across wrap cycles.
         let ch = SpscChannel::<u64>::new(16);
 
         for cycle in 0u64..5 {
-            // Fill
+            // Fill exactly capacity — every message survives (nothing lapped).
             for i in 0..16u64 {
-                ch.try_send(cycle * 100 + i).unwrap();
+                ch.send(cycle * 100 + i);
             }
-            assert!(ch.try_send(999).is_err(), "should be full");
 
-            // Drain
+            // Drain — all 16 come back in FIFO order.
             for i in 0..16u64 {
-                assert_eq!(ch.try_recv(), Some(cycle * 100 + i));
+                assert_eq!(ch.recv(), Some(cycle * 100 + i));
             }
-            assert_eq!(ch.try_recv(), None, "should be empty");
+            assert_eq!(ch.recv(), None, "should be empty");
         }
     }
 

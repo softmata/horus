@@ -122,6 +122,8 @@ pub(crate) mod dispatch;
 pub mod fanout;
 pub(crate) mod mpsc_intra;
 pub(crate) mod registry;
+/// Shared seqlock ring protocol for drop-oldest (latest-wins) fanout.
+pub(crate) mod seqlock;
 /// Cross-process contention-free MPMC via SHM-backed SPSC matrix.
 pub(crate) mod shm_fanout;
 pub(crate) mod spmc_intra;
