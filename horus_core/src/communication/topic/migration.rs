@@ -141,7 +141,15 @@ impl<'a> BackendMigrator<'a> {
     /// migration should be retried rather than proceeding unsafely.
     fn drain_in_flight(&self) -> bool {
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_micros(100); // 100us -- generous for <200ns ops
+        // In-flight send/recv ops complete in <200ns, but this budget must bound
+        // GENUINELY-stuck producers (e.g. a thread suspended by a debugger), not
+        // the drain's own cost: the spin loop below runs DEFAULT_SPIN_COUNT (1000)
+        // SeqCst fences + clock reads, which alone costs ~100us and, under CPU
+        // load or a single preemption, can exceed a tight budget — spuriously
+        // aborting a migration that had nothing to drain. 25ms tolerates that
+        // scheduling jitter while still catching a truly wedged producer (which
+        // never completes, so the migration is safely deferred and retried).
+        let timeout = std::time::Duration::from_millis(25);
 
         // Spin to let sub-microsecond operations complete
         for _ in 0..self.spin_count {
