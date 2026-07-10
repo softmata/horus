@@ -770,11 +770,13 @@ macro_rules! horus_internal {
 /// ```rust
 /// // PREFERRED — use the short aliases:
 /// use horus_core::error::{Result, Error};
-/// fn my_function() -> Result<()> { Ok(()) }
+/// fn preferred() -> Result<()> { Ok(()) }
+/// fn also_ok() -> std::result::Result<(), Error> { Ok(()) }
 ///
 /// // AVOID — verbose, no benefit:
 /// use horus_core::error::HorusResult;
-/// fn my_function() -> HorusResult<()> { Ok(()) }
+/// fn verbose() -> HorusResult<()> { Ok(()) }
+/// # let _ = (preferred(), also_ok(), verbose());
 /// ```
 pub type HorusResult<T> = std::result::Result<T, HorusError>;
 
