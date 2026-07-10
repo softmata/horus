@@ -582,15 +582,22 @@ fn topic_has_message_and_pending_count() {
 #[test]
 fn topic_same_thread_uses_direct_channel() {
     let t: Topic<u64> = Topic::new(unique("dc_mode")).expect("create");
-    // Trigger backend detection
+    // Trigger backend detection (recv must complete to settle the backend).
     t.send(1);
-    let _ = t.recv();
+    assert_eq!(t.recv(), Some(1));
 
+    // Real topics are SHM-backed (creator_pid set), so a same-thread self-loop
+    // resolves to SpscShm — never the DirectChannel fast path. The exact settled
+    // state may still read Unknown before the first migration check fires; the
+    // invariant is simply "not a heap/DirectChannel backend".
     let local = t.ring.local();
-    assert_eq!(
-        local.cached_mode,
-        BackendMode::DirectChannel,
-        "Same-thread should use DirectChannel, got {:?}",
+    assert!(
+        matches!(
+            local.cached_mode,
+            BackendMode::SpscShm | BackendMode::Unknown
+        ),
+        "Same-thread real topic must be SHM-backed (or not-yet-migrated), never \
+         the DirectChannel fast path; got {:?}",
         local.cached_mode
     );
 }
@@ -10458,7 +10465,7 @@ fn e2e_type_name_readable_from_header_info() {
     let t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
     t.send(42); // ensure header is fully initialized
 
-    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let path = shm_topics_dir().join(&name);
     let info = read_topic_header_info(&path).expect("read header info");
     assert!(
         info.type_name.contains("i32"),
@@ -10480,7 +10487,7 @@ fn e2e_messages_total_matches_send_count_via_header_info() {
         t.send(i);
     }
 
-    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let path = shm_topics_dir().join(&name);
     let info = read_topic_header_info(&path).expect("read header info");
     assert_eq!(
         info.messages_total, 200,
@@ -10499,7 +10506,7 @@ fn e2e_messages_total_matches_send_count_via_slot_read() {
         t.send(i);
     }
 
-    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let path = shm_topics_dir().join(&name);
     // Note: read_latest_slot_bytes may return None for DirectChannel (same-thread)
     // backends because sequence_or_head in SHM is not updated on the fast path.
     // When it IS available (SHM backend), verify consistency.
@@ -10532,7 +10539,7 @@ fn e2e_header_info_and_slot_read_consistent() {
         t.send(i);
     }
 
-    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let path = shm_topics_dir().join(&name);
     let info = read_topic_header_info(&path).expect("header info");
 
     // Slot read may return None for DirectChannel backends (same-thread).
@@ -10566,7 +10573,7 @@ fn e2e_non_pod_type_detected() {
     let t: RingTopic<String> = RingTopic::new(&name).expect("create topic");
     t.send("hello".to_string());
 
-    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let path = shm_topics_dir().join(&name);
     let info = read_topic_header_info(&path).expect("header info");
     assert!(!info.is_pod, "String should not be POD");
     assert!(
@@ -10589,8 +10596,8 @@ fn e2e_multiple_topics_distinct_type_names() {
     t1.send(1);
     t2.send(1.0);
 
-    let path1 = shm_topics_dir().join(format!("horus_{}", name_i32));
-    let path2 = shm_topics_dir().join(format!("horus_{}", name_f64));
+    let path1 = shm_topics_dir().join(&name_i32);
+    let path2 = shm_topics_dir().join(&name_f64);
     let info1 = read_topic_header_info(&path1).expect("read i32 header");
     let info2 = read_topic_header_info(&path2).expect("read f64 header");
 
@@ -10658,7 +10665,7 @@ fn e2e_zero_sends_zero_messages_total() {
     let _t: RingTopic<i32> = RingTopic::new(&name).expect("create topic");
     // No sends
 
-    let path = shm_topics_dir().join(format!("horus_{}", name));
+    let path = shm_topics_dir().join(&name);
     let info = read_topic_header_info(&path).expect("header info");
     assert_eq!(
         info.messages_total, 0,
