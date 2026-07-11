@@ -358,10 +358,50 @@ impl TensorPool {
             allocator: PoolAllocator::default(), // Opened pools use mmap (data in the file)
         };
 
+        // Validate header geometry before trusting it. A corrupt or adversarial
+        // pool file can carry a valid magic but hostile geometry, and slot()/
+        // align_up/data_base all trust these fields; an unchecked slot_alignment,
+        // max_slots, or pool_size yields an OOB slot index or a data region past
+        // the mapping. (new()'s non-owner path checks version via validate_fields;
+        // open() did not check version OR geometry at all.)
+        if header.version != POOL_VERSION {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Tensor pool version mismatch: expected {}, got {}",
+                POOL_VERSION, header.version
+            ))));
+        }
+        if config.slot_alignment == 0 || !config.slot_alignment.is_power_of_two() {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Invalid tensor pool slot_alignment {} (must be a power of two)",
+                config.slot_alignment
+            ))));
+        }
         let header_size = std::mem::size_of::<PoolHeader>();
-        let slots_size = config.max_slots * std::mem::size_of::<SlotHeader>();
-        let metadata_size = header_size + slots_size;
+        let slots_size = config
+            .max_slots
+            .checked_mul(std::mem::size_of::<SlotHeader>())
+            .ok_or_else(|| {
+                HorusError::Config(ConfigError::Other(
+                    "Tensor pool max_slots overflows the slot region".to_string(),
+                ))
+            })?;
+        let metadata_size = header_size.checked_add(slots_size).ok_or_else(|| {
+            HorusError::Config(ConfigError::Other(
+                "Tensor pool metadata size overflows".to_string(),
+            ))
+        })?;
         let data_offset = Self::align_up(metadata_size, config.slot_alignment);
+        let needed = data_offset.checked_add(config.pool_size).ok_or_else(|| {
+            HorusError::Config(ConfigError::Other(
+                "Tensor pool geometry overflows usize".to_string(),
+            ))
+        })?;
+        if needed > total_size {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Tensor pool geometry ({needed} bytes: {} slots + {} data) exceeds mapped file size ({total_size} bytes) — corrupt header",
+                config.max_slots, config.pool_size
+            ))));
+        }
 
         // SAFETY: same reasoning as new() — mmap is valid, header is initialized.
         let backend: Box<dyn PoolBackend> = unsafe {
@@ -1765,6 +1805,13 @@ impl TensorPool {
 
     #[inline]
     fn align_up(value: usize, alignment: usize) -> usize {
+        // Guard against alignment 0 and 1: aligning to 1 is the identity, and
+        // alignment 0 (only reachable from a corrupt SHM header) would underflow
+        // `alignment - 1` (debug panic / release wrap that collapses the data
+        // region onto the header). Both cases return the value unchanged.
+        if alignment <= 1 {
+            return value;
+        }
         // Use wrapping_add to avoid overflow in the standard bit-manipulation trick.
         // The mask ensures the result is always aligned regardless of wrap.
         value.wrapping_add(alignment - 1) & !(alignment - 1)
@@ -4151,6 +4198,49 @@ mod tests {
             "alloc of u64::MAX elements must fail, not wrap align_up to 0"
         );
         std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn open_rejects_corrupt_header_geometry() {
+        use memmap2::MmapOptions;
+        use std::fs::OpenOptions;
+
+        let pool = make_test_pool(9974);
+        let path = pool.shm_path.clone();
+
+        // Corrupt slot_alignment to 0 via a second mmap of the same file (valid magic,
+        // hostile geometry). Pre-fix open() underflows align_up (debug panic) or
+        // collapses the data region onto the header. Keep `pool` alive so the file
+        // exists for reopening.
+        {
+            let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            let mut mmap = unsafe { MmapOptions::new().map_mut(&file).unwrap() };
+            let header = unsafe { &mut *(mmap.as_mut_ptr() as *mut PoolHeader) };
+            header.slot_alignment = 0;
+            mmap.flush().unwrap();
+        }
+        assert!(
+            TensorPool::open(9974).is_err(),
+            "open must reject slot_alignment = 0"
+        );
+
+        // Restore alignment; corrupt max_slots to an absurd value whose slot region
+        // would push the data region far past the mapped file (OOB slot indexing).
+        {
+            let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            let mut mmap = unsafe { MmapOptions::new().map_mut(&file).unwrap() };
+            let header = unsafe { &mut *(mmap.as_mut_ptr() as *mut PoolHeader) };
+            header.slot_alignment = 64;
+            header.max_slots = u32::MAX;
+            mmap.flush().unwrap();
+        }
+        assert!(
+            TensorPool::open(9974).is_err(),
+            "open must reject geometry that exceeds the mapped file size"
+        );
+
+        drop(pool);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
