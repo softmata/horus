@@ -874,6 +874,9 @@ impl TensorPool {
         if tensor.pool_id != self.pool_id {
             return;
         }
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return; // out-of-range slot: corrupt/adversarial descriptor — no-op
+        }
 
         let slot = self.slot(tensor.slot_id);
 
@@ -911,6 +914,15 @@ impl TensorPool {
                 format!(
                     "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
                     tensor.pool_id, self.pool_id
+                )
+                .into(),
+            ));
+        }
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return Err(HorusError::Memory(
+                format!(
+                    "slot_id {} out of range (max_slots {}) — corrupt descriptor",
+                    tensor.slot_id, self.config.max_slots
                 )
                 .into(),
             ));
@@ -961,6 +973,9 @@ impl TensorPool {
         if tensor.pool_id != self.pool_id {
             return;
         }
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return; // out-of-range slot: corrupt/adversarial descriptor — no-op
+        }
 
         let slot = self.slot_mut(tensor.slot_id);
 
@@ -1001,6 +1016,15 @@ impl TensorPool {
                 format!(
                     "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
                     tensor.pool_id, self.pool_id
+                )
+                .into(),
+            ));
+        }
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return Err(HorusError::Memory(
+                format!(
+                    "slot_id {} out of range (max_slots {}) — corrupt descriptor",
+                    tensor.slot_id, self.config.max_slots
                 )
                 .into(),
             ));
@@ -1111,6 +1135,11 @@ impl TensorPool {
         // 2. Slot X is freed and reallocated with generation G+1
         // 3. Process B reads the stale SpillDescriptor with generation G
         // 4. Without this check, B reads G+1's data thinking it's G's
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return Err(HorusError::Memory(
+                format!("slot_id {} out of range — corrupt descriptor", tensor.slot_id).into(),
+            ));
+        }
         let slot = self.slot(tensor.slot_id);
         let slot_gen = slot.generation.load(std::sync::atomic::Ordering::Acquire);
         if slot_gen != tensor.generation_full() {
@@ -1157,6 +1186,28 @@ impl TensorPool {
                 "pool_id mismatch in data_slice_mut: tensor belongs to pool {}, this pool is {}",
                 tensor.pool_id, self.pool_id
             )
+                .into(),
+            ));
+        }
+
+        // slot_id bounds + generation check — the WRITE path must be as strict as
+        // data_slice(): reject an out-of-range slot (OOB deref) and a stale
+        // descriptor (freed+realloced slot), else a stale writer clobbers the live
+        // tensor now occupying this slot.
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return Err(HorusError::Memory(
+                format!("slot_id {} out of range — corrupt descriptor", tensor.slot_id).into(),
+            ));
+        }
+        let slot = self.slot(tensor.slot_id);
+        let slot_gen = slot.generation.load(std::sync::atomic::Ordering::Acquire);
+        if slot_gen != tensor.generation_full() {
+            return Err(HorusError::Memory(
+                format!(
+                    "generation mismatch in data_slice_mut: descriptor generation {} != slot generation {} \
+                     (slot was freed and reallocated — stale descriptor)",
+                    tensor.generation_full(), slot_gen
+                )
                 .into(),
             ));
         }
@@ -1281,6 +1332,9 @@ impl TensorPool {
         if tensor.pool_id != self.pool_id {
             return 0;
         }
+        if !self.slot_id_in_range(tensor.slot_id) {
+            return 0; // out-of-range slot: corrupt/adversarial descriptor
+        }
 
         let slot = self.slot(tensor.slot_id);
         if slot.generation.load(Ordering::Acquire) != tensor.generation_full() {
@@ -1354,6 +1408,19 @@ impl TensorPool {
     fn header_mut(&mut self) -> &mut PoolHeader {
         // SAFETY: exclusive access via &mut self; mmap is properly sized and aligned for PoolHeader.
         unsafe { &mut *(self.mmap.as_mut_ptr() as *mut PoolHeader) }
+    }
+
+    /// True if `slot_id` is a valid index into this pool's slot array.
+    ///
+    /// A `Tensor` descriptor can arrive from another process via peer-writable
+    /// SHM and carry an arbitrary `slot_id`. `slot()`/`slot_mut()` compute
+    /// `slots_offset + slot_id * size_of::<SlotHeader>()` and dereference it, so
+    /// every method that indexes the slot array from a descriptor MUST reject an
+    /// out-of-range id first — otherwise a corrupt/adversarial descriptor causes
+    /// an out-of-bounds read/write. Cheap branch; not on the zero-copy data path.
+    #[inline]
+    fn slot_id_in_range(&self, slot_id: u32) -> bool {
+        (slot_id as usize) < self.config.max_slots
     }
 
     fn slot(&self, index: u32) -> &SlotHeader {
@@ -3945,6 +4012,91 @@ mod tests {
         );
 
         pool.release(&_new);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn data_slice_mut_rejects_stale_descriptor_after_realloc() {
+        // Slot reuse bumps the generation (max_slots=1 forces reuse of the same
+        // slot and offset). The read path (data_slice) already rejects the stale
+        // descriptor via the generation check; the WRITE path (data_slice_mut)
+        // must too — otherwise a stale writer silently clobbers the live tensor
+        // now occupying that slot (a fresh sensor frame / actuator command).
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 1,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(8810, config).expect("create pool");
+
+        let old = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("first alloc");
+        pool.release(&old);
+        let new = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("second alloc");
+
+        assert!(
+            pool.data_slice(&old).is_err(),
+            "read path rejects stale descriptor (baseline)"
+        );
+        assert!(
+            pool.data_slice_mut(&old).is_err(),
+            "write path must reject a stale descriptor — else a stale writer clobbers live data"
+        );
+
+        pool.release(&new);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn corrupt_slot_id_descriptor_is_rejected_not_oob() {
+        // A descriptor arriving from a peer (peer-writable SHM) can carry an
+        // out-of-range slot_id. The slot-indexing methods must reject it fail-safe
+        // instead of computing slots_offset + slot_id*size_of::<SlotHeader>() and
+        // dereferencing out of bounds (SIGSEGV, or in-bounds type confusion → an
+        // OOB write primitive via return_slot()). Pre-fix, retain(&bad) SIGSEGVs.
+        let pool = make_test_pool(9971);
+        let real = pool
+            .alloc(&[32], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+
+        let mut bad = real;
+        bad.slot_id = u32::MAX; // far past max_slots (8)
+
+        pool.retain(&bad); // must no-op, not OOB-deref
+        pool.release(&bad); // must no-op, not OOB-deref
+        assert_eq!(
+            pool.refcount(&bad),
+            0,
+            "refcount of an out-of-range slot must be 0"
+        );
+        assert!(
+            pool.data_slice(&bad).is_err(),
+            "data_slice must reject an out-of-range slot"
+        );
+        assert!(
+            pool.data_slice_mut(&bad).is_err(),
+            "data_slice_mut must reject an out-of-range slot"
+        );
+        assert!(
+            pool.try_retain(&bad).is_err(),
+            "try_retain must reject an out-of-range slot"
+        );
+        assert!(
+            pool.try_release(&bad).is_err(),
+            "try_release must reject an out-of-range slot"
+        );
+
+        // The real tensor is unaffected by the malformed descriptor.
+        assert_eq!(
+            pool.refcount(&real),
+            1,
+            "real tensor refcount unchanged by a bad descriptor"
+        );
+        pool.release(&real);
         std::fs::remove_file(&pool.shm_path).ok();
     }
 
