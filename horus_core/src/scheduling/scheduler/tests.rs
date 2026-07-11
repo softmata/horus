@@ -165,6 +165,86 @@ fn fault_path_callback_panic_is_isolated() {
     );
 }
 
+/// A critical node that fails to reach a safe state (its enter_safe_state/shutdown
+/// panicked) must escalate to a SYSTEM emergency stop — not silently "just stop".
+/// This exercises note_safing_failure's critical branch and, crucially, that
+/// is_critical_node's name match holds between the registered critical-node name
+/// and self.nodes[i].name (a mismatch would silently downgrade to no e-stop).
+#[test]
+fn note_safing_failure_escalates_to_estop_for_critical_node() {
+    let _guard = lock_scheduler();
+    struct N;
+    impl Node for N {
+        fn name(&self) -> &str {
+            "crit_node"
+        }
+        fn tick(&mut self) {}
+    }
+    let mut s = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .watchdog(500_u64.ms());
+    // Per-node watchdog on a BestEffort node registers it as critical at finalize.
+    s.add(N).watchdog(100_u64.ms()).build().unwrap();
+    s.finalize_and_init();
+
+    let monitor = s.monitor.safety.as_ref().expect("safety monitor enabled");
+    assert!(monitor.is_critical_node("crit_node"), "node must be critical");
+    assert!(!monitor.is_emergency_stop(), "no e-stop before the failure");
+
+    let idx = s
+        .nodes
+        .iter()
+        .position(|n| n.name.as_ref() == "crit_node")
+        .expect("critical node present in nodes");
+    s.note_safing_failure(idx, "enter_safe_state");
+
+    assert!(s.nodes[idx].is_stopped, "node that failed to safe is stopped");
+    assert!(
+        s.monitor.safety.as_ref().unwrap().is_emergency_stop(),
+        "a critical node that cannot reach a safe state must trigger a system emergency stop"
+    );
+}
+
+/// A non-critical node that fails to safe is stopped, but must NOT trigger a
+/// system-wide emergency stop (that would be over-escalation).
+#[test]
+fn note_safing_failure_stops_noncritical_node_without_estop() {
+    let _guard = lock_scheduler();
+    struct N;
+    impl Node for N {
+        fn name(&self) -> &str {
+            "regular_node"
+        }
+        fn tick(&mut self) {}
+    }
+    // Global watchdog enables the monitor, but this node has no per-node watchdog
+    // and is not RT, so it is NOT registered as critical.
+    let mut s = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .watchdog(500_u64.ms());
+    s.add(N).build().unwrap();
+    s.finalize_and_init();
+
+    let monitor = s.monitor.safety.as_ref().expect("safety monitor enabled");
+    assert!(
+        !monitor.is_critical_node("regular_node"),
+        "node must not be critical"
+    );
+
+    let idx = s
+        .nodes
+        .iter()
+        .position(|n| n.name.as_ref() == "regular_node")
+        .expect("node present in nodes");
+    s.note_safing_failure(idx, "enter_safe_state");
+
+    assert!(s.nodes[idx].is_stopped, "node that failed to safe is stopped");
+    assert!(
+        !s.monitor.safety.as_ref().unwrap().is_emergency_stop(),
+        "a non-critical node failing to safe must NOT trigger a system emergency stop"
+    );
+}
+
 #[test]
 fn test_scheduler_add_basic() {
     let _guard = lock_scheduler();
