@@ -8865,13 +8865,22 @@ fn partial_write_full_ring_backpressure() {
 
 /// Concurrent writers and reader — no partial writes visible to reader.
 #[test]
-#[ignore = "REPRODUCES a rare torn read (softmata-brain 1334): MpscShm's \
-            non-binding capacity gate lets a producer lap the ring and overwrite \
-            an unread slot, and recv_shm_mpsc_pod reads the slot without a \
-            seqlock re-check, so it can return a torn [u64;4]. Fails ~1/5 only \
-            under full-suite contention (unreproducible standalone). Fix is a \
-            loom-gated seqlock treatment of the MPSC protocol — do NOT un-ignore \
-            until then."]
+#[ignore = "Rare torn read (softmata-brain 1334). ROOT LIKELY FIXED by the MP-send \
+            CAS claim (see mp_send_no_overshoot_corruption): the torn read required a \
+            producer to lap the ring and overwrite the slot a reader was mid-copy on, \
+            which the old non-binding fetch_add gate allowed. Under CAS the gate is \
+            binding (head-tail < capacity holds atomically at claim), so the \
+            producer-write slot (head & mask) and the consumer-read slot (tail & mask) \
+            are ALWAYS DISTINCT (head-tail < capacity => head&mask != tail&mask) — the \
+            overwrite that caused the torn read cannot occur. Dropped from ~1/5 to \
+            unobserved under CPU load (40/40). STAYS IGNORED not because a fix is \
+            pending but because it needs FULL-SUITE PARALLEL contention to reproduce, \
+            which this repo runs serially, so it cannot currently be OBSERVED to \
+            confirm closed. A seqlock re-check was considered and REJECTED: with CAS \
+            the overwrite can't happen so it would never fire, and its \
+            return-None-without-advancing-tail recovery would wedge the consumer if a \
+            lap ever did occur. Un-ignore once a parallel/cross-process contention \
+            harness exists to verify."]
 fn partial_write_concurrent_writers_no_partial_data() {
     let name = unique("partial_concurrent");
     let t: Topic<[u64; 4]> = Topic::new(&name).unwrap();
