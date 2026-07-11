@@ -910,13 +910,29 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     }
 
     let index = (seq & local.cached_capacity_mask) as usize;
+    let new_seq = seq.wrapping_add(1);
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
-    // simd_aware_write handles alignment (slot_size is rounded to align_of::<T>()).
+    // cached_seq_ptr points to the per-slot ready-flag array (set unconditionally
+    // in ensure_role). index*8 is within bounds. simd_aware_write handles alignment
+    // (slot_size is rounded to align_of::<T>()).
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
+        // Publish the per-slot ready flag in addition to sequence_or_head. This
+        // is what an MpscShm consumer gates on (recv_shm_mpsc_pod checks
+        // seq_array[idx] == tail+1), whereas the SpscShm consumer gates on
+        // sequence_or_head. Writing both means every message sent under SpscShm
+        // stays readable if the topic later migrates SpscShm -> MpscShm (a second
+        // producer joining) — without it, the buffered [tail,head) range becomes
+        // permanently unreadable after the switch (softmata-brain 1327, the
+        // sp->mp ready-flag conversion gap). The extra Release store is inert for
+        // the SpscShm consumer (which never reads the seq array) and is issued by
+        // the same single producer in the same happens-before as the
+        // sequence_or_head publish below, so it adds no new concurrency.
+        let ready_ptr =
+            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
+        ready_ptr.store(new_seq, Ordering::Release);
     }
-    let new_seq = seq.wrapping_add(1);
     local.local_head = new_seq;
     header.sequence_or_head.store(new_seq, Ordering::Release);
 
