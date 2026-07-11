@@ -7177,6 +7177,93 @@ fn spsc_to_spmc_consumer_join_concurrent_exactly_once() {
     );
 }
 
+/// SAFETY-CRITICAL (softmata-brain): `send_shm_mp_pod`/`_serde`/`_colo` claim a ring
+/// slot with an OPTIMISTIC `fetch_add` after a NON-atomic backpressure check, so
+/// between the check and the claim other producers can claim too, and a producer can
+/// claim `seq >= tail + capacity` — OVERSHOOT. It then writes unconditionally to
+/// `seq & mask`, overwriting an unconsumed message (the slot aliases `seq -
+/// capacity`) with a wrong ready-flag, so the in-order consumer waits forever for a
+/// flag that never matches → data corruption / deadlock. This is latent in normal
+/// operation whenever the consumer keeps `header.tail` accurate and producers push
+/// hard; a small ring makes it deterministic.
+///
+/// N producers lossless-send M distinct values each into a tiny ring while one
+/// consumer drains. A `stop` flag lets producers exit if the consumer stalls, so a
+/// failure asserts (LOST/STALLED) rather than hanging. Reproduces on the pre-fix code
+/// (consumer stalls at a few dozen of N*M); the CAS-claim fix makes it pass.
+#[test]
+#[ignore = "TEMPORARY: demonstrates the send_shm_mp_pod OVERSHOOT corruption \
+            (consumer deterministically stalls at ~0-17 of 1800). Un-ignore in the \
+            commit that fixes it (CAS-claim in the MP send paths)."]
+fn mp_send_no_overshoot_corruption() {
+    let name = unique("mp_overshoot");
+    let cap: u32 = 16; // small ring → near-full contention exposes overshoot
+    let n_producers = 6usize;
+    let per = 300u64;
+    let total = n_producers as u64 * per;
+
+    let consumer: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("consumer");
+    let stop = Arc::new(AtomicBool::new(false));
+    let barrier = Arc::new(Barrier::new(n_producers + 1));
+    let mut handles = Vec::new();
+    for pid in 0..n_producers {
+        let n = name.clone();
+        let stop = stop.clone();
+        let b = barrier.clone();
+        handles.push(test_spawn(move || {
+            let p: Topic<u64> = Topic::with_capacity(&n, cap, None).expect("producer");
+            b.wait();
+            for i in 0..per {
+                // Distinct value: producer id in high bits, sequence in low bits.
+                let mut m = (pid as u64) << 40 | i;
+                loop {
+                    match p.try_send(m) {
+                        Ok(()) => break,
+                        Err(r) => {
+                            if stop.load(Ordering::Acquire) {
+                                return;
+                            }
+                            m = r;
+                            std::thread::yield_now();
+                        }
+                    }
+                }
+            }
+        }));
+    }
+    barrier.wait();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut count = 0u64;
+    let deadline = Instant::now() + 8_u64.secs();
+    while count < total && Instant::now() < deadline {
+        match consumer.try_recv() {
+            Some(v) => {
+                let pid = v >> 40;
+                let i = v & ((1u64 << 40) - 1);
+                assert!(
+                    pid < n_producers as u64 && i < per,
+                    "GARBAGE value {:#x} (overshoot wrote a torn/aliased slot)",
+                    v
+                );
+                assert!(seen.insert(v), "DUPLICATE value {:#x} (overshoot re-used a slot)", v);
+                count += 1;
+            }
+            None => std::thread::yield_now(),
+        }
+    }
+    stop.store(true, Ordering::Release);
+    for h in handles {
+        let _ = h.join();
+    }
+    assert_eq!(
+        count, total,
+        "LOST/STALLED: consumer got {}/{} — overshoot overwrote an unconsumed slot, \
+         stalling the in-order consumer on a flag that never matches",
+        count, total
+    );
+}
+
 // ============================================================================
 // Section 51: Topic Migration — Dispatch Pointer Swapping & Epoch Propagation
 // ============================================================================
