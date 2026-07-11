@@ -2812,11 +2812,30 @@ impl Scheduler {
                         WatchdogSeverity::Critical => {
                             if current != NodeHealthState::Isolated {
                                 registered.health_state.store(NodeHealthState::Isolated);
-                                registered.node.enter_safe_state();
-                                print_line(&format!(
-                                    " Watchdog critical: '{}' (3x timeout) — Isolated, entered safe state",
-                                    node_name
-                                ));
+                                // A 3x-timeout node is critical by definition. If its
+                                // safing callback panics it did NOT reach a safe state,
+                                // so stop it and trigger a system emergency stop.
+                                let node = &mut registered.node;
+                                let panicked = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| node.enter_safe_state()),
+                                )
+                                .is_err();
+                                if panicked {
+                                    registered.is_stopped = true;
+                                    print_line(&format!(
+                                        " Watchdog critical: '{}' PANICKED in enter_safe_state — EMERGENCY STOP",
+                                        node_name
+                                    ));
+                                    monitor.trigger_emergency_stop(format!(
+                                        "critical node '{}' panicked in enter_safe_state (3x watchdog timeout)",
+                                        node_name
+                                    ));
+                                } else {
+                                    print_line(&format!(
+                                        " Watchdog critical: '{}' (3x timeout) — Isolated, entered safe state",
+                                        node_name
+                                    ));
+                                }
                             }
                         }
                     }
@@ -3801,7 +3820,10 @@ impl Scheduler {
                 if let Some(action) = stale_action {
                     match action {
                         super::types::StalePolicy::SafeState => {
-                            self.nodes[i].node.enter_safe_state();
+                            if Self::guard_fault_callback(|| self.nodes[i].node.enter_safe_state())
+                            {
+                                self.note_safing_failure(i, "enter_safe_state");
+                            }
                         }
                         super::types::StalePolicy::Stop => {
                             self.nodes[i].is_stopped = true;
@@ -3879,8 +3901,13 @@ impl Scheduler {
                                     " BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                     node_name, tick_duration, tick_budget * 2
                                 ));
-                                let _ = self.nodes[i].node.shutdown();
-                                self.nodes[i].is_stopped = true;
+                                if Self::guard_fault_callback(|| {
+                                    let _ = self.nodes[i].node.shutdown();
+                                }) {
+                                    self.note_safing_failure(i, "shutdown");
+                                } else {
+                                    self.nodes[i].is_stopped = true;
+                                }
                             }
                         }
                         super::safety_monitor::BudgetPolicy::EmergencyStop => {
@@ -3959,7 +3986,10 @@ impl Scheduler {
                                 " Deadline policy: '{}' entering safe state",
                                 node_name
                             ));
-                            self.nodes[i].node.enter_safe_state();
+                            if Self::guard_fault_callback(|| self.nodes[i].node.enter_safe_state())
+                            {
+                                self.note_safing_failure(i, "enter_safe_state");
+                            }
                             if let Some(ref monitor) = self.monitor.safety {
                                 monitor.record_degrade_activation();
                             }
@@ -4014,7 +4044,9 @@ impl Scheduler {
             }
             DegradationAction::Isolate(ref name) => {
                 self.nodes[i].health_state.store(NodeHealthState::Isolated);
-                self.nodes[i].node.enter_safe_state();
+                if Self::guard_fault_callback(|| self.nodes[i].node.enter_safe_state()) {
+                    self.note_safing_failure(i, "enter_safe_state");
+                }
                 print_line(&format!(
                     " Degradation: '{}' — isolated, entered safe state",
                     name
@@ -4025,8 +4057,13 @@ impl Scheduler {
             }
             DegradationAction::Kill(ref name) => {
                 self.nodes[i].health_state.store(NodeHealthState::Isolated);
-                let _ = self.nodes[i].node.shutdown();
-                self.nodes[i].is_stopped = true;
+                if Self::guard_fault_callback(|| {
+                    let _ = self.nodes[i].node.shutdown();
+                }) {
+                    self.note_safing_failure(i, "shutdown");
+                } else {
+                    self.nodes[i].is_stopped = true;
+                }
                 print_line(&format!(
                     " KILL: '{}' — permanently removed from execution after shutdown()",
                     name
@@ -4057,6 +4094,51 @@ impl Scheduler {
         }
     }
 
+    /// Run a fault-path node callback under `catch_unwind` so a panic in one
+    /// node's recovery code cannot unwind the scheduler tick loop and take down
+    /// every other node. Returns `true` if the callback panicked.
+    ///
+    /// The framework already isolates `tick()`/`init()`; the recovery callbacks
+    /// (`on_error`/`enter_safe_state`/`shutdown`) are invoked exactly when a node
+    /// is already failing, so leaving them bare meant one node's recovery panic
+    /// killed the control loop of every healthy node.
+    #[inline]
+    fn guard_fault_callback(f: impl FnOnce()) -> bool {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+    }
+
+    /// A node's safing callback (`enter_safe_state`/`shutdown`) panicked, so the
+    /// node did NOT reach a safe state. Stop ticking it, and — because a node that
+    /// cannot safe itself is a safety failure — escalate to a system emergency
+    /// stop for critical nodes. The tick loop polls `is_emergency_stop()` and
+    /// halts, so setting the latch is sufficient to propagate the stop.
+    fn note_safing_failure(&mut self, i: usize, action: &str) {
+        let name = Arc::clone(&self.nodes[i].name);
+        self.nodes[i].is_stopped = true;
+        let critical = self
+            .monitor
+            .safety
+            .as_ref()
+            .is_some_and(|m| m.is_critical_node(&name));
+        if critical {
+            print_line(&format!(
+                " '{}' PANICKED in {} and could NOT reach a safe state — EMERGENCY STOP",
+                name, action
+            ));
+            if let Some(ref monitor) = self.monitor.safety {
+                monitor.trigger_emergency_stop(format!(
+                    "critical node '{}' panicked in {} and could not reach a safe state",
+                    name, action
+                ));
+            }
+        } else {
+            print_line(&format!(
+                " '{}' panicked in {} and could NOT reach a safe state — node stopped",
+                name, action
+            ));
+        }
+    }
+
     /// Handle a node tick failure.
     /// Returns `true` if the scheduler should stop (fatal failure).
     fn handle_tick_failure(&mut self, i: usize, panic_err: Box<dyn std::any::Any + Send>) -> bool {
@@ -4076,7 +4158,15 @@ impl Scheduler {
 
             // Set context for on_error handler
             set_node_context(&node_name, context.metrics().total_ticks());
-            registered.node.on_error(&error_msg);
+            // on_error is advisory — a panic here is isolated and logged, not
+            // escalated (unlike enter_safe_state/shutdown, which safe hardware).
+            let node = &mut registered.node;
+            if Self::guard_fault_callback(|| node.on_error(&error_msg)) {
+                print_line(&format!(
+                    " Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                    node_name
+                ));
+            }
             clear_node_context();
 
             print_line(&format!(

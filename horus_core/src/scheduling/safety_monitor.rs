@@ -565,6 +565,15 @@ impl SafetyMonitor {
             .insert(node_name, Watchdog::new(watchdog_timeout));
     }
 
+    /// Returns true if `node_name` was registered as a critical node.
+    ///
+    /// Used by the scheduler to decide how to escalate when a node's safing
+    /// callback (`enter_safe_state`/`shutdown`) itself panics: a critical node
+    /// that cannot reach a safe state triggers a system-wide emergency stop.
+    pub(crate) fn is_critical_node(&self, node_name: &str) -> bool {
+        self.critical_nodes.read().iter().any(|n| n == node_name)
+    }
+
     /// Set tick budget for a node.
     pub(crate) fn set_tick_budget(&self, node_name: String, budget: Duration) {
         self.budget_enforcer.lock().set_budget(node_name, budget);

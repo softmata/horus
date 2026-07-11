@@ -129,6 +129,42 @@ fn test_scheduler_node_priority_ordering() {
     // Note: nodes are sorted by priority
 }
 
+/// Regression: a panic in a fault-path node callback (`on_error` / `enter_safe_state`
+/// / `shutdown`) must NOT unwind the scheduler tick loop and take down every other
+/// node. `tick()` panics are already isolated by design; the *recovery* callbacks —
+/// invoked exactly when a node is already failing — were previously called bare, so
+/// a panic in one node's recovery killed the control loop of every healthy node.
+#[test]
+fn fault_path_callback_panic_is_isolated() {
+    let _guard = lock_scheduler();
+
+    struct DoubleBoom;
+    impl Node for DoubleBoom {
+        fn name(&self) -> &str {
+            "double_boom"
+        }
+        fn tick(&mut self) {
+            panic!("tick boom");
+        }
+        fn on_error(&mut self, _msg: &str) {
+            panic!("on_error boom");
+        }
+    }
+
+    let mut scheduler = Scheduler::new();
+    scheduler.add(DoubleBoom).build().unwrap();
+
+    // tick() panic is caught by design; on_error() then panics. Pre-fix that second
+    // panic escapes handle_tick_failure -> process_tick_result -> tick_once(),
+    // unwinding the whole loop. Post-fix it is caught and the scheduler continues.
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler.tick_once()));
+    assert!(
+        result.is_ok(),
+        "on_error() panic must be isolated — it unwound the scheduler tick loop"
+    );
+}
+
 #[test]
 fn test_scheduler_add_basic() {
     let _guard = lock_scheduler();
