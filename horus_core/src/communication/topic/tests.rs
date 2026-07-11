@@ -7098,11 +7098,18 @@ fn spsc_to_spmc_consumer_join_exactly_once() {
 /// ignored until the overshoot bug is fixed. Passes ~14/15 under load with
 /// flush-on-resync (residual duplicate in the pre-flush window).
 #[test]
-#[ignore = "blocked on send_shm_mp_pod overshoot bug: full concurrent SpmcShm-join \
-            exactly-once needs steady-state header.tail accuracy (eager flush), which \
-            triggers the optimistic-backpressure overshoot deadlock. Deterministic \
-            consumer-join correctness IS fixed (spsc_to_spmc_consumer_join_exactly_once). \
-            Un-ignore when the overshoot bug lands."]
+#[ignore = "residual ~5% under load (~19/20). The overshoot bug that blocked eager \
+            header.tail flush is now FIXED (CAS claim), and eager flush IS adopted — \
+            which raised this from ~9/12 (flush-on-resync) to ~19/20. The last residual \
+            is a DEEPER issue no tail-flush closes: during the SpscShm->SpmcShm \
+            transition, consumer 1 briefly still runs the single-consumer mpsc-recv \
+            (reads via its local_tail, no CAS) while consumer 2 runs spmc-recv (CAS \
+            header.tail), so both can read the same slot once. Fully closing it needs a \
+            uniform consumer tail protocol (e.g. a per-recv mode check forcing consumer \
+            1 off mpsc-recv the instant the mode flips, at a hot-path cost, or a \
+            migration barrier). Deterministic consumer-join IS fixed \
+            (spsc_to_spmc_consumer_join_exactly_once). Tracked; un-ignore with that \
+            refactor."]
 fn spsc_to_spmc_consumer_join_concurrent_exactly_once() {
     let name = unique("spsc_spmc_conc");
     let n: u64 = 300;
