@@ -6971,20 +6971,76 @@ fn broadcast_two_subscribers_each_get_full_stream() {
     }
 }
 
-/// Non-POD (String) multi-subscriber broadcast on SpscShm must deliver the full stream
-/// to EVERY same-process subscriber handle — matching the POD (u64)
-/// `broadcast_two_subscribers_each_get_full_stream`. Regression gate for the serde-recv
-/// eager-flush bug: `recv_shm_mpsc_serde` flushed `header.tail` (the shared consumed
-/// frontier) on every recv, so a second subscriber that synced its local_tail to that
-/// advanced frontier read 0; the POD recv batches the flush and did not. Fixed by
-/// batching the serde flush to match. (Both POD and non-POD deliver via independent
-/// per-handle local_tail while the frontier lags — messages fit the ring here.)
 #[test]
-fn nonpod_multisub_broadcast_delivers_full_stream() {
-    // EXACT mirror of the passing POD `broadcast_two_subscribers_each_get_full_stream`
-    // (u64), but with a non-POD String payload: no warmup, send-then-sequential-drain.
-    let name = unique("nonpod_bcast_real");
-    let n: u64 = 100; // < ring capacity (256) → buffered, no drop-oldest loss
+fn multithread_nonpod_subscribers_each_get_full_stream() {
+    // The REAL multi-subscriber pattern: each subscriber is on its OWN thread (as
+    // separate HORUS nodes are), so the (pid, thread)-keyed participant registration
+    // counts subs = 2 and the detector selects a DESIGNED broadcast backend — not the
+    // single-consumer SpscShm that two same-thread handles collapse onto. Verifies that
+    // real non-POD (String) multi-sub broadcast delivers the FULL stream to every
+    // subscriber regardless of drain timing (n well above the flush interval).
+    let name = unique("mt_nonpod_bcast");
+    let n: u64 = 400u64;
+    let producer: Topic<String> = Topic::new(&name).expect("producer");
+
+    let ready = Arc::new(Barrier::new(3)); // 2 subs + main
+    let spawn_sub = |tag: &'static str| {
+        let name = name.clone();
+        let ready = ready.clone();
+        std::thread::spawn(move || {
+            let sub: Topic<String> = Topic::new(&name).expect("sub");
+            let _ = sub.try_recv(); // register this thread as a subscriber
+            sub.check_migration_now();
+            ready.wait(); // all subs registered before the producer streams
+            let mut got = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while (got.len() as u64) < n && Instant::now() < deadline {
+                sub.check_migration_now();
+                match sub.try_recv() {
+                    Some(v) => got.push(v),
+                    None => std::thread::yield_now(),
+                }
+            }
+            (tag, got, sub.backend_name().to_string())
+        })
+    };
+    let h1 = spawn_sub("sub1");
+    let h2 = spawn_sub("sub2");
+    ready.wait(); // producer waits until both subscriber threads have registered
+    for v in 1..=n {
+        producer.send(format!("m{v}"));
+    }
+    let (t1, got1, be1) = h1.join().unwrap();
+    let (t2, got2, be2) = h2.join().unwrap();
+    eprintln!(
+        "DIAG mt-nonpod: {t1} backend={be1} got={} | {t2} backend={be2} got={} | producer={}",
+        got1.len(),
+        got2.len(),
+        producer.backend_name(),
+    );
+    let expected: Vec<String> = (1..=n).map(|v| format!("m{v}")).collect();
+    assert_eq!(got1, expected, "{t1} (multi-thread non-POD broadcast) must receive every message");
+    assert_eq!(got2, expected, "{t2} (multi-thread non-POD broadcast) must receive every message");
+}
+
+#[test]
+fn same_thread_multihandle_nonpod_serde_flush_fix() {
+    // ATYPICAL case: two non-POD subscriber HANDLES on the SAME thread. Because
+    // participants are keyed by (pid, thread), both collapse to ONE subscriber, so the
+    // detector selects the single-consumer SpscShm rather than a broadcast backend
+    // (real subscribers live on separate threads/nodes and DO get a broadcast backend —
+    // see multithread_nonpod_subscribers_each_get_full_stream). On SpscShm both handles
+    // still read via their own local_tail WHILE the shared consumed frontier lags.
+    //
+    // REGRESSION GATE for the serde-recv flush fix: recv_shm_mpsc_serde used to flush
+    // header.tail every recv (the POD recv batches it), advancing the frontier so a 2nd
+    // same-thread handle read 0 even for tiny streams. Batching the serde flush restores
+    // delivery BELOW the flush interval — the common case. This does NOT make SpscShm a
+    // robust broadcast backend: above the flush interval a sequential-drain 2nd handle
+    // still loses (best-effort); the general answer is a designed broadcast backend,
+    // which real multi-thread usage already gets.
+    let name = unique("nonpod_bcast_same_thread");
+    let n: u64 = 100; // < flush interval (capacity/2 = 128 at default cap 256)
     let producer: Topic<String> = Topic::new(&name).expect("producer");
     let sub1: Topic<String> = Topic::new(&name).expect("sub1");
     let sub2: Topic<String> = Topic::new(&name).expect("sub2");
@@ -7003,19 +7059,13 @@ fn nonpod_multisub_broadcast_delivers_full_stream() {
         }
         got
     };
-    let got1 = drain(&sub1);
-    let got2 = drain(&sub2);
-    eprintln!(
-        "DIAG nonpod seq-drain: sub1={} got1={} sub2={} got2={}",
-        sub1.backend_name(),
-        got1.len(),
-        sub2.backend_name(),
-        got2.len(),
-    );
-
     let expected: Vec<String> = (1..=n).map(|v| format!("m{v}")).collect();
-    assert_eq!(got1, expected, "sub1 (non-POD broadcast) must receive every message");
-    assert_eq!(got2, expected, "sub2 (non-POD broadcast) must receive every message");
+    assert_eq!(drain(&sub1), expected, "sub1 (same-thread, below flush interval)");
+    assert_eq!(
+        drain(&sub2),
+        expected,
+        "sub2 (same-thread, below flush interval) — was 0 before the serde-flush fix"
+    );
 }
 
 /// BROADCAST under a mid-stream subscriber join — the real-world case a subscriber
