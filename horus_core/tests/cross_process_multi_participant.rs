@@ -247,14 +247,19 @@ fn cross_process_spmc_1_pub_3_sub() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "pre-existing HARNESS failure in this environment, NOT the convergence bug: \
-            the re-exec'd child publisher processes deliver 0 messages ('received 0 from \
-            0 children') identically WITH and WITHOUT the multi-producer convergence fix, \
-            so it is not measuring convergence. Cross-process SHM delivery itself works \
-            (cross_process_ipc passes 10/10). The convergence fix (softmata-brain 1327) is \
-            validated by the cross-THREAD equivalents (topic_cross_thread_multi_p_1c_mpsc, \
-            now asserting exactly-once delivery of all 2000 messages) and the service-layer \
-            multi-client tests. Un-ignore once the child-spawn harness works in CI."]
+#[ignore = "BLOCKED by a distinct PRE-EXISTING cross-process issue, NOT multi-producer \
+            convergence: the 3 child publishers all send successfully (each prints SENT:50, \
+            exits 0) and then EXIT at ~0.55s, but this parent does its first recv at ~1000ms \
+            — after every producer has left — and reads 0. Root cause is producer-lifetime / \
+            late-consumer semantics (does buffered SHM data survive all-producers-exit, and \
+            can a consumer that joins afterward read it), which reproduces IDENTICALLY on the \
+            pre-reroute base (0 either way) and is orthogonal to the send-collision convergence \
+            fixed here. Multi-producer SEND convergence IS verified cross-thread (exactly-once: \
+            topic_cross_thread_multi_p_1c_mpsc, backend_detection, service tests) and is \
+            process-agnostic by construction (atomic fetch_add claim). Un-ignore when the \
+            cross-process late-consumer/producer-lifetime issue is fixed (separate work). \
+            NOTE: keep #[ignore] — but the spawned children re-exec WITHOUT --include-ignored, \
+            so running this manually needs the parent un-ignored; children publish regardless."]
 fn cross_process_mpsc_3_pub_1_sub() {
     if is_child() {
         if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_mpsc_3_pub_1_sub") {
