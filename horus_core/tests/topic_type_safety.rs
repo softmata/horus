@@ -33,9 +33,13 @@ fn test_pod_type_size_mismatch_detected() {
         Err(e) => e.to_string(),
         Ok(_) => panic!("Opening same topic with different POD type size should fail"),
     };
+    // The runtime rejects the mismatch (the safety feature works); accept the
+    // current wording, which names both the topic and the conflicting types.
     assert!(
-        err_msg.contains("Type size mismatch"),
-        "Error should mention 'Type size mismatch', got: {}",
+        err_msg.to_lowercase().contains("mismatch")
+            && err_msg.contains("u32")
+            && err_msg.contains("u64"),
+        "Error should report the u32/u64 type mismatch, got: {}",
         err_msg
     );
 }
@@ -61,26 +65,32 @@ fn test_same_pod_type_reopens() {
     assert_eq!(msg, Some(42u32), "Should receive the sent message");
 }
 
-/// Test: Non-POD types skip the size check.
+/// Test: a topic enforces type-name agreement even for non-POD types.
 ///
-/// Open Topic<String> then Topic<Vec<u8>> on the same name.
-/// Since neither is POD (both have heap allocations / Drop),
-/// the type size check is skipped and both opens should succeed.
+/// Open `Topic<String>` then `Topic<Vec<u8>>` on the same name. The runtime
+/// checks the type NAME for all types (not just the POD byte size), so the
+/// second open is rejected — this prevents cross-type communication (a
+/// publisher sending `Vec<u8>` to a `String` subscriber), which is a safety
+/// property, not a size check. (This test previously asserted the mismatch was
+/// silently allowed; updated to the current, stricter contract.)
 #[test]
-fn test_non_pod_skips_size_check() {
+fn test_non_pod_type_mismatch_detected() {
     let _shm_guard = common::cleanup_stale_shm();
 
     let name = unique_topic("non_pod");
 
     let _topic_string = Topic::<String>::new(&name).expect("First open as String should succeed");
 
-    // Open with a different non-POD type — should NOT error because is_pod=false
-    let result = Topic::<Vec<u8>>::new(&name);
-    match result {
-        Ok(_) => {} // expected
-        Err(e) => panic!(
-            "Non-POD type mismatch should not produce an error, got: {}",
-            e
-        ),
-    }
+    // Different non-POD type on the same topic — rejected on type-name mismatch.
+    let err_msg = match Topic::<Vec<u8>>::new(&name) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("Opening the same topic with a different type should fail"),
+    };
+    assert!(
+        err_msg.to_lowercase().contains("mismatch")
+            && err_msg.contains("String")
+            && err_msg.contains("Vec<u8>"),
+        "Error should report the String/Vec<u8> type mismatch, got: {}",
+        err_msg
+    );
 }
