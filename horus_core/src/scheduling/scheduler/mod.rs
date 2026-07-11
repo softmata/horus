@@ -3360,23 +3360,17 @@ impl Scheduler {
                 use super::control::ControlCommand;
                 match cmd {
                     ControlCommand::PauseNode { ref name } => {
-                        // BestEffort nodes (main thread)
-                        for node in &mut self.nodes {
-                            if node.name.as_ref() == name.as_str() {
-                                node.is_paused = true;
-                            }
-                        }
-                        // RT/Compute/Event nodes (executor threads via shared flags)
+                        // Operator pause is persistent (until ResumeNode) for ALL node
+                        // classes via the shared node_controls flag — both the executor
+                        // threads and should_tick_node honor it. It must NOT set the
+                        // transient is_paused flag: that is the Miss::Skip one-tick-skip
+                        // and auto-clears after a single tick, which used to make an
+                        // operator pause on a main-thread node silently lapse.
                         if let Some(ref controls) = self.node_controls {
                             controls.set_paused(name, true);
                         }
                     }
                     ControlCommand::ResumeNode { ref name } => {
-                        for node in &mut self.nodes {
-                            if node.name.as_ref() == name.as_str() {
-                                node.is_paused = false;
-                            }
-                        }
                         if let Some(ref controls) = self.node_controls {
                             controls.set_paused(name, false);
                         }
@@ -3512,6 +3506,17 @@ impl Scheduler {
                 health,
                 NodeHealthState::Unhealthy | NodeHealthState::Isolated
             ) {
+                return false;
+            }
+        }
+
+        // Persistent operator pause (`horus node pause`) — honored the same way the
+        // executor threads do, via node_controls. Unlike is_paused below (the
+        // Miss::Skip one-tick-skip) this does NOT auto-clear; it holds until
+        // ResumeNode, so an operator's pause on a main-thread node does not lapse
+        // after a single tick.
+        if let Some(ref controls) = self.node_controls {
+            if controls.is_paused(self.nodes[i].name.as_ref()) {
                 return false;
             }
         }

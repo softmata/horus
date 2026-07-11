@@ -245,6 +245,65 @@ fn note_safing_failure_stops_noncritical_node_without_estop() {
     );
 }
 
+/// Regression (Sched2): an operator pause (`horus node pause`) on a BestEffort
+/// main-thread node must PERSIST across ticks. should_tick_node used to only check
+/// the transient is_paused flag (which it clears after one tick for Miss::Skip) and
+/// never consulted the persistent node_controls map the executor threads honor — so
+/// the pause silently lapsed after a single tick.
+#[test]
+fn operator_pause_persists_across_ticks_for_besteffort_node() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+    struct CountNode {
+        c: Arc<AtomicUsize>,
+    }
+    impl Node for CountNode {
+        fn name(&self) -> &str {
+            "pause_target"
+        }
+        fn tick(&mut self) {
+            self.c.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let mut s = Scheduler::new();
+    s.add(CountNode { c: counter.clone() }).build().unwrap();
+    s.finalize_and_init();
+
+    s.tick_once().unwrap();
+    let before_pause = counter.load(Ordering::Relaxed);
+    assert!(before_pause >= 1, "node should tick before pause");
+
+    // The run()/executor path sets up node_controls + registers every node (mod.rs
+    // ~2256); the tick_once path used here does not, so replicate that state — this
+    // is the deployment state in which `horus node pause` is actually delivered.
+    let controls = std::sync::Arc::new(crate::scheduling::types::NodeControlMap::default());
+    controls.register("pause_target");
+    s.node_controls = Some(controls.clone());
+
+    // Simulate `horus node pause pause_target`: set the persistent node_controls
+    // pause flag (the authoritative operator-pause signal).
+    controls.set_paused("pause_target", true);
+
+    // The pause must hold across many ticks (pre-fix should_tick_node never
+    // consulted node_controls for main-thread nodes, so the node kept ticking).
+    for _ in 0..5 {
+        s.tick_once().unwrap();
+    }
+    assert_eq!(
+        counter.load(Ordering::Relaxed),
+        before_pause,
+        "operator-paused BestEffort node must stay paused across ticks"
+    );
+
+    // Resume restores ticking.
+    controls.set_paused("pause_target", false);
+    s.tick_once().unwrap();
+    assert!(
+        counter.load(Ordering::Relaxed) > before_pause,
+        "resumed node ticks again"
+    );
+}
+
 #[test]
 fn test_scheduler_add_basic() {
     let _guard = lock_scheduler();
