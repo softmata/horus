@@ -6971,30 +6971,20 @@ fn broadcast_two_subscribers_each_get_full_stream() {
     }
 }
 
-/// OBSERVED backend-selection asymmetry (roadmap roadmap-mrgqzlmb-ixl127 — a NEW,
-/// unverified follow-up, NOT fixed this session): a NON-POD (String) same-process
-/// multi-subscriber topic selects `SpscShm`, whereas the identical POD (u64) topology
-/// selects a broadcast backend (`PodShm` — see
-/// `broadcast_two_subscribers_each_get_full_stream`, which passes). On `SpscShm` the
-/// subscribers COMPETE, so this repro observes sub1 draining all 100 while sub2 gets 0.
-///
-/// CAVEAT — why this is "observed", not a confirmed delivery bug: this repro drains
-/// sub1 to completion BEFORE draining sub2, so `sub2 == 0` is a CONSEQUENCE of landing
-/// on any non-broadcast backend, not independent proof of a delivery bug. The
-/// defensible, evidence-backed finding is the backend SELECTION asymmetry (non-POD →
-/// SpscShm vs POD → PodShm). Confirming an actual delivery loss needs a realistic
-/// pattern (subscribers registered before publish, interleaved drain) — deliberately
-/// NOT done here; that belongs to the follow-up investigation.
-///
-/// Root area (to investigate, not this session): the `shm_backed` same-process branch
-/// in `header.rs::detect_optimal_backend` pins a multi-sub topic to `SpscShm` when
-/// `subs <= 1` at migration, and a non-POD topic does not appear to re-migrate to
-/// `FanoutShm` once `subs > 1` (POD re-selects `PodShm`, which shares ShmData storage).
+/// Non-POD (String) multi-subscriber broadcast on SpscShm must deliver the full stream
+/// to EVERY same-process subscriber handle — matching the POD (u64)
+/// `broadcast_two_subscribers_each_get_full_stream`. Regression gate for the serde-recv
+/// eager-flush bug: `recv_shm_mpsc_serde` flushed `header.tail` (the shared consumed
+/// frontier) on every recv, so a second subscriber that synced its local_tail to that
+/// advanced frontier read 0; the POD recv batches the flush and did not. Fixed by
+/// batching the serde flush to match. (Both POD and non-POD deliver via independent
+/// per-handle local_tail while the frontier lags — messages fit the ring here.)
 #[test]
-#[ignore = "repro of an OBSERVED non-POD vs POD backend-selection asymmetry (non-POD same-process multi-sub selects competing SpscShm); needs its own scoped detector/migration investigation — roadmap roadmap-mrgqzlmb-ixl127. See drain-ordering caveat in doc."]
-fn nonpod_multisub_selects_competing_backend_observed() {
-    let name = unique("bcast_2sub_str");
-    let n: u64 = 100; // < ring capacity → buffered, no drop-oldest loss
+fn nonpod_multisub_broadcast_delivers_full_stream() {
+    // EXACT mirror of the passing POD `broadcast_two_subscribers_each_get_full_stream`
+    // (u64), but with a non-POD String payload: no warmup, send-then-sequential-drain.
+    let name = unique("nonpod_bcast_real");
+    let n: u64 = 100; // < ring capacity (256) → buffered, no drop-oldest loss
     let producer: Topic<String> = Topic::new(&name).expect("producer");
     let sub1: Topic<String> = Topic::new(&name).expect("sub1");
     let sub2: Topic<String> = Topic::new(&name).expect("sub2");
@@ -7005,11 +6995,10 @@ fn nonpod_multisub_selects_competing_backend_observed() {
 
     let drain = |c: &Topic<String>| {
         let mut got = Vec::new();
-        for _ in 0..(n + 32) {
-            c.check_migration_now();
+        for _ in 0..(n + 16) {
             match c.try_recv() {
                 Some(v) => got.push(v),
-                None => std::thread::yield_now(),
+                None => break,
             }
         }
         got
@@ -7017,25 +7006,16 @@ fn nonpod_multisub_selects_competing_backend_observed() {
     let got1 = drain(&sub1);
     let got2 = drain(&sub2);
     eprintln!(
-        "DIAG nonpod broadcast: sub1={} ({} msgs) sub2={} ({} msgs) producer={}",
+        "DIAG nonpod seq-drain: sub1={} got1={} sub2={} got2={}",
         sub1.backend_name(),
         got1.len(),
         sub2.backend_name(),
         got2.len(),
-        producer.backend_name(),
     );
 
     let expected: Vec<String> = (1..=n).map(|v| format!("m{v}")).collect();
-    for (who, got, be) in [
-        ("sub1", got1, sub1.backend_name()),
-        ("sub2", got2, sub2.backend_name()),
-    ] {
-        assert_eq!(
-            got, expected,
-            "{who} (non-POD broadcast, backend={be}) must receive every message in order — got {} of {n}",
-            got.len()
-        );
-    }
+    assert_eq!(got1, expected, "sub1 (non-POD broadcast) must receive every message");
+    assert_eq!(got2, expected, "sub2 (non-POD broadcast) must receive every message");
 }
 
 /// BROADCAST under a mid-stream subscriber join — the real-world case a subscriber

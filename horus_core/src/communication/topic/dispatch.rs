@@ -1865,7 +1865,24 @@ pub(super) fn recv_shm_mpsc_serde<
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    header.tail.store(new_tail, Ordering::Release);
+    // Batch header.tail updates — MUST match recv_shm_mpsc_pod. header.tail is the
+    // SHARED consumed frontier; flushing it on EVERY recv makes it track a single
+    // consumer's progress, so a second same-process subscriber that syncs its
+    // local_tail up to header.tail is starved (reads 0) — the POD path's lagging
+    // (batched) frontier is what let POD multi-sub broadcast work while this serde
+    // path, flushing eagerly, silently delivered to only one subscriber. Interval
+    // < capacity avoids producer backpressure. (Broadcast via independent per-handle
+    // local_tail is only sound while the frontier lags and messages fit the ring;
+    // a designed broadcast backend is the general answer — see roadmap-mrgqzlmb-ixl127.)
+    let flush_interval = (local.cached_capacity / 2).max(1);
+    let flush_mask = if flush_interval.is_power_of_two() {
+        flush_interval - 1
+    } else {
+        flush_interval.next_power_of_two() - 1
+    };
+    if new_tail & flush_mask == 0 {
+        header.tail.store(new_tail, Ordering::Release);
+    }
 
     housekeep_lease!(local, topic);
     Some(msg)
