@@ -120,10 +120,16 @@ unsafe impl<T: Send> Sync for SpscChannel<T> {}
 // (`needs_drop == false`) skip it entirely (const-folded, zero teardown cost).
 //
 // NOTE: values SHED by a drop-oldest *overwrite* are still leaked — the producer's
-// `ptr::write` in `send` clobbers the prior occupant without dropping it. That
-// concurrent overwrite-reclaim is loom-gated and tracked separately (roadmap
-// roadmap-mrgqzlmb-ixl127 phase 2). Teardown reclaim below covers only values
-// still resident at drop time (the consumer-keeps-up case, which is the common one).
+// `ptr::write` in `send` clobbers the prior occupant without dropping it. This is
+// NOT fixable by reclaiming in the producer: a bitwise-copy seqlock consumer can
+// cleanly copy a value the producer is simultaneously shedding, and nothing orders
+// the producer's `tail` sample after the consumer's `tail` advance in that window,
+// so any "drop the shed value on overwrite" formulation double-frees. Proven by
+// `tests/loom_fanout.rs::loom_proof_producer_reclaim_on_overwrite_double_frees`.
+// A real fix would remove the Drop payload entirely — e.g. store inline serialized
+// bytes for non-POD `T` like `ShmSpscChannel` does (roadmap roadmap-mrgqzlmb-ixl127
+// phase 2). Teardown reclaim below covers only values still resident at drop time
+// (the consumer-keeps-up case, which is the common one).
 impl<T> Drop for SpscChannel<T> {
     fn drop(&mut self) {
         if !std::mem::needs_drop::<T>() {
