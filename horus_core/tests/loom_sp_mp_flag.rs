@@ -31,22 +31,30 @@
 //! the model still TERMINATES without the fix (the drain breaks on `None` rather
 //! than spinning), so the gate fails cleanly instead of hanging.
 //!
-//! # SCOPE LIMITATION — why green here is NOT sufficient to ship
+//! # Two coupled properties, two gates in this file
 //!
-//! This model uses a MONOTONIC tail: the single consumer's `tail` only advances.
-//! It therefore does NOT model migration/late-join *resync*, where a handle's
-//! `local_tail` is reset to the shared `header.tail` (`topic/mod.rs` `sync_local`),
-//! which is BATCHED (flushed only every `capacity/2` reads) and so can regress
-//! behind the true consumed position. The ready-flag protocol encodes only
-//! present-vs-absent per slot, never consumed-vs-unconsumed — that lives in `tail`
-//! alone. So a flag-gated consumer reading from a regressed `tail` re-reads
-//! already-consumed slots. Making the SP path set flags (the fix this gate proves)
-//! widens the set of re-deliverable slots to include consumed ones, turning a
-//! previously-masked resync hazard into active stale re-delivery (observed:
-//! `migration_lock_data_flows_during_migration` re-delivers a consumed value once
-//! the SP flag is written). The eventual full fix must make `header.tail` reliable
-//! at resync AND extend this model to cover tail regression. Until then the fix
-//! this file guards is CORRECT-BUT-INSUFFICIENT (see softmata-brain 1327).
+//! The SP flag write alone is CORRECT-BUT-INSUFFICIENT: it makes SpscShm messages
+//! MpscShm-readable, but the MPSC recv is flag-gated and the flag encodes only
+//! present-vs-absent per slot, never consumed-vs-unconsumed. Consumed-ness lives
+//! only in `tail`, and the shared `header.tail` is BATCHED (flushed every
+//! `capacity/2` reads), so on a migration resync `sync_local` could regress a
+//! consumer's tail behind its true position and re-deliver already-consumed slots
+//! (softmata-brain 1327 scenario X — a stale command re-sent to hardware). The fix
+//! therefore has TWO parts, each gated here:
+//!
+//!   1. `run*` (loom_sp_mp_*): the SP send path publishes the per-slot ready flag,
+//!      correctly ordered (data before flag-Release; flag-Acquire before data).
+//!      Gate: delete the flag store -> RED (message loss).
+//!   2. `run_resync` (loom_resync_*): the resync tail policy takes
+//!      `max(local_tail, header_tail)` so the consumed frontier never rewinds.
+//!      Gate: adopt `header_tail` directly -> RED (re-delivery across resync).
+//!
+//! The real-code counterpart of gate 2 is the deterministic
+//! `same_consumer_no_redelivery_across_sp_to_mp_migration` test (exercises the
+//! actual `sync_local` + `force_migrate` path). Data-plane-CHANGE resyncs
+//! (intra<->SHM, capacity grow) still reset the tail (positions are rewritten);
+//! that discrimination is `is_cross_process()`-gated in `sync_local`, not modeled
+//! here (it is a mode check, not a concurrency property).
 //!
 //! Run with: `cargo test --test loom_sp_mp_flag -- --nocapture`
 
@@ -59,6 +67,11 @@ use loom::sync::Arc;
 struct SpRing<const CAP: usize> {
     head: AtomicU64,
     tail: AtomicU64,
+    /// The BATCHED shared consumed position (`header.tail`). SPSC/MPSC recv flush
+    /// it only every capacity/2 reads, so it lags a single consumer's true
+    /// position. The resync scenario keeps it at 0 (never flushed) to model that
+    /// lag at its worst.
+    header_tail: AtomicU64,
     ready: [AtomicU64; CAP],
     data: [AtomicU64; CAP],
 }
@@ -71,9 +84,32 @@ impl<const CAP: usize> SpRing<CAP> {
         Self {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
+            header_tail: AtomicU64::new(0),
             ready: std::array::from_fn(|_| AtomicU64::new(0)),
             data: std::array::from_fn(|_| AtomicU64::new(0)),
         }
+    }
+
+    /// Drain every slot that is currently ready, starting at `tail`, appending the
+    /// delivered POSITION to `out` and returning the advanced tail. Non-spinning:
+    /// it stops at the first not-yet-ready slot, so it always terminates (bounded
+    /// by the number of ready slots). Models a single MPSC consumer's read burst.
+    fn drain_ready(&self, mut tail: u64, out: &mut Vec<u64>) -> u64 {
+        loop {
+            let head = self.head.load(Ordering::Acquire);
+            if head.wrapping_sub(tail) == 0 {
+                break;
+            }
+            let idx = (tail & Self::MASK) as usize;
+            if self.ready[idx].load(Ordering::Acquire) != tail.wrapping_add(1) {
+                break;
+            }
+            let val = self.data[idx].load(Ordering::Relaxed);
+            assert_eq!(val, tail + 1, "torn read at position {tail}: value {val}");
+            out.push(tail);
+            tail = tail.wrapping_add(1);
+        }
+        tail
     }
 
     /// Single-producer POD send — models `send_shm_sp_pod` WITH the fix.
@@ -203,4 +239,70 @@ fn loom_sp_mp_cap4_three() {
     // messages sent under SpscShm, then read after a second producer forces
     // MpscShm), consumer racing the producer.
     run::<4>(3);
+}
+
+/// Scenario X (softmata-brain 1327): a consumer that has already consumed
+/// messages must NOT be re-delivered them across a migration resync.
+///
+/// Models `sync_local`'s data-plane-aware tail policy. The consumer reads a burst,
+/// then RESYNCS — recomputing its tail from its own position and the batched
+/// shared `header_tail` (which lags, kept at 0 here). The production fix takes
+/// `max(local_tail, header_tail)`, so the tail never rewinds; then it reads on.
+/// The delivered positions across BOTH bursts must contain no duplicate — a
+/// re-delivered position is a stale command re-sent to hardware.
+///
+/// GATE: change the resync line below from `.max(...)` to adopting `header_tail`
+/// directly (the old, buggy `sync_local` behavior) and this goes RED — the second
+/// burst re-delivers positions the first already yielded.
+fn run_resync<const CAP: usize>(sends: u64) {
+    assert!(sends <= CAP as u64, "model is faithful only without slot reuse");
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(3);
+    builder.check(move || {
+        let ring = Arc::new(SpRing::<CAP>::new());
+
+        let p = ring.clone();
+        let producer = loom::thread::spawn(move || {
+            for pos in 0..sends {
+                p.sp_send(pos + 1);
+            }
+        });
+
+        let c = ring.clone();
+        let consumer = loom::thread::spawn(move || {
+            let mut delivered = Vec::new();
+            // First read burst (races the producer): drains whatever is ready.
+            let tail = c.drain_ready(0, &mut delivered);
+            // Resync (models sync_local across a same-data-plane migration). The
+            // fix: never rewind behind our own consumed position. header_tail lags
+            // (0), so this is a no-op here — which is exactly the point: the old
+            // code adopted header_tail and rewound to 0.
+            let tail = tail.max(c.header_tail.load(Ordering::Acquire));
+            // Second read burst after resync.
+            let _ = c.drain_ready(tail, &mut delivered);
+            delivered
+        });
+
+        producer.join().unwrap();
+        let delivered = consumer.join().unwrap();
+
+        // No position delivered twice across the resync.
+        let mut seen = std::collections::BTreeSet::new();
+        for &pos in &delivered {
+            assert!(
+                seen.insert(pos),
+                "re-delivered position {pos} across resync: {delivered:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn loom_resync_no_redelivery_cap2() {
+    run_resync::<2>(2);
+}
+
+#[test]
+fn loom_resync_no_redelivery_cap4() {
+    run_resync::<4>(3);
 }

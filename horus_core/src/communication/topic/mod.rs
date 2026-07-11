@@ -1000,6 +1000,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// tail = head to skip stale data from the previous era.
     #[inline(always)]
     fn sync_local(local: &mut LocalState, header: &TopicHeader, skip_stale_broadcast: bool) {
+        // Capture the pre-sync mode/capacity to decide whether this resync crosses
+        // a data-plane boundary (see the local_tail logic below).
+        let old_mode = local.cached_mode;
+        let old_capacity = local.cached_capacity;
+
         local.is_same_process = header.is_same_process();
         local.is_pod = header.is_pod_type();
         local.slot_size = header.slot_size as usize;
@@ -1007,7 +1012,39 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         local.cached_capacity = header.capacity as u64;
         local.cached_capacity_mask = header.capacity_mask as u64;
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        local.local_tail = header.tail.load(Ordering::Acquire);
+        let shared_tail = header.tail.load(Ordering::Acquire);
+
+        // Data-plane-aware consumed frontier (softmata-brain 1327, scenario X).
+        //
+        // `header.tail` is the SHARED consumed position, but SPSC/MPSC recv flush
+        // it only every capacity/2 reads (the single consumer's `local_tail` is
+        // authoritative between flushes). So on a resync `header.tail` typically
+        // LAGS this handle's true consumed position. Blindly adopting it would
+        // REGRESS the consumer and re-deliver already-consumed messages the next
+        // recv — a safety-critical hazard (stale command re-sent to a motor across
+        // a topology change, e.g. SpscShm -> MpscShm when a 2nd producer joins).
+        //
+        // When the migration stays within the SHM data plane (both modes are
+        // cross-process AND the ring capacity is unchanged), message positions are
+        // continuous, so `local_tail` is meaningful in the new coordinates: take
+        // the max so the frontier never rewinds. (This is also correct for SPMC,
+        // where other consumers CAS `header.tail` ahead of us — max() then adopts
+        // the shared frontier, skipping what peers already took.)
+        //
+        // When the migration CHANGES the data plane (intra <-> SHM, where
+        // `drain_old_into_shm` rewrites messages at fresh positions, or a capacity
+        // grow), the old `local_tail` is meaningless in the new coordinates, so we
+        // must adopt `header.tail`. Fresh handles (`local_tail == 0`) are
+        // unaffected either way: `max(0, header.tail) == header.tail`.
+        let same_data_plane = old_mode.is_cross_process()
+            && local.cached_mode.is_cross_process()
+            && old_capacity == local.cached_capacity;
+        local.local_tail = if same_data_plane {
+            local.local_tail.max(shared_tail)
+        } else {
+            shared_tail
+        };
+
         if skip_stale_broadcast && local.cached_mode == BackendMode::PodShm {
             local.local_tail = local.local_head;
         }
