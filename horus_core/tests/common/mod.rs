@@ -24,6 +24,25 @@
 //!
 //! 5. **Do not depend on test execution order.** Tests must be independent
 //!    and pass when run individually or in any order with any thread count.
+//!
+//! # Running the integration suite
+//!
+//! [`cleanup_stale_shm`] returns a lock guard that serializes the SHM-touching
+//! tests which call it, so those are deterministic at any `--test-threads`.
+//! Some integration tests, however, share process-global state WITHOUT calling
+//! `cleanup_stale_shm` (service registries, RT CPU timing, cross-process SHM),
+//! and still race under the default in-binary parallelism. For a fully
+//! deterministic run, execute the integration suite serially:
+//!
+//! ```sh
+//! cargo test --workspace -- --test-threads=1
+//! # or: RUST_TEST_THREADS=1 cargo test --workspace
+//! ```
+//!
+//! (A `.cargo/config.toml` `[env] RUST_TEST_THREADS` was deliberately NOT added:
+//! `.cargo/*` is gitignored except `audit.toml`, and an `[env]` block there
+//! breaks the `horus_py` pyo3 link step in this workspace. Use the invocation
+//! above — or a CI job flag — instead.)
 
 /// Process-wide lock serializing tests that touch the shared "default" SHM
 /// namespace (see [`cleanup_stale_shm`]).
