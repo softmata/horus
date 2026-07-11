@@ -85,7 +85,10 @@ fn test_service_multiple_sequential_calls() {
 // ============================================================================
 
 #[test]
-    #[ignore = "multi-producer convergence window (softmata-brain 1327), service layer: multiple ServiceClients produce to the server's single request topic; requests published before that multi-producer backend converges are lost -> errors/timeouts. NOT a cross-test race (fails serial + isolated). Tracked runtime issue; un-ignore when multi-producer convergence is fixed."]
+    // Robust since the multi-producer convergence fix (softmata-brain 1327): the
+    // server's request topic is single-consumer with multiple ServiceClient
+    // producers; SpscShm now uses the MpscShm atomic-claim + flag protocol, so
+    // client requests are never lost to an incompatible-protocol convergence window.
 fn test_concurrent_multi_client() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -249,7 +252,9 @@ fn test_server_stop_clean() {
 // ============================================================================
 
 #[test]
-    #[ignore = "multi-producer convergence window (softmata-brain 1327), service layer: multiple ServiceClients produce to the server's single request topic; requests published before that multi-producer backend converges are lost -> errors/timeouts. NOT a cross-test race (fails serial + isolated). Tracked runtime issue; un-ignore when multi-producer convergence is fixed."]
+    // Robust since the multi-producer convergence fix (softmata-brain 1327): see
+    // test_concurrent_multi_client. Multiple ServiceClients no longer lose requests
+    // to a convergence window on the server's single-consumer request topic.
 fn test_request_ids_are_unique_sequential() {
     // This test verifies that ServiceClient generates unique request IDs
     // by making multiple clients and checking their first call's ID is unique.

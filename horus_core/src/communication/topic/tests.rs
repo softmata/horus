@@ -765,7 +765,6 @@ fn topic_cross_thread_1p_multi_c_spmc() {
 }
 
 #[test]
-#[ignore = "residual multi-producer convergence window (softmata-brain 1327): a producer can publish before the consumer converges to the migrated backend. DISTINCT from the sp->mp flag/tail-regression bug, which IS fixed (crash_producer_panic_consumer_not_stuck un-ignored). After that fix this test passes 8/8 idle and 15/15 under 32-core CPU load, but the documented flake condition is the full parallel integration suite (SHM contention widens the convergence window), not reproduced here, so it stays ignored pending the residual-convergence work. Re-evaluate un-ignoring once that lands."]
 fn topic_cross_thread_multi_p_1c_mpsc() {
     let name = unique("mpsc_mt");
     let n_per_producer = 500u64;
@@ -782,7 +781,15 @@ fn topic_cross_thread_multi_p_1c_mpsc() {
             test_spawn(move || {
                 b.wait();
                 for i in 0..n_per_producer {
-                    pub_t.send(pid as u64 * 100000 + i);
+                    // Lossless send: retry on a full ring so backpressure never
+                    // drops a message. This isolates the multi-producer CONVERGENCE
+                    // property (no protocol loss when producers join) from bounded-
+                    // ring backpressure, which is a separate concern.
+                    let mut msg = pid as u64 * 100000 + i;
+                    while let Err(returned) = pub_t.try_send(msg) {
+                        msg = returned;
+                        std::thread::yield_now();
+                    }
                 }
             })
         })
@@ -813,12 +820,25 @@ fn topic_cross_thread_multi_p_1c_mpsc() {
         }
     }
 
-    // During Topic backend migration (DirectChannel -> MpscIntra), in-flight
-    // messages may be lost. Under heavy parallel test execution, CPU pressure
-    // can cause significant loss. Verify correctness (messages flow) not throughput.
-    assert!(
-        received.len() >= 100,
-        "MPSC: expected at least 100 messages, got {}",
+    // With SpscShm using the same atomic-claim + per-slot-flag protocol as MpscShm
+    // (softmata-brain 1327 multi-producer convergence fix), there is no incompatible
+    // -protocol window when producers 2..N join the ring, so NO messages are lost:
+    // every message is delivered exactly once.
+    assert_eq!(
+        received.len(),
+        total,
+        "MPSC: expected all {} messages, got {}",
+        total,
+        received.len(),
+    );
+    let mut sorted = received.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        total,
+        "MPSC: duplicate delivery detected ({} unique of {} received)",
+        sorted.len(),
         received.len(),
     );
 }
@@ -2988,9 +3008,12 @@ fn dispatch_migration_during_burst() {
 //   - String:   non-POD    (→ bincode serde dispatch)
 //
 // Dispatch functions exercised per test:
-//   SpscShm + u64     → send_shm_sp_pod_colo    / recv_shm_spsc_pod_colo
-//   SpscShm + [u64;8] → send_shm_sp_pod         / recv_shm_spsc_pod
-//   SpscShm + String  → send_shm_sp_serde        / recv_shm_spsc_serde
+//   (SpscShm shares the MpscShm atomic-claim + per-slot-flag dispatch since the
+//    multi-producer convergence fix, softmata-brain 1327 — so these tests exercise
+//    the send_shm_mp_* / recv_shm_mpsc_* functions, same as MpscShm below.)
+//   SpscShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpsc_pod_colo
+//   SpscShm + [u64;8] → send_shm_mp_pod         / recv_shm_mpsc_pod
+//   SpscShm + String  → send_shm_mp_serde        / recv_shm_mpsc_serde
 //   SpmcShm + u64     → send_shm_sp_pod_colo    / recv_shm_spmc_pod_colo
 //   SpmcShm + String  → send_shm_sp_serde        / recv_shm_spmc_serde
 //   MpscShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpsc_pod_colo
@@ -7949,8 +7972,13 @@ fn crash_rapid_create_drop_no_leak() {
 }
 
 /// Multiple producers, one crashes — other producers and consumer unaffected.
+///
+/// Robust since the multi-producer convergence fix (softmata-brain 1327): every
+/// producer claims slots atomically (SpscShm now uses the MpscShm protocol), so a
+/// 2nd producer joining causes no protocol loss. Assertion stays loose (count > 0 +
+/// no hang) because a producer PANICS mid-stream — some in-flight loss is inherent
+/// to the crash, not to convergence.
 #[test]
-#[ignore = "residual multi-producer convergence window (softmata-brain 1327): a producer can publish before the consumer converges to the migrated backend; the 25ms migration drain widens it under load. DISTINCT from the sp->mp flag/tail-regression bug, which IS fixed. After that fix this passes 8/8 idle and 15/15 under 32-core CPU load, but the flake condition is the full parallel integration suite (not reproduced here); stays ignored pending the residual-convergence work."]
 fn crash_one_producer_others_unaffected() {
     let name = unique("crash_multi_prod");
     let consumer: Topic<u64> = Topic::new(&name).unwrap();

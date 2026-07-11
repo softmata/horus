@@ -250,14 +250,10 @@ fn test_cross_thread_spmc_multiple_consumers() {
 // Same-process multi-producer: MPSC path
 // ============================================================================
 
+// Robust since the multi-producer convergence fix (softmata-brain 1327): SpscShm
+// uses the MpscShm atomic-claim + per-slot-flag protocol, so the 3 producers claim
+// distinct slots from message one — no convergence window, no loss.
 #[test]
-#[ignore = "multi-producer MPSC convergence window (softmata-brain 1327): 3 \
-            producers + 1 consumer each create the topic and immediately \
-            send/recv; messages published before the backend converges to the \
-            shared MpscShm ring are lost, so the consumer can see 0. Flaky \
-            (timing), NOT a cross-test race — serial execution / the SHM guard \
-            does not fix it. Tracked runtime issue; un-ignore when the \
-            multi-producer convergence protocol lands."]
 fn test_cross_thread_mpsc_multiple_producers() {
     let _shm_guard = cleanup_stale_shm();
     let name = unique("ct_mpsc");

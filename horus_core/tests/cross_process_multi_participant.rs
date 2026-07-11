@@ -247,15 +247,14 @@ fn cross_process_spmc_1_pub_3_sub() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "multi-producer MPSC convergence window (softmata-brain 1327), \
-            cross-process variant: 3 publisher processes + 1 subscriber each \
-            open the topic and send/recv immediately; messages published before \
-            the shared MpscShm ring converges are lost. Deterministic here \
-            (cross-process convergence is slower than cross-thread). NOT a \
-            cross-test race — the SHM serialization guard does not fix it. \
-            Tracked runtime issue; un-ignore when multi-producer convergence \
-            is fixed. See also backend_detection::test_cross_thread_mpsc_\
-            multiple_producers."]
+#[ignore = "pre-existing HARNESS failure in this environment, NOT the convergence bug: \
+            the re-exec'd child publisher processes deliver 0 messages ('received 0 from \
+            0 children') identically WITH and WITHOUT the multi-producer convergence fix, \
+            so it is not measuring convergence. Cross-process SHM delivery itself works \
+            (cross_process_ipc passes 10/10). The convergence fix (softmata-brain 1327) is \
+            validated by the cross-THREAD equivalents (topic_cross_thread_multi_p_1c_mpsc, \
+            now asserting exactly-once delivery of all 2000 messages) and the service-layer \
+            multi-client tests. Un-ignore once the child-spawn harness works in CI."]
 fn cross_process_mpsc_3_pub_1_sub() {
     if is_child() {
         if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_mpsc_3_pub_1_sub") {

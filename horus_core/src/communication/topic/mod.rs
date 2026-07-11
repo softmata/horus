@@ -1556,11 +1556,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
             BackendMode::FanoutIntra => dispatch::send_fanout_intra::<T>,
             BackendMode::FanoutShm => dispatch::send_fanout_shm::<T>,
-            BackendMode::SpscShm | BackendMode::SpmcShm if colo => {
-                dispatch::send_shm_sp_pod_colo::<T>
-            }
-            BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
-            BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
+            // SpscShm uses the SAME multi-producer-compatible protocol as MpscShm
+            // (atomic fetch_add slot claim + per-slot ready flag). This makes the
+            // SpscShm -> MpscShm transition (a 2nd producer joining) a no-op at the
+            // protocol level: every producer claims distinct slots atomically from
+            // message one, so there is no incompatible-protocol window on the shared
+            // ring and no multi-producer convergence loss (softmata-brain 1327). The
+            // 1P case is safe (loom_sp_mp_flag).
+            BackendMode::SpscShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
+            BackendMode::SpscShm if is_pod => dispatch::send_shm_mp_pod::<T>,
+            BackendMode::SpscShm => dispatch::send_shm_mp_serde::<T>,
+            // SpmcShm KEEPS the single-producer send path: its multi-consumer CAS
+            // recv (recv_shm_spmc_*) relies on `sequence_or_head` being published
+            // AFTER the data write (send_shm_sp_* stores head last), which the
+            // fetch_add-claim MP path does not provide (it advances head on claim,
+            // before the data write). SpmcShm is single-producer, so this is safe.
+            BackendMode::SpmcShm if colo => dispatch::send_shm_sp_pod_colo::<T>,
+            BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
+            BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
             BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
             BackendMode::MpscShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
@@ -1597,15 +1610,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
             BackendMode::FanoutIntra => dispatch::recv_fanout_intra::<T>,
             BackendMode::FanoutShm => dispatch::recv_fanout_shm::<T>,
-            BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
-            BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
+            BackendMode::SpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
+            BackendMode::SpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
             BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
             BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
             BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
             BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
             BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
-            BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
+            BackendMode::SpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM (handles any topology).
