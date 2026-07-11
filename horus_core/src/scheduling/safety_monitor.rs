@@ -855,11 +855,22 @@ impl SafetyMonitor {
         self.degrade_activations.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Trigger emergency stop
+    /// Trigger emergency stop.
+    ///
+    /// The safety-critical latch (flag + state) is performed BEFORE any fallible
+    /// I/O. This is the single sink for every safety trigger (watchdog expiry,
+    /// 3x timeout, budget overrun, deadline miss, miss ceiling, external hook), so
+    /// a broken stderr — EPIPE from a restarted log supervisor, ENOSPC on a full
+    /// disk, EIO on a dropped pty — must never prevent the e-stop from engaging.
+    /// `eprintln!` panics on a stderr write error; latching first and logging last
+    /// (non-fatally, via `let _ = writeln!`) guarantees the flag is set regardless.
     pub(crate) fn trigger_emergency_stop(&self, reason: String) {
-        eprintln!(" EMERGENCY STOP: {}", reason);
+        // Latch FIRST — the safety-critical action must not depend on logging.
         self.emergency_stop.store(true, Ordering::SeqCst);
         *self.state.lock() = SafetyState::EmergencyStop;
+        // Log LAST and non-fatally — a stderr write failure must not unwind here.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), " EMERGENCY STOP: {}", reason);
     }
 
     /// Check if emergency stop is active
@@ -983,6 +994,50 @@ mod tests {
         assert!(
             !wd.check(),
             "should not be expired immediately after re-feed"
+        );
+    }
+
+    // ── Emergency-stop latch robustness ──────────────────────────────────
+
+    /// Regression: the emergency-stop latch MUST engage even when stderr writes
+    /// fail. `trigger_emergency_stop` used to `eprintln!` BEFORE latching the
+    /// flag/state; `eprintln!` panics on a stderr write error (EPIPE/ENOSPC/EIO),
+    /// so a broken stderr (restarted log supervisor, full disk, dropped pty)
+    /// skipped the latch and the robot kept running under the fault that demanded
+    /// the stop. This runs a child whose stderr is /dev/full (every write fails
+    /// with ENOSPC) and asserts the e-stop still latched. Pre-fix the child aborts
+    /// (double panic); post-fix it latches, ignores the write error, and exits 0.
+    #[test]
+    fn emergency_stop_latches_even_when_stderr_write_fails() {
+        // Child branch: parent redirected our stderr to /dev/full before exec.
+        if std::env::var("HORUS_ESTOP_STDERR_CHILD").is_ok() {
+            let monitor = SafetyMonitor::new(100);
+            monitor.trigger_emergency_stop("stderr-broken regression".to_string());
+            std::process::exit(if monitor.is_emergency_stop() { 0 } else { 3 });
+        }
+
+        // Parent branch: re-exec ourselves running only this test with stderr
+        // pointed at /dev/full. Skip gracefully if /dev/full is unavailable.
+        let devfull = match std::fs::OpenOptions::new().write(true).open("/dev/full") {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let exe = std::env::current_exe().expect("current_exe");
+        let status = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "scheduling::safety_monitor::tests::emergency_stop_latches_even_when_stderr_write_fails",
+                "--nocapture",
+            ])
+            .env("HORUS_ESTOP_STDERR_CHILD", "1")
+            .stderr(std::process::Stdio::from(devfull))
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("spawn child");
+        assert!(
+            status.success(),
+            "emergency stop must latch even when stderr writes fail (child exit {:?})",
+            status.code()
         );
     }
 
