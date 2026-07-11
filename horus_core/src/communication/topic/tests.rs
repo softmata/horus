@@ -411,87 +411,6 @@ fn mpsc_ring_multiple_producers() {
     }
 }
 
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn mpmc_ring_concurrent_producers_and_consumers() {
-    let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 256));
-    let n_per_producer = 500u64;
-    let n_producers = 4;
-    let n_consumers = 4;
-    let total = n_producers * n_per_producer as usize;
-
-    let barrier = Arc::new(Barrier::new(n_producers + n_consumers));
-
-    // Producers
-    let producer_handles: Vec<_> = (0..n_producers)
-        .map(|pid| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            test_spawn(move || {
-                b.wait();
-                for i in 0..n_per_producer {
-                    let val = pid as u64 * 100000 + i;
-                    while r.try_send(val).is_err() {
-                        std::hint::spin_loop();
-                    }
-                }
-            })
-        })
-        .collect();
-
-    // Consumers
-    let consumer_collected = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let consumer_handles: Vec<_> = (0..n_consumers)
-        .map(|_| {
-            let r = ring.clone();
-            let c = consumer_collected.clone();
-            let b = barrier.clone();
-            let d = done.clone();
-            test_spawn(move || {
-                b.wait();
-                let mut local = Vec::new();
-                loop {
-                    match r.try_recv() {
-                        Some(v) => local.push(v),
-                        None => {
-                            if d.load(Ordering::Relaxed) && r.pending_count() == 0 {
-                                // Double-check: try one more time
-                                match r.try_recv() {
-                                    Some(v) => local.push(v),
-                                    None => break,
-                                }
-                            }
-                            std::hint::spin_loop();
-                        }
-                    }
-                }
-                c.lock().unwrap().extend(local);
-            })
-        })
-        .collect();
-
-    for h in producer_handles {
-        h.join().unwrap();
-    }
-    done.store(true, Ordering::Relaxed);
-
-    for h in consumer_handles {
-        h.join().unwrap();
-    }
-
-    let mut all = consumer_collected.lock().unwrap().clone();
-    all.sort();
-    all.dedup();
-    assert_eq!(
-        all.len(),
-        total,
-        "MPMC: expected {} unique messages, got {} (duplicates removed)",
-        total,
-        all.len()
-    );
-}
-
 // ============================================================================
 // 8. TOPIC SAME-THREAD TESTS (DirectChannel backend)
 // ============================================================================
@@ -603,7 +522,6 @@ fn topic_same_thread_uses_direct_channel() {
 }
 
 #[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
 fn topic_read_latest() {
     // Test read_latest on the raw ring buffers where behavior is well-defined
     // (Topic-level read_latest has complex interactions with migration and role tracking)
@@ -624,13 +542,10 @@ fn topic_read_latest() {
     mpsc.try_send(200).unwrap();
     assert_eq!(mpsc.read_latest(), Some(200));
 
-    // MPMC ring: read_latest returns most recent
-    let mpmc = fanout::FanoutRing::<u64>::new(4, 4, 8);
-    assert_eq!(mpmc.read_latest(), None);
-    mpmc.try_send(1000).unwrap();
-    mpmc.try_send(2000).unwrap();
-    mpmc.try_send(3000).unwrap();
-    assert_eq!(mpmc.read_latest(), Some(3000));
+    // NOTE: FanoutRing (broadcast) intentionally has NO read_latest — it is a
+    // hardcoded `None` stub (fanout.rs), because a broadcast ring has no single
+    // "latest": each subscriber has its own independent cursor. There is therefore
+    // no MPMC/fanout subcase here; asserting a value would test a no-op.
 
     // SPMC ring: read_latest returns most recent
     let spmc = SpmcRing::<u64>::new(8);
@@ -1049,78 +964,6 @@ fn stress_mpsc_contention() {
 
     let count = consumer.join().unwrap();
     assert_eq!(count, total);
-}
-
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn stress_mpmc_high_contention() {
-    let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 256));
-    let n_per = 5_000u64;
-    let n_threads = 4;
-    let total = n_threads as u64 * n_per;
-
-    let barrier = Arc::new(Barrier::new(n_threads * 2));
-    let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Producers
-    let producers: Vec<_> = (0..n_threads)
-        .map(|pid| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            test_spawn(move || {
-                b.wait();
-                for i in 0..n_per {
-                    let val = pid as u64 * 1_000_000 + i;
-                    while r.try_send(val).is_err() {
-                        std::hint::spin_loop();
-                    }
-                }
-            })
-        })
-        .collect();
-
-    // Consumers
-    let consumers: Vec<_> = (0..n_threads)
-        .map(|_| {
-            let r = ring.clone();
-            let c = collected.clone();
-            let b = barrier.clone();
-            let d = done.clone();
-            test_spawn(move || {
-                b.wait();
-                let mut local = Vec::new();
-                loop {
-                    match r.try_recv() {
-                        Some(v) => local.push(v),
-                        None => {
-                            if d.load(Ordering::Relaxed) {
-                                while let Some(v) = r.try_recv() {
-                                    local.push(v);
-                                }
-                                break;
-                            }
-                            std::hint::spin_loop();
-                        }
-                    }
-                }
-                c.lock().unwrap().extend(local);
-            })
-        })
-        .collect();
-
-    for h in producers {
-        h.join().unwrap();
-    }
-    done.store(true, Ordering::Relaxed);
-    for h in consumers {
-        h.join().unwrap();
-    }
-
-    let mut all = collected.lock().unwrap().clone();
-    all.sort();
-    all.dedup();
-    assert_eq!(all.len(), total as usize);
 }
 
 // ============================================================================
@@ -2113,26 +1956,6 @@ fn mpsc_ring_drop_pending_messages() {
     let counter = Arc::new(AtomicU64::new(0));
     {
         let ring = MpscRing::<DropCounter>::new(16);
-        for _ in 0..8 {
-            ring.try_send(DropCounter::new(&counter)).unwrap();
-        }
-        for _ in 0..2 {
-            ring.try_recv().unwrap();
-        }
-    }
-    assert_eq!(
-        counter.load(Ordering::Relaxed),
-        8,
-        "All DropCounters must be dropped (2 recv'd + 6 pending)"
-    );
-}
-
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn mpmc_ring_drop_pending_messages() {
-    let counter = Arc::new(AtomicU64::new(0));
-    {
-        let ring = fanout::FanoutRing::<DropCounter>::new(4, 4, 16);
         for _ in 0..8 {
             ring.try_send(DropCounter::new(&counter)).unwrap();
         }
@@ -3281,34 +3104,6 @@ fn shm_dispatch_mpmc_pod_colo() {
     }
 }
 
-#[test]
-#[ignore] // MpmcShm CAS backend removed — FanoutShm replaces it via ShmFanoutRing
-fn shm_dispatch_mpmc_serde() {
-    let name = unique("shm_d_mpmc_ser");
-    let t: Topic<String> = Topic::new(&name).expect("create");
-    t.send("init".to_string());
-    let _ = t.recv();
-
-    match t.force_migrate(BackendMode::FanoutShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            for i in 0..32 {
-                t.try_send(format!("mpmc_{}", i)).unwrap();
-            }
-            let mut received = Vec::new();
-            while let Some(v) = t.try_recv() {
-                received.push(v);
-            }
-            assert!(!received.is_empty(), "MpmcShm serde: no messages");
-            for v in &received {
-                assert!(v.starts_with("mpmc_"), "MpmcShm serde: corrupt '{}'", v);
-            }
-            eprintln!("MpmcShm serde: {}/32", received.len());
-        }
-        other => eprintln!("MpmcShm unavailable: {:?}", other),
-    }
-}
-
 // ---- PodShm broadcast ----
 
 #[test]
@@ -3454,10 +3249,26 @@ fn shm_serde_oversized_data_rejected() {
 }
 
 #[test]
-#[ignore] // MpmcShm CAS backend removed — FanoutShm replaces it via ShmFanoutRing
-fn shm_serde_oversized_mp_rejected() {
-    // Same bounds check but for multi-producer serde path (send_shm_mp_serde)
-    let name = unique("shm_d_bounds_mp");
+fn shm_serde_oversized_broadcast_no_oob() {
+    // MEMORY-SAFETY INVARIANT for the broadcast (FanoutShm) serde send path.
+    //
+    // An oversized serialized message MUST NOT cause an out-of-bounds write.
+    // `ShmSpscChannel::try_send_serde` bounds-checks `4 + bytes.len() > slot_size`
+    // and refuses the write (returns false), surfacing as `try_send() -> Err`. The
+    // ring must stay fully usable afterwards (no partial/torn slot left behind).
+    //
+    // FINDING (surfaced, deliberately NOT fixed in this test-cleanup task): the
+    // fanout serde slot is a FIXED 8 KiB (shm_fanout.rs `compute_slot_size`), and
+    // unlike the SP/MP serde paths (`send_shm_sp_serde` / `send_shm_mp_serde`), the
+    // broadcast path `send_fanout_shm` does NOT call `auto_grow_slot_size` — it
+    // rejects any serde message > ~8 KiB instead of growing to fit. Public `send()`
+    // then drops it after a bounded retry (`send_lossy_retry`), and this path emits
+    // NO warning log. Consequence: a serde topic that delivers a >8 KiB message with
+    // ONE subscriber (SpscShm auto-grows) can silently drop that same message once a
+    // SECOND subscriber joins (FanoutShm is auto-selected for cross-process
+    // multi-sub). This test locks ONLY the no-OOB invariant; it does NOT bless
+    // drop-vs-grow as the intended behavior.
+    let name = unique("shm_bcast_oversized");
     let t: Topic<String> = Topic::with_capacity(&name, 64, Some(64)).expect("create");
     t.send("ok".to_string());
     let _ = t.recv();
@@ -3465,19 +3276,38 @@ fn shm_serde_oversized_mp_rejected() {
     match t.force_migrate(BackendMode::FanoutShm) {
         MigrationResult::Success { .. } => {
             trigger_shm_dispatch(&name);
-            let small = "hi".to_string();
-            assert!(t.try_send(small).is_ok(), "Small string should fit");
-            let _ = t.try_recv();
+            // Register both endpoints on the fanout path and confirm the pub->sub
+            // channel is live (so the oversized send below actually reaches
+            // try_send_serde rather than the n_subs==0 early-return).
+            assert!(t.try_send("hi".to_string()).is_ok(), "small message should fit");
+            let _ = t.try_recv(); // registers subscriber 0
+            assert!(t.try_send("live".to_string()).is_ok(), "small message should fit");
+            assert_eq!(
+                t.try_recv(),
+                Some("live".to_string()),
+                "pub->sub channel must be live before the oversized case"
+            );
 
-            let oversized = "Z".repeat(41);
-            let result = t.try_send(oversized);
-            // try_send returns Err after auto-grow (retry handles success)
+            // The fanout serde slot is a FIXED 8 KiB (shm_fanout.rs compute_slot_size);
+            // a message exceeding it must be rejected — never written OOB.
+            let huge = "Z".repeat(20_000);
             assert!(
-                result.is_err(),
-                "MP try_send should return Err after auto-grow (retry handles success)"
+                t.try_send(huge).is_err(),
+                "oversized broadcast serde message must be rejected (no OOB write)"
+            );
+
+            // The ring must still work after a rejected oversized send.
+            assert!(
+                t.try_send("after".to_string()).is_ok(),
+                "ring must remain usable after an oversized rejection"
+            );
+            assert_eq!(
+                t.try_recv(),
+                Some("after".to_string()),
+                "well-sized message after rejection must round-trip intact"
             );
         }
-        other => eprintln!("MpmcShm unavailable: {:?}", other),
+        other => eprintln!("FanoutShm unavailable: {:?}", other),
     }
 }
 
@@ -3502,21 +3332,6 @@ fn auto_grow_sp_serde_try_send_triggers_grow() {
         // 41 chars → bincode 49 bytes > max_data_len 48
         let result = t.try_send("A".repeat(41));
         assert!(result.is_err(), "try_send should Err after auto-grow");
-    }
-}
-
-#[test]
-#[ignore] // MpmcShm CAS backend removed — FanoutShm replaces it via ShmFanoutRing
-fn auto_grow_mp_serde_try_send_triggers_grow() {
-    let name = unique("auto_grow_mp");
-    let t: RingTopic<String> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
-    t.send("init".to_string());
-    let _ = t.recv();
-
-    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::FanoutShm) {
-        trigger_shm_dispatch(&name);
-        let result = t.try_send("B".repeat(41));
-        assert!(result.is_err(), "MP try_send should Err after auto-grow");
     }
 }
 
@@ -3625,7 +3440,6 @@ fn auto_grow_multiple_grows() {
 }
 
 #[test]
-#[ignore] // MpmcShm CAS backend removed — FanoutShm replaces it via ShmFanoutRing
 fn auto_grow_small_messages_still_work_after_grow() {
     // After growing, small messages should still send and receive correctly.
     let name = unique("auto_grow_small_after");
@@ -3919,30 +3733,52 @@ fn ring_saturation_mpsc_full_then_drain() {
 }
 
 #[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn ring_saturation_mpmc_full_then_drain() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 16);
-    for i in 0..16u64 {
-        ring.try_send(i).unwrap();
+fn fanout_ring_saturation_drops_oldest_never_blocks() {
+    // FanoutRing is a DROP-OLDEST broadcast ring: the producer is NEVER throttled
+    // (real-time contract) and a slow consumer always sees the LATEST data, never a
+    // stale backlog. This replaces the old MpmcRing "reject when full" assertion —
+    // FanoutRing intentionally overwrites the oldest slot instead of rejecting
+    // (fanout.rs `send_as`: "Never fails").
+    let cap = 16usize;
+    let ring = fanout::FanoutRing::<u64>::new(4, 4, cap);
+
+    // Over-fill far past capacity. Every send must succeed — the ring never blocks
+    // or rejects, even when the (single, un-drained) consumer is lapped many times.
+    let n = 1000u64;
+    for i in 0..n {
+        assert!(
+            ring.try_send(i).is_ok(),
+            "drop-oldest ring must never reject or block (send {i})"
+        );
     }
+
+    // Drain. Under drop-oldest the survivors are the most-recent, contiguous,
+    // in-order suffix of what was sent — at most `cap` of them, and the NEWEST
+    // message always survives (newest-wins).
+    let mut got = Vec::new();
+    while let Some(v) = ring.try_recv() {
+        got.push(v);
+    }
+    assert!(!got.is_empty(), "consumer must see the most recent messages");
     assert!(
-        ring.try_send(99).is_err(),
-        "MPMC ring should reject when full"
+        got.len() <= cap,
+        "drop-oldest must retain at most capacity ({cap}), retained {}",
+        got.len()
     );
-    assert_eq!(ring.pending_count(), 16);
-
-    for i in 0..8u64 {
-        assert_eq!(ring.try_recv(), Some(i));
+    for w in got.windows(2) {
+        assert!(w[0] < w[1], "FIFO order must hold among survivors: {w:?}");
     }
-    for i in 16..24u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(99).is_err());
-
-    for i in 8..24u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
+    assert_eq!(
+        *got.last().unwrap(),
+        n - 1,
+        "newest message ({}) must survive drop-oldest",
+        n - 1
+    );
+    assert!(
+        got.iter().all(|&v| v >= n - cap as u64),
+        "survivors must be the most-recent {cap} messages: {got:?}"
+    );
+    assert_eq!(ring.try_recv(), None, "ring must be empty after draining");
 }
 
 // ============================================================================
@@ -4048,21 +3884,6 @@ fn read_latest_full_ring_mpsc_returns_newest() {
         ring.read_latest(),
         Some(7),
         "MPSC: should return newest sensor reading"
-    );
-    assert_eq!(ring.pending_count(), 8);
-}
-
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn read_latest_full_ring_mpmc_returns_newest() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 8);
-    for i in 0..8u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert_eq!(
-        ring.read_latest(),
-        Some(7),
-        "MPMC: should return newest sensor reading"
     );
     assert_eq!(ring.pending_count(), 8);
 }
@@ -9568,24 +9389,6 @@ fn mpmc_ring_single_slot() {
     assert_eq!(ring.try_recv(), Some(99));
 }
 
-/// MPMC: exact capacity fill and drain.
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn mpmc_ring_exact_capacity_fill_drain() {
-    let cap = 16u32;
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, cap as usize);
-
-    for i in 0..cap as u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(9999).is_err());
-
-    for i in 0..cap as u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
 /// MPMC: recv from empty ring returns None.
 #[test]
 fn mpmc_ring_recv_empty() {
@@ -9607,61 +9410,7 @@ fn mpmc_ring_multi_wraparound_fifo() {
     }
 }
 
-/// MPMC: read_latest returns most recent without consuming.
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn mpmc_ring_read_latest_non_consuming() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 4);
-    ring.try_send(10).unwrap();
-    ring.try_send(20).unwrap();
-    ring.try_send(30).unwrap();
-
-    assert_eq!(ring.read_latest(), Some(30));
-    assert_eq!(ring.pending_count(), 3);
-}
-
 // -- Cross-ring capacity rounding --
-
-/// All rings round capacity to next power of 2.
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn all_rings_round_capacity_to_power_of_two() {
-    // Request 3 slots — should get 4 (next power of 2)
-    let spsc = spsc_intra::SpscRing::<u64>::new(3);
-    let mpsc = mpsc_intra::MpscRing::<u64>::new(3);
-    let spmc = spmc_intra::SpmcRing::<u64>::new(3);
-    let mpmc = fanout::FanoutRing::<u64>::new(4, 4, 3);
-
-    // Fill 4 slots (rounded up from 3)
-    for i in 0..4u64 {
-        assert!(
-            spsc.try_send(i).is_ok(),
-            "SPSC should accept {} with cap 3→4",
-            i
-        );
-        assert!(
-            mpsc.try_send(i).is_ok(),
-            "MPSC should accept {} with cap 3→4",
-            i
-        );
-        assert!(
-            spmc.try_send(i).is_ok(),
-            "SPMC should accept {} with cap 3→4",
-            i
-        );
-        assert!(
-            mpmc.try_send(i).is_ok(),
-            "MPMC should accept {} with cap 3→4",
-            i
-        );
-    }
-
-    // 5th should fail (capacity is 4)
-    assert!(spsc.try_send(4).is_err());
-    assert!(mpsc.try_send(4).is_err());
-    assert!(spmc.try_send(4).is_err());
-    assert!(mpmc.try_send(4).is_err());
-}
 
 /// All rings: capacity=1 gives exactly 1 usable slot.
 ///
@@ -9743,76 +9492,6 @@ fn spsc_ring_fast_producer_slow_consumer() {
         received.load(Ordering::Relaxed),
         total_msgs,
         "All messages should be received (no loss)"
-    );
-}
-
-/// MPMC: multiple producers and consumers — total received equals total sent.
-#[test]
-#[ignore] // MpmcRing removed — FanoutRing has different semantics
-fn mpmc_ring_multi_producer_multi_consumer_no_loss() {
-    let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 128));
-    let num_producers = 2usize;
-    let num_consumers = 2usize;
-    let msgs_per_producer = 500u64;
-    let total_expected = num_producers as u64 * msgs_per_producer;
-
-    let total_received = Arc::new(AtomicU64::new(0));
-    let all_sent = Arc::new(AtomicBool::new(false));
-
-    let mut handles = Vec::new();
-
-    // Producers
-    for p in 0..num_producers {
-        let r = ring.clone();
-        handles.push(test_spawn(move || {
-            for i in 0..msgs_per_producer {
-                let val = p as u64 * 10000 + i;
-                loop {
-                    if r.try_send(val).is_ok() {
-                        break;
-                    }
-                    thread::yield_now();
-                }
-            }
-        }));
-    }
-
-    // Consumers
-    for _ in 0..num_consumers {
-        let r = ring.clone();
-        let recv = total_received.clone();
-        let done = all_sent.clone();
-        handles.push(test_spawn(move || {
-            loop {
-                if r.try_recv().is_some() {
-                    recv.fetch_add(1, Ordering::Relaxed);
-                } else if done.load(Ordering::Relaxed) {
-                    // Double-check: drain remaining
-                    while r.try_recv().is_some() {
-                        recv.fetch_add(1, Ordering::Relaxed);
-                    }
-                    break;
-                }
-                thread::yield_now();
-            }
-        }));
-    }
-
-    // Wait for producers to finish
-    for h in handles.drain(..num_producers) {
-        h.join().unwrap();
-    }
-    all_sent.store(true, Ordering::Relaxed);
-
-    // Wait for consumers
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    assert_eq!(
-        total_received.load(Ordering::Relaxed),
-        total_expected,
-        "Total received must equal total sent"
     );
 }
 
