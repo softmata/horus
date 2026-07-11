@@ -53,7 +53,6 @@ action! { NavSeq { goal { id: u64 } feedback { step: u32 } result { ok: bool } }
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn service_basic_add_two_ints() {
     serial!();
 
@@ -78,7 +77,6 @@ fn service_basic_add_two_ints() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn service_concurrent_3_clients() {
     serial!();
 
@@ -127,7 +125,6 @@ fn service_concurrent_3_clients() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn service_timeout_slow_server() {
     serial!();
 
@@ -162,7 +159,6 @@ fn service_timeout_slow_server() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn action_full_lifecycle() {
     serial!();
 
@@ -229,7 +225,6 @@ fn action_full_lifecycle() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn action_cancel_mid_execution() {
     serial!();
 
@@ -294,7 +289,6 @@ fn action_cancel_mid_execution() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn action_5_sequential_goals() {
     serial!();
 
@@ -356,7 +350,6 @@ fn action_5_sequential_goals() {
 service! { StatusSvc { request { query: String } response { status: String } } }
 
 #[test]
-#[ignore]
 fn mixed_service_action_topics() {
     serial!();
 

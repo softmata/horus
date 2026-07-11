@@ -112,7 +112,7 @@ fn test_panic_hook_writes_crash_report() {
 /// Ignored in normal test runs — only invoked explicitly as a subprocess
 /// via `--exact panic_hook_subprocess_helper` with HORUS_CRASH_TEST=1.
 #[test]
-#[ignore]
+#[ignore = "subprocess entry point, not a standalone test — invoked by test_panic_hook_writes_crash_report as a child with HORUS_CRASH_TEST=1"]
 fn panic_hook_subprocess_helper() {
     if std::env::var("HORUS_CRASH_TEST").is_err() {
         // Skip unless explicitly invoked as subprocess

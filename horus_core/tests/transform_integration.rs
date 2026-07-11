@@ -17,7 +17,6 @@ use common::{cleanup_stale_shm, timestamp_now};
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn chain_world_base_arm_tool() {
     let tf = TransformFrame::medium();
 
@@ -81,7 +80,6 @@ fn chain_world_base_arm_tool() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn deep_hierarchy_20_frames() {
     let tf = TransformFrame::medium();
 
@@ -119,7 +117,6 @@ fn deep_hierarchy_20_frames() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn concurrent_writers_no_corruption() {
     let tf = Arc::new(TransformFrame::medium());
 
@@ -222,7 +219,6 @@ fn concurrent_writers_no_corruption() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cross_scheduler_transform_sharing() {
     use horus_core::core::{DurationExt, Node};
     use horus_core::scheduling::Scheduler;

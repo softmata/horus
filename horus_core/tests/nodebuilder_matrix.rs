@@ -129,7 +129,6 @@ impl Node for CmdVelPubNode {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn rate_alone_auto_derives_rt() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -175,7 +174,6 @@ fn rate_alone_auto_derives_rt() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn rate_with_explicit_budget() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -237,7 +235,6 @@ fn rate_with_explicit_budget() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn budget_alone_becomes_rt() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -281,7 +278,6 @@ fn budget_alone_becomes_rt() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn four_execution_classes_coexist() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -412,7 +408,6 @@ fn four_execution_classes_coexist() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn order_fairness_20_nodes() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -465,7 +460,6 @@ fn order_fairness_20_nodes() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn failure_policy_panic_isolation() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -536,7 +530,6 @@ impl Node for OrderLogNode {
 }
 
 #[test]
-#[ignore]
 fn execution_order_deterministic() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -601,7 +594,6 @@ fn execution_order_deterministic() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn default_node_no_config() {
     let _shm_guard = cleanup_stale_shm();
 

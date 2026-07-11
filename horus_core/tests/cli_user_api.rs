@@ -37,7 +37,6 @@ fn horus_cmd() -> Command {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_version() {
     let output = horus_cmd()
         .arg("--version")
@@ -59,7 +58,6 @@ fn cli_version() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_new_rust_project() {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let proj_dir = tmpdir.path().join("test_proj");
@@ -103,7 +101,6 @@ fn cli_new_rust_project() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_new_python_project() {
     let tmpdir = tempfile::TempDir::new().unwrap();
 
@@ -131,7 +128,6 @@ fn cli_new_python_project() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_doctor() {
     let output = horus_cmd()
         .arg("doctor")
@@ -159,7 +155,6 @@ fn cli_doctor() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_clean_shm() {
     // Create some SHM files first
     let shm_dir = horus_sys::shm::shm_topics_dir();
@@ -186,7 +181,6 @@ fn cli_clean_shm() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_check_valid_project() {
     let tmpdir = tempfile::TempDir::new().unwrap();
 
@@ -222,7 +216,6 @@ fn cli_check_valid_project() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_msg_list() {
     let output = horus_cmd()
         .args(["msg", "list"])
@@ -252,7 +245,6 @@ fn cli_msg_list() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn cli_param_set_get() {
     let tmpdir = tempfile::TempDir::new().unwrap();
 

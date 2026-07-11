@@ -188,7 +188,6 @@ impl Node for LidarProcessorNode {
 // ── Test ──────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore]
 fn full_robot_3_schedulers_service_action_tf() {
     let _shm_guard = cleanup_stale_shm();
 

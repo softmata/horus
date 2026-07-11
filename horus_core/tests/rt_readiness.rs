@@ -8,7 +8,6 @@ use horus_core::scheduling::rt_report::RtReport;
 use std::time::Duration;
 
 #[test]
-#[ignore]
 fn generate_rt_readiness_report() {
     println!("\nRunning RT readiness assessment (3 second benchmark)...\n");
     let report = RtReport::generate(Duration::from_secs(3));
