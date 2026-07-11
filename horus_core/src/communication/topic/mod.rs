@@ -1048,6 +1048,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if skip_stale_broadcast && local.cached_mode == BackendMode::PodShm {
             local.local_tail = local.local_head;
         }
+
+        // Consumer-join flush (softmata-brain 1327, consumer side). SpmcShm's recv
+        // CAS-coordinates competing consumers via the shared `header.tail`. A single
+        // consumer arriving from SpscShm/MpscShm advanced only its BATCHED local
+        // tail, so `header.tail` lags its true consumed position; if a 2nd consumer
+        // now joins and CAS-reads from that stale value, it RE-DELIVERS messages the
+        // first consumer already took. Publishing this handle's consumed frontier to
+        // `header.tail` at the migration boundary makes the CAS-tail handoff lossless.
+        //
+        // This is done ONLY here, at resync into a CAS-tail mode — NOT on every recv.
+        // Eager per-recv flushing would keep the producer-visible tail accurate on the
+        // hot path and destabilize `send_shm_mp_pod`'s optimistic backpressure (whose
+        // margin currently relies on the batched tail lagging — see the separately
+        // tracked overshoot bug). `fetch_max` never moves the shared tail backward, so
+        // it is safe even if a concurrent SpmcShm consumer has already advanced it.
+        if local.cached_mode == BackendMode::SpmcShm {
+            header.tail.fetch_max(local.local_tail, Ordering::Release);
+        }
     }
 
     /// Register as producer if not already registered

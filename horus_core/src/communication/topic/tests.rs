@@ -7032,9 +7032,6 @@ fn spsc_to_spmc_consumer_join_no_torn_read() {
 /// — competing-consumer exactly-once is violated. Draining both consumers after the
 /// join must yield NOTHING (everything was already consumed).
 #[test]
-#[ignore = "TEMPORARY: demonstrates the SpmcShm consumer-join double-delivery bug \
-            (deterministically re-delivers all k consumed messages). Un-ignore in the \
-            same commit that fixes it (softmata-brain 1327, consumer side)."]
 fn spsc_to_spmc_consumer_join_exactly_once() {
     let name = unique("spsc_spmc_once");
     let k = 20u64; // < ring capacity/2 (128) → header.tail stays batched at 0
@@ -7077,6 +7074,106 @@ fn spsc_to_spmc_consumer_join_exactly_once() {
         extra.is_empty(),
         "re-delivered already-consumed message(s) after SpscShm->SpmcShm join: {:?}",
         extra
+    );
+}
+
+/// CONCURRENT companion to the deterministic exactly-once gate: a 2nd consumer
+/// joins WHILE a producer streams and consumer 1 is actively draining. Competing
+/// SpmcShm consumers must partition the stream — every value delivered exactly once
+/// across the two, none lost, none duplicated — even across the SpscShm -> SpmcShm
+/// transition (this is the "overlap window" where consumer 1 may briefly still use
+/// the single-consumer recv while consumer 2 uses the CAS recv). Lossless send
+/// isolates the property from ring backpressure.
+///
+/// BLOCKED on the separately-tracked `send_shm_mp_pod` overshoot bug (softmata-brain,
+/// see notes). The DETERMINISTIC gate (spsc_to_spmc_consumer_join_exactly_once) is
+/// fixed by flush-on-resync (sync_local publishes the consumed frontier at the
+/// migration boundary). But the fully-CONCURRENT streaming case needs `header.tail`
+/// to be accurate DURING the stream so a competing consumer that CAS-reads before
+/// the first consumer's next-recv resync-flush never re-delivers. The only way to do
+/// that is eager per-recv flushing — which makes the producer-visible tail accurate
+/// and triggers `send_shm_mp_pod`'s optimistic-backpressure OVERSHOOT (a producer
+/// fetch_add-claims past capacity and overwrites an unconsumed slot -> consumer
+/// deadlock). So this is intentionally NOT forced green with eager flush; it stays
+/// ignored until the overshoot bug is fixed. Passes ~14/15 under load with
+/// flush-on-resync (residual duplicate in the pre-flush window).
+#[test]
+#[ignore = "blocked on send_shm_mp_pod overshoot bug: full concurrent SpmcShm-join \
+            exactly-once needs steady-state header.tail accuracy (eager flush), which \
+            triggers the optimistic-backpressure overshoot deadlock. Deterministic \
+            consumer-join correctness IS fixed (spsc_to_spmc_consumer_join_exactly_once). \
+            Un-ignore when the overshoot bug lands."]
+fn spsc_to_spmc_consumer_join_concurrent_exactly_once() {
+    let name = unique("spsc_spmc_conc");
+    let n: u64 = 300;
+    let producer: Topic<u64> = Topic::new(&name).expect("producer");
+    let consumer1: Topic<u64> = Topic::new(&name).expect("consumer1");
+
+    // Establish SpscShm and let consumer 1 start draining as the producer streams.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let prod = {
+        let p = producer.clone();
+        test_spawn(move || {
+            for v in 1..=n {
+                let mut m = v;
+                while let Err(r) = p.try_send(m) {
+                    m = r;
+                    std::thread::yield_now();
+                }
+            }
+        })
+    };
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let drain = |c: Topic<u64>| {
+        let seen = seen.clone();
+        let stop = stop.clone();
+        test_spawn(move || {
+            let mut local = Vec::new();
+            loop {
+                match c.try_recv() {
+                    Some(v) => local.push(v),
+                    None => {
+                        if stop.load(Ordering::Acquire) {
+                            // Final sweep after producer done.
+                            while let Some(v) = c.try_recv() {
+                                local.push(v);
+                            }
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            seen.lock().unwrap().extend(local);
+        })
+    };
+    let d1 = drain(consumer1);
+    // 2nd consumer joins mid-stream → SpscShm -> SpmcShm.
+    let consumer2: Topic<u64> = Topic::new(&name).expect("consumer2");
+    let d2 = drain(consumer2);
+
+    prod.join().unwrap();
+    stop.store(true, Ordering::Release);
+    d1.join().unwrap();
+    d2.join().unwrap();
+
+    let mut all = seen.lock().unwrap().clone();
+    all.sort_unstable();
+    let total = all.len();
+    all.dedup();
+    // No duplicates: competing consumers never deliver the same message twice.
+    assert_eq!(
+        all.len(),
+        total,
+        "duplicate delivery across concurrent SpscShm->SpmcShm join"
+    );
+    // No loss: every produced value arrived at exactly one consumer.
+    assert_eq!(
+        all,
+        (1..=n).collect::<Vec<_>>(),
+        "lost messages across concurrent SpscShm->SpmcShm join (got {} unique)",
+        all.len()
     );
 }
 
