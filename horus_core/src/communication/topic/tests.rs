@@ -6935,6 +6935,91 @@ fn same_consumer_no_redelivery_across_sp_to_mp_migration() {
     }
 }
 
+/// SAFETY-CRITICAL (softmata-brain 1327): rerouting SpscShm send onto the atomic
+/// `fetch_add`-claim path (advances `head` on claim, BEFORE the data write) must
+/// NOT introduce a TORN READ when a topic gains a 2nd CONSUMER and migrates
+/// SpscShm -> SpmcShm. SpmcShm recv is head-gated CAS (no per-slot flag check), so
+/// a slot claimed-but-not-yet-filled during the SpscShm phase, read after
+/// migration, would be a torn read — the exact hazard the reroute could newly
+/// introduce.
+///
+/// A producer sends continuously while a 2nd consumer joins mid-stream (forcing
+/// SpmcShm); both consumers drain. Values are 1..=N with N < ring capacity (no
+/// lap), so an unfilled slot reads as 0 (a torn read) — detectable, because every
+/// legitimately-received value is in {1..=N, warm-up}. Verified torn-read-free
+/// including 30x under 40-core CPU load.
+///
+/// NOTE: this does NOT assert competing-consumer exactly-once. There is a SEPARATE,
+/// PRE-EXISTING SpmcShm bug where the two consumers can double-deliver a message
+/// across the join (consumer 1's batched `local_tail` runs ahead of the shared
+/// `header.tail` that SpmcShm's CAS recv coordinates on, so consumer 2 re-reads
+/// what consumer 1 already took). It reproduces IDENTICALLY on the pre-reroute base
+/// (~9/25 under load), so it is not caused by this change and is a distinct
+/// tail-coordination issue in the SpmcShm competing-consumer path — tracked, not
+/// fixed here. This test deliberately checks only the torn-read property the
+/// reroute is responsible for.
+#[test]
+fn spsc_to_spmc_consumer_join_no_torn_read() {
+    let name = unique("spsc_spmc_join");
+    let n: u64 = 200; // < ring capacity (256) → no lap, so an unfilled slot reads 0
+    let producer: Topic<u64> = Topic::new(&name).expect("producer");
+    let consumer1: Topic<u64> = Topic::new(&name).expect("consumer1");
+
+    // Establish SpscShm (1P1C).
+    producer.send(999_999); // out-of-band warm-up (distinct from data range 1..=n)
+    let _ = consumer1.recv();
+
+    let prod = {
+        let p = producer.clone();
+        test_spawn(move || {
+            for v in 1..=n {
+                while p.try_send(v).is_err() {
+                    std::thread::yield_now();
+                }
+            }
+        })
+    };
+
+    // 2nd consumer joins mid-stream → forces SpscShm -> SpmcShm.
+    let consumer2: Topic<u64> = Topic::new(&name).expect("consumer2");
+
+    let drain = |c: Topic<u64>| {
+        test_spawn(move || {
+            let deadline = Instant::now() + 3_u64.secs();
+            let mut count = 0u64;
+            loop {
+                match c.try_recv() {
+                    Some(v) => {
+                        // Torn-read detector: every legitimately-published value is
+                        // in {1..=n, warm-up}. An unfilled (claimed-not-written) slot
+                        // reads 0 (no lap), and any other value is garbage — either
+                        // is a torn read introduced by the head-on-claim send path.
+                        assert!(
+                            v == 999_999 || (1..=n).contains(&v),
+                            "torn/garbage read across SpscShm->SpmcShm join: value {}",
+                            v
+                        );
+                        count += 1;
+                    }
+                    None => {
+                        if Instant::now() > deadline {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            count
+        })
+    };
+    let d1 = drain(consumer1);
+    let d2 = drain(consumer2);
+
+    prod.join().unwrap();
+    let _ = d1.join().unwrap();
+    let _ = d2.join().unwrap();
+}
+
 // ============================================================================
 // Section 51: Topic Migration — Dispatch Pointer Swapping & Epoch Propagation
 // ============================================================================
