@@ -7020,6 +7020,66 @@ fn spsc_to_spmc_consumer_join_no_torn_read() {
     let _ = d2.join().unwrap();
 }
 
+/// SAFETY-CRITICAL (softmata-brain 1327, consumer-side mirror of the multi-producer
+/// bug): a message a consumer already consumed under SpscShm must NOT be
+/// re-delivered to a 2nd consumer after the topic migrates SpscShm -> SpmcShm.
+///
+/// Deterministic: consumer 1 consumes ALL k messages under SpscShm (k < capacity/2
+/// so the batched `header.tail` is never flushed and stays behind consumer 1's true
+/// position). A 2nd consumer then joins (forcing SpmcShm, whose recv CAS-coordinates
+/// on the shared `header.tail`). Because `header.tail` lags, the SpmcShm consumers
+/// would restart from a stale position and RE-DELIVER the already-consumed messages
+/// — competing-consumer exactly-once is violated. Draining both consumers after the
+/// join must yield NOTHING (everything was already consumed).
+#[test]
+#[ignore = "TEMPORARY: demonstrates the SpmcShm consumer-join double-delivery bug \
+            (deterministically re-delivers all k consumed messages). Un-ignore in the \
+            same commit that fixes it (softmata-brain 1327, consumer side)."]
+fn spsc_to_spmc_consumer_join_exactly_once() {
+    let name = unique("spsc_spmc_once");
+    let k = 20u64; // < ring capacity/2 (128) → header.tail stays batched at 0
+    let producer: Topic<u64> = Topic::new(&name).expect("producer");
+    let consumer1: Topic<u64> = Topic::new(&name).expect("consumer1");
+
+    // SpscShm (1P1C). Send k, consumer 1 consumes ALL of them.
+    for i in 1..=k {
+        producer.send(i);
+    }
+    let mut got1 = Vec::new();
+    for _ in 0..k {
+        if let Some(v) = consumer1.recv() {
+            got1.push(v);
+        }
+    }
+    assert_eq!(
+        got1,
+        (1..=k).collect::<Vec<_>>(),
+        "consumer 1 should consume all k under SpscShm"
+    );
+
+    // A 2nd consumer joins → force SpscShm -> SpmcShm (1 pub, 2 subs). Register the
+    // 2nd consumer, then migrate, then let both handles pick up the new epoch.
+    let consumer2: Topic<u64> = Topic::new(&name).expect("consumer2");
+    let _ = producer.force_migrate(BackendMode::SpmcShm);
+    consumer1.check_migration_now();
+    consumer2.check_migration_now();
+
+    // Everything was already consumed. Draining EITHER consumer must yield nothing;
+    // any value is a re-delivery of an already-consumed message.
+    let mut extra = Vec::new();
+    while let Some(v) = consumer1.try_recv() {
+        extra.push(v);
+    }
+    while let Some(v) = consumer2.try_recv() {
+        extra.push(v);
+    }
+    assert!(
+        extra.is_empty(),
+        "re-delivered already-consumed message(s) after SpscShm->SpmcShm join: {:?}",
+        extra
+    );
+}
+
 // ============================================================================
 // Section 51: Topic Migration — Dispatch Pointer Swapping & Epoch Propagation
 // ============================================================================
