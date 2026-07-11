@@ -7107,10 +7107,23 @@ fn spsc_to_spmc_consumer_join_exactly_once() {
             flush-on-resync retained. The residual here is a DEEPER issue no tail-flush \
             closes: during SpscShm->SpmcShm, consumer 1 briefly still runs single-consumer \
             mpsc-recv (local_tail, no CAS) while consumer 2 runs spmc-recv (CAS header.tail), \
-            so both can read the same slot once. Fully closing it needs a uniform consumer \
-            tail protocol (per-recv mode check or migration barrier) that ALSO doesn't \
-            regress broadcast. Deterministic consumer-join IS fixed \
-            (spsc_to_spmc_consumer_join_exactly_once). Tracked; un-ignore with that refactor."]
+            so both can read the same slot once. ROOT: `header.tail` is OVERLOADED across \
+            modes (single-consumer batched frontier for SpscShm/MpscShm; CAS-coordinated \
+            shared position for SpmcShm; late-join reference for broadcast), so every \
+            point-fix perturbs one mode to help another. TRIED AND REVERTED (all made it \
+            worse or broke another mode): eager per-recv flush (broke broadcast \
+            test_scenario_2); a per-recv backend_mode guard that defers on mode-change \
+            (44 dups — consumer 2 races from a stale tail before consumer 1's guard fires); \
+            same guard + one-shot flush (9/12 idle, still stale-tail race). CANDIDATE FIX \
+            (not done — needs verification tooling this repo lacks): unify SpscShm+SpmcShm \
+            on one CAS-tail flag-gated recv so there is no protocol handoff. PERF \
+            PRECONDITION: that routes the common 1P1C consumer onto a CAS write of the \
+            consumer cache line every recv (vs a batched store every capacity/2) — must be \
+            benchmarked 1P1C-neutral BEFORE adopting, and verified against a \
+            parallel/cross-process contention harness (which does not exist; the suite runs \
+            serial). Deterministic consumer-join IS fixed \
+            (spsc_to_spmc_consumer_join_exactly_once); this is a ~1/12-under-artificial-load \
+            edge on a mid-stream consumer-join. Un-ignore with that refactor + harness."]
 fn spsc_to_spmc_consumer_join_concurrent_exactly_once() {
     let name = unique("spsc_spmc_conc");
     let n: u64 = 300;
