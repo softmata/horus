@@ -247,21 +247,10 @@ fn cross_process_spmc_1_pub_3_sub() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "This tests a semi-artificial LIFETIME edge, NOT multi-producer convergence, \
-            which IS correct cross-process. PROOF: with the parent's pre-read sleep reduced \
-            so it reads WHILE the 3 child publishers are still alive (overlap), the test \
-            PASSES — cross-process multi-producer delivery works. It reads 0 only in the \
-            written form because the parent's first recv is at ~1000ms, AFTER all 3 children \
-            sent (SENT:50, exit 0) and EXITED at ~0.55s. So the residual issue is purely: can \
-            a consumer that joins AFTER every producer has exited read the buffered SHM data \
-            (a producer-lifetime / late-join durability question). Real producers are \
-            long-lived, so this is low priority. Reproduces identically on the pre-reroute \
-            base. Multi-producer SEND convergence is otherwise verified cross-thread \
-            (topic_cross_thread_multi_p_1c_mpsc exactly-once, backend_detection, service \
-            tests) AND cross-process (this test with the overlap). Un-ignore if/when late-join \
-            durability after all-producers-exit is defined and fixed. NOTE: the spawned \
-            children re-exec WITHOUT --include-ignored, so running manually needs the parent \
-            un-ignored; children publish regardless."]
+// Now passes since the bug #2 fix (sync_local: an early cross-process subscriber
+// no longer skips buffered messages when the topology migrates on first sync).
+// The child re-exec still lacks --include-ignored, so this test must NOT be #[ignore]
+// (else the children skip it and publish nothing).
 fn cross_process_mpsc_3_pub_1_sub() {
     if is_child() {
         if std::env::var(TEST_ENV).ok().as_deref() == Some("cross_process_mpsc_3_pub_1_sub") {

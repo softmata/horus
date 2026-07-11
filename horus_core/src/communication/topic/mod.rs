@@ -1036,9 +1036,26 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // grow), the old `local_tail` is meaningless in the new coordinates, so we
         // must adopt `header.tail`. Fresh handles (`local_tail == 0`) are
         // unaffected either way: `max(0, header.tail) == header.tail`.
-        let same_data_plane = old_mode.is_cross_process()
+        //
+        // We key "same data plane" on the topic being SHM-BACKED (creator_pid != 0),
+        // not on the OLD mode being cross-process. Every SHM mode
+        // (Spsc/Mpsc/Spmc/Pod/Fanout*Shm) shares the ONE ShmData ring, so a transition
+        // between any of them preserves positions — INCLUDING from the not-yet-
+        // classified `Unknown` a handle carries before its first send/recv. Requiring
+        // `old_mode.is_cross_process()` wrongly excluded that Unknown case: an EARLY
+        // cross-process subscriber (created before any message, so `cached_mode ==
+        // Unknown`) migrating straight to PodShm would be treated as a data-plane
+        // CHANGE, trip the broadcast "skip to head" below, and lose all buffered
+        // messages that other processes published (softmata-brain bug #2). The only
+        // real data-plane change on an SHM-backed topic is a heap-ring (`intra`) old
+        // mode or a capacity grow.
+        // `old_capacity == 0` means this handle has never synced (uninitialized), not a
+        // ring resize — treat it as same-plane (there is no prior capacity to differ
+        // from). Only a genuine grow (old != new, both nonzero) is a data-plane change.
+        let same_data_plane = header.creator_pid != 0
+            && !old_mode.is_intra_process()
             && local.cached_mode.is_cross_process()
-            && old_capacity == local.cached_capacity;
+            && (old_capacity == 0 || old_capacity == local.cached_capacity);
         local.local_tail = if same_data_plane {
             local.local_tail.max(shared_tail)
         } else {
