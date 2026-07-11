@@ -672,6 +672,18 @@ impl TensorPool {
             )
         })?;
         let aligned_size = Self::align_up(size as usize, self.config.slot_alignment);
+        // align_up() uses wrapping_add: a `size` near usize::MAX wraps to a small
+        // value (0), masking an impossible allocation and recording a u64::MAX size
+        // on the descriptor. A correctly aligned size is always >= size.
+        if aligned_size < size as usize {
+            return Err(HorusError::Memory(
+                format!(
+                    "allocation size {} overflows when aligned to {} bytes",
+                    size, self.config.slot_alignment
+                )
+                .into(),
+            ));
+        }
 
         // Find a free slot
         let slot_id = self.find_free_slot()?;
@@ -1097,8 +1109,14 @@ impl TensorPool {
                 .unwrap_or(std::ptr::null_mut());
         }
 
-        // Mmap backends: compute from base + offset
-        let end = tensor.offset as usize + tensor.size as usize;
+        // Mmap backends: compute from base + offset. checked_add — a crafted or
+        // corrupt descriptor can carry offset+size that overflows usize, which
+        // would otherwise wrap past the `end > pool_size` gate and yield a valid
+        // base pointer for an out-of-bounds (multi-exabyte) slice.
+        let end = match (tensor.offset as usize).checked_add(tensor.size as usize) {
+            Some(end) => end,
+            None => return std::ptr::null_mut(),
+        };
         if end > self.config.pool_size {
             return std::ptr::null_mut();
         }
@@ -4097,6 +4115,41 @@ mod tests {
             "real tensor refcount unchanged by a bad descriptor"
         );
         pool.release(&real);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn data_ptr_rejects_offset_plus_size_overflow() {
+        // A descriptor whose offset+size overflows usize must not pass the
+        // `end > pool_size` bounds gate. Pre-fix: debug panics on the add; release
+        // wraps to 0, passes the gate, and returns a valid base ptr for an
+        // exabyte-long slice (OOB). Post-fix: checked_add -> null.
+        let pool = make_test_pool(9972);
+        let real = pool
+            .alloc(&[32], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        let mut bad = real;
+        bad.offset = 4096;
+        bad.size = u64::MAX - 4095; // offset + size wraps to 0
+        assert!(
+            pool.data_ptr(&bad).is_null(),
+            "data_ptr must reject an offset+size that overflows usize"
+        );
+        pool.release(&real);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn alloc_rejects_size_overflowing_alignment() {
+        // align_up(u64::MAX, 64) wraps to 0, so alloc would 'succeed' for an
+        // impossible u64::MAX-byte allocation (backend.alloc(0) is Ok) and record
+        // a u64::MAX size on the descriptor that later builds an OOB slice.
+        let pool = make_test_pool(9973);
+        let result = pool.alloc(&[u64::MAX], TensorDtype::U8, Device::cpu());
+        assert!(
+            result.is_err(),
+            "alloc of u64::MAX elements must fail, not wrap align_up to 0"
+        );
         std::fs::remove_file(&pool.shm_path).ok();
     }
 
