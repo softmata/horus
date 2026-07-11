@@ -8883,24 +8883,19 @@ fn partial_write_full_ring_backpressure() {
     );
 }
 
-/// Concurrent writers and reader — no partial writes visible to reader.
+/// Concurrent writers and reader — no partial (torn) writes visible to reader.
+///
+/// The brain-1334 torn read is FIXED by the MP-send CAS claim (see
+/// mp_send_no_overshoot_corruption): the torn read required a producer to lap the ring
+/// and overwrite the slot a reader was mid-copy on, which the old non-binding
+/// fetch_add gate allowed. Under CAS the gate is binding (`head - tail < capacity`
+/// holds atomically at claim), so producer-write slot (`head & mask`) and
+/// consumer-read slot (`tail & mask`) are ALWAYS DISTINCT — the overwrite cannot
+/// occur. This standalone test rarely exercised the window (it needed full-suite
+/// parallel contention); that contention — and the closure of 1334 — is now
+/// reproduced and gate-validated deterministically in
+/// `tests/mpsc_torn_read_contention.rs` (RED without the CAS, green with it).
 #[test]
-#[ignore = "Rare torn read (softmata-brain 1334). ROOT LIKELY FIXED by the MP-send \
-            CAS claim (see mp_send_no_overshoot_corruption): the torn read required a \
-            producer to lap the ring and overwrite the slot a reader was mid-copy on, \
-            which the old non-binding fetch_add gate allowed. Under CAS the gate is \
-            binding (head-tail < capacity holds atomically at claim), so the \
-            producer-write slot (head & mask) and the consumer-read slot (tail & mask) \
-            are ALWAYS DISTINCT (head-tail < capacity => head&mask != tail&mask) — the \
-            overwrite that caused the torn read cannot occur. Dropped from ~1/5 to \
-            unobserved under CPU load (40/40). STAYS IGNORED not because a fix is \
-            pending but because it needs FULL-SUITE PARALLEL contention to reproduce, \
-            which this repo runs serially, so it cannot currently be OBSERVED to \
-            confirm closed. A seqlock re-check was considered and REJECTED: with CAS \
-            the overwrite can't happen so it would never fire, and its \
-            return-None-without-advancing-tail recovery would wedge the consumer if a \
-            lap ever did occur. Un-ignore once a parallel/cross-process contention \
-            harness exists to verify."]
 fn partial_write_concurrent_writers_no_partial_data() {
     let name = unique("partial_concurrent");
     let t: Topic<[u64; 4]> = Topic::new(&name).unwrap();
