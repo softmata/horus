@@ -652,7 +652,10 @@ impl TopicHeader {
                     match (pubs, subs) {
                         (1, _) if subs <= 1 => BackendMode::SpscShm,
                         (_, 1) if pubs > 1 => BackendMode::MpscShm,
-                        (1, _) if subs > 1 => BackendMode::SpmcShm,
+                        // 1 producer, multiple consumers → BROADCAST (each subscriber
+                        // gets every message), NOT competing SpmcShm (which starves).
+                        // Falls through to PodShm (POD) / FanoutShm (non-POD), matching
+                        // intra-process and the same-process branch below.
                         (_, _) if is_pod => BackendMode::PodShm,
                         _ => BackendMode::FanoutShm,
                     }
@@ -660,7 +663,12 @@ impl TopicHeader {
                     // Same process but SHM-backed: use SHM anyway for cross-process readiness
                     match (pubs, subs) {
                         (p, s) if p <= 1 && s <= 1 => BackendMode::SpscShm,
-                        (1, _) if subs > 1 => BackendMode::SpmcShm,
+                        // 1 producer, multiple consumers → BROADCAST (each subscriber
+                        // gets every message), matching intra-process (FanoutIntra) and
+                        // cross-process (FanoutShm). This deliberately does NOT use
+                        // SpmcShm: SpmcShm shares one tail so consumers COMPETE and a
+                        // fast one starves the rest — wrong for pub/sub. Falls through to
+                        // PodShm (POD broadcast on the shared ring) / FanoutShm (non-POD).
                         (_, _) if pubs > 1 && subs <= 1 => BackendMode::MpscShm,
                         (_, _) if is_pod => BackendMode::PodShm,
                         _ => BackendMode::FanoutShm,

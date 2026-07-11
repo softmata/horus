@@ -1045,7 +1045,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             shared_tail
         };
 
-        if skip_stale_broadcast && local.cached_mode == BackendMode::PodShm {
+        // Broadcast "skip to head" — start a consumer at the newest message instead
+        // of replaying the ring. This is correct ONLY across a DATA-PLANE CHANGE
+        // (e.g. intra -> PodShm): the old messages live in a different ring and are
+        // stale in the new coordinates. Across a SAME-DATA-PLANE migration (an
+        // SpscShm topic gaining a subscriber -> PodShm on the SAME shm ring), an
+        // EXISTING consumer's unconsumed backlog is NOT stale — skipping it drops
+        // in-flight messages (a subscriber joining a live topic would starve the
+        // existing subscribers; softmata-brain 1327 broadcast mid-stream join). So
+        // only skip when the data plane actually changed.
+        if skip_stale_broadcast && local.cached_mode == BackendMode::PodShm && !same_data_plane {
             local.local_tail = local.local_head;
         }
 
