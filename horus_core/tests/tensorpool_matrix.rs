@@ -19,7 +19,6 @@ use common::{cleanup_stale_shm, unique};
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn image_roundtrip_640x480() {
     let _shm_guard = cleanup_stale_shm();
     let name = unique("tp_image");
@@ -108,7 +107,6 @@ fn image_roundtrip_640x480() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn pointcloud_roundtrip_1000_points() {
     let _shm_guard = cleanup_stale_shm();
     let name = unique("tp_pointcloud");
@@ -178,7 +176,6 @@ fn pointcloud_roundtrip_1000_points() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn depthimage_roundtrip_320x240() {
     let _shm_guard = cleanup_stale_shm();
     let name = unique("tp_depth");
@@ -249,7 +246,6 @@ fn depthimage_roundtrip_320x240() {
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn mixed_tensor_and_pod_topics() {
     let _shm_guard = cleanup_stale_shm();
 

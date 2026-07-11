@@ -126,7 +126,6 @@ impl Node for MotorDriverNode {
 }
 
 #[test]
-#[ignore]
 fn story_imu_to_controller_to_motor() {
     let _shm_guard = cleanup_stale_shm();
     let imu_topic = unique("imu.data");
@@ -255,7 +254,6 @@ impl Node for CountingRecvNode {
 }
 
 #[test]
-#[ignore]
 fn story_two_schedulers_shared_topic() {
     let _shm_guard = cleanup_stale_shm();
     let imu_topic = unique("shared.imu");
@@ -384,7 +382,6 @@ impl Node for OrderTrackerNode {
 }
 
 #[test]
-#[ignore]
 fn story_execution_order_respected() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -486,7 +483,6 @@ impl Node for HealthyNode {
 }
 
 #[test]
-#[ignore]
 fn story_budget_violation_degrades_not_crashes() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -626,7 +622,6 @@ fn run_deterministic_cmdvel(n_ticks: usize) -> Vec<(f32, f32)> {
 }
 
 #[test]
-#[ignore]
 fn story_deterministic_mode_with_real_cmdvel() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -669,7 +664,6 @@ impl Node for PanickingNode {
 }
 
 #[test]
-#[ignore]
 fn story_node_panic_doesnt_kill_scheduler() {
     let _shm_guard = cleanup_stale_shm();
 
@@ -746,7 +740,6 @@ impl Node for BestEffortLoggerNode {
 }
 
 #[test]
-#[ignore]
 fn story_mixed_execution_classes() {
     let _shm_guard = cleanup_stale_shm();
 
