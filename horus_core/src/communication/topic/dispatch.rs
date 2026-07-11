@@ -1611,16 +1611,17 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    // Publish the consumed frontier to the shared `header.tail` EAGERLY (every recv).
-    // This keeps it accurate so (a) a competing SpmcShm consumer joining mid-stream
-    // never CAS-reads from a stale position and re-delivers (softmata-brain 1327,
-    // consumer side), and (b) the producers' backpressure check sees the true tail
-    // (no spurious "ring full"). Safe on the hot path because the CAS claim in the MP
-    // send paths prevents the overshoot that an accurate tail would otherwise expose.
-    // `fetch_max` never moves the tail backward, so it is safe alongside a concurrent
-    // SpmcShm consumer that CAS-advances it. Measured perf-neutral vs the old batched
-    // store (throughput is bound by cross-core cache traffic on this line either way).
-    header.tail.fetch_max(new_tail, Ordering::Release);
+    // Batch header.tail updates. Interval must be < capacity to avoid
+    // backpressure when the producer has written but consumer hasn't flushed.
+    let flush_interval = (local.cached_capacity / 2).max(1);
+    let flush_mask = if flush_interval.is_power_of_two() {
+        flush_interval - 1
+    } else {
+        flush_interval.next_power_of_two() - 1
+    };
+    if new_tail & flush_mask == 0 {
+        header.tail.store(new_tail, Ordering::Release);
+    }
 
     housekeep_lease!(local, topic);
     Some(msg)
@@ -1803,7 +1804,7 @@ pub(super) fn recv_shm_spsc_serde<
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    header.tail.fetch_max(new_tail, Ordering::Release);
+    header.tail.store(new_tail, Ordering::Release);
 
     housekeep_lease!(local, topic);
     Some(msg)
@@ -1864,7 +1865,7 @@ pub(super) fn recv_shm_mpsc_serde<
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    header.tail.fetch_max(new_tail, Ordering::Release);
+    header.tail.store(new_tail, Ordering::Release);
 
     housekeep_lease!(local, topic);
     Some(msg)
@@ -2060,7 +2061,7 @@ pub(super) fn recv_shm_mpsc_pod_colo<
     let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    header.tail.fetch_max(new_tail, Ordering::Release);
+    header.tail.store(new_tail, Ordering::Release);
 
     housekeep_lease!(local, topic);
     Some(msg)
