@@ -7192,9 +7192,6 @@ fn spsc_to_spmc_consumer_join_concurrent_exactly_once() {
 /// failure asserts (LOST/STALLED) rather than hanging. Reproduces on the pre-fix code
 /// (consumer stalls at a few dozen of N*M); the CAS-claim fix makes it pass.
 #[test]
-#[ignore = "TEMPORARY: demonstrates the send_shm_mp_pod OVERSHOOT corruption \
-            (consumer deterministically stalls at ~0-17 of 1800). Un-ignore in the \
-            commit that fixes it (CAS-claim in the MP send paths)."]
 fn mp_send_no_overshoot_corruption() {
     let name = unique("mp_overshoot");
     let cap: u32 = 16; // small ring → near-full contention exposes overshoot

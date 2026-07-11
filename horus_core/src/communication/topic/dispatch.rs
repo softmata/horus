@@ -958,21 +958,39 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     let mask = local.cached_capacity_mask;
     let capacity = local.cached_capacity;
 
-    // Non-binding capacity gate: reject if ring appears full.
-    // This is optimistic — another publisher may claim a slot between our check
-    // and fetch_add, but with capacity=256 and typical 2-8 publishers, the chance
-    // of overshooting by more than N_pubs slots is negligible.
-    let current_head = header.sequence_or_head.load(Ordering::Acquire);
-    if current_head.wrapping_sub(local.local_tail) >= capacity {
-        local.local_tail = header.tail.load(Ordering::Acquire);
-        if current_head.wrapping_sub(local.local_tail) >= capacity {
-            return Err(msg);
+    // Claim a slot with CAS so we NEVER overshoot the ring's free window.
+    //
+    // An optimistic `fetch_add` (the previous approach) claims unconditionally: two
+    // producers that both pass a non-atomic capacity check then both fetch_add can
+    // claim `seq >= tail + capacity`, and the write below would overwrite an
+    // UNCONSUMED slot (it aliases `seq - capacity`) with a wrong ready-flag —
+    // corrupting data and stalling the in-order consumer forever (mp_send_no_overshoot
+    // _corruption). CAS makes the room check and the claim atomic: we only advance
+    // head when `head - tail < capacity` still holds at claim time, so no claim ever
+    // targets a live slot. On a genuinely full ring we return Err (the non-blocking
+    // try_send contract is preserved — we never wait on the consumer). `header.tail`
+    // lags (batched), which is conservative: it can only make us reject early.
+    let seq = loop {
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        if head.wrapping_sub(local.local_tail) >= capacity {
+            local.local_tail = header.tail.load(Ordering::Acquire);
+            if head.wrapping_sub(local.local_tail) >= capacity {
+                return Err(msg);
+            }
         }
-    }
-
-    // Claim slot via fetch_add — always succeeds in a single atomic op.
-    // Previous CAS loop could spin for 100s of µs under contention.
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
+        match header.sequence_or_head.compare_exchange_weak(
+            head,
+            head.wrapping_add(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break head,
+            // Another producer claimed between our load and CAS (or a spurious weak
+            // failure). Retry with a fresh head — bounded by the number of concurrent
+            // producers, which all make progress.
+            Err(_) => std::hint::spin_loop(),
+        }
+    };
 
     let index = (seq & mask) as usize;
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
@@ -1230,7 +1248,31 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         None // inline path
     };
 
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
+    // Claim a slot with CAS so we never overshoot the ring's free window and
+    // overwrite an unconsumed slot (see send_shm_mp_pod for the full rationale and
+    // mp_send_no_overshoot_corruption for the gate). On a genuinely full ring we
+    // return Err. Rare corner: if we already spilled a large message to the pool and
+    // the ring turns out full here, that pool slot is orphaned — the pool reclaims it
+    // by generation-tagged reallocation (spill is rare; matches the existing
+    // best-effort spill lifetime), so it is a self-healing soft leak, not corruption.
+    let seq = loop {
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        if head.wrapping_sub(local.local_tail) >= capacity {
+            local.local_tail = header.tail.load(Ordering::Acquire);
+            if head.wrapping_sub(local.local_tail) >= capacity {
+                return Err(msg);
+            }
+        }
+        match header.sequence_or_head.compare_exchange_weak(
+            head,
+            head.wrapping_add(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break head,
+            Err(_) => std::hint::spin_loop(),
+        }
+    };
     let index = (seq & mask) as usize;
     let slot_offset = index * slot_size;
 
@@ -1366,17 +1408,27 @@ pub(super) fn send_shm_mp_pod_colo<
     let mask = local.cached_capacity_mask;
     let capacity = local.cached_capacity;
 
-    // Non-binding capacity gate (same pattern as send_shm_mp_pod).
-    let current_head = header.sequence_or_head.load(Ordering::Acquire);
-    if current_head.wrapping_sub(local.local_tail) >= capacity {
-        local.local_tail = header.tail.load(Ordering::Acquire);
-        if current_head.wrapping_sub(local.local_tail) >= capacity {
-            return Err(msg);
+    // Claim a slot with CAS so we never overshoot the ring's free window and
+    // overwrite an unconsumed slot (see send_shm_mp_pod for the full rationale;
+    // gated by mp_send_no_overshoot_corruption). Err on a genuinely full ring.
+    let seq = loop {
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        if head.wrapping_sub(local.local_tail) >= capacity {
+            local.local_tail = header.tail.load(Ordering::Acquire);
+            if head.wrapping_sub(local.local_tail) >= capacity {
+                return Err(msg);
+            }
         }
-    }
-
-    // Claim slot via fetch_add — single atomic op, no CAS retry loop.
-    let seq = header.sequence_or_head.fetch_add(1, Ordering::Relaxed);
+        match header.sequence_or_head.compare_exchange_weak(
+            head,
+            head.wrapping_add(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break head,
+            Err(_) => std::hint::spin_loop(),
+        }
+    };
 
     let index = (seq & mask) as usize;
     // SAFETY: cached_data_ptr points to co-located SHM data region. index < capacity
