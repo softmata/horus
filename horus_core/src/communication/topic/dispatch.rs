@@ -512,37 +512,36 @@ unsafe fn read_spilled_message<T: DeserializeOwned>(
     slot_ptr: *const u8,
     topic_name: &str,
 ) -> Option<T> {
+    // SP/MP slot layout: the SpillDescriptor sits at offset +8 (after the ready flag).
     let spill = read_spill_descriptor(slot_ptr);
+    read_spilled_from_descriptor(spill, topic_name)
+}
+
+/// Reconstruct a spilled message from an already-read `SpillDescriptor`.
+///
+/// Shared by the SP/MP recv path (descriptor read from a slot at offset +8) and
+/// the fanout recv path (descriptor read from offset 0 of the `recv_serde`
+/// payload). Returns `None` on a corrupted or stale (recycled) descriptor.
+///
+/// Intentionally does NOT release the pool slot: for multi-subscriber topics
+/// several receivers read the same spilled slot, and the subscriber count is
+/// unknown at send time, so an early release would free the slot out from under
+/// the other readers (use-after-free). The slot instead lives until the pool
+/// recycles it; the generation counter invalidates any stale descriptor, so a
+/// read after recycle returns `None` here rather than garbage. Spill is rare
+/// (> SPILL_THRESHOLD) and the pool is large, so the transient over-retention is
+/// acceptable — and it is exactly what makes broadcast (FanoutShm) spill safe.
+fn read_spilled_from_descriptor<T: DeserializeOwned>(
+    spill: SpillDescriptor,
+    topic_name: &str,
+) -> Option<T> {
     let tensor = spill.to_tensor();
-
-    // Get the pool — same deterministic pool_id from topic name
     let pool = super::pool_registry::get_or_create_pool(topic_name);
-
-    // Read serialized bytes from pool
     let pool_bytes = pool.data_slice(&tensor).ok()?;
     let len = spill.size as usize;
     if len > pool_bytes.len() {
-        return None; // Corrupted size
+        return None; // Corrupted size or stale (recycled) pool slot.
     }
-
-    // Deserialize from pool bytes
-
-    // NOTE: We intentionally do NOT release the pool slot here.
-    //
-    // For SPMC/MPMC topics, multiple receivers read the same spilled slot.
-    // The sender alloc'd with refcount=1. If we release here, the first
-    // receiver frees the slot (rc=0), and subsequent receivers read freed
-    // memory (use-after-free). Since we don't know subscriber count at
-    // send time, we can't pre-retain the correct number of times.
-    //
-    // The slot remains allocated until the pool recycles it via the
-    // generation counter. This is acceptable because:
-    // - Spill is rare (only messages > 4KB threshold)
-    // - Pool is 1GB with 1024 slots
-    // - Generation counter prevents ABA on reused slots
-    // - For SPSC topics (most common), this "leaks" one slot per spilled
-    //   message, which the pool's free list reclaims on next alloc cycle
-
     bincode::deserialize(&pool_bytes[..len]).ok()
 }
 
@@ -826,8 +825,35 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
         // producer's SPSC channel within the fanout matrix.
         unsafe { ring.send_pod(&msg, pub_id) }
     } else {
-        // Serde path: serialize once, send bytes to all subscribers
+        // Serde path: serialize once, send bytes to all subscribers.
         match bincode::serialize(&msg) {
+            Ok(bytes) if bytes.len() > SPILL_THRESHOLD => {
+                // Large serde message: spill the bytes to the TensorPool ONCE and
+                // broadcast a 40-byte SpillDescriptor through every subscriber
+                // channel (fits the fixed 8 KiB fanout slot). Without this, a
+                // message larger than the slot is dropped on multi-subscriber
+                // FanoutShm topics — whereas SpscShm auto-grows to deliver it.
+                // Receivers do NOT release the pool slot (see
+                // read_spilled_from_descriptor), so the broadcast is safe;
+                // generation-based pool reclaim handles drop-oldest + stale reads.
+                match spill_to_pool(topic, &bytes) {
+                    Some(desc) => {
+                        // SAFETY: SpillDescriptor is repr(C), Copy, 40 bytes with
+                        // no padding and no pointers — a raw byte view is sound.
+                        let desc_bytes = unsafe {
+                            std::slice::from_raw_parts(
+                                &desc as *const SpillDescriptor as *const u8,
+                                std::mem::size_of::<SpillDescriptor>(),
+                            )
+                        };
+                        // SAFETY: writes the descriptor bytes into SHM slots.
+                        unsafe { ring.send_serde(desc_bytes, pub_id) }
+                    }
+                    // Spill failed (pool full/OOM): fall back to inline. Still
+                    // bounded by the fixed slot, but preserves prior behavior.
+                    None => unsafe { ring.send_serde(&bytes, pub_id) },
+                }
+            }
             // SAFETY: same as send_pod — writes serialized bytes into SHM slots.
             Ok(bytes) => unsafe { ring.send_serde(&bytes, pub_id) },
             Err(_) => false,
@@ -874,10 +900,25 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
         // consumer's SPSC channel within the fanout matrix.
         unsafe { ring.recv_pod(sub_id) }
     } else {
-        // SAFETY: same as recv_pod — reads serialized bytes from SHM, then deserializes.
+        // SAFETY: same as recv_pod — reads serialized bytes from SHM. A payload
+        // that is exactly a sentinel-prefixed SpillDescriptor (40 bytes) is a
+        // spilled large message → reconstruct from the pool; otherwise the bytes
+        // are an inline bincode message.
         unsafe {
-            ring.recv_serde(sub_id)
-                .and_then(|bytes| bincode::deserialize(&bytes).ok())
+            ring.recv_serde(sub_id).and_then(|bytes| {
+                if bytes.len() == std::mem::size_of::<SpillDescriptor>()
+                    && u64::from_ne_bytes(bytes[..8].try_into().expect("len == 40 >= 8"))
+                        == SPILL_SENTINEL
+                {
+                    // SAFETY: `bytes` holds exactly a SpillDescriptor (repr(C), 40B);
+                    // read_unaligned copies it out with no alignment assumption.
+                    let desc =
+                        std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor);
+                    read_spilled_from_descriptor::<T>(desc, topic.name())
+                } else {
+                    bincode::deserialize(&bytes).ok()
+                }
+            })
         }
     };
 

@@ -3276,26 +3276,19 @@ fn shm_serde_oversized_data_rejected() {
 }
 
 #[test]
-fn shm_serde_oversized_broadcast_no_oob() {
-    // MEMORY-SAFETY INVARIANT for the broadcast (FanoutShm) serde send path.
+fn fanout_shm_oversized_serde_delivered_via_spill() {
+    // Regression gate for roadmap roadmap-mrgqzxyo-ayjt6u: a serde message larger
+    // than the fixed 8 KiB fanout slot must be DELIVERED, not dropped.
     //
-    // An oversized serialized message MUST NOT cause an out-of-bounds write.
-    // `ShmSpscChannel::try_send_serde` bounds-checks `4 + bytes.len() > slot_size`
-    // and refuses the write (returns false), surfacing as `try_send() -> Err`. The
-    // ring must stay fully usable afterwards (no partial/torn slot left behind).
-    //
-    // FINDING (surfaced, deliberately NOT fixed in this test-cleanup task): the
-    // fanout serde slot is a FIXED 8 KiB (shm_fanout.rs `compute_slot_size`), and
-    // unlike the SP/MP serde paths (`send_shm_sp_serde` / `send_shm_mp_serde`), the
-    // broadcast path `send_fanout_shm` does NOT call `auto_grow_slot_size` — it
-    // rejects any serde message > ~8 KiB instead of growing to fit. Public `send()`
-    // then drops it after a bounded retry (`send_lossy_retry`), and this path emits
-    // NO warning log. Consequence: a serde topic that delivers a >8 KiB message with
-    // ONE subscriber (SpscShm auto-grows) can silently drop that same message once a
-    // SECOND subscriber joins (FanoutShm is auto-selected for cross-process
-    // multi-sub). This test locks ONLY the no-OOB invariant; it does NOT bless
-    // drop-vs-grow as the intended behavior.
-    let name = unique("shm_bcast_oversized");
+    // The fanout serde slot is a fixed 8 KiB (shm_fanout.rs `compute_slot_size`) and
+    // `send_fanout_shm` does not auto-grow. Instead, a message > SPILL_THRESHOLD
+    // (4 KiB) is spilled to the topic's TensorPool and only a 40-byte SpillDescriptor
+    // travels through each subscriber channel; the receiver detects the sentinel and
+    // reconstructs from the pool. This reuses the SP/MP auto-spill infra and the
+    // generation-based reclaim (receivers don't release, so broadcast is safe).
+    // Memory-safe throughout: the >8 KiB bytes never go inline (no OOB), and on spill
+    // failure the inline fallback is still bounds-checked by `try_send_serde`.
+    let name = unique("shm_bcast_spill");
     let t: Topic<String> = Topic::with_capacity(&name, 64, Some(64)).expect("create");
     t.send("ok".to_string());
     let _ = t.recv();
@@ -3315,24 +3308,25 @@ fn shm_serde_oversized_broadcast_no_oob() {
                 "pub->sub channel must be live before the oversized case"
             );
 
-            // The fanout serde slot is a FIXED 8 KiB (shm_fanout.rs compute_slot_size);
-            // a message exceeding it must be rejected — never written OOB.
-            let huge = "Z".repeat(20_000);
+            // A message far larger than the 8 KiB fanout slot: must be spilled to
+            // the pool and DELIVERED intact (it was dropped/rejected before the fix).
+            let big = "Z".repeat(50_000);
             assert!(
-                t.try_send(huge).is_err(),
-                "oversized broadcast serde message must be rejected (no OOB write)"
-            );
-
-            // The ring must still work after a rejected oversized send.
-            assert!(
-                t.try_send("after".to_string()).is_ok(),
-                "ring must remain usable after an oversized rejection"
+                t.try_send(big.clone()).is_ok(),
+                "oversized broadcast serde message must be accepted (spilled to pool)"
             );
             assert_eq!(
                 t.try_recv(),
-                Some("after".to_string()),
-                "well-sized message after rejection must round-trip intact"
+                Some(big),
+                "oversized broadcast serde message must be delivered intact via spill"
             );
+
+            // The ring keeps working for subsequent small messages.
+            assert!(
+                t.try_send("after".to_string()).is_ok(),
+                "ring must remain usable after a spilled send"
+            );
+            assert_eq!(t.try_recv(), Some("after".to_string()));
         }
         other => eprintln!("FanoutShm unavailable: {:?}", other),
     }
