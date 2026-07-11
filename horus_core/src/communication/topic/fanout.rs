@@ -108,12 +108,44 @@ impl<T> SpscChannel<T> {
 unsafe impl<T: Send> Send for SpscChannel<T> {}
 unsafe impl<T: Send> Sync for SpscChannel<T> {}
 
-// NOTE: no `Drop` impl. Under drop-oldest, a slot's value may have been copied
-// out by a consumer (bitwise) while the ring still holds an identical bitwise
-// image; dropping ring slots on teardown would double-free those copies. The
-// ring therefore never runs `Drop` on its slots — for POD/`Copy` payloads this
-// is free, and for `Drop` payloads any values still resident at teardown leak
-// (the same documented cost this backend already accepted for overwrites).
+// Teardown reclaim of ring-OWNED payloads. A slot at position `p` is owned by
+// the ring iff it was never handed to a consumer — i.e. `p >= tail`. `recv` makes
+// a bitwise `ptr::read` COPY (the consumer then owns and drops it) and leaves an
+// identical dangling image behind, so positions `< tail` must NOT be dropped here
+// (that would double-free the consumer's copy). Positions `< head - capacity` were
+// overwritten. The ring therefore drops exactly the never-consumed resident window
+// `[max(tail, head - capacity), head)` on teardown. This runs only when the last
+// `Arc<FanoutRing>` is dropped (backend.rs `FanoutIntra(Arc<..>)`), so access is
+// exclusive — no concurrent producer/consumer, no seqlock race. POD payloads
+// (`needs_drop == false`) skip it entirely (const-folded, zero teardown cost).
+//
+// NOTE: values SHED by a drop-oldest *overwrite* are still leaked — the producer's
+// `ptr::write` in `send` clobbers the prior occupant without dropping it. That
+// concurrent overwrite-reclaim is loom-gated and tracked separately (roadmap
+// roadmap-mrgqzlmb-ixl127 phase 2). Teardown reclaim below covers only values
+// still resident at drop time (the consumer-keeps-up case, which is the common one).
+impl<T> Drop for SpscChannel<T> {
+    fn drop(&mut self) {
+        if !std::mem::needs_drop::<T>() {
+            return; // POD payloads have no destructor — nothing to reclaim.
+        }
+        let head = self.head.0.load(Ordering::Relaxed);
+        let tail = self.tail.0.load(Ordering::Relaxed);
+        let oldest_resident = head.saturating_sub(self.capacity);
+        let mut pos = tail.max(oldest_resident);
+        while pos < head {
+            let idx = (pos & self.mask) as usize;
+            // SAFETY: pos in [max(tail, head - capacity), head) indexes a slot
+            // holding an initialized, never-consumed `T` the ring owns. Exclusive
+            // access at teardown (Arc last-drop) → no concurrent reader/writer, so
+            // this drops each owned value exactly once.
+            unsafe {
+                std::ptr::drop_in_place(self.buffer[idx].get() as *mut T);
+            }
+            pos += 1;
+        }
+    }
+}
 
 /// Contention-free MPMC ring buffer using a matrix of SPSC channels.
 ///

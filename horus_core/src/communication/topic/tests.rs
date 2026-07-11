@@ -1911,6 +1911,33 @@ impl Drop for DropCounter {
 }
 
 #[test]
+fn fanout_ring_teardown_drops_resident_nonpod() {
+    // Regression gate for the FanoutIntra non-POD teardown leak (roadmap
+    // roadmap-mrgqzlmb-ixl127 phase 1). Non-POD values still resident in the ring
+    // at teardown must be dropped, not leaked. `recv` makes a bitwise copy, so only
+    // the never-consumed window is ring-owned; consumed slots are the consumer's.
+    //
+    // send 8 / drain 2 into cap-16 (no overwrite): 8 originals dropped (after the
+    // clone in send_as) + 2 consumed clones dropped by the receiver + 6 resident
+    // clones dropped at teardown = 16.
+    let counter = Arc::new(AtomicU64::new(0));
+    {
+        let ring = fanout::FanoutRing::<DropCounter>::new(4, 4, 16);
+        for _ in 0..8 {
+            ring.try_send(DropCounter::new(&counter)).unwrap();
+        }
+        for _ in 0..2 {
+            ring.try_recv().unwrap();
+        }
+    }
+    assert_eq!(
+        counter.load(Ordering::Relaxed),
+        16,
+        "all 8 sent DropCounters (8 originals + 2 consumed + 6 resident-at-teardown) must be dropped"
+    );
+}
+
+#[test]
 fn spsc_ring_drop_pending_messages() {
     let counter = Arc::new(AtomicU64::new(0));
     {
