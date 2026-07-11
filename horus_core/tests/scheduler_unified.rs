@@ -129,9 +129,9 @@ impl Node for CounterNode {
 // Tests
 // ============================================================================
 
-/// The Discord user's exact scenario:
-/// RT node at 1kHz + slow compute node sleeping 100ms.
-/// The RT node must maintain its tick rate regardless.
+// The Discord user's exact scenario:
+// RT node at 1kHz + slow compute node sleeping 100ms.
+// The RT node must maintain its tick rate regardless.
 
 /// Serializes these tests. They all share the process-global "default" SHM
 /// namespace and each calls cleanup_stale_shm(), which wipes it — so running

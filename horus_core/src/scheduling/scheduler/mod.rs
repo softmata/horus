@@ -3820,8 +3820,9 @@ impl Scheduler {
                 if let Some(action) = stale_action {
                     match action {
                         super::types::StalePolicy::SafeState => {
-                            if Self::guard_fault_callback(|| self.nodes[i].node.enter_safe_state())
-                            {
+                            let panicked =
+                                Self::guard_fault_callback(|| self.nodes[i].node.enter_safe_state());
+                            if panicked {
                                 self.note_safing_failure(i, "enter_safe_state");
                             }
                         }
