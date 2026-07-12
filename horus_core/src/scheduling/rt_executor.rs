@@ -168,7 +168,12 @@ impl RtExecutor {
     ///
     /// Extracted from the RT loop body so the caller can wrap this in `catch_unwind`.
     /// If this function panics, the caller marks the node as stopped.
-    fn tick_node(node: &mut RegisteredNode, monitors: &SharedMonitors, running: &Arc<AtomicBool>) {
+    fn tick_node(
+        node: &mut RegisteredNode,
+        monitors: &SharedMonitors,
+        running: &Arc<AtomicBool>,
+        is_first_tick: bool,
+    ) {
         // Update last tick time
         if node.rate_hz.is_some() {
             node.last_tick = Some(Instant::now());
@@ -184,16 +189,20 @@ impl RtExecutor {
             ctx.start_tick();
         }
 
-        // Enter allocation-free context if .no_alloc() is set
-        if node.no_alloc {
+        // Enter the allocation-free context if `.no_alloc()` is set — but NOT on
+        // the node's first tick, so one-time lazy initialization (e.g. a `Topic`'s
+        // SHM backend initializing on its first recv/send) may allocate. Alloc-
+        // freedom is a steady-state guarantee, enforced from the second tick on.
+        let enforce_no_alloc = node.no_alloc && !is_first_tick;
+        if enforce_no_alloc {
             crate::memory::rt_allocator::enter_rt_context(&node.name);
         }
 
         // Execute tick via NodeRunner
         let tr = NodeRunner::run_tick(&mut node.node);
 
-        // Leave allocation-free context
-        if node.no_alloc {
+        // Leave the allocation-free context
+        if enforce_no_alloc {
             crate::memory::rt_allocator::leave_rt_context();
         }
 
@@ -501,10 +510,16 @@ impl RtExecutor {
             ));
         }
 
+        // Per-node "has completed at least one tick" flags, aligned with `nodes`.
+        // `.no_alloc()` enforcement is skipped on a node's FIRST tick so one-time
+        // lazy initialization (e.g. a `Topic`'s SHM backend initializing on its
+        // first recv/send) may allocate; steady-state ticks are then enforced.
+        let mut warmed = vec![false; nodes.len()];
+
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
-            for node in nodes.iter_mut() {
+            for (idx, node) in nodes.iter_mut().enumerate() {
                 if !node.initialized || node.is_stopped {
                     continue;
                 }
@@ -538,9 +553,11 @@ impl RtExecutor {
                 // If ANY infrastructure code panics (recorder,
                 // timing enforcer, etc.), the node is stopped but the RT thread
                 // continues ticking remaining nodes.
+                let is_first_tick = !warmed[idx];
                 let infra_result = catch_unwind(AssertUnwindSafe(|| {
-                    Self::tick_node(node, &monitors, &running)
+                    Self::tick_node(node, &monitors, &running, is_first_tick)
                 }));
+                warmed[idx] = true;
 
                 match infra_result {
                     Ok(()) => {} // normal completion

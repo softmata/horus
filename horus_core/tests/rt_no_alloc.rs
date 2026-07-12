@@ -28,7 +28,10 @@ mod common;
 use common::cleanup_stale_shm;
 
 use horus_core::communication::Topic;
+use horus_core::core::{DurationExt, Node};
 use horus_core::memory::rt_allocator::{enter_rt_context, leave_rt_context};
+use horus_core::scheduling::Scheduler;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // SAFETY (both `Pod` impls): `#[repr(C)]`, all fields are `Copy` primitives of
 // equal alignment ⇒ no padding bytes, no `Drop`, every bit pattern is valid.
@@ -104,4 +107,96 @@ fn rt_steady_state_recv_compute_send_is_allocation_free() {
     // Reaching here means 200 steady-state recv → compute → send cycles ran with
     // zero heap allocations under the RT guard.
     assert_eq!(state, 199.0 * 0.5, "control loop should have processed readings");
+}
+
+/// Ticks the executor-driven `.no_alloc()` controller completed. A `static` +
+/// atomic so incrementing it never allocates.
+static EXEC_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// End-to-end through the RT executor: a `.no_alloc()` control node ticking
+/// `recv → compute → send` runs continuously without tripping the allocator.
+///
+/// This exercises the executor's **warmup exemption** — the first tick is not
+/// alloc-checked, so the `Topic`'s lazy SHM-backend init may allocate — followed
+/// by steady-state enforcement from the second tick on. That combination is what
+/// makes `.no_alloc()` usable for real control nodes. Without the exemption the
+/// node would panic on tick 1 (lazy init) and the counter would freeze near zero.
+#[test]
+fn no_alloc_node_runs_through_the_rt_executor() {
+    let _shm_guard = cleanup_stale_shm();
+
+    let reading_topic = common::unique("rt.noalloc.exec.reading");
+    let command_topic = common::unique("rt.noalloc.exec.command");
+
+    struct Producer {
+        out: Topic<Reading>,
+        n: u64,
+    }
+    impl Node for Producer {
+        fn name(&self) -> &str {
+            "producer"
+        }
+        fn tick(&mut self) {
+            self.n += 1;
+            self.out.send(Reading {
+                value: self.n as f32,
+                seq: self.n as f32,
+            });
+        }
+    }
+
+    struct Controller {
+        input: Topic<Reading>,
+        output: Topic<Command>,
+        state: f32,
+    }
+    impl Node for Controller {
+        fn name(&self) -> &str {
+            "controller"
+        }
+        fn tick(&mut self) {
+            if let Some(r) = self.input.recv() {
+                self.state = r.value * 0.5;
+            }
+            self.output.send(Command {
+                output: self.state,
+                seq: 0.0,
+            });
+            EXEC_TICKS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let prod_out = Topic::<Reading>::new(&reading_topic).expect("create reading pub");
+    let ctrl_in = Topic::<Reading>::new(&reading_topic).expect("create reading sub");
+    let ctrl_out = Topic::<Command>::new(&command_topic).expect("create command pub");
+
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
+    scheduler
+        .add(Producer { out: prod_out, n: 0 })
+        .order(0)
+        .build()
+        .unwrap();
+    // Real-time (`.rate()`) + `.no_alloc()` ⇒ runs on the RT executor with the
+    // allocation guard active from the second tick.
+    scheduler
+        .add(Controller {
+            input: ctrl_in,
+            output: ctrl_out,
+            state: 0.0,
+        })
+        .order(1)
+        .rate(1000_u64.hz())
+        .no_alloc()
+        .build()
+        .unwrap();
+
+    scheduler.run_for(300_u64.ms()).unwrap();
+
+    let ticks = EXEC_TICKS.load(Ordering::Relaxed);
+    assert!(
+        ticks > 20,
+        ".no_alloc() controller should have run many ticks through the RT executor \
+         (tick 1 warms up the topic backend, steady state is alloc-checked); got {ticks}. \
+         A low count means it panicked on a heap allocation."
+    );
 }
