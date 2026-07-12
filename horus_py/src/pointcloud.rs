@@ -7,7 +7,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
-use crate::dlpack_utils;
+use crate::tensor_convert;
 use crate::tensor::PyTensorHandle;
 
 /// HORUS PointCloud — zero-copy shared memory point cloud with numpy interop.
@@ -28,7 +28,7 @@ impl PyPointCloud {
     #[new]
     #[pyo3(signature = (num_points, fields=3, dtype="float32"))]
     fn new(num_points: u32, fields: u32, dtype: &str) -> PyResult<Self> {
-        let dt = dlpack_utils::parse_dtype(dtype)?;
+        let dt = tensor_convert::parse_dtype(dtype)?;
         let pc = PointCloud::new(num_points, fields, dt).map_err(|e| {
             PyRuntimeError::new_err(format!(
                 "Failed to create PointCloud: {}. Common causes: num_points must be > 0, \
@@ -61,7 +61,7 @@ impl PyPointCloud {
         let fields = u32::try_from(shape_tuple[1]).map_err(|_| {
             PyValueError::new_err(format!("Field count {} exceeds u32::MAX", shape_tuple[1]))
         })?;
-        let dt = dlpack_utils::parse_dtype(&dtype_name)?;
+        let dt = tensor_convert::parse_dtype(&dtype_name)?;
 
         let mut pc = PointCloud::new(num_points, fields, dt).map_err(|e| {
             PyRuntimeError::new_err(format!(
@@ -94,7 +94,7 @@ impl PyPointCloud {
 
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let is_cuda = slf.borrow().inner.is_cuda();
-        dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "point cloud")
+        tensor_convert::to_numpy_impl(slf.as_any(), py, is_cuda, "point cloud")
     }
 
     // === Numpy Array Interface ===
@@ -175,7 +175,7 @@ impl PyPointCloud {
     }
     #[getter]
     fn dtype(&self) -> &'static str {
-        dlpack_utils::dtype_to_str(self.inner.dtype())
+        tensor_convert::dtype_to_str(self.inner.dtype())
     }
     #[getter]
     fn nbytes(&self) -> u64 {
@@ -268,7 +268,7 @@ impl PyPointCloud {
             "PointCloud(points={}, fields={}, dtype='{}')",
             self.inner.point_count(),
             self.inner.fields_per_point(),
-            dlpack_utils::dtype_to_str(self.inner.dtype()),
+            tensor_convert::dtype_to_str(self.inner.dtype()),
         )
     }
 

@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 
 mod config;
 mod depth_image;
-mod dlpack_utils;
+mod tensor_convert;
 mod driver_params;
 mod drivers;
 pub mod errors;

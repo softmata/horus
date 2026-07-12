@@ -14,7 +14,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
-use crate::dlpack_utils;
+use crate::tensor_convert;
 use crate::tensor::PyTensorHandle;
 use horus_core::memory::TensorHandle;
 
@@ -201,7 +201,7 @@ impl PyImage {
     /// Convert to numpy array (zero-copy).
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let is_cuda = slf.borrow().inner.is_cuda();
-        dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "image")
+        tensor_convert::to_numpy_impl(slf.as_any(), py, is_cuda, "image")
     }
 
     // === Numpy Array Interface ===
@@ -308,7 +308,7 @@ impl PyImage {
     }
     #[getter]
     fn dtype(&self) -> &'static str {
-        dlpack_utils::dtype_to_str(self.inner.dtype())
+        tensor_convert::dtype_to_str(self.inner.dtype())
     }
     #[getter]
     fn nbytes(&self) -> u64 {
@@ -466,7 +466,7 @@ impl PyImage {
             self.inner.height(),
             self.inner.width(),
             encoding_to_str(self.inner.encoding()),
-            dlpack_utils::dtype_to_str(self.inner.dtype()),
+            tensor_convert::dtype_to_str(self.inner.dtype()),
         )
     }
 

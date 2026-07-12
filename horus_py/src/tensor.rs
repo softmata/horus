@@ -12,7 +12,7 @@ use pyo3::types::{PyDict, PyTuple};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::dlpack_utils;
+use crate::tensor_convert;
 
 // Global pool registry - allows multiple pools to be accessed by ID
 lazy_static::lazy_static! {
@@ -964,8 +964,8 @@ impl PyTensorHandle {
 // === Helper functions ===
 
 // All helper functions (parse_dtype, dtype_to_str, parse_device, device_to_string)
-// are in crate::dlpack_utils to avoid duplication.
-use dlpack_utils::{device_to_string, dtype_to_str, parse_device, parse_dtype};
+// are in crate::tensor_convert to avoid duplication.
+use tensor_convert::{device_to_string, dtype_to_str, parse_device, parse_dtype};
 
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
     dtype.numpy_typestr()

@@ -7,7 +7,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
-use crate::dlpack_utils;
+use crate::tensor_convert;
 use crate::tensor::PyTensorHandle;
 
 /// Parse a depth dtype string.
@@ -129,7 +129,7 @@ impl PyDepthImage {
 
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let is_cuda = slf.borrow().inner.is_cuda();
-        dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "depth image")
+        tensor_convert::to_numpy_impl(slf.as_any(), py, is_cuda, "depth image")
     }
 
     // === Numpy Array Interface ===
@@ -204,7 +204,7 @@ impl PyDepthImage {
     }
     #[getter]
     fn dtype(&self) -> &'static str {
-        dlpack_utils::dtype_to_str(self.inner.dtype())
+        tensor_convert::dtype_to_str(self.inner.dtype())
     }
     #[getter]
     fn nbytes(&self) -> u64 {
@@ -298,7 +298,7 @@ impl PyDepthImage {
             "DepthImage(height={}, width={}, dtype='{}', format={})",
             self.inner.height(),
             self.inner.width(),
-            dlpack_utils::dtype_to_str(self.inner.dtype()),
+            tensor_convert::dtype_to_str(self.inner.dtype()),
             kind,
         )
     }
