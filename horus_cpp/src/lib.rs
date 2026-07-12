@@ -2,14 +2,18 @@
 //!
 //! This crate provides the FFI boundary between Rust and C++ for the HORUS
 //! robotics framework. It wraps `horus_core` types in opaque, FFI-safe wrappers
-//! and exposes them via CXX bridge modules.
+//! and exposes them across the boundary via hand-written `extern "C"` functions
+//! (with `macro_rules!` helpers to cut boilerplate). The `*_ffi` modules below
+//! are plain C ABI — there is currently **no** `#[cxx::bridge]`; the `cxx` /
+//! `cxx-build` deps and the `cxx_build::bridge(...)` call in `build.rs` are
+//! placeholders reserved for a future migration and are not yet wired.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! C++ user code
-//!   └─ horus/horus.hpp (generated C++ headers)
-//!       └─ CXX bridge (this crate)
+//!   └─ horus/*.hpp (hand-written C++ headers wrapping the C ABI)
+//!       └─ extern "C" FFI surface (this crate)
 //!           └─ horus_core (Rust runtime)
 //! ```
 //!

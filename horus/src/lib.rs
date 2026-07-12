@@ -19,7 +19,7 @@
 //! }
 //!
 //! pub struct MyNode {
-//!     cmd_pub: Topic<CmdVel>,
+//!     cmd_pub: Topic<Twist>,
 //! }
 //!
 //! impl MyNode {
@@ -32,7 +32,9 @@
 //!     fn name(&self) -> &str { "my_node" }
 //!
 //!     fn tick(&mut self) {
-//!         self.cmd_pub.send(CmdVel::new(0.5, 0.0));
+//!         // Twist is the prelude-native velocity command (linear, angular).
+//!         // Robotics-specific messages like CmdVel now live in `horus_robotics`.
+//!         self.cmd_pub.send(Twist::new_2d(0.5, 0.0));
 //!     }
 //! }
 //! ```
@@ -83,8 +85,8 @@
 //!
 //! ### Topic (pub/sub IPC)
 //! ```rust,ignore
-//! let topic: Topic<CmdVel> = Topic::new("cmd_vel")?;    // returns Result
-//! topic.send(CmdVel::new(1.0, 0.0));
+//! let topic: Topic<Twist> = Topic::new("cmd_vel")?;    // returns Result
+//! topic.send(Twist::new_2d(1.0, 0.0));
 //! if let Some(msg) = topic.recv() { /* ... */ }
 //! ```
 //!
@@ -164,6 +166,11 @@
 //! | `Image` | Pool-backed image (zero-copy) |
 //! | `PointCloud` | Pool-backed 3D points (zero-copy) |
 //! | `DepthImage` | Pool-backed depth map (zero-copy) |
+//!
+//! `Twist`, `Pose2D`, `Image`, `PointCloud`, and `DepthImage` are in
+//! `horus::prelude`. Robotics-specific messages (`CmdVel`, `Imu`, `LaserScan`,
+//! …) now live in the `horus_robotics` crate — bring them in with
+//! `use horus_robotics::prelude::*;`.
 //!
 //! ## Common Mistakes
 //!

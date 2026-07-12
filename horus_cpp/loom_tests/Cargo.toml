@@ -1,0 +1,21 @@
+[package]
+name = "horus_cpp-loom-tests"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Loom model tests for horus_cpp atomic contracts.
+# Isolated workspace: loom compilation conflicts with tokio's #[cfg(not(loom))]
+# gates, so we exclude it from the parent workspace. The test models the
+# scheduler/callback atomic contract abstractly — it does not link horus_cpp
+# itself.
+
+[dev-dependencies]
+loom = "0.7"
+
+[workspace]
+members = ["."]
+
+[[test]]
+name = "loom_scheduler"
+path = "tests/loom_scheduler.rs"

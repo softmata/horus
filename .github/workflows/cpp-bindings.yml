@@ -66,6 +66,21 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Run proptest FFI properties
+        run: |
+          cargo test --no-default-features -p horus_cpp --test proptest_ffi \
+            -- --test-threads=1
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Run loom model tests
+        working-directory: horus_cpp/loom_tests
+        run: cargo test --release -- --test-threads=1
+        env:
+          RUSTFLAGS: --cfg loom
+          LOOM_MAX_PREEMPTIONS: "3"
+          RUST_BACKTRACE: 1
+
   # ─── C++ Compilation + Unit Tests ─────────────────────────────────────────
   cpp-compile-test:
     name: C++ Compile + Test (15 binaries)
@@ -103,42 +118,27 @@ jobs:
       - name: Build libhorus_cpp
         run: cargo build --no-default-features -p horus_cpp
 
-      - name: Compile all C++ test binaries
+      - name: Configure + build C++ gtests via CMake
         run: |
-          mkdir -p target/cpp_tests
-          for src in horus_cpp/tests/*.cpp; do
-            name=$(basename "$src" .cpp)
-            echo "Compiling $name..."
-            g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
-                -o "target/cpp_tests/$name" "$src" \
-                -L target/debug -lhorus_cpp -lpthread -ldl -lm
-          done
-          echo "All C++ binaries compiled successfully"
+          cmake -S horus_cpp/tests -B target/cpp_tests \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug
+          cmake --build target/cpp_tests --parallel
 
-      - name: Run cpp_e2e_test (C API smoke test)
-        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_e2e_test
+      - name: Run C++ gtests via ctest
+        run: |
+          LD_LIBRARY_PATH=target/debug ctest \
+            --test-dir target/cpp_tests \
+            --output-on-failure \
+            --output-junit junit.xml
         env:
-          HORUS_NAMESPACE: ci_cpp_e2e_${{ github.run_id }}
+          HORUS_NAMESPACE: ci_cpp_tests_${{ github.run_id }}
 
-      - name: Run cpp_ergonomic_e2e (C++ header API)
-        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_ergonomic_e2e
-        env:
-          HORUS_NAMESPACE: ci_cpp_ergo_${{ github.run_id }}
-
-      - name: Run cpp_full_api_test (Pool/Params/TF/Service/Action)
-        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_full_api_test
-        env:
-          HORUS_NAMESPACE: ci_cpp_api_${{ github.run_id }}
-
-      - name: Run cpp_user_api_test (full user workflow)
-        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_user_api_test
-        env:
-          HORUS_NAMESPACE: ci_cpp_user_${{ github.run_id }}
-
-      - name: Run cpp_stress_test (stability)
-        run: LD_LIBRARY_PATH=target/debug target/cpp_tests/cpp_stress_test
-        env:
-          HORUS_NAMESPACE: ci_cpp_stress_${{ github.run_id }}
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-tests-junit
+          path: target/cpp_tests/junit.xml
 
   # ─── Cross-Process IPC Tests ──────────────────────────────────────────────
   cpp-cross-process:
@@ -178,7 +178,8 @@ jobs:
         run: |
           cargo build --no-default-features -p horus_cpp
           mkdir -p target/cpp_tests
-          for src in horus_cpp/tests/*.cpp; do
+          # Cross-process IPC harnesses are plain C++ binaries (no gtest).
+          for src in horus_cpp/tests/cross_process_*.cpp; do
             name=$(basename "$src" .cpp)
             g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
                 -o "target/cpp_tests/$name" "$src" \
@@ -220,21 +221,24 @@ jobs:
           echo "Received: $COUNT / 50"
           [ "$COUNT" -ge 25 ] || (echo "FAIL: received < 25" && exit 1)
 
-      - name: Cross-process Service (request/response)
+      - name: Cross-process Service (100 req/resp × reliability check)
         run: |
           export LD_LIBRARY_PATH=target/debug
           export HORUS_NAMESPACE=ci_svc_${{ github.run_id }}
           SVC="ci.svc.add"
           CLIENT_ID="$$"
-          target/cpp_tests/cross_process_svc_server "$SVC" "$CLIENT_ID" > /tmp/srv.log 2>&1 &
+          target/cpp_tests/cross_process_svc_server "$SVC" "$CLIENT_ID" 100 > /tmp/srv.log 2>&1 &
           SRV=$!
           sleep 0.5
-          target/cpp_tests/cross_process_svc_client "$SVC" "$CLIENT_ID" > /tmp/cli.log 2>&1
+          target/cpp_tests/cross_process_svc_client "$SVC" "$CLIENT_ID" 100 > /tmp/cli.log 2>&1
+          CLI_RC=$?
           wait $SRV 2>/dev/null
           echo "=== Server ===" && cat /tmp/srv.log
           echo "=== Client ===" && cat /tmp/cli.log
-          grep -q "RESPONSE" /tmp/cli.log || (echo "FAIL: no response received" && exit 1)
-          grep -q '"sum":7' /tmp/cli.log || (echo "FAIL: wrong response" && exit 1)
+          grep -q "SUCCESSES:" /tmp/cli.log || (echo "FAIL: no SUCCESSES line" && exit 1)
+          SUCCESSES=$(grep "SUCCESSES:" /tmp/cli.log | sed 's/SUCCESSES:\([0-9]*\).*/\1/')
+          echo "Service successes: $SUCCESSES / 100 (threshold >= 99)"
+          [ "$CLI_RC" -eq 0 ] || (echo "FAIL: client exit $CLI_RC (successes < 99%)" && exit 1)
 
       - name: Cross-process Action (goal/feedback/result)
         run: |
@@ -288,7 +292,9 @@ jobs:
         run: |
           cargo build --no-default-features -p horus_cpp
           mkdir -p target/cpp_tests
-          for src in horus_cpp/tests/*.cpp; do
+          # Cross-language test drivers are plain C++ binaries (no gtest).
+          for src in horus_cpp/tests/cross_process_*.cpp horus_cpp/tests/cross_lang_*.cpp; do
+            [ -f "$src" ] || continue
             name=$(basename "$src" .cpp)
             g++ -std=c++17 -fext-numeric-literals -I horus_cpp/include \
                 -o "target/cpp_tests/$name" "$src" \
@@ -330,33 +336,355 @@ jobs:
       - name: Build libhorus_cpp
         run: cargo build --no-default-features -p horus_cpp
 
-      - name: Compile stress test with ASAN
+      - name: Configure + build gtests with ASan via CMake
         run: |
-          g++ -std=c++17 -fsanitize=address -fno-omit-frame-pointer \
-              -I horus_cpp/include -o target/cpp_stress_asan \
-              horus_cpp/tests/cpp_stress_test.cpp \
-              -L target/debug -lhorus_cpp -lpthread -ldl -lm
+          cmake -S horus_cpp/tests -B target/cpp_asan \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
+          cmake --build target/cpp_asan --parallel \
+            --target cpp_stress_test cpp_full_api_test
 
       - name: Run ASAN stress test
         run: |
           LD_LIBRARY_PATH=target/debug ASAN_OPTIONS=detect_leaks=0 \
-            target/cpp_stress_asan
+            target/cpp_asan/cpp_stress_test
         env:
-          HORUS_NAMESPACE: ci_asan_${{ github.run_id }}
-
-      - name: Compile full API test with ASAN
-        run: |
-          g++ -std=c++17 -fsanitize=address -fno-omit-frame-pointer \
-              -I horus_cpp/include -o target/cpp_api_asan \
-              horus_cpp/tests/cpp_full_api_test.cpp \
-              -L target/debug -lhorus_cpp -lpthread -ldl -lm
+          HORUS_NAMESPACE: ci_asan_stress_${{ github.run_id }}
 
       - name: Run ASAN full API test
         run: |
           LD_LIBRARY_PATH=target/debug ASAN_OPTIONS=detect_leaks=0 \
-            target/cpp_api_asan
+            target/cpp_asan/cpp_full_api_test
         env:
           HORUS_NAMESPACE: ci_asan_api_${{ github.run_id }}
+
+  # ─── TSAN (ThreadSanitizer) ───────────────────────────────────────────────
+  # TSan instruments Rust (via -Zbuild-std -Zsanitizer=thread, needs nightly)
+  # AND C++ (-fsanitize=thread). Detects data races across the FFI boundary.
+  # Independent job from ASan (sanitizers can't coexist in one build).
+  cpp-tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_tsan_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp with TSan
+        run: |
+          cargo +nightly build -Zbuild-std \
+            --target x86_64-unknown-linux-gnu \
+            --no-default-features -p horus_cpp
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+
+      - name: Configure + build gtests with TSan via CMake
+        run: |
+          cmake -S horus_cpp/tests -B target/cpp_tsan \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/x86_64-unknown-linux-gnu/debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -fPIE -g -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -pie"
+          cmake --build target/cpp_tsan --parallel \
+            --target cpp_stress_test cpp_ergonomic_e2e
+
+      - name: Run TSan stress test
+        run: |
+          LD_LIBRARY_PATH=target/x86_64-unknown-linux-gnu/debug \
+          TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7" \
+            target/cpp_tsan/cpp_stress_test
+        env:
+          HORUS_NAMESPACE: ci_tsan_stress_${{ github.run_id }}
+
+      - name: Run TSan ergonomic E2E
+        run: |
+          LD_LIBRARY_PATH=target/x86_64-unknown-linux-gnu/debug \
+          TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7" \
+            target/cpp_tsan/cpp_ergonomic_e2e
+        env:
+          HORUS_NAMESPACE: ci_tsan_ergo_${{ github.run_id }}
+
+  # ─── UBSan (UndefinedBehaviorSanitizer) ─────────────────────────────────
+  # Catches integer overflow, misalignment, null deref, enum-out-of-range, etc.
+  # Uses nightly + -Zbuild-std + -Zsanitizer=undefined for Rust; C++ via g++.
+  cpp-ubsan:
+    name: UBSanitizer
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_ubsan_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp with UBSan
+        run: |
+          cargo +nightly build -Zbuild-std \
+            --target x86_64-unknown-linux-gnu \
+            --no-default-features -p horus_cpp
+        env:
+          RUSTFLAGS: -Zsanitizer=undefined
+
+      - name: Configure + build gtests with UBSan via CMake
+        run: |
+          cmake -S horus_cpp/tests -B target/cpp_ubsan \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/x86_64-unknown-linux-gnu/debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=undefined -fsanitize=integer -fno-sanitize-recover=all -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=undefined"
+          cmake --build target/cpp_ubsan --parallel \
+            --target cpp_full_api_test cpp_ergonomic_e2e
+
+      - name: Run UBSan full API test
+        run: |
+          LD_LIBRARY_PATH=target/x86_64-unknown-linux-gnu/debug \
+          UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1" \
+            target/cpp_ubsan/cpp_full_api_test
+        env:
+          HORUS_NAMESPACE: ci_ubsan_api_${{ github.run_id }}
+
+      - name: Run UBSan ergonomic E2E
+        run: |
+          LD_LIBRARY_PATH=target/x86_64-unknown-linux-gnu/debug \
+          UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1" \
+            target/cpp_ubsan/cpp_ergonomic_e2e
+        env:
+          HORUS_NAMESPACE: ci_ubsan_ergo_${{ github.run_id }}
+
+  # ─── Valgrind (memcheck) ────────────────────────────────────────────────
+  # Catches uninitialized reads and heap-range errors that ASan misses (e.g.
+  # in mmap'd SHM regions and libstdc++ interactions). 10-50x slower than
+  # native; runs only cpp_ergonomic_e2e.
+  cpp-valgrind:
+    name: Valgrind Memcheck
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++ valgrind
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_vg_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp (debug)
+        run: cargo build --no-default-features -p horus_cpp
+
+      - name: Configure + build ergonomic E2E for valgrind
+        run: |
+          cmake -S horus_cpp/tests -B target/cpp_valgrind \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug \
+            -DCMAKE_CXX_FLAGS="-g -O0 -fno-omit-frame-pointer"
+          cmake --build target/cpp_valgrind --parallel \
+            --target cpp_ergonomic_e2e
+
+      - name: Run valgrind memcheck
+        run: |
+          SUPPS=""
+          [ -f horus_cpp/valgrind.supp ] && SUPPS="--suppressions=horus_cpp/valgrind.supp"
+          LD_LIBRARY_PATH=target/debug valgrind \
+            --tool=memcheck --error-exitcode=1 \
+            --leak-check=full --show-leak-kinds=definite,indirect \
+            --track-origins=yes --undef-value-errors=yes \
+            $SUPPS \
+            target/cpp_valgrind/cpp_ergonomic_e2e
+        env:
+          HORUS_NAMESPACE: ci_valgrind_${{ github.run_id }}
+
+  # ─── libFuzzer Smoke (60s per target) ───────────────────────────────────
+  # Runs each of 4 libFuzzer targets for 60 seconds. Crashes persisted as
+  # artifacts. Long-run (30 min per target) lives in cpp-bindings-nightly.yml.
+  cpp-fuzz:
+    name: libFuzzer Smoke (60s per target)
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_fuzz_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build fuzz targets
+        working-directory: horus_cpp
+        run: cargo +nightly fuzz build
+
+      - name: Fuzz json_service
+        working-directory: horus_cpp
+        run: cargo +nightly fuzz run fuzz_json_service -- -max_total_time=60
+
+      - name: Fuzz params
+        working-directory: horus_cpp
+        run: cargo +nightly fuzz run fuzz_params -- -max_total_time=60
+
+      - name: Fuzz topic_send_recv
+        working-directory: horus_cpp
+        run: cargo +nightly fuzz run fuzz_topic_send_recv -- -max_total_time=60
+        env:
+          HORUS_NAMESPACE: ci_fuzz_topic_${{ github.run_id }}
+
+      - name: Fuzz service_roundtrip
+        working-directory: horus_cpp
+        run: cargo +nightly fuzz run fuzz_service_roundtrip -- -max_total_time=60
+        env:
+          HORUS_NAMESPACE: ci_fuzz_svc_${{ github.run_id }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: horus_cpp/fuzz/artifacts/
+
+  # ─── Coverage (Rust + C++) ──────────────────────────────────────────────
+  # Floor: 80% Rust lines (cargo llvm-cov --fail-under-lines 80), 70% C++
+  # lines (lcov threshold). C++ has some unreachable-by-unit-test paths
+  # (cross-process / error branches) so the floor is slightly lower.
+  cpp-coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    needs: rust-ffi-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++ lcov
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_cov_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Run Rust coverage
+        run: |
+          cargo llvm-cov --no-default-features -p horus_cpp \
+            --lcov --output-path rust-lcov.info \
+            --fail-under-lines 80 \
+            -- --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_cov_rust_${{ github.run_id }}
+
+      - name: Build libhorus_cpp for C++ coverage
+        run: cargo build --no-default-features -p horus_cpp
+
+      - name: Build C++ tests with coverage flags
+        run: |
+          cmake -S horus_cpp/tests -B target/cpp_cov \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+          cmake --build target/cpp_cov --parallel
+
+      - name: Run C++ tests under coverage
+        run: |
+          LD_LIBRARY_PATH=target/debug ctest --test-dir target/cpp_cov \
+            --output-on-failure
+        env:
+          HORUS_NAMESPACE: ci_cov_cpp_${{ github.run_id }}
+
+      - name: Collect C++ coverage with lcov
+        run: |
+          lcov --capture --directory target/cpp_cov \
+               --output-file cpp-lcov.info \
+               --include '*/horus_cpp/include/*' \
+               --include '*/horus_cpp/tests/*' \
+               --ignore-errors gcov,source
+          lcov --list cpp-lcov.info
+
+      - name: Enforce C++ coverage floor (70%)
+        run: |
+          PCT=$(lcov --summary cpp-lcov.info 2>&1 | \
+                grep 'lines' | head -1 | grep -oE '[0-9]+\.[0-9]+%' | tr -d '%' | head -1)
+          echo "C++ line coverage: ${PCT}%"
+          awk -v p="$PCT" 'BEGIN {exit !(p+0 >= 70)}' || \
+            (echo "FAIL: C++ coverage ${PCT}% < 70% floor" && exit 1)
+
+      - name: Merge lcov reports
+        run: |
+          lcov --add-tracefile rust-lcov.info \
+               --add-tracefile cpp-lcov.info \
+               --output-file merged-lcov.info \
+               --ignore-errors inconsistent,format
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: merged-lcov.info
+          flags: horus_cpp
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload lcov artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horus-cpp-coverage
+          path: |
+            rust-lcov.info
+            cpp-lcov.info
+            merged-lcov.info
 
   # ─── Benchmark (release mode) ─────────────────────────────────────────────
   cpp-benchmark:
@@ -401,7 +729,9 @@ jobs:
   # ─── Final gate ───────────────────────────────────────────────────────────
   cpp-success:
     name: C++ Bindings CI Success
-    needs: [rust-ffi-tests, cpp-compile-test, cpp-cross-process, cpp-cross-language, cpp-asan, cpp-benchmark]
+    needs: [rust-ffi-tests, cpp-compile-test, cpp-cross-process, cpp-cross-language,
+            cpp-asan, cpp-tsan, cpp-ubsan, cpp-valgrind, cpp-fuzz,
+            cpp-coverage, cpp-benchmark]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -411,7 +741,12 @@ jobs:
              [[ "${{ needs.cpp-compile-test.result }}" == "success" ]] && \
              [[ "${{ needs.cpp-cross-process.result }}" == "success" ]] && \
              [[ "${{ needs.cpp-cross-language.result }}" == "success" ]] && \
-             [[ "${{ needs.cpp-asan.result }}" == "success" ]]; then
+             [[ "${{ needs.cpp-asan.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-tsan.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-ubsan.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-valgrind.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-fuzz.result }}" == "success" ]] && \
+             [[ "${{ needs.cpp-coverage.result }}" == "success" ]]; then
             echo "All C++ binding tests passed!"
             echo "Benchmark: ${{ needs.cpp-benchmark.result }}"
             exit 0
@@ -422,6 +757,11 @@ jobs:
             echo "cross-process: ${{ needs.cpp-cross-process.result }}"
             echo "cross-language: ${{ needs.cpp-cross-language.result }}"
             echo "asan: ${{ needs.cpp-asan.result }}"
+            echo "tsan: ${{ needs.cpp-tsan.result }}"
+            echo "ubsan: ${{ needs.cpp-ubsan.result }}"
+            echo "valgrind: ${{ needs.cpp-valgrind.result }}"
+            echo "fuzz: ${{ needs.cpp-fuzz.result }}"
+            echo "coverage: ${{ needs.cpp-coverage.result }}"
             echo "benchmark: ${{ needs.cpp-benchmark.result }}"
             exit 1
           fi

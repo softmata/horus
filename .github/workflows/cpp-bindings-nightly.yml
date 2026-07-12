@@ -1,0 +1,126 @@
+# Nightly (cron-scheduled) C++ bindings stability tests.
+# - 2-hour soak with RSS / thread / fd monitoring
+# - 5 fault-injection scenarios
+# - 30-minute libFuzzer runs per target (vs 60-second smoke in PR CI)
+
+name: C++ Bindings Nightly
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cpp-soak:
+    name: 2-hour Soak Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 150  # 2h + 30 min slack
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_soak_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp
+        run: cargo build --no-default-features -p horus_cpp
+
+      - name: Configure + build soak test
+        run: |
+          cmake -S horus_cpp/tests -B target/cpp_nightly \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug
+          cmake --build target/cpp_nightly --target cpp_soak_test --parallel
+
+      - name: Run soak (2h)
+        run: |
+          LD_LIBRARY_PATH=target/debug \
+          HORUS_SOAK_DURATION_SEC=7200 \
+            target/cpp_nightly/cpp_soak_test
+        env:
+          HORUS_NAMESPACE: ci_soak_${{ github.run_id }}
+
+  cpp-fault-injection:
+    name: Fault Injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config g++
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_fi_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Build libhorus_cpp
+        run: cargo build --no-default-features -p horus_cpp
+
+      - name: Configure + build fault injection
+        run: |
+          cmake -S horus_cpp/tests -B target/cpp_fi \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug
+          cmake --build target/cpp_fi --target cpp_fault_injection --parallel
+
+      - name: Run fault injection
+        run: LD_LIBRARY_PATH=target/debug target/cpp_fi/cpp_fault_injection
+        env:
+          HORUS_NAMESPACE: ci_fi_${{ github.run_id }}
+
+  cpp-fuzz-long:
+    name: libFuzzer Long Run (30 min per target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_fuzz_long_${GITHUB_RUN_ID}"
+          sudo mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler,tensors}
+          sudo chmod -R 777 "$SHM_DIR"
+
+      - name: Fuzz all 4 targets (30 min each)
+        working-directory: horus_cpp
+        run: |
+          for T in fuzz_json_service fuzz_params fuzz_topic_send_recv fuzz_service_roundtrip; do
+            echo "=== Fuzzing $T for 30 minutes ==="
+            cargo +nightly fuzz run $T -- -max_total_time=1800
+          done
+        env:
+          HORUS_NAMESPACE: ci_fuzz_long_${{ github.run_id }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-nightly
+          path: horus_cpp/fuzz/artifacts/

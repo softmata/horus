@@ -1,0 +1,57 @@
+[package]
+name = "horus_cpp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.horus_cpp]
+path = ".."
+
+[dependencies.horus_core]
+path = "../../horus_core"
+default-features = false
+
+# Prevent this from interfering with the parent workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+# ── Fuzz targets ──────────────────────────────────────────────────────────────
+
+[[bin]]
+name = "fuzz_json_service"
+path = "fuzz_targets/fuzz_json_service.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_params"
+path = "fuzz_targets/fuzz_params.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_topic_send_recv"
+path = "fuzz_targets/fuzz_topic_send_recv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_service_roundtrip"
+path = "fuzz_targets/fuzz_service_roundtrip.rs"
+test = false
+doc = false
+bench = false

@@ -15,11 +15,15 @@
 //! (JSON round-trip). This is acceptable for services (which are inherently
 //! higher-latency than topics due to the request-response pattern).
 //!
-//! ## Alternative: Monomorphized Services
+//! ## Alternative: Direct Topic<T: Pod> for Typed Services
 //!
-//! For performance-critical services, the `impl_service_ffi!` macro can
-//! generate typed FFI per service (like `impl_topic_ffi!` does for topics).
-//! This is planned for a future phase.
+//! For performance-critical services, callers can skip this JSON layer and
+//! use `Topic<T: Pod>` directly with `<svc>.request` / `<svc>.response.<id>`
+//! naming. This gives ~500ns per call (vs ~5µs JSON) at the cost of requiring
+//! the request/response types to be `bytemuck::Pod`. The existing
+//! `Publisher<T>` / `Subscriber<T>` ergonomic wrappers are sufficient — no
+//! new FFI needed. A templated C++ `horus::Service<Req, Resp>` wrapper is a
+//! natural follow-up once a first consumer arrives.
 
 use crate::types_ffi::JsonWireMessage;
 use horus_core::communication::Topic;
