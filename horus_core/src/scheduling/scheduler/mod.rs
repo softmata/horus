@@ -2180,7 +2180,6 @@ impl Scheduler {
             let mut compute_executor = None;
             let mut event_executor = None;
             let mut async_executor = None;
-            let mut gpu_executor: Option<super::gpu_executor::GpuExecutor> = None;
 
             if deterministic {
                 print_line("Deterministic mode: all nodes execute sequentially on main thread");
@@ -2221,7 +2220,6 @@ impl Scheduler {
                             &groups.compute_nodes,
                             &groups.event_nodes,
                             &groups.async_io_nodes,
-                            &groups.gpu_nodes,
                         ];
                         for nodes in all_node_groups {
                             for node in nodes {
@@ -2230,7 +2228,6 @@ impl Scheduler {
                                     crate::scheduling::types::ExecutionClass::Compute => 1,
                                     crate::scheduling::types::ExecutionClass::Event(_) => 2,
                                     crate::scheduling::types::ExecutionClass::AsyncIo => 3,
-                                    crate::scheduling::types::ExecutionClass::Gpu => 5,
                                     crate::scheduling::types::ExecutionClass::BestEffort => 4,
                                 };
                                 let rate = node.rate_hz.unwrap_or(0.0);
@@ -2255,7 +2252,7 @@ impl Scheduler {
                 // Node control map for cross-thread pause/stop commands
                 let arc_controls = Arc::new(super::types::NodeControlMap::default());
                 // Register all nodes in the control map
-                for nodes in [&self.nodes as &[_], &groups.rt_nodes, &groups.compute_nodes, &groups.event_nodes, &groups.async_io_nodes, &groups.gpu_nodes] {
+                for nodes in [&self.nodes as &[_], &groups.rt_nodes, &groups.compute_nodes, &groups.event_nodes, &groups.async_io_nodes] {
                     for node in nodes {
                         arc_controls.register(&node.name);
                     }
@@ -2390,33 +2387,6 @@ impl Scheduler {
                         shared_monitors.clone(),
                     ));
                 }
-
-                // GPU executor — runs GPU nodes on a dedicated thread with CUDA streams.
-                if !groups.gpu_nodes.is_empty() {
-                    print_line(&format!(
-                        "Starting GPU executor with {} nodes on dedicated CUDA thread",
-                        groups.gpu_nodes.len()
-                    ));
-                    match super::gpu_executor::GpuExecutor::start(
-                        groups.gpu_nodes,
-                        self.running.clone(),
-                        self.tick.period,
-                        shared_monitors.clone(),
-                    ) {
-                        Ok(executor) => {
-                            gpu_executor = Some(executor);
-                        }
-                        Err(e) => {
-                            print_line(&format!(
-                                "[GPU] Failed to start GPU executor: {}. GPU nodes will run as BestEffort.",
-                                e
-                            ));
-                            // Fallback: run GPU nodes on main thread
-                            // (nodes were already consumed by start() attempt — this path
-                            // only triggers if thread spawn fails, which is fatal anyway)
-                        }
-                    }
-                }
             }
 
             // Main tick loop
@@ -2455,10 +2425,6 @@ impl Scheduler {
             if let Some(executor) = async_executor {
                 let async_nodes = executor.stop();
                 self.nodes.extend(async_nodes);
-            }
-            if let Some(executor) = gpu_executor {
-                let gpu_nodes = executor.stop();
-                self.nodes.extend(gpu_nodes);
             }
 
             // Drop lifecycle handles in reverse order (LIFO) so the last hook

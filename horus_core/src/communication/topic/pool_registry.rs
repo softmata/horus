@@ -12,8 +12,6 @@ use lazy_static::lazy_static;
 use parking_lot::Mutex;
 
 use crate::memory::{TensorPool, TensorPoolConfig};
-#[allow(unused_imports)] // Used by get_or_create_pool_for_device (called in R2+)
-use crate::types::Device;
 
 lazy_static! {
     /// Global registry of per-topic tensor pools.
@@ -75,46 +73,6 @@ pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
 
 /// Get or create a device-specific tensor pool for a topic name.
 ///
-/// The pool key includes both the topic name and the device, so the same
-/// topic can have separate CPU and GPU pools. For CPU devices, this is
-/// equivalent to `get_or_create_pool`. For GPU devices, a device-keyed
-/// pool is created.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let gpu_pool = get_or_create_pool_for_device("camera.image", Device::cuda(0));
-/// let cpu_pool = get_or_create_pool_for_device("camera.image", Device::cpu());
-/// // These are different pools — different memory backends.
-/// ```
-pub(crate) fn get_or_create_pool_for_device(topic_name: &str, device: Device) -> Arc<TensorPool> {
-    // CPU devices use the existing pool (backward compatible).
-    if device.is_cpu() {
-        return get_or_create_pool(topic_name);
-    }
-
-    // Device-specific key: "topic_name@cuda:0"
-    let key = format!("{}@{}", topic_name, device);
-
-    let mut pools = TOPIC_POOLS.lock();
-    if let Some(pool) = pools.get(&key) {
-        return Arc::clone(pool);
-    }
-
-    // Create pool with the appropriate GPU backend.
-    let pid = pool_id_from_name(&key);
-    let config = auto_pool_config();
-    let backend = crate::gpu::auto_backend_for_device(device);
-
-    let pool = Arc::new(
-        TensorPool::with_backend(pid, config, backend)
-            .expect("failed to create GPU-backed pool for topic"),
-    );
-
-    pools.insert(key, Arc::clone(&pool));
-    pool
-}
-
 /// Default pool name for standalone type creation (Image::new, PointCloud::new, etc.).
 const GLOBAL_POOL_NAME: &str = "__horus_global__";
 

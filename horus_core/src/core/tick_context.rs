@@ -22,11 +22,6 @@ thread_local! {
     /// Fallback wall clock for when no tick context is set.
     /// Lazily initialized on first access outside of tick().
     static FALLBACK_CLOCK: WallClock = WallClock::new();
-    /// GPU stream handle for the current GPU node's tick.
-    /// Set by GpuExecutor before tick(), cleared after.
-    /// Raw pointer to a CudaStream — valid only during tick().
-    static GPU_STREAM: std::cell::Cell<*const std::ffi::c_void> =
-        const { std::cell::Cell::new(std::ptr::null()) };
 }
 
 /// Ambient context available during a node's `tick()` call.
@@ -122,32 +117,6 @@ pub fn clear_tick_context() {
             existing.budget = None;
         }
     });
-}
-
-// ─── GPU Stream Context ─────────────────────────────────────────────────────
-
-/// Set the GPU stream for the current tick (called by GpuExecutor).
-///
-/// # Safety
-/// The pointer must point to a valid CudaStream that outlives the tick() call.
-/// The GpuExecutor guarantees this by owning the streams.
-#[doc(hidden)]
-pub fn set_gpu_stream(stream_ptr: *const std::ffi::c_void) {
-    GPU_STREAM.with(|s| s.set(stream_ptr));
-}
-
-/// Clear the GPU stream after tick() (called by GpuExecutor).
-#[doc(hidden)]
-pub fn clear_gpu_stream() {
-    GPU_STREAM.with(|s| s.set(std::ptr::null()));
-}
-
-/// Read the current GPU stream pointer. Returns null outside GPU tick().
-///
-/// Used by `horus::gpu_stream()` to get the scheduler-managed CUDA stream.
-#[doc(hidden)]
-pub fn ctx_gpu_stream() -> *const std::ffi::c_void {
-    GPU_STREAM.with(|s| s.get())
 }
 
 // ─── Readers (accessible from horus crate via #[doc(hidden)]) ────────────────

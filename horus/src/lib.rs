@@ -454,9 +454,6 @@ pub mod prelude {
     // === Time API ===
     pub use crate::time::TimeStamp;
 
-    // === GPU ===
-    pub use horus_core::gpu::{cuda_available, cuda_device_count, gpu_platform, GpuPlatform};
-
     // === Macros ===
     pub use horus_core::action;
     pub use horus_core::hlog;

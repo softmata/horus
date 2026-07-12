@@ -27,10 +27,10 @@
 
 use std::sync::Arc;
 
-use crate::types::{Device, ImageDescriptor, ImageEncoding};
+use crate::types::{ImageDescriptor, ImageEncoding};
 
 use super::tensor_pool::TensorPool;
-use crate::communication::topic::pool_registry::{get_or_create_pool_for_device, global_pool};
+use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
 
 /// Image with zero-copy shared memory backing.
@@ -89,36 +89,6 @@ impl Image {
         let tensor = pool.alloc(&shape, dtype, device)?;
         let descriptor = ImageDescriptor::new(tensor, encoding);
         Ok(Self { descriptor, pool })
-    }
-
-    // === Device transfer methods ===
-
-    /// Copy this image to a GPU device, returning a new GPU-backed Image.
-    ///
-    /// If the image is already on the target device, returns a clone (refcount bump, no copy).
-    /// The target device defaults to `cuda:0`.
-    ///
-    /// Requires CUDA to be available. Returns error if GPU not present.
-    pub fn to_gpu(&self, device: Device) -> HorusResult<Self> {
-        let current_device = self.descriptor.tensor().device();
-        if current_device == device {
-            return Ok(self.clone()); // Already on target — just bump refcount
-        }
-
-        // Create a new image on the GPU pool
-        let gpu_pool = get_or_create_pool_for_device("__gpu_transfer__", device);
-        let mut gpu_img = Self::new_on(self.width(), self.height(), self.encoding(), gpu_pool)?;
-
-        // Copy data: CPU → GPU (or GPU → GPU)
-        let src_data = self.data();
-        let dst_data = gpu_img.data_mut();
-        dst_data.copy_from_slice(src_data);
-
-        // Copy metadata
-        gpu_img.set_timestamp_ns(self.timestamp_ns());
-        gpu_img.set_frame_id(self.frame_id());
-
-        Ok(gpu_img)
     }
 
     /// Copy this image to CPU, returning a new CPU-backed Image.

@@ -24,13 +24,9 @@ pub mod communication;
 #[doc(hidden)]
 pub mod core;
 #[doc(hidden)]
-pub mod dlpack;
-#[doc(hidden)]
 pub mod drivers;
 #[doc(hidden)]
 pub mod error;
-#[doc(hidden)]
-pub mod gpu;
 #[doc(hidden)]
 pub mod memory;
 #[doc(hidden)]

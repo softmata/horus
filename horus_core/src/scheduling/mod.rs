@@ -46,9 +46,6 @@ pub(crate) mod event_executor;
 // Async I/O executor for I/O-bound nodes (tokio spawn_blocking)
 pub(crate) mod async_executor;
 
-// GPU executor for nodes that launch CUDA kernels
-pub(crate) mod gpu_executor;
-
 // Advanced execution modules — individual types re-exported below
 pub(crate) mod fault_tolerance;
 

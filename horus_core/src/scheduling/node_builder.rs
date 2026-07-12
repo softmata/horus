@@ -252,28 +252,6 @@ impl NodeRegistration {
         self
     }
 
-    /// Mark this as a GPU node.
-    ///
-    /// **When to use:** Nodes that launch CUDA kernels in their tick(). The
-    /// scheduler manages a CUDA stream per GPU node. Access the stream inside
-    /// tick() via `horus::gpu_stream()`.
-    ///
-    /// **Don't use for:** CPU-bound work (use `.compute()`), or nodes that
-    /// merely read GPU-backed Images (those work fine as BestEffort/Compute).
-    ///
-    /// `.gpu()` takes precedence over `.rate()` for execution class — a GPU node
-    /// with `.rate(30.hz()).gpu()` runs on the GPU executor at 30Hz, not the RT executor.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// scheduler.add(preprocess_node).rate(30.hz()).gpu().build()?;
-    /// ```
-    pub fn gpu(mut self) -> Self {
-        self.warn_class_override("gpu");
-        self.execution_class = ExecutionClass::Gpu;
-        self
-    }
-
     /// Emit a warning if the execution class is being overridden.
     fn warn_class_override(&self, new_class: &str) {
         if !matches!(self.execution_class, ExecutionClass::BestEffort) {
@@ -288,7 +266,6 @@ impl NodeRegistration {
                     return;
                 }
                 ExecutionClass::Rt => "rt",
-                ExecutionClass::Gpu => "gpu",
                 ExecutionClass::BestEffort => unreachable!(),
             };
             log::warn!(
@@ -814,12 +791,6 @@ impl<'a> NodeBuilder<'a> {
     /// Mark this as an async I/O node (runs on tokio blocking pool).
     pub fn async_io(mut self) -> Self {
         self.config = self.config.async_io();
-        self
-    }
-
-    /// Mark this as a GPU node (runs on GPU executor with CUDA stream).
-    pub fn gpu(mut self) -> Self {
-        self.config = self.config.gpu();
         self
     }
 

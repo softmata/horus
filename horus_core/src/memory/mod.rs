@@ -25,7 +25,6 @@ pub(crate) mod platform;
 pub mod rt_allocator;
 pub(crate) mod shm_region;
 pub(crate) mod simd;
-pub(crate) mod tensor_descriptor;
 
 // Re-export platform functions needed by horus_manager
 #[doc(hidden)]

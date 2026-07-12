@@ -139,7 +139,6 @@ mod execution_class_tests {
         assert!(groups.compute_nodes.is_empty());
         assert!(groups.event_nodes.is_empty());
         assert!(groups.async_io_nodes.is_empty());
-        assert!(groups.gpu_nodes.is_empty());
         assert!(groups.main_nodes.is_empty());
     }
 
@@ -186,7 +185,6 @@ mod execution_class_tests {
         assert!(groups.rt_nodes.is_empty());
         assert!(groups.event_nodes.is_empty());
         assert!(groups.async_io_nodes.is_empty());
-        assert!(groups.gpu_nodes.is_empty());
     }
 
     // ── NodeHealthState tests ────────────────────────────────────────────
@@ -261,9 +259,6 @@ pub enum ExecutionClass {
     Event(String),
     /// Async I/O node — runs via tokio::task::spawn_blocking on a tokio runtime.
     AsyncIo,
-    /// GPU node — runs on a dedicated GPU executor thread with CUDA stream management.
-    /// Kernels launched in tick() execute asynchronously on the GPU.
-    Gpu,
     /// Best-effort — default scheduling in the main tick loop.
     #[default]
     BestEffort,
@@ -314,8 +309,6 @@ pub(crate) struct NodeGroups {
     pub event_nodes: Vec<RegisteredNode>,
     /// Nodes with ExecutionClass::AsyncIo — run via tokio spawn_blocking.
     pub async_io_nodes: Vec<RegisteredNode>,
-    /// Nodes with ExecutionClass::Gpu — scheduled on the GPU executor thread.
-    pub gpu_nodes: Vec<RegisteredNode>,
     /// Nodes with ExecutionClass::BestEffort — sequential execution on main thread.
     pub main_nodes: Vec<RegisteredNode>,
 }
@@ -332,7 +325,6 @@ pub(crate) fn group_nodes_by_class(nodes: Vec<RegisteredNode>) -> NodeGroups {
     let mut compute_nodes = Vec::new();
     let mut event_nodes = Vec::new();
     let mut async_io_nodes = Vec::new();
-    let mut gpu_nodes = Vec::new();
     let mut main_nodes = Vec::new();
 
     for node in nodes {
@@ -341,7 +333,6 @@ pub(crate) fn group_nodes_by_class(nodes: Vec<RegisteredNode>) -> NodeGroups {
             ExecutionClass::Compute => compute_nodes.push(node),
             ExecutionClass::Event(_) => event_nodes.push(node),
             ExecutionClass::AsyncIo => async_io_nodes.push(node),
-            ExecutionClass::Gpu => gpu_nodes.push(node),
             ExecutionClass::BestEffort => main_nodes.push(node),
         }
     }
@@ -351,7 +342,6 @@ pub(crate) fn group_nodes_by_class(nodes: Vec<RegisteredNode>) -> NodeGroups {
         compute_nodes,
         event_nodes,
         async_io_nodes,
-        gpu_nodes,
         main_nodes,
     }
 }

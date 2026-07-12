@@ -202,34 +202,6 @@ pub fn rng<R>(f: impl FnOnce(&mut rand::rngs::SmallRng) -> R) -> R {
     tick_context::ctx_with_rng(f)
 }
 
-/// Get the scheduler-managed CUDA stream for the current GPU node's tick.
-///
-/// Returns `None` for non-GPU nodes (BestEffort, Compute, RT, etc.).
-/// Returns `Some(raw_stream_ptr)` for GPU nodes during their tick().
-///
-/// The returned pointer is a raw `CUstream` handle that can be passed to
-/// CUDA kernel launch functions. It is valid only for the duration of tick().
-///
-/// # Example
-///
-/// ```rust,ignore
-/// fn tick(&mut self) {
-///     if let Some(stream) = horus::gpu_stream() {
-///         // Launch CUDA kernel on the scheduler-managed stream
-///         my_cuda_kernel(data_ptr, size, stream);
-///     }
-/// }
-/// ```
-#[inline]
-pub fn gpu_stream() -> Option<*const std::ffi::c_void> {
-    let ptr = tick_context::ctx_gpu_stream();
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr)
-    }
-}
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
