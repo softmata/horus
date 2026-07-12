@@ -28,10 +28,13 @@ ctor = "0.2"
 # DEFAULT FEATURES
 # ============================================================================
 # HORUS ships minimal by default - fast IPC via shared memory.
-# For multi-robot networking: horus pkg install horus-ros2
-default = ["macros", "telemetry", "blackbox", "net"]
+# Multi-robot LAN replication is opt-in: build with `--features net`
+# (or `horus pkg install horus-ros2` for the ROS2 bridge).
+default = ["macros", "telemetry", "blackbox"]
 
-# LAN replication — transparent cross-machine topic sharing
+# LAN replication — transparent cross-machine topic sharing (opt-in).
+# When enabled, replication auto-starts on scheduler.run(); disable at
+# runtime with `.network(false)` or HORUS_NET_ENABLED=false.
 net = ["dep:horus_net"]
 
 macros = ["dep:horus_macros"]
