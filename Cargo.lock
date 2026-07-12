@@ -1749,7 +1749,9 @@ dependencies = [
  "horus_core",
  "horus_cpp_macros",
  "horus_types",
+ "loom",
  "paste",
+ "proptest",
  "serde",
  "serde_json",
 ]
