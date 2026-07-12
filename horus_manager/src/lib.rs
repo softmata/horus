@@ -14,7 +14,6 @@ pub mod dispatch;
 pub mod error_wrapper;
 pub mod fingerprint;
 pub mod fs_utils;
-pub mod graph;
 pub mod lockfile;
 pub mod manifest;
 pub mod native_sync;

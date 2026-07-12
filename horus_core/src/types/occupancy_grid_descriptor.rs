@@ -4,7 +4,7 @@
 //! that flows through the ring buffer via the ~50ns Pod path. Actual grid data
 //! (i8 occupancy cells) lives in a `TensorPool`.
 //!
-//! Users should use `OccupancyGrid` from `horus_library` which wraps this with
+//! Users should use `OccupancyGrid` from `horus_robotics` which wraps this with
 //! data access and coordinate transform methods.
 
 use bytemuck::{Pod, Zeroable};

@@ -787,7 +787,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
-        // Extract a short type name for the header (e.g. "CmdVel" from "horus_library::messages::CmdVel")
+        // Extract a short type name for the header (e.g. "CmdVel" from "horus_robotics::messages::CmdVel")
         let full_type_name = std::any::type_name::<T>();
         let short_type_name = full_type_name.rsplit("::").next().unwrap_or(full_type_name);
         let final_slot_size = Self::negotiate_shm_header(

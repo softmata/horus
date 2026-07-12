@@ -301,10 +301,6 @@ pub enum MemoryError {
     #[error("mmap failed: {reason}")]
     MmapFailed { reason: String },
 
-    /// DLPack tensor import validation failed.
-    #[error("DLPack import failed: {reason}")]
-    DLPackImportFailed { reason: String },
-
     /// Tensor pool allocation offset would overflow.
     #[error("Tensor pool allocation offset overflow")]
     OffsetOverflow,
@@ -1049,8 +1045,6 @@ impl HorusError {
                 Some("Memory allocation failed. The system may be low on memory, or the requested size exceeds limits."),
             Self::Memory(MemoryError::OffsetOverflow) =>
                 Some("Tensor pool allocation overflowed. This indicates a pool sizing issue — reduce concurrent allocations or increase pool size."),
-            Self::Memory(MemoryError::DLPackImportFailed { .. }) =>
-                Some("The DLPack tensor has an invalid structure. Verify the tensor shape, dtype, and device match expectations."),
 
             // === Node ===
             Self::Node(NodeError::InitPanic { .. }) =>

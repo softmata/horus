@@ -24,8 +24,6 @@
 
 mod macros;
 #[doc(hidden)]
-pub mod network;
-#[doc(hidden)]
 pub mod pod;
 pub mod topic;
 

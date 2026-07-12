@@ -22,7 +22,6 @@
 pub(crate) mod config;
 pub mod control;
 pub(crate) mod dependency_graph;
-pub(crate) mod graph;
 pub mod registry;
 pub(crate) mod safety_monitor;
 pub(crate) mod scheduler;

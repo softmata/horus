@@ -728,7 +728,7 @@ fn generate_member_cargo(
     writeln!(cargo, "[dependencies]").unwrap();
 
     // Horus core deps as workspace = true
-    for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
+    for dep_name in &["horus", "horus_core", "horus_macros"] {
         writeln!(cargo, "{}.workspace = true", dep_name).unwrap();
     }
 

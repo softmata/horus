@@ -1,7 +1,7 @@
 //! Image encoding formats for HORUS vision types
 //!
 //! Defines the pixel format of image data. Lives in `horus_core::types`
-//! so both `horus_core` (for `Topic<Image>`) and `horus_library` (for
+//! so both `horus_core` (for `Topic<Image>`) and `horus_robotics` (for
 //! `CompressedImage`, `CameraInfo`) can reference it.
 
 use bytemuck::{Pod, Zeroable};
