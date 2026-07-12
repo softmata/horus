@@ -606,9 +606,6 @@ impl PyScheduler {
                 ExecutionClass::Rt => {
                     // RT is auto-detected from rate
                 }
-                ExecutionClass::Gpu => {
-                    config = config.gpu();
-                }
                 ExecutionClass::BestEffort => {} // default, no-op
             }
         }

@@ -10,46 +10,9 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use std::collections::HashMap;
-use std::ffi::{c_void, CString};
 use std::sync::Arc;
 
 use crate::dlpack_utils;
-
-/// RAII guard that calls the DLPack deleter when dropped.
-///
-/// Used in `from_dlpack` to ensure the `DLManagedTensor` received from Python
-/// is always freed, even when an error occurs after the PyCapsule has been
-/// renamed to `"used_dltensor"`.  At that point Python's GC (via
-/// `dlpack_capsule_destructor`) will no longer call the deleter — we own the
-/// cleanup responsibility.
-///
-/// Disarm the guard (via [`DLPackDeleterGuard::disarm`]) immediately before
-/// the explicit deleter call at the end of the success path so the deleter
-/// is not invoked twice.
-struct DLPackDeleterGuard(*mut horus_core::dlpack::DLManagedTensor);
-
-impl DLPackDeleterGuard {
-    /// Prevent the destructor from calling the deleter.
-    /// Call this after the deleter has already been invoked explicitly.
-    fn disarm(&mut self) {
-        self.0 = std::ptr::null_mut();
-    }
-}
-
-impl Drop for DLPackDeleterGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: pointer is valid; we have exclusive cleanup responsibility
-            // (capsule has been renamed to "used_dltensor" so Python's GC will
-            // not invoke the deleter via dlpack_capsule_destructor).
-            unsafe {
-                if let Some(deleter) = (*self.0).deleter {
-                    deleter(self.0);
-                }
-            }
-        }
-    }
-}
 
 // Global pool registry - allows multiple pools to be accessed by ID
 lazy_static::lazy_static! {
@@ -443,194 +406,6 @@ impl PyTensorHandle {
         dict.set_item("version", 3)?;
 
         Ok(dict.into())
-    }
-
-    /// DLPack export - returns a PyCapsule containing DLManagedTensor
-    ///
-    /// This enables: torch.from_dlpack(tensor_handle), np.from_dlpack(tensor_handle)
-    ///
-    /// Creates a real PyCapsule wrapping a C-ABI DLManagedTensor via horus_core::dlpack.
-    /// No numpy/torch dependency required for export.
-    ///
-    /// Args:
-    ///     stream: Optional CUDA stream for synchronization (ignored for CPU tensors)
-    ///
-    /// Returns:
-    ///     PyCapsule containing DLManagedTensor
-    #[pyo3(signature = (stream=None))]
-    fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
-
-        let tensor = handle.tensor();
-        let _ = stream;
-
-        let shape: Vec<i64> = handle.shape().iter().map(|&x| x as i64).collect();
-        let elem_size = tensor.dtype.element_size() as i64;
-        let strides: Vec<i64> = handle
-            .strides()
-            .iter()
-            .map(|&x| (x as i64) / elem_size)
-            .collect();
-
-        // Use handle.data_ptr() for all backends — pool.data_ptr() returns the
-        // correct pointer for mmap (CPU), cudaMallocManaged (unified/Jetson),
-        // and cudaMallocHost (pinned). No special CUDA branch needed.
-        let data_ptr = handle.data_ptr() as *mut c_void;
-
-        dlpack_utils::make_dlpack_capsule(
-            py,
-            data_ptr,
-            &shape,
-            &strides,
-            tensor.dtype,
-            tensor.device(),
-        )
-    }
-
-    /// DLPack device info - returns (device_type, device_id)
-    ///
-    /// This enables frameworks to check device compatibility before calling __dlpack__.
-    ///
-    /// Returns:
-    ///     Tuple of (device_type: int, device_id: int)
-    ///     device_type: 1=CPU, 2=CUDA
-    fn __dlpack_device__(&self) -> PyResult<(i32, i32)> {
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
-
-        let device = handle.tensor().device();
-        Ok((device.to_dlpack_device_type(), device.to_dlpack_device_id()))
-    }
-
-    /// Import a DLPack tensor
-    ///
-    /// Creates a TensorHandle from any object that implements __dlpack__.
-    /// Parses the PyCapsule directly via horus_core::dlpack — no numpy/torch required.
-    ///
-    /// Args:
-    ///     obj: Object with __dlpack__ method (PyTorch tensor, JAX array, etc.)
-    ///
-    /// Returns:
-    ///     TensorHandle wrapping a copy of the DLPack tensor data
-    #[staticmethod]
-    fn from_dlpack(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Self> {
-        // Get capsule from __dlpack__ — try without args first (PyTorch 2.x),
-        // fall back to __dlpack__(stream=None) (older DLPack spec)
-        let capsule_obj = obj
-            .call_method0(py, "__dlpack__")
-            .or_else(|_| obj.call_method1(py, "__dlpack__", (py.None(),)))?;
-
-        // Extract DLManagedTensor* from PyCapsule
-        let capsule_name = CString::new("dltensor").expect("static str has no NUL");
-        // SAFETY: capsule_obj is the return value of __dlpack__(), which per the
-        // DLPack spec must be a PyCapsule named "dltensor" containing a valid
-        // DLManagedTensor pointer. capsule_name is a valid null-terminated C string.
-        // If the capsule is invalid or already consumed, GetPointer returns null
-        // which we check immediately below.
-        let managed_ptr =
-            unsafe { pyo3::ffi::PyCapsule_GetPointer(capsule_obj.as_ptr(), capsule_name.as_ptr()) };
-        if managed_ptr.is_null() {
-            return Err(PyRuntimeError::new_err(
-                "Invalid DLPack capsule (not a dltensor or already consumed)",
-            ));
-        }
-
-        // Parse tensor metadata via horus_core
-        // SAFETY: managed_ptr was obtained from PyCapsule_GetPointer above and
-        // verified non-null. Per the DLPack spec it points to a valid
-        // DLManagedTensor whose dl_tensor field contains valid shape/strides
-        // pointers and a valid data pointer. The capsule has not been consumed
-        // yet (name is still "dltensor"), so the producer has not freed it.
-        let descriptor = unsafe {
-            horus_core::dlpack::from_dlpack(
-                managed_ptr as *const horus_core::dlpack::DLManagedTensor,
-            )
-        }
-        .map_err(|e| PyRuntimeError::new_err(format!("DLPack import failed: {}", e)))?;
-
-        // Rename capsule to "used_dltensor" (DLPack spec: prevents double-consume).
-        //
-        // After this point Python's GC (dlpack_capsule_destructor) will NOT call
-        // the deleter — we own the cleanup responsibility.  Arm a RAII guard so
-        // that any `?` error return between here and the explicit deleter call at
-        // the end still invokes the deleter, preventing a memory leak.
-        let used_name = CString::new("used_dltensor").expect("static str has no NUL");
-        // SAFETY: capsule_obj is a valid PyCapsule (verified by successful
-        // PyCapsule_GetPointer above). used_name is a valid null-terminated
-        // C string. We forget used_name immediately after so that the CString
-        // is not dropped while the PyCapsule still references its pointer.
-        // This rename prevents double-consumption per the DLPack protocol.
-        unsafe {
-            pyo3::ffi::PyCapsule_SetName(capsule_obj.as_ptr(), used_name.as_ptr());
-        }
-        std::mem::forget(used_name);
-        let managed_dlpack = managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
-        let mut deleter_guard = DLPackDeleterGuard(managed_dlpack);
-
-        // Allocate HORUS TensorHandle and copy data from source.
-        // GPU sources are handled based on hardware capability:
-        //   - Jetson (unified): allocate with Device::cuda — managed memory is CPU+GPU accessible
-        //   - Discrete GPU: allocate with Device::cpu in pinned pool — fast DMA staging
-        //   - No GPU: allocate with Device::cpu in mmap pool
-        let is_cuda_source = descriptor.device.is_cuda();
-        let src_ptr = descriptor.data_ptr as *const u8;
-        let copy_len = descriptor.size_bytes as usize;
-
-        if is_cuda_source {
-            // Guard drops here and calls the deleter — no leak.
-            return Err(PyRuntimeError::new_err(
-                "Cannot import CUDA DLPack tensor: CUDA support is not available",
-            ));
-        }
-
-        // CPU source — direct memory copy into default pool
-        // Any `?` below triggers the guard, which calls the deleter.
-        let pool = get_or_create_pool(1, None)?;
-        let handle = TensorHandle::alloc(
-            Arc::clone(&pool),
-            &descriptor.shape,
-            descriptor.dtype,
-            horus_core::types::Device::cpu(),
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
-
-        let dst_ptr = handle.data_ptr();
-        // SAFETY: src_ptr points to the DLPack tensor's data buffer which is
-        // valid for at least copy_len bytes (derived from descriptor.size_bytes).
-        // dst_ptr points to a freshly allocated TensorPool slot with the same
-        // shape and dtype, so it has at least copy_len bytes of writable space.
-        // The two buffers do not overlap (src is from an external framework's
-        // allocation, dst is from our pool). Both pointers are properly aligned
-        // for byte-level copy.
-        unsafe {
-            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
-        }
-
-        // Disarm the guard before calling the deleter explicitly — prevents a
-        // double-free if the guard's destructor runs after this point.
-        deleter_guard.disarm();
-
-        // Call deleter on the original DLManagedTensor (we're done with the data).
-        // SAFETY: managed_dlpack is the valid DLManagedTensor pointer obtained
-        // from the PyCapsule. The data has been fully copied into our pool, so
-        // we no longer need the source buffer. The guard has been disarmed, so
-        // this is the sole invocation of the deleter — no double-free risk.
-        // The deleter was set by the DLPack producer and is responsible for
-        // freeing the DLManagedTensor and its associated resources.
-        unsafe {
-            if let Some(deleter) = (*managed_dlpack).deleter {
-                deleter(managed_dlpack);
-            }
-        }
-
-        Ok(Self {
-            handle: Some(handle),
-        })
     }
 
     /// Get tensor shape
@@ -1162,18 +937,6 @@ impl PyTensorHandle {
         np_arr.call_method0("tolist")
     }
 
-    /// Create from a PyTorch tensor (one copy into shared memory).
-    #[staticmethod]
-    fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Self> {
-        // Use DLPack if available, fall back to numpy
-        if tensor.hasattr("__dlpack__")? {
-            Self::from_dlpack(py, tensor.clone().unbind())
-        } else {
-            let arr = tensor.call_method0("numpy")?;
-            Self::from_numpy(py, &arr)
-        }
-    }
-
     /// Release the tensor handle explicitly
     ///
     /// Normally handles are released when garbage collected, but this allows
@@ -1200,8 +963,8 @@ impl PyTensorHandle {
 
 // === Helper functions ===
 
-// All helper functions (parse_dtype, dtype_to_str, parse_device, device_to_string,
-// dlpack_capsule_destructor) are in crate::dlpack_utils to avoid duplication.
+// All helper functions (parse_dtype, dtype_to_str, parse_device, device_to_string)
+// are in crate::dlpack_utils to avoid duplication.
 use dlpack_utils::{device_to_string, dtype_to_str, parse_device, parse_dtype};
 
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
@@ -1349,75 +1112,5 @@ impl PyTensorHandle {
         Ok(Self {
             handle: Some(handle),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Guard must call the DLPack deleter when dropped without `disarm()`.
-    ///
-    /// Simulates the error path in `from_dlpack` where pool exhaustion or
-    /// allocation failure causes an early return after the capsule has been
-    /// renamed — verifying that the guard prevents the DLManagedTensor leak.
-    ///
-    /// We verify correctness by checking there is no crash or double-free:
-    /// the `data` Vec below keeps the data pointer alive, so a valid deleter
-    /// call should complete without segfault.  Under MIRI, this also catches
-    /// use-after-free if the deleter accesses already-freed memory.
-    #[test]
-    fn test_dlpack_deleter_guard_calls_deleter_on_drop() {
-        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-        let managed = horus_core::dlpack::to_dlpack(
-            data.as_ptr() as *mut std::ffi::c_void,
-            &[4i64],
-            &[1i64],
-            horus_core::types::TensorDtype::F32,
-            horus_core::types::Device::cpu(),
-        );
-        let managed_ptr = Box::into_raw(managed);
-
-        {
-            let _guard = DLPackDeleterGuard(managed_ptr);
-            // Simulate error path: drop guard without calling disarm().
-            // Guard drops here and calls the deleter — no leak, no crash.
-        }
-        // Reaching here means the deleter ran without crash.
-        // `data` Vec is still alive so its memory was not invalidly accessed.
-    }
-
-    /// Guard must NOT call the deleter after `disarm()`.
-    ///
-    /// Simulates the success path where the caller explicitly invokes the
-    /// deleter and then disarms the guard to prevent a double-free.
-    #[test]
-    fn test_dlpack_deleter_guard_disarmed_does_not_double_free() {
-        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-        let managed = horus_core::dlpack::to_dlpack(
-            data.as_ptr() as *mut std::ffi::c_void,
-            &[4i64],
-            &[1i64],
-            horus_core::types::TensorDtype::F32,
-            horus_core::types::Device::cpu(),
-        );
-        let managed_ptr = Box::into_raw(managed);
-
-        {
-            let mut guard = DLPackDeleterGuard(managed_ptr);
-
-            // Explicitly call the deleter (success path).
-            // SAFETY: managed_ptr is valid and not yet freed.
-            unsafe {
-                if let Some(deleter) = (*managed_ptr).deleter {
-                    deleter(managed_ptr);
-                }
-            }
-
-            // Disarm the guard — must NOT call deleter again on drop.
-            guard.disarm();
-            // guard drops here without calling deleter.
-        }
-        // No crash or MIRI double-free = disarm correctly suppressed second call.
     }
 }

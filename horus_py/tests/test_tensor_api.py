@@ -1,8 +1,8 @@
 """
-Battle tests for horus.Tensor — Pythonic API, NumPy interop, and DLPack protocol.
+Battle tests for horus.Tensor — Pythonic API and NumPy interop.
 
 Tests every public method on horus.Tensor:
-  - Constructors: Tensor(), zeros(), empty(), from_numpy(), from_dlpack()
+  - Constructors: Tensor(), zeros(), empty(), from_numpy()
   - Properties: shape, dtype, nbytes, numel
   - Indexing: __getitem__, __setitem__, __len__
   - Shape ops: reshape, flatten, squeeze, unsqueeze, view, slice, T
@@ -10,10 +10,10 @@ Tests every public method on horus.Tensor:
   - Comparisons: ==, <, >, <=, >=
   - Reductions: sum, mean, max, min
   - Type conversion: astype, float, half, int, byte
-  - Interop: numpy(), tolist(), __array_interface__, __dlpack__
+  - Interop: numpy(), tolist(), __array_interface__
   - Zero-copy verification: data pointer matches between numpy and SHM
 
-Requires: numpy >= 1.22 (for np.from_dlpack)
+Requires: numpy >= 1.22
 """
 
 import gc
@@ -166,13 +166,6 @@ class TestZeroCopy:
         arr[0] = 42.0
         arr2 = t.numpy()
         assert arr2[0] == 42.0, "numpy view should share memory with tensor"
-
-    def test_from_dlpack_numpy(self):
-        """np.from_dlpack(tensor) must produce a usable array."""
-        import horus
-        t = horus.Tensor.from_numpy(np.arange(10, dtype=np.float32))
-        arr = np.from_dlpack(t)
-        np.testing.assert_array_equal(arr, np.arange(10, dtype=np.float32))
 
     def test_np_asarray(self):
         """np.asarray(tensor) must work via __array_interface__."""
@@ -569,40 +562,6 @@ class TestNumpyWorkflows:
         arr = t.numpy()
         arr[:] = 3.14
         assert arr[1000, 500] == pytest.approx(3.14)
-
-
-# ============================================================================
-# DLPack protocol
-# ============================================================================
-
-
-class TestDLPack:
-    def test_dlpack_to_numpy(self):
-        """np.from_dlpack(tensor) roundtrip."""
-        import horus
-        src = np.arange(24, dtype=np.float32).reshape(4, 6)
-        t = horus.Tensor.from_numpy(src)
-        recovered = np.from_dlpack(t)
-        np.testing.assert_array_equal(recovered, src)
-
-    def test_dlpack_device(self):
-        """__dlpack_device__ returns (CPU, 0)."""
-        import horus
-        t = horus.Tensor([10], dtype="float32")
-        device_type, device_id = t.__dlpack_device__()
-        assert device_type == 1  # CPU
-        assert device_id == 0
-
-    def test_dlpack_roundtrip_preserves_dtype(self):
-        """DLPack preserves dtype through roundtrip."""
-        import horus
-        for dtype in ["float32", "float64", "int32", "uint8"]:
-            np_dtype = {"float32": np.float32, "float64": np.float64,
-                        "int32": np.int32, "uint8": np.uint8}[dtype]
-            src = np.ones((4,), dtype=np_dtype)
-            t = horus.Tensor.from_numpy(src)
-            arr = np.from_dlpack(t)
-            assert arr.dtype == np_dtype, f"dtype mismatch for {dtype}"
 
 
 # ============================================================================

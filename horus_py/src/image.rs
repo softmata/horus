@@ -1,11 +1,11 @@
 //! Python bindings for HORUS Image type
 //!
-//! Provides `Image` class that hides DLPack, TensorPool, and shared memory
-//! internals. Users interact with numpy/torch directly:
+//! Provides `Image` class that hides TensorPool and shared memory
+//! internals. Users interact with numpy directly:
 //!
 //! ```python
 //! img = Image.from_numpy(camera_frame)
-//! t = img.to_torch()  # zero-copy, no DLPack visible
+//! arr = img.to_numpy()  # zero-copy
 //! ```
 
 use horus_core::memory::Image;
@@ -76,12 +76,11 @@ fn infer_encoding(shape: &[u64], dtype_str: &str) -> PyResult<ImageEncoding> {
     }
 }
 
-/// HORUS Image — zero-copy shared memory image with ML framework interop.
+/// HORUS Image — zero-copy shared memory image with numpy interop.
 ///
 /// Examples:
 ///     img = Image(480, 640, "rgb8")
 ///     img = Image.from_numpy(arr)
-///     t = img.to_torch()   # zero-copy
 ///     arr = img.to_numpy()  # zero-copy
 #[pyclass(name = "Image")]
 pub struct PyImage {
@@ -170,18 +169,6 @@ impl PyImage {
         Ok(Self { inner: img })
     }
 
-    /// Create an Image from a PyTorch tensor (CPU only).
-    #[staticmethod]
-    #[pyo3(signature = (tensor, encoding=None))]
-    fn from_torch(
-        py: Python<'_>,
-        tensor: &Bound<'_, PyAny>,
-        encoding: Option<&str>,
-    ) -> PyResult<Self> {
-        let arr = dlpack_utils::torch_to_numpy(tensor)?;
-        Self::from_numpy(py, &arr, encoding)
-    }
-
     /// Create an Image from raw bytes.
     #[staticmethod]
     #[pyo3(signature = (data, height, width, encoding="rgb8"))]
@@ -215,31 +202,6 @@ impl PyImage {
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let is_cuda = slf.borrow().inner.is_cuda();
         dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "image")
-    }
-
-    /// Convert to torch tensor (zero-copy via DLPack).
-    fn to_torch<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        dlpack_utils::to_torch_impl(slf.as_any(), py)
-    }
-
-    /// Convert to JAX array (zero-copy via DLPack).
-    fn to_jax<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        dlpack_utils::to_jax_impl(slf.as_any(), py)
-    }
-
-    // === DLPack Protocol ===
-
-    #[pyo3(signature = (stream=None))]
-    fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
-        let _ = stream;
-        let tensor = self.inner.descriptor().tensor();
-        let (data_ptr, shape, strides, dtype, device) =
-            dlpack_utils::prepare_dlpack_args(tensor, self.inner.pool());
-        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, dtype, device)
-    }
-
-    fn __dlpack_device__(&self) -> (i32, i32) {
-        dlpack_utils::dlpack_device_tuple(self.inner.descriptor().tensor())
     }
 
     // === Numpy Array Interface ===
@@ -389,31 +351,6 @@ impl PyImage {
         format!("{}", d)
     }
 
-    /// Copy image to GPU, returning a new GPU-backed Image.
-    ///
-    /// If already on the target device, returns a clone (no copy).
-    /// Default device: "cuda:0".
-    ///
-    /// Example:
-    ///     gpu_img = img.to_gpu()       # copy to cuda:0
-    ///     gpu_img = img.to_gpu("cuda:1")  # copy to cuda:1
-    #[pyo3(signature = (device=None))]
-    fn to_gpu(&self, device: Option<&str>) -> PyResult<Self> {
-        let dev = match device {
-            Some(s) => horus_core::types::Device::parse(s).ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "Invalid device: '{}'. Use 'cuda:0', 'cuda:1', etc.",
-                    s
-                ))
-            })?,
-            None => horus_core::types::Device::cuda(0),
-        };
-        self.inner
-            .to_gpu(dev)
-            .map(|img| PyImage { inner: img })
-            .map_err(|e| PyRuntimeError::new_err(format!("to_gpu failed: {}", e)))
-    }
-
     /// Copy image to CPU, returning a new CPU-backed Image.
     ///
     /// If already on CPU, returns a clone (no copy).
@@ -432,14 +369,14 @@ impl PyImage {
     ///
     /// The returned Tensor shares the same shared memory — modifications
     /// to the Tensor are visible in the Image and vice versa. All Tensor
-    /// operations (indexing, arithmetic, reshape, DLPack) work on the result.
+    /// operations (indexing, arithmetic, reshape) work on the result.
     ///
     /// Example:
     ///     img = horus.Image(480, 640, "rgb8")
     ///     t = img.as_tensor()       # zero-copy view
     ///     t[0:10] += 128            # modifies image pixels
     ///     features = t.flatten()    # Tensor ops work
-    ///     pt = torch.from_dlpack(t) # PyTorch interop
+    ///     arr = t.numpy()           # numpy interop
     fn as_tensor(&self) -> PyResult<PyTensorHandle> {
         let tensor = *self.inner.descriptor().tensor();
         let pool = std::sync::Arc::clone(self.inner.pool());

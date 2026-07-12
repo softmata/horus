@@ -102,10 +102,6 @@ try:
         time_tick as _time_tick,
         time_budget_remaining as _time_budget_remaining,
         time_rng_float as _time_rng_float,
-        # GPU detection
-        cuda_available,
-        cuda_device_count,
-        gpu_platform,
         # Nanosecond timestamp for TF queries
         get_timestamp_ns,
         # Domain types — clean API hiding DLPack/TensorPool internals

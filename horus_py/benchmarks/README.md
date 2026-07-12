@@ -48,7 +48,6 @@ python3 benchmarks/research_bench_python.py --duration 10 --csv results.csv --js
 | PointCloud 10K pts | 2.8μs | — | — |
 | PointCloud 100K pts | 2.8μs | — | — |
 | DepthImage 640×480 | 2.8μs | — | — |
-| np.from_dlpack() | 979ns | — | — |
 
 ### Node Tick Overhead
 

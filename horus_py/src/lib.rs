@@ -92,11 +92,6 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(time_budget_remaining, m)?)?;
     m.add_function(wrap_pyfunction!(time_rng_float, m)?)?;
 
-    // GPU detection API
-    m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
-    m.add_function(wrap_pyfunction!(cuda_device_count, m)?)?;
-    m.add_function(wrap_pyfunction!(gpu_platform, m)?)?;
-
     Ok(())
 }
 
@@ -159,32 +154,4 @@ fn time_rng_float() -> f64 {
         use rand::Rng;
         rng.random::<f64>()
     })
-}
-
-// ── GPU Detection API ───────────────────────────────────────────────────────
-
-/// Check if CUDA GPU support is available.
-///
-/// Returns True if the CUDA driver is installed and a GPU is detected.
-/// Does NOT require the CUDA toolkit — only the GPU driver.
-#[pyfunction]
-fn cuda_available() -> bool {
-    horus_core::gpu::cuda_available()
-}
-
-/// Get the number of CUDA-capable GPU devices.
-///
-/// Returns 0 if CUDA is not available.
-#[pyfunction]
-fn cuda_device_count() -> usize {
-    horus_core::gpu::cuda_device_count()
-}
-
-/// Get the detected GPU platform as a string.
-///
-/// Returns None on CPU-only machines. On GPU machines, returns a description
-/// like "NVIDIA GeForce RTX 4090 (sm_89, 24.0 GB)".
-#[pyfunction]
-fn gpu_platform() -> Option<String> {
-    horus_core::gpu::gpu_platform().map(|p| p.to_string())
 }

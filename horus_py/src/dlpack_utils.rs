@@ -1,12 +1,10 @@
-//! Shared DLPack and dtype utilities for all Python binding types.
+//! Shared dtype/device/numpy conversion utilities.
 //!
 //! Centralizes code that was duplicated across tensor.rs, image.rs,
 //! pointcloud.rs, and depth_image.rs.
 
-use std::ffi::{c_void, CStr, CString};
-
 use horus_core::types::{Device, TensorDtype};
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 // === Dtype helpers ===
@@ -70,21 +68,9 @@ pub fn device_to_string(device: Device) -> String {
     device.to_string()
 }
 
-// === ML framework conversion helpers ===
+// === Numpy conversion ===
 
-/// Shared `to_torch` implementation: calls `torch.from_dlpack(obj)`.
-pub fn to_torch_impl<'py>(slf: &Bound<'py, PyAny>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-    let torch = py.import("torch")?;
-    torch.call_method1("from_dlpack", (slf,))
-}
-
-/// Shared `to_jax` implementation: calls `jax.dlpack.from_dlpack(obj)`.
-pub fn to_jax_impl<'py>(slf: &Bound<'py, PyAny>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-    let jax_dlpack = py.import("jax.dlpack")?;
-    jax_dlpack.call_method1("from_dlpack", (slf,))
-}
-
-/// Shared `to_numpy` implementation: calls `np.asarray(obj)` after CUDA check.
+/// Shared `to_numpy` implementation: calls `np.asarray(obj)` after CPU check.
 pub fn to_numpy_impl<'py>(
     slf: &Bound<'py, PyAny>,
     py: Python<'py>,
@@ -93,148 +79,10 @@ pub fn to_numpy_impl<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     if is_cuda {
         return Err(PyTypeError::new_err(format!(
-            "Cannot create numpy array from CUDA {}. Use .to_torch() for GPU data.",
+            "Cannot create a numpy array from a non-CPU {}.",
             type_name,
         )));
     }
     let np = py.import("numpy")?;
     np.call_method1("asarray", (slf,))
-}
-
-/// Shared `from_torch` helper: verifies CPU, calls `.numpy()`, returns the numpy array.
-pub fn torch_to_numpy<'py>(tensor: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let device = tensor.getattr("device")?;
-    let device_type: String = device.getattr("type")?.extract()?;
-    if device_type != "cpu" {
-        return Err(PyValueError::new_err(
-            "Tensor must be on CPU. Call tensor.cpu() first.",
-        ));
-    }
-    tensor.call_method0("numpy")
-}
-
-// === DLPack helpers ===
-
-/// Prepare DLPack arguments from a Tensor + TensorPool.
-///
-/// Returns (data_ptr, shape, strides_in_elements, dtype, device) — everything
-/// needed by `make_dlpack_capsule`.
-pub fn prepare_dlpack_args(
-    tensor: &horus_core::types::Tensor,
-    pool: &horus_core::memory::TensorPool,
-) -> (*mut c_void, Vec<i64>, Vec<i64>, TensorDtype, Device) {
-    let shape: Vec<i64> = tensor.shape().iter().map(|&x| x as i64).collect();
-    let elem_size = tensor.dtype.element_size() as i64;
-    let strides: Vec<i64> = tensor
-        .strides()
-        .iter()
-        .map(|&x| (x as i64) / elem_size)
-        .collect();
-
-    let data_ptr = pool.data_ptr(tensor) as *mut c_void;
-
-    (data_ptr, shape, strides, tensor.dtype, tensor.device())
-}
-
-/// Shared `__dlpack_device__` implementation for types wrapping a Tensor.
-pub fn dlpack_device_tuple(tensor: &horus_core::types::Tensor) -> (i32, i32) {
-    let device = tensor.device();
-    (device.to_dlpack_device_type(), device.to_dlpack_device_id())
-}
-
-/// Create a DLPack PyCapsule from a HORUS tensor's raw components.
-///
-/// Shared implementation for `__dlpack__` across Image, PointCloud, DepthImage,
-/// and TensorHandle.
-pub fn make_dlpack_capsule(
-    py: Python<'_>,
-    data_ptr: *mut c_void,
-    shape: &[i64],
-    strides_elements: &[i64],
-    dtype: TensorDtype,
-    device: Device,
-) -> PyResult<Py<PyAny>> {
-    let managed = horus_core::dlpack::to_dlpack(data_ptr, shape, strides_elements, dtype, device);
-    let managed_ptr = Box::into_raw(managed);
-
-    let capsule_name = CString::new("dltensor").expect("static str has no NUL");
-    // SAFETY: managed_ptr is a valid heap allocation from Box::into_raw above.
-    // PyCapsule_New takes ownership of the pointer and will call
-    // dlpack_capsule_destructor when the capsule is garbage collected.
-    // capsule_name is forgotten to prevent double-free (PyCapsule holds the C string).
-    // If PyCapsule_New fails (returns null), we manually call the deleter to
-    // prevent a memory leak.
-    unsafe {
-        let capsule = pyo3::ffi::PyCapsule_New(
-            managed_ptr as *mut c_void,
-            capsule_name.as_ptr(),
-            Some(dlpack_capsule_destructor),
-        );
-        std::mem::forget(capsule_name);
-        if capsule.is_null() {
-            // SAFETY: managed_ptr is still valid (PyCapsule_New failed, so
-            // it did not take ownership). We call the deleter to clean up.
-            let managed = &mut *managed_ptr;
-            if let Some(deleter) = managed.deleter {
-                deleter(managed_ptr);
-            }
-            return Err(PyRuntimeError::new_err("Failed to create DLPack capsule"));
-        }
-        Ok(Bound::from_owned_ptr(py, capsule).unbind())
-    }
-}
-
-/// PyCapsule destructor for unclaimed DLPack tensors.
-///
-/// Per DLPack spec: if capsule name is still "dltensor" at destruction time,
-/// the consumer never claimed it, so we must call the deleter.
-///
-/// # Double-free safety
-///
-/// Python's GC can invoke a PyCapsule destructor more than once in certain
-/// reference-cycle scenarios.  To prevent a double-free we **null the capsule
-/// pointer before calling the deleter** (via `PyCapsule_SetPointer`).  Any
-/// subsequent invocation finds a null pointer and returns immediately.
-///
-/// # Safety
-///
-/// Called by Python's PyCapsule machinery. `capsule` must be a valid PyCapsule
-/// created by `make_dlpack_capsule` containing a `DLManagedTensor` pointer.
-pub unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    // SAFETY: capsule is a valid PyCapsule object provided by Python runtime.
-    let name_ptr = pyo3::ffi::PyCapsule_GetName(capsule);
-    if name_ptr.is_null() {
-        return;
-    }
-    // SAFETY: name_ptr is a valid null-terminated C string set by PyCapsule_New.
-    let name = CStr::from_ptr(name_ptr);
-    if name.to_bytes() == b"dltensor" {
-        // SAFETY: capsule contains a DLManagedTensor pointer set by PyCapsule_New.
-        let ptr = pyo3::ffi::PyCapsule_GetPointer(capsule, name_ptr);
-        if !ptr.is_null() {
-            // ── Double-free prevention ────────────────────────────────────
-            // Attempt to null out the capsule pointer BEFORE calling the
-            // deleter.  If the GC triggers this destructor a second time
-            // (e.g. after a reference cycle is broken), the second call
-            // finds null and returns without touching freed memory.
-            //
-            // CPython's `PyCapsule_SetPointer` rejects NULL with a
-            // `ValueError` (it uses NULL as an internal sentinel).  We
-            // must therefore clear any exception it sets so that the error
-            // does not leak into the surrounding Python error state and
-            // corrupt the next Python operation.  We already captured `ptr`
-            // above, so cleanup proceeds regardless of whether the null-out
-            // succeeded.
-            if pyo3::ffi::PyCapsule_SetPointer(capsule, std::ptr::null_mut()) != 0 {
-                pyo3::ffi::PyErr_Clear();
-            }
-
-            // SAFETY: ptr is the DLManagedTensor* we stored in the capsule.
-            // Calling the deleter transfers ownership back and frees resources.
-            let managed = ptr as *mut horus_core::dlpack::DLManagedTensor;
-            if let Some(deleter) = (*managed).deleter {
-                deleter(managed);
-            }
-        }
-    }
 }

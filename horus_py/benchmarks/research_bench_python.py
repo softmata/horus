@@ -257,16 +257,6 @@ def main():
         name, samples, stats = sustained_bench("np.copy(640x480) baseline", setup_image, measure_np_copy, duration)
         all_results.append(("image", "np_copy_640x480", stats))
 
-        try:
-            def measure_dlpack(ctx):
-                img, _ = ctx
-                np.from_dlpack(img)
-
-            name, samples, stats = sustained_bench("np.from_dlpack(640x480)", setup_image, measure_dlpack, duration)
-            all_results.append(("image", "dlpack_640x480", stats))
-        except Exception:
-            print("  SKIP — DLPack not supported")
-
     except ImportError as e:
         print(f"  SKIP — numpy or horus.Image not available: {e}")
 

@@ -35,14 +35,14 @@ fn infer_depth_dtype(dtype_name: &str) -> PyResult<TensorDtype> {
     }
 }
 
-/// HORUS DepthImage — zero-copy shared memory depth image with ML framework interop.
+/// HORUS DepthImage — zero-copy shared memory depth image with numpy interop.
 ///
 /// Examples:
 ///     depth = DepthImage(480, 640)               # float32 meters
 ///     depth = DepthImage(480, 640, "uint16")      # uint16 millimeters
 ///     depth = DepthImage.from_numpy(arr)
 ///     d = depth.get_depth(320, 240)               # meters
-///     t = depth.to_torch()                        # zero-copy
+///     arr = depth.to_numpy()                      # zero-copy
 #[pyclass(name = "DepthImage")]
 pub struct PyDepthImage {
     inner: DepthImage,
@@ -125,41 +125,11 @@ impl PyDepthImage {
         Ok(Self { inner: depth })
     }
 
-    /// Create a DepthImage from a PyTorch tensor (CPU only).
-    #[staticmethod]
-    fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let arr = dlpack_utils::torch_to_numpy(tensor)?;
-        Self::from_numpy(py, &arr)
-    }
-
     // === ML Framework Conversions ===
 
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let is_cuda = slf.borrow().inner.is_cuda();
         dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "depth image")
-    }
-
-    fn to_torch<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        dlpack_utils::to_torch_impl(slf.as_any(), py)
-    }
-
-    fn to_jax<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        dlpack_utils::to_jax_impl(slf.as_any(), py)
-    }
-
-    // === DLPack Protocol ===
-
-    #[pyo3(signature = (stream=None))]
-    fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
-        let _ = stream;
-        let tensor = self.inner.descriptor().tensor();
-        let (data_ptr, shape, strides, dtype, device) =
-            dlpack_utils::prepare_dlpack_args(tensor, self.inner.pool());
-        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, dtype, device)
-    }
-
-    fn __dlpack_device__(&self) -> (i32, i32) {
-        dlpack_utils::dlpack_device_tuple(self.inner.descriptor().tensor())
     }
 
     // === Numpy Array Interface ===

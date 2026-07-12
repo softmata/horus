@@ -10,13 +10,13 @@ use pyo3::types::{PyBytes, PyDict, PyTuple};
 use crate::dlpack_utils;
 use crate::tensor::PyTensorHandle;
 
-/// HORUS PointCloud — zero-copy shared memory point cloud with ML framework interop.
+/// HORUS PointCloud — zero-copy shared memory point cloud with numpy interop.
 ///
 /// Examples:
 ///     pc = PointCloud(1000)              # 1000 XYZ points (float32)
 ///     pc = PointCloud(1000, fields=4)    # 1000 XYZI points
 ///     pc = PointCloud.from_numpy(arr)    # from (N, 3) or (N, 4) array
-///     t = pc.to_torch()                  # zero-copy
+///     arr = pc.to_numpy()                # zero-copy
 #[pyclass(name = "PointCloud")]
 pub struct PyPointCloud {
     inner: PointCloud,
@@ -90,41 +90,11 @@ impl PyPointCloud {
         Ok(Self { inner: pc })
     }
 
-    /// Create a PointCloud from a PyTorch tensor (CPU only).
-    #[staticmethod]
-    fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let arr = dlpack_utils::torch_to_numpy(tensor)?;
-        Self::from_numpy(py, &arr)
-    }
-
     // === ML Framework Conversions ===
 
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let is_cuda = slf.borrow().inner.is_cuda();
         dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "point cloud")
-    }
-
-    fn to_torch<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        dlpack_utils::to_torch_impl(slf.as_any(), py)
-    }
-
-    fn to_jax<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        dlpack_utils::to_jax_impl(slf.as_any(), py)
-    }
-
-    // === DLPack Protocol ===
-
-    #[pyo3(signature = (stream=None))]
-    fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
-        let _ = stream;
-        let tensor = self.inner.descriptor().tensor();
-        let (data_ptr, shape, strides, dtype, device) =
-            dlpack_utils::prepare_dlpack_args(tensor, self.inner.pool());
-        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, dtype, device)
-    }
-
-    fn __dlpack_device__(&self) -> (i32, i32) {
-        dlpack_utils::dlpack_device_tuple(self.inner.descriptor().tensor())
     }
 
     // === Numpy Array Interface ===

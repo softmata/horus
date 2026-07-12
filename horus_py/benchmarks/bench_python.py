@@ -7,7 +7,7 @@ Run: python3 benchmarks/bench_python.py
 Benchmarks:
 1. Message roundtrip latency (dict, typed)
 2. Node tick overhead (empty, with send/recv)
-3. Image zero-copy (to_numpy, from_numpy, to_torch)
+3. Image zero-copy (to_numpy, from_numpy)
 4. Multi-node scheduler throughput
 5. Generic message serialization sizes
 """
@@ -204,11 +204,6 @@ def bench_image_zerocopy():
         speedup = cp / zc if zc > 0 else 0
         print(f"  Image {name:10s} ({kb:>5.0f}KB)  zero-copy={zc:>8,}ns  np.copy={cp:>8,}ns  → {speedup:.0f}x faster")
 
-    # ── DLPack protocol (fastest path) ──
-    print()
-    img_med = Image.from_numpy(np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8))
-    bench("np.from_dlpack(Image 640x480)", lambda: np.from_dlpack(img_med), iterations=5000)
-
     # ── PointCloud zero-copy ──
     print()
     pc_data = np.random.randn(10000, 3).astype(np.float32)
@@ -223,14 +218,6 @@ def bench_image_zerocopy():
     depth_data = np.random.rand(480, 640).astype(np.float32)
     depth = DepthImage.from_numpy(depth_data)
     bench("DepthImage.to_numpy(640x480)", lambda: depth.to_numpy(), iterations=5000)
-
-    # ── PyTorch interop ──
-    print()
-    try:
-        import torch
-        bench("Image.to_torch(640x480 RGB)", lambda: img_med.to_torch(), iterations=2000)
-    except ImportError:
-        print(f"  {'SKIP — torch not available':45s}")
 
 
 # ── 4. Multi-Node Throughput ────────────────────────────────────────────────
