@@ -244,24 +244,18 @@ fn spill_to_pool<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static
     let dst = pool.data_slice_mut(&tensor).ok()?;
     dst[..bytes.len()].copy_from_slice(bytes);
 
-    // Retain the tensor so it survives until the receiver releases it.
-    // The alloc() call starts with refcount=1. Each receiver that reads
-    // the spill calls pool.release() after deserialization.
-    // For multi-subscriber (SPMC/MPMC), we need refcount = N subscribers.
-    // However, we don't know N at send time. Instead, we retain once here
-    // and let each receiver retain+release around their read. The sender's
-    // initial refcount=1 is released when the slot is overwritten or the
-    // topic is dropped.
-    //
-    // Actually, TensorPool::alloc() returns refcount=1. The receiver
-    // will call release() after reading. For single subscriber, this
-    // works: sender alloc (rc=1), receiver release (rc=0, freed).
-    // For multi-subscriber, we'd need to retain once per subscriber,
-    // but we don't know N. So for now, we DON'T release on recv —
-    // the slot is freed when the pool's slot gets reallocated (the
-    // generation counter prevents ABA). This is a small leak for
-    // SPMC but acceptable since spill is rare and pool is 1GB.
-
+    // The alloc starts at refcount=1. How that refcount is reclaimed depends on
+    // the backend (both COMM-H3 — the old "freed when the slot gets reallocated"
+    // was a myth: nothing ever released it, so it never recycled and the pool
+    // leaked until full, silently dropping large messages):
+    //   - SpscShm / MpscShm (single consumer): the receiver releases after its
+    //     read (`read_spilled_once`) — sender alloc (rc=1), receiver release (rc=0).
+    //   - FanoutShm (multi-subscriber, N unknown at send time): the sender keeps
+    //     this refcount as a keep-alive in `LocalState::spill_keepalive` and
+    //     releases it once the ring position is overwritten; each receiver
+    //     `try_retain`s around its read (`read_spilled_retained`). The generation
+    //     counter + rc>0 pin turn a concurrent release/reuse into a clean miss,
+    //     never a torn read.
     Some(SpillDescriptor::from_tensor(&tensor, bytes.len() as u64))
 }
 
@@ -514,35 +508,65 @@ unsafe fn read_spilled_message<T: DeserializeOwned>(
 ) -> Option<T> {
     // SP/MP slot layout: the SpillDescriptor sits at offset +8 (after the ready flag).
     let spill = read_spill_descriptor(slot_ptr);
-    read_spilled_from_descriptor(spill, topic_name)
+    read_spilled_once(spill, topic_name)
 }
 
-/// Reconstruct a spilled message from an already-read `SpillDescriptor`.
+/// Deserialize a message from a spill slot, generation-validated.
 ///
-/// Shared by the SP/MP recv path (descriptor read from a slot at offset +8) and
-/// the fanout recv path (descriptor read from offset 0 of the `recv_serde`
-/// payload). Returns `None` on a corrupted or stale (recycled) descriptor.
+/// Returns `None` on a corrupted or stale (recycled) descriptor — `data_slice`
+/// checks the generation, so a recycled slot yields `None`, never garbage. The
+/// borrow of the pool slot ends before this returns (bincode copies into an owned
+/// `T`), so the caller may safely `release()` the slot afterwards.
+fn deserialize_spill_slot<T: DeserializeOwned>(
+    pool: &crate::memory::TensorPool,
+    tensor: &crate::types::Tensor,
+    len: usize,
+) -> Option<T> {
+    let pool_bytes = pool.data_slice(tensor).ok()?;
+    if len > pool_bytes.len() {
+        return None; // Corrupted size or stale (recycled) pool slot.
+    }
+    bincode::deserialize(&pool_bytes[..len]).ok()
+}
+
+/// Read a spilled message on a **single-consumer** (SpscShm / MpscShm) topic and
+/// release the producer's allocation refcount.
 ///
-/// Intentionally does NOT release the pool slot: for multi-subscriber topics
-/// several receivers read the same spilled slot, and the subscriber count is
-/// unknown at send time, so an early release would free the slot out from under
-/// the other readers (use-after-free). The slot instead lives until the pool
-/// recycles it; the generation counter invalidates any stale descriptor, so a
-/// read after recycle returns `None` here rather than garbage. Spill is rare
-/// (> SPILL_THRESHOLD) and the pool is large, so the transient over-retention is
-/// acceptable — and it is exactly what makes broadcast (FanoutShm) spill safe.
-fn read_spilled_from_descriptor<T: DeserializeOwned>(
+/// There is exactly one reader, so releasing after the read is safe — no other
+/// receiver can be looking at the slot. `release` is generation-checked, so a
+/// stale descriptor (e.g. after a topic recreate) no-ops rather than freeing an
+/// unrelated slot. This is the reclaim that stops the spill-pool leak (COMM-H3)
+/// for the SP/MP backends; FanoutShm uses `read_spilled_retained` instead.
+fn read_spilled_once<T: DeserializeOwned>(spill: SpillDescriptor, topic_name: &str) -> Option<T> {
+    let tensor = spill.to_tensor();
+    let pool = super::pool_registry::get_or_create_pool(topic_name);
+    let msg = deserialize_spill_slot::<T>(&pool, &tensor, spill.size as usize);
+    // Single consumer owns the alloc refcount; free it now (gen-checked no-op if stale).
+    pool.release(&tensor);
+    msg
+}
+
+/// Read a spilled message on a **multi-subscriber** (FanoutShm) topic.
+///
+/// The subscriber count is unknown at send time, so the producer holds the slot
+/// alive as a keep-alive (`LocalState::spill_keepalive`) and releases it when the
+/// ring position is overwritten (COMM-H3). Each reader `try_retain`s the slot for
+/// the duration of its read: `Ok` pins it (rc > 0, generation matches) so a
+/// concurrent producer release/reuse cannot tear the `data_slice`; `Err` means the
+/// message was already superseded and freed (a correct drop-oldest miss) → `None`.
+fn read_spilled_retained<T: DeserializeOwned>(
     spill: SpillDescriptor,
     topic_name: &str,
 ) -> Option<T> {
     let tensor = spill.to_tensor();
     let pool = super::pool_registry::get_or_create_pool(topic_name);
-    let pool_bytes = pool.data_slice(&tensor).ok()?;
-    let len = spill.size as usize;
-    if len > pool_bytes.len() {
-        return None; // Corrupted size or stale (recycled) pool slot.
+    // Pin the slot for the read. Err => superseded + freed => clean miss.
+    if pool.try_retain(&tensor).is_err() {
+        return None;
     }
-    bincode::deserialize(&pool_bytes[..len]).ok()
+    let msg = deserialize_spill_slot::<T>(&pool, &tensor, spill.size as usize);
+    pool.release(&tensor); // drop our read pin
+    msg
 }
 
 // ============================================================================
@@ -833,11 +857,25 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 // channel (fits the fixed 8 KiB fanout slot). Without this, a
                 // message larger than the slot is dropped on multi-subscriber
                 // FanoutShm topics — whereas SpscShm auto-grows to deliver it.
-                // Receivers do NOT release the pool slot (see
-                // read_spilled_from_descriptor), so the broadcast is safe;
-                // generation-based pool reclaim handles drop-oldest + stale reads.
+                //
+                // COMM-H3: hold each spilled slot alive (`spill_keepalive`) until its
+                // ring position is overwritten — after `window` more sends no
+                // subscriber can reach the descriptor (drop-oldest) — then release it,
+                // so the pool can't fill up and silently drop large messages. Readers
+                // `try_retain` around their read (`read_spilled_retained`), so a
+                // release here can never tear an in-progress read. Evict BEFORE the
+                // alloc so the pool always has a free slot for the new spill.
+                let pool = topic.get_or_create_spill_pool();
+                let window = (local.cached_capacity as usize).max(1);
+                while local.spill_keepalive.len() >= window {
+                    if let Some(old) = local.spill_keepalive.pop_front() {
+                        pool.release(&old);
+                    }
+                }
                 match spill_to_pool(topic, &bytes) {
                     Some(desc) => {
+                        // Hold the alloc refcount until the ring overwrites this slot.
+                        local.spill_keepalive.push_back(desc.to_tensor());
                         // SAFETY: SpillDescriptor is repr(C), Copy, 40 bytes with
                         // no padding and no pointers — a raw byte view is sound.
                         let desc_bytes = unsafe {
@@ -914,7 +952,7 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                     // read_unaligned copies it out with no alignment assumption.
                     let desc =
                         std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor);
-                    read_spilled_from_descriptor::<T>(desc, topic.name())
+                    read_spilled_retained::<T>(desc, topic.name())
                 } else {
                     bincode::deserialize(&bytes).ok()
                 }

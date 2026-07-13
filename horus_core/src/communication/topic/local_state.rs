@@ -100,6 +100,17 @@ pub(crate) struct LocalState {
 
     /// SHM region backing the fanout channel matrix (must stay alive for lifetime of ring)
     pub fanout_shm_storage: Option<std::sync::Arc<crate::memory::shm_region::ShmRegion>>,
+
+    /// COMM-H3: producer keep-alive for spilled FanoutShm messages. Each large
+    /// (> SPILL_THRESHOLD) serde message is copied into a TensorPool slot and only
+    /// a 40-byte descriptor is broadcast; the slot must stay alive until every
+    /// subscriber that can still see the descriptor has read it. This holds the
+    /// last `capacity` (ring window R) spilled tensors and releases each one once
+    /// its ring position is overwritten (drop-oldest ⇒ no subscriber can reach it),
+    /// so the spill pool can't fill up and start silently dropping large messages.
+    /// Empty for every non-FanoutShm backend. See `dispatch::spill_to_pool` /
+    /// `read_spilled_retained`.
+    pub spill_keepalive: std::collections::VecDeque<crate::types::Tensor>,
 }
 
 impl Default for LocalState {
@@ -125,6 +136,7 @@ impl Default for LocalState {
             fanout_shm_pub_id: None,
             fanout_shm_sub_id: None,
             fanout_shm_storage: None,
+            spill_keepalive: std::collections::VecDeque::new(),
         }
     }
 }

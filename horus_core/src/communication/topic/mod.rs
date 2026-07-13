@@ -2846,6 +2846,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
 
 impl<T> Drop for RingTopic<T> {
     fn drop(&mut self) {
+        // COMM-H3: release any spill keep-alives this producer still holds, so a
+        // dropped FanoutShm producer doesn't leak its outstanding spill slots.
+        // SAFETY: at drop this thread has exclusive ownership of the RingTopic, so
+        // no other access to this LocalState / spill_pool can race.
+        let local = unsafe { &mut *self.local.get() };
+        if !local.spill_keepalive.is_empty() {
+            if let Some(pool) = unsafe { &*self.spill_pool.get() } {
+                while let Some(t) = local.spill_keepalive.pop_front() {
+                    pool.release(&t);
+                }
+            }
+        }
+
         // Registry entries are NOT removed here — other instances may still
         // reference the same backend Arc. Entries are cleaned up automatically
         // by store_or_get_backend() when new epochs are created (old epochs
