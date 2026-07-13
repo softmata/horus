@@ -917,10 +917,16 @@ impl TensorPool {
 
     /// Increment reference count for a tensor.
     ///
-    /// Silently ignores mismatched pool IDs, stale generation counters, or
-    /// slots that were freed between the generation check and the refcount
-    /// increment (TOCTOU prevention via CAS loop that rejects refcount 0).
-    /// Use [`try_retain`] to get an explicit error on mismatch.
+    /// Silently ignores mismatched pool IDs and stale generation counters (a
+    /// freed-but-not-reused slot is rejected by the CAS loop's refcount-0 check).
+    ///
+    /// Unlike [`try_retain`], this does NOT re-check the generation after the
+    /// refcount CAS, so it is sound only when the caller already holds a live
+    /// reference to the slot (refcount > 0, generation pinned) — which keeps the
+    /// free-and-reallocate ABA window from opening. All current callers satisfy
+    /// this: `to_wire` / `Clone` / `send_handle` retain a slot they already own.
+    /// Callers that retain from a possibly-stale descriptor (e.g. a Topic recv)
+    /// MUST use [`try_retain`], which closes the ABA.
     #[inline]
     pub fn retain(&self, tensor: &Tensor) {
         if tensor.pool_id != self.pool_id {
@@ -1010,6 +1016,30 @@ impl TensorPool {
                 .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
+                // ABA close: the pre-CAS generation check can pass and then the
+                // slot be freed AND reallocated (generation bumped only on alloc,
+                // never on free) before this increment landed — leaving us with a
+                // reference to the WRONG (reused) slot. Re-validate the generation
+                // now that we hold a ref. Generations are monotonic, so a matching
+                // re-read proves this is still our allocation, and since the
+                // refcount is now > 0 it can no longer be reused. On mismatch, undo
+                // the phantom increment DIRECTLY — not via `release`, which would
+                // no-op on our stale generation and leak the reference.
+                if slot.generation.load(Ordering::Acquire) != tensor.generation_full() {
+                    let prev = slot.refcount.fetch_sub(1, Ordering::AcqRel);
+                    if prev == 1 {
+                        // We removed the last reference to the reused slot — its
+                        // new owner had already released; return it as `release`
+                        // would (bypassing the generation check, which is stale).
+                        self.return_slot(tensor.slot_id);
+                    }
+                    return Err(HorusError::Memory(
+                        "Generation changed during retain: slot was freed and \
+                         reallocated within the refcount CAS window (stale descriptor)"
+                            .to_string()
+                            .into(),
+                    ));
+                }
                 return Ok(());
             }
         }

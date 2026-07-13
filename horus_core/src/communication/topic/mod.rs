@@ -2913,12 +2913,78 @@ pub struct Topic<T: TopicMessage> {
     registered_sub: std::cell::Cell<bool>,
     /// Node name captured at creation time (for lazy registration).
     owner_node: Option<String>,
+    /// Keep-alive reference(s) to the last pool-backed message sent, released on
+    /// the next send (or on Drop) so the producer's transport reference does not
+    /// leak. `(pool, primary, secondary)` — the exact pool the retain was taken
+    /// on (so release always matches, even for the auto-pool Tensor path);
+    /// `secondary` is `Some` only for the dual-tensor `CostMap`. Always `None`
+    /// for non-pool-backed message types.
+    last_sent_keepalive: std::cell::Cell<Option<(Arc<TensorPool>, Tensor, Option<Tensor>)>>,
 }
 
 // Safety: Topic delegates to RingTopic which handles synchronization.
 // The pool field is Arc (Send+Sync).
 unsafe impl<T: TopicMessage> Send for Topic<T> where T::Wire: Send {}
 unsafe impl<T: TopicMessage> Sync for Topic<T> where T::Wire: Send + Sync {}
+
+/// Release a keep-alive tuple `(pool, primary, secondary)` on its own stored
+/// pool. Safe against the drop-oldest ABA: `release` generation-checks and
+/// no-ops on a stale/reallocated slot, and generations are monotonic, so a
+/// stale descriptor can never match — and therefore never free — a later slot.
+#[inline]
+fn release_keepalive_tuple(ka: (Arc<TensorPool>, Tensor, Option<Tensor>)) {
+    let (pool, primary, secondary) = ka;
+    pool.release(&primary);
+    if let Some(second) = secondary {
+        pool.release(&second);
+    }
+}
+
+impl<T: TopicMessage> Topic<T> {
+    /// The pool a pool-backed keep-alive is retained on for `self.pool`-based
+    /// topics (Image/PointCloud/DepthImage): `self.pool`, or the global pool.
+    #[inline]
+    fn keepalive_pool(&self) -> Arc<TensorPool> {
+        self.pool
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(pool_registry::global_pool)
+    }
+
+    /// Publish a new pool-backed keep-alive (on `self.pool`) and release the
+    /// previous one, which has now been superseded (drop-oldest). Subscribers
+    /// each hold their own `try_from_wire` reference, so releasing the transport
+    /// reference here can only ever drop the producer's ref — never a live
+    /// reader's.
+    #[inline]
+    fn publish_keepalive(&self, primary: Tensor, secondary: Option<Tensor>) {
+        let pool = self.keepalive_pool();
+        self.publish_keepalive_on(pool, primary, secondary);
+    }
+
+    /// Like [`publish_keepalive`] but for topics whose pool is not `self.pool`
+    /// (the auto-pool `Topic<Tensor>` handle path passes `self.pool()`).
+    #[inline]
+    fn publish_keepalive_on(&self, pool: Arc<TensorPool>, primary: Tensor, secondary: Option<Tensor>) {
+        if let Some(prev) = self
+            .last_sent_keepalive
+            .replace(Some((pool, primary, secondary)))
+        {
+            release_keepalive_tuple(prev);
+        }
+    }
+}
+
+impl<T: TopicMessage> Drop for Topic<T> {
+    fn drop(&mut self) {
+        // Release the final message's keep-alive so it isn't leaked when the
+        // producer stops sending. A late subscriber is unaffected: it holds its
+        // own reference (`try_from_wire`), which keeps the slot alive.
+        if let Some(ka) = self.last_sent_keepalive.take() {
+            release_keepalive_tuple(ka);
+        }
+    }
+}
 
 // ============================================================================
 // Shared methods — all TopicMessage types
@@ -3087,6 +3153,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
 
@@ -3113,6 +3180,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
 
@@ -3141,6 +3209,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
 }
@@ -3248,6 +3317,9 @@ where
             registered_pub: self.registered_pub.clone(),
             registered_sub: self.registered_sub.clone(),
             owner_node: self.owner_node.clone(),
+            // A fresh clone has sent nothing yet; each handle tracks and releases
+            // only its own last-sent keep-alive, so clones never double-release.
+            last_sent_keepalive: std::cell::Cell::new(None),
         }
     }
 }
@@ -3275,15 +3347,20 @@ impl Topic<Image> {
             self.registered_pub.set(true);
         }
         let wire = img.borrow().to_wire(&self.pool);
+        self.publish_keepalive(*wire.tensor(), None);
         self.ring.send(wire);
     }
 
     /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
     pub fn try_send(&self, img: Image) -> Result<(), Image> {
         let wire = img.to_wire(&self.pool);
-        self.ring
-            .try_send(wire)
-            .map_err(|w| Image::from_wire(w, &self.pool))
+        match self.ring.try_send(wire) {
+            Ok(()) => {
+                self.publish_keepalive(*wire.tensor(), None);
+                Ok(())
+            }
+            Err(w) => Err(Image::from_wire(w, &self.pool)),
+        }
     }
 
     /// Receive the next image.
@@ -3300,7 +3377,7 @@ impl Topic<Image> {
             self.registered_sub.set(true);
         }
         let wire = self.ring.recv()?;
-        Some(Image::from_wire(wire, &self.pool))
+        Image::try_from_wire(wire, &self.pool)
     }
 }
 
@@ -3325,15 +3402,20 @@ impl Topic<PointCloud> {
             self.registered_pub.set(true);
         }
         let wire = pc.borrow().to_wire(&self.pool);
+        self.publish_keepalive(*wire.tensor(), None);
         self.ring.send(wire);
     }
 
     /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
     pub fn try_send(&self, pc: PointCloud) -> Result<(), PointCloud> {
         let wire = pc.to_wire(&self.pool);
-        self.ring
-            .try_send(wire)
-            .map_err(|w| PointCloud::from_wire(w, &self.pool))
+        match self.ring.try_send(wire) {
+            Ok(()) => {
+                self.publish_keepalive(*wire.tensor(), None);
+                Ok(())
+            }
+            Err(w) => Err(PointCloud::from_wire(w, &self.pool)),
+        }
     }
 
     /// Receive the next point cloud.
@@ -3350,7 +3432,7 @@ impl Topic<PointCloud> {
             self.registered_sub.set(true);
         }
         let wire = self.ring.recv()?;
-        Some(PointCloud::from_wire(wire, &self.pool))
+        PointCloud::try_from_wire(wire, &self.pool)
     }
 }
 
@@ -3375,15 +3457,20 @@ impl Topic<DepthImage> {
             self.registered_pub.set(true);
         }
         let wire = depth.borrow().to_wire(&self.pool);
+        self.publish_keepalive(*wire.tensor(), None);
         self.ring.send(wire);
     }
 
     /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
     pub fn try_send(&self, depth: DepthImage) -> Result<(), DepthImage> {
         let wire = depth.to_wire(&self.pool);
-        self.ring
-            .try_send(wire)
-            .map_err(|w| DepthImage::from_wire(w, &self.pool))
+        match self.ring.try_send(wire) {
+            Ok(()) => {
+                self.publish_keepalive(*wire.tensor(), None);
+                Ok(())
+            }
+            Err(w) => Err(DepthImage::from_wire(w, &self.pool)),
+        }
     }
 
     /// Receive the next depth image.
@@ -3400,7 +3487,7 @@ impl Topic<DepthImage> {
             self.registered_sub.set(true);
         }
         let wire = self.ring.recv()?;
-        Some(DepthImage::from_wire(wire, &self.pool))
+        DepthImage::try_from_wire(wire, &self.pool)
     }
 }
 
@@ -3442,6 +3529,7 @@ impl Topic<Tensor> {
             self.registered_pub.set(true);
         }
         handle.pool().retain(handle.tensor());
+        self.publish_keepalive_on(handle.pool().clone(), *handle.tensor(), None);
         self.ring.send(*handle.tensor());
     }
 
@@ -3461,9 +3549,14 @@ impl Topic<Tensor> {
         }
         let tensor = self.ring.recv()?;
         let pool = self.pool();
-        // from_owned validates pool_id matches; returns None (discards the
-        // tensor) if the descriptor was sent from a different pool — this
-        // prevents refcount corruption on a mismatched pool.
+        // Take a generation-guarded reference so each subscriber owns its own: a
+        // co-subscriber dropping its handle cannot free the slot out from under
+        // us. `Err` => the slot was superseded (drop-oldest) before we read it
+        // => missed message. `try_retain` also validates pool_id (as `from_owned`
+        // did), discarding a descriptor sent from a different pool.
+        if pool.try_retain(&tensor).is_err() {
+            return None;
+        }
         crate::memory::TensorHandle::from_owned(tensor, pool).ok()
     }
 }

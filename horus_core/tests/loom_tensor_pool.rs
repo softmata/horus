@@ -180,3 +180,182 @@ fn loom_pool_1slot_2threads() {
     // One slot, two threads: the tightest contention (both fight for slot 0).
     run(1, 2);
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// COMM-H2 fix: refcount + generation retain/release safety.
+//
+// The multi-subscriber zero-copy fix has each subscriber `try_retain` the shared
+// pool slot (owning its own reference) and the producer release the keep-alive on
+// its NEXT send. A late subscriber can therefore `try_retain` a descriptor whose
+// slot the producer has already released AND reallocated for the next frame (its
+// generation bumped) — the `try_retain` ABA. The hardened `try_retain` closes it
+// by re-checking the generation AFTER the increment and undoing on mismatch.
+//
+// This models that race and verifies, under every interleaving: (1) a successful
+// retain is always on the descriptor's OWN generation — never a reused slot (no
+// wrong-retain); (2) no double-free or reuse-of-live slot — caught inline by an
+// `occupied` sentinel, exercised down to the undo's return-slot branch by the
+// producer's gen-2 release; (3) no leak — every allocation is returned and the
+// refcount drains to 0. Reverting the re-check trips (1); removing the CAS's
+// refcount-0 guard trips (2) as a double-free.
+// ───────────────────────────────────────────────────────────────────────────
+
+struct RcSlot {
+    generation: AtomicU64,
+    refcount: AtomicU64,
+    /// Test sentinel (mirrors the existing `loom_pool` `occupied` flag): `true`
+    /// while the slot holds a live allocation. `return_slot` flips it `false` and
+    /// asserts it was `true` (a double-free — returning an already-free slot —
+    /// trips here); `reuse` flips it `true` and asserts it was `false`.
+    occupied: AtomicBool,
+}
+
+impl RcSlot {
+    /// Return the slot to the free list (mirror of `TensorPool::return_slot`),
+    /// asserting it was actually allocated — a second free of the same
+    /// allocation trips this at the exact moment it happens.
+    fn return_slot(&self) {
+        assert!(
+            self.occupied.swap(false, Ordering::AcqRel),
+            "double-free: returned a slot that was already free"
+        );
+    }
+
+    /// Mirror of the hardened `TensorPool::try_retain`: generation pre-check,
+    /// CAS-increment-if-`> 0`, then a generation RE-CHECK that closes the ABA —
+    /// on mismatch the phantom increment is undone directly (not via the
+    /// generation-checking `release`), returning the slot if we held the last ref.
+    fn try_retain(&self, desc_gen: u64) -> bool {
+        if self.generation.load(Ordering::Acquire) != desc_gen {
+            return false;
+        }
+        loop {
+            let cur = self.refcount.load(Ordering::Acquire);
+            if cur == 0 {
+                return false;
+            }
+            if self
+                .refcount
+                .compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                // ABA close: if the slot was freed+reallocated in the CAS window,
+                // we incremented the reused slot — undo directly (fetch_sub, and
+                // return the slot if our decrement was the one that reached 0).
+                if self.generation.load(Ordering::Acquire) != desc_gen {
+                    if self.refcount.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        self.return_slot();
+                    }
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
+
+    /// Mirror of `TensorPool::release`: generation-check (no-op on a stale
+    /// descriptor — the load-bearing safety fact), then CAS-decrement-if-`> 0`,
+    /// returning the slot on reaching 0.
+    fn release(&self, desc_gen: u64) {
+        if self.generation.load(Ordering::Acquire) != desc_gen {
+            return; // stale descriptor — never decrements a reused slot
+        }
+        loop {
+            let cur = self.refcount.load(Ordering::Acquire);
+            if cur == 0 {
+                return;
+            }
+            if self
+                .refcount
+                .compare_exchange_weak(cur, cur - 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                if cur == 1 {
+                    self.return_slot();
+                }
+                return;
+            }
+        }
+    }
+
+    /// Mirror of `pop_and_claim`: atomically claim the slot IF it is free (i.e.
+    /// on the free list), then bump the generation and set refcount to 1. Returns
+    /// whether the claim succeeded. Gating on the occupancy CAS — not a racy
+    /// `rc == 0` peek — mirrors popping the slot off the free stack, which
+    /// `return_slot` pushes to only AFTER clearing occupancy.
+    fn reuse(&self) -> bool {
+        if self
+            .occupied
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false; // still live / not yet returned — cannot reuse
+        }
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.refcount.store(1, Ordering::Release);
+        true
+    }
+}
+
+#[test]
+fn loom_comm_h2_stale_retain_never_double_frees() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(3);
+    builder.check(|| {
+        // Producer holds the keep-alive of the message published at generation 1
+        // (slot live); a subscriber has the matching descriptor and is about to read.
+        let slot = Arc::new(RcSlot {
+            generation: AtomicU64::new(1),
+            refcount: AtomicU64::new(1),
+            occupied: AtomicBool::new(true),
+        });
+        let desc_gen = 1u64;
+
+        let p = slot.clone();
+        let producer = loom::thread::spawn(move || {
+            // Supersede on next send: release the keep-alive. If that returned the
+            // slot to the free list, the next frame claims it (gen bump) AND later
+            // drops it too — that second release is what drives the consumer's ABA
+            // undo down to its return-slot (`prev == 1`) branch.
+            p.release(desc_gen);
+            if p.reuse() {
+                p.release(2);
+            }
+        });
+
+        let c = slot.clone();
+        let consumer = loom::thread::spawn(move || {
+            // Late subscriber takes its own reference off the (possibly stale)
+            // descriptor, then releases it on drop.
+            if c.try_retain(desc_gen) {
+                // The hardened try_retain guarantees a successful retain is on OUR
+                // generation, never a reused slot. We now hold a reference, so the
+                // generation is pinned — this read is stable, not racy. (Before the
+                // fix, the ABA could make this a gen-2 slot: assertion would trip.)
+                assert_eq!(
+                    c.generation.load(Ordering::Acquire),
+                    desc_gen,
+                    "wrong-generation retain — the try_retain ABA is not closed"
+                );
+                c.release(desc_gen);
+            }
+        });
+
+        producer.join().unwrap();
+        consumer.join().unwrap();
+
+        // Double-free and reuse-of-live are caught inline by the `occupied` sentinel
+        // (including on the undo's return-slot branch, which the gen-2 release above
+        // now exercises). No leak: every allocation was returned and the refcount
+        // drained to 0 — a leaked phantom ref (the un-hardened ABA) would leave rc > 0.
+        assert!(
+            !slot.occupied.load(Ordering::Acquire),
+            "leak: slot left allocated after all references dropped"
+        );
+        assert_eq!(
+            slot.refcount.load(Ordering::Acquire),
+            0,
+            "refcount not drained to 0 — leaked or underflowed reference"
+        );
+    });
+}
