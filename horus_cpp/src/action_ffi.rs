@@ -47,6 +47,33 @@ fn next_goal_id() -> u64 {
     ((std::process::id() as u64) << 32) | n
 }
 
+/// The client PID a goal-id belongs to — the high 32 bits (see `next_goal_id`).
+#[inline]
+fn client_pid_of(goal_id: u64) -> u32 {
+    (goal_id >> 32) as u32
+}
+
+/// Get (creating on first use) the per-client topic `{name}.{kind}.{pid}`, matching
+/// that client's subscription. Mirrors the service server's per-PID response routing
+/// so one client can never consume another client's feedback/result.
+fn per_client_topic<'a>(
+    topics: &'a mut HashMap<u32, Topic<JsonWireMessage>>,
+    name: &str,
+    kind: &str,
+    pid: u32,
+) -> Option<&'a Topic<JsonWireMessage>> {
+    use std::collections::hash_map::Entry;
+    let topic: &Topic<JsonWireMessage> = match topics.entry(pid) {
+        Entry::Occupied(e) => e.into_mut(),
+        // Topic creation is fallible, so `or_insert_with` won't do — on failure,
+        // return None (this client's topic will be retried on the next event).
+        Entry::Vacant(e) => {
+            e.insert(Topic::<JsonWireMessage>::new(format!("{}.{}.{}", name, kind, pid)).ok()?)
+        }
+    };
+    Some(topic)
+}
+
 /// Goal status — matches Rust GoalStatus enum.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,12 +151,17 @@ pub struct FfiGoalHandle {
 
 /// Create a new action client with Pod-based topic wiring.
 pub fn action_client_new(name: &str) -> Box<FfiActionClient> {
+    // Feedback/result are delivered on this client's own PID-scoped topics so a
+    // second client of the same action cannot consume our messages — the server
+    // routes by the client PID carried in the goal_id. This PID matches the one
+    // `next_goal_id` stamps into every goal_id we send.
+    let pid = std::process::id();
     Box::new(FfiActionClient {
         name: name.to_string(),
         goal_topic: Topic::<JsonWireMessage>::new(format!("{}.goal", name)).ok(),
         cancel_topic: Topic::<JsonWireMessage>::new(format!("{}.cancel", name)).ok(),
-        feedback_topic: Topic::<JsonWireMessage>::new(format!("{}.feedback", name)).ok(),
-        result_topic: Topic::<JsonWireMessage>::new(format!("{}.result", name)).ok(),
+        feedback_topic: Topic::<JsonWireMessage>::new(format!("{}.feedback.{}", name, pid)).ok(),
+        result_topic: Topic::<JsonWireMessage>::new(format!("{}.result.{}", name, pid)).ok(),
     })
 }
 
@@ -180,8 +212,9 @@ pub fn action_client_poll_feedback(client: &FfiActionClient) -> Option<(u64, Str
 }
 
 /// Poll for a result for `goal_id`. Returns `(status, json)` once the goal has
-/// finished, else `None`. Non-blocking; results for other goals seen while
-/// polling are discarded (a client is expected to track one goal at a time).
+/// finished, else `None`. Non-blocking. Reads this client's own PID-scoped result
+/// topic, so it never consumes another client's result; a lingering result from a
+/// prior goal of this same client is skipped.
 pub fn action_client_poll_result(
     client: &FfiActionClient,
     goal_id: u64,
@@ -298,8 +331,12 @@ pub struct FfiActionServer {
     name: String,
     goal_topic: Option<Topic<JsonWireMessage>>,
     cancel_topic: Option<Topic<JsonWireMessage>>,
-    feedback_topic: Option<Topic<JsonWireMessage>>,
-    result_topic: Option<Topic<JsonWireMessage>>,
+    // Per-client (PID) feedback/result topics, created on demand, matching each
+    // client's `{name}.{feedback|result}.{pid}` subscription. The client PID is
+    // the high 32 bits of the goal_id (`next_goal_id`), so one client can never
+    // consume another's messages.
+    feedback_topics: HashMap<u32, Topic<JsonWireMessage>>,
+    result_topics: HashMap<u32, Topic<JsonWireMessage>>,
     status_topic: Option<Topic<JsonWireMessage>>,
     accept_handler: Option<Box<dyn Fn(&[u8]) -> FfiGoalResponse + Send + Sync>>,
     execute_handler: Option<ExecuteFn>,
@@ -317,8 +354,8 @@ pub fn action_server_new(name: &str) -> Box<FfiActionServer> {
         name: name.to_string(),
         goal_topic: Topic::<JsonWireMessage>::new(format!("{}.goal", name)).ok(),
         cancel_topic: Topic::<JsonWireMessage>::new(format!("{}.cancel", name)).ok(),
-        feedback_topic: Topic::<JsonWireMessage>::new(format!("{}.feedback", name)).ok(),
-        result_topic: Topic::<JsonWireMessage>::new(format!("{}.result", name)).ok(),
+        feedback_topics: HashMap::new(),
+        result_topics: HashMap::new(),
         status_topic: Topic::<JsonWireMessage>::new(format!("{}.status", name)).ok(),
         accept_handler: None,
         execute_handler: None,
@@ -389,12 +426,19 @@ pub fn action_server_process(server: &mut FfiActionServer) {
     for event in drained {
         match event {
             FfiServerEvent::Feedback(wire) => {
-                if let Some(ref t) = server.feedback_topic {
+                // Route to the originating client's PID topic (goal_id high bits).
+                let pid = client_pid_of(wire.msg_id);
+                if let Some(t) =
+                    per_client_topic(&mut server.feedback_topics, &server.name, "feedback", pid)
+                {
                     t.send(wire);
                 }
             }
             FfiServerEvent::Completed(goal_id, status, wire) => {
-                if let Some(ref t) = server.result_topic {
+                let pid = client_pid_of(goal_id);
+                if let Some(t) =
+                    per_client_topic(&mut server.result_topics, &server.name, "result", pid)
+                {
                     t.send(wire);
                 }
                 publish_status(server, goal_id, status);
@@ -689,5 +733,59 @@ mod tests {
             Some(FfiGoalStatus::Aborted),
             "a handler that never finishes must complete the goal as Aborted"
         );
+    }
+
+    // F2 regression: results are routed to the ORIGINATING client's PID topic, so
+    // two clients of one action never consume each other's results. We can't spawn
+    // two processes in a unit test, so we drive the server's routing directly with
+    // goal_ids that encode two distinct client PIDs.
+    #[test]
+    fn results_are_routed_per_client_pid_no_cross_client_theft() {
+        fn recv_soon(t: &Topic<JsonWireMessage>) -> Option<JsonWireMessage> {
+            for _ in 0..200 {
+                if let Some(w) = t.recv() {
+                    return Some(w);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            None
+        }
+
+        let name = format!("act_percli.{}", std::process::id());
+        let mut server = action_server_new(&name);
+
+        let pid_a: u32 = 40001;
+        let pid_b: u32 = 40002;
+        let gid_a = ((pid_a as u64) << 32) | 7;
+        let gid_b = ((pid_b as u64) << 32) | 9;
+
+        // Each "client" subscribes to its own per-PID result topic.
+        let sub_a = Topic::<JsonWireMessage>::new(format!("{}.result.{}", name, pid_a)).unwrap();
+        let sub_b = Topic::<JsonWireMessage>::new(format!("{}.result.{}", name, pid_b)).unwrap();
+
+        // The server completes both goals (as its goal threads would) and routes them.
+        let res_a =
+            JsonWireMessage::from_json(r#"{"who":"a"}"#, gid_a, FfiGoalStatus::Succeeded as u8).unwrap();
+        let res_b =
+            JsonWireMessage::from_json(r#"{"who":"b"}"#, gid_b, FfiGoalStatus::Succeeded as u8).unwrap();
+        {
+            let mut ev = server.events.lock().unwrap();
+            ev.push(FfiServerEvent::Completed(gid_a, FfiGoalStatus::Succeeded, res_a));
+            ev.push(FfiServerEvent::Completed(gid_b, FfiGoalStatus::Succeeded, res_b));
+        }
+        action_server_process(&mut server);
+
+        // Client A sees ONLY its own result; client B's never appears on A's topic
+        // (before the fix, a single shared result topic let A consume B's result).
+        let ra = recv_soon(&sub_a).expect("client A must receive its own result");
+        assert_eq!(ra.msg_id, gid_a);
+        assert_eq!(client_pid_of(ra.msg_id), pid_a);
+        assert!(
+            sub_a.recv().is_none(),
+            "client A must not see any other client's result"
+        );
+
+        let rb = recv_soon(&sub_b).expect("client B must receive its own result");
+        assert_eq!(rb.msg_id, gid_b);
     }
 }
