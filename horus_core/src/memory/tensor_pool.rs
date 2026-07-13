@@ -79,7 +79,11 @@ const POOL_MAGIC: u64 = 0x484F5255535F5450; // "HORUS_TP" in hex
 ///   3 — `SlotHeader.refcount` upgraded from `AtomicU32` to `AtomicU64`.
 ///       Prevents refcount overflow under sustained alloc/dealloc cycles.
 ///       `SlotHeader` total size grew from 40 to 48 bytes.
-const POOL_VERSION: u32 = 3;
+///   4 — Added `SlotHeader.capacity` (physical high-water region size). A freed
+///       slot's region is now reused whenever the new request fits its capacity,
+///       not just its last logical size — fixing the grow-after-shrink data-region
+///       leak (F-MEM1). `SlotHeader` grew from 48 to 56 bytes; v3 pools fail `validate()`.
+const POOL_VERSION: u32 = 4;
 
 /// Slot flags
 const SLOT_FREE: u32 = 0;
@@ -117,9 +121,9 @@ struct PoolHeader {
 
 /// Slot metadata stored in shared memory
 ///
-/// Layout (48 bytes, repr(C)):
+/// Layout (56 bytes, repr(C)):
 ///   refcount(8) + flags(4) + _pad(4) + generation(8) + offset(8) + size(8)
-///   + next_free(4) + owner_pid(4)
+///   + capacity(8) + next_free(4) + owner_pid(4)
 ///
 /// Field ordering ensures `AtomicU64`/`u64` fields land on 8-byte boundaries
 /// without implicit padding.  Changed in POOL_VERSION 3 (refcount upgraded to AtomicU64 from POOL_VERSION 2's 40-byte layout).
@@ -141,8 +145,14 @@ struct SlotHeader {
     generation: AtomicU64,
     /// Byte offset from the data region base to this slot's tensor data.
     offset: u64,
-    /// Allocation size in bytes.
+    /// Logical size of the current allocation, in bytes.
     size: u64,
+    /// Physical high-water size of this slot's backing region, in bytes — the
+    /// largest allocation ever made here (the region is never shrunk). A freed
+    /// slot is reused when the new request fits `capacity`, so a grow-after-shrink
+    /// reuses this region instead of bumping a fresh one and leaking it (F-MEM1).
+    /// Zero until the slot is first bump-allocated.
+    capacity: u64,
     /// Next free slot index for the Treiber free-stack.
     next_free: AtomicU32,
     /// PID of the process that last allocated this slot.
@@ -553,6 +563,7 @@ impl TensorPool {
             slot.owner_pid.store(0, Ordering::Release);
             slot.offset = 0;
             slot.size = 0;
+            slot.capacity = 0;
             // Link this slot on top of the free stack being built.
             slot.next_free.store(stack_head, Ordering::Release);
             stack_head = i as u32;
@@ -744,15 +755,16 @@ impl TensorPool {
         //
         // Only the shared mmap backend qualifies: CUDA backends `free()` and
         // re-`alloc()` real device memory, so they must take the normal path.
-        // The capacity check is conservative (compares against the *last*
-        // logical size, not the largest ever), which can fall back to a bump
-        // for grow-after-shrink patterns — always correct, never over-reads.
+        // Reuse iff the new request fits this slot's PHYSICAL capacity — the
+        // high-water size ever allocated here (`slot.capacity`), NOT the last
+        // logical size. The old behavior compared the last logical size, so any
+        // grow-after-shrink bumped a fresh region and abandoned this one, leaking
+        // the data region under size-varying streams (e.g. per-frame point clouds)
+        // — F-MEM1. A monotonically growing slot still bumps once per new high-water
+        // (bounded by the max size); reclaiming those needs a real free-list allocator.
         if self.backend.is_shared() {
             let slot = self.slot_mut(slot_id);
-            let prev_size = slot.size;
-            if prev_size > 0
-                && aligned_size <= Self::align_up(prev_size as usize, self.config.slot_alignment)
-            {
+            if slot.capacity > 0 && aligned_size as u64 <= slot.capacity {
                 let reused_offset = slot.offset;
                 // Bump the generation (ABA / stale-descriptor protection) exactly
                 // as the bump path does, so old Tensor handles are rejected.
@@ -817,6 +829,11 @@ impl TensorPool {
         let generation_u64 = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
         slot.offset = offset as u64;
         slot.size = size;
+        // Record the physical region size, alongside offset/size so it rides the
+        // same free-stack release/acquire that publishes them cross-thread. Only a
+        // real bump sets this; the reuse path leaves it intact, preserving the
+        // high-water capacity for future grow-within-capacity reuse.
+        slot.capacity = aligned_size as u64;
         slot.owner_pid.store(std::process::id(), Ordering::Release);
         slot.refcount.store(1, Ordering::Release);
         slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
@@ -2691,6 +2708,47 @@ mod tests {
         );
 
         pool.release(&t2);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    // F-MEM1 regression: a slot that grew to A, shrank to B, then regrows to C
+    // (B < C <= A) must REUSE its region — bounded by physical capacity — not bump
+    // a fresh one and abandon (leak) the old. Before the fix, reuse compared the
+    // LAST logical size, so the regrow bumped a new region every size-up cycle.
+    #[test]
+    fn grow_after_shrink_reuses_region_within_capacity() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 1, // single slot recycles deterministically (LIFO free stack)
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9782, config).expect("pool");
+
+        // A: 4096 bytes — establishes the high-water capacity.
+        let a = pool
+            .alloc(&[4096], TensorDtype::U8, Device::cpu())
+            .expect("alloc A");
+        let region = pool.data_ptr(&a);
+        pool.release(&a);
+
+        // B: 1024 bytes (shrink) — reuses A's region.
+        let b = pool
+            .alloc(&[1024], TensorDtype::U8, Device::cpu())
+            .expect("alloc B");
+        assert_eq!(pool.data_ptr(&b), region, "a shrink must reuse the region");
+        pool.release(&b);
+
+        // C: 2048 bytes, B < C <= A's capacity — must REUSE, not bump + leak.
+        let c = pool
+            .alloc(&[2048], TensorDtype::U8, Device::cpu())
+            .expect("alloc C");
+        assert_eq!(
+            pool.data_ptr(&c),
+            region,
+            "grow-after-shrink within physical capacity must reuse the region, not bump (F-MEM1)"
+        );
+        pool.release(&c);
         std::fs::remove_file(&pool.shm_path).ok();
     }
 
