@@ -262,6 +262,7 @@ impl PyDepthImage {
         let handle = TensorHandle::new(tensor, pool);
         Ok(PyTensorHandle {
             handle: Some(handle),
+            view_keepalive: None,
         })
     }
 

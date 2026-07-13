@@ -700,6 +700,7 @@ impl PyTopic {
                             py,
                             PyTensorHandle {
                                 handle: Some(handle),
+                                view_keepalive: None,
                             },
                         )?
                         .into_any(),

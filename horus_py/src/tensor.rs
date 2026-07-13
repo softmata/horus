@@ -117,6 +117,7 @@ impl PyTensorPool {
 
         Ok(PyTensorHandle {
             handle: Some(handle),
+            view_keepalive: None,
         })
     }
 
@@ -150,6 +151,14 @@ impl PyTensorPool {
 #[pyclass(name = "Tensor")]
 pub struct PyTensorHandle {
     pub(crate) handle: Option<TensorHandle>,
+    /// Keeps the backing pool slot alive while a zero-copy numpy/torch view may
+    /// still alias it. Populated with a *retained* clone of `handle` whenever
+    /// `__array_interface__` / `__cuda_array_interface__` is exported (via the
+    /// GIL-guarded `borrow_mut`). A later `release()` nulls `handle` but not this
+    /// clone, so it cannot free the slot out from under a live view (F-PY1).
+    /// Dropped when the Python `Tensor` object is garbage-collected — which
+    /// numpy/torch keep alive via `array.base` for as long as the view exists.
+    pub(crate) view_keepalive: Option<TensorHandle>,
 }
 
 #[pymethods]
@@ -181,6 +190,7 @@ impl PyTensorHandle {
             .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
         Ok(Self {
             handle: Some(handle),
+            view_keepalive: None,
         })
     }
 
@@ -264,6 +274,7 @@ impl PyTensorHandle {
 
         Ok(Self {
             handle: Some(handle),
+            view_keepalive: None,
         })
     }
 
@@ -292,6 +303,7 @@ impl PyTensorHandle {
 
         Ok(Self {
             handle: Some(handle),
+            view_keepalive: None,
         })
     }
 
@@ -355,6 +367,16 @@ impl PyTensorHandle {
         // backing tensor pool slot cannot be freed while numpy holds this dict.
         dict.set_item("__horus_obj__", slf)?;
 
+        // F-PY1: retain a clone of the handle so a later explicit `release()`
+        // cannot free this slot while numpy/torch still alias it. numpy sets the
+        // resulting array's `base` to this object, keeping it — and therefore this
+        // clone — alive for the lifetime of the view; `release()` nulls `handle`
+        // but leaves the clone, so the slot's refcount stays > 0 until the view is
+        // gone. `handle` borrows `this`, so clone first, then re-borrow mutably.
+        let keepalive = handle.clone();
+        drop(this);
+        slf.borrow_mut().view_keepalive = Some(keepalive);
+
         Ok(dict.into())
     }
 
@@ -364,8 +386,9 @@ impl PyTensorHandle {
     /// Only valid for tensors in unified memory (Jetson) where `data_ptr()` returns
     /// a GPU-accessible pointer. CPU/pinned tensors cannot expose __cuda_array_interface__.
     #[getter]
-    fn __cuda_array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let handle = self
+    fn __cuda_array_interface__(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let this = slf.borrow();
+        let handle = this
             .handle
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
@@ -404,6 +427,12 @@ impl PyTensorHandle {
 
         // Version
         dict.set_item("version", 3)?;
+
+        // F-PY1: see __array_interface__ — retain a clone so a later `release()`
+        // cannot free the slot while torch still aliases the GPU buffer.
+        let keepalive = handle.clone();
+        drop(this);
+        slf.borrow_mut().view_keepalive = Some(keepalive);
 
         Ok(dict.into())
     }
@@ -558,6 +587,7 @@ impl PyTensorHandle {
 
         Ok(Self {
             handle: Some(sliced),
+            view_keepalive: None,
         })
     }
 
@@ -575,6 +605,7 @@ impl PyTensorHandle {
 
         Ok(Self {
             handle: Some(viewed),
+            view_keepalive: None,
         })
     }
 
@@ -595,6 +626,7 @@ impl PyTensorHandle {
         if handle.is_cpu() {
             return Ok(Self {
                 handle: Some(handle.clone()),
+                view_keepalive: None,
             });
         }
 
@@ -618,6 +650,7 @@ impl PyTensorHandle {
         if handle.is_cuda() && handle.device() == target_device {
             return Ok(Self {
                 handle: Some(handle.clone()),
+                view_keepalive: None,
             });
         }
 
@@ -687,6 +720,7 @@ impl PyTensorHandle {
             ))?;
         Ok(Self {
             handle: Some(viewed),
+            view_keepalive: None,
         })
     }
 
@@ -702,6 +736,7 @@ impl PyTensorHandle {
             .ok_or_else(|| PyValueError::new_err("Cannot flatten: tensor must be contiguous"))?;
         Ok(Self {
             handle: Some(viewed),
+            view_keepalive: None,
         })
     }
 
@@ -719,6 +754,7 @@ impl PyTensorHandle {
                 .ok_or_else(|| PyValueError::new_err("Cannot squeeze"))?;
             Ok(Self {
                 handle: Some(viewed),
+                view_keepalive: None,
             })
         } else {
             let viewed = handle.view(&new_shape).ok_or_else(|| {
@@ -726,6 +762,7 @@ impl PyTensorHandle {
             })?;
             Ok(Self {
                 handle: Some(viewed),
+                view_keepalive: None,
             })
         }
     }
@@ -751,6 +788,7 @@ impl PyTensorHandle {
             .ok_or_else(|| PyValueError::new_err("Cannot unsqueeze: tensor must be contiguous"))?;
         Ok(Self {
             handle: Some(viewed),
+            view_keepalive: None,
         })
     }
 
@@ -902,6 +940,7 @@ impl PyTensorHandle {
         if handle.dtype() == new_dtype {
             return Ok(Self {
                 handle: Some(handle.clone()),
+                view_keepalive: None,
             });
         }
         let np = py.import("numpy")?;
@@ -1111,6 +1150,69 @@ impl PyTensorHandle {
         }
         Ok(Self {
             handle: Some(handle),
+            view_keepalive: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod fpy1_tests {
+    use super::*;
+    use horus_core::types::Device;
+    use std::sync::Arc;
+
+    /// F-PY1 regression: exporting a zero-copy view retains a clone of the handle
+    /// into `view_keepalive`, so a subsequent `release()` cannot free the pool slot
+    /// while the view still aliases it (which would let the next alloc reuse the
+    /// offset — silent cross-tensor corruption).
+    ///
+    /// This test binary does not link libpython, so numpy and the
+    /// `__array_interface__` getter cannot run here. The test therefore models the
+    /// getter's one relevant side effect — retaining a clone into `view_keepalive`
+    /// — and then exercises the REAL `release()` against it, proving `release()`
+    /// leaves the keepalive (and thus the slot) intact. The clone/drop refcount
+    /// semantics this relies on are independently covered by horus_core's
+    /// tensor_handle tests. NOT covered locally: that numpy pins this object via
+    /// `array.base` for the view's lifetime (assumed; verified empirically upstream).
+    #[test]
+    fn view_export_keeps_slot_alive_across_release() {
+        let config = TensorPoolConfig {
+            pool_size: 4096,
+            max_slots: 8,
+            slot_alignment: 64,
+            allocator: auto_allocator(),
+        };
+        let pool =
+            Arc::new(TensorPool::new(60_000_000 + std::process::id(), config).expect("pool"));
+        let handle = TensorHandle::alloc(pool.clone(), &[16], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+
+        let mut t = PyTensorHandle {
+            handle: Some(handle),
+            view_keepalive: None,
+        };
+        assert_eq!(pool.stats().total_refcount, 1, "one live handle after alloc");
+
+        // Model `__array_interface__` export: retain a clone into the keepalive.
+        let clone = t.handle.as_ref().unwrap().clone();
+        t.view_keepalive = Some(clone);
+        assert_eq!(pool.stats().total_refcount, 2, "export retains a second ref");
+
+        // The REAL release() — nulls `handle`, must leave `view_keepalive` intact.
+        t.release();
+        assert!(t.handle.is_none(), "release() nulls the primary handle");
+        assert_eq!(
+            pool.stats().total_refcount,
+            1,
+            "F-PY1: release() must NOT free the slot while a view is outstanding"
+        );
+
+        // The view goes away: numpy GCs the array -> Tensor GCd -> keepalive drops.
+        t.view_keepalive = None;
+        assert_eq!(
+            pool.stats().total_refcount,
+            0,
+            "slot is freed once the last view reference is gone"
+        );
     }
 }
