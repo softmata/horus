@@ -41,14 +41,25 @@ use crate::services::types::{
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_request_id() -> u64 {
-    NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    // Mix the PID into the high 32 bits so request ids are unique ACROSS
+    // processes — a process-local counter starts every process at 1, so two
+    // clients of one service in different processes would otherwise collide and
+    // one could accept the other's response. Low 32 bits are the per-process
+    // monotonic counter. Mirrors the action and C++ FFI id scheme (F-SVC1).
+    let n = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF;
+    ((std::process::id() as u64) << 32) | n
 }
 
 /// Process-wide monotonic client ID counter for per-client response topics.
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_client_id() -> u64 {
-    NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed)
+    // PID in the high 32 bits (see `next_request_id`) so each client's response
+    // topic `{service}.response.{client_id}` is unique across processes —
+    // otherwise two client processes both build `{service}.response.1` and one
+    // reads the other's response (F-SVC1).
+    let n = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF;
+    ((std::process::id() as u64) << 32) | n
 }
 
 // ─── ServiceClient ────────────────────────────────────────────────────────
@@ -403,6 +414,29 @@ mod tests {
         deduped.sort();
         deduped.dedup();
         assert_eq!(ids.len(), deduped.len(), "All request IDs must be unique");
+    }
+
+    // F-SVC1 regression: request/client ids must carry this process's PID in the
+    // high 32 bits so two client PROCESSES don't collide — a process-local counter
+    // starts both at 1, which would give them the same `{service}.response.1` topic
+    // and let one client read the other's response.
+    #[test]
+    fn ids_embed_pid_for_cross_process_uniqueness() {
+        let pid = std::process::id() as u64;
+        assert_eq!(
+            next_request_id() >> 32,
+            pid,
+            "request_id must carry the PID in its high 32 bits"
+        );
+        assert_eq!(
+            next_client_id() >> 32,
+            pid,
+            "client_id must carry the PID in its high 32 bits"
+        );
+        // Low 32 bits still increment — unique within the process.
+        let a = next_request_id() & 0xFFFF_FFFF;
+        let b = next_request_id() & 0xFFFF_FFFF;
+        assert_ne!(a, b, "ids must remain unique within a process");
     }
 
     // ── ServiceClient construction ───────────────────────────────────────
