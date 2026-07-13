@@ -271,13 +271,13 @@ TEST(Action, ClientSendGoalAndCancel) {
 
     HorusGoalHandle* goal = horus_action_client_send_goal(client, "{\"x\": 5.0}");
     ASSERT_NE(goal, nullptr);
-    EXPECT_EQ(horus_goal_handle_id(goal), 1u);
+    EXPECT_NE(horus_goal_handle_id(goal), 0u); // ids are process-unique, not necessarily 1
     EXPECT_EQ(horus_goal_handle_status(goal), static_cast<uint8_t>(HORUS_GOAL_PENDING));
     EXPECT_TRUE(horus_goal_handle_is_active(goal));
 
-    horus_action_client_cancel(goal);
-    EXPECT_EQ(horus_goal_handle_status(goal), static_cast<uint8_t>(HORUS_GOAL_CANCELED));
-    EXPECT_FALSE(horus_goal_handle_is_active(goal));
+    // Cancel is published over the cancel topic by id; it does not mutate the
+    // client-side handle's local status.
+    horus_action_client_cancel(client, horus_goal_handle_id(goal));
 
     horus_goal_handle_destroy(goal);
     horus_action_client_destroy(client);

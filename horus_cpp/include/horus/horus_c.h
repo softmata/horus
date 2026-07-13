@@ -504,12 +504,15 @@ int                 horus_service_client_call(const HorusServiceClient* client, 
 HorusServiceServer* horus_service_server_new(const char* name);
 void                horus_service_server_destroy(HorusServiceServer* server);
 void                horus_service_server_set_handler(HorusServiceServer* server, bool (*handler)(const uint8_t*, size_t, uint8_t*, size_t*));
+/* Drive the server once; call in a loop on the thread that created it. */
+void                horus_service_server_process(HorusServiceServer* server);
 
 /* ── Action ─────────────────────────────────────────────────────────────── */
 
-typedef struct HorusActionClient HorusActionClient;
-typedef struct HorusActionServer HorusActionServer;
-typedef struct HorusGoalHandle   HorusGoalHandle;
+typedef struct HorusActionClient     HorusActionClient;
+typedef struct HorusActionServer     HorusActionServer;
+typedef struct HorusGoalHandle       HorusGoalHandle;       /* client-side goal tracking */
+typedef struct HorusActionGoalHandle HorusActionGoalHandle; /* server-side, in execute handler */
 
 /* Goal status: 0=Pending, 1=Active, 2=Succeeded, 3=Aborted, 4=Canceled, 5=Rejected */
 #define HORUS_GOAL_PENDING    0
@@ -519,21 +522,36 @@ typedef struct HorusGoalHandle   HorusGoalHandle;
 #define HORUS_GOAL_CANCELED   4
 #define HORUS_GOAL_REJECTED   5
 
+/* Client */
 HorusActionClient* horus_action_client_new(const char* name);
 void               horus_action_client_destroy(HorusActionClient* client);
 HorusGoalHandle*   horus_action_client_send_goal(const HorusActionClient* client, const char* goal_json);
-void               horus_action_client_cancel(HorusGoalHandle* handle);
+void               horus_action_client_cancel(const HorusActionClient* client, uint64_t goal_id);
+/* Non-blocking polls: return JSON length (null-terminated in out_buf), or -1 if none. */
+int32_t            horus_action_client_poll_feedback(const HorusActionClient* client, uint64_t* out_goal_id, uint8_t* out_buf, size_t out_buf_len);
+int32_t            horus_action_client_poll_result(const HorusActionClient* client, uint64_t goal_id, uint8_t* out_status, uint8_t* out_buf, size_t out_buf_len);
 
 uint8_t            horus_goal_handle_status(const HorusGoalHandle* handle);
 uint64_t           horus_goal_handle_id(const HorusGoalHandle* handle);
 bool               horus_goal_handle_is_active(const HorusGoalHandle* handle);
 void               horus_goal_handle_destroy(HorusGoalHandle* handle);
 
+/* Server */
 HorusActionServer* horus_action_server_new(const char* name);
 void               horus_action_server_destroy(HorusActionServer* server);
 void               horus_action_server_set_accept_handler(HorusActionServer* server, uint8_t (*handler)(const uint8_t*, size_t));
-void               horus_action_server_set_execute_handler(HorusActionServer* server, void (*handler)(uint64_t, const uint8_t*, size_t));
+void               horus_action_server_set_execute_handler(HorusActionServer* server, void (*handler)(HorusActionGoalHandle*, const uint8_t*, size_t));
 bool               horus_action_server_is_ready(const HorusActionServer* server);
+/* Drive the server once; call repeatedly from the thread the server was created on. */
+void               horus_action_server_process(HorusActionServer* server);
+
+/* Server-side goal handle — used inside the execute handler. */
+bool               horus_action_goal_is_cancel_requested(const HorusActionGoalHandle* handle);
+uint64_t           horus_action_goal_id(const HorusActionGoalHandle* handle);
+bool               horus_action_goal_publish_feedback(const HorusActionGoalHandle* handle, const char* feedback_json);
+void               horus_action_goal_succeed(HorusActionGoalHandle* handle, const char* result_json);
+void               horus_action_goal_abort(HorusActionGoalHandle* handle, const char* result_json);
+void               horus_action_goal_canceled(HorusActionGoalHandle* handle, const char* result_json);
 
 /* ── TransformFrame ─────────────────────────────────────────────────────── */
 

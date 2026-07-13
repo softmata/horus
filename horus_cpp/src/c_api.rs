@@ -1322,9 +1322,36 @@ pub unsafe extern "C" fn horus_service_server_set_handler(
     service_ffi::service_server_set_handler(server, handler);
 }
 
+/// Drive the service server once: answer any pending requests. Call repeatedly
+/// from the thread the server was created on.
+#[no_mangle]
+pub unsafe extern "C" fn horus_service_server_process(server: *mut HorusServiceServer) {
+    if server.is_null() {
+        return;
+    }
+    let server = &mut *(server as *mut service_ffi::FfiServiceServer);
+    service_ffi::service_server_process(server);
+}
+
 // ─── Action C API ────────────────────────────────────────────────────────────
 
 use crate::action_ffi;
+
+/// Copy `bytes` into a caller-provided buffer as a null-terminated string.
+/// Returns the number of bytes written (excluding the terminator), or -1 if the
+/// buffer is null/zero-length. Truncates to fit.
+///
+/// # Safety
+/// `out_buf` must be valid for writes of `out_buf_len` bytes (or null).
+unsafe fn write_cstr(bytes: &[u8], out_buf: *mut u8, out_buf_len: usize) -> i32 {
+    if out_buf.is_null() || out_buf_len == 0 {
+        return -1;
+    }
+    let copy_len = bytes.len().min(out_buf_len - 1);
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, copy_len);
+    *out_buf.add(copy_len) = 0;
+    copy_len as i32
+}
 
 /// Opaque ActionClient handle for C.
 pub struct HorusActionClient {
@@ -1334,8 +1361,12 @@ pub struct HorusActionClient {
 pub struct HorusActionServer {
     _opaque: [u8; 0],
 }
-/// Opaque GoalHandle for C.
+/// Opaque GoalHandle for C (client-side goal tracking).
 pub struct HorusGoalHandle {
+    _opaque: [u8; 0],
+}
+/// Opaque server-side goal handle, passed to the execute handler.
+pub struct HorusActionGoalHandle {
     _opaque: [u8; 0],
 }
 
@@ -1377,12 +1408,67 @@ pub unsafe extern "C" fn horus_action_client_send_goal(
     }
 }
 
-/// Cancel a goal.
+/// Request cancellation of a goal by id (publishes on the cancel topic).
 #[no_mangle]
-pub unsafe extern "C" fn horus_action_client_cancel(handle: *mut HorusGoalHandle) {
-    if !handle.is_null() {
-        let handle = &mut *(handle as *mut action_ffi::FfiGoalHandle);
-        action_ffi::action_client_cancel(handle);
+pub unsafe extern "C" fn horus_action_client_cancel(
+    client: *const HorusActionClient,
+    goal_id: u64,
+) {
+    if client.is_null() {
+        return;
+    }
+    let client = &*(client as *const action_ffi::FfiActionClient);
+    action_ffi::action_client_cancel(client, goal_id);
+}
+
+/// Poll for the next feedback message. Writes JSON into `out_buf` (null-
+/// terminated) and the goal id into `out_goal_id`. Returns the JSON length, or
+/// -1 if no feedback is currently available.
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_client_poll_feedback(
+    client: *const HorusActionClient,
+    out_goal_id: *mut u64,
+    out_buf: *mut u8,
+    out_buf_len: usize,
+) -> i32 {
+    if client.is_null() {
+        return -1;
+    }
+    let client = &*(client as *const action_ffi::FfiActionClient);
+    match action_ffi::action_client_poll_feedback(client) {
+        Some((goal_id, json)) => {
+            if !out_goal_id.is_null() {
+                *out_goal_id = goal_id;
+            }
+            write_cstr(json.as_bytes(), out_buf, out_buf_len)
+        }
+        None => -1,
+    }
+}
+
+/// Poll for a result for `goal_id`. Writes result JSON into `out_buf` (null-
+/// terminated) and the terminal status (0..5) into `out_status`. Returns the
+/// JSON length once the goal has finished, or -1 if not yet available.
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_client_poll_result(
+    client: *const HorusActionClient,
+    goal_id: u64,
+    out_status: *mut u8,
+    out_buf: *mut u8,
+    out_buf_len: usize,
+) -> i32 {
+    if client.is_null() {
+        return -1;
+    }
+    let client = &*(client as *const action_ffi::FfiActionClient);
+    match action_ffi::action_client_poll_result(client, goal_id) {
+        Some((status, json)) => {
+            if !out_status.is_null() {
+                *out_status = status as u8;
+            }
+            write_cstr(json.as_bytes(), out_buf, out_buf_len)
+        }
+        None => -1,
     }
 }
 
@@ -1455,11 +1541,13 @@ pub unsafe extern "C" fn horus_action_server_set_accept_handler(
     action_ffi::action_server_set_accept_handler(server, handler);
 }
 
-/// Set execute handler. handler(goal_id, goal_bytes, goal_len).
+/// Set execute handler: `handler(goal_handle, goal_bytes, goal_len)`. Runs on a
+/// dedicated thread per goal. The handler checks `is_cancel_requested`, publishes
+/// feedback, and finishes via the goal handle.
 #[no_mangle]
 pub unsafe extern "C" fn horus_action_server_set_execute_handler(
     server: *mut HorusActionServer,
-    handler: extern "C" fn(u64, *const u8, usize),
+    handler: extern "C" fn(*mut action_ffi::FfiActionGoalHandle, *const u8, usize),
 ) {
     if server.is_null() {
         return;
@@ -1476,6 +1564,109 @@ pub unsafe extern "C" fn horus_action_server_is_ready(server: *const HorusAction
     }
     let server = &*(server as *const action_ffi::FfiActionServer);
     action_ffi::action_server_is_ready(server)
+}
+
+/// Drive the server once: publish feedback/results, accept/reject new goals
+/// (spawning a thread per accepted goal), and deliver cancellations. Call this
+/// repeatedly from the same thread the server was created on.
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_server_process(server: *mut HorusActionServer) {
+    if server.is_null() {
+        return;
+    }
+    let server = &mut *(server as *mut action_ffi::FfiActionServer);
+    action_ffi::action_server_process(server);
+}
+
+// ─── Server-side goal handle (used inside the execute handler) ────────────────
+
+/// Whether cancellation was requested for this goal.
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_goal_is_cancel_requested(
+    handle: *const HorusActionGoalHandle,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let handle = &*(handle as *const action_ffi::FfiActionGoalHandle);
+    action_ffi::action_goal_is_cancel_requested(handle)
+}
+
+/// Goal id for this handle.
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_goal_id(handle: *const HorusActionGoalHandle) -> u64 {
+    if handle.is_null() {
+        return 0;
+    }
+    let handle = &*(handle as *const action_ffi::FfiActionGoalHandle);
+    action_ffi::action_goal_id(handle)
+}
+
+/// Publish feedback (JSON). Returns false if oversize (>3968 bytes) and dropped.
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_goal_publish_feedback(
+    handle: *const HorusActionGoalHandle,
+    feedback_json: *const c_char,
+) -> bool {
+    if handle.is_null() || feedback_json.is_null() {
+        return false;
+    }
+    let handle = &*(handle as *const action_ffi::FfiActionGoalHandle);
+    match CStr::from_ptr(feedback_json).to_str() {
+        Ok(json) => action_ffi::action_goal_publish_feedback(handle, json),
+        Err(_) => false,
+    }
+}
+
+/// Finish the goal as succeeded with a result payload (JSON).
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_goal_succeed(
+    handle: *mut HorusActionGoalHandle,
+    result_json: *const c_char,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let handle = &mut *(handle as *mut action_ffi::FfiActionGoalHandle);
+    let json = result_json
+        .as_ref()
+        .and_then(|_| CStr::from_ptr(result_json).to_str().ok())
+        .unwrap_or("null");
+    action_ffi::action_goal_succeed(handle, json);
+}
+
+/// Finish the goal as aborted with a result payload (JSON).
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_goal_abort(
+    handle: *mut HorusActionGoalHandle,
+    result_json: *const c_char,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let handle = &mut *(handle as *mut action_ffi::FfiActionGoalHandle);
+    let json = result_json
+        .as_ref()
+        .and_then(|_| CStr::from_ptr(result_json).to_str().ok())
+        .unwrap_or("null");
+    action_ffi::action_goal_abort(handle, json);
+}
+
+/// Finish the goal as canceled with a result payload (JSON).
+#[no_mangle]
+pub unsafe extern "C" fn horus_action_goal_canceled(
+    handle: *mut HorusActionGoalHandle,
+    result_json: *const c_char,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let handle = &mut *(handle as *mut action_ffi::FfiActionGoalHandle);
+    let json = result_json
+        .as_ref()
+        .and_then(|_| CStr::from_ptr(result_json).to_str().ok())
+        .unwrap_or("null");
+    action_ffi::action_goal_canceled(handle, json);
 }
 
 // ─── TransformFrame C API ────────────────────────────────────────────────────
@@ -1925,13 +2116,14 @@ mod tests {
             let handle = horus_action_client_send_goal(client, goal.as_ptr());
             assert!(!handle.is_null());
 
-            assert_eq!(horus_goal_handle_id(handle), 1);
+            let goal_id = horus_goal_handle_id(handle);
+            assert_ne!(goal_id, 0); // ids are process-unique, not necessarily 1
             assert_eq!(horus_goal_handle_status(handle), 0); // Pending
             assert!(horus_goal_handle_is_active(handle));
 
-            horus_action_client_cancel(handle);
-            assert_eq!(horus_goal_handle_status(handle), 4); // Canceled
-            assert!(!horus_goal_handle_is_active(handle));
+            // Cancel now publishes on the cancel topic (by id); it does not flip
+            // the client-side handle's local status. Just ensure it's callable.
+            horus_action_client_cancel(client, goal_id);
 
             horus_goal_handle_destroy(handle);
             horus_action_client_destroy(client);
@@ -1949,7 +2141,12 @@ mod tests {
             extern "C" fn accept(_: *const u8, _: usize) -> u8 {
                 0
             }
-            extern "C" fn execute(_: u64, _: *const u8, _: usize) {}
+            extern "C" fn execute(
+                _: *mut action_ffi::FfiActionGoalHandle,
+                _: *const u8,
+                _: usize,
+            ) {
+            }
 
             horus_action_server_set_accept_handler(server, accept);
             horus_action_server_set_execute_handler(server, execute);

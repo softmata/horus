@@ -92,6 +92,7 @@ inline NodeBuilder Scheduler::add(Node& node) {
     builder.tick([&node] { node.tick(); });
     builder.init([&node] { node.init(); });
     builder.safe_state([&node] { node.enter_safe_state(); });
+    builder.shutdown([&node] { node.on_shutdown(); });
     return builder;
 }
 
@@ -240,6 +241,11 @@ inline NodeBuilder& NodeBuilder::safe_state(std::function<void()> callback) {
     return *this;
 }
 
+inline NodeBuilder& NodeBuilder::shutdown(std::function<void()> callback) {
+    shutdown_fn_ = std::move(callback);
+    return *this;
+}
+
 // Per-node callback registry. Each node gets a unique slot.
 // The extern "C" trampoline indexes into this array.
 // Per-node callback registry with trampolines for tick, init, and safe_state.
@@ -248,14 +254,16 @@ namespace detail {
     static std::function<void()> g_tick_callbacks[MAX_NODES];
     static std::function<void()> g_init_callbacks[MAX_NODES];
     static std::function<void()> g_safe_callbacks[MAX_NODES];
+    static std::function<void()> g_shutdown_callbacks[MAX_NODES];
     static size_t g_next_slot = 0;
 
-    // Generate trampolines for tick, init, and safe_state
+    // Generate trampolines for tick, init, safe_state, and shutdown
     #define HORUS_TRAMPOLINE_TICK(N) inline void tick_trampoline_##N() { if (g_tick_callbacks[N]) g_tick_callbacks[N](); }
     #define HORUS_TRAMPOLINE_INIT(N) inline void init_trampoline_##N() { if (g_init_callbacks[N]) g_init_callbacks[N](); }
     #define HORUS_TRAMPOLINE_SAFE(N) inline void safe_trampoline_##N() { if (g_safe_callbacks[N]) g_safe_callbacks[N](); }
+    #define HORUS_TRAMPOLINE_SHUTDOWN(N) inline void shutdown_trampoline_##N() { if (g_shutdown_callbacks[N]) g_shutdown_callbacks[N](); }
 
-    #define HORUS_ALL_TRAMPOLINES(N) HORUS_TRAMPOLINE_TICK(N) HORUS_TRAMPOLINE_INIT(N) HORUS_TRAMPOLINE_SAFE(N)
+    #define HORUS_ALL_TRAMPOLINES(N) HORUS_TRAMPOLINE_TICK(N) HORUS_TRAMPOLINE_INIT(N) HORUS_TRAMPOLINE_SAFE(N) HORUS_TRAMPOLINE_SHUTDOWN(N)
 
     HORUS_ALL_TRAMPOLINES(0)  HORUS_ALL_TRAMPOLINES(1)  HORUS_ALL_TRAMPOLINES(2)  HORUS_ALL_TRAMPOLINES(3)
     HORUS_ALL_TRAMPOLINES(4)  HORUS_ALL_TRAMPOLINES(5)  HORUS_ALL_TRAMPOLINES(6)  HORUS_ALL_TRAMPOLINES(7)
@@ -316,14 +324,31 @@ namespace detail {
     }
     #undef HORUS_TABLE_ENTRY
 
+    #define HORUS_TABLE_ENTRY(N) shutdown_trampoline_##N
+    inline TrampolineFn get_shutdown_trampoline(size_t slot) {
+        static const TrampolineFn table[] = {
+            HORUS_TABLE_ENTRY(0),  HORUS_TABLE_ENTRY(1),  HORUS_TABLE_ENTRY(2),  HORUS_TABLE_ENTRY(3),
+            HORUS_TABLE_ENTRY(4),  HORUS_TABLE_ENTRY(5),  HORUS_TABLE_ENTRY(6),  HORUS_TABLE_ENTRY(7),
+            HORUS_TABLE_ENTRY(8),  HORUS_TABLE_ENTRY(9),  HORUS_TABLE_ENTRY(10), HORUS_TABLE_ENTRY(11),
+            HORUS_TABLE_ENTRY(12), HORUS_TABLE_ENTRY(13), HORUS_TABLE_ENTRY(14), HORUS_TABLE_ENTRY(15),
+            HORUS_TABLE_ENTRY(16), HORUS_TABLE_ENTRY(17), HORUS_TABLE_ENTRY(18), HORUS_TABLE_ENTRY(19),
+            HORUS_TABLE_ENTRY(20), HORUS_TABLE_ENTRY(21), HORUS_TABLE_ENTRY(22), HORUS_TABLE_ENTRY(23),
+            HORUS_TABLE_ENTRY(24), HORUS_TABLE_ENTRY(25), HORUS_TABLE_ENTRY(26), HORUS_TABLE_ENTRY(27),
+            HORUS_TABLE_ENTRY(28), HORUS_TABLE_ENTRY(29), HORUS_TABLE_ENTRY(30), HORUS_TABLE_ENTRY(31),
+        };
+        return slot < 32 ? table[slot] : nullptr;
+    }
+    #undef HORUS_TABLE_ENTRY
+
     #undef HORUS_TRAMPOLINE_TICK
     #undef HORUS_TRAMPOLINE_INIT
     #undef HORUS_TRAMPOLINE_SAFE
+    #undef HORUS_TRAMPOLINE_SHUTDOWN
     #undef HORUS_ALL_TRAMPOLINES
 }
 
 inline void NodeBuilder::build() {
-    if (tick_fn_ || init_fn_ || safe_state_fn_) {
+    if (tick_fn_ || init_fn_ || safe_state_fn_ || shutdown_fn_) {
         size_t slot = detail::g_next_slot++;
         if (slot >= 32) {
             throw Error("Too many nodes (max 32 with callbacks)");
@@ -340,6 +365,10 @@ inline void NodeBuilder::build() {
         if (safe_state_fn_) {
             detail::g_safe_callbacks[slot] = std::move(safe_state_fn_);
             horus_node_builder_set_safe_state(inner_, detail::get_safe_trampoline(slot));
+        }
+        if (shutdown_fn_) {
+            detail::g_shutdown_callbacks[slot] = std::move(shutdown_fn_);
+            horus_node_builder_set_shutdown(inner_, detail::get_shutdown_trampoline(slot));
         }
     }
     int result = horus_node_builder_build(inner_, sched_->inner_);

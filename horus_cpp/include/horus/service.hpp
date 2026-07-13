@@ -11,6 +11,7 @@
 //       // Parse request, compute response, write to res
 //       return true;
 //   });
+//   while (running) { server.process(); }   // drive it to answer requests
 #pragma once
 
 #include "horus_c.h"
@@ -87,6 +88,12 @@ public:
 
     void set_handler(Handler handler) {
         if (handle_) horus_service_server_set_handler(handle_, handler);
+    }
+
+    // Drive the server once: answer any pending requests. Call repeatedly from
+    // the thread that constructed the server (e.g. inside a scheduled tick).
+    void process() {
+        if (handle_) horus_service_server_process(handle_);
     }
 
 private:

@@ -163,6 +163,9 @@ public:
     /// Set the enter_safe_state callback — called by safety monitor.
     NodeBuilder& safe_state(std::function<void()> callback);
 
+    /// Set the on_shutdown callback — called once when the scheduler stops.
+    NodeBuilder& shutdown(std::function<void()> callback);
+
     /// Finalize and register the node with the scheduler.
     void build();
 
@@ -175,6 +178,7 @@ private:
     std::function<void()> tick_fn_;
     std::function<void()> init_fn_;
     std::function<void()> safe_state_fn_;
+    std::function<void()> shutdown_fn_;
 };
 
 } // namespace horus

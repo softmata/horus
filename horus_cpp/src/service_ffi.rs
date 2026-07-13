@@ -27,13 +27,28 @@
 
 use crate::types_ffi::JsonWireMessage;
 use horus_core::communication::Topic;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Wire `msg_type` tags: requests on `{name}.request`, responses on the
+// per-client `{name}.response.{pid}` topic.
+const MSG_REQUEST: u8 = 0;
+const MSG_RESPONSE: u8 = 1;
+
+/// Process-unique request id. The high 32 bits carry the client PID so the
+/// server can route the response back to `{name}.response.{pid}`; the low 32
+/// bits are a per-client counter.
+fn next_request_id(counter: &AtomicU64) -> u64 {
+    let n = counter.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF;
+    ((std::process::id() as u64) << 32) | n
+}
 
 /// Opaque service client using Pod-based JsonWireMessage transport.
 pub struct FfiServiceClient {
     name: String,
     req_topic: Option<Topic<JsonWireMessage>>,
     res_topic: Option<Topic<JsonWireMessage>>,
-    next_id: std::sync::atomic::AtomicU64,
+    next_id: AtomicU64,
 }
 
 /// Opaque service server using Pod-based JsonWireMessage transport.
@@ -42,6 +57,8 @@ pub struct FfiServiceServer {
     name: String,
     req_topic: Option<Topic<JsonWireMessage>>,
     handler: Option<Box<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>>,
+    // Per-client response topics (`{name}.response.{pid}`), created on demand.
+    res_topics: HashMap<u32, Topic<JsonWireMessage>>,
 }
 
 // ─── Service Client FFI ──────────────────────────────────────────────────────
@@ -97,12 +114,10 @@ pub fn service_client_call(
         .as_ref()
         .ok_or_else(|| format!("Service '{}' response topic not initialized", client.name))?;
 
-    let msg_id = client
-        .next_id
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let msg_id = next_request_id(&client.next_id);
 
     // Send request as JsonWireMessage (Pod — works through any Topic backend)
-    let wire_msg = JsonWireMessage::from_json(request_json, msg_id, 0)
+    let wire_msg = JsonWireMessage::from_json(request_json, msg_id, MSG_REQUEST)
         .ok_or_else(|| "Request JSON too large (max 3968 bytes)".to_string())?;
     req_topic.send(wire_msg);
 
@@ -136,6 +151,7 @@ pub fn service_server_new(name: &str) -> Box<FfiServiceServer> {
         name: name.to_string(),
         req_topic,
         handler: None,
+        res_topics: HashMap::new(),
     })
 }
 
@@ -177,6 +193,44 @@ pub fn service_server_name(server: &FfiServiceServer) -> &str {
 /// Check if the server has a handler set.
 pub fn service_server_has_handler(server: &FfiServiceServer) -> bool {
     server.handler.is_some()
+}
+
+/// Drive the server once: receive pending requests, invoke the handler, and
+/// publish each response back to the calling client's response topic. Call this
+/// repeatedly from a single thread (the one the server was created on).
+pub fn service_server_process(server: &mut FfiServiceServer) {
+    let requests: Vec<JsonWireMessage> = match server.req_topic {
+        Some(ref t) => std::iter::from_fn(|| t.recv()).collect(),
+        None => Vec::new(),
+    };
+    for req in requests {
+        let msg_id = req.msg_id;
+        let req_json = match req.to_json() {
+            Some(j) => j,
+            None => continue,
+        };
+        let response_bytes = match server.handler {
+            Some(ref h) => h(req_json.as_bytes()),
+            None => continue, // no handler: drop the request
+        };
+
+        // Route the response to the client's per-PID response topic, matching
+        // the client's `{name}.response.{pid}` subscription. The PID is encoded
+        // in the high 32 bits of the request id.
+        let client_pid = (msg_id >> 32) as u32;
+        if !server.res_topics.contains_key(&client_pid) {
+            let topic_name = format!("{}.response.{}", server.name, client_pid);
+            if let Ok(t) = Topic::<JsonWireMessage>::new(topic_name) {
+                server.res_topics.insert(client_pid, t);
+            }
+        }
+        if let Some(topic) = server.res_topics.get(&client_pid) {
+            let response_json = String::from_utf8_lossy(&response_bytes);
+            if let Some(wire) = JsonWireMessage::from_json(&response_json, msg_id, MSG_RESPONSE) {
+                topic.send(wire);
+            }
+        }
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -316,5 +370,43 @@ mod tests {
         let input = br#"{"sum": 42}"#;
         let output = handler(input);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn server_answers_a_client_call_end_to_end() {
+        use std::time::{Duration, Instant};
+
+        // Echo handler: response bytes = request bytes.
+        extern "C" fn echo(req: *const u8, req_len: usize, res: *mut u8, res_len: *mut usize) -> bool {
+            unsafe {
+                std::ptr::copy_nonoverlapping(req, res, req_len);
+                *res_len = req_len;
+            }
+            true
+        }
+
+        let name = format!("svc_e2e.{}", std::process::id());
+        let mut server = service_server_new(&name);
+        service_server_set_handler(&mut server, echo);
+
+        let client = service_client_new(&name);
+        std::thread::sleep(Duration::from_millis(50));
+
+        // service_client_call blocks polling for its response, so run it on a
+        // thread and drive the server from here.
+        let call = std::thread::spawn(move || service_client_call(&client, r#"{"ping":1}"#, 3_000_000));
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !call.is_finished() {
+            service_server_process(&mut server);
+            if Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let resp = call.join().unwrap();
+        assert!(resp.is_ok(), "service call should be answered: {resp:?}");
+        assert!(resp.unwrap().contains("ping"), "response should echo the request");
     }
 }

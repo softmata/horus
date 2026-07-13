@@ -124,6 +124,18 @@ impl Node for CppNode {
             }));
         }
     }
+
+    fn shutdown(&mut self) -> horus_core::error::HorusResult<()> {
+        // Invoke the C++ on_shutdown callback when the scheduler stops. Without
+        // this override the stored `shutdown_fn` was never called (the trait
+        // default no-op ran) — see stub audit 2026-07-13. Mirrors `init`.
+        if let Some(ref mut shutdown_fn) = self.shutdown_fn {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (shutdown_fn)();
+            }));
+        }
+        Ok(())
+    }
 }
 
 // ─── Node Builder FFI ────────────────────────────────────────────────────────
@@ -417,6 +429,33 @@ mod tests {
             TICK_COUNTER.load(Ordering::Relaxed) >= 1,
             "callback should have been invoked at least once, got {}",
             TICK_COUNTER.load(Ordering::Relaxed)
+        );
+    }
+
+    static SHUTDOWN_COUNTER: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(0);
+    extern "C" fn test_shutdown_callback() {
+        SHUTDOWN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn shutdown_callback_invoked_when_scheduler_stops() {
+        SHUTDOWN_COUNTER.store(0, Ordering::Relaxed);
+
+        let mut sched = scheduler_new();
+        let mut builder = node_builder_new("shutdown_node");
+        node_builder_set_tick(&mut builder, test_tick_callback);
+        node_builder_set_shutdown(&mut builder, test_shutdown_callback);
+        node_builder_build(builder, &mut sched).unwrap();
+
+        // Run briefly; on stop the scheduler calls node.shutdown(), which must
+        // invoke the registered C shutdown callback (regression: it never did).
+        let _ = crate::scheduler_ffi::scheduler_run_for(&mut sched, 20_000);
+
+        assert_eq!(
+            SHUTDOWN_COUNTER.load(Ordering::Relaxed),
+            1,
+            "on_shutdown must fire exactly once when the scheduler stops"
         );
     }
 
