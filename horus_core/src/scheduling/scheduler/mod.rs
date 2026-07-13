@@ -3538,8 +3538,12 @@ impl Scheduler {
             self.nodes[i].last_tick = Some(Instant::now());
         }
 
-        // Feed watchdog for RT nodes
-        if self.nodes[i].is_rt_node {
+        // Feed the watchdog for every node registered as critical — RT nodes, AND
+        // non-RT nodes with an explicit `.watchdog()` (which `apply_safety_config`
+        // also registers). Gating this on `is_rt_node` alone left a non-RT watchdog
+        // node registered but never fed, so its watchdog expired and spuriously
+        // emergency-stopped the whole scheduler (SCHED-H2).
+        if self.nodes[i].is_rt_node || self.nodes[i].node_watchdog.is_some() {
             if let Some(ref monitor) = self.monitor.safety {
                 monitor.feed_watchdog(&self.nodes[i].name);
             }

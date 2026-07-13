@@ -475,6 +475,34 @@ fn test_scheduler_with_watchdog() {
     );
 }
 
+/// SCHED-H2: a NON-RT node with an explicit `.watchdog()` is registered as a
+/// critical watchdog node, so it must be FED each tick. Before the fix the feed
+/// was gated on `is_rt_node`, so the node's watchdog was never fed, expired, and
+/// spuriously emergency-stopped the scheduler.
+#[test]
+fn non_rt_watchdog_node_is_fed_no_spurious_estop() {
+    let _guard = lock_scheduler();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut scheduler = Scheduler::new().watchdog(1000_u64.ms());
+    // No rate/budget => non-RT; explicit per-node watchdog of 50 ms.
+    scheduler
+        .add(CounterNode::with_counter("nonrt_wdog", counter.clone()))
+        .watchdog(50_u64.ms())
+        .build()
+        .unwrap();
+    // Run well past the 50 ms watchdog; the node ticks many times, feeding it.
+    let _ = scheduler.run_for(300_u64.ms());
+    let ticks = counter.load(Ordering::SeqCst);
+    assert!(ticks > 5, "node should tick many times, got {ticks}");
+    let stats = scheduler.safety_stats().expect("safety monitor enabled");
+    assert_eq!(
+        stats.watchdog_expirations(),
+        0,
+        "a fed non-RT watchdog node must not expire its watchdog (SCHED-H2); got {}",
+        stats.watchdog_expirations()
+    );
+}
+
 // ============================================================================
 // Real-time Node Tests
 // ============================================================================
