@@ -92,7 +92,16 @@ impl CostMap {
         let shape = vec![height as u64, width as u64];
 
         let grid_tensor = pool.alloc(&shape, TensorDtype::I8, device)?;
-        let cost_tensor = pool.alloc(&shape, TensorDtype::U8, device)?;
+        let cost_tensor = match pool.alloc(&shape, TensorDtype::U8, device) {
+            Ok(t) => t,
+            Err(e) => {
+                // Roll back the first allocation. `CostMap::Drop` (which releases
+                // both tensors) is not constructed yet, so without this the grid
+                // tensor's slot leaks — ALLOCATED with refcount 1 forever (F-MEM3).
+                pool.release(&grid_tensor);
+                return Err(e);
+            }
+        };
 
         let mut descriptor =
             CostMapDescriptor::new(grid_tensor, cost_tensor, resolution, width, height);
@@ -453,6 +462,39 @@ mod tests {
         assert_eq!(cm.get_occupancy(0, 0), Some(-1));
         // Cost initialized to 0 (free)
         assert_eq!(cm.get_cost(0, 0), Some(0));
+    }
+
+    /// F-MEM3: `new_on` allocates the grid tensor then the cost tensor; if the
+    /// second alloc fails, the grid must be released, not leaked (`CostMap::Drop`,
+    /// which releases both, is never constructed on the error path).
+    #[test]
+    fn costmap_new_on_releases_grid_when_cost_alloc_fails() {
+        use crate::memory::tensor_pool::{TensorPool, TensorPoolConfig};
+        use std::sync::Arc;
+        // A 32x32 CostMap allocates two 32x32 tensors (1 KiB each). Size the data
+        // region to hold only one, so the second (cost) alloc fails. A PID-scoped
+        // fresh pool id keeps each `cargo test` invocation independent of leftover shm.
+        let config = TensorPoolConfig {
+            pool_size: 1536, // fits one 1 KiB tensor, not two
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool =
+            Arc::new(TensorPool::new(50_000_000 + std::process::id(), config).expect("pool"));
+        let result = CostMap::new_on(32, 32, 0.05, 0.0, pool.clone());
+        assert!(
+            result.is_err(),
+            "the second (cost) alloc must fail — the pool holds only one tensor"
+        );
+        // total_refcount isolates the grid leak: the cost slot's OOM-return path
+        // leaves a stale ALLOCATED flag but refcount 0, so only a leaked grid
+        // (refcount 1) shows up here.
+        assert_eq!(
+            pool.stats().total_refcount,
+            0,
+            "grid tensor must be released when the cost alloc fails (F-MEM3)"
+        );
     }
 
     #[test]
