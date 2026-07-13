@@ -8,7 +8,12 @@
 //   // Server side
 //   auto server = horus::ServiceServer("add_two_ints");
 //   server.set_handler([](const uint8_t* req, size_t len, uint8_t* res, size_t* res_len) -> bool {
-//       // Parse request, compute response, write to res
+//       // *res_len is IN/OUT: on entry it holds the capacity of `res` in bytes;
+//       // write at most that many bytes, then set it to the number written.
+//       std::string body = compute(req, len);
+//       if (body.size() > *res_len) return false;   // too large — no response
+//       std::memcpy(res, body.data(), body.size());
+//       *res_len = body.size();
 //       return true;
 //   });
 //   while (running) { server.process(); }   // drive it to answer requests

@@ -155,19 +155,29 @@ pub fn service_server_new(name: &str) -> Box<FfiServiceServer> {
     })
 }
 
-/// Set the request handler as a function that takes JSON request and returns JSON response.
+/// Set the request handler as an `extern "C"` function.
 ///
-/// The handler is called for each incoming request. It receives the request
-/// payload as a JSON string and must return the response payload as a JSON string.
+/// Signature `(req_ptr, req_len, res_ptr, res_len) -> bool`:
+/// - `req_ptr` / `req_len`: the request payload (JSON bytes).
+/// - `res_ptr`: output buffer for the response payload (JSON bytes).
+/// - `res_len`: **IN/OUT** — on entry, the capacity of `res_ptr` in bytes; on
+///   return, the number of bytes the handler wrote. The handler MUST write no
+///   more than the incoming capacity. Returning `false`, or reporting a length
+///   greater than the capacity, yields no response.
 pub fn service_server_set_handler(
     server: &mut FfiServiceServer,
     handler: extern "C" fn(*const u8, usize, *mut u8, *mut usize) -> bool,
 ) {
-    // Wrap the extern "C" handler in a safe Rust closure
+    // Wrap the extern "C" handler in a safe Rust closure.
     server.handler = Some(Box::new(move |request_bytes: &[u8]| -> Vec<u8> {
-        // Allocate response buffer (4KB initial)
-        let mut response_buf = vec![0u8; 4096];
-        let mut response_len: usize = 0;
+        // Response buffer sized to the wire payload cap. `response_len` is IN/OUT:
+        // on entry it advertises the buffer capacity; on return it is the number
+        // of bytes the handler wrote. Initializing it to the capacity — not 0 —
+        // is what closes the heap overflow (F1): a handler that respects it can
+        // never write past `response_buf`. Because the capacity equals the wire
+        // limit, an accepted response can never be silently dropped downstream (F4).
+        let mut response_buf = vec![0u8; JsonWireMessage::MAX_PAYLOAD];
+        let mut response_len: usize = response_buf.len();
 
         let ok = handler(
             request_bytes.as_ptr(),
@@ -180,6 +190,8 @@ pub fn service_server_set_handler(
             response_buf.truncate(response_len);
             response_buf
         } else {
+            // Handler failed, or reported more bytes than the advertised capacity
+            // (a contract violation) — do not forward a truncated/oversized body.
             b"null".to_vec()
         }
     }));
@@ -408,5 +420,56 @@ mod tests {
         let resp = call.join().unwrap();
         assert!(resp.is_ok(), "service call should be answered: {resp:?}");
         assert!(resp.unwrap().contains("ping"), "response should echo the request");
+    }
+
+    // F1 regression: the FFI must advertise the real output-buffer capacity to
+    // the handler via `*res_len` (IN). The bug initialized it to 0, so a handler
+    // had no bound and a large response overflowed the Rust-side buffer. A handler
+    // that fills to the advertised capacity must (a) observe the true wire cap,
+    // not 0, and (b) not overflow the buffer.
+    #[test]
+    fn service_handler_is_told_capacity_and_can_fill_it() {
+        extern "C" fn fill_to_capacity(
+            _req: *const u8,
+            _req_len: usize,
+            res: *mut u8,
+            res_len: *mut usize,
+        ) -> bool {
+            let cap = unsafe { *res_len };
+            unsafe {
+                std::ptr::write_bytes(res, 0xAB, cap);
+                *res_len = cap;
+            }
+            true
+        }
+
+        let mut server = service_server_new("cap_fill");
+        service_server_set_handler(&mut server, fill_to_capacity);
+        let handler = server.handler.as_ref().unwrap();
+        let out = handler(b"{}");
+        // Old bug: capacity was 0 => out.len() == 0. Fixed: the full wire cap,
+        // filled without overflowing the buffer.
+        assert_eq!(out.len(), JsonWireMessage::MAX_PAYLOAD);
+        assert!(out.iter().all(|&b| b == 0xAB));
+    }
+
+    // F1: a handler that reports more bytes than the advertised capacity (a
+    // contract violation) is rejected — no truncated or oversized body is sent.
+    #[test]
+    fn service_handler_overreported_length_is_rejected() {
+        extern "C" fn overreport(
+            _req: *const u8,
+            _req_len: usize,
+            _res: *mut u8,
+            res_len: *mut usize,
+        ) -> bool {
+            unsafe { *res_len = JsonWireMessage::MAX_PAYLOAD + 1_000_000 };
+            true
+        }
+
+        let mut server = service_server_new("cap_overreport");
+        service_server_set_handler(&mut server, overreport);
+        let handler = server.handler.as_ref().unwrap();
+        assert_eq!(handler(b"{}"), b"null");
     }
 }

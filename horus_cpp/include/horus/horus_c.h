@@ -503,6 +503,9 @@ int                 horus_service_client_call(const HorusServiceClient* client, 
 
 HorusServiceServer* horus_service_server_new(const char* name);
 void                horus_service_server_destroy(HorusServiceServer* server);
+/* handler(req, req_len, res, res_len): res_len is IN/OUT — on entry it is the
+ * capacity of `res` in bytes; write at most that many, then set it to the number
+ * written. Return false (or res_len > capacity) for no response. */
 void                horus_service_server_set_handler(HorusServiceServer* server, bool (*handler)(const uint8_t*, size_t, uint8_t*, size_t*));
 /* Drive the server once; call in a loop on the thread that created it. */
 void                horus_service_server_process(HorusServiceServer* server);

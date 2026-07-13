@@ -57,10 +57,17 @@ impl std::fmt::Debug for JsonWireMessage {
 }
 
 impl JsonWireMessage {
+    /// Maximum JSON payload the wire can carry, in bytes — the size of `data`.
+    /// A service request/response larger than this cannot be delivered; the C++
+    /// FFI service handler is told this value as its output-buffer capacity (see
+    /// `service_ffi::service_server_set_handler`) so it can neither overflow the
+    /// buffer nor produce a response the wire would silently drop.
+    pub const MAX_PAYLOAD: usize = 3968;
+
     /// Create from a JSON string. Returns None if too large.
     pub fn from_json(json: &str, msg_id: u64, msg_type: u8) -> Option<Self> {
         let bytes = json.as_bytes();
-        if bytes.len() > 3968 {
+        if bytes.len() > Self::MAX_PAYLOAD {
             return None;
         }
         let mut msg = Self::default();
@@ -74,7 +81,7 @@ impl JsonWireMessage {
     /// Extract JSON string from the message.
     pub fn to_json(&self) -> Option<String> {
         let len = self.data_len as usize;
-        if len > 3968 {
+        if len > Self::MAX_PAYLOAD {
             return None;
         }
         std::str::from_utf8(&self.data[..len])
