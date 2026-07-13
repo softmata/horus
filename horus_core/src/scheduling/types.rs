@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::fault_tolerance::FailureHandler;
+use super::fault_tolerance::{FailureAction, FailureHandler};
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
 use super::safety_monitor::BudgetPolicy;
@@ -391,6 +391,60 @@ pub(crate) struct RegisteredNode {
     /// Per-subscription freshness watchdogs.
     /// Tracks last-received timestamp and staleness policy for each subscribed topic.
     pub(crate) subscription_freshness: Vec<SubscriptionFreshness>,
+}
+
+impl RegisteredNode {
+    /// Whether this node may tick this cycle. Returns `false` when its failure
+    /// policy has put it in a backoff (Restart) or cooldown (Skip) window.
+    #[inline]
+    pub(crate) fn failure_policy_allows_tick(&self) -> bool {
+        self.failure_handler
+            .as_ref()
+            .is_none_or(|h| h.should_allow())
+    }
+
+    /// Record a successful tick with the failure policy (clears backoff/cooldown).
+    #[inline]
+    pub(crate) fn record_tick_success(&mut self) {
+        if let Some(ref mut h) = self.failure_handler {
+            h.record_success();
+        }
+    }
+
+    /// Apply this node's failure policy after its `tick()` panicked. Returns
+    /// `true` if the scheduler must STOP (Fatal, or Restart limit exhausted).
+    ///
+    /// - `Fatal` / `FatalAfterRestarts`: safe the faulted node immediately
+    ///   (`enter_safe_state`, panic-guarded) and signal stop. The caller stops
+    ///   the run loop, whose teardown then calls `shutdown()` on every node.
+    /// - `Restart`: re-run `init()` (panic-guarded — it runs on partial state
+    ///   and may itself panic or double-open a device).
+    /// - `Skip` / `Continue`: nothing here; `failure_policy_allows_tick()` gates
+    ///   subsequent ticks during the cooldown/backoff.
+    ///
+    /// Runs on the post-panic path (already off the no-alloc tick hot path), so
+    /// the allocation `init()` may do under `Restart` is acceptable here.
+    pub(crate) fn apply_failure_policy_after_panic(&mut self) -> bool {
+        let action = match self.failure_handler {
+            Some(ref mut h) => h.record_failure(),
+            None => return false, // no policy → legacy log-and-continue
+        };
+        match action {
+            FailureAction::StopScheduler | FailureAction::FatalAfterRestarts => {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.node.enter_safe_state();
+                }));
+                true
+            }
+            FailureAction::RestartNode => {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = self.node.init();
+                }));
+                false
+            }
+            FailureAction::SkipNode | FailureAction::Continue => false,
+        }
+    }
 }
 
 /// Tracks freshness of a single subscription for stale data detection.

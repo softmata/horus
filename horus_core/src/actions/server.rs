@@ -42,17 +42,42 @@ use crate::communication::{Topic, TopicKind};
 use crate::core::{DurationExt, LogSummary, Node};
 use crate::HorusResult;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// Shared feedback topic link — lazily initialized, shared across clones.
-type FeedbackLink<F> = Arc<RwLock<Option<Topic<ActionFeedback<F>>>>>;
+/// Events produced by a goal-execution thread, drained and dispatched by the
+/// server's `tick()` on the tick thread. Goal threads never touch a `Topic`
+/// directly: topics carry a single-thread contract and are unsafe under
+/// concurrent producers, so ALL action-topic I/O is funneled through the tick
+/// thread via this inbox.
+type ServerEvents<A> = Arc<Mutex<Vec<ServerEvent<A>>>>;
+
+/// A message from a goal-execution thread to the server's tick thread.
+enum ServerEvent<A: Action> {
+    /// Rate-limited feedback emitted by the goal handle during execution.
+    Feedback(GoalId, <A as Action>::Feedback),
+    /// The goal's execute callback returned; carries the final outcome.
+    Completed(GoalId, GoalOutcome<A>),
+}
+
+/// Outcome of applying the preemption policy to an incoming (goal-callback-
+/// accepted) goal.
+enum GoalAdmission {
+    /// Start the goal now.
+    Accept,
+    /// Defer the goal — it has been pushed onto the queue and starts when a
+    /// slot frees. Distinct from `Reject`: a queued goal must NOT be rejected.
+    Queue,
+    /// Reject the goal outright.
+    Reject,
+}
 
 /// Result of goal execution.
 ///
@@ -199,8 +224,13 @@ impl<A: Action> Debug for ServerGoalHandle<A> {
 }
 
 /// Internal feedback sender that handles rate limiting.
+///
+/// Runs on the goal-execution thread. It does NOT send to the feedback topic
+/// directly (that would be a concurrent producer on a single-thread-contract
+/// topic); instead it pushes rate-limited feedback into the server's event
+/// inbox, which the tick thread drains and publishes.
 struct FeedbackSender<A: Action> {
-    link: FeedbackLink<A::Feedback>,
+    events: ServerEvents<A>,
     last_send: Arc<RwLock<Instant>>,
     min_interval: Duration,
 }
@@ -209,14 +239,14 @@ impl<A: Action> FeedbackSender<A>
 where
     A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
-    fn new(link: FeedbackLink<A::Feedback>, rate_hz: f64) -> Self {
+    fn new(events: ServerEvents<A>, rate_hz: f64) -> Self {
         let min_interval = if rate_hz > 0.0 {
             rate_hz.hz().period()
         } else {
             Duration::ZERO
         };
         Self {
-            link,
+            events,
             last_send: Arc::new(RwLock::new(Instant::now() - min_interval)),
             min_interval,
         }
@@ -227,11 +257,11 @@ where
         let elapsed = now.duration_since(*self.last_send.read());
 
         if elapsed >= self.min_interval {
-            if let Some(ref link) = *self.link.read() {
-                let msg = ActionFeedback::new(goal_id, feedback);
-                link.send(msg);
-                *self.last_send.write() = now;
-            }
+            // Hand off to the tick thread; it owns the feedback topic send.
+            self.events
+                .lock()
+                .push(ServerEvent::Feedback(goal_id, feedback));
+            *self.last_send.write() = now;
         }
     }
 }
@@ -239,7 +269,7 @@ where
 impl<A: Action> Clone for FeedbackSender<A> {
     fn clone(&self) -> Self {
         Self {
-            link: self.link.clone(),
+            events: self.events.clone(),
             last_send: self.last_send.clone(),
             min_interval: self.min_interval,
         }
@@ -258,7 +288,9 @@ struct GoalState {
 /// Callback types for action server.
 pub type GoalCallback<A> = Box<dyn Fn(&<A as Action>::Goal) -> GoalResponse + Send + Sync>;
 pub type CancelCallback = Box<dyn Fn(GoalId) -> CancelResponse + Send + Sync>;
-pub type ExecuteCallback<A> = Box<dyn Fn(ServerGoalHandle<A>) -> GoalOutcome<A> + Send + Sync>;
+/// The execute callback. `Arc` (not `Box`) so it can be shared with the
+/// per-goal execution thread that invokes it.
+pub type ExecuteCallback<A> = Arc<dyn Fn(ServerGoalHandle<A>) -> GoalOutcome<A> + Send + Sync>;
 
 /// Builder for creating action servers.
 ///
@@ -320,7 +352,7 @@ where
     where
         F: Fn(ServerGoalHandle<A>) -> GoalOutcome<A> + Send + Sync + 'static,
     {
-        self.execute_callback = Some(Box::new(callback));
+        self.execute_callback = Some(Arc::new(callback));
         self
     }
 
@@ -400,12 +432,19 @@ pub struct ActionServerNode<A: Action> {
     goal_link: Option<Topic<GoalRequest<A::Goal>>>,
     cancel_link: Option<Topic<CancelRequest>>,
     result_link: Option<Topic<ActionResult<A::Result>>>,
-    feedback_link: FeedbackLink<A::Feedback>,
+    feedback_link: Option<Topic<ActionFeedback<A::Feedback>>>,
     status_link: Option<Topic<GoalStatusUpdate>>,
 
     // Active goals
     active_goals: HashMap<GoalId, GoalState>,
     goal_queue: VecDeque<GoalRequest<A::Goal>>,
+
+    // Goal execution runs on a dedicated thread per goal so the tick loop stays
+    // responsive to cancel/preempt/new-goal requests while a goal runs.
+    goal_threads: HashMap<GoalId, JoinHandle<()>>,
+    // Feedback + completion events produced by goal threads, dispatched to
+    // action topics by `tick()` (single producer per topic).
+    events: ServerEvents<A>,
 
     // Metrics
     goals_received: AtomicU64,
@@ -441,10 +480,12 @@ where
             goal_link: None,
             cancel_link: None,
             result_link: None,
-            feedback_link: Arc::new(RwLock::new(None)),
+            feedback_link: None,
             status_link: None,
             active_goals: HashMap::new(),
             goal_queue: VecDeque::new(),
+            goal_threads: HashMap::new(),
+            events: Arc::new(Mutex::new(Vec::new())),
             goals_received: AtomicU64::new(0),
             goals_accepted: AtomicU64::new(0),
             goals_rejected: AtomicU64::new(0),
@@ -479,9 +520,19 @@ where
         };
 
         match response {
-            GoalResponse::Accept => {
-                // Apply preemption policy
-                if !self.can_accept_goal(&request) {
+            GoalResponse::Accept => match self.admit_goal(&request) {
+                GoalAdmission::Accept => self.accept_goal(request),
+                GoalAdmission::Queue => {
+                    // Deferred: the goal now sits in goal_queue and starts when a
+                    // slot frees. It stays Pending (no terminal status published),
+                    // so the client keeps waiting instead of seeing Rejected.
+                    log::debug!(
+                        "ActionServer '{}': Queued goal {} (server at capacity)",
+                        A::name(),
+                        request.goal_id
+                    );
+                }
+                GoalAdmission::Reject => {
                     log::debug!(
                         "ActionServer '{}': Rejecting goal {} due to preemption policy",
                         A::name(),
@@ -491,57 +542,57 @@ where
                         request.goal_id,
                         "Server busy, goal rejected by preemption policy",
                     );
-                    return;
                 }
-
-                self.accept_goal(request);
-            }
+            },
             GoalResponse::Reject(reason) => {
                 self.reject_goal(request.goal_id, &reason);
             }
         }
     }
 
-    /// Check if a goal can be accepted based on preemption policy.
-    fn can_accept_goal(&mut self, request: &GoalRequest<A::Goal>) -> bool {
+    /// Decide what to do with an accepted goal based on the preemption policy:
+    /// start it now, queue it, or reject it. For the `Queue` policy this also
+    /// performs the enqueue (returning `Queue`), which the caller must NOT treat
+    /// as a rejection.
+    fn admit_goal(&mut self, request: &GoalRequest<A::Goal>) -> GoalAdmission {
         let active_count = self.active_goals.len();
         let max_concurrent = self.config.max_concurrent_goals.unwrap_or(usize::MAX);
 
         if active_count < max_concurrent {
-            return true;
+            return GoalAdmission::Accept;
         }
 
-        // At capacity, check policy
+        // At capacity, apply the policy.
         match self.config.preemption_policy {
-            PreemptionPolicy::RejectNew => false,
+            PreemptionPolicy::RejectNew => GoalAdmission::Reject,
             PreemptionPolicy::PreemptOld => {
-                // Preempt oldest goal
+                // Preempt the oldest goal to make room.
                 if let Some(oldest_id) = self.get_oldest_goal_id() {
                     self.preempt_goal(oldest_id);
-                    true
+                    GoalAdmission::Accept
                 } else {
-                    false
+                    GoalAdmission::Reject
                 }
             }
             PreemptionPolicy::Priority => {
-                // Find lowest priority active goal
+                // Preempt the lowest-priority active goal if this one outranks it.
                 if let Some((lowest_id, lowest_priority)) = self.get_lowest_priority_goal() {
                     if request.priority.is_higher_than(&lowest_priority) {
                         self.preempt_goal(lowest_id);
-                        true
+                        GoalAdmission::Accept
                     } else {
-                        false
+                        GoalAdmission::Reject
                     }
                 } else {
-                    false
+                    GoalAdmission::Reject
                 }
             }
             PreemptionPolicy::Queue { max_size } => {
                 if self.goal_queue.len() < max_size {
                     self.goal_queue.push_back(request.clone());
-                    false // Don't start now, it's queued
+                    GoalAdmission::Queue
                 } else {
-                    false // Queue full
+                    GoalAdmission::Reject // Queue full
                 }
             }
         }
@@ -589,7 +640,13 @@ where
         // Publish status update
         self.publish_status(goal_id, GoalStatus::Active);
 
-        // Execute the goal
+        // Execute the goal on a dedicated thread so the server's tick loop stays
+        // responsive: it keeps reading cancel/preempt/new-goal requests while
+        // this goal runs. The handle shares the goal's cancel/preempt flags
+        // (`Arc<AtomicBool>`), so a cancel processed by `tick()` is observed by
+        // the running callback via `is_cancel_requested()`. All action-topic I/O
+        // (feedback/result/status) stays on the tick thread — the goal thread
+        // only pushes to the event inbox.
         if let Some(ref execute_callback) = self.execute_callback {
             let handle = ServerGoalHandle {
                 goal_id,
@@ -599,14 +656,41 @@ where
                 cancel_requested,
                 preempt_requested,
                 feedback_sender: FeedbackSender::new(
-                    self.feedback_link.clone(),
+                    self.events.clone(),
                     self.config.feedback_rate_hz,
                 ),
                 started_at: now,
             };
 
-            let outcome = execute_callback(handle);
-            self.complete_goal(goal_id, outcome);
+            let callback = execute_callback.clone();
+            let events = self.events.clone();
+            let spawn = std::thread::Builder::new()
+                .name(format!("horus-action-{}", A::name()))
+                .spawn(move || {
+                    let outcome = callback(handle);
+                    events
+                        .lock()
+                        .push(ServerEvent::Completed(goal_id, outcome));
+                });
+
+            match spawn {
+                Ok(join) => {
+                    self.goal_threads.insert(goal_id, join);
+                }
+                Err(e) => {
+                    // Thread exhaustion — extremely rare. Don't leave a phantom
+                    // active goal behind: drop it and report Aborted via status.
+                    log::error!(
+                        "ActionServer '{}': failed to spawn execution thread for goal {}: {}",
+                        A::name(),
+                        goal_id,
+                        e
+                    );
+                    self.active_goals.remove(&goal_id);
+                    self.goals_aborted.fetch_add(1, Ordering::Relaxed);
+                    self.publish_status(goal_id, GoalStatus::Aborted);
+                }
+            }
         }
     }
 
@@ -678,6 +762,58 @@ where
         self.process_goal_queue();
     }
 
+    /// Dispatch feedback + completion events produced by goal-execution threads.
+    ///
+    /// This is the ONLY place feedback is published and the ONLY place completed
+    /// goals are finalized. Running on the tick thread keeps every action topic
+    /// single-producer. Called at the top of every `tick()`, so it runs
+    /// regardless of any in-flight goal.
+    fn drain_goal_events(&mut self) {
+        // Take the batch under the lock, then release it before doing any topic
+        // I/O or joining threads (never hold the lock across `join`).
+        let drained: Vec<ServerEvent<A>> = {
+            let mut ev = self.events.lock();
+            std::mem::take(&mut *ev)
+        };
+
+        for event in drained {
+            match event {
+                ServerEvent::Feedback(goal_id, feedback) => {
+                    if let Some(ref link) = self.feedback_link {
+                        link.send(ActionFeedback::new(goal_id, feedback));
+                    }
+                }
+                ServerEvent::Completed(goal_id, outcome) => {
+                    // The thread has pushed its result and is returning; join
+                    // reaps it near-instantly and avoids a detached thread.
+                    if let Some(join) = self.goal_threads.remove(&goal_id) {
+                        let _ = join.join();
+                    }
+                    self.complete_goal(goal_id, outcome);
+                }
+            }
+        }
+    }
+
+    /// Request cancellation of every active goal and join its execution thread.
+    ///
+    /// Used by `shutdown()` and `Drop` so no goal thread outlives the server.
+    /// A cooperative callback (one that checks `is_cancel_requested()`) returns
+    /// promptly; a non-cooperative one blocks the join — the same contract ROS
+    /// action servers impose on their execute callbacks.
+    fn stop_all_goals(&mut self) {
+        for state in self.active_goals.values() {
+            state.cancel_requested.store(true, Ordering::Release);
+        }
+        for (_goal_id, join) in self.goal_threads.drain() {
+            let _ = join.join();
+        }
+        self.active_goals.clear();
+        self.goal_queue.clear();
+        // The server is stopping; drop pending events without re-dispatching.
+        self.events.lock().clear();
+    }
+
     /// Handle an incoming cancel request.
     fn handle_cancel(&mut self, request: CancelRequest) {
         log::debug!(
@@ -686,7 +822,47 @@ where
             request.goal_id
         );
 
-        // Check if goal exists
+        // A goal still sitting in the queue (accepted-but-not-yet-started) can be
+        // canceled before it ever runs. Remove it and finalize as Canceled —
+        // otherwise the cancel would be dropped and the goal would run anyway
+        // when a slot frees.
+        if let Some(pos) = self
+            .goal_queue
+            .iter()
+            .position(|g| g.goal_id == request.goal_id)
+        {
+            let response = if let Some(ref callback) = self.cancel_callback {
+                callback(request.goal_id)
+            } else {
+                CancelResponse::Accept
+            };
+            match response {
+                CancelResponse::Accept => {
+                    self.goal_queue.remove(pos);
+                    self.goals_canceled.fetch_add(1, Ordering::Relaxed);
+                    log::info!(
+                        "ActionServer '{}': Canceling queued goal {}",
+                        A::name(),
+                        request.goal_id
+                    );
+                    // No result payload — the goal never executed; the terminal
+                    // status conveys cancellation to the client.
+                    self.publish_status(request.goal_id, GoalStatus::Canceled);
+                }
+                CancelResponse::Reject(reason) => {
+                    log::debug!(
+                        "ActionServer '{}': Cancel rejected for queued goal {}: {}",
+                        A::name(),
+                        request.goal_id,
+                        reason
+                    );
+                }
+            }
+            return;
+        }
+
+        // Otherwise it must be an active goal; signal cooperative cancellation
+        // via the shared flag the running callback polls.
         if !self.active_goals.contains_key(&request.goal_id) {
             log::debug!(
                 "ActionServer '{}': Cancel rejected - goal {} not found",
@@ -696,7 +872,6 @@ where
             return;
         }
 
-        // Check cancel callback
         let response = if let Some(ref callback) = self.cancel_callback {
             callback(request.goal_id)
         } else {
@@ -758,12 +933,12 @@ where
         }
     }
 
-    /// Publish a result.
+    /// Publish a result on the result topic.
+    ///
+    /// Results are not retained server-side; clients correlate the result to
+    /// their goal by `goal_id` on the result topic.
     fn publish_result(&self, result: ActionResult<A::Result>) {
         if let Some(ref link) = self.result_link {
-            // Store in history
-            // Note: We can't modify result_history here since we only have &self
-            // This would need to be handled differently in a real implementation
             link.send(result);
         }
     }
@@ -844,7 +1019,7 @@ where
             A::result_topic(),
             TopicKind::ActionResult as u8,
         )?);
-        *self.feedback_link.write() = Some(Topic::new_with_kind(
+        self.feedback_link = Some(Topic::new_with_kind(
             A::feedback_topic(),
             TopicKind::ActionFeedback as u8,
         )?);
@@ -863,6 +1038,11 @@ where
     }
 
     fn tick(&mut self) {
+        // Dispatch feedback + finalize goals whose execution threads have
+        // produced events. This runs first and unconditionally, so cancel /
+        // preempt / new-goal handling below stays live even while goals execute.
+        self.drain_goal_events();
+
         // JSON gateway: accept goals from CLI (horus action send-goal).
         // CLI writes JSON to .service_gateway/{action}.goal.json.
         {
@@ -926,6 +1106,30 @@ where
 
         // Check for timed-out goals
         self.check_timeouts();
+    }
+
+    fn shutdown(&mut self) -> HorusResult<()> {
+        // Cancel and join every in-flight goal thread so none outlives the node.
+        self.stop_all_goals();
+        Ok(())
+    }
+}
+
+impl<A: Action> Drop for ActionServerNode<A> {
+    fn drop(&mut self) {
+        // Safety net if `shutdown()` was never called (e.g. the scheduler
+        // dropped the node on a panic): cancel and join any remaining goal
+        // threads so none is left detached. Fields only — no trait bounds
+        // required here, unlike `stop_all_goals`.
+        if self.goal_threads.is_empty() {
+            return;
+        }
+        for state in self.active_goals.values() {
+            state.cancel_requested.store(true, Ordering::Release);
+        }
+        for (_goal_id, join) in self.goal_threads.drain() {
+            let _ = join.join();
+        }
     }
 }
 

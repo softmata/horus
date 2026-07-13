@@ -10,12 +10,15 @@
 //
 // Architecture notes (same as action_runtime.rs):
 // - ActionServerNode implements Node trait (init creates topics, tick processes goals)
-// - Server's execute callback is SYNCHRONOUS — runs to completion in one tick
+// - Each accepted goal executes on its OWN thread, so the server's tick loop
+//   stays responsive (keeps reading goal/cancel topics) while a goal runs.
 // - SyncActionClient polls topics directly (doesn't need a scheduler)
 // - Server MUST be ticked for goals to be processed
-// - Because execute blocks the server thread, cancel requests sent via topics
-//   during execution cannot be processed until the NEXT tick. Cancellation is
-//   tested via cooperative patterns (shared AtomicBool checked inside execute).
+// - A cancel request sent over the topic while a goal runs IS delivered on the
+//   next tick and observed by the running callback via is_cancel_requested().
+//   (The dedicated end-to-end proof of that path lives in
+//   action_cancel_running_goal.rs; the cancel test below uses a shared
+//   AtomicBool purely to control the exact cancel timing.)
 
 use horus_core::action;
 use horus_core::actions::*;
@@ -263,9 +266,9 @@ fn test_goal_metrics_counted_accurately() {
 // send_goal_and_wait_with_feedback to receive intermediate feedback via
 // a callback. Assert at least some feedback messages are received.
 //
-// NOTE: Because execute is synchronous (all 5 feedbacks are published in
-// one tick before the result), the client's poll loop may not see every
-// individual feedback. We verify at least 1 is received.
+// NOTE: Feedback is published rapidly and may be coalesced within a tick or
+// thinned by rate limiting, so the client's poll loop is not guaranteed to see
+// every individual feedback. We verify at least 1 is received.
 // ============================================================================
 
 #[test]
@@ -323,16 +326,14 @@ fn test_feedback_published_during_execution() {
 // ============================================================================
 // Test 4: Cancel during execution (cooperative cancel pattern)
 //
-// The execute callback runs synchronously on the server thread, so cancel
-// requests sent via topics cannot be processed until execute returns. This
-// test uses a shared AtomicBool (external cancel signal) to simulate the
-// cooperative cancellation pattern: the execute callback checks both
-// handle.is_cancel_requested() and the external flag on each iteration.
-//
-// A background thread sets the external cancel flag after 300ms. The execute
-// callback detects it, exits its loop early, and returns handle.canceled().
-// The client observes GoalCanceled error — confirming the full cancel path
-// from execute callback through result publication to client reception.
+// The execute callback runs on its own thread, so the server keeps ticking and
+// a topic cancel would be delivered mid-execution. This test drives the cancel
+// with a shared AtomicBool purely for deterministic timing: the callback checks
+// both handle.is_cancel_requested() and the external flag each iteration, exits
+// early via handle.canceled(), and the client observes GoalCanceled — confirming
+// the full path from execute callback through result publication to client.
+// (Delivery of a real cancel REQUEST over the topic to a running goal is proven
+// end-to-end in action_cancel_running_goal.rs.)
 // ============================================================================
 
 #[test]

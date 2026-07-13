@@ -156,7 +156,11 @@ impl EventExecutor {
         let mut last_seen_generation: u64 = 0;
 
         while running.load(Ordering::Relaxed) {
-            if !node.initialized || node.is_stopped || node.is_paused {
+            if !node.initialized
+                || node.is_stopped
+                || node.is_paused
+                || !node.failure_policy_allows_tick()
+            {
                 std::thread::sleep(POLL_INTERVAL);
                 continue;
             }
@@ -202,6 +206,7 @@ impl EventExecutor {
                     match tr.result {
                         Ok(_) => {
                             tick_count += 1;
+                            node.record_tick_success();
                         }
                         Err(panic_err) => {
                             if let Ok(mut profiler) = monitors.profiler.try_lock() {
@@ -216,6 +221,13 @@ impl EventExecutor {
                             };
                             print_line(&error_msg);
                             node.node.on_error(&error_msg);
+
+                            // Enforce the failure policy (Fatal → safe + stop via
+                            // shared `running`; Restart → re-init; Skip → gated).
+                            if node.apply_failure_policy_after_panic() {
+                                running.store(false, Ordering::SeqCst);
+                                break;
+                            }
                         }
                     }
                 }

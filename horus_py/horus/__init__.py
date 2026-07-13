@@ -915,6 +915,18 @@ class Node:
         """
         if self.info:
             self.info.request_stop()
+        else:
+            # Outside a callback (init/tick/shutdown) there is no live scheduler
+            # binding, so the request cannot be delivered. Warn instead of
+            # silently doing nothing (matches the log_* helpers). Stub audit
+            # 2026-07-13.
+            import warnings
+            warnings.warn(
+                "request_stop() called outside a node callback (init/tick/shutdown) — "
+                "it has no effect there. Call it from within tick() to stop the scheduler.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     # Topic introspection methods
     def publishers(self) -> List[str]:
@@ -1094,13 +1106,26 @@ class Scheduler:
             duration: Optional duration in seconds (runs forever if None)
         """
         if self._scheduler:
-            # Start network replication if enabled (before scheduler.run)
+            # Start network replication if enabled (before scheduler.run).
             if self._net_enabled:
                 try:
                     from horus._horus import _start_net_replicator
                     self._net_handle = _start_net_replicator()
-                except (ImportError, Exception):
-                    pass  # horus_net not available or failed — degrade silently
+                except (ImportError, AttributeError):
+                    # The native replicator is not wired into the Python bindings.
+                    # Warn instead of silently ignoring net=True (stub audit
+                    # 2026-07-13) — the scheduler still runs, just without LAN
+                    # replication.
+                    import warnings
+                    warnings.warn(
+                        "net=True was requested but network replication is not available in the "
+                        "Python bindings — running WITHOUT LAN replication. Multi-robot "
+                        "replication is currently a Rust-only feature (build horus with "
+                        "`--features net`).",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    self._net_handle = None
 
             # horus_core handles init/tick/shutdown via PyNodeAdapter
             try:
@@ -1241,38 +1266,54 @@ class Scheduler:
             self._scheduler.add_critical_node(node_name, timeout_ms)
 
     def remove_node(self, node_name: str) -> bool:
-        """Remove a node from the scheduler.
+        """Remove a node from the scheduler — NOT SUPPORTED.
+
+        The scheduler core cannot remove a node once it is running. This method
+        previously only hid the node from introspection while it KEPT executing
+        (a "removed" actuator would keep commanding), so it now raises instead of
+        silently misleading you.
 
         Args:
             node_name: Name of the node to remove
 
-        Returns:
-            True if the node was found and removed
+        Raises:
+            NotImplementedError: always — runtime node removal is unsupported.
+                Construct the scheduler without the node, or gate the node's work
+                inside its own ``tick()``.
         """
-        if self._scheduler:
-            return self._scheduler.remove_node(node_name)
-        return False
+        raise NotImplementedError(
+            f"remove_node({node_name!r}) is not supported: the scheduler cannot remove a node "
+            "at runtime — a 'removed' node would keep executing. Construct the scheduler without "
+            "the node, or gate the node's work inside its own tick()."
+        )
 
     # ── Single-Tick Execution (Testing & Simulation) ─────────────────
 
     def tick_once(self, node_names: Optional[List[str]] = None) -> None:
-        """Execute exactly one tick cycle.
+        """Execute exactly one tick cycle across all nodes, then return.
 
         Useful for testing and simulation stepping. Lazily initializes
         nodes on first call.
 
         Args:
-            node_names: Optional list of node names to tick (None = all nodes)
+            node_names: Ignored — a single tick always ticks all nodes. (Per-node
+                filtering is only available for the continuous ``tick()``.)
 
         Example::
 
             sched.add(Node(tick=sensor_fn, rate=100))
             sched.tick_once()  # one tick, then return
-            sched.tick_once(["sensor"])  # tick only the sensor node
         """
         if self._scheduler:
-            names = node_names or [n.name for n in self._nodes]
-            self._scheduler.tick(names)
+            if node_names:
+                import warnings
+                warnings.warn(
+                    "tick_once() ticks all nodes once; per-node filtering (node_names) is "
+                    "not supported for a single tick and is ignored.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self._scheduler.tick_once()
 
     def tick_for(self, duration: float, node_names: Optional[List[str]] = None) -> None:
         """Run the tick loop for a specific duration, then return.

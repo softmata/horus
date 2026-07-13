@@ -598,17 +598,22 @@ impl Scheduler {
     /// ```
     /// Attach a runtime parameter store to the scheduler.
     ///
-    /// Enables live parameter changes with node callbacks:
-    /// - When `RuntimeParams::set()` is called, nodes with
-    ///   `on_parameter_change()` are notified before their next tick.
-    /// - If a node rejects the change (returns Err), the value rolls back.
+    /// The store's `get()` / `set()` work immediately and are shared with your
+    /// nodes.
+    ///
+    /// **NOT yet wired (stub audit 2026-07-13):** the scheduler does *not*
+    /// currently invoke a node's `on_parameter_change()` when a parameter
+    /// changes, and there is no automatic rollback on reject — the
+    /// scheduler→node notification bridge is future work. To react to changes
+    /// today, register a callback yourself via `RuntimeParams::on_change()`.
     ///
     /// ```rust,ignore
     /// let params = RuntimeParams::new()?;
     /// let scheduler = Scheduler::new()
     ///     .with_params(params.clone())
     ///     .tick_rate(100_u64.hz());
-    /// // Later: params.set("max_speed", 2.0) notifies all nodes
+    /// // params.set("max_speed", 2.0) updates the store; to be notified, use
+    /// // params.on_change(...) — nodes' on_parameter_change() are NOT called yet.
     /// ```
     pub fn with_params(mut self, params: crate::params::RuntimeParams) -> Self {
         self.params = Some(Arc::new(params));
@@ -3465,6 +3470,12 @@ impl Scheduler {
             return false;
         }
 
+        // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
+        // while the node is suppressed.
+        if !self.nodes[i].failure_policy_allows_tick() {
+            return false;
+        }
+
         {
             use super::types::NodeHealthState;
             let health = self.nodes[i].health_state.load();
@@ -3727,6 +3738,8 @@ impl Scheduler {
                 if let Some(ref mut context) = self.nodes[i].context {
                     context.record_tick();
                 }
+                // A clean tick clears any failure-policy backoff/cooldown.
+                self.nodes[i].record_tick_success();
 
                 // Recovery: successful tick transitions Warning→Healthy
                 {
@@ -4142,10 +4155,18 @@ impl Scheduler {
             clear_node_context();
 
             print_line(&format!(
-                " Node '{}' failed (continuing): {}",
+                " Node '{}' failed: {}",
                 node_name, error_msg
             ));
             context.transition_to_error(error_msg);
+        }
+
+        // Enforce the node's failure policy. Fatal → safe the faulted node and
+        // stop the scheduler (the run-loop teardown then shutdown()s every node).
+        // Restart → re-init. Skip/Ignore → gated by should_tick_node next cycle.
+        if self.nodes[i].apply_failure_policy_after_panic() {
+            self.running.store(false, Ordering::SeqCst);
+            return true;
         }
         false
     }

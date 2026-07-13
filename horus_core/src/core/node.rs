@@ -635,9 +635,16 @@ pub trait Node: Send {
 
     /// Called when a runtime parameter changes.
     ///
-    /// The scheduler invokes this before the next tick when a watched parameter
-    /// changes via `RuntimeParams::set()`. The node can inspect old/new values
-    /// and return `Err` to reject the change (value rolls back).
+    /// **NOT yet wired (stub audit 2026-07-13):** the scheduler does not
+    /// currently call this method — attaching `RuntimeParams` via
+    /// `.with_params()` does not route `RuntimeParams::set()` to nodes, and
+    /// there is no automatic rollback on reject. Overriding this today has no
+    /// effect. To react to parameter changes now, register a callback via
+    /// `RuntimeParams::on_change()`. Scheduler-mediated routing is future work.
+    ///
+    /// When wired, the intent is: the scheduler invokes this before the next
+    /// tick when a parameter changes; the node inspects old/new values and may
+    /// return `Err` to reject the change (value rolls back).
     ///
     /// Default: accept all changes silently.
     ///

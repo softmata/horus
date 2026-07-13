@@ -847,6 +847,15 @@ impl PyScheduler {
         })
     }
 
+    /// Execute exactly ONE tick cycle across all nodes, then return.
+    ///
+    /// Core `tick()` runs continuously (until stop); this calls core
+    /// `tick_once()` for a single cycle. The Python wrapper used to call `tick()`
+    /// here, which blocked forever (stub audit 2026-07-13).
+    fn tick_once(&self, py: Python) -> PyResult<()> {
+        self.with_inner_run(py, move |sched| sched.tick_once())
+    }
+
     /// Run specific nodes for a specified duration (in seconds).
     fn tick_for(&self, py: Python, node_names: Vec<String>, duration_seconds: f64) -> PyResult<()> {
         if duration_seconds <= 0.0 {
@@ -890,11 +899,20 @@ impl PyScheduler {
         )))
     }
 
-    /// Remove a node from the scheduler.
-    /// Note: horus_core doesn't support runtime removal; node is excluded from stats.
+    /// Runtime node removal is NOT supported by horus_core.
+    ///
+    /// This previously only added the name to a hide-set that suppressed the
+    /// node from introspection (`get_node_count`/`has_node`/…) while the node
+    /// KEPT EXECUTING every tick — a "removed" actuator would keep commanding.
+    /// That silent lie is dangerous for a robotics framework, so it now raises.
+    /// See stub audit 2026-07-13.
     fn remove_node(&self, name: String) -> PyResult<bool> {
-        let mut removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
-        Ok(removed.insert(name))
+        let _ = name;
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "Scheduler.remove_node() is not supported: horus_core cannot remove a node at \
+             runtime — a 'removed' node would keep executing. Construct the scheduler without \
+             the node, or gate the node's work inside its own tick().",
+        ))
     }
 
     /// Get list of all nodes with basic information.

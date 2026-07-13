@@ -8,7 +8,8 @@
 //
 // Architecture:
 // - ActionServerNode implements Node trait (init creates topics, tick processes goals)
-// - Server's execute callback is SYNCHRONOUS — runs to completion in one tick
+// - Each accepted goal executes on its OWN thread; the tick loop stays
+//   responsive, and feedback/result/status are published by the tick thread
 // - SyncActionClient polls topics directly (doesn't need a scheduler)
 // - Server MUST be ticked for goals to be processed
 

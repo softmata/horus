@@ -2,35 +2,34 @@
 // Preemption policy integration tests for ActionServer.
 //
 // These tests exercise the PreemptionPolicy variants: RejectNew, Priority,
-// Queue, and PreemptOld. The action server's execute callback is synchronous
-// (runs to completion within a single tick), so goals are processed one at a
-// time. The preemption policy logic runs in `can_accept_goal` when a new goal
-// is received while the server is at max_concurrent capacity.
+// Queue, and PreemptOld. Each accepted goal executes on its OWN thread, so the
+// server's tick loop stays responsive while a goal runs — it keeps reading the
+// goal/cancel topics and applies the preemption policy in `can_accept_goal`
+// while goals are genuinely in flight (`active_goals` at max_concurrent).
 //
 // Test strategy per policy:
 //
-// - RejectNew: While a slow goal executes, the server thread is blocked and
-//   cannot process new goals. A second goal sent during that window times out
-//   on the client side. After the slow goal finishes, subsequent goals succeed.
+// - RejectNew: While a slow goal is genuinely executing on its thread, a second
+//   goal is ACTIVELY rejected by the policy (the server is at capacity, not
+//   deaf). The client observes GoalRejected. After the slow goal finishes,
+//   subsequent goals succeed.
 //
-// - Priority: Send goals sequentially. With Priority policy both complete since
-//   there is no contention. We verify the priority config is applied and both
-//   goals succeed with the correct results. The preemption path is exercised
-//   at the unit-level within horus_core itself.
+// - Priority: Goals sent sequentially through one blocking client complete in
+//   FIFO order with no contention (the client serializes them). Verifies the
+//   priority config is applied and results are correct.
 //
 // - Queue: Send goals sequentially through a single client, verifying FIFO
 //   order and correct execution counters.
 //
-// - PreemptOld: Sequential goals succeed. The policy allows new goals to
-//   replace old ones, but with synchronous execute the old goal always
-//   completes before the new one arrives. Verified by sending two sequential
-//   goals and confirming both complete successfully.
+// - PreemptOld: A slow goal runs on its thread; a second goal arriving at
+//   capacity preempts it. The running goal observes `should_abort()`, exits with
+//   `preempted()`, and the new goal proceeds — real concurrent preemption.
 
 use horus_core::action;
 use horus_core::actions::*;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,14 +108,13 @@ fn stop_server(running: Arc<AtomicBool>, handle: std::thread::JoinHandle<()>) {
 }
 
 // ============================================================================
-// Test 1: RejectNew — server is unreachable while executing a slow goal
+// Test 1: RejectNew — server actively rejects new goals while at capacity
 //
-// With max_concurrent=1 and PreemptionPolicy::RejectNew, the server should
-// reject new goals when at capacity. Because the execute callback runs
-// synchronously on the server thread, the server cannot process (or reject)
-// a second goal while executing the first. A client sending during this
-// window sees a timeout. Once the first goal completes, the server is free
-// and the next goal succeeds.
+// With max_concurrent=1 and PreemptionPolicy::RejectNew, a second goal sent
+// while the first is genuinely executing (on its own thread) is ACTIVELY
+// rejected by the policy — the server keeps ticking and responds with
+// GoalRejected, rather than going deaf and letting the client time out. Once
+// the first goal completes, the server is free and the next goal succeeds.
 // ============================================================================
 
 #[test]
@@ -169,15 +167,16 @@ fn test_reject_new_policy_rejects_when_server_busy() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // The server thread is now blocked in execute(goal 1) for ~800ms.
-    // A second client sending a goal with a SHORT timeout should time out,
-    // because the server cannot even dequeue it.
+    // Goal 1 is now executing on its own thread for ~800ms. The server keeps
+    // ticking, so a second goal sent now is at capacity (active=1, max=1) and
+    // the RejectNew policy ACTIVELY rejects it. The client observes GoalRejected
+    // promptly — well within the timeout, i.e. not a timeout.
     let client2 = SyncActionClient::<PreemptSlow>::new().unwrap();
-    let result2 = client2.send_goal_and_wait(PreemptSlowGoal { id: 2 }, Duration::from_millis(300));
+    let result2 = client2.send_goal_and_wait(PreemptSlowGoal { id: 2 }, Duration::from_secs(2));
 
     assert!(
-        matches!(result2, Err(ActionError::GoalTimeout)),
-        "Expected GoalTimeout while server is busy, got: {:?}",
+        matches!(result2, Err(ActionError::GoalRejected(_))),
+        "Expected GoalRejected while server is genuinely busy, got: {:?}",
         result2
     );
 
@@ -201,14 +200,15 @@ fn test_reject_new_policy_rejects_when_server_busy() {
 // ============================================================================
 // Test 2: Priority — sequential goals succeed; priority config is applied
 //
-// With PreemptionPolicy::Priority and max_concurrent=1, goals are processed
-// one at a time. Since the execute callback is synchronous, there is never
-// actual contention in this test — each goal completes before the next
-// arrives. We verify that:
+// With PreemptionPolicy::Priority and max_concurrent=1, goals are sent through
+// a single blocking client, which serializes them (each result is awaited
+// before the next goal is sent), so there is no contention in this test. We
+// verify that:
 // 1. The priority policy is correctly configured (no crash, no unexpected
 //    rejection).
 // 2. Both low-priority and high-priority goals succeed.
 // 3. The execution order matches send order (FIFO).
+// (Concurrent priority preemption is covered by the PreemptOld test's pattern.)
 // ============================================================================
 
 #[test]
@@ -268,9 +268,9 @@ fn test_priority_policy_preempts_lower_priority() {
 // ============================================================================
 // Test 3: Queue — goals are queued and processed in FIFO order
 //
-// With PreemptionPolicy::Queue { max_size: 3 } and max_concurrent=1,
-// only one goal executes at a time. We send goals sequentially through a
-// single client, verifying they complete in the correct order with the
+// With PreemptionPolicy::Queue { max_size: 3 } and max_concurrent=1, at most
+// one goal executes at a time. We send goals sequentially through a single
+// blocking client, verifying they complete in the correct order with the
 // expected execution counters.
 // ============================================================================
 
@@ -336,23 +336,25 @@ fn test_queue_policy_queues_goals() {
 }
 
 // ============================================================================
-// Test 4: PreemptOld — sequential goals both succeed
+// Test 4: PreemptOld — a new goal preempts the running goal (real concurrency)
 //
-// With PreemptionPolicy::PreemptOld and max_concurrent=1, new goals preempt
-// active goals. In the synchronous model each goal completes before the next
-// is processed, so there is never an active goal to preempt. We verify:
-// 1. The PreemptOld policy is correctly configured.
-// 2. A slow goal followed by a fast goal both succeed.
-// 3. The execute callback's cooperative preemption check
-//    (`handle.should_abort()`) works without false positives.
+// With PreemptionPolicy::PreemptOld and max_concurrent=1: a slow goal (id=1)
+// runs on its own thread; while it is genuinely executing, a second goal (id=2)
+// arrives at capacity and preempts it. The running goal observes
+// `handle.should_abort()` becoming true (the server set its preempt flag) and
+// exits early via `preempted()`. The new goal then proceeds and succeeds. This
+// exercises the actual concurrent-preemption path, which the old synchronous
+// (tick-blocking) execution model could never reach.
 // ============================================================================
 
 #[test]
 fn test_preempt_old_cancels_existing_goal() {
     serial_setup!();
 
-    let goals_completed = Arc::new(AtomicU32::new(0));
-    let goals_completed_clone = goals_completed.clone();
+    let first_started = Arc::new(AtomicBool::new(false));
+    let first_started_clone = first_started.clone();
+    let first_hit_guard = Arc::new(AtomicBool::new(false));
+    let first_hit_guard_clone = first_hit_guard.clone();
 
     let server = ActionServerBuilder::<PreemptFast>::new()
         .preemption_policy(PreemptionPolicy::PreemptOld)
@@ -361,20 +363,21 @@ fn test_preempt_old_cancels_existing_goal() {
         .on_cancel(|_id| CancelResponse::Accept)
         .on_execute(move |handle| {
             let goal_id = handle.goal().id;
-            goals_completed_clone.fetch_add(1, Ordering::SeqCst);
 
             if goal_id == 1 {
-                // Slow goal: loop checking for preemption (cooperative pattern)
-                for _ in 0..20 {
+                first_started_clone.store(true, Ordering::Release);
+                // Cooperative slow goal: run up to ~2s, exiting early if the
+                // server requests preemption. 400 * 5ms = 2s hard cap.
+                for _ in 0..400 {
                     if handle.should_abort() {
                         return handle.preempted(PreemptFastResult { goal_id, ok: false });
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                // Reached the guard: preemption was never observed.
+                first_hit_guard_clone.store(true, Ordering::Release);
             }
 
-            // Goal completes normally — preemption was NOT requested because
-            // in the synchronous model no other goal is contending.
             handle.succeed(PreemptFastResult { goal_id, ok: true })
         })
         .build();
@@ -382,31 +385,41 @@ fn test_preempt_old_cancels_existing_goal() {
     let (running, server_handle) = run_server_background(server);
     std::thread::sleep(Duration::from_millis(100));
 
-    let client = SyncActionClient::<PreemptFast>::new().unwrap();
+    // Send the slow goal (id=1) on a background thread with its own client so
+    // the test thread stays free to send the preempting goal.
+    let goal1_handle = {
+        let client = SyncActionClient::<PreemptFast>::new().unwrap();
+        std::thread::spawn(move || {
+            client.send_goal_and_wait(PreemptFastGoal { id: 1 }, Duration::from_secs(5))
+        })
+    };
 
-    // Send the slow goal (id=1) — should succeed (no preemption in sync model)
-    let r1 = client.send_goal_and_wait(PreemptFastGoal { id: 1 }, Duration::from_secs(3));
-    assert!(r1.is_ok(), "First goal should succeed: {:?}", r1);
-    let r1_val = r1.unwrap();
-    assert_eq!(r1_val.goal_id, 1);
+    // Wait until goal 1 is genuinely executing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !first_started.load(Ordering::Acquire) {
+        if std::time::Instant::now() > deadline {
+            panic!("First goal never started executing");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // Send the preempting goal (id=2). At capacity, PreemptOld preempts goal 1
+    // and accepts goal 2, which should succeed.
+    let client2 = SyncActionClient::<PreemptFast>::new().unwrap();
+    let r2 = client2.send_goal_and_wait(PreemptFastGoal { id: 2 }, Duration::from_secs(3));
+    assert!(r2.is_ok(), "Preempting goal should succeed: {:?}", r2);
+    assert_eq!(r2.unwrap().goal_id, 2);
+
+    // Goal 1 must have observed preemption and exited early — not run to guard.
+    let r1 = goal1_handle.join().unwrap();
     assert!(
-        r1_val.ok,
-        "First goal should not be preempted in sequential mode"
+        matches!(r1, Err(ActionError::GoalPreempted)),
+        "First goal should be preempted by the newer goal, got: {:?}",
+        r1
     );
-
-    // Send the fast goal (id=2) — should also succeed
-    let r2 = client.send_goal_and_wait(PreemptFastGoal { id: 2 }, Duration::from_secs(3));
-    assert!(r2.is_ok(), "Second goal should succeed: {:?}", r2);
-    let r2_val = r2.unwrap();
-    assert_eq!(r2_val.goal_id, 2);
-    assert!(r2_val.ok);
-
-    // Verify both goals were processed
-    let completed = goals_completed.load(Ordering::SeqCst);
-    assert_eq!(
-        completed, 2,
-        "Both goals should have been executed, got {}",
-        completed
+    assert!(
+        !first_hit_guard.load(Ordering::Acquire),
+        "First goal ran to its guard instead of observing preemption"
     );
 
     stop_server(running, server_handle);

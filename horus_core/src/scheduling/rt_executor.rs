@@ -174,6 +174,12 @@ impl RtExecutor {
         running: &Arc<AtomicBool>,
         is_first_tick: bool,
     ) {
+        // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
+        // while the node is suppressed.
+        if !node.failure_policy_allows_tick() {
+            return;
+        }
+
         // Update last tick time
         if node.rate_hz.is_some() {
             node.last_tick = Some(Instant::now());
@@ -336,6 +342,7 @@ impl RtExecutor {
                 if let Some(ref mut ctx) = node.context {
                     ctx.record_tick();
                 }
+                node.record_tick_success();
             }
             Err(panic_err) => {
                 // Use try_lock to avoid priority inversion — skip if contended
@@ -355,6 +362,15 @@ impl RtExecutor {
 
                 // Call on_error handler
                 node.node.on_error(&error_msg);
+
+                // Enforce the failure policy. Fatal → safe the faulted node and
+                // stop the whole scheduler via the shared `running` flag (the
+                // same cross-thread mechanism as a deadline EmergencyStop); the
+                // main run-loop teardown then shutdown()s every node. Restart →
+                // re-init. Skip/Ignore → gated by should_allow on the next tick.
+                if node.apply_failure_policy_after_panic() {
+                    running.store(false, Ordering::SeqCst);
+                }
             }
         }
 

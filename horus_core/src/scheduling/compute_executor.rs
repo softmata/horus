@@ -105,7 +105,11 @@ impl ComputeExecutor {
             // Classify which nodes should tick this cycle
             let mut ready_indices = Vec::new();
             for (i, node) in nodes.iter().enumerate() {
-                if !node.initialized || node.is_stopped || node.is_paused {
+                if !node.initialized
+                    || node.is_stopped
+                    || node.is_paused
+                    || !node.failure_policy_allows_tick()
+                {
                     continue;
                 }
 
@@ -254,7 +258,7 @@ impl ComputeExecutor {
     fn process_node_result(
         node: &mut RegisteredNode,
         tr: super::primitives::TickResult,
-        _running: &Arc<AtomicBool>,
+        running: &Arc<AtomicBool>,
         monitors: &SharedMonitors,
     ) {
         // Record execution stats
@@ -281,6 +285,7 @@ impl ComputeExecutor {
                 if let Some(ref mut ctx) = node.context {
                     ctx.record_tick();
                 }
+                node.record_tick_success();
             }
             Err(panic_err) => {
                 if let Ok(mut profiler) = monitors.profiler.try_lock() {
@@ -295,6 +300,12 @@ impl ComputeExecutor {
                 };
                 print_line(&error_msg);
                 node.node.on_error(&error_msg);
+
+                // Enforce the failure policy (Fatal → safe node + stop scheduler
+                // via shared `running`; Restart → re-init; Skip/Ignore → gated).
+                if node.apply_failure_policy_after_panic() {
+                    running.store(false, Ordering::SeqCst);
+                }
             }
         }
     }
