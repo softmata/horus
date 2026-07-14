@@ -668,11 +668,14 @@ fn test_package_metadata_serde() {
         name: "test-pkg".to_string(),
         version: "0.1.0".to_string(),
         checksum: Some("deadbeef".to_string()),
+        signature: Some("cafef00d".to_string()),
     };
     let json = serde_json::to_string(&meta).unwrap();
     assert!(json.contains("deadbeef"));
+    assert!(json.contains("cafef00d"));
     let roundtripped: PackageMetadata = serde_json::from_str(&json).unwrap();
     assert_eq!(roundtripped.checksum, Some("deadbeef".to_string()));
+    assert_eq!(roundtripped.signature, Some("cafef00d".to_string()));
 }
 
 // ============================================================================

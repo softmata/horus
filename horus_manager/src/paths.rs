@@ -45,6 +45,15 @@ pub fn keys_dir() -> Result<PathBuf> {
     Ok(horus_sys::platform::data_dir().join("keys"))
 }
 
+/// Get the path to the out-of-repo plugin trust store.
+///
+/// Lives under the user's data directory (NOT any project `.horus/`), so a
+/// cloned repository cannot forge trust for its own bundled plugins. See
+/// [`crate::plugins::TrustStore`].
+pub fn trusted_plugins_path() -> Result<PathBuf> {
+    Ok(horus_sys::platform::data_dir().join("trusted_plugins.json"))
+}
+
 /// Get the authentication config file path.
 pub fn auth_config_path() -> Result<PathBuf> {
     Ok(horus_sys::platform::config_dir().join("auth.json"))

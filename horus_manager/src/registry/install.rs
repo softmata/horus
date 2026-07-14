@@ -778,6 +778,9 @@ impl RegistryClient {
             name: package_name.to_string(),
             version: actual_version.clone(),
             checksum: Some(checksum),
+            // SEC3: carry the verified publisher signature (if any) into the
+            // package record so plugin registration can anchor provenance.
+            signature: pkg_signature.clone(),
         };
 
         let metadata_path = package_dir.join("metadata.json");
@@ -1209,6 +1212,9 @@ impl RegistryClient {
             name: package_name.to_string(),
             version: actual_version.clone(),
             checksum: Some(actual_checksum),
+            // SEC3: carry the verified publisher signature (if any) into the
+            // package record so plugin registration can anchor provenance.
+            signature: pkg_signature.clone(),
         };
         let metadata_path = package_dir.join("metadata.json");
         fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;

@@ -11,7 +11,7 @@ use crate::plugins::{
     CommandInfo, Compatibility, PluginEntry, PluginRegistry, PluginResolver, PluginScope,
     PluginSource, VerificationStatus, HORUS_VERSION,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use colored::*;
 use serde_json;
@@ -404,6 +404,160 @@ pub fn resolve_installed_package_dir(name: &str, version: &str, global: bool) ->
     None
 }
 
+/// Read the publisher signature (if any) recorded in a package's metadata.json.
+/// Best-effort: a missing/unsigned/unreadable metadata simply yields `None`.
+fn read_package_signature(package_dir: &Path) -> Option<String> {
+    let meta_path = package_dir.join("metadata.json");
+    let content = fs::read_to_string(&meta_path).ok()?;
+    serde_json::from_str::<crate::registry::PackageMetadata>(&content)
+        .ok()
+        .and_then(|m| m.signature)
+}
+
+/// Record trust for a deliberately-installed project-local plugin binary in the
+/// out-of-repo trust store. Best-effort: failures are logged, never fatal (the
+/// install already succeeded; the user can re-run `horus plugin trust`).
+fn record_local_plugin_trust(checksum: &str, command: &str, binary: &Path) {
+    let store_path = match crate::paths::trusted_plugins_path() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("Could not locate plugin trust store to trust '{command}': {e}");
+            return;
+        }
+    };
+    let mut store = crate::plugins::TrustStore::load(&store_path).unwrap_or_default();
+    if let Err(e) = store.trust(checksum, command, binary) {
+        log::warn!("Could not record plugin trust for '{command}': {e}");
+        return;
+    }
+    if let Err(e) = store.save(&store_path) {
+        log::warn!("Could not persist plugin trust for '{command}': {e}");
+    }
+}
+
+/// Locate the binary a plugin command would execute (registered entry, else
+/// path-based discovery mirroring the executor's project-then-global order).
+fn locate_plugin_binary(command: &str) -> Result<PathBuf> {
+    let resolver = PluginResolver::new()?;
+    if let Some(entry) = resolver.resolve(command) {
+        return Ok(entry.binary.clone());
+    }
+    let binary_name = format!("horus-{}", command);
+    if let Some(root) = resolver.project_root() {
+        let p = PluginRegistry::project_bin_dir(root).join(&binary_name);
+        if p.exists() && is_executable(&p) {
+            return Ok(p);
+        }
+    }
+    let global = PluginRegistry::global_bin_dir()?.join(&binary_name);
+    if global.exists() && is_executable(&global) {
+        return Ok(global);
+    }
+    Err(anyhow!(
+        "No plugin binary found for command '{}'. Install it first \
+         (e.g. 'horus plugin install --local <package>').",
+        command
+    ))
+}
+
+/// `horus plugin trust <command>` — record the plugin binary's current content
+/// hash in the out-of-repo trust store so the execution gate will allow it.
+pub fn trust_plugin(command: &str) -> Result<()> {
+    let binary = locate_plugin_binary(command)?;
+    let checksum = PluginRegistry::calculate_checksum(&binary)
+        .with_context(|| format!("failed to hash plugin binary {}", binary.display()))?;
+
+    let store_path = crate::paths::trusted_plugins_path()?;
+    let mut store = crate::plugins::TrustStore::load(&store_path).unwrap_or_default();
+    store.trust(&checksum, command, &binary)?;
+    store.save(&store_path)?;
+
+    println!(
+        "  {} Trusted plugin '{}'",
+        cli_output::ICON_SUCCESS.green(),
+        command.green(),
+    );
+    println!(
+        "      {}",
+        format!("{}  ({})", checksum, binary.display()).dimmed()
+    );
+    Ok(())
+}
+
+/// `horus plugin untrust <command>` — remove the plugin from the trust store.
+/// It will refuse to execute afterwards unless it is trusted again.
+pub fn untrust_plugin(command: &str) -> Result<()> {
+    let store_path = crate::paths::trusted_plugins_path()?;
+    let mut store = crate::plugins::TrustStore::load(&store_path).unwrap_or_default();
+    let removed = store.untrust_command(command);
+    if removed == 0 {
+        println!(
+            "  {} Plugin '{}' was not in the trust store",
+            cli_output::ICON_INFO.cyan(),
+            command.yellow()
+        );
+        return Ok(());
+    }
+    store.save(&store_path)?;
+    println!(
+        "  {} Untrusted plugin '{}' ({} record{} removed); it will no longer execute unless re-trusted.",
+        cli_output::ICON_SUCCESS.green(),
+        command.yellow(),
+        removed,
+        if removed == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+/// `horus plugin trusted` — list every plugin binary in the trust store.
+pub fn list_trusted_plugins(json: bool) -> Result<()> {
+    let store_path = crate::paths::trusted_plugins_path()?;
+    let store = crate::plugins::TrustStore::load(&store_path).unwrap_or_default();
+
+    if json {
+        let items: Vec<_> = store
+            .records()
+            .into_iter()
+            .map(|(checksum, rec)| {
+                serde_json::json!({
+                    "command": rec.command,
+                    "checksum": checksum,
+                    "path": rec.path,
+                    "added_at": rec.added_at,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "trusted": items }))
+                .unwrap_or_default()
+        );
+        return Ok(());
+    }
+
+    if store.is_empty() {
+        println!("{} No trusted plugins", cli_output::ICON_INFO.cyan());
+        return Ok(());
+    }
+    println!(
+        "{} Trusted plugins ({}):\n",
+        cli_output::ICON_INFO.cyan(),
+        store.len()
+    );
+    for (checksum, rec) in store.records() {
+        println!(
+            "  {} {}",
+            cli_output::ICON_SUCCESS.green(),
+            rec.command.green()
+        );
+        println!(
+            "      {}",
+            format!("{}  ({})", checksum, rec.path.display()).dimmed()
+        );
+    }
+    Ok(())
+}
+
 /// Register a plugin after package installation
 pub fn register_plugin_after_install(
     package_dir: &Path,
@@ -419,6 +573,12 @@ pub fn register_plugin_after_install(
     // Create plugin entry
     let checksum = PluginRegistry::calculate_checksum(&metadata.binary)?;
 
+    // SEC3: carry the publisher signature recorded at install time (if any)
+    // from the package's metadata.json into the registry entry, so the
+    // provenance field is populated by the real install path instead of being
+    // hard-coded `None`.
+    let signature = read_package_signature(package_dir);
+
     // Clone commands for later display
     let commands_for_display = metadata.commands.clone();
 
@@ -427,8 +587,8 @@ pub fn register_plugin_after_install(
         version: metadata.version.clone(),
         source,
         binary: metadata.binary.clone(),
-        checksum,
-        signature: None,
+        checksum: checksum.clone(),
+        signature,
         installed_at: Utc::now(),
         installed_by: HORUS_VERSION.to_string(),
         compatibility: metadata.compatibility,
@@ -488,6 +648,16 @@ pub fn register_plugin_after_install(
             }
         }
         return Err(anyhow!("Failed to create plugin symlink: {}", e));
+    }
+
+    // A deliberate project-local install confers trust: record the binary's
+    // content hash in the OUT-OF-REPO trust store so the execution gate will
+    // allow this specific binary to run. (Global installs live outside any repo
+    // and are trusted by location, so they need no record here.) This is what
+    // keeps `horus plugin install --local` usable under the fail-closed gate
+    // while a merely-cloned `.horus/` plugin stays untrusted.
+    if !is_global {
+        record_local_plugin_trust(&checksum, &metadata.command, &metadata.binary);
     }
 
     println!(

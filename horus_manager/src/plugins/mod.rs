@@ -36,14 +36,16 @@ mod registry;
 mod resolver;
 #[cfg(target_os = "linux")]
 pub mod sandbox;
+mod trust;
 
 pub use discovery::{AvailablePlugin, PluginCategory, PluginDiscovery, PluginSourceType};
-pub use executor::{PluginExecutor, PluginInfo};
+pub use executor::{PluginExecutor, PluginInfo, PluginOrigin};
 pub use registry::{
     CommandInfo, Compatibility, DisabledPlugin, PluginEntry, PluginRegistry, PluginScope,
     PluginSource,
 };
 pub use resolver::{PluginResolver, VerificationResult, VerificationStatus};
+pub use trust::{TrustRecord, TrustStore};
 
 /// Current schema version for plugins.lock
 pub const SCHEMA_VERSION: &str = "1.0";
