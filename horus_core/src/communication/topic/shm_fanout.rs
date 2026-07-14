@@ -15,8 +15,8 @@
 //! ├──────────────────────────────────────────┤ offset 640
 //! │ padding to page boundary                 │
 //! ├──────────────────────────────────────────┤ offset 4096 (FANOUT_META_OFFSET)
-//! │ FanoutShmMeta (128 bytes, cache-aligned) │  — fanout dimensions & strides
-//! ├──────────────────────────────────────────┤ offset 4224
+//! │ FanoutShmMeta (256 bytes, cache-aligned) │  — dims + endpoint bitmasks/PIDs
+//! ├──────────────────────────────────────────┤ offset 4352
 //! │ padding to cache-line boundary           │
 //! ├──────────────────────────────────────────┤ offset CHANNELS_BASE
 //! │ Channel[0][0]: head_cl(64) + tail_cl(64) │
@@ -44,13 +44,36 @@
 //!   SPSC doesn't need them). Serde support can be added later by storing
 //!   `[len: u32, serialized_bytes]` in larger slots.
 //!
-//! - **Process-safe registration**: Publisher/subscriber IDs allocated via atomic
-//!   `fetch_add` on counters in the FanoutShmMeta header. Combined with flock-based
-//!   lease detection for process death handling.
+//! - **Process-safe registration (COMM-H1)**: Each endpoint slot is claimed under
+//!   an exclusive `flock` on a per-endpoint lock file (the claim authority), then
+//!   recorded in a reusable bitmask + owner-PID array in the FanoutShmMeta header.
+//!   A crashed process's flock is released by the OS, which is the sole proof of
+//!   abandonment that permits reclaiming its slot — see `register_publisher`.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use horus_sys::fs::FileLock;
+
 use super::seqlock::{seqlock_consume, seqlock_publish};
+
+/// Which endpoint kind a lock file / claim belongs to. Drives the lock-file path
+/// component and (for subscribers) the fresh-slot channel reset on claim.
+#[derive(Clone, Copy)]
+enum EndpointKind {
+    Publisher,
+    Subscriber,
+}
+
+impl EndpointKind {
+    /// Path component used in the lock-file name (`pub`/`sub`).
+    fn tag(self) -> &'static str {
+        match self {
+            EndpointKind::Publisher => "pub",
+            EndpointKind::Subscriber => "sub",
+        }
+    }
+}
 
 // ============================================================================
 // Constants
@@ -66,13 +89,17 @@ pub(crate) const MAX_FANOUT_ENDPOINTS: usize = 16;
 /// (clean magic mismatch → SpscShm fallback in `init_shm_backend`) rather than
 /// silently reinterpreted with the new strides. v2 added the per-slot version
 /// array (each channel grew by `capacity * 8` bytes for the seqlock stamps).
-pub(crate) const FANOUT_MAGIC: u64 = 0x0200_5455_4F4E_4146;
+/// v3 (COMM-H1) replaced the monotonic `num_publishers`/`num_subscribers`
+/// counters with reusable endpoint bitmasks + per-slot owner PIDs, growing the
+/// meta header from 128 to 256 bytes — a v2 region MUST NOT be read with v3
+/// strides, hence the version bump and the `attach` rejection of a stale magic.
+pub(crate) const FANOUT_MAGIC: u64 = 0x0300_5455_4F4E_4146;
 
 /// Offset of FanoutShmMeta in the SHM file (page-aligned, after TopicHeader).
 pub(crate) const FANOUT_META_OFFSET: usize = 4096;
 
-/// Size of the FanoutShmMeta header (2 cache lines = 128 bytes).
-pub(crate) const FANOUT_META_SIZE: usize = 128;
+/// Size of the FanoutShmMeta header (4 cache lines = 256 bytes as of v3).
+pub(crate) const FANOUT_META_SIZE: usize = 256;
 
 /// Base offset where channels start (meta offset + meta size, cache-aligned).
 pub(crate) const FANOUT_CHANNELS_BASE: usize = FANOUT_META_OFFSET + FANOUT_META_SIZE;
@@ -89,8 +116,20 @@ const CHANNEL_HEADER_SIZE: usize = 128;
 
 /// Fanout metadata stored at `FANOUT_META_OFFSET` in the SHM region.
 ///
-/// Two cache lines (128 bytes). First cache line is read-mostly (dimensions),
-/// second cache line has the dynamic counters (publisher/subscriber registration).
+/// Four cache lines (256 bytes). Cache line 1 is read-mostly (dimensions set once
+/// at creation). Cache lines 2+ hold the dynamic cross-process registration state:
+/// per-kind endpoint bitmasks (`pub_active`/`sub_active`, bit i = slot i live) and
+/// per-slot owner PIDs (`pub_owner_pids`/`sub_owner_pids`, for the same-process
+/// reclaim guard).
+///
+/// The bitmask replaces the old monotonic `num_publishers`/`num_subscribers`
+/// counters. Those counters lived in SHM and so persisted across process death;
+/// a crashed process never ran Drop to decrement, so after 16 cumulative
+/// (re)registrations the `assert!(id < max)` panicked forever (COMM-H1). A
+/// reusable bitmask lets a freed OR crash-abandoned slot be reclaimed. Crash
+/// liveness is proven by `flock` on a per-endpoint lock file (see
+/// `register_publisher`), NOT by these fields — the OS releases the flock on
+/// process death, which is the only sound proof of abandonment.
 #[repr(C, align(64))]
 pub(crate) struct FanoutShmMeta {
     // --- Cache line 1: read-mostly dimensions (set once at creation) ---
@@ -112,15 +151,26 @@ pub(crate) struct FanoutShmMeta {
     pub _reserved1: u32,
     /// Total file size in bytes.
     pub total_file_size: u64,
-    _pad1: [u8; 8],
+    _pad1: [u8; 16],
 
-    // --- Cache line 2: dynamic registration counters ---
-    /// Number of registered publishers (atomic for cross-process CAS).
-    pub num_publishers: AtomicU32,
-    /// Number of registered subscribers (atomic for cross-process CAS).
-    pub num_subscribers: AtomicU32,
-    /// Reserved for lease/death tracking.
-    pub _reserved2: [u8; 56],
+    // --- Cache line 2+: dynamic cross-process registration state ---
+    /// Live-publisher slot bitmask (bit i set = publisher slot i in use). A
+    /// reusable bitmask, not a monotonic counter: a freed or crash-abandoned slot
+    /// is reclaimed (COMM-H1), so cumulative (re)registrations never overflow the
+    /// fixed 16-slot matrix. This is the hot-path "active set"; `flock` is the
+    /// ownership authority and this bit is derived state set only after the flock
+    /// is held.
+    pub pub_active: AtomicU64,
+    /// Live-subscriber slot bitmask (bit i set = subscriber slot i in use).
+    pub sub_active: AtomicU64,
+    /// Owner PID recorded per publisher slot — read ONLY by the same-process
+    /// reclaim guard (a live in-process sibling that the OS let us re-`flock`).
+    /// Never an authority: `flock` is the claim authority.
+    pub pub_owner_pids: [AtomicU32; MAX_FANOUT_ENDPOINTS],
+    /// Owner PID recorded per subscriber slot (same-process reclaim guard).
+    pub sub_owner_pids: [AtomicU32; MAX_FANOUT_ENDPOINTS],
+    /// Reserved for future use (pads the header to `FANOUT_META_SIZE`).
+    pub _reserved2: [u8; 48],
 }
 
 // Static assertions
@@ -308,6 +358,48 @@ impl ShmSpscChannel {
             drop,
         )
     }
+
+    /// Reset the consumer position to the current producer head, discarding any
+    /// buffered messages. Called when a subscriber slot is reclaimed (COMM-H1) so
+    /// the new owner starts fresh instead of reading the prior owner's backlog.
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold the subscriber slot exclusively (no live consumer on
+    /// this channel) so the `tail` store is uncontended. The producer-owned `head`
+    /// is only read — a live producer may keep advancing it concurrently, which is
+    /// safe (distinct atomics; benign message-window race).
+    #[inline]
+    pub(crate) unsafe fn reset_tail_to_head(&self) {
+        let head = (*self.head_ptr).load(Ordering::Acquire);
+        (*self.tail_ptr).store(head, Ordering::Release);
+    }
+}
+
+/// Claim the lowest free slot in `[0, limit)` from an endpoint bitmask via CAS.
+///
+/// Returns `None` when all `limit` slots are set (every endpoint simultaneously
+/// live). The CAS loop makes concurrent claims pick distinct slots. Mirrors the
+/// intra-process `super::fanout::claim_slot`.
+///
+/// Test-only: the production cross-process path (`claim_endpoint_locked`) sets a
+/// SPECIFIC flocked slot's bit rather than the lowest-free one, so it does not use
+/// this helper. It backs the in-process bitmask/routing tests.
+#[cfg(test)]
+#[inline]
+fn claim_bit(mask: &AtomicU64, limit: usize) -> Option<usize> {
+    let mut cur = mask.load(Ordering::Relaxed);
+    loop {
+        let free = (!cur).trailing_zeros() as usize;
+        if free >= limit {
+            return None; // all slots live
+        }
+        let bit = 1u64 << free;
+        match mask.compare_exchange_weak(cur, cur | bit, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return Some(free),
+            Err(actual) => cur = actual, // lost the race — retry with the new mask
+        }
+    }
 }
 
 // SAFETY: ShmSpscChannel is a view into mmap'd memory. The SPSC contract
@@ -392,8 +484,12 @@ impl ShmFanoutRing {
         meta.channel_stride = channel_stride;
         meta.capacity_mask = cap - 1;
         meta.total_file_size = total_size as u64;
-        meta.num_publishers = AtomicU32::new(0);
-        meta.num_subscribers = AtomicU32::new(0);
+        meta.pub_active = AtomicU64::new(0);
+        meta.sub_active = AtomicU64::new(0);
+        for i in 0..MAX_FANOUT_ENDPOINTS {
+            meta.pub_owner_pids[i] = AtomicU32::new(0);
+            meta.sub_owner_pids[i] = AtomicU32::new(0);
+        }
 
         // Zero-init all channel head/tail atomics and per-slot version stamps.
         // Version 0 == done(pos 0); head starts at 0 so no position is read
@@ -429,15 +525,32 @@ impl ShmFanoutRing {
     /// # Safety
     ///
     /// `shm_base` must point to a valid mmap'd SHM region.
-    pub(crate) unsafe fn attach(shm_base: *mut u8, is_pod: bool, type_size: usize) -> Self {
+    ///
+    /// Returns `None` if the region carries an incompatible (older/foreign) layout
+    /// version, so the caller can reject-and-rebuild (fall back to SpscShm) instead
+    /// of reinterpreting a stale region with the new strides.
+    pub(crate) unsafe fn attach(shm_base: *mut u8, is_pod: bool, type_size: usize) -> Option<Self> {
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
 
-        // Spin-wait for owner to finish initialization.
-        // meta is a raw pointer read through a shared-memory mapping; the mutation
-        // happens in another process, so clippy cannot see it — suppress the lint.
+        // Spin-wait for the owner to finish initialization (it writes `magic` LAST).
+        // The magic lives in a cross-process mapping, so read it volatile.
+        //
+        // Version discipline (COMM-H1): a region already carrying a DIFFERENT
+        // non-zero magic is an older/incompatible layout (e.g. the v2 128-byte
+        // header) or foreign data. Reject it immediately — reading it with the v3
+        // strides would be UB, and spinning would hang forever (no v3 owner will
+        // ever write the new magic into an already-initialized old region). A
+        // `magic == 0` region is a fresh, zero-filled region whose owner is still
+        // initializing → keep spinning (unchanged from prior behavior).
         let mut spins = 0u32;
-        #[allow(clippy::while_immutable_condition)]
-        while meta.magic != FANOUT_MAGIC {
+        loop {
+            let m = std::ptr::read_volatile(std::ptr::addr_of!(meta.magic));
+            if m == FANOUT_MAGIC {
+                break;
+            }
+            if m != 0 {
+                return None; // stale/incompatible layout — reject, do not misread
+            }
             std::hint::spin_loop();
             spins += 1;
             if spins > 1_000_000 {
@@ -448,7 +561,7 @@ impl ShmFanoutRing {
         }
         std::sync::atomic::fence(Ordering::Acquire);
 
-        Self::build_views(shm_base, is_pod, type_size)
+        Some(Self::build_views(shm_base, is_pod, type_size))
     }
 
     /// Build channel views from an initialized SHM region.
@@ -490,32 +603,211 @@ impl ShmFanoutRing {
         }
     }
 
-    /// Register a new publisher (cross-process safe via atomic fetch_add).
-    /// Returns the publisher ID.
-    pub(crate) fn register_publisher(&self) -> usize {
+    /// Register a new publisher, claiming a free endpoint slot under an exclusive
+    /// `flock` (COMM-H1 cross-process crash-liveness). Returns `(id, lock)`; the
+    /// caller MUST keep `lock` alive for the endpoint's lifetime — it is the
+    /// OS-level proof the slot is live. The OS releases it on process death, which
+    /// is what lets a peer later reclaim a crashed owner's slot. Returns `None` when
+    /// every slot is held by a live process (a genuine capacity limit, NEVER the
+    /// pre-fix panic).
+    ///
+    /// `topic_name` derives the per-endpoint lock-file path; every process on the
+    /// topic derives the SAME path, so the flock is a machine-wide claim.
+    pub(crate) fn register_publisher_locked(&self, topic_name: &str) -> Option<(usize, FileLock)> {
         let meta = unsafe { &*self.meta_ptr };
-        let id = meta.num_publishers.fetch_add(1, Ordering::Relaxed) as usize;
-        assert!(
-            id < self.max_publishers,
-            "ShmFanoutRing: too many publishers ({} >= {})",
-            id,
-            self.max_publishers
-        );
-        id
+        self.claim_endpoint_locked(
+            topic_name,
+            &meta.pub_active,
+            &meta.pub_owner_pids,
+            self.max_publishers,
+            EndpointKind::Publisher,
+        )
     }
 
-    /// Register a new subscriber (cross-process safe via atomic fetch_add).
-    /// Returns the subscriber ID.
-    pub(crate) fn register_subscriber(&self) -> usize {
+    /// Register a new subscriber (symmetric to `register_publisher_locked`). On
+    /// claim, the slot's channels are reset (tail→head) so a reclaimed slot starts
+    /// fresh instead of inheriting a prior/crashed owner's unread backlog.
+    pub(crate) fn register_subscriber_locked(&self, topic_name: &str) -> Option<(usize, FileLock)> {
         let meta = unsafe { &*self.meta_ptr };
-        let id = meta.num_subscribers.fetch_add(1, Ordering::Relaxed) as usize;
-        assert!(
-            id < self.max_subscribers,
-            "ShmFanoutRing: too many subscribers ({} >= {})",
-            id,
-            self.max_subscribers
-        );
-        id
+        let (id, lock) = self.claim_endpoint_locked(
+            topic_name,
+            &meta.sub_active,
+            &meta.sub_owner_pids,
+            self.max_subscribers,
+            EndpointKind::Subscriber,
+        )?;
+        // A publisher never resets its channels (their tails are consumer-owned and
+        // may belong to LIVE subscribers — never write them). A subscriber skips any
+        // stale backlog on its freshly-claimed slot. Mirrors the intra FanoutRing.
+        self.reset_subscriber_channels(id);
+        Some((id, lock))
+    }
+
+    /// Release this instance's publisher slot on CLEAN drop (COMM-H1): clear the
+    /// active bit, then the owner PID. The caller drops the held `FileLock` AFTER
+    /// this (releasing the flock), so the ordering is: bit clear → PID clear →
+    /// flock release. The flock stays held throughout, so no peer can reclaim
+    /// mid-teardown; once released, the cleared bit makes the slot immediately
+    /// reusable — crucially by THIS process too (the same-process guard would
+    /// otherwise refuse to reclaim our own still-marked slot). A CRASH runs none of
+    /// this, but the OS releases the flock and a peer reclaims via the dead-owner
+    /// path (the stale bit/PID self-heal on that reclaim).
+    pub(crate) fn deregister_publisher(&self, id: usize) {
+        let meta = unsafe { &*self.meta_ptr };
+        meta.pub_active.fetch_and(!(1u64 << id), Ordering::AcqRel);
+        meta.pub_owner_pids[id].store(0, Ordering::Relaxed);
+    }
+
+    /// Release this instance's subscriber slot on clean drop (symmetric).
+    pub(crate) fn deregister_subscriber(&self, id: usize) {
+        let meta = unsafe { &*self.meta_ptr };
+        meta.sub_active.fetch_and(!(1u64 << id), Ordering::AcqRel);
+        meta.sub_owner_pids[id].store(0, Ordering::Relaxed);
+    }
+
+    /// The core flock claim/reclaim protocol (COMM-H1).
+    ///
+    /// # #1 INVARIANT (a wrong reclaim = silent cross-process UB, strictly worse
+    /// than the pre-fix panic)
+    ///
+    /// A slot is reclaimed from a prior owner ONLY on PROOF of abandonment: we hold
+    /// its exclusive `flock`, which the OS releases solely on `LOCK_UN` (clean drop)
+    /// or process death. Acquiring it therefore proves no live process holds the
+    /// slot. The four cases after `try_exclusive`:
+    ///
+    /// - `Err(_)` / `Ok(None)` → cannot prove abandonment (IO error, or a LIVE
+    ///   process holds it) → skip. Never reclaim.
+    /// - `Ok(Some(lock))` + `owner_pid == my_pid && bit set` → a LIVE in-process
+    ///   sibling that the OS let us re-`flock` (same-process permissiveness) →
+    ///   drop the lock and skip. Never reclaim a live same-process endpoint.
+    /// - `Ok(Some(lock))` otherwise (bit clear = free, OR owner is a dead/other
+    ///   process) → the slot is ours: set the bit, record our PID, return the lock.
+    ///
+    /// All slots skipped → `None` (a genuine "all endpoints live" capacity limit —
+    /// the graceful-degradation worst case, never a panic and never a mis-reclaim).
+    ///
+    /// RESTS-ON-DESIGN: the real crash path — a peer SIGKILLed, the OS releasing its
+    /// `flock`, another process then reclaiming — relies on the documented `flock`
+    /// OS contract (release on process death). It is NOT integration-testable in
+    /// this headless sandbox (cross-process SHM is env-broken here). It is exercised
+    /// in-process via a *simulated-dead* lock file (unlocked + foreign PID). The
+    /// same-process guard and the free/reclaim bit logic ARE verified in-process.
+    fn claim_endpoint_locked(
+        &self,
+        topic_name: &str,
+        active: &AtomicU64,
+        owner_pids: &[AtomicU32; MAX_FANOUT_ENDPOINTS],
+        max: usize,
+        kind: EndpointKind,
+    ) -> Option<(usize, FileLock)> {
+        let my_pid = std::process::id();
+        for i in 0..max {
+            // Derive + create the per-endpoint lock file. Any IO error → we cannot
+            // prove anything about this slot → skip it (fail-safe, never reclaim).
+            let path = match self.endpoint_lock_path(topic_name, kind, i) {
+                Some(p) => p,
+                None => continue,
+            };
+            let file = match horus_sys::fs::open_private(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            // The flock is the claim AUTHORITY:
+            //   Err(_)      → real error, cannot prove → skip.
+            //   Ok(None)    → a LIVE process holds it → skip (never reclaim live).
+            //   Ok(Some(l)) → we hold it: the prior owner (if any) is provably gone.
+            let lock = match FileLock::try_exclusive(&file) {
+                Ok(Some(lock)) => lock,
+                Ok(None) => continue,
+                Err(_) => continue,
+            };
+            // Same-process guard: on some OSes `flock` on a second fd within the SAME
+            // process succeeds, so holding the lock does NOT prove a same-process
+            // sibling is dead. If the recorded owner is THIS process AND the slot is
+            // still active, it is a LIVE in-process endpoint → do NOT reclaim.
+            let owner_pid = owner_pids[i].load(Ordering::Relaxed);
+            let bit_set = active.load(Ordering::Acquire) & (1u64 << i) != 0;
+            if owner_pid == my_pid && bit_set {
+                drop(lock); // release our re-lock; leave the live sibling untouched
+                continue;
+            }
+            // Claim: the slot is free (bit clear) or abandoned by a dead/other-process
+            // owner (we hold its flock). Set the active bit, record our PID, and hand
+            // the HELD lock to the caller. Order: the flock (already held) is the
+            // ownership truth; the bit is derived state, set only AFTER the flock.
+            active.fetch_or(1u64 << i, Ordering::AcqRel);
+            owner_pids[i].store(my_pid, Ordering::Release);
+            return Some((i, lock));
+        }
+        None
+    }
+
+    /// Deterministic per-endpoint lock-file path, mirroring the SHM region naming
+    /// (`{topic}_fanout`) determinism so every process on the topic agrees on it:
+    /// `{shm_base_dir}/fanout_locks/horus.{sanitized_topic}.fanout.{pub|sub}.{slot}.lock`.
+    /// `shm_base_dir()` is namespace-aware (`HORUS_NAMESPACE`), matching the SHM
+    /// region's isolation. A leftover lock file is harmless — content is irrelevant,
+    /// only the `flock` state matters. Returns `None` if the shared lock directory
+    /// can't be created (→ caller skips the slot, fail-safe).
+    fn endpoint_lock_path(
+        &self,
+        topic_name: &str,
+        kind: EndpointKind,
+        slot: usize,
+    ) -> Option<PathBuf> {
+        let dir = horus_sys::shm::shm_base_dir().join("fanout_locks");
+        if horus_sys::fs::create_dir_secure(&dir).is_err() {
+            return None;
+        }
+        // Flatten the topic name into a safe filename component (keep alnum/_/./-;
+        // map path separators & anything else to '_'). Deterministic across procs.
+        let mut sanitized = String::with_capacity(topic_name.len());
+        for c in topic_name.chars() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                sanitized.push(c);
+            } else {
+                sanitized.push('_');
+            }
+        }
+        Some(dir.join(format!(
+            "horus.{}.fanout.{}.{}.lock",
+            sanitized,
+            kind.tag(),
+            slot
+        )))
+    }
+
+    /// Reset every publisher-channel feeding subscriber `id` to skip whatever a
+    /// prior (possibly crash-abandoned) owner left buffered. Producer-owned `head`
+    /// is only READ; the consumer-owned `tail` store is uncontended because this
+    /// slot was just claimed (no live consumer on `id`).
+    #[inline]
+    fn reset_subscriber_channels(&self, id: usize) {
+        for pub_id in 0..self.max_publishers {
+            let ch_idx = pub_id * self.max_subscribers + id;
+            // SAFETY: `ch_idx` is in range (`pub_id < max_publishers`,
+            // `id < max_subscribers`); the channel view points into the live mmap.
+            unsafe { self.channels[ch_idx].reset_tail_to_head() };
+        }
+    }
+
+    /// Test-only bitmask claim (no flock) — exercises the reusable-slot bitmask +
+    /// hot-path routing logic in-process without touching the filesystem.
+    /// Production uses `register_publisher_locked`.
+    #[cfg(test)]
+    pub(crate) fn register_publisher(&self) -> Option<usize> {
+        let meta = unsafe { &*self.meta_ptr };
+        claim_bit(&meta.pub_active, self.max_publishers)
+    }
+
+    /// Test-only bitmask claim (no flock). Production uses
+    /// `register_subscriber_locked`.
+    #[cfg(test)]
+    pub(crate) fn register_subscriber(&self) -> Option<usize> {
+        let meta = unsafe { &*self.meta_ptr };
+        let id = claim_bit(&meta.sub_active, self.max_subscribers)?;
+        self.reset_subscriber_channels(id);
+        Some(id)
     }
 
     /// Send a POD message from publisher `pub_id` to ALL subscribers.
@@ -526,15 +818,18 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn send_pod<T>(&self, msg: &T, pub_id: usize) -> bool {
         let meta = &*self.meta_ptr;
-        let n_subs = meta.num_subscribers.load(Ordering::Relaxed) as usize;
-        if n_subs == 0 {
+        let subs = meta.sub_active.load(Ordering::Relaxed);
+        if subs == 0 {
             return true; // No subscribers — silent drop
         }
 
-        // Drop-oldest fan-out: never fails. Always reports success.
-        for sub_id in 0..n_subs {
-            let ch_idx = pub_id * self.max_subscribers + sub_id;
-            self.channels[ch_idx].try_send_pod(msg);
+        // Drop-oldest fan-out to every LIVE subscriber slot (holes from reused or
+        // crash-abandoned endpoints are skipped via the active bitmask). Never fails.
+        for sub_id in 0..self.max_subscribers {
+            if subs & (1u64 << sub_id) != 0 {
+                let ch_idx = pub_id * self.max_subscribers + sub_id;
+                self.channels[ch_idx].try_send_pod(msg);
+            }
         }
         true
     }
@@ -548,15 +843,22 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn recv_pod<T>(&self, sub_id: usize) -> Option<T> {
         let meta = &*self.meta_ptr;
-        let n_pubs = meta.num_publishers.load(Ordering::Relaxed) as usize;
-        if n_pubs == 0 {
+        let pubs = meta.pub_active.load(Ordering::Relaxed);
+        if pubs == 0 {
             return None;
         }
 
-        let start = self.recv_cursors[sub_id].get() % n_pubs;
+        // Round-robin over LIVE publisher slots (holes from reused/crashed endpoints
+        // are skipped), starting from the last cursor position, bounded by the fixed
+        // matrix width so a stale cursor can never index out of range.
+        let max_pubs = self.max_publishers;
+        let start = self.recv_cursors[sub_id].get() % max_pubs;
 
-        for offset in 0..n_pubs {
-            let pub_id = (start + offset) % n_pubs;
+        for offset in 0..max_pubs {
+            let pub_id = (start + offset) % max_pubs;
+            if pubs & (1u64 << pub_id) == 0 {
+                continue; // inactive publisher slot
+            }
             let ch_idx = pub_id * self.max_subscribers + sub_id;
             if let Some(msg) = self.channels[ch_idx].try_recv_pod::<T>() {
                 self.recv_cursors[sub_id].set(pub_id + 1);
@@ -575,18 +877,21 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn send_serde(&self, bytes: &[u8], pub_id: usize) -> bool {
         let meta = &*self.meta_ptr;
-        let n_subs = meta.num_subscribers.load(Ordering::Relaxed) as usize;
-        if n_subs == 0 {
+        let subs = meta.sub_active.load(Ordering::Relaxed);
+        if subs == 0 {
             return true;
         }
 
-        // Drop-oldest fan-out: never blocks. `try_send_serde` returns false only
-        // if a message is too large for a slot — surface that as the aggregate.
+        // Drop-oldest fan-out to every LIVE subscriber slot (holes skipped): never
+        // blocks. `try_send_serde` returns false only if a message is too large for
+        // a slot — surface that as the aggregate.
         let mut all_ok = true;
-        for sub_id in 0..n_subs {
-            let ch_idx = pub_id * self.max_subscribers + sub_id;
-            if !self.channels[ch_idx].try_send_serde(bytes) {
-                all_ok = false;
+        for sub_id in 0..self.max_subscribers {
+            if subs & (1u64 << sub_id) != 0 {
+                let ch_idx = pub_id * self.max_subscribers + sub_id;
+                if !self.channels[ch_idx].try_send_serde(bytes) {
+                    all_ok = false;
+                }
             }
         }
         all_ok
@@ -600,15 +905,19 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn recv_serde(&self, sub_id: usize) -> Option<Vec<u8>> {
         let meta = &*self.meta_ptr;
-        let n_pubs = meta.num_publishers.load(Ordering::Relaxed) as usize;
-        if n_pubs == 0 {
+        let pubs = meta.pub_active.load(Ordering::Relaxed);
+        if pubs == 0 {
             return None;
         }
 
-        let start = self.recv_cursors[sub_id].get() % n_pubs;
+        let max_pubs = self.max_publishers;
+        let start = self.recv_cursors[sub_id].get() % max_pubs;
 
-        for offset in 0..n_pubs {
-            let pub_id = (start + offset) % n_pubs;
+        for offset in 0..max_pubs {
+            let pub_id = (start + offset) % max_pubs;
+            if pubs & (1u64 << pub_id) == 0 {
+                continue; // inactive publisher slot
+            }
             let ch_idx = pub_id * self.max_subscribers + sub_id;
             if let Some(data) = self.channels[ch_idx].try_recv_serde() {
                 self.recv_cursors[sub_id].set(pub_id + 1);
@@ -629,20 +938,20 @@ impl ShmFanoutRing {
     // Test-only introspection helpers
     // ========================================================================
 
-    /// Get the number of registered publishers.
+    /// Get the number of currently-live publishers (popcount of the active mask).
     #[cfg(test)]
     #[inline]
     pub(crate) fn num_publishers(&self) -> usize {
         let meta = unsafe { &*self.meta_ptr };
-        meta.num_publishers.load(Ordering::Relaxed) as usize
+        meta.pub_active.load(Ordering::Relaxed).count_ones() as usize
     }
 
-    /// Get the number of registered subscribers.
+    /// Get the number of currently-live subscribers (popcount of the active mask).
     #[cfg(test)]
     #[inline]
     pub(crate) fn num_subscribers(&self) -> usize {
         let meta = unsafe { &*self.meta_ptr };
-        meta.num_subscribers.load(Ordering::Relaxed) as usize
+        meta.sub_active.load(Ordering::Relaxed).count_ones() as usize
     }
 
     // ========================================================================
@@ -678,9 +987,13 @@ impl ShmFanoutRing {
     /// Total pending messages across all channels for a subscriber.
     #[cfg(test)]
     pub(crate) fn pending_count_for_sub(&self, sub_id: usize) -> u64 {
-        let n_pubs = self.num_publishers();
+        let meta = unsafe { &*self.meta_ptr };
+        let pubs = meta.pub_active.load(Ordering::Relaxed);
         let mut total = 0u64;
-        for pub_id in 0..n_pubs {
+        for pub_id in 0..self.max_publishers {
+            if pubs & (1u64 << pub_id) == 0 {
+                continue;
+            }
             let ch_idx = pub_id * self.max_subscribers + sub_id;
             let ch = &self.channels[ch_idx];
             unsafe {
@@ -713,7 +1026,7 @@ mod tests {
 
     #[test]
     fn meta_size_and_alignment() {
-        assert_eq!(std::mem::size_of::<FanoutShmMeta>(), 128);
+        assert_eq!(std::mem::size_of::<FanoutShmMeta>(), 256);
         assert_eq!(std::mem::align_of::<FanoutShmMeta>(), 64);
     }
 
@@ -746,9 +1059,9 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            assert_eq!(ring.register_publisher(), 0);
-            assert_eq!(ring.register_publisher(), 1);
-            assert_eq!(ring.register_subscriber(), 0);
+            assert_eq!(ring.register_publisher(), Some(0));
+            assert_eq!(ring.register_publisher(), Some(1));
+            assert_eq!(ring.register_subscriber(), Some(0));
             assert_eq!(ring.num_publishers(), 2);
             assert_eq!(ring.num_subscribers(), 1);
             std::alloc::dealloc(ptr, layout);
@@ -760,8 +1073,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let pub_id = ring.register_publisher();
-            let sub_id = ring.register_subscriber();
+            let pub_id = ring.register_publisher().unwrap();
+            let sub_id = ring.register_subscriber().unwrap();
 
             let val: u64 = 42;
             assert!(ring.send_pod(&val, pub_id));
@@ -782,10 +1095,10 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let p0 = ring.register_publisher();
-            let p1 = ring.register_publisher();
-            let s0 = ring.register_subscriber();
-            let s1 = ring.register_subscriber();
+            let p0 = ring.register_publisher().unwrap();
+            let p1 = ring.register_publisher().unwrap();
+            let s0 = ring.register_subscriber().unwrap();
+            let s1 = ring.register_subscriber().unwrap();
 
             // Publisher 0 sends 100
             let v100: u64 = 100;
@@ -816,8 +1129,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(0, false, 32);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 0, false, 32);
-            let pub_id = ring.register_publisher();
-            let sub_id = ring.register_subscriber();
+            let pub_id = ring.register_publisher().unwrap();
+            let sub_id = ring.register_subscriber().unwrap();
 
             let data = b"hello world";
             assert!(ring.send_serde(data, pub_id));
@@ -834,8 +1147,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
-            let pub_id = ring.register_publisher();
-            let sub_id = ring.register_subscriber();
+            let pub_id = ring.register_publisher().unwrap();
+            let sub_id = ring.register_subscriber().unwrap();
 
             // Drop-oldest: sends never fail. Push 20 into a 16-slot ring; the
             // oldest 4 (0..4) are overwritten by the newest 4 (16..20).
@@ -859,9 +1172,9 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let p0 = ring.register_publisher();
-            let p1 = ring.register_publisher();
-            let sub = ring.register_subscriber();
+            let p0 = ring.register_publisher().unwrap();
+            let p1 = ring.register_publisher().unwrap();
+            let sub = ring.register_subscriber().unwrap();
 
             // P0 sends 10, 20; P1 sends 30, 40
             for v in [10u64, 20] {
@@ -896,7 +1209,7 @@ mod tests {
             let _owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
 
             // Simulated second process attaches
-            let joiner = ShmFanoutRing::attach(ptr, true, 8);
+            let joiner = ShmFanoutRing::attach(ptr, true, 8).unwrap();
             assert_eq!(joiner.max_publishers, MAX_FANOUT_ENDPOINTS);
             assert_eq!(joiner.max_subscribers, MAX_FANOUT_ENDPOINTS);
 
@@ -909,8 +1222,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let p0 = ring.register_publisher();
-            let sub = ring.register_subscriber();
+            let p0 = ring.register_publisher().unwrap();
+            let sub = ring.register_subscriber().unwrap();
 
             assert_eq!(ring.pending_count_for_sub(sub), 0);
 
@@ -937,8 +1250,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for round in 0u64..20 {
                 for i in 0u64..16 {
@@ -966,8 +1279,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(0, false, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 0, false, 16);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for round in 0..10 {
                 for i in 0..16 {
@@ -996,8 +1309,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(128, true, 32);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 128, true, 32);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for i in 0u64..32 {
                 let val = LargePod { data: [i; 16] };
@@ -1029,10 +1342,10 @@ mod tests {
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
 
         // Register endpoints before spawning threads
-        let p0 = unsafe { (*ring).register_publisher() };
-        let p1 = unsafe { (*ring).register_publisher() };
-        let s0 = unsafe { (*ring).register_subscriber() };
-        let s1 = unsafe { (*ring).register_subscriber() };
+        let p0 = unsafe { (*ring).register_publisher().unwrap() };
+        let p1 = unsafe { (*ring).register_publisher().unwrap() };
+        let s0 = unsafe { (*ring).register_subscriber().unwrap() };
+        let s1 = unsafe { (*ring).register_subscriber().unwrap() };
 
         let ring_addr = ring as usize;
 
@@ -1121,8 +1434,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for cycle in 0u64..5 {
                 // Fill exactly to capacity (no overwrite at avail == capacity).
@@ -1152,8 +1465,8 @@ mod tests {
             let mut pubs = Vec::new();
             let mut subs = Vec::new();
             for _ in 0..MAX_FANOUT_ENDPOINTS {
-                pubs.push(ring.register_publisher());
-                subs.push(ring.register_subscriber());
+                pubs.push(ring.register_publisher().unwrap());
+                subs.push(ring.register_subscriber().unwrap());
             }
 
             // Each publisher sends to all subscribers
@@ -1186,7 +1499,7 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let s = ring.register_subscriber();
+            let s = ring.register_subscriber().unwrap();
             let got: Option<u64> = ring.recv_pod(s);
             assert_eq!(got, None);
             std::alloc::dealloc(ptr, layout);
@@ -1211,7 +1524,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let ring = unsafe { &*(ring_addr as *const ShmFanoutRing) };
                 b.wait();
-                ring.register_publisher()
+                ring.register_publisher().unwrap()
             }));
         }
         for _ in 0..4 {
@@ -1219,7 +1532,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let ring = unsafe { &*(ring_addr as *const ShmFanoutRing) };
                 b.wait();
-                ring.register_subscriber()
+                ring.register_subscriber().unwrap()
             }));
         }
 
@@ -1235,6 +1548,268 @@ mod tests {
             assert_eq!((*ring).num_publishers(), 4);
             assert_eq!((*ring).num_subscribers(), 4);
             drop(Box::from_raw(ring));
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    // ====================================================================
+    // COMM-H1: cross-process liveness (bitmask reuse, holes, flock reclaim).
+    //
+    // All tests here are IN-PROCESS. Real cross-process SHM does not work in the
+    // headless sandbox, so the *live-other-process → skip* case and the real
+    // SIGKILL → OS-flock-release → peer-reclaim case REST ON DESIGN (the flock
+    // OS contract) and are not integration-testable here. What IS verified
+    // in-process: the reusable bitmask, hot-path routing over non-contiguous
+    // active masks, the clean-drop free/reuse sequence, reclaim of a
+    // *simulated-dead* slot (unlocked lock file + foreign owner PID), and — the
+    // anti-UB guard — refusal to reclaim a live SAME-process slot.
+    // ====================================================================
+
+    /// Unique-per-test topic name so serial tests never share a lock file.
+    fn test_topic(tag: &str) -> String {
+        format!("commh1.{}.{}", tag, std::process::id())
+    }
+
+    #[test]
+    fn commh1_bitmask_reuse_past_16_no_panic() {
+        // Pre-fix: a monotonic counter panicked on the 17th cumulative register.
+        // The reusable bitmask refuses the 17th SIMULTANEOUS endpoint gracefully
+        // (None), and a freed slot is reclaimed and still delivers.
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let subs: Vec<usize> = (0..MAX_FANOUT_ENDPOINTS)
+                .map(|_| ring.register_subscriber().expect("first 16 register"))
+                .collect();
+            assert_eq!(
+                ring.register_subscriber(),
+                None,
+                "17th subscriber refused gracefully, not a panic"
+            );
+            let freed = subs[5];
+            ring.deregister_subscriber(freed);
+            let reclaimed = ring
+                .register_subscriber()
+                .expect("a freed slot must be reclaimable");
+            assert_eq!(reclaimed, freed, "freed slot reused, not leaked");
+            let p = ring.register_publisher().unwrap();
+            ring.send_pod(&99u64, p);
+            let got: Option<u64> = ring.recv_pod(reclaimed);
+            assert_eq!(got, Some(99), "reclaimed subscriber receives after reuse");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_hot_path_send_skips_subscriber_holes() {
+        // Non-contiguous active subscriber mask {0,2,5}: a send fans out to EXACTLY
+        // those channels and skips the holes.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let p = ring.register_publisher().unwrap(); // slot 0
+            let subs: Vec<usize> = (0..6).map(|_| ring.register_subscriber().unwrap()).collect();
+            for &h in &[1usize, 3, 4] {
+                ring.deregister_subscriber(subs[h]);
+            }
+            let meta = &*ring.meta_ptr;
+            assert_eq!(
+                meta.sub_active.load(Ordering::Relaxed),
+                (1 << 0) | (1 << 2) | (1 << 5),
+                "active sub mask is the non-contiguous set {{0,2,5}}"
+            );
+            ring.send_pod(&123u64, p);
+            for s in [0usize, 2, 5] {
+                assert_eq!(ring.pending_count_for_sub(s), 1, "active sub {s} got the msg");
+                let got: Option<u64> = ring.recv_pod(s);
+                assert_eq!(got, Some(123), "active sub {s} receives");
+            }
+            for s in [1usize, 3, 4] {
+                assert_eq!(ring.pending_count_for_sub(s), 0, "hole sub {s} untouched");
+            }
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_hot_path_recv_round_robin_over_publisher_holes() {
+        // Non-contiguous active PUBLISHER mask {0,2,5}: a subscriber's round-robin
+        // recv polls EXACTLY those publisher channels (skips holes) and rotates
+        // over the active set without getting stuck on a hole.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let pubs: Vec<usize> = (0..6).map(|_| ring.register_publisher().unwrap()).collect();
+            for &h in &[1usize, 3, 4] {
+                ring.deregister_publisher(pubs[h]);
+            }
+            let s = ring.register_subscriber().unwrap(); // slot 0
+            let meta = &*ring.meta_ptr;
+            assert_eq!(
+                meta.pub_active.load(Ordering::Relaxed),
+                (1 << 0) | (1 << 2) | (1 << 5),
+                "active pub mask is {{0,2,5}}"
+            );
+            ring.send_pod(&100u64, 0);
+            ring.send_pod(&102u64, 2);
+            ring.send_pod(&105u64, 5);
+            let mut got = Vec::new();
+            while let Some(v) = ring.recv_pod::<u64>(s) {
+                got.push(v);
+            }
+            got.sort();
+            assert_eq!(
+                got,
+                vec![100, 102, 105],
+                "recv polls only active pubs {{0,2,5}}, skipping holes"
+            );
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_clean_drop_sequence_frees_flock_slot_for_reuse() {
+        // The clean-drop path (RingTopic::drop) does: deregister (clear bit+PID)
+        // then drop the held FileLock. Exercise that sequence directly and prove
+        // the slot is reusable afterward BY THE SAME PROCESS — the same-process
+        // guard would refuse a slot still marked ours, so clearing bit+PID matters.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("cleandrop");
+            let (id, lock) = ring.register_publisher_locked(&topic).expect("claim");
+            assert_eq!(id, 0);
+            let meta = &*ring.meta_ptr;
+            assert!(meta.pub_active.load(Ordering::Relaxed) & 1 != 0);
+            assert_eq!(meta.pub_owner_pids[0].load(Ordering::Relaxed), std::process::id());
+            // Clean-drop sequence: clear bit+PID, then release the flock.
+            ring.deregister_publisher(id);
+            drop(lock);
+            assert!(
+                meta.pub_active.load(Ordering::Relaxed) & 1 == 0,
+                "deregister clears the active bit"
+            );
+            assert_eq!(
+                meta.pub_owner_pids[0].load(Ordering::Relaxed),
+                0,
+                "deregister clears the owner PID"
+            );
+            // Same process re-registers → reuses slot 0 as a FREE claim (bit clear).
+            let (id2, _lock2) = ring.register_publisher_locked(&topic).expect("reuse");
+            assert_eq!(id2, 0, "cleanly-freed slot reused by the same process");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_simulated_dead_owner_slot_is_reclaimed() {
+        // Reclaim path (in-process simulation of a dead OTHER-process owner): slot 0
+        // marked active with a FOREIGN owner PID and NO live flock (as after the OS
+        // released a SIGKILLed owner's lock). A new register must RECLAIM slot 0
+        // (acquire the lock; foreign PID != ours so the guard does not fire), NOT
+        // skip past it to a fresh slot.
+        //
+        // RESTS-ON-DESIGN: the real SIGKILL → OS-flock-release step is not
+        // reproducible in this sandbox; here the released state is simulated by
+        // simply not holding a flock on the slot's lock file.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("dead");
+            let meta = &*ring.meta_ptr;
+            let foreign = std::process::id().wrapping_add(1); // definitely not us
+            meta.pub_active.fetch_or(1 << 0, Ordering::Relaxed);
+            meta.pub_owner_pids[0].store(foreign, Ordering::Relaxed);
+            let (id, _lock) = ring
+                .register_publisher_locked(&topic)
+                .expect("dead slot must be reclaimable");
+            assert_eq!(id, 0, "must reclaim abandoned slot 0, not skip to a fresh slot");
+            assert_eq!(
+                meta.pub_owner_pids[0].load(Ordering::Relaxed),
+                std::process::id(),
+                "reclaim rewrites the owner PID to us"
+            );
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_simulated_dead_subscriber_reclaim_skips_stale_backlog() {
+        // A reclaimed (dead-owner) subscriber slot must start fresh — the tail is
+        // reset to head on claim, so the prior owner's unread backlog is skipped.
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let topic = test_topic("deadsub");
+            let p = ring.register_publisher().unwrap(); // slot 0
+            let meta = &*ring.meta_ptr;
+            // Simulate a DEAD subscriber that owned slot 0 (foreign PID, no flock).
+            meta.sub_active.fetch_or(1 << 0, Ordering::Relaxed);
+            meta.sub_owner_pids[0].store(std::process::id().wrapping_add(1), Ordering::Relaxed);
+            for i in 0..5u64 {
+                ring.send_pod(&i, p); // backlog into channel[p][0]
+            }
+            let (sid, _lock) = ring
+                .register_subscriber_locked(&topic)
+                .expect("reclaim dead subscriber slot");
+            assert_eq!(sid, 0, "reclaim the abandoned subscriber slot 0");
+            let stale: Option<u64> = ring.recv_pod(sid);
+            assert_eq!(
+                stale, None,
+                "reclaimed subscriber must skip the dead owner's backlog (tail reset)"
+            );
+            ring.send_pod(&99u64, p);
+            let fresh: Option<u64> = ring.recv_pod(sid);
+            assert_eq!(fresh, Some(99), "delivery works after reclaim");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_same_process_live_slot_is_not_reclaimed() {
+        // THE ANTI-UB GUARD. A slot whose bit is SET and owner PID == THIS process
+        // must NOT be reclaimed even when try_exclusive succeeds (the permissive-OS
+        // re-lock case). Simulated by marking slot 0 active+owned-by-us but NOT
+        // holding a real flock, so try_exclusive returns Ok(Some); the guard must
+        // still refuse slot 0 and claim the next free slot (1) instead. Handing
+        // slot 0 to a second owner would give two producers one SPSC channel = UB.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("guard");
+            let meta = &*ring.meta_ptr;
+            meta.pub_active.fetch_or(1 << 0, Ordering::Relaxed);
+            meta.pub_owner_pids[0].store(std::process::id(), Ordering::Relaxed); // OUR pid
+            let (id, _lock) = ring.register_publisher_locked(&topic).expect("claim a slot");
+            assert_ne!(id, 0, "must NOT reclaim our own LIVE slot 0 (anti-UB guard)");
+            assert_eq!(id, 1, "guard skips slot 0, claims the next free slot");
+            // Slot 0 left untouched (still ours, still active).
+            assert_eq!(
+                meta.pub_owner_pids[0].load(Ordering::Relaxed),
+                std::process::id(),
+                "guarded slot 0 owner PID untouched"
+            );
+            assert!(
+                meta.pub_active.load(Ordering::Relaxed) & 1 != 0,
+                "guarded slot 0 still active"
+            );
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_two_locked_publishers_same_process_get_distinct_slots() {
+        // Same-process double registration via the flock path must yield DISTINCT
+        // slots — on Linux via flock's same-process denial (Ok(None) → skip), on
+        // permissive OSes via the PID guard. Either way, never two owners on one
+        // SPSC channel.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("two");
+            let (a, _la) = ring.register_publisher_locked(&topic).expect("first");
+            let (b, _lb) = ring.register_publisher_locked(&topic).expect("second");
+            assert_ne!(a, b, "two live same-process publishers get distinct slots");
             std::alloc::dealloc(ptr, layout);
         }
     }

@@ -1486,15 +1486,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 let shm_base = fanout_storage.as_ptr() as *mut u8;
                 let ring = unsafe {
                     if is_owner {
-                        shm_fanout::ShmFanoutRing::init_owner(shm_base, type_size, is_pod, capacity)
+                        Some(shm_fanout::ShmFanoutRing::init_owner(
+                            shm_base, type_size, is_pod, capacity,
+                        ))
                     } else {
+                        // COMM-H1: `attach` returns None when the region carries an
+                        // older/incompatible layout version (the v3 meta bump) —
+                        // reject-and-fall-back instead of reinterpreting a stale
+                        // region with the new strides.
                         shm_fanout::ShmFanoutRing::attach(shm_base, is_pod, type_size)
                     }
                 };
-                // Store the SHM region in local state so it stays alive
-                self.local().fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
-                *backend = BackendStorage::FanoutShm(Box::new(ring));
-                return;
+                if let Some(ring) = ring {
+                    // Store the SHM region in local state so it stays alive
+                    self.local().fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
+                    *backend = BackendStorage::FanoutShm(Box::new(ring));
+                    return;
+                }
+                // else: stale/incompatible fanout layout — drop this region and
+                // fall through to the SpscShm fallback below.
             }
             // Fallback: FanoutShm creation failed (stale SHM from previous run,
             // permission error, etc.). Fall back to SpscShm which uses the main
@@ -2870,6 +2880,25 @@ impl<T> Drop for RingTopic<T> {
             if let Some(id) = local.fanout_sub_id.take() {
                 ring.deregister_subscriber(id);
             }
+        }
+
+        // COMM-H1 cross-process: on CLEAN drop, clear this instance's FanoutShm
+        // endpoint bit + owner PID, THEN release the held flock. A crashed process
+        // runs none of this, but the OS releases its flock and a peer reclaims the
+        // slot via the dead-owner path. Clearing bit+PID here (before releasing the
+        // flock) makes the slot immediately reusable — including by THIS process,
+        // whose same-process guard would otherwise refuse to reclaim its own slot.
+        if let BackendStorage::FanoutShm(ring) = unsafe { &*self.backend.get() } {
+            if let Some(id) = local.fanout_shm_pub_id.take() {
+                ring.deregister_publisher(id);
+            }
+            if let Some(id) = local.fanout_shm_sub_id.take() {
+                ring.deregister_subscriber(id);
+            }
+            // Release the flock(s) AFTER clearing bit+PID (order matters: a held
+            // flock blocks any concurrent claim until the bit is already clear).
+            local.fanout_pub_lock.take();
+            local.fanout_sub_lock.take();
         }
 
         // Registry entries are NOT removed here — other instances may still

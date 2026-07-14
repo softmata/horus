@@ -82,7 +82,7 @@
 //!    non-overlapping source/dest within the data region. The SHM layout ensures
 //!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -841,14 +841,37 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     let local = topic.local();
 
-    // Lazy publisher registration — first send registers this Topic as a publisher
+    // Lazy publisher registration — first send registers this Topic as a publisher.
+    // register_publisher returns None only when all 16 endpoint slots are
+    // simultaneously live (COMM-H1) — return the message rather than the pre-fix
+    // panic; a freed/crash-abandoned slot lets a later send succeed.
     let pub_id = match local.fanout_shm_pub_id {
         Some(id) => id,
-        None => {
-            let id = ring.register_publisher();
-            local.fanout_shm_pub_id = Some(id);
-            id
-        }
+        None => match ring.register_publisher_locked(topic.name()) {
+            Some((id, lock)) => {
+                local.fanout_shm_pub_id = Some(id);
+                // Hold the endpoint flock for this Topic's lifetime (COMM-H1) — its
+                // Drop (or process death) releases it, letting a peer reclaim.
+                local.fanout_pub_lock = Some(lock);
+                id
+            }
+            None => {
+                // COMM-H1: never let "all 16 slots live" become a SILENT no-comms
+                // endpoint (worse than the pre-fix loud panic). Warn LOUDLY, but
+                // once per process so a hot send-loop can't flood the log.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "FanoutShm topic '{}': all {} publisher endpoint slots are \
+                         live — this publisher has NO comms until a slot frees \
+                         (COMM-H1 capacity limit, not a panic).",
+                        topic.name(),
+                        super::shm_fanout::MAX_FANOUT_ENDPOINTS,
+                    );
+                }
+                return Err(msg);
+            }
+        },
     };
 
     let ok = if ring.is_pod() {
@@ -930,14 +953,34 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     let local = topic.local();
 
-    // Lazy subscriber registration — first recv registers this Topic as a subscriber
+    // Lazy subscriber registration — first recv registers this Topic as a subscriber.
+    // register_subscriber returns None only when all 16 endpoint slots are
+    // simultaneously live (COMM-H1) — nothing to receive until a slot frees;
+    // recoverable, not the pre-fix panic.
     let sub_id = match local.fanout_shm_sub_id {
         Some(id) => id,
-        None => {
-            let id = ring.register_subscriber();
-            local.fanout_shm_sub_id = Some(id);
-            id
-        }
+        None => match ring.register_subscriber_locked(topic.name()) {
+            Some((id, lock)) => {
+                local.fanout_shm_sub_id = Some(id);
+                // Hold the endpoint flock for this Topic's lifetime (COMM-H1).
+                local.fanout_sub_lock = Some(lock);
+                id
+            }
+            None => {
+                // COMM-H1: same as the send path — loud once, never silent.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "FanoutShm topic '{}': all {} subscriber endpoint slots are \
+                         live — this subscriber has NO comms until a slot frees \
+                         (COMM-H1 capacity limit, not a panic).",
+                        topic.name(),
+                        super::shm_fanout::MAX_FANOUT_ENDPOINTS,
+                    );
+                }
+                return None;
+            }
+        },
     };
 
     let result: Option<T> = if ring.is_pod() {

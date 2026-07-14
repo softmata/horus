@@ -98,6 +98,16 @@ pub(crate) struct LocalState {
     /// SHM FanoutRing subscriber ID (registered on first recv when mode is FanoutShm)
     pub fanout_shm_sub_id: Option<usize>,
 
+    /// COMM-H1: exclusive `flock` proving this process holds the FanoutShm publisher
+    /// endpoint slot. Held for the endpoint's lifetime — its Drop (or process death)
+    /// releases the lock, which is what lets a peer reclaim a crashed owner's slot.
+    /// `None` for every non-FanoutShm backend.
+    pub fanout_pub_lock: Option<horus_sys::fs::FileLock>,
+
+    /// COMM-H1: exclusive `flock` proving this process holds the FanoutShm
+    /// subscriber endpoint slot (symmetric to `fanout_pub_lock`).
+    pub fanout_sub_lock: Option<horus_sys::fs::FileLock>,
+
     /// SHM region backing the fanout channel matrix (must stay alive for lifetime of ring)
     pub fanout_shm_storage: Option<std::sync::Arc<crate::memory::shm_region::ShmRegion>>,
 
@@ -135,6 +145,8 @@ impl Default for LocalState {
             fanout_sub_id: None,
             fanout_shm_pub_id: None,
             fanout_shm_sub_id: None,
+            fanout_pub_lock: None,
+            fanout_sub_lock: None,
             fanout_shm_storage: None,
             spill_keepalive: std::collections::VecDeque::new(),
         }
