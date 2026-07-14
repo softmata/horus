@@ -42,6 +42,32 @@ pub fn trigger_external_emergency_stop(reason: String) {
     }
 }
 
+// ============================================================================
+// Pending LOCAL-origin e-stop signal — the SEND half of networked e-stop.
+// ============================================================================
+
+/// Process-global slot holding this robot's OWN, local-origin e-stop reason while it
+/// awaits network broadcast. One SafetyMonitor + one replicator per process, so a
+/// process-global is the correct scope. Set ONLY on the false→true rising edge of a
+/// local trigger (see `SafetyMonitor::trigger_emergency_stop`); a remote e-stop arrives
+/// via the hook which latches the flag directly, consuming the edge, so a received
+/// e-stop is never queued for re-broadcast (the #1 anti-storm invariant).
+///
+/// `std::sync::Mutex` (not `parking_lot`) so poisoning is recoverable via `into_inner`
+/// on the safety path — never an unwrap-panic.
+static PENDING_LOCAL_ESTOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Drain the pending LOCAL-origin e-stop reason (if any) for network broadcast.
+///
+/// Called by horus_net's replicator tick. Returns `Some(reason)` exactly once per
+/// local e-stop episode; `None` after draining or for remote-origin e-stops.
+pub fn take_pending_local_estop() -> Option<String> {
+    PENDING_LOCAL_ESTOP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
 /// Return the current wall-clock time as nanoseconds since the Unix epoch.
 ///
 /// Using `SystemTime` rather than `Instant` lets us store an absolute timestamp
@@ -884,8 +910,22 @@ impl SafetyMonitor {
     /// (non-fatally, via `let _ = writeln!`) guarantees the flag is set regardless.
     pub(crate) fn trigger_emergency_stop(&self, reason: String) {
         // Latch FIRST — the safety-critical action must not depend on logging.
-        self.emergency_stop.store(true, Ordering::SeqCst);
-        *self.state.lock() = SafetyState::EmergencyStop;
+        //
+        // Rising-edge gate: swap returns the PRIOR value. Only the call that
+        // transitions false→true is a genuine LOCAL-origin e-stop that must be
+        // announced to the fleet. A remote e-stop arrives via the hook
+        // (install_emergency_stop_hook) which store()s true directly — consuming the
+        // edge — so when THIS robot's own watchdog later starves and calls us, swap
+        // returns true (already latched) → NOT a rising edge → no PENDING set → no
+        // re-broadcast (the #1 anti-storm invariant). The latch still ends `true`
+        // unconditionally (swap sets true); only the PENDING queueing is gated.
+        let rising_edge = !self.emergency_stop.swap(true, Ordering::SeqCst);
+        *self.state.lock() = SafetyState::EmergencyStop; // unchanged, idempotent
+        if rising_edge {
+            *PENDING_LOCAL_ESTOP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(reason.clone());
+        }
         // Log LAST and non-fatally — a stderr write failure must not unwind here.
         use std::io::Write;
         let _ = writeln!(std::io::stderr(), " EMERGENCY STOP: {}", reason);
@@ -2750,6 +2790,72 @@ mod tests {
         monitor.trigger_emergency_stop("third".to_string());
         assert!(monitor.is_emergency_stop());
         assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+    }
+
+    // ── Networked-e-stop SEND path: rising-edge gate + anti-storm ─────────────
+    // PENDING_LOCAL_ESTOP is process-global — these tests drain it at the start and
+    // MUST run with `--test-threads=1` (they share the global with each other and
+    // with every other trigger_emergency_stop test in this crate).
+
+    /// Rising-edge gate: only the false→true transition queues a broadcast.
+    ///
+    /// The take() is INTERLEAVED (drain after each trigger) so the SECOND take is the
+    /// discriminator. With the gate, the second (non-rising) trigger queues nothing →
+    /// None. Without it (naive unconditional set) the second trigger overwrites PENDING
+    /// to Some("second") and the final assert fails. Proven RED→GREEN by forcing the
+    /// set unconditional.
+    #[test]
+    fn test_rising_edge_queues_pending_only_on_edge() {
+        // Global slot — drain any residue left by other tests first.
+        let _ = take_pending_local_estop();
+
+        let monitor = SafetyMonitor::new(100);
+
+        // First trigger is the rising edge (false→true) → queues the reason.
+        monitor.trigger_emergency_stop("first".to_string());
+        assert_eq!(
+            take_pending_local_estop(),
+            Some("first".to_string()),
+            "first (rising-edge) trigger must queue the local e-stop reason"
+        );
+
+        // Second trigger is NOT a rising edge (already latched) → queues nothing.
+        // This final None is the gate discriminator (naive set would yield Some).
+        monitor.trigger_emergency_stop("second".to_string());
+        assert_eq!(
+            take_pending_local_estop(),
+            None,
+            "second (non-rising) trigger must NOT re-queue (anti-storm)"
+        );
+    }
+
+    /// ANTI-STORM (the key test): a received remote e-stop latches this monitor, then
+    /// THIS robot's own watchdog starves and triggers locally — that local trigger must
+    /// NOT queue a broadcast, because the remote store consumed the rising edge.
+    ///
+    /// Without the swap-gate this returns Some → a delayed fleet-wide e-stop storm.
+    /// The remote path is simulated by `store(true)` directly on the flag — exactly what
+    /// `install_emergency_stop_hook`'s closure does when a remote packet arrives.
+    /// Proven RED→GREEN by forcing the set unconditional.
+    #[test]
+    fn test_antistorm_remote_estop_not_rebroadcast() {
+        // Global slot — drain any residue left by other tests first.
+        let _ = take_pending_local_estop();
+
+        let monitor = SafetyMonitor::new(100);
+
+        // Simulate a RECEIVED remote e-stop: the hook store()s the flag true directly.
+        monitor.emergency_stop.store(true, Ordering::SeqCst);
+
+        // Now this robot's nodes stop ticking → watchdog starves → LOCAL trigger fires.
+        monitor.trigger_emergency_stop("watchdog expired".to_string());
+
+        assert_eq!(
+            take_pending_local_estop(),
+            None,
+            "a remote-latched e-stop must NOT be re-broadcast when the local watchdog \
+             later fires — re-broadcasting is the e-stop storm bug"
+        );
     }
 
     /// SafetyStats reports watchdog expirations correctly across multiple nodes.

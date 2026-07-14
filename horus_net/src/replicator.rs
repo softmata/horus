@@ -658,6 +658,27 @@ impl Replicator {
         self.estop_broadcaster
             .tick(&self.transport, mcast, &peer_addrs);
 
+        // SEND path (the other half of NET-F1): announce this robot's OWN e-stop to
+        // the fleet. Drained here on the timer tick (worst-case ~TIMER_INTERVAL=50ms
+        // latency — a CONSCIOUS tradeoff vs the current path which never sends at all;
+        // an immediate wake via the event-loop eventfd is a possible follow-up if a
+        // <5ms bound is required). take_pending_local_estop() returns Some ONLY for
+        // local-origin rising-edge e-stops (see safety_monitor.rs) — received e-stops
+        // are never re-broadcast (anti-storm invariant).
+        //
+        // Known limitation: a node joining an already-e-stopped fleet won't learn it
+        // (no join-time state sync). One broadcast per episode — EstopBroadcaster's
+        // triple-redundant multicast+unicast + 3× retry handles delivery reliability.
+        //
+        // RESTS-ON-DESIGN: real cross-process delivery is not exercised here (the
+        // sandbox's cross-process UDP/SHM is env-broken, same as NET-F1's gate test);
+        // the send seam is unit-tested at EstopBroadcaster::broadcast in estop.rs.
+        if let Some(reason) = horus_core::scheduling::take_pending_local_estop() {
+            let payload = crate::estop::encode_estop(self.peer_id_hash, &reason);
+            self.estop_broadcaster
+                .broadcast(&self.transport, payload, mcast, &peer_addrs);
+        }
+
         // Presence cleanup (every 5s)
         if now.duration_since(self.last_presence_cleanup) >= Duration::from_secs(5) {
             self.presence_receiver.cleanup_stale();
