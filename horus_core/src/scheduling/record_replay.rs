@@ -1006,12 +1006,17 @@ impl RecordingManager {
     ///
     /// Session name is sanitized to prevent directory traversal.
     /// Deletes from whichever directory contains the session.
-    pub fn delete_session(&self, session: &str) -> std::io::Result<()> {
+    ///
+    /// Returns `true` if the session existed and was deleted, `false` if no
+    /// session with that name was found (a no-op, still `Ok`).
+    pub fn delete_session(&self, session: &str) -> std::io::Result<bool> {
         let session_dir = self.find_session_dir(session);
         if session_dir.exists() {
             fs::remove_dir_all(session_dir)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
     /// Get total size of recordings across all search directories.

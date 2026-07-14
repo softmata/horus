@@ -113,6 +113,65 @@ class TestTickExceptionHandling:
         assert tick_count[0] >= 1, f"Should tick at least once, got {tick_count[0]}"
 
 
+class TestOnErrorEscalation:
+    """on_error is a NOTIFICATION hook, not a suppress-the-error hook.
+
+    Regression tests for the docs-vs-code audit bug: when a user supplied an
+    on_error callback that returned normally, the tick exception was SWALLOWED
+    instead of re-raised, so the Rust FailurePolicy (fatal/restart/skip) never
+    saw it. A node that should have stopped/restarted kept running silently — a
+    robotics safety footgun. After the fix, on_error runs and THEN the error
+    propagates so the FailurePolicy escalates.
+    """
+
+    def test_on_error_present_still_reraises(self):
+        """tick raises + on_error returns normally -> exception STILL propagates
+        (so the FailurePolicy escalates) AND on_error was invoked."""
+        on_error_calls = []
+
+        def boom(node):
+            raise ValueError("tick failed")
+
+        def note(node, exc):
+            # Notification hook: log and return normally (does NOT suppress).
+            on_error_calls.append(exc)
+
+        node = horus.Node(name="on_err_reraise", tick=boom, on_error=note, rate=10)
+
+        with pytest.raises(ValueError, match="tick failed"):
+            node._run_tick_with_error_handling()
+
+        assert len(on_error_calls) == 1, "on_error must still be invoked"
+        assert isinstance(on_error_calls[0], ValueError)
+
+    def test_no_on_error_reraises(self):
+        """No on_error -> exception propagates (FailurePolicy handles escalation)."""
+
+        def boom(node):
+            raise RuntimeError("no handler")
+
+        node = horus.Node(name="no_on_err_reraise", tick=boom, rate=10)
+
+        with pytest.raises(RuntimeError, match="no handler"):
+            node._run_tick_with_error_handling()
+
+    def test_on_error_raising_propagates_original(self):
+        """If on_error itself raises, the ORIGINAL tick exception propagates."""
+
+        def boom(node):
+            raise ValueError("original")
+
+        def bad_handler(node, exc):
+            raise KeyError("handler blew up")
+
+        node = horus.Node(
+            name="on_err_raises", tick=boom, on_error=bad_handler, rate=10
+        )
+
+        with pytest.raises(ValueError, match="original"):
+            node._run_tick_with_error_handling()
+
+
 class TestConfigValidation:
     """Tests for configuration validation with helpful errors."""
 
