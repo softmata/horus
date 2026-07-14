@@ -126,11 +126,27 @@ impl WireTopicEntry {
 
 // ─── Announcement ───────────────────────────────────────────────────────────
 
+/// Announcement discriminator — bit 7 of the announcement `flags` byte.
+///
+/// `AnnouncementHeader` and `PacketHeader` share wire `MAGIC` + `VERSION`, and
+/// both carry their flags byte at the same offset (byte 5). Without a
+/// discriminator, every data / heartbeat / ack / fragment / estop packet ≥30B
+/// false-matches `AnnouncementHeader::decode` (which only checked magic+version)
+/// and gets swallowed on the receive path.
+///
+/// `PacketFlags` (see `wire.rs`) only uses bits 0–5, so bit 7 is free: real
+/// announcements ALWAYS set it and `decode` REQUIRES it. Non-announcement
+/// encoders never set bit 7, so they no longer decode as announcements.
+pub const ANNOUNCEMENT_FLAG: u8 = 0x80;
+
+/// Bit 0 of the announcement `flags` byte: a `secret_hash` is present.
+pub const ANNOUNCEMENT_HAS_SECRET: u8 = 0x01;
+
 /// Discovery announcement header (30 bytes).
 pub struct AnnouncementHeader {
     pub magic: u32,
     pub version: u8,
-    pub flags: u8, // bit 0: has_secret_hash
+    pub flags: u8, // bit 7: announcement discriminator (required); bit 0: has_secret_hash
     pub peer_id: [u8; 16],
     pub data_port: u16,
     pub secret_hash: [u8; 4], // First 4 bytes of hash (compact)
@@ -164,6 +180,13 @@ impl AnnouncementHeader {
             return None;
         }
         let flags = buf[5];
+        // Require the announcement discriminator (bit 7). Data / heartbeat / ack /
+        // fragment / estop packets share MAGIC+VERSION but carry `PacketFlags`
+        // (bits 0–5 only) at byte 5, so bit 7 is always clear for them — this stops
+        // them from false-matching as announcements and being swallowed.
+        if flags & ANNOUNCEMENT_FLAG == 0 {
+            return None;
+        }
         let mut peer_id = [0u8; 16];
         peer_id.copy_from_slice(&buf[6..22]);
         let data_port = u16::from_le_bytes([buf[22], buf[23]]);
@@ -199,7 +222,8 @@ pub fn encode_announcement(
     let header = AnnouncementHeader {
         magic: MAGIC,
         version: VERSION,
-        flags: if has_secret { 1 } else { 0 },
+        // Always set the discriminator (bit 7); OR in has_secret (bit 0).
+        flags: ANNOUNCEMENT_FLAG | if has_secret { ANNOUNCEMENT_HAS_SECRET } else { 0 },
         peer_id: *peer_id,
         data_port,
         secret_hash: *secret_hash,
@@ -250,7 +274,7 @@ pub fn decode_announcement(buf: &[u8], source_addr: SocketAddr) -> Option<PeerAn
         peer_id: header.peer_id,
         data_port: header.data_port,
         secret_hash: header.secret_hash,
-        has_secret: header.flags & 1 != 0,
+        has_secret: header.flags & ANNOUNCEMENT_HAS_SECRET != 0,
         topics,
         source_addr,
     })
@@ -385,7 +409,7 @@ mod tests {
         let header = AnnouncementHeader {
             magic: MAGIC,
             version: VERSION,
-            flags: 1,
+            flags: ANNOUNCEMENT_FLAG | ANNOUNCEMENT_HAS_SECRET,
             peer_id: [0xAA; 16],
             data_port: 9100,
             secret_hash: [1, 2, 3, 4],
