@@ -82,7 +82,7 @@
 //!    non-overlapping source/dest within the data region. The SHM layout ensures
 //!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -855,7 +855,22 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 local.fanout_pub_lock = Some(lock);
                 id
             }
-            None => return Err(msg),
+            None => {
+                // COMM-H1: never let "all 16 slots live" become a SILENT no-comms
+                // endpoint (worse than the pre-fix loud panic). Warn LOUDLY, but
+                // once per process so a hot send-loop can't flood the log.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "FanoutShm topic '{}': all {} publisher endpoint slots are \
+                         live — this publisher has NO comms until a slot frees \
+                         (COMM-H1 capacity limit, not a panic).",
+                        topic.name(),
+                        super::shm_fanout::MAX_FANOUT_ENDPOINTS,
+                    );
+                }
+                return Err(msg);
+            }
         },
     };
 
@@ -951,7 +966,20 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 local.fanout_sub_lock = Some(lock);
                 id
             }
-            None => return None,
+            None => {
+                // COMM-H1: same as the send path — loud once, never silent.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "FanoutShm topic '{}': all {} subscriber endpoint slots are \
+                         live — this subscriber has NO comms until a slot frees \
+                         (COMM-H1 capacity limit, not a panic).",
+                        topic.name(),
+                        super::shm_fanout::MAX_FANOUT_ENDPOINTS,
+                    );
+                }
+                return None;
+            }
         },
     };
 

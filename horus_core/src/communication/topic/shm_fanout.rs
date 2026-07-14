@@ -643,6 +643,28 @@ impl ShmFanoutRing {
         Some((id, lock))
     }
 
+    /// Release this instance's publisher slot on CLEAN drop (COMM-H1): clear the
+    /// active bit, then the owner PID. The caller drops the held `FileLock` AFTER
+    /// this (releasing the flock), so the ordering is: bit clear → PID clear →
+    /// flock release. The flock stays held throughout, so no peer can reclaim
+    /// mid-teardown; once released, the cleared bit makes the slot immediately
+    /// reusable — crucially by THIS process too (the same-process guard would
+    /// otherwise refuse to reclaim our own still-marked slot). A CRASH runs none of
+    /// this, but the OS releases the flock and a peer reclaims via the dead-owner
+    /// path (the stale bit/PID self-heal on that reclaim).
+    pub(crate) fn deregister_publisher(&self, id: usize) {
+        let meta = unsafe { &*self.meta_ptr };
+        meta.pub_active.fetch_and(!(1u64 << id), Ordering::AcqRel);
+        meta.pub_owner_pids[id].store(0, Ordering::Relaxed);
+    }
+
+    /// Release this instance's subscriber slot on clean drop (symmetric).
+    pub(crate) fn deregister_subscriber(&self, id: usize) {
+        let meta = unsafe { &*self.meta_ptr };
+        meta.sub_active.fetch_and(!(1u64 << id), Ordering::AcqRel);
+        meta.sub_owner_pids[id].store(0, Ordering::Relaxed);
+    }
+
     /// The core flock claim/reclaim protocol (COMM-H1).
     ///
     /// # #1 INVARIANT (a wrong reclaim = silent cross-process UB, strictly worse

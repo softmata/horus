@@ -2882,6 +2882,25 @@ impl<T> Drop for RingTopic<T> {
             }
         }
 
+        // COMM-H1 cross-process: on CLEAN drop, clear this instance's FanoutShm
+        // endpoint bit + owner PID, THEN release the held flock. A crashed process
+        // runs none of this, but the OS releases its flock and a peer reclaims the
+        // slot via the dead-owner path. Clearing bit+PID here (before releasing the
+        // flock) makes the slot immediately reusable — including by THIS process,
+        // whose same-process guard would otherwise refuse to reclaim its own slot.
+        if let BackendStorage::FanoutShm(ring) = unsafe { &*self.backend.get() } {
+            if let Some(id) = local.fanout_shm_pub_id.take() {
+                ring.deregister_publisher(id);
+            }
+            if let Some(id) = local.fanout_shm_sub_id.take() {
+                ring.deregister_subscriber(id);
+            }
+            // Release the flock(s) AFTER clearing bit+PID (order matters: a held
+            // flock blocks any concurrent claim until the bit is already clear).
+            local.fanout_pub_lock.take();
+            local.fanout_sub_lock.take();
+        }
+
         // Registry entries are NOT removed here — other instances may still
         // reference the same backend Arc. Entries are cleaned up automatically
         // by store_or_get_backend() when new epochs are created (old epochs
