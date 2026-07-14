@@ -909,7 +909,16 @@ impl HorusManifest {
     pub fn save_to(&self, path: &Path) -> Result<()> {
         let content =
             toml::to_string_pretty(self).context("Failed to serialize manifest to TOML")?;
-        fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
+        // Atomic write: temp file + rename, so an interrupt mid-write can't corrupt the
+        // manifest (see Lockfile::save_to). `rename(2)` is atomic within a filesystem.
+        let tmp = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("toml")
+        ));
+        fs::write(&tmp, &content)
+            .with_context(|| format!("Failed to write {}", tmp.display()))?;
+        fs::rename(&tmp, path)
+            .with_context(|| format!("Failed to persist {}", path.display()))?;
         Ok(())
     }
 

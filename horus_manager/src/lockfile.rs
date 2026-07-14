@@ -179,8 +179,18 @@ impl HorusLockfile {
     /// Save lockfile to disk.
     pub fn save_to(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self).context("Failed to serialize lockfile")?;
-        fs::write(path, content)
-            .with_context(|| format!("Failed to write lockfile: {}", path.display()))?;
+        // Atomic write: serialize into a sibling temp file, then rename it into place.
+        // `rename(2)` is atomic within a filesystem, so an interrupt (Ctrl-C, crash,
+        // ENOSPC mid-write) can never leave a truncated/corrupt lockfile — a reader
+        // sees either the old file or the complete new one.
+        let tmp = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("lock")
+        ));
+        fs::write(&tmp, &content)
+            .with_context(|| format!("Failed to write lockfile: {}", tmp.display()))?;
+        fs::rename(&tmp, path)
+            .with_context(|| format!("Failed to persist lockfile: {}", path.display()))?;
         Ok(())
     }
 
@@ -298,6 +308,26 @@ mod tests {
         assert_eq!(deserialized.version, CURRENT_VERSION);
         assert_eq!(deserialized.config_hash, Some("deadbeef".to_string()));
         assert_eq!(deserialized.packages.len(), 3);
+    }
+
+    #[test]
+    fn save_to_is_atomic_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("horus.lock");
+        let mut lock = HorusLockfile::new();
+        lock.pin("serde", "1.0.215", "crates.io", None);
+        lock.save_to(&path).unwrap();
+
+        // Written and round-trips through load_from.
+        assert!(path.exists());
+        assert_eq!(HorusLockfile::load_from(&path).unwrap().packages.len(), 1);
+
+        // The sibling temp file must have been renamed into place, not left behind
+        // (guards the tmp+rename mechanics — a broken rename would strand horus.lock.tmp).
+        assert!(
+            !dir.path().join("horus.lock.tmp").exists(),
+            "atomic save must not leave a .tmp file behind"
+        );
     }
 
     #[test]
