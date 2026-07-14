@@ -22,6 +22,12 @@ on:
       - 'horus_library/**'
   workflow_dispatch:
 
+# Minimal default GITHUB_TOKEN scope for every job (CodeQL actions/missing-workflow-permissions).
+# All jobs only check out the repo and run tests — none push, comment, or release. upload-artifact
+# uses the Actions runtime token and codecov uses CODECOV_TOKEN, so both work with a read-only token.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   HORUS_NAMESPACE: ci_cpp_${{ github.run_id }}

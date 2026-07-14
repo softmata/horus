@@ -10,6 +10,12 @@ on:
     - cron: '0 2 * * *'  # 2 AM UTC daily
   workflow_dispatch:
 
+# Minimal default GITHUB_TOKEN scope for every job (CodeQL actions/missing-workflow-permissions).
+# These nightly jobs only run soak/fault/fuzz tests and upload artifacts (Actions runtime token) —
+# none push, comment, or release, so a read-only token is sufficient.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
