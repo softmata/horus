@@ -228,8 +228,21 @@ impl Replicator {
         }
     }
 
+    /// Route one received datagram to its handler.
+    ///
+    /// Dispatch contract (relies on the §1 bit-7 discriminator so the branches are
+    /// mutually exclusive — before it, `decode_announcement` swallowed everything):
+    ///   1. Announcement (flags bit 7 set)  → peer table + discovery/matching
+    ///   2. Heartbeat    (`PacketFlags::HEARTBEAT`) → `heartbeat.on_received`
+    ///   3. Ack          (`PacketFlags::ACK`)       → `reliability.on_ack`
+    ///   4. Fragment     (`PacketFlags::FRAGMENT`)  → reassembly → message dispatch
+    ///   5. Data         (no special flag)          → `decode_packet` → message dispatch
+    ///
+    /// Fragment and data both funnel into `process_incoming_message`, which
+    /// dispatches system topics (presence / logs / estop) and normal imports.
     fn process_packet(&mut self, buf: &[u8], from: SocketAddr) {
-        // Discovery announcement
+        // 1. Discovery announcement — self-filters on the bit-7 discriminator, so a
+        //    real heartbeat/ack/fragment/data packet no longer matches here.
         if let Some(ann) = decode_announcement(buf, from) {
             if ann.peer_id == self.peer_id {
                 return;
@@ -251,12 +264,13 @@ impl Replicator {
             return;
         }
 
-        // Heartbeat packet
+        // Not an announcement: decode the packet header and route by flags.
         let header = match wire::PacketHeader::decode(buf) {
             Some(h) => h,
             None => return,
         };
 
+        // 2. Heartbeat packet
         if header.flags.heartbeat() {
             if let Some(hb) = wire::decode_heartbeat(buf) {
                 self.heartbeat.on_received(&hb.peer_id);
@@ -264,7 +278,7 @@ impl Replicator {
             return;
         }
 
-        // ACK packet
+        // 3. ACK packet
         if header.flags.ack() {
             if let Some(ack) = wire::decode_ack(buf) {
                 self.reliability.on_ack(&ack);
@@ -272,7 +286,7 @@ impl Replicator {
             return;
         }
 
-        // Data packet — handle fragments and regular messages
+        // 4. Fragmented data packet — reassemble, then dispatch as a message
         if header.flags.fragment() {
             // Parse the message header (contains topic_hash, sequence, etc.)
             // then the fragment header, then the fragment payload
@@ -315,6 +329,7 @@ impl Replicator {
             return;
         }
 
+        // 5. Regular (unfragmented) data packet
         let (_, mut messages) = match wire::decode_packet(buf) {
             Some(r) => r,
             None => return,
