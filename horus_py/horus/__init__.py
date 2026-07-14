@@ -802,8 +802,13 @@ class Node:
     def _run_tick_with_error_handling(self, info: Optional[Any] = None) -> None:
         """Run tick_fn with error handling and info context management.
 
-        Error escalation is handled by Rust FailurePolicy (fatal/restart/skip/ignore).
-        Python only handles user's on_error callback if provided.
+        ``on_error`` is a NOTIFICATION hook, not a suppress-the-error hook. When
+        the user supplies one it is invoked, and THEN the exception is re-raised
+        so the Rust FailurePolicy (fatal/restart/skip/ignore) still escalates.
+        Swallowing the error here would silently bypass the FailurePolicy — a
+        node configured to stop/restart on failure would keep running instead
+        (a robotics safety footgun). The only special case is when ``on_error``
+        itself raises: then the ORIGINAL tick exception is propagated.
         """
         old_info = self.info
         self.info = info
@@ -815,9 +820,10 @@ class Node:
                 try:
                     self.on_error_fn(self, e)
                 except Exception:
-                    raise e  # on_error failed too — propagate original
-            else:
-                raise  # Rust FailurePolicy handles escalation
+                    raise e  # on_error failed — propagate the original error
+            # Always re-raise (on_error is a notification hook, not a suppressor)
+            # so the Rust FailurePolicy escalates the failure.
+            raise
         finally:
             self.info = old_info
 
