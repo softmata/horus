@@ -300,4 +300,79 @@ mod tests {
         assert!(!is_fresh_estop(now.saturating_sub(10_000_000_000))); // 10s old: stale
         assert!(!is_fresh_estop(now + 10_000_000_000)); // 10s future: reject
     }
+
+    // ── SEND seam: EstopBroadcaster actually emits packets ────────────────────
+
+    /// Mock `Transport` that records every `(payload, addr)` handed to `send_to`,
+    /// so the SEND path can be asserted without a real socket.
+    struct MockTransport {
+        sent: std::sync::Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            Self {
+                sent: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Transport for MockTransport {
+        fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+            self.sent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((data.to_vec(), addr));
+            Ok(data.len())
+        }
+        fn recv_from(&self, _buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "mock: no data",
+            ))
+        }
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok(SocketAddr::from(([127, 0, 0, 1], 0)))
+        }
+        fn join_multicast(&self, _group: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+        #[cfg(unix)]
+        fn raw_fd(&self) -> std::os::unix::io::RawFd {
+            -1
+        }
+    }
+
+    /// `EstopBroadcaster::broadcast` must emit at least one outbound packet that
+    /// `decode_estop`s back to the given (host, reason). This is the horus_net half of
+    /// the wired SEND path.
+    ///
+    /// The replicator's `handle_timer` call site is the 3-line wiring
+    /// (`take_pending_local_estop` → `encode_estop` → `broadcast`) verified by
+    /// inspection; real cross-process delivery RESTS-ON-DESIGN (sandbox cross-process
+    /// UDP/SHM is env-broken, same as NET-F1's gate test).
+    #[test]
+    fn broadcast_emits_decodable_estop_packet() {
+        let transport = MockTransport::new();
+        let mut bc = EstopBroadcaster::new();
+        let peer = SocketAddr::from(([127, 0, 0, 1], 7447));
+
+        let reason = "local watchdog expired";
+        let payload = encode_estop(0xBEEF, reason);
+        // No multicast addr in this seam test — unicast to the one fake peer is enough.
+        bc.broadcast(&transport, payload, None, &[peer]);
+
+        let sent = transport.sent.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !sent.is_empty(),
+            "broadcast must emit at least one outbound packet"
+        );
+        assert!(
+            sent.iter().any(|(pkt, _addr)| matches!(
+                decode_estop(pkt),
+                Some((host, ref r, _ts)) if host == 0xBEEF && r == reason
+            )),
+            "at least one sent packet must decode_estop() to (0xBEEF, reason)"
+        );
+    }
 }

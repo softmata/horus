@@ -259,8 +259,8 @@ pub use record_replay::{
 pub use registry::SchedulerRegistry;
 #[doc(hidden)]
 pub use safety_monitor::{
-    set_emergency_stop_hook, trigger_external_emergency_stop, BudgetPolicy, SafetyState,
-    SafetyStats,
+    set_emergency_stop_hook, take_pending_local_estop, trigger_external_emergency_stop,
+    BudgetPolicy, SafetyState, SafetyStats,
 };
 #[doc(hidden)]
 pub use scheduler::{set_network_auto_wire, LifecycleStartFn, RtFeatureDegradation};
