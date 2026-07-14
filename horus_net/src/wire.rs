@@ -105,6 +105,10 @@ impl PacketFlags {
     pub const FRAGMENT: u8 = 1 << 3;
     pub const HEARTBEAT: u8 = 1 << 4;
     pub const ACK: u8 = 1 << 5;
+    // Bit 6 is unused/reserved. Bit 7 (0x80) is RESERVED as the announcement
+    // discriminator (`discovery::ANNOUNCEMENT_FLAG`) — it distinguishes an
+    // `AnnouncementHeader` from a `PacketHeader` on the shared MAGIC+VERSION wire
+    // format. Packet encoders MUST NOT set bit 7; announcements always set it.
 
     pub const fn empty() -> Self {
         Self(0)

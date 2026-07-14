@@ -205,6 +205,40 @@ fn note_safing_failure_escalates_to_estop_for_critical_node() {
     );
 }
 
+/// SCHED-H1: after the scheduler is finalized, an EXTERNAL emergency stop (the path
+/// horus_net uses for a remote e-stop / link-loss) must latch the scheduler's stop.
+/// The global hook was never installed, so `trigger_external_emergency_stop` only
+/// printed to stderr and returned — the networked e-stop was completely inert.
+#[test]
+fn external_emergency_stop_latches_scheduler_after_finalize() {
+    let _guard = lock_scheduler();
+    struct N;
+    impl Node for N {
+        fn name(&self) -> &str {
+            "estop_node"
+        }
+        fn tick(&mut self) {}
+    }
+    let mut s = Scheduler::new().tick_rate(100_u64.hz()).watchdog(500_u64.ms());
+    s.add(N).watchdog(100_u64.ms()).build().unwrap();
+    // finalize_and_init() runs finalize_config(), which installs the external
+    // emergency-stop hook (SCHED-H1) — mirrors what run() does before the tick loop.
+    s.finalize_and_init();
+
+    assert!(
+        !s.monitor.safety.as_ref().unwrap().is_emergency_stop(),
+        "no e-stop before the external trigger"
+    );
+
+    // An external system fires the global hook (as horus_net does on link loss).
+    crate::scheduling::safety_monitor::trigger_external_emergency_stop("link lost".to_string());
+
+    assert!(
+        s.monitor.safety.as_ref().unwrap().is_emergency_stop(),
+        "external emergency stop must latch THIS scheduler's stop flag (SCHED-H1)"
+    );
+}
+
 /// A non-critical node that fails to safe is stopped, but must NOT trigger a
 /// system-wide emergency stop (that would be over-escalation).
 #[test]

@@ -228,8 +228,21 @@ impl Replicator {
         }
     }
 
+    /// Route one received datagram to its handler.
+    ///
+    /// Dispatch contract (relies on the §1 bit-7 discriminator so the branches are
+    /// mutually exclusive — before it, `decode_announcement` swallowed everything):
+    ///   1. Announcement (flags bit 7 set)  → peer table + discovery/matching
+    ///   2. Heartbeat    (`PacketFlags::HEARTBEAT`) → `heartbeat.on_received`
+    ///   3. Ack          (`PacketFlags::ACK`)       → `reliability.on_ack`
+    ///   4. Fragment     (`PacketFlags::FRAGMENT`)  → reassembly → message dispatch
+    ///   5. Data         (no special flag)          → `decode_packet` → message dispatch
+    ///
+    /// Fragment and data both funnel into `process_incoming_message`, which
+    /// dispatches system topics (presence / logs / estop) and normal imports.
     fn process_packet(&mut self, buf: &[u8], from: SocketAddr) {
-        // Discovery announcement
+        // 1. Discovery announcement — self-filters on the bit-7 discriminator, so a
+        //    real heartbeat/ack/fragment/data packet no longer matches here.
         if let Some(ann) = decode_announcement(buf, from) {
             if ann.peer_id == self.peer_id {
                 return;
@@ -251,12 +264,13 @@ impl Replicator {
             return;
         }
 
-        // Heartbeat packet
+        // Not an announcement: decode the packet header and route by flags.
         let header = match wire::PacketHeader::decode(buf) {
             Some(h) => h,
             None => return,
         };
 
+        // 2. Heartbeat packet
         if header.flags.heartbeat() {
             if let Some(hb) = wire::decode_heartbeat(buf) {
                 self.heartbeat.on_received(&hb.peer_id);
@@ -264,7 +278,7 @@ impl Replicator {
             return;
         }
 
-        // ACK packet
+        // 3. ACK packet
         if header.flags.ack() {
             if let Some(ack) = wire::decode_ack(buf) {
                 self.reliability.on_ack(&ack);
@@ -272,7 +286,7 @@ impl Replicator {
             return;
         }
 
-        // Data packet — handle fragments and regular messages
+        // 4. Fragmented data packet — reassemble, then dispatch as a message
         if header.flags.fragment() {
             // Parse the message header (contains topic_hash, sequence, etc.)
             // then the fragment header, then the fragment payload
@@ -315,6 +329,7 @@ impl Replicator {
             return;
         }
 
+        // 5. Regular (unfragmented) data packet
         let (_, mut messages) = match wire::decode_packet(buf) {
             Some(r) => r,
             None => return,
@@ -357,7 +372,7 @@ impl Replicator {
             return;
         }
         if msg.topic_hash == estop_hash {
-            crate::estop::handle_remote_estop(&msg.payload);
+            crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
             return;
         }
 
@@ -821,5 +836,84 @@ mod tests {
         assert_eq!(rep.reassembler.pending_count(), 0);
         assert_eq!(rep.flow_control.tracked_count(), 0);
         assert!(rep.optimizers.is_empty()); // No optimizers by default
+    }
+
+    // ─── §2/§6 process_packet dispatch (gate) ───────────────────────────────
+    // These drive the private receive path directly. Run with --test-threads=1:
+    // the data-packet test installs the global external emergency-stop hook.
+
+    fn test_replicator() -> Replicator {
+        let registry = Arc::new(TopicRegistry::new());
+        Replicator::new(registry, NetConfig::test_config(0)).unwrap()
+    }
+
+    #[test]
+    fn process_packet_does_not_swallow_heartbeat_as_announcement() {
+        // RED→GREEN: before the §1 bit-7 discriminator, a genuine heartbeat (≥30B,
+        // shares MAGIC+VERSION) false-matched decode_announcement and was swallowed,
+        // polluting the peer table with a bogus peer (alive_count would be 1). After
+        // the fix it routes to the heartbeat path and the peer table stays clean.
+        let mut rep = test_replicator();
+        let payload = wire::HeartbeatPayload {
+            peer_id: [0x55; 16],
+            heartbeat_sequence: 1,
+        };
+        let mut buf = [0u8; 64];
+        let len = wire::encode_heartbeat(0x1234, 1, &payload, &mut buf);
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        rep.process_packet(&buf[..len], from);
+        assert_eq!(
+            rep.peers.alive_count(),
+            0,
+            "heartbeat must not be swallowed as a bogus announcement/peer"
+        );
+    }
+
+    #[test]
+    fn process_packet_routes_real_announcement() {
+        // Positive control: a genuine announcement (bit 7 set) registers a peer.
+        let mut rep = test_replicator();
+        let peer_id = [0x77; 16];
+        let mut buf = [0u8; 4096];
+        let len =
+            crate::discovery::encode_announcement(&peer_id, 9100, &[0u8; 4], &[], &mut buf);
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        rep.process_packet(&buf[..len], from);
+        assert_eq!(rep.peers.alive_count(), 1, "real announcement registers a peer");
+    }
+
+    #[test]
+    fn process_packet_dispatches_estop_data_packet() {
+        // A genuine DATA packet on _horus.estop must flow through decode_packet →
+        // process_incoming_message → the estop handler (proves data packets are
+        // dispatched, not swallowed). Observed via the external e-stop hook.
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired2 = fired.clone();
+        horus_core::scheduling::set_emergency_stop_hook(move |_reason| {
+            fired2.store(true, Ordering::SeqCst);
+        });
+
+        let mut rep = test_replicator(); // estop_remote defaults to Warn
+        let estop_payload = crate::estop::encode_estop(0xABCD, "gate test"); // fresh ts
+        let header = PacketHeader::new(PacketFlags::empty(), 0x1234, 1);
+        let msg = wire::OutMessage {
+            topic_name: crate::registry::SYSTEM_TOPIC_ESTOP.into(),
+            topic_hash: wire::topic_hash(crate::registry::SYSTEM_TOPIC_ESTOP),
+            payload: estop_payload,
+            timestamp_ns: 0,
+            sequence: 0,
+            priority: Priority::Immediate,
+            reliability: Reliability::None,
+            encoding: Encoding::Bincode,
+        };
+        let mut buf = [0u8; 1024];
+        let len = wire::encode_single(&header, &msg, &mut buf);
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        rep.process_packet(&buf[..len], from);
+
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "estop data packet must dispatch to the estop handler"
+        );
     }
 }
