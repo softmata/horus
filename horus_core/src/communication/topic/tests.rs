@@ -50,11 +50,17 @@ fn unique(prefix: &str) -> String {
 // ============================================================================
 
 #[test]
-fn local_state_fits_three_cache_lines() {
+fn local_state_fits_four_cache_lines() {
+    // The PERF-critical invariant is that the hot path (offsets 0–63: cached_mode
+    // through cached_seq_ptr) stays in cache line 1 — that is unchanged. COMM-H1's
+    // cross-process crash-liveness added COLD-path registration state to line 2+
+    // (fanout_shm_pub_id/sub_id + the two `flock` guard fields fanout_pub_lock/
+    // sub_lock), touched only once per endpoint at register/teardown, never per
+    // message. That grew the total footprint from 3 to 4 cache lines (200 bytes).
     let size = mem::size_of::<LocalState>();
     assert!(
-        size <= 192,
-        "LocalState should fit in 3 cache lines, got {} bytes ({} cache lines)",
+        size <= 256,
+        "LocalState should fit in 4 cache lines, got {} bytes ({} cache lines)",
         size,
         size.div_ceil(64)
     );
