@@ -18,6 +18,21 @@ pub const MAX_FRAGMENT_PAYLOAD: usize = 1400;
 /// Maximum total message size for reassembly.
 pub const MAX_REASSEMBLY_SIZE: usize = 1_048_576; // 1MB
 
+/// Maximum fragments a single message may declare.
+///
+/// A legitimate `MAX_REASSEMBLY_SIZE` message split at `MAX_FRAGMENT_PAYLOAD`
+/// needs `ceil(1MB / 1400) = 749` fragments; anything claiming more is malicious.
+/// `fragment_count` is attacker-controlled and drives a `vec![None; count]`
+/// allocation, so it must be bounded before that allocation happens (DoS).
+pub const MAX_FRAGMENTS_PER_MESSAGE: u16 = (MAX_REASSEMBLY_SIZE / MAX_FRAGMENT_PAYLOAD + 1) as u16;
+
+/// Maximum number of concurrent partial (incomplete) messages held for reassembly.
+///
+/// Each distinct `(topic_hash, fragment_id)` opens a new reassembly buffer. Without
+/// a cap, an attacker floods distinct ids and grows the pending map without bound
+/// (OOM). New buffers are refused past this ceiling; stale ones are GC'd every tick.
+pub const MAX_PENDING_MESSAGES: usize = 256;
+
 /// Timeout for discarding incomplete fragment sets.
 pub const FRAGMENT_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -116,6 +131,9 @@ impl Default for Fragmenter {
 struct PendingMessage {
     fragments: Vec<Option<Vec<u8>>>,
     received_count: u16,
+    /// Running sum of stored fragment payload bytes — bounds actual memory held
+    /// against the declared `total_len` regardless of attacker-supplied headers.
+    received_bytes: usize,
     expected_count: u16,
     total_len: u32,
     first_seen: Instant,
@@ -154,8 +172,20 @@ impl Reassembler {
     }
 
     /// Feed a fragment. Returns the reassembled message if all fragments arrived.
+    ///
+    /// All bounds here are DoS guards against attacker-controlled fragment headers:
+    /// the declared total size, the fragment count (drives allocation), the number
+    /// of concurrent partial messages, and the running byte total per message.
+    /// Every guard fails closed (returns `None`; never allocates unboundedly).
     pub fn feed(&mut self, frag: Fragment) -> Option<ReassembledMessage> {
+        // Bound 1: declared total must fit the reassembly cap.
         if frag.total_payload_len as usize > MAX_REASSEMBLY_SIZE {
+            return None;
+        }
+
+        // Bound 2: reject implausible fragment counts BEFORE allocating a slot vec
+        // sized from the (attacker-controlled) count.
+        if frag.fragment_count == 0 || frag.fragment_count > MAX_FRAGMENTS_PER_MESSAGE {
             return None;
         }
 
@@ -174,9 +204,18 @@ impl Reassembler {
 
         let key = (frag.topic_hash, frag.fragment_id);
 
+        // Bound 3: cap concurrent partial messages. Refuse to open a NEW reassembly
+        // buffer once at capacity (existing keys may still receive their fragments).
+        if !self.pending.contains_key(&key) && self.pending.len() >= MAX_PENDING_MESSAGES {
+            return None;
+        }
+
+        let idx = frag.fragment_index as usize;
+
         let pending = self.pending.entry(key).or_insert_with(|| PendingMessage {
             fragments: vec![None; frag.fragment_count as usize],
             received_count: 0,
+            received_bytes: 0,
             expected_count: frag.fragment_count,
             total_len: frag.total_payload_len,
             first_seen: Instant::now(),
@@ -188,17 +227,39 @@ impl Reassembler {
             encoding: frag.encoding,
         });
 
-        let idx = frag.fragment_index as usize;
         if idx >= pending.fragments.len() {
             return None; // Invalid index
         }
 
-        if pending.fragments[idx].is_none() {
-            pending.fragments[idx] = Some(frag.payload);
-            pending.received_count += 1;
+        // Decide within the entry borrow; act (remove) after it ends.
+        let mut overflow = false;
+        let complete = if pending.fragments[idx].is_none() {
+            // Bound 4: the summed payload of stored fragments must never exceed the
+            // declared total (which is itself <= MAX_REASSEMBLY_SIZE). This caps the
+            // actual bytes held even if individual fragment payloads are oversized.
+            let new_bytes = pending.received_bytes.saturating_add(frag.payload.len());
+            if new_bytes > pending.total_len as usize {
+                overflow = true;
+                false
+            } else {
+                pending.received_bytes = new_bytes;
+                pending.fragments[idx] = Some(frag.payload);
+                pending.received_count += 1;
+                pending.received_count == pending.expected_count
+            }
+        } else {
+            // Duplicate index — no new bytes; complete only if already all present.
+            pending.received_count == pending.expected_count
+        };
+
+        if overflow {
+            // Malformed/malicious stream: accumulated payload exceeds the declared
+            // total. Drop the whole partial message rather than retain attacker state.
+            self.pending.remove(&key);
+            return None;
         }
 
-        if pending.received_count == pending.expected_count {
+        if complete {
             // All fragments received — concatenate
             let pending = self.pending.remove(&key).unwrap();
             let mut payload = Vec::with_capacity(pending.total_len as usize);
