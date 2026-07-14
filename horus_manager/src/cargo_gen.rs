@@ -791,51 +791,49 @@ fn write_single_dep(cargo: &mut String, name: &str, dep: &DependencyValue) {
             writeln!(cargo, "{} = \"{}\"", name, v).unwrap();
         }
         DependencyValue::Detailed(d) => {
-            let version = d.version.as_deref().unwrap_or("*");
-            if !d.features.is_empty() {
-                let feats = d
-                    .features
-                    .iter()
-                    .map(|f| format!("\"{}\"", f))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if d.optional {
-                    writeln!(
-                        cargo,
-                        "{} = {{ version = \"{}\", features = [{}], optional = true }}",
-                        name, version, feats
-                    )
-                    .unwrap();
-                } else {
-                    writeln!(
-                        cargo,
-                        "{} = {{ version = \"{}\", features = [{}] }}",
-                        name, version, feats
-                    )
-                    .unwrap();
-                }
-            } else if let Some(ref git) = d.git {
-                let mut parts = format!("{} = {{ git = \"{}\"", name, git);
-                if let Some(ref branch) = d.branch {
-                    parts.push_str(&format!(", branch = \"{}\"", branch));
-                }
-                if let Some(ref tag) = d.tag {
-                    parts.push_str(&format!(", tag = \"{}\"", tag));
-                }
-                if let Some(ref rev) = d.rev {
-                    parts.push_str(&format!(", rev = \"{}\"", rev));
-                }
-                parts.push_str(" }");
-                writeln!(cargo, "{}", parts).unwrap();
-            } else if d.optional {
-                writeln!(
-                    cargo,
-                    "{} = {{ version = \"{}\", optional = true }}",
-                    name, version
-                )
-                .unwrap();
-            } else {
+            if d.git.is_none() && d.features.is_empty() && !d.optional {
+                // Bare version requirement, no source override or modifiers → short form.
+                let version = d.version.as_deref().unwrap_or("*");
                 writeln!(cargo, "{} = \"{}\"", name, version).unwrap();
+            } else {
+                // Inline table. The source token comes first — a git source takes
+                // precedence over a version requirement — then features and the
+                // optional flag are appended regardless of source. Previously the git
+                // branch and the features/optional branches were mutually exclusive,
+                // so a member `{ git = "...", features = [...] }` dep silently dropped
+                // its git source (emitting a bogus `version = "*"` crates.io dep) and a
+                // git+optional dep dropped `optional = true`.
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(ref git) = d.git {
+                    parts.push(format!("git = \"{}\"", git));
+                    if let Some(ref branch) = d.branch {
+                        parts.push(format!("branch = \"{}\"", branch));
+                    }
+                    if let Some(ref tag) = d.tag {
+                        parts.push(format!("tag = \"{}\"", tag));
+                    }
+                    if let Some(ref rev) = d.rev {
+                        parts.push(format!("rev = \"{}\"", rev));
+                    }
+                } else {
+                    parts.push(format!(
+                        "version = \"{}\"",
+                        d.version.as_deref().unwrap_or("*")
+                    ));
+                }
+                if !d.features.is_empty() {
+                    let feats = d
+                        .features
+                        .iter()
+                        .map(|f| format!("\"{}\"", f))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    parts.push(format!("features = [{}]", feats));
+                }
+                if d.optional {
+                    parts.push("optional = true".to_string());
+                }
+                writeln!(cargo, "{} = {{ {} }}", name, parts.join(", ")).unwrap();
             }
         }
     }
@@ -977,6 +975,42 @@ mod tests {
 
         assert!(content.contains("serde = { version = \"1.0\", features = [\"derive\"] }"));
         assert!(content.contains("tokio = \"1.0\""));
+    }
+
+    #[test]
+    fn write_single_dep_keeps_git_source_with_features_and_optional() {
+        // Regression (F3): a workspace-member dep carrying BOTH a git source and
+        // features must keep the git source. The old writer's git branch and
+        // features/optional branch were mutually exclusive, so this dep took the
+        // features branch and emitted `version = "*"`, silently dropping the git URL
+        // (cargo would then try to resolve a nonexistent wildcard crates.io crate).
+        // The optional flag was likewise dropped for a git+optional dep.
+        let dep = DependencyValue::Detailed(DetailedDependency {
+            version: None,
+            git: Some("https://github.com/foo/bar".to_string()),
+            branch: Some("main".to_string()),
+            features: vec!["async".to_string(), "tls".to_string()],
+            optional: true,
+            ..Default::default()
+        });
+
+        let mut out = String::new();
+        write_single_dep(&mut out, "bar", &dep);
+
+        assert!(
+            out.contains("git = \"https://github.com/foo/bar\""),
+            "git source dropped: {out}"
+        );
+        assert!(out.contains("branch = \"main\""), "branch dropped: {out}");
+        assert!(
+            out.contains("features = [\"async\", \"tls\"]"),
+            "features dropped: {out}"
+        );
+        assert!(out.contains("optional = true"), "optional dropped: {out}");
+        assert!(
+            !out.contains("version = \"*\""),
+            "must not emit a bogus wildcard version for a git dep: {out}"
+        );
     }
 
     #[test]
