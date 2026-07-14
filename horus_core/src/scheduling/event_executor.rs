@@ -184,7 +184,16 @@ impl EventExecutor {
                         recorder.begin_tick(tick_count);
                     }
 
+                    // FIX #5: this tick runs on THIS watcher thread — install the
+                    // per-tick context here so horus::now/dt/rng/budget_remaining
+                    // work for event nodes too (mirrors run_node_tick).
+                    super::primitives::set_node_tick_context(
+                        &node,
+                        &*monitors.clock,
+                        monitors.tick_period,
+                    );
                     let tr = NodeRunner::run_tick(&mut node.node);
+                    super::primitives::clear_node_tick_context();
 
                     // Record stats
                     if let Some(ref mut stats) = node.rt_stats {
@@ -207,6 +216,16 @@ impl EventExecutor {
                         Ok(_) => {
                             tick_count += 1;
                             node.record_tick_success();
+                            // FIX #2: feed the watchdog after a successful tick.
+                            // Event nodes are critical only via an explicit
+                            // `.watchdog()` (is_rt_node is false here). A hung
+                            // tick never returns and a panic lands in Err(_), so
+                            // neither refreshes the watchdog.
+                            if node.is_rt_node || node.node_watchdog.is_some() {
+                                if let Some(ref feeder) = monitors.watchdog {
+                                    feeder.feed(&node.name);
+                                }
+                            }
                         }
                         Err(panic_err) => {
                             if let Ok(mut profiler) = monitors.profiler.try_lock() {
@@ -269,6 +288,9 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
+            watchdog: None,
         }
     }
 

@@ -167,8 +167,19 @@ impl AsyncExecutor {
                     // SAFETY: Each task accesses a distinct index into the nodes vec.
                     // We await all handles before nodes can be mutated again.
                     let node_ref = unsafe { &mut *nodes_ptr.add(i) };
+                    // FIX #5: the tick runs on a tokio blocking-pool thread, so the
+                    // thread-local context is set INSIDE the closure. spawn_blocking
+                    // requires 'static, so move an owned clock Arc clone (cheap).
+                    let clock = monitors.clock.clone();
+                    let ctx_tick_period = monitors.tick_period;
                     let handle = tokio::task::spawn_blocking(move || {
+                        super::primitives::set_node_tick_context(
+                            node_ref,
+                            &*clock,
+                            ctx_tick_period,
+                        );
                         let tr = NodeRunner::run_tick(&mut node_ref.node);
+                        super::primitives::clear_node_tick_context();
                         AsyncResult {
                             index: i,
                             tick_start: tr.tick_start,
@@ -249,6 +260,16 @@ impl AsyncExecutor {
                     ctx.record_tick();
                 }
                 node.record_tick_success();
+                // FIX #2: feed the watchdog after a successful tick, gated on the
+                // main loop's critical-node condition (mod.rs:3555). Reached only
+                // when the spawn_blocking task RETURNED (a hung task blocks its
+                // await so this never runs → hang-detection preserved); the Err
+                // arm below is skipped so a panic does not feed either.
+                if node.is_rt_node || node.node_watchdog.is_some() {
+                    if let Some(ref feeder) = monitors.watchdog {
+                        feeder.feed(&node.name);
+                    }
+                }
             }
             Err(panic_err) => {
                 if let Ok(mut profiler) = monitors.profiler.try_lock() {
@@ -298,6 +319,9 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
+            watchdog: None,
         }
     }
 

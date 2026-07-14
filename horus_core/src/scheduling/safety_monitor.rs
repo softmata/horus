@@ -566,6 +566,33 @@ pub(crate) struct SafetyMonitor {
     degradation_states: Mutex<HashMap<String, NodeDegradationState>>,
 }
 
+/// A cheap, cloneable handle for feeding node watchdogs from another thread.
+///
+/// Holds a clone of the SAME `Arc<RwLock<HashMap<String, Watchdog>>>` that the
+/// owning `SafetyMonitor` iterates in `check_watchdogs()` /
+/// `check_watchdogs_graduated()`, so a `feed()` through this handle is observed
+/// by those checks — provably the same atomics, not a copy.
+///
+/// Handed to the executor threads (via `SharedMonitors`) so they can keep their
+/// critical nodes' watchdogs alive. Without it, executor-run nodes (which live
+/// outside `self.nodes`, the only place the main loop feeds) were never fed, so
+/// a HEALTHY RT node's watchdog expired and `check_watchdogs` tripped a spurious
+/// fleet-halting emergency stop (FIX #2).
+#[derive(Clone, Debug)]
+pub(crate) struct WatchdogFeeder {
+    watchdogs: Arc<RwLock<HashMap<String, Watchdog>>>,
+}
+
+impl WatchdogFeeder {
+    /// Feed the watchdog for `node_name`. No-op if the node has no registered
+    /// watchdog — identical semantics to `SafetyMonitor::feed_watchdog`.
+    pub(crate) fn feed(&self, node_name: &str) {
+        if let Some(watchdog) = self.watchdogs.read().get(node_name) {
+            watchdog.feed();
+        }
+    }
+}
+
 impl SafetyMonitor {
     pub(crate) fn new(max_deadline_misses: u64) -> Self {
         Self {
@@ -622,6 +649,29 @@ impl SafetyMonitor {
         if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.feed();
         }
+    }
+
+    /// Produce a cheap feed handle that shares this monitor's watchdog map.
+    ///
+    /// The returned `WatchdogFeeder` clones the very `Arc<RwLock<HashMap>>` that
+    /// `check_watchdogs`/`check_watchdogs_graduated` iterate, so feeds through
+    /// the handle are seen by those checks. Given to executor threads so they
+    /// can feed their critical nodes' watchdogs (FIX #2).
+    pub(crate) fn watchdog_feeder(&self) -> WatchdogFeeder {
+        WatchdogFeeder {
+            watchdogs: self.watchdogs.clone(),
+        }
+    }
+
+    /// Read a node's last-heartbeat timestamp (ns since the Unix epoch), for
+    /// tests that assert whether a watchdog was actually fed. `None` if the
+    /// node has no registered watchdog.
+    #[cfg(test)]
+    pub(crate) fn watchdog_last_heartbeat_ns(&self, node_name: &str) -> Option<u64> {
+        self.watchdogs
+            .read()
+            .get(node_name)
+            .map(|w| w.last_heartbeat_ns.load(Ordering::Acquire))
     }
 
     /// Check all watchdogs and write expired node names into `expired`.

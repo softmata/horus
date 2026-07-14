@@ -200,6 +200,14 @@ impl RtExecutor {
         // SHM backend initializing on its first recv/send) may allocate. Alloc-
         // freedom is a steady-state guarantee, enforced from the second tick on.
         let enforce_no_alloc = node.no_alloc && !is_first_tick;
+
+        // FIX #5: install the per-tick thread-local context (horus::now/dt/
+        // elapsed/rng/budget_remaining) on THIS RT thread, mirroring
+        // run_node_tick. Set BEFORE entering the alloc-free guard — the first
+        // set_tick_context allocates its RNG + node-name string, which must not
+        // trip `.no_alloc()`.
+        super::primitives::set_node_tick_context(node, &*monitors.clock, monitors.tick_period);
+
         if enforce_no_alloc {
             crate::memory::rt_allocator::enter_rt_context(&node.name);
         }
@@ -211,6 +219,10 @@ impl RtExecutor {
         if enforce_no_alloc {
             crate::memory::rt_allocator::leave_rt_context();
         }
+
+        // Clear the per-tick context (mirror run_node_tick's clear right after
+        // the tick; the following post-tick bookkeeping does not use it).
+        super::primitives::clear_node_tick_context();
 
         // Record execution stats
         if let Some(ref mut stats) = node.rt_stats {
@@ -343,6 +355,19 @@ impl RtExecutor {
                     ctx.record_tick();
                 }
                 node.record_tick_success();
+                // FIX #2: feed the watchdog AFTER a successful tick. Mirrors the
+                // main loop's critical-node condition (mod.rs:3555): is_rt_node
+                // OR an explicit `.watchdog()`. Feeding in the Ok arm (rather than
+                // before the tick) preserves hang-detection — a hung tick never
+                // returns and a panicking tick lands in Err(_), so neither
+                // refreshes the watchdog, and the main-thread `check_watchdogs`
+                // still trips expiry. Feeding the wrong (non-critical) node is a
+                // harmless no-op (no watchdog registered for it).
+                if node.is_rt_node || node.node_watchdog.is_some() {
+                    if let Some(ref feeder) = monitors.watchdog {
+                        feeder.feed(&node.name);
+                    }
+                }
             }
             Err(panic_err) => {
                 // Use try_lock to avoid priority inversion — skip if contended
@@ -645,6 +670,9 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
+            watchdog: None,
         }
     }
 
@@ -1130,6 +1158,9 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
+            watchdog: None,
         };
 
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
@@ -1207,6 +1238,9 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
+            watchdog: None,
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -2235,5 +2269,277 @@ mod tests {
             count_healthy.load(std::sync::atomic::Ordering::Relaxed) > 0,
             "healthy node must tick normally"
         );
+    }
+
+    // ========================================================================
+    // FIX #5: executor installs the per-tick thread-local context
+    // ========================================================================
+
+    /// A node that records the ambient `horus::dt()` / `budget_remaining()` it
+    /// observes *during* its tick. Used to prove the RT executor installs the
+    /// tick context (mirroring run_node_tick) rather than leaving the inert
+    /// fallbacks (dt→0, budget_remaining→MAX).
+    struct CtxProbeNode {
+        name: String,
+        observed_dt: Arc<Mutex<Option<Duration>>>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
+        ticked: Arc<AtomicBool>,
+    }
+    impl Node for CtxProbeNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            let dt = crate::core::tick_context::ctx_dt();
+            let budget = crate::core::tick_context::ctx_budget_remaining();
+            *self.observed_dt.lock().unwrap() = Some(dt);
+            *self.observed_budget.lock().unwrap() = Some(budget);
+            self.ticked.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_rt_executor_installs_tick_context() {
+        let observed_dt = Arc::new(Mutex::new(None));
+        let observed_budget = Arc::new(Mutex::new(None));
+        let ticked = Arc::new(AtomicBool::new(false));
+
+        let probe = CtxProbeNode {
+            name: "ctx_probe".to_string(),
+            observed_dt: observed_dt.clone(),
+            observed_budget: observed_budget.clone(),
+            ticked: ticked.clone(),
+        };
+
+        // 1kHz rate + 800us budget → during tick, dt()==1ms and
+        // budget_remaining()<MAX (and <=800us). Without FIX #5 the executor
+        // never sets the context, so dt()==ZERO and budget_remaining()==MAX.
+        let mut reg = make_rt_registered("ctx_probe", Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        reg.node = super::super::types::NodeKind::new(Box::new(probe));
+        reg.rate_hz = Some(1000.0);
+        reg.tick_budget = Some(Duration::from_micros(800));
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![reg]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        // Wait until the probe has ticked at least once.
+        for _ in 0..100 {
+            if ticked.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(5_u64.ms());
+        }
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        assert!(ticked.load(Ordering::Relaxed), "probe node must have ticked");
+        let dt = observed_dt.lock().unwrap().expect("dt must have been recorded");
+        let budget = observed_budget
+            .lock()
+            .unwrap()
+            .expect("budget must have been recorded");
+
+        // dt = 1/rate (the exact value run_node_tick computes). RED: dt == ZERO.
+        assert_eq!(
+            dt,
+            Duration::from_secs_f64(1.0 / 1000.0),
+            "dt() during executor tick must equal 1/rate, got {:?}",
+            dt
+        );
+        assert!(dt > Duration::ZERO, "dt() must not be the inert ZERO fallback");
+        // budget_remaining = budget - elapsed. RED: budget == Duration::MAX.
+        assert!(
+            budget < Duration::MAX,
+            "budget_remaining() must be real, not the MAX fallback, got {:?}",
+            budget
+        );
+        assert!(
+            budget <= Duration::from_micros(800),
+            "budget_remaining() must be <= configured budget, got {:?}",
+            budget
+        );
+    }
+
+    // ========================================================================
+    // FIX #2: executor feeds the watchdog for its critical nodes
+    // ========================================================================
+
+    use super::super::safety_monitor::{SafetyMonitor, WatchdogFeeder};
+
+    fn monitors_with_watchdog(feeder: WatchdogFeeder) -> SharedMonitors {
+        let mut m = test_monitors();
+        m.watchdog = Some(feeder);
+        m
+    }
+
+    /// A healthy critical RT node's watchdog must be fed by the executor.
+    /// RED (no FIX #2): last_heartbeat_ns never advances past registration →
+    /// check_watchdogs would trip a spurious fleet-halting e-stop.
+    #[test]
+    fn test_rt_executor_feeds_critical_watchdog() {
+        let monitor = SafetyMonitor::new(10);
+        // Long timeout — we only assert it gets FED, not that it (never) expires.
+        monitor.add_critical_node("rt_critical".to_string(), Duration::from_secs(5));
+        let h0 = monitor
+            .watchdog_last_heartbeat_ns("rt_critical")
+            .expect("watchdog registered");
+
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut reg = make_rt_registered("rt_critical", count.clone());
+        reg.rate_hz = Some(1000.0); // is_rt_node already true → critical
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![reg]],
+            running.clone(),
+            1_u64.ms(),
+            monitors_with_watchdog(monitor.watchdog_feeder()),
+            Vec::new(),
+        )
+        .unwrap();
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        let h1 = monitor
+            .watchdog_last_heartbeat_ns("rt_critical")
+            .expect("watchdog registered");
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "node must have ticked"
+        );
+        assert!(
+            h1 > h0,
+            "critical RT node watchdog must be fed by the executor (h0={h0}, h1={h1})"
+        );
+    }
+
+    /// A panicking tick must NOT feed the watchdog — this is what pins the
+    /// feed-AFTER-successful-tick placement (Ok arm). RED (feed-before): the
+    /// pre-tick feed advances the heartbeat even though the tick panics.
+    #[test]
+    fn test_rt_executor_does_not_feed_panicking_node() {
+        let monitor = SafetyMonitor::new(10);
+        monitor.add_critical_node("panic_critical".to_string(), Duration::from_secs(5));
+        let h0 = monitor
+            .watchdog_last_heartbeat_ns("panic_critical")
+            .expect("watchdog registered");
+
+        let panic_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut reg = make_rt_registered("panic_critical", Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        reg.node = super::super::types::NodeKind::new(Box::new(AlwaysPanicNode {
+            name: "panic_critical".to_string(),
+            count: panic_count.clone(),
+        }));
+        reg.rate_hz = Some(1000.0);
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![reg]],
+            running.clone(),
+            1_u64.ms(),
+            monitors_with_watchdog(monitor.watchdog_feeder()),
+            Vec::new(),
+        )
+        .unwrap();
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        assert!(
+            panic_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "panic node must have been ticked (and panicked)"
+        );
+        let h1 = monitor
+            .watchdog_last_heartbeat_ns("panic_critical")
+            .expect("watchdog registered");
+        assert_eq!(
+            h1, h0,
+            "a panicking tick (Err) must NOT refresh the watchdog — feed lives in the Ok arm"
+        );
+    }
+
+    /// Hang-detection (the dangerous inverse): a genuinely HUNG critical node
+    /// (stuck in tick, never returns) is never fed, so its watchdog still
+    /// expires and check_watchdogs trips the emergency stop. Uses a controllable
+    /// hang (blocks on an AtomicBool) so the test is deterministic and joins
+    /// cleanly. The Ok arm is never reached while hung → no feed.
+    #[test]
+    fn test_rt_executor_hung_node_still_trips_watchdog() {
+        struct HangNode {
+            name: String,
+            entered: Arc<AtomicBool>,
+            release: Arc<AtomicBool>,
+        }
+        impl Node for HangNode {
+            fn name(&self) -> &str {
+                &self.name
+            }
+            fn tick(&mut self) {
+                self.entered.store(true, Ordering::Relaxed);
+                while !self.release.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+
+        let monitor = SafetyMonitor::new(10);
+        monitor.add_critical_node("hang_node".to_string(), Duration::from_millis(30));
+
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let mut reg = make_rt_registered("hang_node", Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        reg.node = super::super::types::NodeKind::new(Box::new(HangNode {
+            name: "hang_node".to_string(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        // No rate_hz → ticks immediately and hangs on the first tick.
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![reg]],
+            running.clone(),
+            1_u64.ms(),
+            monitors_with_watchdog(monitor.watchdog_feeder()),
+            Vec::new(),
+        )
+        .unwrap();
+
+        // Wait for the tick to enter the hang, then wait well past the timeout.
+        for _ in 0..200 {
+            if entered.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(entered.load(Ordering::Relaxed), "hang tick must have started");
+        std::thread::sleep(Duration::from_millis(150)); // >> 30ms timeout
+
+        // The scheduler main loop (absent here) would call this each cycle.
+        let mut expired = Vec::new();
+        monitor.check_watchdogs(&mut expired);
+        assert!(
+            expired.iter().any(|n| n == "hang_node"),
+            "hung node's watchdog must expire (it was never fed): {expired:?}"
+        );
+        assert!(
+            monitor.is_emergency_stop(),
+            "an expired critical node must trigger the emergency stop"
+        );
+
+        // Release the hang so the RT thread returns and stop() joins cleanly.
+        release.store(true, Ordering::SeqCst);
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
     }
 }

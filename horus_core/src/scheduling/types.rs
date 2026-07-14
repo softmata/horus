@@ -488,6 +488,21 @@ pub(crate) struct SharedMonitors {
     pub registry_slots: Arc<std::collections::HashMap<String, usize>>,
     /// Cross-thread node control: pause/stop flags set by main thread, read by executors.
     pub node_controls: Arc<NodeControlMap>,
+    /// Clock shared into executor threads so they can install the per-tick
+    /// thread-local tick context (`horus::now/dt/elapsed/rng/budget_remaining`)
+    /// exactly as the main loop's `run_node_tick` does. Without this, executor-
+    /// run nodes saw inert fallbacks (FIX #5). Same `Arc<dyn Clock>` the
+    /// scheduler ticks on, so sim/real time is consistent across threads.
+    pub clock: Arc<dyn crate::core::clock::Clock>,
+    /// Scheduler global tick period (`self.tick.period`) — the `node_dt`
+    /// fallback for rateless nodes, identical to the value `run_node_tick` uses.
+    pub tick_period: Duration,
+    /// Watchdog feed handle sharing the scheduler `SafetyMonitor`'s watchdog map
+    /// (`None` when no safety monitor is configured). Executor threads feed
+    /// their critical nodes here each cycle; without it a healthy executor-run
+    /// RT node was never fed and its watchdog spuriously e-stopped the fleet
+    /// (FIX #2). Same Arc the main-thread `check_watchdogs` reads.
+    pub watchdog: Option<super::safety_monitor::WatchdogFeeder>,
 }
 
 /// Shared atomic control flags for each node, keyed by name.
