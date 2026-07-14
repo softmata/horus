@@ -148,9 +148,11 @@ fn write_driver_deps(
 ) {
     use crate::manifest::DriverValue;
 
-    // Track crates already added to avoid duplicates (e.g., two drivers using terra-serial)
-    let mut added_crates: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    // Track crates already added to avoid duplicates (e.g., two drivers using terra-serial).
+    // Value = (explicit version if the driver pinned one, features). A BTreeMap keeps the
+    // generated dependency lines in deterministic order (the old HashMap produced
+    // run-to-run line reshuffling → spurious diffs / non-reproducible Cargo.toml).
+    let mut added_crates: BTreeMap<String, (Option<String>, Vec<String>)> = BTreeMap::new();
 
     for value in drivers.values() {
         match value {
@@ -158,22 +160,23 @@ fn write_driver_deps(
                 // Terra drivers: no longer auto-resolved — user adds terra-horus
                 // as a normal dependency in [dependencies]. Skip terra entries.
                 if let Some(package) = &cfg.package {
-                    if !added_crates.contains_key(package) {
-                        added_crates.insert(package.clone(), Vec::new());
-                    }
+                    // Registry package — version resolved at install time, emit as "*".
+                    added_crates.entry(package.clone()).or_insert((None, Vec::new()));
                 } else if let Some(crate_name) = &cfg.crate_name {
-                    // CratesIo driver — add the crate as a dependency
-                    let _version = cfg
+                    // CratesIo driver — add the crate, PRESERVING any pinned version.
+                    // Previously the version was extracted then discarded, so a driver
+                    // that pinned `version = "1.2"` still emitted a bare `crate = "*"`.
+                    let version = cfg
                         .params
                         .get("version")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("*")
-                        .to_string();
-                    added_crates.entry(crate_name.clone()).or_insert_with(|| {
-                        // Store version as first "feature" entry (hacky but works with existing output logic)
-                        // TODO: separate version tracking from features
-                        Vec::new()
-                    });
+                        .map(str::to_string);
+                    let entry = added_crates
+                        .entry(crate_name.clone())
+                        .or_insert((None, Vec::new()));
+                    if entry.0.is_none() {
+                        entry.0 = version;
+                    }
                 }
                 // pip/exec/sim3d/node → no Cargo dep needed
             }
@@ -185,9 +188,10 @@ fn write_driver_deps(
 
     if !added_crates.is_empty() {
         writeln!(cargo, "\n# Driver dependencies (from [drivers])").unwrap();
-        for (crate_name, features) in &added_crates {
+        for (crate_name, (version, features)) in &added_crates {
+            let ver = version.as_deref().unwrap_or("*");
             if features.is_empty() {
-                writeln!(cargo, "{} = \"*\"", crate_name).unwrap();
+                writeln!(cargo, "{} = \"{}\"", crate_name, ver).unwrap();
             } else {
                 let features_str = features
                     .iter()
@@ -196,8 +200,8 @@ fn write_driver_deps(
                     .join(", ");
                 writeln!(
                     cargo,
-                    "{} = {{ version = \"*\", features = [{}] }}",
-                    crate_name, features_str
+                    "{} = {{ version = \"{}\", features = [{}] }}",
+                    crate_name, ver, features_str
                 )
                 .unwrap();
             }
@@ -733,6 +737,17 @@ fn generate_member_cargo(
     }
 
     for (name, dep) in &member_manifest.dependencies {
+        // Skip non-Cargo deps (PyPI / system libraries) — they aren't crates and would
+        // otherwise leak into the member's Cargo.toml as bogus crates.io deps. The
+        // single-package path (write_deps_section) already skips these; the member path
+        // had diverged and did not.
+        if matches!(
+            dep.effective_source(),
+            DepSource::PyPI | DepSource::System
+        ) {
+            continue;
+        }
+
         // workspace = true deps
         if let DependencyValue::Detailed(d) = dep {
             if d.workspace {
@@ -2509,6 +2524,100 @@ mod tests {
         assert!(
             content.contains("rplidar-driver = \"*\""),
             "crate_name driver should produce crates.io dep: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn driver_crate_name_preserves_pinned_version() {
+        // F1: a CratesIo driver that pins `version = "1.2"` must emit that version,
+        // not a bare `crate = "*"` — the version was previously extracted then discarded.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.drivers.insert(
+            "lidar".into(),
+            DriverValue::Config(crate::manifest::DriverTableConfig {
+                crate_name: Some("rplidar-driver".to_string()),
+                params: std::collections::HashMap::from([(
+                    "version".to_string(),
+                    toml::Value::String("1.2".to_string()),
+                )]),
+                ..Default::default()
+            }),
+        );
+
+        let (result, _) = generate(&manifest, dir.path(), &[], false).unwrap();
+        let content = fs::read_to_string(result).unwrap();
+
+        assert!(
+            content.contains("rplidar-driver = \"1.2\""),
+            "pinned driver version must be preserved: {}",
+            content
+        );
+        assert!(
+            !content.contains("rplidar-driver = \"*\""),
+            "must not emit a wildcard when a version was pinned: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn workspace_member_skips_pypi_dep() {
+        // F4: a workspace member's PyPI/system deps are not crates and must not leak
+        // into its generated Cargo.toml (the single-package path already skips them;
+        // the member path had diverged and emitted them as bogus crates.io deps).
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("crates/perception/src")).unwrap();
+        fs::write(
+            dir.path().join("crates/perception/src/lib.rs"),
+            "pub fn f() {}",
+        )
+        .unwrap();
+
+        let root = HorusManifest {
+            workspace: Some(WorkspaceConfig {
+                members: vec!["crates/*".to_string()],
+                exclude: vec![],
+                dependencies: BTreeMap::new(),
+            }),
+            ..empty_manifest()
+        };
+
+        let member = HorusManifest {
+            package: PackageInfo {
+                name: "perception".to_string(),
+                version: "0.1.0".to_string(),
+                target_type: TargetType::Lib,
+                ..PackageInfo::default()
+            },
+            dependencies: BTreeMap::from([
+                (
+                    "serde".to_string(),
+                    detailed(DepSource::CratesIo, Some("1.0"), &[], false),
+                ),
+                (
+                    "numpy".to_string(),
+                    detailed(DepSource::PyPI, Some(">=1.24"), &[], false),
+                ),
+            ]),
+            ..empty_manifest()
+        };
+
+        let members = vec![(PathBuf::from("crates/perception"), member)];
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let content =
+            fs::read_to_string(dir.path().join(".horus/perception/Cargo.toml")).unwrap();
+        assert!(
+            content.contains("serde = \"1.0\""),
+            "crates.io dep should appear: {}",
+            content
+        );
+        assert!(
+            !content.contains("numpy"),
+            "PyPI dep must NOT leak into member Cargo.toml: {}",
             content
         );
     }
