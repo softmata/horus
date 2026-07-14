@@ -2023,6 +2023,15 @@ impl Scheduler {
         // Safety config runs here so it sees ALL nodes (added after builder methods)
         self.apply_safety_config(&config.realtime);
 
+        // SCHED-H1: wire the global external-emergency-stop hook to this scheduler's
+        // safety monitor. Until now nothing installed it, so a horus_net remote e-stop
+        // or link-loss stop (trigger_external_emergency_stop) only printed to stderr —
+        // the networked emergency stop was inert. Now it latches the flag the tick
+        // loop polls, so the scheduler actually stops.
+        if let Some(ref safety) = self.monitor.safety {
+            safety.install_emergency_stop_hook();
+        }
+
         // Auto-enable mlockall if: RT nodes present, system permits it, and user didn't
         // explicitly disable it. This prevents 10-100ms page fault spikes under memory pressure.
         let has_rt_nodes = self
