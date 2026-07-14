@@ -72,17 +72,24 @@ impl PluginResolver {
         None
     }
 
-    /// Resolve a plugin command to its entry
+    /// Resolve a plugin command to its entry and the scope it came from.
     ///
     /// Resolution order:
     /// 1. Project registry (if exists and not disabled)
     /// 2. Global registry (if project inherits global or no project)
-    pub fn resolve(&self, command: &str) -> Option<&PluginEntry> {
+    ///
+    /// The returned [`PluginScope`] is the **provenance** of the entry — which
+    /// registry it was read from — and is the sole input to the execution trust
+    /// decision (a project-scoped entry is attacker-controlled in a cloned
+    /// repo, regardless of where its `binary` path points). Callers must not
+    /// re-derive scope separately, or resolution order and trust classification
+    /// could silently diverge.
+    pub fn resolve_with_scope(&self, command: &str) -> Option<(&PluginEntry, PluginScope)> {
         // Try project registry first
         if let Some(ref project) = self.project_registry {
             // Check if plugin exists in project
             if let Some(entry) = project.get_plugin(command) {
-                return Some(entry);
+                return Some((entry, PluginScope::Project));
             }
 
             // Check if project inherits from global
@@ -92,7 +99,14 @@ impl PluginResolver {
         }
 
         // Fall back to global registry
-        self.global_registry.get_plugin(command)
+        self.global_registry
+            .get_plugin(command)
+            .map(|entry| (entry, PluginScope::Global))
+    }
+
+    /// Resolve a plugin command to its entry (see [`Self::resolve_with_scope`]).
+    pub fn resolve(&self, command: &str) -> Option<&PluginEntry> {
+        self.resolve_with_scope(command).map(|(entry, _)| entry)
     }
 
     /// Check if a command is a registered plugin

@@ -1030,6 +1030,24 @@ enum PluginCommands {
         #[arg(long = "json")]
         json: bool,
     },
+    /// Trust a project-local plugin so it may execute (records its content hash
+    /// in the out-of-repo trust store). Required before an unsigned plugin that
+    /// ships inside a checkout's .horus/ can run.
+    Trust {
+        /// Plugin command name to trust
+        command: String,
+    },
+    /// Remove a plugin from the trust store (it will refuse to execute after).
+    Untrust {
+        /// Plugin command name to untrust
+        command: String,
+    },
+    /// List plugins that have been trusted for execution.
+    Trusted {
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2734,6 +2752,15 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
             PluginCommands::Verify { plugin, json } => {
                 commands::pkg::verify_plugins(plugin.as_deref(), json).map_err(HorusError::from)
+            }
+            PluginCommands::Trust { command } => {
+                commands::pkg::trust_plugin(&command).map_err(HorusError::from)
+            }
+            PluginCommands::Untrust { command } => {
+                commands::pkg::untrust_plugin(&command).map_err(HorusError::from)
+            }
+            PluginCommands::Trusted { json } => {
+                commands::pkg::list_trusted_plugins(json).map_err(HorusError::from)
             }
         },
 

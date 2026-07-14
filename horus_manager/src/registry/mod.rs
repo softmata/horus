@@ -39,6 +39,14 @@ pub struct PackageMetadata {
     pub name: String,
     pub version: String,
     pub checksum: Option<String>,
+    /// Ed25519 publisher signature over the downloaded package tarball, when the
+    /// registry provided one at install time (SEC1). This is a **provenance
+    /// record** carried into the plugin registry ([`crate::plugins::PluginEntry`]);
+    /// it is a signature over the *tarball*, not the extracted binary, so it is
+    /// NOT the runtime execution trust anchor (that is the content-hash trust
+    /// store — see [`crate::plugins::TrustStore`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
