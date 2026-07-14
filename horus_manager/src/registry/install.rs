@@ -905,6 +905,17 @@ impl RegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
+        // SEC1: read the Ed25519 publisher signature now, before the response body is
+        // consumed by the download. The pre-built-binary path (tried before source)
+        // previously verified only the same-origin checksum — which a compromised
+        // registry serves alongside a malicious binary — so it installed unauthenticated
+        // native code. Verified below at parity with the source-install path.
+        let pkg_signature = response
+            .headers()
+            .get("x-horus-signature")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
         // Maximum download size (100 MB)
         const MAX_DOWNLOAD_SIZE: u64 = 100 * 1024 * 1024;
 
@@ -997,6 +1008,65 @@ impl RegistryClient {
                 package_name,
                 version_str,
                 target_triple
+            );
+        }
+
+        // SEC1: verify the Ed25519 publisher signature — parity with the source path.
+        // A same-origin checksum a compromised registry also controls is not
+        // authentication; a signature the registry cannot forge (it lacks the private
+        // key) is. Same policy as source install: a signed binary MUST verify against a
+        // configured public key; an unsigned binary only warns when a key is configured.
+        let pub_key_path = crate::paths::keys_dir()
+            .ok()
+            .map(|d| d.join("signing_key.pub"));
+        let has_public_key = pub_key_path.as_ref().is_some_and(|p| p.exists());
+
+        if let Some(ref sig_hex) = pkg_signature {
+            if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
+                match verify_package_signature(&bytes, sig_hex, &pub_path) {
+                    Ok(true) => {
+                        log::info!(
+                            "Binary signature verified for {}@{} ({})",
+                            package_name,
+                            version_str,
+                            target_triple
+                        );
+                    }
+                    Ok(false) => {
+                        return Err(anyhow!(
+                            "Binary signature verification FAILED for {}@{} ({}). \
+                             The pre-built binary may have been tampered with. \
+                             If you trust this package, remove your local public key.",
+                            package_name,
+                            version_str,
+                            target_triple
+                        ));
+                    }
+                    Err(e) => {
+                        // Crypto/IO errors are hard failures — don't silently continue.
+                        return Err(anyhow!(
+                            "Signature verification error for {}: {}. \
+                             Check your public key file at ~/.horus/signing_key.pub",
+                            package_name,
+                            e
+                        ));
+                    }
+                }
+            } else {
+                return Err(anyhow!(
+                    "Pre-built binary for {} is signed but no local public key was found to \
+                     verify it.\n\
+                     Install the publisher's public key to ~/.horus/signing_key.pub before \
+                     installing.",
+                    package_name
+                ));
+            }
+        } else if has_public_key {
+            // Public key configured but the binary is unsigned — warn the user.
+            log::warn!(
+                "Pre-built binary for {} is NOT signed, but you have a signing key configured. \
+                 Its integrity cannot be verified.",
+                package_name
             );
         }
 
@@ -2378,5 +2448,44 @@ impl RegistryClient {
         println!("  {} Binary linked: {}", "".cyan(), bin_link.display());
 
         Ok(system_version.to_string())
+    }
+}
+
+#[cfg(test)]
+mod sec1_signature_tests {
+    use super::verify_package_signature;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    /// SEC1: `verify_package_signature` must reject a payload that does not match the
+    /// signature. This is the property the pre-built-binary install path now relies on
+    /// to refuse an unauthenticated/tampered native binary (a compromised registry can
+    /// serve a matching checksum, but cannot forge a signature without the private key).
+    #[test]
+    fn verify_package_signature_rejects_tampered_payload() {
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let pub_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
+        let dir = std::env::temp_dir().join(format!("horus_sec1_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pub_path = dir.join("signing_key.pub");
+        std::fs::write(&pub_path, pub_hex).unwrap();
+
+        let authentic = b"authentic pre-built binary bytes";
+        let sig_hex = hex::encode(signing_key.sign(authentic).to_bytes());
+
+        // The correctly signed payload verifies.
+        assert!(
+            verify_package_signature(authentic, &sig_hex, &pub_path).unwrap(),
+            "a correctly signed payload must verify"
+        );
+
+        // Attacker swaps the binary but keeps the (now-mismatched) signature — rejected.
+        let tampered = b"MALICIOUS pre-built binary bytes";
+        assert!(
+            !verify_package_signature(tampered, &sig_hex, &pub_path).unwrap(),
+            "a tampered payload must NOT verify (SEC1)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
