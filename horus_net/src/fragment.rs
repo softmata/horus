@@ -474,4 +474,61 @@ mod tests {
         let f2 = frag.fragment(&msg2);
         assert_ne!(f1[0].fragment_id, f2[0].fragment_id);
     }
+
+    // ─── §3 reassembly DoS bounds ───────────────────────────────────────────
+
+    fn part_frag(topic: u32, id: u32, index: u16, count: u16, total: u32, bytes: usize) -> Fragment {
+        Fragment {
+            topic_hash: topic,
+            sequence: 0,
+            timestamp_ns: 0,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::PodLe,
+            fragment_id: id,
+            fragment_index: index,
+            fragment_count: count,
+            total_payload_len: total,
+            payload: vec![0u8; bytes],
+        }
+    }
+
+    #[test]
+    fn reassembler_rejects_oversized_fragment_count() {
+        let mut reasm = Reassembler::new();
+        // u16::MAX fragments would drive a huge vec![None; count] allocation.
+        let frag = part_frag(1, 1, 0, u16::MAX, 1000, 100);
+        assert!(reasm.feed(frag).is_none());
+        assert_eq!(reasm.pending_count(), 0, "no buffer allocated for oversized count");
+    }
+
+    #[test]
+    fn reassembler_rejects_zero_fragment_count() {
+        let mut reasm = Reassembler::new();
+        assert!(reasm.feed(part_frag(1, 1, 0, 0, 100, 10)).is_none());
+        assert_eq!(reasm.pending_count(), 0);
+    }
+
+    #[test]
+    fn reassembler_bounds_concurrent_pending() {
+        let mut reasm = Reassembler::new();
+        for i in 0..MAX_PENDING_MESSAGES as u32 {
+            // 2-fragment message; feed only fragment 0 → stays pending.
+            assert!(reasm.feed(part_frag(i, i, 0, 2, 2000, 1000)).is_none());
+        }
+        assert_eq!(reasm.pending_count(), MAX_PENDING_MESSAGES);
+        // A new distinct key past the ceiling is refused (map does not grow).
+        assert!(reasm.feed(part_frag(999_999, 999_999, 0, 2, 2000, 1000)).is_none());
+        assert_eq!(reasm.pending_count(), MAX_PENDING_MESSAGES);
+    }
+
+    #[test]
+    fn reassembler_rejects_bytes_beyond_declared_total() {
+        let mut reasm = Reassembler::new();
+        // Declare total 1500, then stream fragments summing to 2000 → drop message.
+        assert!(reasm.feed(part_frag(7, 7, 0, 3, 1500, 1000)).is_none());
+        assert_eq!(reasm.pending_count(), 1);
+        assert!(reasm.feed(part_frag(7, 7, 1, 3, 1500, 1000)).is_none());
+        assert_eq!(reasm.pending_count(), 0, "overflowing message dropped");
+    }
 }

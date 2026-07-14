@@ -242,3 +242,62 @@ impl EstopBroadcaster {
         self.pending_retries.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_ns() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    }
+
+    /// Overwrite the trailing u64 timestamp of an encoded e-stop payload.
+    fn with_timestamp(mut payload: Vec<u8>, ts_ns: u64) -> Vec<u8> {
+        let off = payload.len() - 8;
+        payload[off..].copy_from_slice(&ts_ns.to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn fresh_estop_warn_triggers() {
+        let payload = encode_estop(0xABCD, "test"); // fresh timestamp
+        assert!(handle_remote_estop(&payload, EstopRemotePolicy::Warn));
+    }
+
+    #[test]
+    fn off_policy_ignores_remote_estop() {
+        let payload = encode_estop(0xABCD, "test");
+        assert!(!handle_remote_estop(&payload, EstopRemotePolicy::Off));
+    }
+
+    #[test]
+    fn stale_timestamp_rejected() {
+        // 1s after epoch → decades old → outside the freshness window.
+        let payload = with_timestamp(encode_estop(0x1111, "old"), 1_000_000_000);
+        assert!(!handle_remote_estop(&payload, EstopRemotePolicy::Warn));
+    }
+
+    #[test]
+    fn far_future_timestamp_rejected() {
+        let payload = with_timestamp(encode_estop(0x2222, "future"), now_ns() + 60_000_000_000);
+        assert!(!handle_remote_estop(&payload, EstopRemotePolicy::Warn));
+    }
+
+    #[test]
+    fn malformed_estop_rejected() {
+        assert!(!handle_remote_estop(&[], EstopRemotePolicy::Warn));
+        assert!(!handle_remote_estop(&[0u8; 4], EstopRemotePolicy::Warn));
+    }
+
+    #[test]
+    fn freshness_window_boundaries() {
+        let now = now_ns();
+        assert!(is_fresh_estop(now));
+        assert!(is_fresh_estop(now.saturating_sub(1_000_000_000))); // 1s old: fresh
+        assert!(!is_fresh_estop(now.saturating_sub(10_000_000_000))); // 10s old: stale
+        assert!(!is_fresh_estop(now + 10_000_000_000)); // 10s future: reject
+    }
+}

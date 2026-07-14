@@ -608,4 +608,72 @@ mod tests {
         let h2 = compute_secret_hash("lab-43");
         assert_ne!(h1, h2);
     }
+
+    // ─── §1 discriminator (RED→GREEN vs the bit-7 fix) ──────────────────────
+
+    #[test]
+    fn decode_rejects_header_without_discriminator() {
+        // Valid magic+version but bit 7 clear → must NOT decode as an announcement.
+        let mut buf = [0u8; AnnouncementHeader::SIZE];
+        let header = AnnouncementHeader {
+            magic: MAGIC,
+            version: VERSION,
+            flags: 0, // no discriminator
+            peer_id: [0x11; 16],
+            data_port: 9100,
+            secret_hash: [0u8; 4],
+            topic_count: 0,
+        };
+        header.encode(&mut buf);
+        assert!(AnnouncementHeader::decode(&buf).is_none());
+    }
+
+    #[test]
+    fn real_data_packet_not_decoded_as_announcement() {
+        // A genuine data packet shares MAGIC+VERSION and is ≥30B, so before the fix it
+        // false-matched as an announcement and was swallowed. Its byte-5 PacketFlags
+        // never sets bit 7 → decode_announcement must now return None (GREEN).
+        use crate::priority::{Encoding, Priority, Reliability};
+        use crate::wire::{encode_single, OutMessage, PacketFlags, PacketHeader};
+        let header = PacketHeader::new(PacketFlags::empty(), 0x1234, 1);
+        let msg = OutMessage {
+            topic_name: "robot.imu".into(),
+            topic_hash: wire::topic_hash("robot.imu"),
+            payload: vec![0xAB; 40],
+            timestamp_ns: 123,
+            sequence: 1,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::PodLe,
+        };
+        let mut buf = [0u8; 256];
+        let len = encode_single(&header, &msg, &mut buf);
+        assert!(len >= AnnouncementHeader::SIZE);
+        let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        assert!(decode_announcement(&buf[..len], addr).is_none());
+    }
+
+    #[test]
+    fn heartbeat_packet_not_decoded_as_announcement() {
+        use crate::wire::{encode_heartbeat, HeartbeatPayload};
+        let payload = HeartbeatPayload {
+            peer_id: [0x55; 16],
+            heartbeat_sequence: 7,
+        };
+        let mut buf = [0u8; 64];
+        let len = encode_heartbeat(0x1234, 1, &payload, &mut buf);
+        let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        assert!(decode_announcement(&buf[..len], addr).is_none());
+    }
+
+    #[test]
+    fn real_announcement_still_decodes() {
+        // Positive control: encode_announcement sets bit 7, so it decodes.
+        let peer_id = [0xCD; 16];
+        let mut buf = [0u8; 4096];
+        let len = encode_announcement(&peer_id, 9100, &[0u8; 4], &[], &mut buf);
+        let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        let ann = decode_announcement(&buf[..len], addr).expect("real announcement decodes");
+        assert_eq!(ann.peer_id, peer_id);
+    }
 }

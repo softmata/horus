@@ -269,3 +269,52 @@ pub fn build_local_presence(peer_id_hash: u16) -> Option<Vec<u8>> {
 
     Some(buf)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_component_accepts_normal_host_ids() {
+        assert!(is_safe_path_component("a1b2"));
+        assert!(is_safe_path_component("host_01"));
+        assert!(is_safe_path_component("robot-42"));
+    }
+
+    #[test]
+    fn safe_component_rejects_traversal_and_separators() {
+        assert!(!is_safe_path_component(""));
+        assert!(!is_safe_path_component(".."));
+        assert!(!is_safe_path_component("../../etc/passwd"));
+        assert!(!is_safe_path_component("a/b"));
+        assert!(!is_safe_path_component("x/../../y"));
+        assert!(!is_safe_path_component("/etc/passwd"));
+        assert!(!is_safe_path_component("a\\b"));
+        assert!(!is_safe_path_component("a\0b"));
+        assert!(!is_safe_path_component("."));
+    }
+
+    /// Build a minimal presence wire payload with a chosen host_id and no nodes.
+    fn presence_payload(namespace: &str, host_id: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(namespace.len() as u16).to_le_bytes());
+        buf.extend_from_slice(namespace.as_bytes());
+        buf.extend_from_slice(&(host_id.len() as u16).to_le_bytes());
+        buf.extend_from_slice(host_id.as_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // timestamp
+        buf.extend_from_slice(&0u16.to_le_bytes()); // node_count = 0
+        buf
+    }
+
+    #[test]
+    fn handle_broadcast_skips_traversal_host_id() {
+        let mut recv = PresenceReceiver::new();
+        let ns = recv.local_namespace.clone();
+        // A traversal host_id must be rejected before any path is built.
+        recv.handle_broadcast(&presence_payload(&ns, "../pwned"));
+        assert!(
+            recv.active_hosts.is_empty(),
+            "traversal host_id must not be tracked or written"
+        );
+    }
+}
