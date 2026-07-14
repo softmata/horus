@@ -1486,15 +1486,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 let shm_base = fanout_storage.as_ptr() as *mut u8;
                 let ring = unsafe {
                     if is_owner {
-                        shm_fanout::ShmFanoutRing::init_owner(shm_base, type_size, is_pod, capacity)
+                        Some(shm_fanout::ShmFanoutRing::init_owner(
+                            shm_base, type_size, is_pod, capacity,
+                        ))
                     } else {
+                        // COMM-H1: `attach` returns None when the region carries an
+                        // older/incompatible layout version (the v3 meta bump) —
+                        // reject-and-fall-back instead of reinterpreting a stale
+                        // region with the new strides.
                         shm_fanout::ShmFanoutRing::attach(shm_base, is_pod, type_size)
                     }
                 };
-                // Store the SHM region in local state so it stays alive
-                self.local().fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
-                *backend = BackendStorage::FanoutShm(Box::new(ring));
-                return;
+                if let Some(ring) = ring {
+                    // Store the SHM region in local state so it stays alive
+                    self.local().fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
+                    *backend = BackendStorage::FanoutShm(Box::new(ring));
+                    return;
+                }
+                // else: stale/incompatible fanout layout — drop this region and
+                // fall through to the SpscShm fallback below.
             }
             // Fallback: FanoutShm creation failed (stale SHM from previous run,
             // permission error, etc.). Fall back to SpscShm which uses the main

@@ -841,14 +841,19 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     let local = topic.local();
 
-    // Lazy publisher registration — first send registers this Topic as a publisher
+    // Lazy publisher registration — first send registers this Topic as a publisher.
+    // register_publisher returns None only when all 16 endpoint slots are
+    // simultaneously live (COMM-H1) — return the message rather than the pre-fix
+    // panic; a freed/crash-abandoned slot lets a later send succeed.
     let pub_id = match local.fanout_shm_pub_id {
         Some(id) => id,
-        None => {
-            let id = ring.register_publisher();
-            local.fanout_shm_pub_id = Some(id);
-            id
-        }
+        None => match ring.register_publisher() {
+            Some(id) => {
+                local.fanout_shm_pub_id = Some(id);
+                id
+            }
+            None => return Err(msg),
+        },
     };
 
     let ok = if ring.is_pod() {
@@ -930,14 +935,19 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     let local = topic.local();
 
-    // Lazy subscriber registration — first recv registers this Topic as a subscriber
+    // Lazy subscriber registration — first recv registers this Topic as a subscriber.
+    // register_subscriber returns None only when all 16 endpoint slots are
+    // simultaneously live (COMM-H1) — nothing to receive until a slot frees;
+    // recoverable, not the pre-fix panic.
     let sub_id = match local.fanout_shm_sub_id {
         Some(id) => id,
-        None => {
-            let id = ring.register_subscriber();
-            local.fanout_shm_sub_id = Some(id);
-            id
-        }
+        None => match ring.register_subscriber() {
+            Some(id) => {
+                local.fanout_shm_sub_id = Some(id);
+                id
+            }
+            None => return None,
+        },
     };
 
     let result: Option<T> = if ring.is_pod() {

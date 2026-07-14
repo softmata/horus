@@ -15,8 +15,8 @@
 //! ├──────────────────────────────────────────┤ offset 640
 //! │ padding to page boundary                 │
 //! ├──────────────────────────────────────────┤ offset 4096 (FANOUT_META_OFFSET)
-//! │ FanoutShmMeta (128 bytes, cache-aligned) │  — fanout dimensions & strides
-//! ├──────────────────────────────────────────┤ offset 4224
+//! │ FanoutShmMeta (256 bytes, cache-aligned) │  — dims + endpoint bitmasks/PIDs
+//! ├──────────────────────────────────────────┤ offset 4352
 //! │ padding to cache-line boundary           │
 //! ├──────────────────────────────────────────┤ offset CHANNELS_BASE
 //! │ Channel[0][0]: head_cl(64) + tail_cl(64) │
@@ -44,9 +44,11 @@
 //!   SPSC doesn't need them). Serde support can be added later by storing
 //!   `[len: u32, serialized_bytes]` in larger slots.
 //!
-//! - **Process-safe registration**: Publisher/subscriber IDs allocated via atomic
-//!   `fetch_add` on counters in the FanoutShmMeta header. Combined with flock-based
-//!   lease detection for process death handling.
+//! - **Process-safe registration (COMM-H1)**: Each endpoint slot is claimed under
+//!   an exclusive `flock` on a per-endpoint lock file (the claim authority), then
+//!   recorded in a reusable bitmask + owner-PID array in the FanoutShmMeta header.
+//!   A crashed process's flock is released by the OS, which is the sole proof of
+//!   abandonment that permits reclaiming its slot — see `register_publisher`.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -66,13 +68,17 @@ pub(crate) const MAX_FANOUT_ENDPOINTS: usize = 16;
 /// (clean magic mismatch → SpscShm fallback in `init_shm_backend`) rather than
 /// silently reinterpreted with the new strides. v2 added the per-slot version
 /// array (each channel grew by `capacity * 8` bytes for the seqlock stamps).
-pub(crate) const FANOUT_MAGIC: u64 = 0x0200_5455_4F4E_4146;
+/// v3 (COMM-H1) replaced the monotonic `num_publishers`/`num_subscribers`
+/// counters with reusable endpoint bitmasks + per-slot owner PIDs, growing the
+/// meta header from 128 to 256 bytes — a v2 region MUST NOT be read with v3
+/// strides, hence the version bump and the `attach` rejection of a stale magic.
+pub(crate) const FANOUT_MAGIC: u64 = 0x0300_5455_4F4E_4146;
 
 /// Offset of FanoutShmMeta in the SHM file (page-aligned, after TopicHeader).
 pub(crate) const FANOUT_META_OFFSET: usize = 4096;
 
-/// Size of the FanoutShmMeta header (2 cache lines = 128 bytes).
-pub(crate) const FANOUT_META_SIZE: usize = 128;
+/// Size of the FanoutShmMeta header (4 cache lines = 256 bytes as of v3).
+pub(crate) const FANOUT_META_SIZE: usize = 256;
 
 /// Base offset where channels start (meta offset + meta size, cache-aligned).
 pub(crate) const FANOUT_CHANNELS_BASE: usize = FANOUT_META_OFFSET + FANOUT_META_SIZE;
@@ -89,8 +95,20 @@ const CHANNEL_HEADER_SIZE: usize = 128;
 
 /// Fanout metadata stored at `FANOUT_META_OFFSET` in the SHM region.
 ///
-/// Two cache lines (128 bytes). First cache line is read-mostly (dimensions),
-/// second cache line has the dynamic counters (publisher/subscriber registration).
+/// Four cache lines (256 bytes). Cache line 1 is read-mostly (dimensions set once
+/// at creation). Cache lines 2+ hold the dynamic cross-process registration state:
+/// per-kind endpoint bitmasks (`pub_active`/`sub_active`, bit i = slot i live) and
+/// per-slot owner PIDs (`pub_owner_pids`/`sub_owner_pids`, for the same-process
+/// reclaim guard).
+///
+/// The bitmask replaces the old monotonic `num_publishers`/`num_subscribers`
+/// counters. Those counters lived in SHM and so persisted across process death;
+/// a crashed process never ran Drop to decrement, so after 16 cumulative
+/// (re)registrations the `assert!(id < max)` panicked forever (COMM-H1). A
+/// reusable bitmask lets a freed OR crash-abandoned slot be reclaimed. Crash
+/// liveness is proven by `flock` on a per-endpoint lock file (see
+/// `register_publisher`), NOT by these fields — the OS releases the flock on
+/// process death, which is the only sound proof of abandonment.
 #[repr(C, align(64))]
 pub(crate) struct FanoutShmMeta {
     // --- Cache line 1: read-mostly dimensions (set once at creation) ---
@@ -112,15 +130,26 @@ pub(crate) struct FanoutShmMeta {
     pub _reserved1: u32,
     /// Total file size in bytes.
     pub total_file_size: u64,
-    _pad1: [u8; 8],
+    _pad1: [u8; 16],
 
-    // --- Cache line 2: dynamic registration counters ---
-    /// Number of registered publishers (atomic for cross-process CAS).
-    pub num_publishers: AtomicU32,
-    /// Number of registered subscribers (atomic for cross-process CAS).
-    pub num_subscribers: AtomicU32,
-    /// Reserved for lease/death tracking.
-    pub _reserved2: [u8; 56],
+    // --- Cache line 2+: dynamic cross-process registration state ---
+    /// Live-publisher slot bitmask (bit i set = publisher slot i in use). A
+    /// reusable bitmask, not a monotonic counter: a freed or crash-abandoned slot
+    /// is reclaimed (COMM-H1), so cumulative (re)registrations never overflow the
+    /// fixed 16-slot matrix. This is the hot-path "active set"; `flock` is the
+    /// ownership authority and this bit is derived state set only after the flock
+    /// is held.
+    pub pub_active: AtomicU64,
+    /// Live-subscriber slot bitmask (bit i set = subscriber slot i in use).
+    pub sub_active: AtomicU64,
+    /// Owner PID recorded per publisher slot — read ONLY by the same-process
+    /// reclaim guard (a live in-process sibling that the OS let us re-`flock`).
+    /// Never an authority: `flock` is the claim authority.
+    pub pub_owner_pids: [AtomicU32; MAX_FANOUT_ENDPOINTS],
+    /// Owner PID recorded per subscriber slot (same-process reclaim guard).
+    pub sub_owner_pids: [AtomicU32; MAX_FANOUT_ENDPOINTS],
+    /// Reserved for future use (pads the header to `FANOUT_META_SIZE`).
+    pub _reserved2: [u8; 48],
 }
 
 // Static assertions
@@ -308,6 +337,44 @@ impl ShmSpscChannel {
             drop,
         )
     }
+
+    /// Reset the consumer position to the current producer head, discarding any
+    /// buffered messages. Called when a subscriber slot is reclaimed (COMM-H1) so
+    /// the new owner starts fresh instead of reading the prior owner's backlog.
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold the subscriber slot exclusively (no live consumer on
+    /// this channel) so the `tail` store is uncontended. The producer-owned `head`
+    /// is only read — a live producer may keep advancing it concurrently, which is
+    /// safe (distinct atomics; benign message-window race).
+    #[inline]
+    pub(crate) unsafe fn reset_tail_to_head(&self) {
+        let head = (*self.head_ptr).load(Ordering::Acquire);
+        (*self.tail_ptr).store(head, Ordering::Release);
+    }
+}
+
+/// Claim the lowest free slot in `[0, limit)` from an endpoint bitmask via CAS.
+///
+/// Returns `None` when all `limit` slots are set (every endpoint simultaneously
+/// live). The CAS loop makes concurrent claims pick distinct slots. Mirrors the
+/// intra-process `super::fanout::claim_slot`; the cross-process crash-liveness
+/// (flock) is layered on top of this in `register_publisher`/`register_subscriber`.
+#[inline]
+fn claim_bit(mask: &AtomicU64, limit: usize) -> Option<usize> {
+    let mut cur = mask.load(Ordering::Relaxed);
+    loop {
+        let free = (!cur).trailing_zeros() as usize;
+        if free >= limit {
+            return None; // all slots live
+        }
+        let bit = 1u64 << free;
+        match mask.compare_exchange_weak(cur, cur | bit, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return Some(free),
+            Err(actual) => cur = actual, // lost the race — retry with the new mask
+        }
+    }
 }
 
 // SAFETY: ShmSpscChannel is a view into mmap'd memory. The SPSC contract
@@ -392,8 +459,12 @@ impl ShmFanoutRing {
         meta.channel_stride = channel_stride;
         meta.capacity_mask = cap - 1;
         meta.total_file_size = total_size as u64;
-        meta.num_publishers = AtomicU32::new(0);
-        meta.num_subscribers = AtomicU32::new(0);
+        meta.pub_active = AtomicU64::new(0);
+        meta.sub_active = AtomicU64::new(0);
+        for i in 0..MAX_FANOUT_ENDPOINTS {
+            meta.pub_owner_pids[i] = AtomicU32::new(0);
+            meta.sub_owner_pids[i] = AtomicU32::new(0);
+        }
 
         // Zero-init all channel head/tail atomics and per-slot version stamps.
         // Version 0 == done(pos 0); head starts at 0 so no position is read
@@ -429,15 +500,32 @@ impl ShmFanoutRing {
     /// # Safety
     ///
     /// `shm_base` must point to a valid mmap'd SHM region.
-    pub(crate) unsafe fn attach(shm_base: *mut u8, is_pod: bool, type_size: usize) -> Self {
+    ///
+    /// Returns `None` if the region carries an incompatible (older/foreign) layout
+    /// version, so the caller can reject-and-rebuild (fall back to SpscShm) instead
+    /// of reinterpreting a stale region with the new strides.
+    pub(crate) unsafe fn attach(shm_base: *mut u8, is_pod: bool, type_size: usize) -> Option<Self> {
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
 
-        // Spin-wait for owner to finish initialization.
-        // meta is a raw pointer read through a shared-memory mapping; the mutation
-        // happens in another process, so clippy cannot see it — suppress the lint.
+        // Spin-wait for the owner to finish initialization (it writes `magic` LAST).
+        // The magic lives in a cross-process mapping, so read it volatile.
+        //
+        // Version discipline (COMM-H1): a region already carrying a DIFFERENT
+        // non-zero magic is an older/incompatible layout (e.g. the v2 128-byte
+        // header) or foreign data. Reject it immediately — reading it with the v3
+        // strides would be UB, and spinning would hang forever (no v3 owner will
+        // ever write the new magic into an already-initialized old region). A
+        // `magic == 0` region is a fresh, zero-filled region whose owner is still
+        // initializing → keep spinning (unchanged from prior behavior).
         let mut spins = 0u32;
-        #[allow(clippy::while_immutable_condition)]
-        while meta.magic != FANOUT_MAGIC {
+        loop {
+            let m = std::ptr::read_volatile(std::ptr::addr_of!(meta.magic));
+            if m == FANOUT_MAGIC {
+                break;
+            }
+            if m != 0 {
+                return None; // stale/incompatible layout — reject, do not misread
+            }
             std::hint::spin_loop();
             spins += 1;
             if spins > 1_000_000 {
@@ -448,7 +536,7 @@ impl ShmFanoutRing {
         }
         std::sync::atomic::fence(Ordering::Acquire);
 
-        Self::build_views(shm_base, is_pod, type_size)
+        Some(Self::build_views(shm_base, is_pod, type_size))
     }
 
     /// Build channel views from an initialized SHM region.
@@ -490,32 +578,42 @@ impl ShmFanoutRing {
         }
     }
 
-    /// Register a new publisher (cross-process safe via atomic fetch_add).
-    /// Returns the publisher ID.
-    pub(crate) fn register_publisher(&self) -> usize {
+    /// Register a new publisher, claiming a free slot in the reusable bitmask.
+    /// Returns its id, or `None` when all publisher slots are simultaneously live
+    /// (a genuine endpoint limit, not a leak — freed slots are reclaimed).
+    ///
+    /// NOTE (COMM-H1): this is the intra-process bitmask claim only. Cross-process
+    /// crash-liveness (flock-based reclaim of a crashed owner's slot) is layered on
+    /// top in a subsequent commit; here a freed slot is reused, and a crash-leaked
+    /// slot degrades gracefully to `None` (never the pre-fix panic).
+    pub(crate) fn register_publisher(&self) -> Option<usize> {
         let meta = unsafe { &*self.meta_ptr };
-        let id = meta.num_publishers.fetch_add(1, Ordering::Relaxed) as usize;
-        assert!(
-            id < self.max_publishers,
-            "ShmFanoutRing: too many publishers ({} >= {})",
-            id,
-            self.max_publishers
-        );
-        id
+        claim_bit(&meta.pub_active, self.max_publishers)
     }
 
-    /// Register a new subscriber (cross-process safe via atomic fetch_add).
-    /// Returns the subscriber ID.
-    pub(crate) fn register_subscriber(&self) -> usize {
+    /// Register a new subscriber, claiming a free slot. Returns its id, or `None`
+    /// when all subscriber slots are simultaneously live. On claim, the slot's
+    /// channels are reset (tail→head) so a reclaimed slot starts fresh rather than
+    /// inheriting a prior owner's unread backlog.
+    pub(crate) fn register_subscriber(&self) -> Option<usize> {
         let meta = unsafe { &*self.meta_ptr };
-        let id = meta.num_subscribers.fetch_add(1, Ordering::Relaxed) as usize;
-        assert!(
-            id < self.max_subscribers,
-            "ShmFanoutRing: too many subscribers ({} >= {})",
-            id,
-            self.max_subscribers
-        );
-        id
+        let id = claim_bit(&meta.sub_active, self.max_subscribers)?;
+        self.reset_subscriber_channels(id);
+        Some(id)
+    }
+
+    /// Reset every publisher-channel feeding subscriber `id` to skip whatever a
+    /// prior (possibly crash-abandoned) owner left buffered. Producer-owned `head`
+    /// is only READ; the consumer-owned `tail` store is uncontended because this
+    /// slot was just claimed (no live consumer on `id`).
+    #[inline]
+    fn reset_subscriber_channels(&self, id: usize) {
+        for pub_id in 0..self.max_publishers {
+            let ch_idx = pub_id * self.max_subscribers + id;
+            // SAFETY: `ch_idx` is in range (`pub_id < max_publishers`,
+            // `id < max_subscribers`); the channel view points into the live mmap.
+            unsafe { self.channels[ch_idx].reset_tail_to_head() };
+        }
     }
 
     /// Send a POD message from publisher `pub_id` to ALL subscribers.
@@ -526,15 +624,18 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn send_pod<T>(&self, msg: &T, pub_id: usize) -> bool {
         let meta = &*self.meta_ptr;
-        let n_subs = meta.num_subscribers.load(Ordering::Relaxed) as usize;
-        if n_subs == 0 {
+        let subs = meta.sub_active.load(Ordering::Relaxed);
+        if subs == 0 {
             return true; // No subscribers — silent drop
         }
 
-        // Drop-oldest fan-out: never fails. Always reports success.
-        for sub_id in 0..n_subs {
-            let ch_idx = pub_id * self.max_subscribers + sub_id;
-            self.channels[ch_idx].try_send_pod(msg);
+        // Drop-oldest fan-out to every LIVE subscriber slot (holes from reused or
+        // crash-abandoned endpoints are skipped via the active bitmask). Never fails.
+        for sub_id in 0..self.max_subscribers {
+            if subs & (1u64 << sub_id) != 0 {
+                let ch_idx = pub_id * self.max_subscribers + sub_id;
+                self.channels[ch_idx].try_send_pod(msg);
+            }
         }
         true
     }
@@ -548,15 +649,22 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn recv_pod<T>(&self, sub_id: usize) -> Option<T> {
         let meta = &*self.meta_ptr;
-        let n_pubs = meta.num_publishers.load(Ordering::Relaxed) as usize;
-        if n_pubs == 0 {
+        let pubs = meta.pub_active.load(Ordering::Relaxed);
+        if pubs == 0 {
             return None;
         }
 
-        let start = self.recv_cursors[sub_id].get() % n_pubs;
+        // Round-robin over LIVE publisher slots (holes from reused/crashed endpoints
+        // are skipped), starting from the last cursor position, bounded by the fixed
+        // matrix width so a stale cursor can never index out of range.
+        let max_pubs = self.max_publishers;
+        let start = self.recv_cursors[sub_id].get() % max_pubs;
 
-        for offset in 0..n_pubs {
-            let pub_id = (start + offset) % n_pubs;
+        for offset in 0..max_pubs {
+            let pub_id = (start + offset) % max_pubs;
+            if pubs & (1u64 << pub_id) == 0 {
+                continue; // inactive publisher slot
+            }
             let ch_idx = pub_id * self.max_subscribers + sub_id;
             if let Some(msg) = self.channels[ch_idx].try_recv_pod::<T>() {
                 self.recv_cursors[sub_id].set(pub_id + 1);
@@ -575,18 +683,21 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn send_serde(&self, bytes: &[u8], pub_id: usize) -> bool {
         let meta = &*self.meta_ptr;
-        let n_subs = meta.num_subscribers.load(Ordering::Relaxed) as usize;
-        if n_subs == 0 {
+        let subs = meta.sub_active.load(Ordering::Relaxed);
+        if subs == 0 {
             return true;
         }
 
-        // Drop-oldest fan-out: never blocks. `try_send_serde` returns false only
-        // if a message is too large for a slot — surface that as the aggregate.
+        // Drop-oldest fan-out to every LIVE subscriber slot (holes skipped): never
+        // blocks. `try_send_serde` returns false only if a message is too large for
+        // a slot — surface that as the aggregate.
         let mut all_ok = true;
-        for sub_id in 0..n_subs {
-            let ch_idx = pub_id * self.max_subscribers + sub_id;
-            if !self.channels[ch_idx].try_send_serde(bytes) {
-                all_ok = false;
+        for sub_id in 0..self.max_subscribers {
+            if subs & (1u64 << sub_id) != 0 {
+                let ch_idx = pub_id * self.max_subscribers + sub_id;
+                if !self.channels[ch_idx].try_send_serde(bytes) {
+                    all_ok = false;
+                }
             }
         }
         all_ok
@@ -600,15 +711,19 @@ impl ShmFanoutRing {
     #[inline(always)]
     pub(crate) unsafe fn recv_serde(&self, sub_id: usize) -> Option<Vec<u8>> {
         let meta = &*self.meta_ptr;
-        let n_pubs = meta.num_publishers.load(Ordering::Relaxed) as usize;
-        if n_pubs == 0 {
+        let pubs = meta.pub_active.load(Ordering::Relaxed);
+        if pubs == 0 {
             return None;
         }
 
-        let start = self.recv_cursors[sub_id].get() % n_pubs;
+        let max_pubs = self.max_publishers;
+        let start = self.recv_cursors[sub_id].get() % max_pubs;
 
-        for offset in 0..n_pubs {
-            let pub_id = (start + offset) % n_pubs;
+        for offset in 0..max_pubs {
+            let pub_id = (start + offset) % max_pubs;
+            if pubs & (1u64 << pub_id) == 0 {
+                continue; // inactive publisher slot
+            }
             let ch_idx = pub_id * self.max_subscribers + sub_id;
             if let Some(data) = self.channels[ch_idx].try_recv_serde() {
                 self.recv_cursors[sub_id].set(pub_id + 1);
@@ -629,20 +744,20 @@ impl ShmFanoutRing {
     // Test-only introspection helpers
     // ========================================================================
 
-    /// Get the number of registered publishers.
+    /// Get the number of currently-live publishers (popcount of the active mask).
     #[cfg(test)]
     #[inline]
     pub(crate) fn num_publishers(&self) -> usize {
         let meta = unsafe { &*self.meta_ptr };
-        meta.num_publishers.load(Ordering::Relaxed) as usize
+        meta.pub_active.load(Ordering::Relaxed).count_ones() as usize
     }
 
-    /// Get the number of registered subscribers.
+    /// Get the number of currently-live subscribers (popcount of the active mask).
     #[cfg(test)]
     #[inline]
     pub(crate) fn num_subscribers(&self) -> usize {
         let meta = unsafe { &*self.meta_ptr };
-        meta.num_subscribers.load(Ordering::Relaxed) as usize
+        meta.sub_active.load(Ordering::Relaxed).count_ones() as usize
     }
 
     // ========================================================================
@@ -678,9 +793,13 @@ impl ShmFanoutRing {
     /// Total pending messages across all channels for a subscriber.
     #[cfg(test)]
     pub(crate) fn pending_count_for_sub(&self, sub_id: usize) -> u64 {
-        let n_pubs = self.num_publishers();
+        let meta = unsafe { &*self.meta_ptr };
+        let pubs = meta.pub_active.load(Ordering::Relaxed);
         let mut total = 0u64;
-        for pub_id in 0..n_pubs {
+        for pub_id in 0..self.max_publishers {
+            if pubs & (1u64 << pub_id) == 0 {
+                continue;
+            }
             let ch_idx = pub_id * self.max_subscribers + sub_id;
             let ch = &self.channels[ch_idx];
             unsafe {
@@ -713,7 +832,7 @@ mod tests {
 
     #[test]
     fn meta_size_and_alignment() {
-        assert_eq!(std::mem::size_of::<FanoutShmMeta>(), 128);
+        assert_eq!(std::mem::size_of::<FanoutShmMeta>(), 256);
         assert_eq!(std::mem::align_of::<FanoutShmMeta>(), 64);
     }
 
@@ -746,9 +865,9 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            assert_eq!(ring.register_publisher(), 0);
-            assert_eq!(ring.register_publisher(), 1);
-            assert_eq!(ring.register_subscriber(), 0);
+            assert_eq!(ring.register_publisher(), Some(0));
+            assert_eq!(ring.register_publisher(), Some(1));
+            assert_eq!(ring.register_subscriber(), Some(0));
             assert_eq!(ring.num_publishers(), 2);
             assert_eq!(ring.num_subscribers(), 1);
             std::alloc::dealloc(ptr, layout);
@@ -760,8 +879,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let pub_id = ring.register_publisher();
-            let sub_id = ring.register_subscriber();
+            let pub_id = ring.register_publisher().unwrap();
+            let sub_id = ring.register_subscriber().unwrap();
 
             let val: u64 = 42;
             assert!(ring.send_pod(&val, pub_id));
@@ -782,10 +901,10 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let p0 = ring.register_publisher();
-            let p1 = ring.register_publisher();
-            let s0 = ring.register_subscriber();
-            let s1 = ring.register_subscriber();
+            let p0 = ring.register_publisher().unwrap();
+            let p1 = ring.register_publisher().unwrap();
+            let s0 = ring.register_subscriber().unwrap();
+            let s1 = ring.register_subscriber().unwrap();
 
             // Publisher 0 sends 100
             let v100: u64 = 100;
@@ -816,8 +935,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(0, false, 32);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 0, false, 32);
-            let pub_id = ring.register_publisher();
-            let sub_id = ring.register_subscriber();
+            let pub_id = ring.register_publisher().unwrap();
+            let sub_id = ring.register_subscriber().unwrap();
 
             let data = b"hello world";
             assert!(ring.send_serde(data, pub_id));
@@ -834,8 +953,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
-            let pub_id = ring.register_publisher();
-            let sub_id = ring.register_subscriber();
+            let pub_id = ring.register_publisher().unwrap();
+            let sub_id = ring.register_subscriber().unwrap();
 
             // Drop-oldest: sends never fail. Push 20 into a 16-slot ring; the
             // oldest 4 (0..4) are overwritten by the newest 4 (16..20).
@@ -859,9 +978,9 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let p0 = ring.register_publisher();
-            let p1 = ring.register_publisher();
-            let sub = ring.register_subscriber();
+            let p0 = ring.register_publisher().unwrap();
+            let p1 = ring.register_publisher().unwrap();
+            let sub = ring.register_subscriber().unwrap();
 
             // P0 sends 10, 20; P1 sends 30, 40
             for v in [10u64, 20] {
@@ -896,7 +1015,7 @@ mod tests {
             let _owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
 
             // Simulated second process attaches
-            let joiner = ShmFanoutRing::attach(ptr, true, 8);
+            let joiner = ShmFanoutRing::attach(ptr, true, 8).unwrap();
             assert_eq!(joiner.max_publishers, MAX_FANOUT_ENDPOINTS);
             assert_eq!(joiner.max_subscribers, MAX_FANOUT_ENDPOINTS);
 
@@ -909,8 +1028,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let p0 = ring.register_publisher();
-            let sub = ring.register_subscriber();
+            let p0 = ring.register_publisher().unwrap();
+            let sub = ring.register_subscriber().unwrap();
 
             assert_eq!(ring.pending_count_for_sub(sub), 0);
 
@@ -937,8 +1056,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for round in 0u64..20 {
                 for i in 0u64..16 {
@@ -966,8 +1085,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(0, false, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 0, false, 16);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for round in 0..10 {
                 for i in 0..16 {
@@ -996,8 +1115,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(128, true, 32);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 128, true, 32);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for i in 0u64..32 {
                 let val = LargePod { data: [i; 16] };
@@ -1029,10 +1148,10 @@ mod tests {
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
 
         // Register endpoints before spawning threads
-        let p0 = unsafe { (*ring).register_publisher() };
-        let p1 = unsafe { (*ring).register_publisher() };
-        let s0 = unsafe { (*ring).register_subscriber() };
-        let s1 = unsafe { (*ring).register_subscriber() };
+        let p0 = unsafe { (*ring).register_publisher().unwrap() };
+        let p1 = unsafe { (*ring).register_publisher().unwrap() };
+        let s0 = unsafe { (*ring).register_subscriber().unwrap() };
+        let s1 = unsafe { (*ring).register_subscriber().unwrap() };
 
         let ring_addr = ring as usize;
 
@@ -1121,8 +1240,8 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
-            let p = ring.register_publisher();
-            let s = ring.register_subscriber();
+            let p = ring.register_publisher().unwrap();
+            let s = ring.register_subscriber().unwrap();
 
             for cycle in 0u64..5 {
                 // Fill exactly to capacity (no overwrite at avail == capacity).
@@ -1152,8 +1271,8 @@ mod tests {
             let mut pubs = Vec::new();
             let mut subs = Vec::new();
             for _ in 0..MAX_FANOUT_ENDPOINTS {
-                pubs.push(ring.register_publisher());
-                subs.push(ring.register_subscriber());
+                pubs.push(ring.register_publisher().unwrap());
+                subs.push(ring.register_subscriber().unwrap());
             }
 
             // Each publisher sends to all subscribers
@@ -1186,7 +1305,7 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
-            let s = ring.register_subscriber();
+            let s = ring.register_subscriber().unwrap();
             let got: Option<u64> = ring.recv_pod(s);
             assert_eq!(got, None);
             std::alloc::dealloc(ptr, layout);
@@ -1211,7 +1330,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let ring = unsafe { &*(ring_addr as *const ShmFanoutRing) };
                 b.wait();
-                ring.register_publisher()
+                ring.register_publisher().unwrap()
             }));
         }
         for _ in 0..4 {
@@ -1219,7 +1338,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let ring = unsafe { &*(ring_addr as *const ShmFanoutRing) };
                 b.wait();
-                ring.register_subscriber()
+                ring.register_subscriber().unwrap()
             }));
         }
 
