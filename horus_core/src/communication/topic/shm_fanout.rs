@@ -1551,4 +1551,266 @@ mod tests {
             std::alloc::dealloc(ptr, layout);
         }
     }
+
+    // ====================================================================
+    // COMM-H1: cross-process liveness (bitmask reuse, holes, flock reclaim).
+    //
+    // All tests here are IN-PROCESS. Real cross-process SHM does not work in the
+    // headless sandbox, so the *live-other-process → skip* case and the real
+    // SIGKILL → OS-flock-release → peer-reclaim case REST ON DESIGN (the flock
+    // OS contract) and are not integration-testable here. What IS verified
+    // in-process: the reusable bitmask, hot-path routing over non-contiguous
+    // active masks, the clean-drop free/reuse sequence, reclaim of a
+    // *simulated-dead* slot (unlocked lock file + foreign owner PID), and — the
+    // anti-UB guard — refusal to reclaim a live SAME-process slot.
+    // ====================================================================
+
+    /// Unique-per-test topic name so serial tests never share a lock file.
+    fn test_topic(tag: &str) -> String {
+        format!("commh1.{}.{}", tag, std::process::id())
+    }
+
+    #[test]
+    fn commh1_bitmask_reuse_past_16_no_panic() {
+        // Pre-fix: a monotonic counter panicked on the 17th cumulative register.
+        // The reusable bitmask refuses the 17th SIMULTANEOUS endpoint gracefully
+        // (None), and a freed slot is reclaimed and still delivers.
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let subs: Vec<usize> = (0..MAX_FANOUT_ENDPOINTS)
+                .map(|_| ring.register_subscriber().expect("first 16 register"))
+                .collect();
+            assert_eq!(
+                ring.register_subscriber(),
+                None,
+                "17th subscriber refused gracefully, not a panic"
+            );
+            let freed = subs[5];
+            ring.deregister_subscriber(freed);
+            let reclaimed = ring
+                .register_subscriber()
+                .expect("a freed slot must be reclaimable");
+            assert_eq!(reclaimed, freed, "freed slot reused, not leaked");
+            let p = ring.register_publisher().unwrap();
+            ring.send_pod(&99u64, p);
+            let got: Option<u64> = ring.recv_pod(reclaimed);
+            assert_eq!(got, Some(99), "reclaimed subscriber receives after reuse");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_hot_path_send_skips_subscriber_holes() {
+        // Non-contiguous active subscriber mask {0,2,5}: a send fans out to EXACTLY
+        // those channels and skips the holes.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let p = ring.register_publisher().unwrap(); // slot 0
+            let subs: Vec<usize> = (0..6).map(|_| ring.register_subscriber().unwrap()).collect();
+            for &h in &[1usize, 3, 4] {
+                ring.deregister_subscriber(subs[h]);
+            }
+            let meta = &*ring.meta_ptr;
+            assert_eq!(
+                meta.sub_active.load(Ordering::Relaxed),
+                (1 << 0) | (1 << 2) | (1 << 5),
+                "active sub mask is the non-contiguous set {{0,2,5}}"
+            );
+            ring.send_pod(&123u64, p);
+            for s in [0usize, 2, 5] {
+                assert_eq!(ring.pending_count_for_sub(s), 1, "active sub {s} got the msg");
+                let got: Option<u64> = ring.recv_pod(s);
+                assert_eq!(got, Some(123), "active sub {s} receives");
+            }
+            for s in [1usize, 3, 4] {
+                assert_eq!(ring.pending_count_for_sub(s), 0, "hole sub {s} untouched");
+            }
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_hot_path_recv_round_robin_over_publisher_holes() {
+        // Non-contiguous active PUBLISHER mask {0,2,5}: a subscriber's round-robin
+        // recv polls EXACTLY those publisher channels (skips holes) and rotates
+        // over the active set without getting stuck on a hole.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let pubs: Vec<usize> = (0..6).map(|_| ring.register_publisher().unwrap()).collect();
+            for &h in &[1usize, 3, 4] {
+                ring.deregister_publisher(pubs[h]);
+            }
+            let s = ring.register_subscriber().unwrap(); // slot 0
+            let meta = &*ring.meta_ptr;
+            assert_eq!(
+                meta.pub_active.load(Ordering::Relaxed),
+                (1 << 0) | (1 << 2) | (1 << 5),
+                "active pub mask is {{0,2,5}}"
+            );
+            ring.send_pod(&100u64, 0);
+            ring.send_pod(&102u64, 2);
+            ring.send_pod(&105u64, 5);
+            let mut got = Vec::new();
+            while let Some(v) = ring.recv_pod::<u64>(s) {
+                got.push(v);
+            }
+            got.sort();
+            assert_eq!(
+                got,
+                vec![100, 102, 105],
+                "recv polls only active pubs {{0,2,5}}, skipping holes"
+            );
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_clean_drop_sequence_frees_flock_slot_for_reuse() {
+        // The clean-drop path (RingTopic::drop) does: deregister (clear bit+PID)
+        // then drop the held FileLock. Exercise that sequence directly and prove
+        // the slot is reusable afterward BY THE SAME PROCESS — the same-process
+        // guard would refuse a slot still marked ours, so clearing bit+PID matters.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("cleandrop");
+            let (id, lock) = ring.register_publisher_locked(&topic).expect("claim");
+            assert_eq!(id, 0);
+            let meta = &*ring.meta_ptr;
+            assert!(meta.pub_active.load(Ordering::Relaxed) & 1 != 0);
+            assert_eq!(meta.pub_owner_pids[0].load(Ordering::Relaxed), std::process::id());
+            // Clean-drop sequence: clear bit+PID, then release the flock.
+            ring.deregister_publisher(id);
+            drop(lock);
+            assert!(
+                meta.pub_active.load(Ordering::Relaxed) & 1 == 0,
+                "deregister clears the active bit"
+            );
+            assert_eq!(
+                meta.pub_owner_pids[0].load(Ordering::Relaxed),
+                0,
+                "deregister clears the owner PID"
+            );
+            // Same process re-registers → reuses slot 0 as a FREE claim (bit clear).
+            let (id2, _lock2) = ring.register_publisher_locked(&topic).expect("reuse");
+            assert_eq!(id2, 0, "cleanly-freed slot reused by the same process");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_simulated_dead_owner_slot_is_reclaimed() {
+        // Reclaim path (in-process simulation of a dead OTHER-process owner): slot 0
+        // marked active with a FOREIGN owner PID and NO live flock (as after the OS
+        // released a SIGKILLed owner's lock). A new register must RECLAIM slot 0
+        // (acquire the lock; foreign PID != ours so the guard does not fire), NOT
+        // skip past it to a fresh slot.
+        //
+        // RESTS-ON-DESIGN: the real SIGKILL → OS-flock-release step is not
+        // reproducible in this sandbox; here the released state is simulated by
+        // simply not holding a flock on the slot's lock file.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("dead");
+            let meta = &*ring.meta_ptr;
+            let foreign = std::process::id().wrapping_add(1); // definitely not us
+            meta.pub_active.fetch_or(1 << 0, Ordering::Relaxed);
+            meta.pub_owner_pids[0].store(foreign, Ordering::Relaxed);
+            let (id, _lock) = ring
+                .register_publisher_locked(&topic)
+                .expect("dead slot must be reclaimable");
+            assert_eq!(id, 0, "must reclaim abandoned slot 0, not skip to a fresh slot");
+            assert_eq!(
+                meta.pub_owner_pids[0].load(Ordering::Relaxed),
+                std::process::id(),
+                "reclaim rewrites the owner PID to us"
+            );
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_simulated_dead_subscriber_reclaim_skips_stale_backlog() {
+        // A reclaimed (dead-owner) subscriber slot must start fresh — the tail is
+        // reset to head on claim, so the prior owner's unread backlog is skipped.
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let topic = test_topic("deadsub");
+            let p = ring.register_publisher().unwrap(); // slot 0
+            let meta = &*ring.meta_ptr;
+            // Simulate a DEAD subscriber that owned slot 0 (foreign PID, no flock).
+            meta.sub_active.fetch_or(1 << 0, Ordering::Relaxed);
+            meta.sub_owner_pids[0].store(std::process::id().wrapping_add(1), Ordering::Relaxed);
+            for i in 0..5u64 {
+                ring.send_pod(&i, p); // backlog into channel[p][0]
+            }
+            let (sid, _lock) = ring
+                .register_subscriber_locked(&topic)
+                .expect("reclaim dead subscriber slot");
+            assert_eq!(sid, 0, "reclaim the abandoned subscriber slot 0");
+            let stale: Option<u64> = ring.recv_pod(sid);
+            assert_eq!(
+                stale, None,
+                "reclaimed subscriber must skip the dead owner's backlog (tail reset)"
+            );
+            ring.send_pod(&99u64, p);
+            let fresh: Option<u64> = ring.recv_pod(sid);
+            assert_eq!(fresh, Some(99), "delivery works after reclaim");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_same_process_live_slot_is_not_reclaimed() {
+        // THE ANTI-UB GUARD. A slot whose bit is SET and owner PID == THIS process
+        // must NOT be reclaimed even when try_exclusive succeeds (the permissive-OS
+        // re-lock case). Simulated by marking slot 0 active+owned-by-us but NOT
+        // holding a real flock, so try_exclusive returns Ok(Some); the guard must
+        // still refuse slot 0 and claim the next free slot (1) instead. Handing
+        // slot 0 to a second owner would give two producers one SPSC channel = UB.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("guard");
+            let meta = &*ring.meta_ptr;
+            meta.pub_active.fetch_or(1 << 0, Ordering::Relaxed);
+            meta.pub_owner_pids[0].store(std::process::id(), Ordering::Relaxed); // OUR pid
+            let (id, _lock) = ring.register_publisher_locked(&topic).expect("claim a slot");
+            assert_ne!(id, 0, "must NOT reclaim our own LIVE slot 0 (anti-UB guard)");
+            assert_eq!(id, 1, "guard skips slot 0, claims the next free slot");
+            // Slot 0 left untouched (still ours, still active).
+            assert_eq!(
+                meta.pub_owner_pids[0].load(Ordering::Relaxed),
+                std::process::id(),
+                "guarded slot 0 owner PID untouched"
+            );
+            assert!(
+                meta.pub_active.load(Ordering::Relaxed) & 1 != 0,
+                "guarded slot 0 still active"
+            );
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn commh1_two_locked_publishers_same_process_get_distinct_slots() {
+        // Same-process double registration via the flock path must yield DISTINCT
+        // slots — on Linux via flock's same-process denial (Ok(None) → skip), on
+        // permissive OSes via the PID guard. Either way, never two owners on one
+        // SPSC channel.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let topic = test_topic("two");
+            let (a, _la) = ring.register_publisher_locked(&topic).expect("first");
+            let (b, _lb) = ring.register_publisher_locked(&topic).expect("second");
+            assert_ne!(a, b, "two live same-process publishers get distinct slots");
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
 }
