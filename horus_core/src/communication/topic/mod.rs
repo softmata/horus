@@ -2859,6 +2859,19 @@ impl<T> Drop for RingTopic<T> {
             }
         }
 
+        // COMM-H1: release this instance's intra-fanout endpoint slots so they can
+        // be reused. Without it a monotonic counter overflowed the fixed 16-slot
+        // matrix after 16 (re)registrations and panicked. (Cross-process FanoutShm
+        // reclaim is separate — a crashed process never runs Drop.)
+        if let BackendStorage::FanoutIntra(ring) = unsafe { &*self.backend.get() } {
+            if let Some(id) = local.fanout_pub_id.take() {
+                ring.deregister_publisher(id);
+            }
+            if let Some(id) = local.fanout_sub_id.take() {
+                ring.deregister_subscriber(id);
+            }
+        }
+
         // Registry entries are NOT removed here — other instances may still
         // reference the same backend Arc. Entries are cleaned up automatically
         // by store_or_get_backend() when new epochs are created (old epochs

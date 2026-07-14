@@ -767,11 +767,15 @@ pub(super) fn send_fanout_intra<T: Clone + Send + Sync + Serialize + Deserialize
     // Lazy publisher registration — first send registers this Topic as a publisher
     let pub_id = match local.fanout_pub_id {
         Some(id) => id,
-        None => {
-            let id = ring.register_publisher();
-            local.fanout_pub_id = Some(id);
-            id
-        }
+        None => match ring.register_publisher() {
+            Some(id) => {
+                local.fanout_pub_id = Some(id);
+                id
+            }
+            // Fanout at capacity (16 live publishers). Return the message rather
+            // than panicking (COMM-H1) — a freed slot lets a later send succeed.
+            None => return Err(msg),
+        },
     };
 
     let result = ring.send_as(msg, pub_id);
@@ -800,11 +804,15 @@ pub(super) fn recv_fanout_intra<T: Clone + Send + Sync + Serialize + Deserialize
     // Lazy subscriber registration — first recv registers this Topic as a subscriber
     let sub_id = match local.fanout_sub_id {
         Some(id) => id,
-        None => {
-            let id = ring.register_subscriber();
-            local.fanout_sub_id = Some(id);
-            id
-        }
+        None => match ring.register_subscriber() {
+            Some(id) => {
+                local.fanout_sub_id = Some(id);
+                id
+            }
+            // Fanout at capacity (16 live subscribers). Nothing to receive until a
+            // slot frees — recoverable, not the pre-fix panic (COMM-H1).
+            None => return None,
+        },
     };
 
     let result = ring.recv_as(sub_id);

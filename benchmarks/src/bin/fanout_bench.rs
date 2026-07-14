@@ -14,10 +14,10 @@ fn bench_fanout(np: usize, ns: usize) -> (u64, u64, u64, u64) {
     let mut pub_ids = Vec::new();
     let mut sub_ids = Vec::new();
     for _ in 0..np {
-        pub_ids.push(ring.register_publisher());
+        pub_ids.push(ring.register_publisher().expect("register pub"));
     }
     for _ in 0..ns {
-        sub_ids.push(ring.register_subscriber());
+        sub_ids.push(ring.register_subscriber().expect("register sub"));
     }
 
     let barrier = Arc::new(std::sync::Barrier::new(np + ns));

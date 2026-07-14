@@ -101,6 +101,17 @@ impl<T> SpscChannel<T> {
         }
     }
 
+    /// Reset the consumer position to the current producer head, discarding any
+    /// buffered messages. Called when a subscriber slot is reclaimed (COMM-H1) so
+    /// the new owner starts fresh instead of reading the prior owner's backlog.
+    /// The prior consumer deregistered before this slot could be found free, so
+    /// the `tail` store is uncontended; the producer-owned `head` is left
+    /// untouched (live publishers may still be advancing it).
+    #[inline]
+    fn reset_tail_to_head(&self) {
+        let head = self.head.0.load(Ordering::Acquire);
+        self.tail.0.store(head, Ordering::Release);
+    }
 }
 
 // SAFETY: SpscChannel is used within FanoutRing which ensures
@@ -153,6 +164,26 @@ impl<T> Drop for SpscChannel<T> {
     }
 }
 
+/// Claim the lowest free slot in `[0, limit)` from an endpoint bitmask via CAS.
+///
+/// Returns `None` when all `limit` slots are set (every endpoint simultaneously
+/// live). The CAS loop makes concurrent claims pick distinct slots.
+#[inline]
+fn claim_slot(mask: &AtomicU64, limit: usize) -> Option<usize> {
+    let mut cur = mask.load(Ordering::Relaxed);
+    loop {
+        let free = (!cur).trailing_zeros() as usize;
+        if free >= limit {
+            return None; // all slots live
+        }
+        let bit = 1u64 << free;
+        match mask.compare_exchange_weak(cur, cur | bit, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return Some(free),
+            Err(actual) => cur = actual, // lost the race — retry with the new mask
+        }
+    }
+}
+
 /// Contention-free MPMC ring buffer using a matrix of SPSC channels.
 ///
 /// Each (publisher, subscriber) pair gets its own dedicated SPSC channel.
@@ -161,10 +192,13 @@ impl<T> Drop for SpscChannel<T> {
 pub struct FanoutRing<T> {
     /// Matrix of SPSC channels: channels[pub_id][sub_id]
     channels: Vec<Vec<SpscChannel<T>>>,
-    /// Number of registered publishers
-    num_publishers: AtomicU64,
-    /// Number of registered subscribers
-    num_subscribers: AtomicU64,
+    /// Bitmask of live publisher slots (bit i set = pub slot i in use). A bitmask,
+    /// not a monotonic counter, so a dropped endpoint frees its slot for reuse —
+    /// otherwise the 17th cumulative (re)registration overflows the fixed 16-slot
+    /// matrix and panics (COMM-H1). Slots are reclaimed on `RingTopic::drop`.
+    pub_active: AtomicU64,
+    /// Bitmask of live subscriber slots (bit i set = sub slot i in use).
+    sub_active: AtomicU64,
     /// Per-subscriber round-robin cursor for fair polling across publishers
     recv_cursors: [Cell<usize>; MAX_ENDPOINTS],
     /// Channel capacity per SPSC ring
@@ -177,6 +211,19 @@ pub struct FanoutRing<T> {
 // the pub_id/sub_id registration system.
 unsafe impl<T: Send> Send for FanoutRing<T> {}
 unsafe impl<T: Send + Sync> Sync for FanoutRing<T> {}
+
+impl<T> FanoutRing<T> {
+    /// Release this publisher's slot so it can be reused (COMM-H1). Idempotent.
+    /// `T`-unbounded so `RingTopic::drop` (no `Clone` bound) can call it.
+    pub fn deregister_publisher(&self, id: usize) {
+        self.pub_active.fetch_and(!(1u64 << id), Ordering::AcqRel);
+    }
+
+    /// Release this subscriber's slot so it can be reused (COMM-H1). Idempotent.
+    pub fn deregister_subscriber(&self, id: usize) {
+        self.sub_active.fetch_and(!(1u64 << id), Ordering::AcqRel);
+    }
+}
 
 impl<T: Clone> FanoutRing<T> {
     /// Create a new FanoutRing with pre-allocated channels.
@@ -204,28 +251,40 @@ impl<T: Clone> FanoutRing<T> {
         const CELL_INIT: Cell<usize> = Cell::new(0);
         Self {
             channels,
-            num_publishers: AtomicU64::new(0),
-            num_subscribers: AtomicU64::new(0),
+            pub_active: AtomicU64::new(0),
+            sub_active: AtomicU64::new(0),
             recv_cursors: [CELL_INIT; MAX_ENDPOINTS],
             channel_capacity: cap,
         }
     }
 
-    /// Register a new publisher. Returns the publisher ID.
-    pub fn register_publisher(&self) -> usize {
-        let id = self.num_publishers.fetch_add(1, Ordering::Relaxed) as usize;
-        assert!(id < self.channels.len(), "too many publishers");
-        id
+    #[inline]
+    fn max_pubs(&self) -> usize {
+        self.channels.len()
     }
 
-    /// Register a new subscriber. Returns the subscriber ID.
-    pub fn register_subscriber(&self) -> usize {
-        let id = self.num_subscribers.fetch_add(1, Ordering::Relaxed) as usize;
-        assert!(
-            id < self.channels.first().map_or(0, |c| c.len()),
-            "too many subscribers"
-        );
-        id
+    #[inline]
+    fn max_subs(&self) -> usize {
+        self.channels.first().map_or(0, |c| c.len())
+    }
+
+    /// Register a new publisher, claiming a free slot. Returns its id, or `None`
+    /// when all publisher slots are simultaneously live (a genuine endpoint limit,
+    /// not a leak — dropped endpoints free their slot).
+    pub fn register_publisher(&self) -> Option<usize> {
+        claim_slot(&self.pub_active, self.max_pubs())
+    }
+
+    /// Register a new subscriber, claiming a free slot. Returns its id, or `None`
+    /// when all subscriber slots are simultaneously live.
+    pub fn register_subscriber(&self) -> Option<usize> {
+        let id = claim_slot(&self.sub_active, self.max_subs())?;
+        // Fresh start on a (possibly reclaimed) slot: skip whatever the prior
+        // owner left buffered in this subscriber's channels.
+        for pub_channels in &self.channels {
+            pub_channels[id].reset_tail_to_head();
+        }
+        Some(id)
     }
 
     /// Send a message from publisher `pub_id` to ALL subscribers.
@@ -234,18 +293,21 @@ impl<T: Clone> FanoutRing<T> {
     /// Each write is ~20ns (SPSC, no contention). Total = N_sub × 20ns.
     #[inline(always)]
     pub fn send_as(&self, msg: T, pub_id: usize) -> Result<(), T> {
-        let n_subs = self.num_subscribers.load(Ordering::Relaxed) as usize;
-        if n_subs == 0 {
+        let subs = self.sub_active.load(Ordering::Relaxed);
+        if subs == 0 {
             return Ok(()); // No subscribers — drop silently
         }
 
         let pub_channels = &self.channels[pub_id];
 
-        // Drop-oldest fan-out: each subscriber channel overwrites its oldest
-        // slot when full so a slow consumer always gets the LATEST data, never
-        // stale buffered data, and the producer is never throttled. Never fails.
-        for ch in pub_channels.iter().take(n_subs) {
-            ch.send(msg.clone());
+        // Drop-oldest fan-out to every LIVE subscriber slot (holes from reused
+        // endpoints are skipped): each channel overwrites its oldest slot when
+        // full so a slow consumer always gets the LATEST data, never stale
+        // buffered data, and the producer is never throttled. Never fails.
+        for sub_id in 0..self.max_subs() {
+            if subs & (1u64 << sub_id) != 0 {
+                pub_channels[sub_id].send(msg.clone());
+            }
         }
 
         Ok(())
@@ -257,16 +319,22 @@ impl<T: Clone> FanoutRing<T> {
     /// Each poll is ~5ns (Relaxed load). Read is ~20ns when data found.
     #[inline(always)]
     pub fn recv_as(&self, sub_id: usize) -> Option<T> {
-        let n_pubs = self.num_publishers.load(Ordering::Relaxed) as usize;
-        if n_pubs == 0 {
+        let pubs = self.pub_active.load(Ordering::Relaxed);
+        if pubs == 0 {
             return None;
         }
 
-        // Round-robin starting from last cursor position
-        let start = self.recv_cursors[sub_id].get() % n_pubs;
+        // Round-robin over LIVE publisher slots (holes from reused endpoints are
+        // skipped), starting from the last cursor position, bounded by the fixed
+        // matrix width so a stale cursor can never index out of range.
+        let max_pubs = self.max_pubs();
+        let start = self.recv_cursors[sub_id].get() % max_pubs;
 
-        for offset in 0..n_pubs {
-            let pub_id = (start + offset) % n_pubs;
+        for offset in 0..max_pubs {
+            let pub_id = (start + offset) % max_pubs;
+            if pubs & (1u64 << pub_id) == 0 {
+                continue; // inactive publisher slot
+            }
             if let Some(msg) = self.channels[pub_id][sub_id].recv() {
                 // Advance cursor past this publisher for fairness
                 self.recv_cursors[sub_id].set(pub_id + 1);
@@ -283,9 +351,12 @@ impl<T: Clone> FanoutRing<T> {
     /// `head - tail` can exceed the ring size, but at most `capacity` messages
     /// are actually still readable (the rest were overwritten).
     pub fn pending_count_for_sub(&self, sub_id: usize) -> u64 {
-        let n_pubs = self.num_publishers.load(Ordering::Relaxed) as usize;
+        let pubs = self.pub_active.load(Ordering::Relaxed);
         let mut total = 0u64;
-        for pub_id in 0..n_pubs {
+        for pub_id in 0..self.max_pubs() {
+            if pubs & (1u64 << pub_id) == 0 {
+                continue;
+            }
             let ch = &self.channels[pub_id][sub_id];
             let head = ch.head.0.load(Ordering::Relaxed);
             let tail = ch.tail.0.load(Ordering::Relaxed);
@@ -307,11 +378,11 @@ impl<T: Clone> FanoutRing<T> {
     /// For multi-publisher scenarios, use [`send_as`] with explicit pub_id.
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
-        if self.num_publishers.load(Ordering::Relaxed) == 0 {
-            self.register_publisher();
+        if self.pub_active.load(Ordering::Relaxed) == 0 {
+            let _ = self.register_publisher();
         }
-        if self.num_subscribers.load(Ordering::Relaxed) == 0 {
-            self.register_subscriber();
+        if self.sub_active.load(Ordering::Relaxed) == 0 {
+            let _ = self.register_subscriber();
         }
         self.send_as(msg, 0)
     }
@@ -321,10 +392,10 @@ impl<T: Clone> FanoutRing<T> {
     /// For multi-subscriber scenarios, use [`recv_as`] with explicit sub_id.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
-        if self.num_subscribers.load(Ordering::Relaxed) == 0 {
-            self.register_subscriber();
+        if self.sub_active.load(Ordering::Relaxed) == 0 {
+            let _ = self.register_subscriber();
         }
-        if self.num_publishers.load(Ordering::Relaxed) == 0 {
+        if self.pub_active.load(Ordering::Relaxed) == 0 {
             return None;
         }
         self.recv_as(0)
@@ -340,10 +411,12 @@ impl<T: Clone> FanoutRing<T> {
 
     /// Total pending across ALL subscriber channels.
     pub fn pending_count(&self) -> u64 {
-        let n_subs = self.num_subscribers.load(Ordering::Relaxed) as usize;
+        let subs = self.sub_active.load(Ordering::Relaxed);
         let mut total = 0u64;
-        for sub_id in 0..n_subs {
-            total += self.pending_count_for_sub(sub_id);
+        for sub_id in 0..self.max_subs() {
+            if subs & (1u64 << sub_id) != 0 {
+                total += self.pending_count_for_sub(sub_id);
+            }
         }
         total
     }
@@ -380,8 +453,8 @@ mod tests {
     #[test]
     fn test_fanout_1p_1s() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub_id = ring.register_publisher();
-        let sub_id = ring.register_subscriber();
+        let pub_id = ring.register_publisher().expect("register pub");
+        let sub_id = ring.register_subscriber().expect("register sub");
 
         ring.send_as(42, pub_id).unwrap();
         assert_eq!(ring.recv_as(sub_id), Some(42));
@@ -391,9 +464,9 @@ mod tests {
     #[test]
     fn test_fanout_1p_2s() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub_id = ring.register_publisher();
-        let sub0 = ring.register_subscriber();
-        let sub1 = ring.register_subscriber();
+        let pub_id = ring.register_publisher().expect("register pub");
+        let sub0 = ring.register_subscriber().expect("register sub");
+        let sub1 = ring.register_subscriber().expect("register sub");
 
         // Publisher sends — both subscribers should receive
         ring.send_as(100, pub_id).unwrap();
@@ -405,9 +478,9 @@ mod tests {
     #[test]
     fn test_fanout_2p_1s() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub0 = ring.register_publisher();
-        let pub1 = ring.register_publisher();
-        let sub_id = ring.register_subscriber();
+        let pub0 = ring.register_publisher().expect("register pub");
+        let pub1 = ring.register_publisher().expect("register pub");
+        let sub_id = ring.register_subscriber().expect("register sub");
 
         ring.send_as(10, pub0).unwrap();
         ring.send_as(20, pub1).unwrap();
@@ -426,10 +499,10 @@ mod tests {
     #[test]
     fn test_fanout_2p_2s() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub0 = ring.register_publisher();
-        let pub1 = ring.register_publisher();
-        let sub0 = ring.register_subscriber();
-        let sub1 = ring.register_subscriber();
+        let pub0 = ring.register_publisher().expect("register pub");
+        let pub1 = ring.register_publisher().expect("register pub");
+        let sub0 = ring.register_subscriber().expect("register sub");
+        let sub1 = ring.register_subscriber().expect("register sub");
 
         ring.send_as(100, pub0).unwrap();
         ring.send_as(200, pub1).unwrap();
@@ -458,10 +531,10 @@ mod tests {
         let mut pub_ids = Vec::new();
         let mut sub_ids = Vec::new();
         for _ in 0..4 {
-            pub_ids.push(ring.register_publisher());
+            pub_ids.push(ring.register_publisher().expect("register pub"));
         }
         for _ in 0..4 {
-            sub_ids.push(ring.register_subscriber());
+            sub_ids.push(ring.register_subscriber().expect("register sub"));
         }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
@@ -509,8 +582,8 @@ mod tests {
     #[test]
     fn test_fanout_fifo_per_publisher() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub_id = ring.register_publisher();
-        let sub_id = ring.register_subscriber();
+        let pub_id = ring.register_publisher().expect("register pub");
+        let sub_id = ring.register_subscriber().expect("register sub");
 
         for i in 0..10 {
             ring.send_as(i, pub_id).unwrap();
@@ -523,8 +596,8 @@ mod tests {
     #[test]
     fn test_fanout_pending_count() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub_id = ring.register_publisher();
-        let sub_id = ring.register_subscriber();
+        let pub_id = ring.register_publisher().expect("register pub");
+        let sub_id = ring.register_subscriber().expect("register sub");
 
         assert_eq!(ring.pending_count(), 0);
         ring.send_as(1, pub_id).unwrap();
@@ -535,7 +608,7 @@ mod tests {
     #[test]
     fn test_fanout_no_subscribers_is_ok() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let pub_id = ring.register_publisher();
+        let pub_id = ring.register_publisher().expect("register pub");
         // No subscribers registered — send should succeed silently
         ring.send_as(42, pub_id).unwrap();
     }
@@ -548,8 +621,8 @@ mod tests {
     fn test_wrap_around_correctness() {
         // Verify data integrity when head/tail wrap past capacity
         let ring = FanoutRing::<u64>::new(2, 2, 16); // small capacity to force wraps
-        let p0 = ring.register_publisher();
-        let s0 = ring.register_subscriber();
+        let p0 = ring.register_publisher().expect("register pub");
+        let s0 = ring.register_subscriber().expect("register sub");
 
         // Send + recv more than capacity to force multiple wraps
         for round in 0..10 {
@@ -587,10 +660,10 @@ mod tests {
         let ring = Arc::new(FanoutRing::<u64>::new(4, 4, 256));
         let msgs = 50_000;
 
-        let p0 = ring.register_publisher();
-        let p1 = ring.register_publisher();
-        let s0 = ring.register_subscriber();
-        let s1 = ring.register_subscriber();
+        let p0 = ring.register_publisher().expect("register pub");
+        let p1 = ring.register_publisher().expect("register pub");
+        let s0 = ring.register_subscriber().expect("register sub");
+        let s1 = ring.register_subscriber().expect("register sub");
 
         let barrier = Arc::new(std::sync::Barrier::new(4));
 
@@ -710,10 +783,10 @@ mod tests {
         let mut pids = Vec::new();
         let mut sids = Vec::new();
         for _ in 0..4 {
-            pids.push(ring.register_publisher());
+            pids.push(ring.register_publisher().expect("register pub"));
         }
         for _ in 0..4 {
-            sids.push(ring.register_subscriber());
+            sids.push(ring.register_subscriber().expect("register sub"));
         }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
@@ -832,7 +905,7 @@ mod tests {
     #[test]
     fn test_no_publishers_recv_returns_none() {
         let ring = FanoutRing::<u64>::new(4, 4, 64);
-        let _sub = ring.register_subscriber();
+        let _sub = ring.register_subscriber().expect("register sub");
         // No publishers registered — recv should return None, not panic
         assert_eq!(ring.recv_as(0), None);
     }
@@ -844,8 +917,8 @@ mod tests {
         let mut pubs = Vec::new();
         let mut subs = Vec::new();
         for _ in 0..MAX_ENDPOINTS {
-            pubs.push(ring.register_publisher());
-            subs.push(ring.register_subscriber());
+            pubs.push(ring.register_publisher().expect("register pub"));
+            subs.push(ring.register_subscriber().expect("register sub"));
         }
 
         // Each publisher sends to each subscriber
@@ -874,13 +947,75 @@ mod tests {
     fn test_drop_safety_with_pending_messages() {
         // Ring with unconsumed messages should not leak or crash on drop
         let ring = FanoutRing::<String>::new(4, 4, 64);
-        let p = ring.register_publisher();
-        let _s = ring.register_subscriber();
+        let p = ring.register_publisher().expect("register pub");
+        let _s = ring.register_subscriber().expect("register sub");
 
         for i in 0..10 {
             ring.send_as(format!("msg_{}", i), p).unwrap();
         }
         // Drop ring with 10 unconsumed String messages — should not leak
         drop(ring);
+    }
+
+    #[test]
+    fn fanout_reuses_endpoint_slots_no_panic_after_16() {
+        // COMM-H1: a monotonic counter panicked on the 17th (re)registration. With a
+        // reusable slot bitmask the 17th is refused gracefully (None, not panic), and
+        // freeing a slot lets a fresh registration reclaim it and still deliver.
+        let ring = FanoutRing::<u64>::new(MAX_ENDPOINTS, MAX_ENDPOINTS, 16);
+        let subs: Vec<usize> = (0..MAX_ENDPOINTS)
+            .map(|_| ring.register_subscriber().expect("first 16 subs register"))
+            .collect();
+        // 17th registration is refused, NOT a panic (pre-fix: assert!(id < 16) fired).
+        assert_eq!(
+            ring.register_subscriber(),
+            None,
+            "17th subscriber must be refused gracefully, not panic"
+        );
+        // Free one slot; a fresh registration must reclaim exactly that slot.
+        let freed = subs[5];
+        ring.deregister_subscriber(freed);
+        let reclaimed = ring
+            .register_subscriber()
+            .expect("a freed slot must be reclaimable");
+        assert_eq!(reclaimed, freed, "freed slot should be reused, not leaked");
+        // And delivery still works on the reclaimed slot.
+        let p = ring.register_publisher().expect("pub");
+        ring.send_as(99u64, p).unwrap();
+        assert_eq!(
+            ring.recv_as(reclaimed),
+            Some(99),
+            "reclaimed subscriber must receive after reuse"
+        );
+    }
+
+    #[test]
+    fn fanout_reclaimed_subscriber_skips_stale_backlog() {
+        // COMM-H1: a reclaimed subscriber slot must start fresh, not inherit the
+        // previous owner's unread backlog (tail reset to head on claim).
+        let ring = FanoutRing::<u64>::new(2, 2, 16);
+        let p = ring.register_publisher().expect("pub");
+        let a = ring.register_subscriber().expect("sub a");
+        // Publish a backlog that subscriber `a` never drains.
+        for i in 0..5u64 {
+            ring.send_as(i, p).unwrap();
+        }
+        // `a` leaves without draining; its slot is reclaimed by `b`.
+        ring.deregister_subscriber(a);
+        let b = ring.register_subscriber().expect("sub b");
+        assert_eq!(a, b, "b should reclaim a's freed slot");
+        // `b` must NOT see a's stale backlog.
+        assert_eq!(
+            ring.recv_as(b),
+            None,
+            "reclaimed subscriber must not see the prior owner's backlog"
+        );
+        // A message sent AFTER reclaim IS delivered to `b`.
+        ring.send_as(42, p).unwrap();
+        assert_eq!(
+            ring.recv_as(b),
+            Some(42),
+            "b receives messages sent after reclaim"
+        );
     }
 }

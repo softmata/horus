@@ -157,9 +157,9 @@ impl ImageMetadata {
 #[test]
 fn ring_overflow_lossy_not_crash() {
     let ring = FanoutRing::<u64>::new(1, 2, 16); // tiny 16-slot ring
-    let pub_id = ring.register_publisher();
-    let fast_sub = ring.register_subscriber();
-    let slow_sub = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let fast_sub = ring.register_subscriber().expect("register sub");
+    let slow_sub = ring.register_subscriber().expect("register sub");
 
     // Fill ring far beyond capacity for slow_sub (never drains)
     for i in 0..1000u64 {
@@ -190,9 +190,9 @@ fn ring_overflow_lossy_not_crash() {
 #[test]
 fn selective_backpressure_fast_not_blocked_by_slow() {
     let ring = FanoutRing::<u64>::new(1, 2, 64);
-    let pub_id = ring.register_publisher();
-    let fast_sub = ring.register_subscriber();
-    let _slow_sub = ring.register_subscriber(); // never drained
+    let pub_id = ring.register_publisher().expect("register pub");
+    let fast_sub = ring.register_subscriber().expect("register sub");
+    let _slow_sub = ring.register_subscriber().expect("register sub"); // never drained
 
     let mut fast_received = 0u64;
     for i in 0..500u64 {
@@ -219,8 +219,8 @@ fn selective_backpressure_fast_not_blocked_by_slow() {
 #[test]
 fn burst_after_idle_absorbed() {
     let ring = FanoutRing::<u64>::new(1, 1, 128);
-    let pub_id = ring.register_publisher();
-    let sub_id = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub_id = ring.register_subscriber().expect("register sub");
 
     // Burst: send 100 messages without any recv
     for i in 0..100u64 {
@@ -269,8 +269,8 @@ fn fanout_latency_percentiles_intra_process() {
         let ring = Arc::new(FanoutRing::<u64>::new(n_pubs, n_subs, 256));
 
         // Register all endpoints
-        let pub_ids: Vec<usize> = (0..n_pubs).map(|_| ring.register_publisher()).collect();
-        let sub_ids: Vec<usize> = (0..n_subs).map(|_| ring.register_subscriber()).collect();
+        let pub_ids: Vec<usize> = (0..n_pubs).map(|_| ring.register_publisher().expect("register pub")).collect();
+        let sub_ids: Vec<usize> = (0..n_subs).map(|_| ring.register_subscriber().expect("register sub")).collect();
 
         // Warmup: 1000 messages (discard timings)
         for i in 0..1000u64 {
@@ -490,7 +490,7 @@ fn shm_fanout_latency_percentiles_cross_thread() {
 #[test]
 fn per_publisher_fifo_8_publishers() {
     let ring = Arc::new(FanoutRing::<u64>::new(8, 1, 256));
-    let sub_id = ring.register_subscriber();
+    let sub_id = ring.register_subscriber().expect("register sub");
     let barrier = Arc::new(Barrier::new(9)); // 8 pubs + 1 test thread
 
     let mut handles = Vec::new();
@@ -498,7 +498,7 @@ fn per_publisher_fifo_8_publishers() {
         let ring = ring.clone();
         let barrier = barrier.clone();
         handles.push(std::thread::spawn(move || {
-            let pub_id = ring.register_publisher();
+            let pub_id = ring.register_publisher().expect("register pub");
             barrier.wait();
             for seq in 0..1000u64 {
                 // Encode: pub_idx in upper 32 bits, sequence in lower 32
@@ -553,10 +553,10 @@ fn per_publisher_fifo_8_publishers() {
 #[test]
 fn no_message_duplication() {
     let ring = FanoutRing::<u64>::new(2, 2, 128);
-    let pub0 = ring.register_publisher();
-    let pub1 = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub0 = ring.register_publisher().expect("register pub");
+    let pub1 = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     // Each publisher sends unique values
     for i in 0..100u64 {
@@ -589,9 +589,9 @@ fn no_message_duplication() {
 #[test]
 fn sustained_million_messages_no_corruption() {
     let ring = FanoutRing::<u64>::new(1, 2, 64);
-    let pub_id = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     let n = 1_000_000u64;
     let mut s0_count = 0u64;
@@ -964,8 +964,8 @@ fn estop_reaches_all_motor_controllers() {
 #[test]
 fn watchdog_heartbeat_no_long_gaps() {
     let ring = FanoutRing::<u64>::new(1, 4, 64);
-    let pub_id = ring.register_publisher();
-    let sub_ids: Vec<usize> = (0..4).map(|_| ring.register_subscriber()).collect();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub_ids: Vec<usize> = (0..4).map(|_| ring.register_subscriber().expect("register sub")).collect();
 
     let max_gap_allowed = 5u64;
     let total_beats = 10_000u64;
@@ -1036,9 +1036,9 @@ fn deadline_bound_delivery_1khz_control() {
     }
 
     let ring = FanoutRing::<u64>::new(1, 2, 128);
-    let pub_id = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     let deadline_ns = 500_000u64; // 500μs
     let n = 10_000usize;
@@ -1098,8 +1098,8 @@ fn deadline_bound_delivery_1khz_control() {
 fn safety_observer_does_not_degrade_control_throughput() {
     // Baseline: 1 pub → 1 sub (no observer)
     let ring_baseline = FanoutRing::<u64>::new(1, 1, 256);
-    let pub_b = ring_baseline.register_publisher();
-    let sub_b = ring_baseline.register_subscriber();
+    let pub_b = ring_baseline.register_publisher().expect("register pub");
+    let sub_b = ring_baseline.register_subscriber().expect("register sub");
 
     let n = 100_000u64;
     let mut baseline_count = 0u64;
@@ -1112,9 +1112,9 @@ fn safety_observer_does_not_degrade_control_throughput() {
 
     // With observer: 1 pub → 2 sub (control + observer)
     let ring_observed = FanoutRing::<u64>::new(1, 2, 256);
-    let pub_o = ring_observed.register_publisher();
-    let sub_ctrl = ring_observed.register_subscriber();
-    let sub_obs = ring_observed.register_subscriber();
+    let pub_o = ring_observed.register_publisher().expect("register pub");
+    let sub_ctrl = ring_observed.register_subscriber().expect("register sub");
+    let sub_obs = ring_observed.register_subscriber().expect("register sub");
 
     let mut ctrl_count = 0u64;
     let mut obs_count = 0u64;
@@ -1906,8 +1906,8 @@ fn diamond_no_duplicate_at_merge() {
 #[test]
 fn fanout_under_cpu_contention() {
     let ring = Arc::new(FanoutRing::<u64>::new(1, 4, 256));
-    let pub_id = ring.register_publisher();
-    let sub_ids: Vec<usize> = (0..4).map(|_| ring.register_subscriber()).collect();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub_ids: Vec<usize> = (0..4).map(|_| ring.register_subscriber().expect("register sub")).collect();
 
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -2015,8 +2015,8 @@ fn fanout_latency_degradation_under_contention() {
 
     fn measure_fanout_latency(with_burners: bool) -> (u64, u64, u64) {
         let ring = FanoutRing::<u64>::new(1, 4, 256);
-        let pub_id = ring.register_publisher();
-        let subs: Vec<usize> = (0..4).map(|_| ring.register_subscriber()).collect();
+        let pub_id = ring.register_publisher().expect("register pub");
+        let subs: Vec<usize> = (0..4).map(|_| ring.register_subscriber().expect("register sub")).collect();
 
         let stop = Arc::new(AtomicBool::new(false));
         let mut burn_handles = Vec::new();
@@ -2097,7 +2097,7 @@ fn fanout_latency_degradation_under_contention() {
 #[test]
 fn concurrent_producers_data_integrity() {
     let ring = Arc::new(FanoutRing::<u64>::new(4, 1, 1024));
-    let sub_id = ring.register_subscriber();
+    let sub_id = ring.register_subscriber().expect("register sub");
     let barrier = Arc::new(Barrier::new(5)); // 4 producers + 1 main
 
     let handles: Vec<_> = (0..4u64)
@@ -2105,7 +2105,7 @@ fn concurrent_producers_data_integrity() {
             let ring = ring.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let pub_id = ring.register_publisher();
+                let pub_id = ring.register_publisher().expect("register pub");
                 barrier.wait();
                 for seq in 0..10_000u64 {
                     // Each thread sends values tagged with thread_idx
@@ -2274,10 +2274,10 @@ fn replay_determinism_same_output_sequence() {
 #[test]
 fn no_memory_leak_sustained_fanout() {
     let ring = FanoutRing::<u64>::new(2, 2, 128);
-    let pub0 = ring.register_publisher();
-    let pub1 = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub0 = ring.register_publisher().expect("register pub");
+    let pub1 = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     // Phase 1: warm up
     for i in 0..10_000u64 {
@@ -2338,8 +2338,8 @@ fn max_endpoints_16p_16s() {
     let ring = Arc::new(FanoutRing::<u64>::new(16, 16, 32));
 
     // Register all 16 publishers and 16 subscribers
-    let pub_ids: Vec<usize> = (0..16).map(|_| ring.register_publisher()).collect();
-    let sub_ids: Vec<usize> = (0..16).map(|_| ring.register_subscriber()).collect();
+    let pub_ids: Vec<usize> = (0..16).map(|_| ring.register_publisher().expect("register pub")).collect();
+    let sub_ids: Vec<usize> = (0..16).map(|_| ring.register_subscriber().expect("register sub")).collect();
 
     // Each publisher sends 100 messages tagged with its ID
     for &pub_id in &pub_ids {
@@ -2380,10 +2380,10 @@ fn max_endpoints_16p_16s() {
 #[test]
 fn compound_type_fanout_integrity() {
     let ring = FanoutRing::<Vec<f64>>::new(1, 3, 64);
-    let pub_id = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
-    let sub2 = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
+    let sub2 = ring.register_subscriber().expect("register sub");
 
     // Send trajectory waypoints (heap-allocated, non-trivial Clone)
     let trajectories: Vec<Vec<f64>> = (0..50)
@@ -2425,9 +2425,9 @@ fn compound_type_fanout_integrity() {
 #[test]
 fn string_fanout_clone_drop_safety() {
     let ring = FanoutRing::<String>::new(1, 2, 128);
-    let pub_id = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     let messages: Vec<String> = (0..100)
         .map(|i| format!("diagnostic_message_{i:04}_with_payload"))
@@ -2471,8 +2471,8 @@ fn string_fanout_clone_drop_safety() {
 #[test]
 fn realistic_payload_imu_fanout() {
     let ring = FanoutRing::<ImuPayload>::new(1, 4, 256);
-    let pub_id = ring.register_publisher();
-    let subs: Vec<_> = (0..4).map(|_| ring.register_subscriber()).collect();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let subs: Vec<_> = (0..4).map(|_| ring.register_subscriber().expect("register sub")).collect();
 
     for seq in 0..5000u64 {
         let imu = ImuPayload::new(seq);
@@ -2501,10 +2501,10 @@ fn realistic_payload_imu_fanout() {
 #[test]
 fn realistic_payload_image_metadata_fanout() {
     let ring = FanoutRing::<ImageMetadata>::new(2, 2, 32);
-    let pub0 = ring.register_publisher();
-    let pub1 = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub0 = ring.register_publisher().expect("register pub");
+    let pub1 = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     for frame in 0..100u64 {
         let meta0 = ImageMetadata::new(frame * 2);
@@ -2546,9 +2546,9 @@ fn realistic_payload_image_metadata_fanout() {
 #[test]
 fn realistic_payload_point_cloud_fanout() {
     let ring = FanoutRing::<Vec<u8>>::new(1, 2, 16);
-    let pub_id = ring.register_publisher();
-    let sub0 = ring.register_subscriber();
-    let sub1 = ring.register_subscriber();
+    let pub_id = ring.register_publisher().expect("register pub");
+    let sub0 = ring.register_subscriber().expect("register sub");
+    let sub1 = ring.register_subscriber().expect("register sub");
 
     let point_clouds: Vec<Vec<u8>> = (0..50u64)
         .map(|i| {
