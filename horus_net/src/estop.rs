@@ -10,9 +10,24 @@
 //! Target: <5ms from trigger to all peers stopped.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::config::EstopRemotePolicy;
 use crate::transport::Transport;
+
+/// Freshness window for a received e-stop timestamp.
+///
+/// Reject an e-stop older than this (stale / replayed) or further than this into
+/// the future (clock desync / garbage). The window is deliberately generous so a
+/// genuinely fresh e-stop is never dropped over modest LAN clock skew — an e-stop
+/// is a HALT command, and honoring a slightly-skewed real one is safer than
+/// discarding it. This is an anti-replay/anti-garbage filter, NOT authentication.
+const ESTOP_MAX_AGE_NS: u64 = 5_000_000_000; // 5s in the past
+const ESTOP_MAX_FUTURE_SKEW_NS: u64 = 5_000_000_000; // 5s in the future
+
+/// Emitted at most once: acting on the UNAUTHENTICATED networked e-stop channel.
+static ESTOP_UNAUTH_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// E-stop message wire format (compact, no serde):
 /// [host_id_hash:u16][reason_len:u16][reason:bytes][timestamp_ns:u64]
@@ -60,12 +75,86 @@ pub fn decode_estop(data: &[u8]) -> Option<(u16, String, u64)> {
     Some((host_id_hash, reason, timestamp_ns))
 }
 
-/// Handle a received e-stop broadcast. Triggers local emergency stop.
-pub fn handle_remote_estop(data: &[u8]) {
-    if let Some((host_id, reason, _timestamp)) = decode_estop(data) {
-        let msg = format!("Remote e-stop from host {:04x}: {}", host_id, reason);
-        eprintln!("[horus_net] {}", msg);
-        horus_core::scheduling::trigger_external_emergency_stop(msg);
+/// Handle a received e-stop broadcast. May trigger the local emergency stop.
+///
+/// Returns `true` if this call acted on the e-stop (triggered the external stop),
+/// `false` if it was rejected (stale/malformed) or suppressed by policy.
+///
+/// # Security posture — UNAUTHENTICATED (read before "hardening" this)
+///
+/// This channel is **not authenticated**. The only wire-level "identity" is the
+/// discovery `secret_hash`, which is a non-cryptographic FNV-1a value broadcast in
+/// CLEARTEXT for peer *filtering* (`config` says "NOT security"). Building e-stop
+/// auth on it would be fake security — an attacker reads the hash off the wire and
+/// replays it. This pass therefore deliberately does **not** fake authentication.
+///
+/// What it DOES provide (defense in depth, honestly scoped):
+///   * **Freshness/replay reject** — a timestamp outside `[now-5s, now+5s]` is
+///     dropped, so a captured e-stop cannot be replayed indefinitely.
+///   * **Explicit policy gate** (`EstopRemotePolicy`, env `HORUS_ESTOP_REMOTE`):
+///     `Warn` (default) acts on the e-stop but emits a LOUD one-time warning that
+///     any LAN peer can halt the fleet; `Off` ignores remote e-stop entirely.
+///     The LOCAL safety path (watchdog/deadline e-stop in horus_core) is
+///     independent and unaffected by either setting.
+///
+/// Genuine authenticated networked e-stop needs a future provisioned, off-wire
+/// key (planned `HORUS_ESTOP_KEY`) used to MAC each e-stop packet. Until that
+/// exists, `Warn` is loud-by-design and `Off` is available for hardened fleets.
+pub fn handle_remote_estop(data: &[u8], policy: EstopRemotePolicy) -> bool {
+    let (host_id, reason, timestamp) = match decode_estop(data) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    // Freshness / replay guard (NOT authentication — see doc above).
+    if !is_fresh_estop(timestamp) {
+        eprintln!(
+            "[horus_net] Ignoring stale/implausible remote e-stop from host {:04x} \
+             (timestamp outside freshness window)",
+            host_id
+        );
+        return false;
+    }
+
+    // Policy gate.
+    match policy {
+        EstopRemotePolicy::Off => {
+            // Remote e-stop suppressed. Local e-stop is unaffected.
+            false
+        }
+        EstopRemotePolicy::Warn => {
+            warn_unauthenticated_once();
+            let msg = format!("Remote e-stop from host {:04x}: {}", host_id, reason);
+            eprintln!("[horus_net] {}", msg);
+            horus_core::scheduling::trigger_external_emergency_stop(msg);
+            true
+        }
+    }
+}
+
+/// True if `timestamp_ns` (Unix nanoseconds) is within the freshness window of now.
+fn is_fresh_estop(timestamp_ns: u64) -> bool {
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    if now_ns >= timestamp_ns {
+        // Past (or equal): reject if older than the max age (replay).
+        now_ns - timestamp_ns <= ESTOP_MAX_AGE_NS
+    } else {
+        // Future: reject if further ahead than the skew tolerance (desync/garbage).
+        timestamp_ns - now_ns <= ESTOP_MAX_FUTURE_SKEW_NS
+    }
+}
+
+/// Emit the "networked e-stop is unauthenticated" warning at most once per process.
+fn warn_unauthenticated_once() {
+    if !ESTOP_UNAUTH_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[horus_net] WARNING: acting on a NETWORKED e-stop, which is \
+             UNAUTHENTICATED — any peer on this LAN can halt the fleet. Set \
+             HORUS_ESTOP_REMOTE=off to ignore remote e-stop. (This warning fires once.)"
+        );
     }
 }
 

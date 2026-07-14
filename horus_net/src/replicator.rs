@@ -372,7 +372,7 @@ impl Replicator {
             return;
         }
         if msg.topic_hash == estop_hash {
-            crate::estop::handle_remote_estop(&msg.payload);
+            crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
             return;
         }
 

@@ -23,10 +23,46 @@ pub struct NetConfig {
     pub deny_export: Vec<String>,
     /// Safety heartbeat settings.
     pub safety: SafetyConfig,
+    /// Posture for acting on UNAUTHENTICATED remote e-stop packets.
+    /// Env: HORUS_ESTOP_REMOTE = warn (default) | off.
+    pub estop_remote: EstopRemotePolicy,
     /// Enabled optimizers (e.g., ["fusion", "delta"]).
     pub optimizers: Vec<String>,
     /// Per-topic overrides.
     pub topic_overrides: std::collections::HashMap<String, TopicNetConfig>,
+}
+
+/// Policy for acting on e-stop packets received from the network.
+///
+/// Networked e-stop is currently UNAUTHENTICATED (see `estop::handle_remote_estop`):
+/// the wire `secret_hash` is a non-cryptographic FNV-1a value broadcast in cleartext
+/// for peer *filtering*, NOT security. Any host on the LAN can therefore forge an
+/// e-stop and halt the fleet. This policy lets an operator choose the posture.
+/// Env: `HORUS_ESTOP_REMOTE` = `warn` (default) | `off`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EstopRemotePolicy {
+    /// Act on remote e-stop (halt), but emit a LOUD one-time warning that the
+    /// networked e-stop channel is unauthenticated. This is the default: honoring a
+    /// possibly-forged HALT is safer than ignoring a genuine one.
+    #[default]
+    Warn,
+    /// Ignore remote e-stop entirely. Local (watchdog/deadline) e-stop is unaffected.
+    Off,
+}
+
+impl EstopRemotePolicy {
+    /// Parse from the `HORUS_ESTOP_REMOTE` env var. Unknown/empty → `Warn` (default).
+    pub fn from_env() -> Self {
+        match std::env::var("HORUS_ESTOP_REMOTE")
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
+            "off" | "ignore" | "0" | "false" => Self::Off,
+            _ => Self::Warn,
+        }
+    }
 }
 
 /// Import control configuration.
@@ -132,6 +168,7 @@ impl Default for NetConfig {
             import: ImportConfig::default(),
             deny_export: Vec::new(),
             safety: SafetyConfig::default(),
+            estop_remote: EstopRemotePolicy::from_env(),
             optimizers: Vec::new(),
             topic_overrides: std::collections::HashMap::new(),
         }
@@ -166,6 +203,7 @@ impl NetConfig {
             import: ImportConfig::Auto,
             deny_export: vec![],
             safety: SafetyConfig::default(),
+            estop_remote: EstopRemotePolicy::Warn,
             optimizers: vec![],
             topic_overrides: std::collections::HashMap::new(),
         }
@@ -273,6 +311,7 @@ mod tests {
             import: ImportConfig::Auto,
             deny_export: vec![],
             safety: SafetyConfig::default(),
+            estop_remote: EstopRemotePolicy::Warn,
             optimizers: vec![],
             topic_overrides: std::collections::HashMap::new(),
         }
