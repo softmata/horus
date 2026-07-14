@@ -847,9 +847,12 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
     // panic; a freed/crash-abandoned slot lets a later send succeed.
     let pub_id = match local.fanout_shm_pub_id {
         Some(id) => id,
-        None => match ring.register_publisher() {
-            Some(id) => {
+        None => match ring.register_publisher_locked(topic.name()) {
+            Some((id, lock)) => {
                 local.fanout_shm_pub_id = Some(id);
+                // Hold the endpoint flock for this Topic's lifetime (COMM-H1) — its
+                // Drop (or process death) releases it, letting a peer reclaim.
+                local.fanout_pub_lock = Some(lock);
                 id
             }
             None => return Err(msg),
@@ -941,9 +944,11 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
     // recoverable, not the pre-fix panic.
     let sub_id = match local.fanout_shm_sub_id {
         Some(id) => id,
-        None => match ring.register_subscriber() {
-            Some(id) => {
+        None => match ring.register_subscriber_locked(topic.name()) {
+            Some((id, lock)) => {
                 local.fanout_shm_sub_id = Some(id);
+                // Hold the endpoint flock for this Topic's lifetime (COMM-H1).
+                local.fanout_sub_lock = Some(lock);
                 id
             }
             None => return None,

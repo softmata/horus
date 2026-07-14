@@ -50,9 +50,30 @@
 //!   A crashed process's flock is released by the OS, which is the sole proof of
 //!   abandonment that permits reclaiming its slot — see `register_publisher`.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use horus_sys::fs::FileLock;
+
 use super::seqlock::{seqlock_consume, seqlock_publish};
+
+/// Which endpoint kind a lock file / claim belongs to. Drives the lock-file path
+/// component and (for subscribers) the fresh-slot channel reset on claim.
+#[derive(Clone, Copy)]
+enum EndpointKind {
+    Publisher,
+    Subscriber,
+}
+
+impl EndpointKind {
+    /// Path component used in the lock-file name (`pub`/`sub`).
+    fn tag(self) -> &'static str {
+        match self {
+            EndpointKind::Publisher => "pub",
+            EndpointKind::Subscriber => "sub",
+        }
+    }
+}
 
 // ============================================================================
 // Constants
@@ -359,8 +380,12 @@ impl ShmSpscChannel {
 ///
 /// Returns `None` when all `limit` slots are set (every endpoint simultaneously
 /// live). The CAS loop makes concurrent claims pick distinct slots. Mirrors the
-/// intra-process `super::fanout::claim_slot`; the cross-process crash-liveness
-/// (flock) is layered on top of this in `register_publisher`/`register_subscriber`.
+/// intra-process `super::fanout::claim_slot`.
+///
+/// Test-only: the production cross-process path (`claim_endpoint_locked`) sets a
+/// SPECIFIC flocked slot's bit rather than the lowest-free one, so it does not use
+/// this helper. It backs the in-process bitmask/routing tests.
+#[cfg(test)]
 #[inline]
 fn claim_bit(mask: &AtomicU64, limit: usize) -> Option<usize> {
     let mut cur = mask.load(Ordering::Relaxed);
@@ -578,28 +603,156 @@ impl ShmFanoutRing {
         }
     }
 
-    /// Register a new publisher, claiming a free slot in the reusable bitmask.
-    /// Returns its id, or `None` when all publisher slots are simultaneously live
-    /// (a genuine endpoint limit, not a leak — freed slots are reclaimed).
+    /// Register a new publisher, claiming a free endpoint slot under an exclusive
+    /// `flock` (COMM-H1 cross-process crash-liveness). Returns `(id, lock)`; the
+    /// caller MUST keep `lock` alive for the endpoint's lifetime — it is the
+    /// OS-level proof the slot is live. The OS releases it on process death, which
+    /// is what lets a peer later reclaim a crashed owner's slot. Returns `None` when
+    /// every slot is held by a live process (a genuine capacity limit, NEVER the
+    /// pre-fix panic).
     ///
-    /// NOTE (COMM-H1): this is the intra-process bitmask claim only. Cross-process
-    /// crash-liveness (flock-based reclaim of a crashed owner's slot) is layered on
-    /// top in a subsequent commit; here a freed slot is reused, and a crash-leaked
-    /// slot degrades gracefully to `None` (never the pre-fix panic).
-    pub(crate) fn register_publisher(&self) -> Option<usize> {
+    /// `topic_name` derives the per-endpoint lock-file path; every process on the
+    /// topic derives the SAME path, so the flock is a machine-wide claim.
+    pub(crate) fn register_publisher_locked(&self, topic_name: &str) -> Option<(usize, FileLock)> {
         let meta = unsafe { &*self.meta_ptr };
-        claim_bit(&meta.pub_active, self.max_publishers)
+        self.claim_endpoint_locked(
+            topic_name,
+            &meta.pub_active,
+            &meta.pub_owner_pids,
+            self.max_publishers,
+            EndpointKind::Publisher,
+        )
     }
 
-    /// Register a new subscriber, claiming a free slot. Returns its id, or `None`
-    /// when all subscriber slots are simultaneously live. On claim, the slot's
-    /// channels are reset (tail→head) so a reclaimed slot starts fresh rather than
-    /// inheriting a prior owner's unread backlog.
-    pub(crate) fn register_subscriber(&self) -> Option<usize> {
+    /// Register a new subscriber (symmetric to `register_publisher_locked`). On
+    /// claim, the slot's channels are reset (tail→head) so a reclaimed slot starts
+    /// fresh instead of inheriting a prior/crashed owner's unread backlog.
+    pub(crate) fn register_subscriber_locked(&self, topic_name: &str) -> Option<(usize, FileLock)> {
         let meta = unsafe { &*self.meta_ptr };
-        let id = claim_bit(&meta.sub_active, self.max_subscribers)?;
+        let (id, lock) = self.claim_endpoint_locked(
+            topic_name,
+            &meta.sub_active,
+            &meta.sub_owner_pids,
+            self.max_subscribers,
+            EndpointKind::Subscriber,
+        )?;
+        // A publisher never resets its channels (their tails are consumer-owned and
+        // may belong to LIVE subscribers — never write them). A subscriber skips any
+        // stale backlog on its freshly-claimed slot. Mirrors the intra FanoutRing.
         self.reset_subscriber_channels(id);
-        Some(id)
+        Some((id, lock))
+    }
+
+    /// The core flock claim/reclaim protocol (COMM-H1).
+    ///
+    /// # #1 INVARIANT (a wrong reclaim = silent cross-process UB, strictly worse
+    /// than the pre-fix panic)
+    ///
+    /// A slot is reclaimed from a prior owner ONLY on PROOF of abandonment: we hold
+    /// its exclusive `flock`, which the OS releases solely on `LOCK_UN` (clean drop)
+    /// or process death. Acquiring it therefore proves no live process holds the
+    /// slot. The four cases after `try_exclusive`:
+    ///
+    /// - `Err(_)` / `Ok(None)` → cannot prove abandonment (IO error, or a LIVE
+    ///   process holds it) → skip. Never reclaim.
+    /// - `Ok(Some(lock))` + `owner_pid == my_pid && bit set` → a LIVE in-process
+    ///   sibling that the OS let us re-`flock` (same-process permissiveness) →
+    ///   drop the lock and skip. Never reclaim a live same-process endpoint.
+    /// - `Ok(Some(lock))` otherwise (bit clear = free, OR owner is a dead/other
+    ///   process) → the slot is ours: set the bit, record our PID, return the lock.
+    ///
+    /// All slots skipped → `None` (a genuine "all endpoints live" capacity limit —
+    /// the graceful-degradation worst case, never a panic and never a mis-reclaim).
+    ///
+    /// RESTS-ON-DESIGN: the real crash path — a peer SIGKILLed, the OS releasing its
+    /// `flock`, another process then reclaiming — relies on the documented `flock`
+    /// OS contract (release on process death). It is NOT integration-testable in
+    /// this headless sandbox (cross-process SHM is env-broken here). It is exercised
+    /// in-process via a *simulated-dead* lock file (unlocked + foreign PID). The
+    /// same-process guard and the free/reclaim bit logic ARE verified in-process.
+    fn claim_endpoint_locked(
+        &self,
+        topic_name: &str,
+        active: &AtomicU64,
+        owner_pids: &[AtomicU32; MAX_FANOUT_ENDPOINTS],
+        max: usize,
+        kind: EndpointKind,
+    ) -> Option<(usize, FileLock)> {
+        let my_pid = std::process::id();
+        for i in 0..max {
+            // Derive + create the per-endpoint lock file. Any IO error → we cannot
+            // prove anything about this slot → skip it (fail-safe, never reclaim).
+            let path = match self.endpoint_lock_path(topic_name, kind, i) {
+                Some(p) => p,
+                None => continue,
+            };
+            let file = match horus_sys::fs::open_private(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            // The flock is the claim AUTHORITY:
+            //   Err(_)      → real error, cannot prove → skip.
+            //   Ok(None)    → a LIVE process holds it → skip (never reclaim live).
+            //   Ok(Some(l)) → we hold it: the prior owner (if any) is provably gone.
+            let lock = match FileLock::try_exclusive(&file) {
+                Ok(Some(lock)) => lock,
+                Ok(None) => continue,
+                Err(_) => continue,
+            };
+            // Same-process guard: on some OSes `flock` on a second fd within the SAME
+            // process succeeds, so holding the lock does NOT prove a same-process
+            // sibling is dead. If the recorded owner is THIS process AND the slot is
+            // still active, it is a LIVE in-process endpoint → do NOT reclaim.
+            let owner_pid = owner_pids[i].load(Ordering::Relaxed);
+            let bit_set = active.load(Ordering::Acquire) & (1u64 << i) != 0;
+            if owner_pid == my_pid && bit_set {
+                drop(lock); // release our re-lock; leave the live sibling untouched
+                continue;
+            }
+            // Claim: the slot is free (bit clear) or abandoned by a dead/other-process
+            // owner (we hold its flock). Set the active bit, record our PID, and hand
+            // the HELD lock to the caller. Order: the flock (already held) is the
+            // ownership truth; the bit is derived state, set only AFTER the flock.
+            active.fetch_or(1u64 << i, Ordering::AcqRel);
+            owner_pids[i].store(my_pid, Ordering::Release);
+            return Some((i, lock));
+        }
+        None
+    }
+
+    /// Deterministic per-endpoint lock-file path, mirroring the SHM region naming
+    /// (`{topic}_fanout`) determinism so every process on the topic agrees on it:
+    /// `{shm_base_dir}/fanout_locks/horus.{sanitized_topic}.fanout.{pub|sub}.{slot}.lock`.
+    /// `shm_base_dir()` is namespace-aware (`HORUS_NAMESPACE`), matching the SHM
+    /// region's isolation. A leftover lock file is harmless — content is irrelevant,
+    /// only the `flock` state matters. Returns `None` if the shared lock directory
+    /// can't be created (→ caller skips the slot, fail-safe).
+    fn endpoint_lock_path(
+        &self,
+        topic_name: &str,
+        kind: EndpointKind,
+        slot: usize,
+    ) -> Option<PathBuf> {
+        let dir = horus_sys::shm::shm_base_dir().join("fanout_locks");
+        if horus_sys::fs::create_dir_secure(&dir).is_err() {
+            return None;
+        }
+        // Flatten the topic name into a safe filename component (keep alnum/_/./-;
+        // map path separators & anything else to '_'). Deterministic across procs.
+        let mut sanitized = String::with_capacity(topic_name.len());
+        for c in topic_name.chars() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                sanitized.push(c);
+            } else {
+                sanitized.push('_');
+            }
+        }
+        Some(dir.join(format!(
+            "horus.{}.fanout.{}.{}.lock",
+            sanitized,
+            kind.tag(),
+            slot
+        )))
     }
 
     /// Reset every publisher-channel feeding subscriber `id` to skip whatever a
@@ -614,6 +767,25 @@ impl ShmFanoutRing {
             // `id < max_subscribers`); the channel view points into the live mmap.
             unsafe { self.channels[ch_idx].reset_tail_to_head() };
         }
+    }
+
+    /// Test-only bitmask claim (no flock) — exercises the reusable-slot bitmask +
+    /// hot-path routing logic in-process without touching the filesystem.
+    /// Production uses `register_publisher_locked`.
+    #[cfg(test)]
+    pub(crate) fn register_publisher(&self) -> Option<usize> {
+        let meta = unsafe { &*self.meta_ptr };
+        claim_bit(&meta.pub_active, self.max_publishers)
+    }
+
+    /// Test-only bitmask claim (no flock). Production uses
+    /// `register_subscriber_locked`.
+    #[cfg(test)]
+    pub(crate) fn register_subscriber(&self) -> Option<usize> {
+        let meta = unsafe { &*self.meta_ptr };
+        let id = claim_bit(&meta.sub_active, self.max_subscribers)?;
+        self.reset_subscriber_channels(id);
+        Some(id)
     }
 
     /// Send a POD message from publisher `pub_id` to ALL subscribers.
