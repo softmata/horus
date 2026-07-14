@@ -11,24 +11,33 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // ============================================================================
 
 type EmergencyStopHook = Box<dyn Fn(String) + Send + Sync>;
-static EMERGENCY_STOP_HOOK: std::sync::OnceLock<EmergencyStopHook> = std::sync::OnceLock::new();
+// RwLock (not OnceLock): the hook must be RE-SETTABLE so each scheduler `run()`
+// wires it to its own monitor — the most recently started scheduler owns external
+// e-stop. A OnceLock latched the very first scheduler forever, so a second scheduler
+// in the same process (common in tests, and in a supervisor that restarts the graph)
+// could never receive a networked e-stop (SCHED-H1).
+static EMERGENCY_STOP_HOOK: RwLock<Option<EmergencyStopHook>> = RwLock::new(None);
 
 /// Set a global hook that triggers emergency stop from external systems (e.g., horus_net).
 ///
 /// The hook receives a reason string. Called when network heartbeat detects link loss
-/// with `LinkLostAction::Stop`.
+/// with `LinkLostAction::Stop`, or when a remote e-stop packet is received. Installed by
+/// the Scheduler at startup (see `SafetyMonitor::install_emergency_stop_hook`); last set
+/// wins.
 pub fn set_emergency_stop_hook(hook: impl Fn(String) + Send + Sync + 'static) {
-    let _ = EMERGENCY_STOP_HOOK.set(Box::new(hook));
+    *EMERGENCY_STOP_HOOK.write() = Some(Box::new(hook));
 }
 
 /// Trigger emergency stop from external systems (e.g., horus_net heartbeat timeout).
 ///
-/// If the hook is set (by the Scheduler at startup), this triggers the Scheduler's
+/// If the hook is set (by the Scheduler at startup), this latches the Scheduler's
 /// emergency stop. If not set, it only prints to stderr.
 pub fn trigger_external_emergency_stop(reason: String) {
-    if let Some(hook) = EMERGENCY_STOP_HOOK.get() {
+    let guard = EMERGENCY_STOP_HOOK.read();
+    if let Some(hook) = guard.as_ref() {
         hook(reason);
     } else {
+        drop(guard);
         eprintln!("[horus] External emergency stop (no scheduler): {reason}");
     }
 }
@@ -885,6 +894,24 @@ impl SafetyMonitor {
     /// Check if emergency stop is active
     pub(crate) fn is_emergency_stop(&self) -> bool {
         self.emergency_stop.load(Ordering::SeqCst)
+    }
+
+    /// Wire the global external-emergency-stop hook (used by horus_net link-loss /
+    /// remote e-stop) to THIS monitor's stop flag. Without it the hook is never
+    /// installed, so `trigger_external_emergency_stop` only printed to stderr and a
+    /// networked e-stop silently did nothing (SCHED-H1). Mirrors
+    /// `trigger_emergency_stop`: latch the flag FIRST (safety-critical), log LAST and
+    /// non-fatally. The captured `Arc`s point at the same flag/state the scheduler's
+    /// tick loop polls, so the external trigger latches the running scheduler.
+    pub(crate) fn install_emergency_stop_hook(&self) {
+        let emergency_stop = Arc::clone(&self.emergency_stop);
+        let state = Arc::clone(&self.state);
+        set_emergency_stop_hook(move |reason| {
+            emergency_stop.store(true, Ordering::SeqCst);
+            *state.lock() = SafetyState::EmergencyStop;
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), " EMERGENCY STOP (external): {reason}");
+        });
     }
 
     /// Get current safety state
