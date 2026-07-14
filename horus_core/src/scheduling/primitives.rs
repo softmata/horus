@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::types::NodeKind;
+use super::types::{NodeKind, RegisteredNode};
 use crate::core::rt_node::BudgetViolation;
 use crate::core::Miss;
 
@@ -47,6 +47,62 @@ impl NodeRunner {
             result,
         }
     }
+}
+
+/// Install the per-tick thread-local ambient context for `node`, mirroring the
+/// main loop's `Scheduler::run_node_tick` (scheduler/mod.rs:3636-3665).
+///
+/// The tick context (`horus::now()`/`dt()`/`elapsed()`/`rng()`/
+/// `budget_remaining()`) and node context (`hlog!`) are **thread-locals**, so
+/// this MUST be called on the SAME thread that will run `NodeRunner::run_tick`
+/// — for the compute (crossbeam) and async (`spawn_blocking`) executors that is
+/// the child worker thread, not the pool thread. Without this, executor-run
+/// nodes see the inert fallbacks (`dt()`→0, `budget_remaining()`→`MAX`,
+/// `rng()`→unseeded), because only the main loop was calling it (FIX #5).
+///
+/// Pair every call with `clear_node_tick_context()` on the same thread after
+/// the tick returns.
+pub(crate) fn set_node_tick_context(
+    node: &RegisteredNode,
+    clock: &dyn crate::core::clock::Clock,
+    tick_period: Duration,
+) {
+    // Read the tick number the same way run_node_tick does: after start_tick()
+    // (already called by the executor) and before record_tick().
+    let tick_number = node
+        .context
+        .as_ref()
+        .map(|c| c.metrics().total_ticks())
+        .unwrap_or(0);
+    crate::core::hlog::set_node_context(&node.name, tick_number);
+
+    // dt = 1/rate for rate-driven nodes, else the scheduler's tick period
+    // (identical to run_node_tick's `self.tick.period` fallback).
+    let node_dt = node
+        .rate_hz
+        .map(|hz| Duration::from_secs_f64(1.0 / hz))
+        .unwrap_or(tick_period);
+    let sim_time = clock.elapsed();
+    let tick_start_ci = clock.now();
+    crate::core::tick_context::set_tick_context(
+        &node.name,
+        tick_number,
+        clock,
+        node_dt,
+        sim_time,
+        tick_start_ci,
+        node.tick_budget,
+    );
+}
+
+/// Clear the per-tick thread-local context installed by `set_node_tick_context`.
+///
+/// Must run on the SAME thread as its paired `set_node_tick_context`, after
+/// `NodeRunner::run_tick` returns (mirrors run_node_tick's
+/// `clear_tick_context()` + `clear_node_context()`).
+pub(crate) fn clear_node_tick_context() {
+    crate::core::tick_context::clear_tick_context();
+    crate::core::hlog::clear_node_context();
 }
 
 /// Action to take after a budget violation is detected.

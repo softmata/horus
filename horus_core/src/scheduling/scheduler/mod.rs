@@ -2288,6 +2288,10 @@ impl Scheduler {
                     registry: arc_registry,
                     registry_slots: arc_slots,
                     node_controls: arc_controls.clone(),
+                    // FIX #5: thread the scheduler clock + tick period so executor
+                    // threads install the same per-tick context run_node_tick does.
+                    clock: self.clock.clone(),
+                    tick_period: self.tick.period,
                 };
 
                 if !groups.rt_nodes.is_empty() {

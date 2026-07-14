@@ -200,6 +200,14 @@ impl RtExecutor {
         // SHM backend initializing on its first recv/send) may allocate. Alloc-
         // freedom is a steady-state guarantee, enforced from the second tick on.
         let enforce_no_alloc = node.no_alloc && !is_first_tick;
+
+        // FIX #5: install the per-tick thread-local context (horus::now/dt/
+        // elapsed/rng/budget_remaining) on THIS RT thread, mirroring
+        // run_node_tick. Set BEFORE entering the alloc-free guard — the first
+        // set_tick_context allocates its RNG + node-name string, which must not
+        // trip `.no_alloc()`.
+        super::primitives::set_node_tick_context(node, &*monitors.clock, monitors.tick_period);
+
         if enforce_no_alloc {
             crate::memory::rt_allocator::enter_rt_context(&node.name);
         }
@@ -211,6 +219,10 @@ impl RtExecutor {
         if enforce_no_alloc {
             crate::memory::rt_allocator::leave_rt_context();
         }
+
+        // Clear the per-tick context (mirror run_node_tick's clear right after
+        // the tick; the following post-tick bookkeeping does not use it).
+        super::primitives::clear_node_tick_context();
 
         // Record execution stats
         if let Some(ref mut stats) = node.rt_stats {
@@ -645,6 +657,8 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
         }
     }
 
@@ -1130,6 +1144,8 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
         };
 
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
@@ -1207,6 +1223,8 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -2234,6 +2252,102 @@ mod tests {
         assert!(
             count_healthy.load(std::sync::atomic::Ordering::Relaxed) > 0,
             "healthy node must tick normally"
+        );
+    }
+
+    // ========================================================================
+    // FIX #5: executor installs the per-tick thread-local context
+    // ========================================================================
+
+    /// A node that records the ambient `horus::dt()` / `budget_remaining()` it
+    /// observes *during* its tick. Used to prove the RT executor installs the
+    /// tick context (mirroring run_node_tick) rather than leaving the inert
+    /// fallbacks (dt→0, budget_remaining→MAX).
+    struct CtxProbeNode {
+        name: String,
+        observed_dt: Arc<Mutex<Option<Duration>>>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
+        ticked: Arc<AtomicBool>,
+    }
+    impl Node for CtxProbeNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            let dt = crate::core::tick_context::ctx_dt();
+            let budget = crate::core::tick_context::ctx_budget_remaining();
+            *self.observed_dt.lock().unwrap() = Some(dt);
+            *self.observed_budget.lock().unwrap() = Some(budget);
+            self.ticked.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_rt_executor_installs_tick_context() {
+        let observed_dt = Arc::new(Mutex::new(None));
+        let observed_budget = Arc::new(Mutex::new(None));
+        let ticked = Arc::new(AtomicBool::new(false));
+
+        let probe = CtxProbeNode {
+            name: "ctx_probe".to_string(),
+            observed_dt: observed_dt.clone(),
+            observed_budget: observed_budget.clone(),
+            ticked: ticked.clone(),
+        };
+
+        // 1kHz rate + 800us budget → during tick, dt()==1ms and
+        // budget_remaining()<MAX (and <=800us). Without FIX #5 the executor
+        // never sets the context, so dt()==ZERO and budget_remaining()==MAX.
+        let mut reg = make_rt_registered("ctx_probe", Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        reg.node = super::super::types::NodeKind::new(Box::new(probe));
+        reg.rate_hz = Some(1000.0);
+        reg.tick_budget = Some(Duration::from_micros(800));
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![reg]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        // Wait until the probe has ticked at least once.
+        for _ in 0..100 {
+            if ticked.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(5_u64.ms());
+        }
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        assert!(ticked.load(Ordering::Relaxed), "probe node must have ticked");
+        let dt = observed_dt.lock().unwrap().expect("dt must have been recorded");
+        let budget = observed_budget
+            .lock()
+            .unwrap()
+            .expect("budget must have been recorded");
+
+        // dt = 1/rate (the exact value run_node_tick computes). RED: dt == ZERO.
+        assert_eq!(
+            dt,
+            Duration::from_secs_f64(1.0 / 1000.0),
+            "dt() during executor tick must equal 1/rate, got {:?}",
+            dt
+        );
+        assert!(dt > Duration::ZERO, "dt() must not be the inert ZERO fallback");
+        // budget_remaining = budget - elapsed. RED: budget == Duration::MAX.
+        assert!(
+            budget < Duration::MAX,
+            "budget_remaining() must be real, not the MAX fallback, got {:?}",
+            budget
+        );
+        assert!(
+            budget <= Duration::from_micros(800),
+            "budget_remaining() must be <= configured budget, got {:?}",
+            budget
         );
     }
 }

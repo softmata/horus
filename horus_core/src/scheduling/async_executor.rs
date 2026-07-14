@@ -167,8 +167,19 @@ impl AsyncExecutor {
                     // SAFETY: Each task accesses a distinct index into the nodes vec.
                     // We await all handles before nodes can be mutated again.
                     let node_ref = unsafe { &mut *nodes_ptr.add(i) };
+                    // FIX #5: the tick runs on a tokio blocking-pool thread, so the
+                    // thread-local context is set INSIDE the closure. spawn_blocking
+                    // requires 'static, so move an owned clock Arc clone (cheap).
+                    let clock = monitors.clock.clone();
+                    let ctx_tick_period = monitors.tick_period;
                     let handle = tokio::task::spawn_blocking(move || {
+                        super::primitives::set_node_tick_context(
+                            node_ref,
+                            &*clock,
+                            ctx_tick_period,
+                        );
                         let tr = NodeRunner::run_tick(&mut node_ref.node);
+                        super::primitives::clear_node_tick_context();
                         AsyncResult {
                             index: i,
                             tick_start: tr.tick_start,
@@ -298,6 +309,8 @@ mod tests {
             registry: None,
             registry_slots: Arc::new(std::collections::HashMap::new()),
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
+            clock: Arc::new(crate::core::clock::WallClock::new()),
+            tick_period: Duration::from_millis(1),
         }
     }
 
