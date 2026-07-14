@@ -305,6 +305,16 @@ impl ComputeExecutor {
                     ctx.record_tick();
                 }
                 node.record_tick_success();
+                // FIX #2: feed the watchdog after a successful tick, gated on the
+                // main loop's critical-node condition (mod.rs:3555). Reached only
+                // when the crossbeam child tick RETURNED (a hung child blocks the
+                // scope so this never runs → hang-detection preserved); the Err
+                // arm below is skipped so a panic does not feed either.
+                if node.is_rt_node || node.node_watchdog.is_some() {
+                    if let Some(ref feeder) = monitors.watchdog {
+                        feeder.feed(&node.name);
+                    }
+                }
             }
             Err(panic_err) => {
                 if let Ok(mut profiler) = monitors.profiler.try_lock() {
@@ -355,6 +365,7 @@ mod tests {
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
+            watchdog: None,
         }
     }
 
@@ -535,5 +546,57 @@ mod tests {
         let expected = Duration::from_secs_f64(1.0 / 500.0);
         assert_eq!(observed_a, expected, "probe_a dt() on child thread must be 1/rate");
         assert_eq!(observed_b, expected, "probe_b dt() on child thread must be 1/rate");
+    }
+
+    // ========================================================================
+    // FIX #2: executor feeds the watchdog only for critical nodes
+    // ========================================================================
+
+    use super::super::safety_monitor::{SafetyMonitor, WatchdogFeeder};
+
+    fn monitors_with_watchdog(feeder: WatchdogFeeder) -> SharedMonitors {
+        let mut m = test_monitors();
+        m.watchdog = Some(feeder);
+        m
+    }
+
+    /// A NON-critical node (is_rt_node=false, no `.watchdog()`) must not be fed
+    /// even if a watchdog exists for its name — guards against blanket-feeding
+    /// (mirrors the main loop's `is_rt_node || node_watchdog.is_some()` gate).
+    #[test]
+    fn test_compute_executor_does_not_feed_non_critical() {
+        let monitor = SafetyMonitor::new(10);
+        monitor.add_critical_node("plain_compute".to_string(), Duration::from_secs(5));
+        let h0 = monitor
+            .watchdog_last_heartbeat_ns("plain_compute")
+            .expect("watchdog registered");
+
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut reg = make_compute_node("plain_compute", count.clone());
+        reg.rate_hz = Some(1000.0); // is_rt_node stays false, node_watchdog None
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = ComputeExecutor::start(
+            vec![reg],
+            running.clone(),
+            1_u64.ms(),
+            monitors_with_watchdog(monitor.watchdog_feeder()),
+        );
+
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "node must have ticked"
+        );
+        let h1 = monitor
+            .watchdog_last_heartbeat_ns("plain_compute")
+            .expect("watchdog registered");
+        assert_eq!(
+            h1, h0,
+            "a non-critical node must NOT be fed by the executor"
+        );
     }
 }

@@ -260,6 +260,16 @@ impl AsyncExecutor {
                     ctx.record_tick();
                 }
                 node.record_tick_success();
+                // FIX #2: feed the watchdog after a successful tick, gated on the
+                // main loop's critical-node condition (mod.rs:3555). Reached only
+                // when the spawn_blocking task RETURNED (a hung task blocks its
+                // await so this never runs → hang-detection preserved); the Err
+                // arm below is skipped so a panic does not feed either.
+                if node.is_rt_node || node.node_watchdog.is_some() {
+                    if let Some(ref feeder) = monitors.watchdog {
+                        feeder.feed(&node.name);
+                    }
+                }
             }
             Err(panic_err) => {
                 if let Ok(mut profiler) = monitors.profiler.try_lock() {
@@ -311,6 +321,7 @@ mod tests {
             node_controls: Arc::new(super::super::types::NodeControlMap::default()),
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
+            watchdog: None,
         }
     }
 
