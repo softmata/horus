@@ -445,7 +445,7 @@ class Node:
             init: Called once before first tick — ``init(node)``. Can be async.
             shutdown: Called on scheduler stop — ``shutdown(node)``. Can be async.
             on_error: Error handler — ``on_error(node, exception)``
-            order: Execution order (lower = earlier, default: 100)
+            order: Execution order (lower = earlier, default: 0)
             budget: Tick budget in seconds (e.g., ``300 * us``). None = auto (80% of period).
             deadline: Tick deadline in seconds (e.g., ``900 * us``). None = auto (95% of period).
             on_miss: Deadline miss policy — ``"warn"``, ``"skip"``, ``"safe_mode"``, ``"stop"``
