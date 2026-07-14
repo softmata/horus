@@ -16,6 +16,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Staleness thresholds.
 const DEAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Reject a wire-supplied name that could escape the presence directory when used
+/// to build a filesystem path (`remote_{host_id}.json`).
+///
+/// Fail closed: accept only a single "normal" path component — no path separators,
+/// no `..`, no absolute/root markers, no NUL. `host_id` arrives from an untrusted
+/// UDP peer, so a value like `../../etc/cron.d/x` must never reach `Path::join`.
+fn is_safe_path_component(name: &str) -> bool {
+    use std::path::{Component, Path};
+    if name.is_empty() || name.len() > 128 {
+        return false;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
+        return false;
+    }
+    let mut comps = Path::new(name).components();
+    matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
+}
+
 /// Manages incoming remote presence data — writes presence files to disk.
 pub struct PresenceReceiver {
     /// Active remote host files: host_id → (file_path, last_seen)
@@ -73,6 +91,16 @@ impl PresenceReceiver {
         }
         let host_id = String::from_utf8_lossy(&data[pos..pos + hid_len]).to_string();
         pos += hid_len;
+
+        // Path-traversal guard: host_id becomes a filename (remote_{host_id}.json)
+        // under shm_nodes_dir(). Reject separators / `..` / absolute components so an
+        // untrusted peer cannot escape the directory. Fail closed — skip this entry.
+        if !is_safe_path_component(&host_id) {
+            eprintln!(
+                "[horus_net] Rejecting presence broadcast: unsafe host_id (path traversal)"
+            );
+            return;
+        }
 
         // Timestamp
         if pos + 8 > data.len() {
