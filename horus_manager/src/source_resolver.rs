@@ -61,8 +61,45 @@ impl<'a> PackageSourceResolver<'a> {
     pub fn resolve(&self, name: &str) -> ResolvedSource {
         let normalized = name.to_lowercase().replace('-', "_");
 
+        let in_crate = is_known_crate(&normalized);
+        let in_pypi = is_known_pypi(&normalized);
+
+        // F6: some names are well-known on BOTH crates.io and PyPI (idna, redis, regex,
+        // rsa, termcolor, ...). Because the crates.io table is checked first, a Python
+        // project's `redis`/`regex`/etc. resolved to crates.io. When the project language
+        // is unambiguous, route a dual-listed name by it. (Truly ambiguous / no-context
+        // callers keep the deterministic first-match order below.)
+        if in_crate && in_pypi {
+            match (
+                self.languages.contains(&Language::Rust),
+                self.languages.contains(&Language::Python),
+            ) {
+                (true, false) => {
+                    return ResolvedSource {
+                        source: DepSource::CratesIo,
+                        confidence: Confidence::High,
+                        reason: format!(
+                            "'{}' is on both crates.io and PyPI; project is Rust-only",
+                            name
+                        ),
+                    }
+                }
+                (false, true) => {
+                    return ResolvedSource {
+                        source: DepSource::PyPI,
+                        confidence: Confidence::High,
+                        reason: format!(
+                            "'{}' is on both crates.io and PyPI; project is Python-only",
+                            name
+                        ),
+                    }
+                }
+                _ => {} // ambiguous — fall through to the deterministic first-match order
+            }
+        }
+
         // 1. Well-known crates.io packages
-        if is_known_crate(&normalized) {
+        if in_crate {
             return ResolvedSource {
                 source: DepSource::CratesIo,
                 confidence: Confidence::High,
@@ -71,7 +108,7 @@ impl<'a> PackageSourceResolver<'a> {
         }
 
         // 2. Well-known PyPI packages
-        if is_known_pypi(&normalized) {
+        if in_pypi {
             return ResolvedSource {
                 source: DepSource::PyPI,
                 confidence: Confidence::High,
@@ -1138,6 +1175,25 @@ mod tests {
         let result = resolver.resolve("redis");
         assert!(result.source == DepSource::CratesIo || result.source == DepSource::PyPI);
         assert_eq!(result.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn dual_table_package_routes_by_project_language() {
+        // 'redis'/'regex' are well-known on BOTH crates.io and PyPI. Before F6 they
+        // always resolved to crates.io (that table is checked first), mis-routing a
+        // Python project's dependency. With unambiguous context they must route right.
+        let py = PackageSourceResolver::new(&[Language::Python]);
+        assert_eq!(py.resolve("redis").source, DepSource::PyPI);
+        assert_eq!(py.resolve("regex").source, DepSource::PyPI);
+
+        let rust = PackageSourceResolver::new(&[Language::Rust]);
+        assert_eq!(rust.resolve("redis").source, DepSource::CratesIo);
+
+        // No project context stays deterministic (first-match order) — unchanged.
+        assert_eq!(
+            PackageSourceResolver::without_context().resolve("redis").source,
+            DepSource::CratesIo
+        );
     }
 
     // ── Known-list invariants ───────────────────────────────────────────
