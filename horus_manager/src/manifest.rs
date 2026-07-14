@@ -1125,6 +1125,152 @@ pub fn resolve_workspace_dep(
     Ok(resolved)
 }
 
+// ─── Surgical manifest editing (preserves comments/formatting) ───────────────
+//
+// `save_to` reserializes the whole typed struct via serde, which DESTROYS
+// comments, blank lines, key ordering, and any TOML keys the struct does not
+// model (e.g. a `[plugin]` section read by the plugin system). The
+// `horus add` / `horus remove` commands only mutate a single dependency, so
+// instead of round-tripping through the struct they load the manifest as a
+// `toml_edit::DocumentMut`, apply a surgical edit to one key, and write the DOM
+// back — leaving everything else byte-for-byte identical.
+//
+// `save_to` remains the right tool for brand-new manifests (`horus new`,
+// `horus migrate`) where there is no existing formatting to preserve.
+
+/// Load an existing manifest file as an editable TOML document (preserving
+/// comments, blank lines, and ordering).
+fn load_manifest_document(path: &Path) -> Result<toml_edit::DocumentMut> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
+    content
+        .parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("Failed to parse {}", path.display()))
+}
+
+/// Write an editable TOML document back atomically (temp file + rename), so an
+/// interrupt mid-write can't corrupt the manifest. Mirrors [`HorusManifest::save_to`].
+fn write_manifest_document(path: &Path, doc: &toml_edit::DocumentMut) -> Result<()> {
+    let content = doc.to_string();
+    let tmp = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("toml")
+    ));
+    fs::write(&tmp, &content).with_context(|| format!("Failed to write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("Failed to persist {}", path.display()))?;
+    Ok(())
+}
+
+/// Recursively convert a parsed [`toml::Value`] into a [`toml_edit::Value`],
+/// rendering nested tables as *inline* tables — the conventional, compact form
+/// for a dependency entry (`serde = { version = "1.0", features = [...] }`).
+fn toml_value_to_edit_value(value: &toml::Value) -> toml_edit::Value {
+    match value {
+        toml::Value::String(s) => toml_edit::Value::from(s.as_str()),
+        toml::Value::Integer(i) => toml_edit::Value::from(*i),
+        toml::Value::Float(f) => toml_edit::Value::from(*f),
+        toml::Value::Boolean(b) => toml_edit::Value::from(*b),
+        toml::Value::Datetime(dt) => {
+            // Dependency/driver values never contain datetimes in practice; parse
+            // the canonical string form, falling back to a plain string on any
+            // error so this can never panic.
+            dt.to_string()
+                .parse::<toml_edit::Value>()
+                .unwrap_or_else(|_| toml_edit::Value::from(dt.to_string()))
+        }
+        toml::Value::Array(arr) => {
+            let mut out = toml_edit::Array::new();
+            for elem in arr {
+                out.push(toml_value_to_edit_value(elem));
+            }
+            toml_edit::Value::Array(out)
+        }
+        toml::Value::Table(map) => {
+            let mut inline = toml_edit::InlineTable::new();
+            for (k, v) in map {
+                inline.insert(k, toml_value_to_edit_value(v));
+            }
+            toml_edit::Value::InlineTable(inline)
+        }
+    }
+}
+
+/// Serialize any manifest value (`DependencyValue`, `DriverValue`, …) into a
+/// `toml_edit::Item` ready for insertion, honoring serde `skip_serializing_if`
+/// so absent/default fields are omitted.
+fn serialize_to_edit_item<T: Serialize>(value: &T) -> Result<toml_edit::Item> {
+    let value =
+        toml::Value::try_from(value).context("Failed to serialize dependency value to TOML")?;
+    Ok(toml_edit::Item::Value(toml_value_to_edit_value(&value)))
+}
+
+/// Surgically insert or update `key` in the `[table]` section of an existing
+/// manifest file, preserving comments, blank lines, key ordering, and any
+/// unmodeled keys elsewhere in the file.
+///
+/// - Creates the `[table]` section if absent (appended at end of file).
+/// - If `key` already exists, its value is replaced in place; the key's leading
+///   comments are retained (its own trailing inline comment, if any, is lost).
+/// - `value` is any `Serialize` type; detailed forms render as inline tables.
+///
+/// The caller is responsible for ensuring `path` exists — this is a
+/// mutate-existing helper, never a create path.
+pub fn upsert_manifest_entry<T: Serialize>(
+    path: &Path,
+    table: &str,
+    key: &str,
+    value: &T,
+) -> Result<()> {
+    let mut doc = load_manifest_document(path)?;
+    let item = serialize_to_edit_item(value)?;
+
+    let root = doc.as_table_mut();
+    if root.get(table).is_none() {
+        root.insert(table, toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    let tbl = root
+        .get_mut(table)
+        .and_then(|it| it.as_table_mut())
+        .ok_or_else(|| anyhow!("`[{}]` in {} is not a table; cannot edit", table, path.display()))?;
+    // Update in place when the key already exists — replacing only the value
+    // slot keeps the existing key's leading decor (comments/blank lines).
+    // `Table::insert` would instead reset that decor, so it is only used to
+    // append a brand-new key.
+    match tbl.get_mut(key) {
+        Some(existing) => *existing = item,
+        None => {
+            tbl.insert(key, item);
+        }
+    }
+
+    write_manifest_document(path, &doc)
+}
+
+/// Surgically remove `key` from any of the given `tables` in an existing
+/// manifest file, preserving formatting. Returns the names of the tables the
+/// key was actually removed from.
+///
+/// Empty tables are intentionally left in place: pruning them would delete the
+/// table header's leading comments, which the caller may want to keep.
+pub fn remove_manifest_entry(path: &Path, tables: &[&str], key: &str) -> Result<Vec<String>> {
+    let mut doc = load_manifest_document(path)?;
+    let root = doc.as_table_mut();
+    let mut removed = Vec::new();
+
+    for &table in tables {
+        if let Some(tbl) = root.get_mut(table).and_then(|it| it.as_table_mut()) {
+            if tbl.remove(key).is_some() {
+                removed.push(table.to_string());
+            }
+        }
+    }
+
+    if !removed.is_empty() {
+        write_manifest_document(path, &doc)?;
+    }
+    Ok(removed)
+}
+
 // ─── Schema generation ──────────────────────────────────────────────────────
 
 /// Generate a JSON Schema for the `horus.toml` manifest format.

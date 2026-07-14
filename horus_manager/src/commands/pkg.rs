@@ -844,7 +844,7 @@ pub fn run_add_dep(
 
     // ── Write to horus.toml ──────────────────────────────────────────────
     let manifest_path = Path::new(HORUS_TOML);
-    let mut manifest = if manifest_path.exists() {
+    let manifest = if manifest_path.exists() {
         HorusManifest::load_from(manifest_path)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
     } else {
@@ -988,18 +988,16 @@ pub fn run_add_dep(
     } else {
         "dependencies"
     };
-    let deps_map = if dev {
-        &mut manifest.dev_dependencies
+
+    let was_present = if dev {
+        manifest.dev_dependencies.contains_key(&dep_name)
     } else {
-        &mut manifest.dependencies
+        manifest.dependencies.contains_key(&dep_name)
     };
 
-    let was_present = deps_map.contains_key(&dep_name);
-    deps_map.insert(dep_name.clone(), dep_value);
-
-    // Save manifest
-    manifest
-        .save_to(manifest_path)
+    // Surgically write the dependency into horus.toml, preserving the user's
+    // comments, blank lines, key ordering, and any unmodeled keys.
+    crate::manifest::upsert_manifest_entry(manifest_path, section_name, &dep_name, &dep_value)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     let action = if was_present { "Updated" } else { "Added" };
@@ -1433,26 +1431,28 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
 /// Remove a dependency from horus.toml if the manifest exists.
 fn remove_from_horus_toml(package: &str) {
-    use crate::manifest::{HorusManifest, HORUS_TOML};
+    use crate::manifest::HORUS_TOML;
 
     let manifest_path = std::path::Path::new(HORUS_TOML);
     if !manifest_path.exists() {
         return;
     }
 
-    let Ok(mut manifest) = HorusManifest::load_from(manifest_path) else {
-        return;
-    };
-
-    let had_dep = manifest.dependencies.remove(package).is_some();
-    let had_dev = manifest.dev_dependencies.remove(package).is_some();
-
-    if (had_dep || had_dev) && manifest.save_to(manifest_path).is_ok() {
-        println!(
-            "  {} Removed {} from horus.toml",
-            cli_output::ICON_SUCCESS.green(),
-            package
-        );
+    // Surgically remove from [dependencies]/[dev-dependencies], preserving the
+    // user's comments, blank lines, and any unmodeled keys. Best-effort: stay
+    // silent on any I/O or parse error (matches the prior behavior).
+    if let Ok(removed) = crate::manifest::remove_manifest_entry(
+        manifest_path,
+        &["dependencies", "dev-dependencies"],
+        package,
+    ) {
+        if !removed.is_empty() {
+            println!(
+                "  {} Removed {} from horus.toml",
+                cli_output::ICON_SUCCESS.green(),
+                package
+            );
+        }
     }
 }
 
@@ -2081,7 +2081,7 @@ pub fn run_add(
         )));
     }
 
-    let mut manifest = HorusManifest::load_from(manifest_path)
+    let manifest = HorusManifest::load_from(manifest_path)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if driver {
@@ -2131,9 +2131,9 @@ pub fn run_add(
             }
         };
 
-        manifest.drivers.insert(name.clone(), driver_value);
-        manifest
-            .save_to(manifest_path)
+        // Surgically write the driver into horus.toml, preserving comments,
+        // blank lines, key ordering, and any unmodeled keys.
+        crate::manifest::upsert_manifest_entry(manifest_path, "drivers", &name, &driver_value)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         let source_display = if source_str.is_empty() {
@@ -2196,9 +2196,9 @@ pub fn run_add(
         };
 
         let was_present = manifest.dependencies.contains_key(&name);
-        manifest.dependencies.insert(name.clone(), dep_value);
-        manifest
-            .save_to(manifest_path)
+        // Surgically write the dependency into horus.toml, preserving comments,
+        // blank lines, key ordering, and any unmodeled keys.
+        crate::manifest::upsert_manifest_entry(manifest_path, "dependencies", &name, &dep_value)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         let action = if was_present { "Updated" } else { "Added" };
@@ -2252,9 +2252,16 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
         let removed_from_drivers = manifest.drivers.remove(&name).is_some();
 
         if removed_from_deps || removed_from_dev || removed_from_drivers {
-            manifest
-                .save_to(manifest_path)
-                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+            // Surgically remove from horus.toml, preserving comments, blank
+            // lines, and any unmodeled keys. The in-memory `manifest` above
+            // stays mutated so the build-file regeneration below reflects the
+            // removal.
+            crate::manifest::remove_manifest_entry(
+                manifest_path,
+                &["dependencies", "dev-dependencies", "drivers"],
+                &name,
+            )
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
             let sections: Vec<&str> = [
                 if removed_from_deps {
@@ -7194,5 +7201,182 @@ edition = "1"
         assert!(name.is_ok());
         let n = name.unwrap();
         assert!(!n.is_empty());
+    }
+
+    // ── SSOT preservation: horus.toml comments/unmodeled keys survive edits ──
+    //
+    // The serde round-trip in `HorusManifest::save_to` destroys comments, blank
+    // lines, key ordering, and any TOML the struct does not model (e.g. the
+    // `[plugin]` section). `horus add` / `horus remove` must instead edit the
+    // manifest surgically so hand-authored formatting survives.
+
+    /// A hand-authored manifest with a top comment, an unmodeled top-level key,
+    /// a comment inside [dependencies], and an unmodeled [plugin] section.
+    /// `[plugin]` is the sharpest discriminator: it can only survive if we do
+    /// NOT round-trip through `HorusManifest` (which has no `plugin` field).
+    const HANDCRAFTED_MANIFEST: &str = "\
+# ── HORUS project manifest (hand-edited — keep my formatting!) ──
+custom_top_key = \"keep-me-please\"
+
+[package]
+name = \"test-bot\"
+version = \"0.1.0\"
+
+[dependencies]
+# pin this one for reproducibility
+existing-dep = \"1.0.0\"
+
+[plugin]
+command = \"mycmd\"
+binary = \"bin/mycmd\"
+";
+
+    #[test]
+    fn test_run_add_dep_preserves_comments_and_unmodeled_keys() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join(HORUS_TOML), HANDCRAFTED_MANIFEST).unwrap();
+
+        // `crates.io` source is a pure horus.toml edit (no network / no install).
+        let result = run_add_dep(
+            "newpkg".to_string(),
+            Some("2.3.4".to_string()),
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        result.unwrap();
+
+        let raw = fs::read_to_string(temp_dir.path().join(HORUS_TOML)).unwrap();
+
+        // Hand-authored formatting/content must survive the mutation.
+        assert!(
+            raw.contains("# ── HORUS project manifest"),
+            "top-of-file comment was destroyed:\n{raw}"
+        );
+        assert!(
+            raw.contains("custom_top_key = \"keep-me-please\""),
+            "unmodeled top-level key was destroyed:\n{raw}"
+        );
+        assert!(
+            raw.contains("# pin this one for reproducibility"),
+            "comment inside [dependencies] was destroyed:\n{raw}"
+        );
+        assert!(
+            raw.contains("[plugin]") && raw.contains("command = \"mycmd\""),
+            "unmodeled [plugin] section was destroyed:\n{raw}"
+        );
+
+        // And the dependency mutation actually landed in the right table.
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(
+            manifest.dependencies.contains_key("existing-dep"),
+            "pre-existing dep must remain"
+        );
+        let added = manifest
+            .dependencies
+            .get("newpkg")
+            .expect("newpkg should be added to [dependencies]");
+        assert!(added.is_crates_io(), "newpkg should be a crates.io dep");
+        assert_eq!(added.version(), Some("2.3.4"));
+    }
+
+    #[test]
+    fn test_run_remove_dep_preserves_comments_and_unmodeled_keys() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Add a second dep to remove; survivor signals live OUTSIDE the removed
+        // key's own line (the removed key's leading comment is expected to go
+        // with it — that is correct behavior, not a preservation failure).
+        let manifest_src = HANDCRAFTED_MANIFEST.replace(
+            "existing-dep = \"1.0.0\"\n",
+            "existing-dep = \"1.0.0\"\ndoomed-dep = \"9.9.9\"\n",
+        );
+        fs::write(temp_dir.path().join(HORUS_TOML), &manifest_src).unwrap();
+
+        let result = run_remove_dep("doomed-dep".to_string());
+        std::env::set_current_dir(&original_dir).unwrap();
+        result.unwrap();
+
+        let raw = fs::read_to_string(temp_dir.path().join(HORUS_TOML)).unwrap();
+
+        assert!(
+            raw.contains("# ── HORUS project manifest"),
+            "top-of-file comment was destroyed:\n{raw}"
+        );
+        assert!(
+            raw.contains("custom_top_key = \"keep-me-please\""),
+            "unmodeled top-level key was destroyed:\n{raw}"
+        );
+        assert!(
+            raw.contains("# pin this one for reproducibility"),
+            "comment inside [dependencies] was destroyed:\n{raw}"
+        );
+        assert!(
+            raw.contains("[plugin]") && raw.contains("command = \"mycmd\""),
+            "unmodeled [plugin] section was destroyed:\n{raw}"
+        );
+        assert!(
+            !raw.contains("doomed-dep"),
+            "removed dep should be gone from the file:\n{raw}"
+        );
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        assert!(!manifest.dependencies.contains_key("doomed-dep"));
+        assert!(
+            manifest.dependencies.contains_key("existing-dep"),
+            "untouched dep must remain"
+        );
+    }
+
+    #[test]
+    fn test_run_add_dep_update_in_place_preserves_leading_comment() {
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        fs::write(temp_dir.path().join(HORUS_TOML), HANDCRAFTED_MANIFEST).unwrap();
+
+        // Update an already-present key in place (bumps version + source).
+        let result = run_add_dep(
+            "existing-dep".to_string(),
+            Some("2.0.0".to_string()),
+            None,
+            Some("crates.io".to_string()),
+            None,
+            false,
+        );
+        std::env::set_current_dir(&original_dir).unwrap();
+        result.unwrap();
+
+        let raw = fs::read_to_string(temp_dir.path().join(HORUS_TOML)).unwrap();
+
+        // Updating a key in place keeps that key's leading comment (its decor is
+        // retained) and the rest of the document.
+        assert!(
+            raw.contains("# pin this one for reproducibility"),
+            "leading comment on the updated key must survive:\n{raw}"
+        );
+        assert!(
+            raw.contains("[plugin]") && raw.contains("custom_top_key = \"keep-me-please\""),
+            "surrounding document must survive an in-place update:\n{raw}"
+        );
+
+        let manifest = HorusManifest::load_from(&temp_dir.path().join(HORUS_TOML)).unwrap();
+        let updated = manifest
+            .dependencies
+            .get("existing-dep")
+            .expect("existing-dep should still be present");
+        assert!(updated.is_crates_io(), "source should be updated to crates.io");
+        assert_eq!(updated.version(), Some("2.0.0"), "version should be bumped");
     }
 }
