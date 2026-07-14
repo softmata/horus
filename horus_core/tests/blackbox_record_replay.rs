@@ -488,8 +488,14 @@ fn test_e2e_recording_manager_full_lifecycle() {
     let total = manager.total_size().unwrap();
     assert!(total > 0, "total size should be non-zero");
 
-    // Delete session
-    manager.delete_session("crash_2026_03_11").unwrap();
+    // Delete session — it exists, so this reports true
+    let deleted = manager
+        .delete_session("crash_2026_03_11")
+        .expect("deleting an existing session should not error");
+    assert!(
+        deleted,
+        "deleting an existing session should report true (it was found)"
+    );
     let sessions = manager.list_sessions().unwrap();
     assert!(sessions.is_empty());
 }

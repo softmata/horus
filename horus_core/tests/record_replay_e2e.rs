@@ -843,10 +843,12 @@ fn test_manager_delete_nonexistent_session_ok() {
     let tmp = TestTempDir::new("mgr_delete");
     let manager = RecordingManager::with_base_dir(tmp.path().to_path_buf());
 
-    let result = manager.delete_session("this_session_does_not_exist");
+    let deleted = manager
+        .delete_session("this_session_does_not_exist")
+        .expect("Deleting a nonexistent session should return Ok, not error");
     assert!(
-        result.is_ok(),
-        "Deleting nonexistent session should return Ok"
+        !deleted,
+        "Deleting a nonexistent session should report false (nothing was found)"
     );
 }
 

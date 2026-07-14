@@ -1162,8 +1162,11 @@ impl PyScheduler {
     }
 
     /// Delete a recording by session name.
+    ///
+    /// Returns `True` if the recording was found and deleted, `False` if no
+    /// recording with that name existed.
     #[staticmethod]
-    fn delete_recording(session_name: String) -> PyResult<()> {
+    fn delete_recording(session_name: String) -> PyResult<bool> {
         CoreScheduler::delete_recording(&session_name)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }

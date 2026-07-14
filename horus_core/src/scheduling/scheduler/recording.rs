@@ -294,7 +294,10 @@ impl Scheduler {
     }
 
     /// Delete a recording session.
-    pub fn delete_recording(session_name: &str) -> HorusResult<()> {
+    ///
+    /// Returns `true` if the session existed and was deleted, `false` if no
+    /// recording with that name was found.
+    pub fn delete_recording(session_name: &str) -> HorusResult<bool> {
         let manager = RecordingManager::new();
         manager
             .delete_session(session_name)
