@@ -234,9 +234,31 @@ fn run_with_prefix_output(cmd: &PrefixedCommand, colored_label: &str) -> Prefixe
 pub fn worst_exit_code(results: &[PrefixedResult]) -> i32 {
     results
         .iter()
-        .filter_map(|r| r.status.code())
+        .map(|r| exit_code_of(&r.status))
         .max()
         .unwrap_or(0)
+}
+
+/// Map an `ExitStatus` to a non-zero-on-failure exit code.
+///
+/// F9: `ExitStatus::code()` returns `None` when a process is killed by a SIGNAL
+/// (SIGSEGV, OOM-kill via SIGKILL, etc.). The old code `filter_map`ed on `.code()`,
+/// so signal-terminated subprocesses were DROPPED — an all-crashed lint/doc/fmt run
+/// then reported exit 0 (false-green in CI). A signal death must be a failure: report
+/// the shell convention `128 + signal`.
+fn exit_code_of(status: &ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        return status.signal().map(|s| 128 + s).unwrap_or(1);
+    }
+    #[cfg(not(unix))]
+    {
+        1
+    }
 }
 
 /// Check if all results succeeded.
@@ -380,6 +402,28 @@ mod tests {
     fn empty_commands_returns_empty() {
         let results = run_prefixed(vec![]);
         assert!(results.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worst_exit_code_treats_signal_death_as_failure() {
+        // A subprocess killed by a signal (SIGSEGV=11, OOM-kill, ...) has NO exit code.
+        // The old `filter_map(|r| r.status.code())` dropped these, so an all-crashed
+        // lint/doc/fmt run reported exit 0 — a false-green (F9). It must now be non-zero.
+        use std::os::unix::process::ExitStatusExt;
+        let crashed = PrefixedResult {
+            label: "[lint]".to_string(),
+            status: ExitStatus::from_raw(11), // terminated by signal 11 (SIGSEGV)
+        };
+        assert!(
+            crashed.status.code().is_none(),
+            "sanity: a signal-terminated status has no exit code"
+        );
+        assert_ne!(
+            worst_exit_code(std::slice::from_ref(&crashed)),
+            0,
+            "a signal-killed subprocess must not report success (exit 0)"
+        );
     }
 
     #[test]
