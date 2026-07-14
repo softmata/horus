@@ -26,6 +26,9 @@ env:
   CARGO_TERM_COLOR: always
   HORUS_NAMESPACE: ci_${{ github.run_id }}
 
+permissions:
+  contents: read
+
 jobs:
   miri:
     name: MIRI - Undefined Behavior Detection

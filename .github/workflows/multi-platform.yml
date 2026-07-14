@@ -18,6 +18,9 @@ env:
   # Minimum Supported Rust Version
   MSRV: "1.92.0"
 
+permissions:
+  contents: read
+
 jobs:
   # macOS Testing
   macos:

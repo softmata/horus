@@ -14,6 +14,9 @@ env:
   # Allow warnings on dev branch, strict on main
   RUSTFLAGS: ${{ github.ref == 'refs/heads/main' && '-D warnings' || '-W warnings' }}
 
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check

@@ -35,6 +35,9 @@ env:
   RUST_BACKTRACE: 1
   HORUS_NAMESPACE: ci_${{ github.run_id }}
 
+permissions:
+  contents: read
+
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   #  Unit Tests — fast, every PR

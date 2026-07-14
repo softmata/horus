@@ -15,6 +15,10 @@ env:
   # Regression threshold: fail if latency increases by more than this percentage
   REGRESSION_THRESHOLD: 10
 
+permissions:
+  contents: read
+  pull-requests: write  # benchmark job posts/updates a PR comment via github-script
+
 jobs:
   benchmark:
     name: Run Benchmarks
