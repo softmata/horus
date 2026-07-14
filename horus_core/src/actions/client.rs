@@ -34,7 +34,7 @@ use crate::core::Node;
 use crate::HorusResult;
 
 use crate::core::DurationExt;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -65,6 +65,10 @@ struct ClientGoalState<A: Action> {
     last_feedback: Option<A::Feedback>,
     feedback_count: u64,
     updated_at: Instant,
+    /// F-ACT2: set once this goal's terminal outcome has been counted into the
+    /// node's success/failure metrics, so `ActionClientNode::tick` counts each
+    /// completion exactly once instead of re-counting every tick.
+    metrics_counted: bool,
 }
 
 impl<A: Action> ClientGoalState<A> {
@@ -75,6 +79,7 @@ impl<A: Action> ClientGoalState<A> {
             last_feedback: None,
             feedback_count: 0,
             updated_at: Instant::now(),
+            metrics_counted: false,
         }
     }
 }
@@ -162,6 +167,11 @@ where
         let poll_interval = 10_u64.ms();
 
         while start.elapsed() < timeout {
+            // F-ACT1: pump the client so status/result messages are drained even when
+            // no ActionClientNode is ticking (the standalone pattern the docs show).
+            // Without this the goal state never leaves Pending and this always times
+            // out. `process_messages` serializes, so it is safe if a node also pumps.
+            self.client.process_messages();
             if self.is_done() {
                 return self.result();
             }
@@ -191,6 +201,9 @@ where
         let mut last_feedback_count = 0u64;
 
         while start.elapsed() < timeout {
+            // F-ACT1: self-pump (see await_result) so this works without a ticking node.
+            self.client.process_messages();
+
             // Check for new feedback
             let state = self.state.read();
             if state.feedback_count > last_feedback_count {
@@ -273,6 +286,13 @@ struct ActionClientInner<A: Action> {
 
     /// State
     initialized: AtomicBool,
+
+    /// Serializes `process_messages`. The status/feedback/result links are
+    /// single-consumer `Topic`s, so two threads draining them at once is UB. This
+    /// lets `ClientGoalHandle::await_result` self-pump (F-ACT1) while an
+    /// `ActionClientNode` may also be pumping from its tick — only one drains at a
+    /// time. Uncontended (≈one `Mutex` acquire) in the common single-pumper case.
+    pump_lock: Mutex<()>,
 }
 
 impl<A: Action> ActionClientInner<A>
@@ -293,6 +313,7 @@ where
             result_callback: RwLock::new(None),
             status_callback: RwLock::new(None),
             initialized: AtomicBool::new(false),
+            pump_lock: Mutex::new(()),
         }
     }
 
@@ -365,6 +386,11 @@ where
 
     /// Process incoming messages.
     fn process_messages(&self) {
+        // Serialize draining — the links are single-consumer Topics (F-ACT1). Held
+        // for the whole drain so a concurrent pumper (node tick vs await_result)
+        // can't recv the same Topic at the same time.
+        let _pump = self.pump_lock.lock();
+
         // Process status updates
         if let Some(ref link) = *self.status_link.read() {
             while let Some(update) = link.recv() {
@@ -695,13 +721,20 @@ where
         // Process incoming messages (results, feedback, status)
         self.inner.process_messages();
 
-        // Update metrics based on goal states
+        // F-ACT2: count each goal's terminal outcome exactly once. The old code
+        // iterated goals but never incremented — it left the counters at 0 forever
+        // (it noted a naive increment would double-count every tick). The
+        // `metrics_counted` flag on the goal state makes the count idempotent.
         let goals = self.inner.goals.read();
         for (_, state) in goals.iter() {
-            let state = state.read();
-            if state.status.is_terminal() && state.status.is_success() {
-                // Note: This would double-count on subsequent ticks
-                // A proper implementation would track which goals we've counted
+            let mut st = state.write();
+            if st.status.is_terminal() && !st.metrics_counted {
+                if st.status.is_success() {
+                    self.goals_succeeded.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.goals_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                st.metrics_counted = true;
             }
         }
     }
@@ -942,6 +975,73 @@ mod tests {
             assert!(status.is_terminal(), "{:?} should be terminal", status);
             assert!(!status.is_active(), "{:?} should not be active", status);
         }
+    }
+
+    /// F-ACT2: `ActionClientNode::tick` must count each goal's terminal outcome into
+    /// the success/failure metrics exactly once. The old code left the counters at 0
+    /// forever (the increment was stubbed out to avoid double-counting).
+    #[test]
+    fn action_client_node_counts_each_terminal_goal_once() {
+        let mut node = ActionClientBuilder::<TestAction>::new().build();
+        // Drive goals to terminal states directly — no server needed. `tick()` pumps
+        // (a no-op with uninitialized links) and then runs the metrics count.
+        node.inner.register_goal(GoalId::new()).write().status = GoalStatus::Succeeded;
+        node.inner.register_goal(GoalId::new()).write().status = GoalStatus::Aborted;
+
+        assert_eq!(node.metrics().goals_succeeded, 0);
+        assert_eq!(node.metrics().goals_failed, 0);
+
+        // First tick counts each terminal goal exactly once.
+        node.tick();
+        assert_eq!(node.metrics().goals_succeeded, 1, "one success counted");
+        assert_eq!(node.metrics().goals_failed, 1, "one failure counted");
+
+        // Later ticks must NOT re-count (the double-count the old stub feared).
+        node.tick();
+        node.tick();
+        assert_eq!(node.metrics().goals_succeeded, 1, "no double-count on later ticks");
+        assert_eq!(node.metrics().goals_failed, 1, "no double-count on later ticks");
+    }
+
+    /// F-ACT1: `ClientGoalHandle::await_result` must pump the client itself, so a
+    /// STANDALONE client (no `ActionClientNode` ticking) still receives status/result
+    /// messages. Before the fix it only polled the goal state — which nothing updated
+    /// — so a standalone goal stayed `Pending` until the timeout.
+    #[test]
+    fn await_result_self_pumps_without_a_ticking_node() {
+        let client = Arc::new(ActionClientInner::<TestAction>::new());
+        client.initialize().expect("initialize");
+        let gid = GoalId::new();
+        let state = client.register_goal(gid);
+        // Build the handle exactly as send_goal would (private fields, same module).
+        let handle = ClientGoalHandle::<TestAction> {
+            goal_id: gid,
+            priority: GoalPriority::NORMAL,
+            state: state.clone(),
+            client: Arc::clone(&client),
+            sent_at: Instant::now(),
+        };
+
+        // A "server" publishes a terminal status on the same status topic/kind.
+        let status_tx: Topic<GoalStatusUpdate> = Topic::new_with_kind(
+            <TestAction as Action>::status_topic(),
+            TopicKind::ActionStatus as u8,
+        )
+        .expect("status publisher");
+        status_tx.send(GoalStatusUpdate {
+            goal_id: gid,
+            status: GoalStatus::Succeeded,
+            timestamp: Duration::from_secs(0),
+        });
+
+        // await_result self-pumps → drains the status link → the goal leaves Pending.
+        // (Returns None: no Result message was published; we assert the drained state.)
+        let _ = handle.await_result(Duration::from_millis(300));
+        assert_eq!(
+            handle.status(),
+            GoalStatus::Succeeded,
+            "await_result must pump the client so a standalone goal leaves Pending (F-ACT1)"
+        );
     }
 
     #[test]
