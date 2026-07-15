@@ -26,7 +26,7 @@
 //! ```
 
 use super::tensor_pool::{Device, Tensor, TensorDtype, TensorPool};
-use crate::error::{HorusError, HorusResult};
+use crate::error::{HorusError, HorusResult, ValidationError};
 use crate::types::MAX_TENSOR_DIMS;
 use std::sync::Arc;
 
@@ -95,6 +95,47 @@ impl TensorHandle {
         // SAFETY: tensor was just allocated from `pool`, so pool_ids always match.
         Ok(Self::from_owned(tensor, pool)
             .expect("tensor just allocated from pool always has matching pool_id"))
+    }
+
+    /// Allocate a new tensor from the process-wide global pool, given a shape
+    /// and dtype.
+    ///
+    /// This is the ergonomic constructor for creating a tensor to fill in and
+    /// publish: the data lives in the [`global_pool`](crate::communication::topic::pool_registry::global_pool)
+    /// and the device is inferred from that pool's backend (CPU by default). For
+    /// an explicit pool or device, use [`alloc`](Self::alloc).
+    ///
+    /// Mirrors the Python `horus.Tensor([shape], dtype=...)` constructor and the
+    /// `new`/`new_on` convenience on [`Image`](crate::memory::Image) and the
+    /// other pool-backed types.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::memory::TensorHandle;
+    /// use horus_core::types::TensorDtype;
+    ///
+    /// let mut costmap = TensorHandle::from_shape(&[1000, 1000], TensorDtype::F32)?;
+    /// costmap.data_slice_mut().fill(0);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HorusError::InvalidInput`] if `shape` is empty or any dimension
+    /// is zero, or a memory error if the global pool cannot satisfy the request.
+    pub fn from_shape(shape: &[u64], dtype: TensorDtype) -> HorusResult<Self> {
+        if shape.is_empty() {
+            return Err(HorusError::InvalidInput(ValidationError::Other(
+                "TensorHandle::from_shape: shape must have at least one dimension".to_string(),
+            )));
+        }
+        if shape.contains(&0) {
+            return Err(HorusError::InvalidInput(ValidationError::Other(
+                "TensorHandle::from_shape: every dimension must be greater than zero".to_string(),
+            )));
+        }
+        let pool = crate::communication::topic::pool_registry::global_pool();
+        let device = pool.backend_device();
+        Self::alloc(pool, shape, dtype, device)
     }
 
     /// Get the underlying tensor descriptor
@@ -381,6 +422,38 @@ mod tests {
         assert_eq!(handle.nbytes(), 800); // 200 * 4 bytes
 
         std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    #[test]
+    fn test_from_shape_global_pool() {
+        // Ergonomic constructor: no explicit pool/device — uses the global pool.
+        // Parity with Python `horus.Tensor([shape], dtype)` and Image::new.
+        let handle = TensorHandle::from_shape(&[10, 20], TensorDtype::F32)
+            .expect("from_shape should allocate from the global pool");
+        assert_eq!(handle.shape(), &[10, 20]);
+        assert_eq!(handle.dtype(), TensorDtype::F32);
+        assert_eq!(handle.numel(), 200);
+        assert_eq!(handle.nbytes(), 800); // 200 * 4 bytes
+        // Data is CPU-accessible and correctly sized.
+        assert_eq!(handle.data_slice_mut().expect("cpu data").len(), 800);
+    }
+
+    #[test]
+    fn test_from_shape_rejects_bad_shape() {
+        assert!(
+            matches!(
+                TensorHandle::from_shape(&[], TensorDtype::F32),
+                Err(HorusError::InvalidInput(ValidationError::Other(_)))
+            ),
+            "empty shape must be rejected"
+        );
+        assert!(
+            matches!(
+                TensorHandle::from_shape(&[10, 0, 5], TensorDtype::F32),
+                Err(HorusError::InvalidInput(ValidationError::Other(_)))
+            ),
+            "zero-sized dimension must be rejected"
+        );
     }
 
     #[test]
