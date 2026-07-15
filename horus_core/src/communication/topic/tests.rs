@@ -463,6 +463,55 @@ fn topic_multiple_messages_fifo() {
 }
 
 #[test]
+fn topic_overflow_rejects_newest_keeps_oldest() {
+    // Locks the documented overflow contract for POINT-TO-POINT (1:1) topics: a full
+    // SpscShm ring REJECTS the newest send and preserves the OLDEST queued messages in
+    // FIFO order (drop-newest / reject-on-full). This is the OPPOSITE of drop-oldest /
+    // latest-wins, which is broadcast (Fanout/PodShm) behavior. python/ring-buffer.mdx
+    // is corrected to match this; if that page ever regresses to "overwrites oldest"
+    // for a 1:1 topic, this test fails.
+    const CAP: u32 = 8;
+    let name = unique("overflow_reject_newest");
+    let pub_t: Topic<u32> = Topic::with_capacity(&name, CAP, None).expect("pub");
+    let sub_t: Topic<u32> = Topic::with_capacity(&name, CAP, None).expect("sub");
+
+    // Settle to a 1:1 topology (1 pub + 1 sub → SpscShm point-to-point).
+    pub_t.send(9999);
+    assert_eq!(sub_t.recv(), Some(9999));
+
+    // Saturate WITHOUT draining. Once the ring is full every further try_send is
+    // rejected and hands the NEW value back — it is never stored.
+    let mut accepted = Vec::new();
+    let mut rejected_any = false;
+    for i in 0..(CAP * 4) {
+        match pub_t.try_send(i) {
+            Ok(()) => accepted.push(i),
+            Err(returned) => {
+                assert_eq!(returned, i, "a rejected send returns the NEW message unchanged");
+                rejected_any = true;
+            }
+        }
+    }
+    assert!(
+        rejected_any,
+        "a saturated 1:1 ring must reject (drop-newest), not absorb every send"
+    );
+    // Survivors are the OLDEST contiguous prefix starting at 0. Under drop-oldest we
+    // would have accepted every send and kept the most-recent CAP instead.
+    assert_eq!(
+        accepted,
+        (0..accepted.len() as u32).collect::<Vec<_>>(),
+        "survivors must be the oldest contiguous prefix (drop-newest)"
+    );
+
+    // Drain: FIFO oldest-first, exactly the accepted set, nothing newer survived.
+    for &v in &accepted {
+        assert_eq!(sub_t.recv(), Some(v), "FIFO oldest-first survivor {v}");
+    }
+    assert_eq!(sub_t.recv(), None, "no rejected/newer message survived");
+}
+
+#[test]
 fn topic_separate_pub_sub_instances() {
     let name = unique("sep_inst");
     let pub_t: Topic<f32> = Topic::new(&name).expect("pub");
