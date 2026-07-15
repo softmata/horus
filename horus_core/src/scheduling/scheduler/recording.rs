@@ -124,16 +124,22 @@ impl Scheduler {
         let mut scheduler = Self::new();
         scheduler.scheduler_name = format!("Replay({})", scheduler_recording.session_name);
 
-        // Use ReplayClock with timestamps from the recording.
-        // Extract tick timestamps from the recording metadata.
+        // Build a synthetic evenly-spaced tick clock for replay.
+        //
+        // Replay preserves recorded inputs and execution order, not per-tick
+        // wall-clock jitter. Derive the *average* tick period from the
+        // recording's own wall-clock span (`started_at..ended_at`) so a node
+        // reading `dt()`/`now()` during replay sees roughly the original
+        // cadence instead of a blind default. Reconstructing per-tick timing
+        // would require loading and aligning every node's snapshot timeline.
         let mut timestamps_ns: Vec<u64> = Vec::new();
         let total_ticks = scheduler_recording.total_ticks;
         if total_ticks > 0 {
-            // If we have execution_order, create evenly-spaced timestamps
-            // based on the recorded tick count. Each tick gets a 10ms slot.
-            // (Real timestamps from node snapshots would be better, but
-            //  requires loading all node recordings first.)
-            let period_ns = 10_000_000u64; // 10ms default
+            let period_ns = replay_tick_period_ns(
+                scheduler_recording.started_at,
+                scheduler_recording.ended_at,
+                total_ticks,
+            );
             for i in 0..total_ticks {
                 timestamps_ns.push(i * period_ns);
             }
@@ -302,5 +308,69 @@ impl Scheduler {
         manager
             .delete_session(session_name)
             .horus_context_with(|| format!("deleting recording session '{}'", session_name))
+    }
+}
+
+/// Derive the synthetic replay tick period (nanoseconds) from a recording's
+/// wall-clock span.
+///
+/// `started_at_us`/`ended_at_us` are microseconds since the epoch (as stored on
+/// [`SchedulerRecording`]). Returns `span / total_ticks`, falling back to a
+/// 10 ms default when the span is unavailable (`ended_at` unset), degenerate
+/// (clock skew or zero duration), or there are no ticks. This reproduces the
+/// original run's *average* cadence for `dt()`/`now()` during replay, not its
+/// per-tick jitter.
+fn replay_tick_period_ns(started_at_us: u64, ended_at_us: Option<u64>, total_ticks: u64) -> u64 {
+    const DEFAULT_PERIOD_NS: u64 = 10_000_000; // 10 ms
+    if total_ticks == 0 {
+        return DEFAULT_PERIOD_NS;
+    }
+    ended_at_us
+        .and_then(|end| end.checked_sub(started_at_us))
+        .map(|span_us| span_us.saturating_mul(1_000) / total_ticks)
+        .filter(|&period| period > 0)
+        .unwrap_or(DEFAULT_PERIOD_NS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_tick_period_ns;
+
+    const DEFAULT: u64 = 10_000_000;
+
+    #[test]
+    fn period_derived_from_span_matches_original_rate() {
+        // 1000 ticks over 2.0s wall-clock (500 Hz) → 2 ms per tick.
+        let started_us = 1_000_000;
+        let ended_us = Some(started_us + 2_000_000); // +2.0s
+        assert_eq!(replay_tick_period_ns(started_us, ended_us, 1000), 2_000_000);
+    }
+
+    #[test]
+    fn period_falls_back_when_ended_at_unset() {
+        assert_eq!(replay_tick_period_ns(1_000_000, None, 1000), DEFAULT);
+    }
+
+    #[test]
+    fn period_falls_back_on_clock_skew() {
+        // ended_at before started_at → checked_sub yields None.
+        assert_eq!(
+            replay_tick_period_ns(2_000_000, Some(1_000_000), 1000),
+            DEFAULT
+        );
+    }
+
+    #[test]
+    fn period_falls_back_on_zero_ticks() {
+        assert_eq!(replay_tick_period_ns(1_000_000, Some(3_000_000), 0), DEFAULT);
+    }
+
+    #[test]
+    fn period_falls_back_on_zero_span() {
+        // Same start/end → 0 period → default (avoids a degenerate all-zero clock).
+        assert_eq!(
+            replay_tick_period_ns(1_000_000, Some(1_000_000), 1000),
+            DEFAULT
+        );
     }
 }
