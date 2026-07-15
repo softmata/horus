@@ -23,8 +23,9 @@ pub enum Miss {
     Warn,
     /// Skip this tick, resume next cycle.
     Skip,
-    /// Call `enter_safe_state()` on the node, continue ticking in safe mode.
-    /// The scheduler checks `is_safe_state()` each tick for recovery.
+    /// Call `enter_safe_state()` on the node, then keep ticking. Fired on every
+    /// deadline miss; the node is not isolated and the scheduler does not poll
+    /// `is_safe_state()` for automatic recovery.
     SafeMode,
     /// Stop the entire scheduler (last resort).
     Stop,

@@ -326,6 +326,18 @@ impl FailureHandler {
     /// - **Transient** + other policies, or **Permanent**: delegates to the normal
     ///   [`record_failure()`](Self::record_failure) path.
     ///
+    /// ## Not wired on the per-tick failure path
+    ///
+    /// The scheduler's per-tick failure handling ([`apply_failure_policy_after_panic`])
+    /// uses [`record_failure()`](Self::record_failure), not this method: a node `tick()`
+    /// signals failure by **panicking**, which carries no [`HorusError`] and therefore no
+    /// severity. Severity classification is instead applied at node init/re-init (to stop
+    /// vs. retry) and by the service-call resilience helpers. This method is retained for
+    /// callers that hold a typed error; wiring it into the panic path would require a
+    /// panic→severity mapping, which would override the user's configured policy.
+    ///
+    /// [`apply_failure_policy_after_panic`]: crate::scheduling::types
+    ///
     /// ## RT-safe: no heap allocation
     ///
     /// Same guarantees as `record_failure()` — `Severity` is `Copy`, no allocations.
