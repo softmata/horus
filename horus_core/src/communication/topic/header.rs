@@ -442,44 +442,6 @@ impl TopicHeader {
             && self.creator_thread_id_hash == hash_thread_id(std::thread::current().id())
     }
 
-    /// Check if ALL active participants are on the same thread.
-    ///
-    /// This is the correct check for DirectChannel mode - it requires that
-    /// all registered producers AND consumers share the same thread.
-    #[inline]
-    pub fn all_participants_same_thread(&self) -> bool {
-        if !self.is_same_process() {
-            return false;
-        }
-
-        let current_thread_hash = hash_thread_id(std::thread::current().id()) as u32;
-        let mut reference_thread: Option<u32> = None;
-
-        for p in &self.participants {
-            if p.active.load(Ordering::Acquire) != 0 {
-                if p.pid.load(Ordering::Acquire) != std::process::id() {
-                    return false;
-                }
-
-                let thread_hash = p.thread_id_hash.load(Ordering::Acquire);
-                match reference_thread {
-                    None => reference_thread = Some(thread_hash),
-                    Some(ref_hash) => {
-                        if thread_hash != ref_hash {
-                            return false;
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(ref_hash) = reference_thread {
-            return current_thread_hash == ref_hash;
-        }
-
-        true
-    }
-
     /// Check if type is registered as POD
     #[inline]
     pub fn is_pod_type(&self) -> bool {
@@ -621,96 +583,36 @@ impl TopicHeader {
 
     /// Detect the optimal backend based on current topology.
     ///
-    /// SHM-backed topics (creator_pid != 0) always use SHM backends, even for
-    /// same-process communication. This ensures data is written to the shared
-    /// memory region from the first message, so cross-process consumers that
-    /// join later can immediately read it without waiting for a migration.
-    ///
-    /// Intra-process heap backends (DirectChannel, SpscIntra, etc.) are only
-    /// used for topics created without SHM backing (in-memory only).
+    /// Every topic is SHM-backed (a backing file is created and `creator_pid` is
+    /// stamped at `header.init()`), so the data plane always lives in the shared
+    /// memory region — a cross-process consumer that joins later can read
+    /// published data immediately without a migration + drain cycle. The choice
+    /// is purely a function of topology (producer/consumer counts) and whether
+    /// the message type is POD.
     pub fn detect_optimal_backend(&self) -> BackendMode {
         let pubs = self.pub_count();
         let subs = self.sub_count();
-        let same_process = self.is_same_process();
-        let all_same_thread = self.all_participants_same_thread();
         let is_pod = self.is_pod_type();
-        // SHM-backed: creator_pid is set during header.init() from the owner process.
-        // If non-zero, this topic has a backing SHM file and should always use SHM
-        // backends to ensure cross-process readiness from the first message.
-        let shm_backed = self.creator_pid != 0;
 
-        match (all_same_thread, same_process, pubs, subs, is_pod) {
-            (_, _, 0, 0, _) => BackendMode::Unknown,
+        match (pubs, subs) {
+            (0, 0) => BackendMode::Unknown,
 
-            // SHM-backed topics: skip heap backends, go straight to SHM.
-            // This is the key fix for cross-process reliability: data lands in
-            // the mmap'd region immediately, so a consumer joining from another
-            // process sees it without needing a migration + drain cycle.
-            _ if shm_backed && (pubs + subs > 0) => {
-                if !same_process {
-                    // Already detected cross-process
-                    match (pubs, subs) {
-                        (1, _) if subs <= 1 => BackendMode::SpscShm,
-                        (_, 1) if pubs > 1 => BackendMode::MpscShm,
-                        // 1 producer, multiple consumers → BROADCAST (each subscriber
-                        // gets every message), NOT competing SpmcShm (which starves).
-                        // Falls through to PodShm (POD) / FanoutShm (non-POD), matching
-                        // intra-process and the same-process branch below.
-                        (_, _) if is_pod => BackendMode::PodShm,
-                        _ => BackendMode::FanoutShm,
-                    }
-                } else {
-                    // Same process but SHM-backed: use SHM anyway for cross-process readiness
-                    match (pubs, subs) {
-                        (p, s) if p <= 1 && s <= 1 => BackendMode::SpscShm,
-                        // 1 producer, multiple consumers → BROADCAST (each subscriber
-                        // gets every message), matching intra-process (FanoutIntra) and
-                        // cross-process (FanoutShm). This deliberately does NOT use
-                        // SpmcShm: SpmcShm shares one tail so consumers COMPETE and a
-                        // fast one starves the rest — wrong for pub/sub. Falls through to
-                        // PodShm (POD broadcast on the shared ring) / FanoutShm (non-POD).
-                        (_, _) if pubs > 1 && subs <= 1 => BackendMode::MpscShm,
-                        (_, _) if is_pod => BackendMode::PodShm,
-                        _ => BackendMode::FanoutShm,
-                    }
-                }
-            }
+            // 1P↔1C (or a single participant anticipating a single counterpart).
+            (p, s) if p <= 1 && s <= 1 => BackendMode::SpscShm,
 
-            (true, _, 1, 1, true) => BackendMode::DirectChannel,
+            // Multiple producers, single (or no) consumer → MP claim ring.
+            // (Must come before the POD broadcast arm: a multi-producer POD topic
+            // is MpscShm, not PodShm.)
+            (_, s) if pubs > 1 && s <= 1 => BackendMode::MpscShm,
 
-            // Intra-process: 1P↔1C (or anticipating single counterpart)
-            (_, true, 1, 1, _) => BackendMode::SpscIntra,
-            (_, true, 1, 0, _) => BackendMode::SpscIntra,
-            (_, true, 0, 1, _) => BackendMode::SpscIntra,
-            // Intra-process: 1P, multiple consumers — use FanoutIntra so each
-            // subscriber gets its own SPSC channel (broadcast semantics).
-            // SpmcIntra has a shared tail pointer where consumers compete for
-            // messages — one fast consumer drains the ring, starving others.
-            // FanoutIntra gives each subscriber an independent copy of every message.
-            (_, true, 1, _, _) if subs > 1 => BackendMode::FanoutIntra,
-            // Intra-process: multiple producers (0 or 1 consumer)
-            (_, true, _, 0, _) if pubs > 1 => BackendMode::MpscIntra,
-            (_, true, _, 1, _) if pubs > 1 => BackendMode::MpscIntra,
-            // Intra-process: 0 pubs, multiple consumers (anticipating single producer)
-            (_, true, 0, _, _) if subs > 1 => BackendMode::FanoutIntra,
-            // Intra-process: MPMC — use FanoutRing (contention-free SPSC matrix)
-            (_, true, _, _, _) if pubs > 1 && subs > 1 => BackendMode::FanoutIntra,
+            // 1→many / 0→many (and MPMC) broadcast of POD types → PodShm broadcast
+            // on the shared ring (each subscriber gets every message). This
+            // deliberately does NOT use SpmcShm, whose consumers share one tail and
+            // COMPETE — a fast consumer would starve the rest, which is wrong for
+            // pub/sub broadcast semantics.
+            (_, _) if is_pod => BackendMode::PodShm,
 
-            // Cross-process: 1P↔1C
-            (_, false, 1, 1, _) => BackendMode::SpscShm,
-            (_, false, 1, 0, _) => BackendMode::SpscShm,
-            (_, false, 0, 1, _) => BackendMode::SpscShm,
-            // Cross-process: multi-producer
-            (_, false, _, 0, _) if pubs > 1 => BackendMode::MpscShm,
-            (_, false, _, 1, _) if pubs > 1 => BackendMode::MpscShm,
-            // Cross-process: multi-consumer — FanoutShm for broadcast semantics
-            // (same reasoning as intra-process: SpmcShm has competing consumers)
-            (_, false, 1, _, _) if subs > 1 => BackendMode::FanoutShm,
-            (_, false, 0, _, _) if subs > 1 => BackendMode::FanoutShm,
-
-            (_, false, _, _, true) => BackendMode::PodShm,
-
-            // Cross-process MPMC — use FanoutShm (contention-free SHM SPSC matrix)
+            // Non-POD broadcast / MPMC → FanoutShm (contention-free SHM SPSC matrix).
             _ => BackendMode::FanoutShm,
         }
     }
@@ -1488,37 +1390,6 @@ mod tests {
         assert!(h.is_same_thread());
     }
 
-    #[test]
-    fn all_participants_same_thread_empty() {
-        let h = make_header(8, 8, true, 16);
-        assert!(h.all_participants_same_thread());
-    }
-
-    #[test]
-    fn all_participants_same_thread_single_producer() {
-        let h = make_header(8, 8, true, 16);
-        h.register_producer().unwrap();
-        assert!(h.all_participants_same_thread());
-    }
-
-    #[test]
-    fn all_participants_same_thread_false_with_different_threads() {
-        let h = make_header(8, 8, true, 16);
-        h.register_producer().unwrap();
-
-        let header_ptr = &h as *const TopicHeader as usize;
-        std::thread::spawn(move || {
-            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
-            // outlives this thread (main thread joins before h is dropped).
-            let h = unsafe { &*(header_ptr as *const TopicHeader) };
-            h.register_consumer().unwrap();
-        })
-        .join()
-        .unwrap();
-
-        assert!(!h.all_participants_same_thread());
-    }
-
     // ── Migration lock ──────────────────────────────────────────────────
 
     #[test]
@@ -1555,38 +1426,39 @@ mod tests {
     }
 
     #[test]
-    fn detect_optimal_backend_same_thread_pod_is_direct_channel() {
+    fn detect_optimal_backend_1p1c_pod_is_spsc_shm() {
         let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
-        assert_eq!(h.detect_optimal_backend(), BackendMode::DirectChannel);
+        // Every topic is SHM-backed: 1P:1C → SpscShm.
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
-    fn detect_optimal_backend_same_thread_non_pod_is_spsc_intra() {
+    fn detect_optimal_backend_1p1c_non_pod_is_spsc_shm() {
         let h = make_inmem_header(8, 8, false, 16);
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
-        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
     fn detect_optimal_backend_single_producer_only() {
         let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
-        // 1P, 0C → SpscIntra (anticipating single consumer)
-        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+        // 1P, 0C → SpscShm (anticipating single consumer)
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
     fn detect_optimal_backend_single_consumer_only() {
         let h = make_inmem_header(8, 8, true, 16);
         h.register_consumer().unwrap();
-        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
-    fn detect_optimal_backend_cross_thread_spsc_intra() {
+    fn detect_optimal_backend_cross_thread_spsc_shm() {
         let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
         let header_ptr = &h as *const TopicHeader as usize;
@@ -1598,12 +1470,12 @@ mod tests {
         })
         .join()
         .unwrap();
-        // Same process, different threads, 1P:1C → SpscIntra
-        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+        // 1P:1C → SpscShm
+        assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
-    fn detect_optimal_backend_spmc_intra() {
+    fn detect_optimal_backend_1p_multi_c_pod_is_pod_shm() {
         let h = make_inmem_header(8, 8, true, 16);
         h.register_producer().unwrap();
 
@@ -1621,15 +1493,13 @@ mod tests {
         }
         assert_eq!(h.pub_count(), 1);
         assert!(h.sub_count() >= 2);
-        // 1P → multiple consumers resolves to FanoutIntra (broadcast: each
-        // subscriber gets its own SPSC channel). SpmcIntra was intentionally
-        // dropped for this topology because its shared tail lets one fast
-        // consumer drain the ring and starve the others.
-        assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutIntra);
+        // 1P → multiple consumers, POD → PodShm broadcast (each subscriber gets
+        // every message). Deliberately NOT SpmcShm (whose consumers compete).
+        assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
     }
 
     #[test]
-    fn detect_optimal_backend_mpsc_intra() {
+    fn detect_optimal_backend_multi_p_1c_is_mpsc_shm() {
         let h = make_inmem_header(8, 8, true, 16);
         h.register_consumer().unwrap();
 
@@ -1647,7 +1517,7 @@ mod tests {
         }
         assert!(h.pub_count() >= 2);
         assert_eq!(h.sub_count(), 1);
-        assert_eq!(h.detect_optimal_backend(), BackendMode::MpscIntra);
+        assert_eq!(h.detect_optimal_backend(), BackendMode::MpscShm);
     }
 
     #[test]
@@ -1717,11 +1587,6 @@ mod tests {
         let h = make_header(8, 8, true, 16);
         let modes = [
             BackendMode::Unknown,
-            BackendMode::DirectChannel,
-            BackendMode::SpscIntra,
-            BackendMode::SpmcIntra,
-            BackendMode::MpscIntra,
-            BackendMode::FanoutIntra,
             BackendMode::PodShm,
             BackendMode::MpscShm,
             BackendMode::SpmcShm,
