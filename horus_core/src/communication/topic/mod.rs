@@ -710,6 +710,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             if ts + 8 <= 64 {
                 // Co-located layout: [seq(8) | data(T) | pad to 64]
                 // Seq + data on SAME cache line for non-SPSC recv paths.
+                // NOTE: this 64-byte slot geometry is part of the cross-LANGUAGE
+                // (Python<->Rust) SHM wire contract — horus_py computes slot size the
+                // same way. Do NOT change it on one side alone (breaks cross_language_ipc).
                 64
             } else {
                 ts
