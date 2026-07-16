@@ -542,7 +542,7 @@ pub(crate) struct RingTopic<T> {
     /// Shared memory region containing the header and data
     storage: Arc<ShmRegion>,
 
-    /// Per-path optimized backend (heap rings for intra-process, SHM for cross-process)
+    /// SHM-backed ring for this topic's data plane (every topic is SHM-backed).
     backend: std::cell::UnsafeCell<BackendStorage<T>>,
 
     /// Function pointer for try_send dispatch — set by initialize_backend(),
@@ -908,8 +908,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Check if verbose content logging is enabled via the SHM header flag.
-    /// Uses the stable `header_ptr` (not `LocalState::cached_header_ptr` which
-    /// is repurposed in DirectChannel mode).
+    /// Uses the stable `header_ptr` (not `LocalState::cached_header_ptr`, which
+    /// is repurposed by the role=Both same-instance fast path).
     #[inline(always)]
     fn is_verbose(&self) -> bool {
         // SAFETY: header_ptr points into the Arc<ShmRegion> storage which outlives self;
@@ -1149,8 +1149,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             //
             // `initialize_backend()` short-circuits when `backend_matches_mode`
             // is true — it checks only the *type* of the backend, not the epoch.
-            // If the backend MODE is the same across epochs (e.g. DirectChannel
-            // epoch 0 → DirectChannel epoch 2 after a double migration) the
+            // If the backend MODE is the same across epochs (e.g. SpscShm
+            // epoch 0 → SpscShm epoch 2 after a double migration) the
             // short-circuit would silently leave us holding the ring from the old
             // epoch, causing send/recv to diverge from other participants who
             // have moved to the ring for the new epoch.
@@ -1263,11 +1263,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Initialize or re-initialize the per-path optimized backend based on current mode.
     ///
-    /// For intra-process modes, creates heap-backed rings and stores them in the
-    /// global registry so all participants share the same Arc. When switching from
-    /// SHM or a different heap ring, drains pending messages into the new backend.
-    ///
-    /// For cross-process modes, creates an ShmData backend pointing to the SHM region.
+    /// Every topic is SHM-backed, so this creates (or restores) an ShmData backend
+    /// pointing to the topic's SHM region for the current mode (FanoutShm gets its
+    /// own ShmFanoutRing storage). On a SHM→SHM mode change, pending messages are
+    /// drained into the new backend.
     fn initialize_backend(&self) {
         let local = self.local();
         let mode = local.cached_mode;
@@ -1587,9 +1586,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// Periodic migration check — reads migration_epoch from SHM header.
     ///
     /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead
-    /// of `local.cached_header_ptr` which is repurposed in DirectChannel mode.
-    /// This ensures cross-process migration is detected even when the local
-    /// backend is DirectChannel (issue #37).
+    /// of `local.cached_header_ptr`, which is repurposed by the role=Both
+    /// same-instance fast path. This ensures cross-process migration is detected
+    /// even when the topic is running that local fast path (issue #37).
     #[cold]
     #[inline(never)]
     fn check_migration_periodic(&self) {
@@ -1614,8 +1613,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // SAFETY: header_ptr always points to the real SHM TopicHeader, valid for the
         // Topic lifetime (backed by Arc<ShmRegion> in `storage`).  We use self.header_ptr
         // rather than local.cached_header_ptr because the latter may be stale or null
-        // when the topic is still in DirectChannel mode (cached_header_ptr is only
-        // updated after sync_local, not before).
+        // when the topic is still on the role=Both fast path (cached_header_ptr is
+        // only updated after sync_local, not before).
         let header = unsafe { &*self.header_ptr.get() };
 
         // Flush batched updates before migration — but ONLY when the mode is a
@@ -1730,7 +1729,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Send a message (fire-and-forget with bounded retry).
     ///
-    /// Fast path for DirectChannel-local (role=Both): the entire ring write is
+    /// Fast path for role=Both (same-instance send+recv): the entire ring write is
     /// inlined here — no function pointer indirection, no BackendStorage match,
     /// no epoch_guard. This bypasses 3 levels of call overhead (~8-10ns savings).
     ///
@@ -1746,14 +1745,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             crate::core::NodeInfo::notify_event(&self.name);
             return;
         }
-        // Fast path: DirectChannel-local (role=Both, same-thread pub+sub).
+        // Fast path: role=Both (same-instance, same-thread pub+sub).
         // Bypasses fn ptr indirection + call chain. LocalState fields are in
         // the Topic struct (no pointer chase), and role is on the hot cache line.
         let local = self.local();
         if local.role == TopicRole::Both {
             let head = local.local_head;
             if head.wrapping_sub(local.local_tail) < local.cached_capacity {
-                // SAFETY: cached_data_ptr points to the DirectSlot heap buffer; the index is
+                // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
                 // masked to ring capacity, so it is always in bounds. The capacity check above
                 // ensures the slot is not occupied (no unconsumed data will be overwritten).
                 unsafe {
@@ -1830,8 +1829,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[inline(never)]
     fn send_lossy_retry(&self, mut msg: T) {
         // Check migration before retrying — if the ring is full because we're
-        // on DirectChannel with no local consumer, a cross-process migration
-        // will switch to SHM where the remote subscriber is waiting.
+        // on the role=Both fast path with no consumer draining it, a cross-process
+        // migration will switch to a SHM backend where the remote subscriber is waiting.
         // (GitHub issue #37)
         self.check_migration_periodic();
 
@@ -1926,19 +1925,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Receive a message with optional logging.
     ///
-    /// Fast path for DirectChannel-local (role=Both): inlined ring read,
+    /// Fast path for role=Both (same-instance send+recv): inlined ring read,
     /// no function pointer indirection. Same optimization as send().
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         if unlikely(self.is_verbose()) {
             return self.recv_with_content_logging();
         }
-        // Fast path: DirectChannel-local (role=Both, same-thread pub+sub)
+        // Fast path: role=Both (same-instance, same-thread pub+sub)
         let local = self.local();
         if local.role == TopicRole::Both {
             let tail = local.local_tail;
             if local.local_head.wrapping_sub(tail) > 0 {
-                // SAFETY: cached_data_ptr points to the DirectSlot heap buffer; the index is
+                // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
                 // masked to ring capacity, so it is always in bounds. The head-tail check above
                 // ensures the slot contains a valid, initialized message written by send().
                 let msg = unsafe {
@@ -1964,7 +1963,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // Always check SHM migration_epoch on empty recv.
             //
             // When another process migrates to SHM, this process's dispatch
-            // function stays on DirectChannel until it detects the epoch change.
+            // function stays on the role=Both fast path until it detects the epoch change.
             // The dispatch functions only check every EPOCH_CHECK_INTERVAL
             // messages — but a subscriber that never receives anything never
             // reaches that threshold. Checking on every empty recv ensures
@@ -2056,7 +2055,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return None;
         }
 
-        // Role==Both (same-instance send+recv) uses the DirectChannel-local fast
+        // Role==Both (same-instance send+recv) uses the role=Both local fast
         // path (LocalState head/tail over `cached_data_ptr`) regardless of the
         // negotiated backend, including SHM-backed ones. The SHM header's
         // sequence_or_head is never advanced on that path, so read the local
@@ -2123,7 +2122,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Get the number of pending messages
     pub fn pending_count(&self) -> u64 {
-        // Role==Both (same-instance send+recv) uses the DirectChannel-local fast
+        // Role==Both (same-instance send+recv) uses the role=Both local fast
         // path in send()/recv() (LocalState head/tail over `cached_data_ptr`),
         // regardless of the negotiated backend — including SHM-backed ones after
         // the shm_backed change. The SHM header's head/tail are NEVER advanced on
@@ -2695,7 +2694,7 @@ where
 
     /// Low-level receive without logging/recording hooks.
     ///
-    /// Prefer `recv()` — it includes the DirectChannel fast path, logging,
+    /// Prefer `recv()` — it includes the role=Both fast path, logging,
     /// and recording hooks. This exists for internal/test use only.
     #[doc(hidden)]
     #[inline(always)]

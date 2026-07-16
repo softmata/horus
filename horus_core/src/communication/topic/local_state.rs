@@ -29,8 +29,8 @@ pub(crate) const EPOCH_CHECK_INTERVAL: u32 = 4;
 ///
 /// Fields are ordered to match the ACCESS PATTERN in send():
 /// 1. First: cached_mode (branch decision)
-/// 2. Then: local_head, cached_data_ptr, cached_capacity_mask (DirectChannel hot path)
-/// 3. Then: local_tail, cached_capacity, cached_header_ptr (SpscIntra additions)
+/// 2. Then: local_head, cached_data_ptr, cached_capacity_mask (role=Both send hot path)
+/// 3. Then: local_tail, cached_capacity, cached_header_ptr (ring backpressure + migration)
 ///
 /// First cache line (0-63): ALL hot path fields in access order
 /// Second cache line (64+): Cold path fields (registration, migration, etc.)
@@ -62,13 +62,13 @@ pub(crate) struct LocalState {
     /// SAFETY: Valid for Topic lifetime (points into Arc<ShmRegion>)
     pub cached_data_ptr: *mut u8, // offset 24
 
-    /// Locally cached tail index (for backpressure check in SpscIntra)
+    /// Locally cached tail index (for backpressure check on the ring)
     pub local_tail: u64, // offset 32
 
     /// Cached capacity (for backpressure check)
     pub cached_capacity: u64, // offset 40
 
-    /// Cached pointer to header - for atomic updates in SpscIntra
+    /// Cached pointer to header - for atomic updates on the SHM header
     /// SAFETY: Valid for Topic lifetime (points into Arc<ShmRegion>)
     pub cached_header_ptr: *const TopicHeader, // offset 48
 

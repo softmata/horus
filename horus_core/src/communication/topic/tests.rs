@@ -5,7 +5,7 @@
 //! - Unit tests for struct layout, mode detection, capacity calculation
 //! - Migration protocol: epoch tracking, lock contention, concurrent migration
 //! - Per-backend ring correctness: SpscRing, SpmcRing, MpscRing, FanoutRing
-//! - Multi-thread tests exercising all 5 intra-process backends
+//! - Multi-thread tests exercising the SHM backends
 //! - Stress tests: ring saturation, backpressure, sustained throughput
 //! - Contention tests: CAS races under N producers / N consumers
 //! - Topic API: send/recv, read_latest, clone, metrics, force_migrate
@@ -829,7 +829,7 @@ fn migration_epoch_visible_across_clones() {
 
     let epoch_before = t1.ring.header().migration_epoch.load(Ordering::Acquire);
 
-    // Force migrate to a heap-backed intra-process mode
+    // Force migrate to an SHM-backed ring
     let result = t1.force_migrate(BackendMode::FanoutShm);
     assert!(matches!(result, MigrationResult::Success { .. }));
 
@@ -840,7 +840,7 @@ fn migration_epoch_visible_across_clones() {
     );
 
     // t2's check_migration_now detects the new epoch and updates its state.
-    // The auto-detection system may re-migrate back to DirectChannel (optimal
+    // The auto-detection system may re-migrate back to the role=Both fast path (optimal
     // for same-thread topology), which itself increments the epoch further.
     t2.check_migration_now();
 
@@ -854,7 +854,7 @@ fn migration_epoch_visible_across_clones() {
 
     // After check_migration_now, both topics converged to the same backend.
     // Re-sync t1 to match (it may have been left on FanoutShm while t2
-    // auto-migrated back to DirectChannel).
+    // auto-migrated back to the role=Both fast path).
     t1.check_migration_now();
 
     // Now both should be on the same backend — send/recv should work.
@@ -893,8 +893,8 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
 
     let name = unique("epoch_revalidate");
 
-    // Initialise the topic in a known non-DirectChannel state so the
-    // background migrations don't immediately re-migrate back to DirectChannel
+    // Initialise the topic in a known non-role=Both state so the
+    // background migrations don't immediately re-migrate back to the role=Both fast path
     // (which would prevent epoch accumulation).
     {
         let init_t: Topic<u64> = Topic::new(&name).expect("init");
@@ -1269,7 +1269,7 @@ fn robotics_sensor_fusion_pipeline() {
 
     let n_ticks = 500;
 
-    // Pre-initialize backends to avoid DirectChannel→SpscShm migration race.
+    // Pre-initialize backends to avoid role=Both→SpscShm migration race.
     // Create both pub and sub on the same thread, send+recv a warm-up message
     // so the backend is established before threads begin.
     {
@@ -2162,7 +2162,7 @@ fn dispatch_migration_during_burst() {
     let mut sent = 0u64;
     let mut received_values = Vec::new();
 
-    // Burst 1: DirectChannel
+    // Burst 1: role=Both fast path
     for i in 1..=100 {
         t.send(i);
         sent += 1;
@@ -2226,7 +2226,7 @@ fn dispatch_migration_during_burst() {
 //   → handle_epoch_change → initialize_backend(ShmData) → set_dispatch_fn_ptrs
 //   → SHM fn ptr executes on real SHM storage
 //
-// IMPORTANT: send()/recv() bypass fn ptrs via the Role::Both DirectChannel fast
+// IMPORTANT: send()/recv() bypass fn ptrs via the role=Both fast
 // path. We must use try_send()/try_recv() which go through the fn ptr dispatch.
 // Also, force_migrate syncs cached_epoch == process_epoch, so we must manually
 // bump process_epoch to trigger the epoch_guard in the dispatch function.
@@ -2800,7 +2800,7 @@ fn auto_grow_shm_region_len_increases() {
 fn auto_grow_multiple_grows() {
     let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Verify multiple successive grows work without corruption.
-    // After each grow, migrate_to_optimal switches to intra-process mode.
+    // After each grow, migrate_to_optimal switches to a SHM backend.
     // We force back to SpscShm before each oversized send to test the SHM path.
     let name = unique("auto_grow_multi");
     let t: RingTopic<Vec<u8>> = RingTopic::with_capacity(&name, 16, Some(64)).expect("create");
@@ -2990,7 +2990,7 @@ fn auto_grow_cross_thread_no_crash() {
     let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Verify that auto-grow doesn't cause crashes or data corruption when
     // another thread holds a Topic on the same name. Same-process Topics
-    // use intra-process rings (no SHM serde path), so the grow is exercised
+    // use the POD SHM ring (no SHM serde path), so the grow is exercised
     // via force_migrate. The real cross-process test is large_message_cross_process
     // in the integration test suite.
     let name = unique("auto_grow_cross_thread");
@@ -3033,17 +3033,17 @@ fn auto_grow_cross_thread_no_crash() {
     );
 }
 
-// ---- DC→SHM pointer restoration (regression test for cached_data_ptr bug) ----
+// ---- role=Both→SHM pointer restoration (regression test for cached_data_ptr bug) ----
 
 #[test]
 fn shm_dispatch_dc_to_shm_pointer_restore() {
-    // Verify that migrating from DirectChannel to SHM correctly restores
-    // cached_data_ptr to point at SHM storage instead of DirectSlot buffer.
+    // Verify that migrating from the role=Both fast path to a SHM backend correctly restores
+    // cached_data_ptr to point at the SHM ring data region.
     // Without the fix in initialize_backend, this would write to the wrong
     // memory and either corrupt data or segfault.
     let name = unique("shm_d_dc_restore");
     let t: Topic<u64> = Topic::new(&name).expect("create");
-    // Initialize in DirectChannel mode (sets cached_data_ptr to DirectSlot)
+    // Initialize on the role=Both fast path (cached_data_ptr into the SHM ring)
     t.send(42);
     assert_eq!(t.recv(), Some(42));
 
@@ -3054,7 +3054,7 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
             // This should restore cached_data_ptr to SHM storage
             trigger_shm_dispatch(&name);
 
-            // Send/recv through SHM dispatch (not DC fast path)
+            // Send/recv through SHM dispatch (not the role=Both fast path)
             for i in 100..110u64 {
                 assert!(t.try_send(i).is_ok(), "DC→SHM: send {} failed", i);
             }
@@ -3094,7 +3094,7 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
 
 #[test]
 fn dispatch_selects_direct_channel_for_same_instance() {
-    // Single Topic used for both send and recv → DirectChannel
+    // Single Topic used for both send and recv → role=Both fast path
     let t: Topic<u64> = Topic::new(unique("dc_mode")).expect("create");
     t.send(1);
     assert_eq!(t.recv(), Some(1));
@@ -3103,7 +3103,7 @@ fn dispatch_selects_direct_channel_for_same_instance() {
 
 #[test]
 fn dispatch_same_thread_multiple_instances_use_direct_channel() {
-    // All participants on same thread → stays DirectChannel (cached ptrs)
+    // All participants on same thread → stays on the role=Both fast path (cached ptrs)
     let name = unique("dc_multi");
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
     let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
@@ -3169,7 +3169,7 @@ fn dispatch_cross_thread_mpsc_mode() {
     h1.join().unwrap();
     h2.join().unwrap();
 
-    // Multi-producer from different threads should not stay DirectChannel
+    // Multi-producer from different threads should not stay on the role=Both fast path
     assert_ne!(
         mode,
         BackendMode::Unknown,
@@ -4453,7 +4453,7 @@ fn topic_multiple_recv_consumers_independent() {
     pub_t.send(200);
 
     // Both subscribers should be able to receive
-    // (at least one should see data — with DirectChannel/SPMC topology)
+    // (at least one should see data — with role=Both/SPMC topology)
     let s1 = sub1.recv();
     let s2 = sub2.recv();
     assert!(
@@ -4560,7 +4560,7 @@ fn topic_capacity_1_latest_only_semantic() {
 // - epoch_guard_send!/recv! compares process_epoch (Arc<AtomicU64>) vs cached_epoch
 // - force_migrate on the SAME Topic sets both to match, so epoch guard won't fire
 // - To test epoch guard firing, use a SECOND Topic to migrate (they share process_epoch)
-// - DirectChannel-local amortizes epoch check to every 4096 messages
+// - the role=Both fast path amortizes epoch check to every 4096 messages
 // - Ring capacity for u64 = 512 (PAGE_SIZE/8), so drain periodically
 //
 // Robotics scenario: A robot arm controller publishes joint commands at 1kHz.
@@ -4570,7 +4570,7 @@ fn topic_capacity_1_latest_only_semantic() {
 /// When another Topic instance force-migrates, check_migration_now detects
 /// the SHM epoch change and resyncs the first Topic's cached_epoch.
 ///
-/// With same-thread POD Topics, the optimal mode is DirectChannel (amortized
+/// With same-thread POD Topics, the optimal mode is the role=Both fast path (amortized
 /// epoch check every 4096 messages). Explicit check_migration_now provides
 /// the immediate detection path.
 ///
@@ -4601,7 +4601,7 @@ fn epoch_detected_via_check_migration_now() {
     t1.check_migration_now();
 
     // After resync, cached_epoch should be at or above the SHM epoch
-    // (may exceed if check_migration also triggers optimize-to-DC migration)
+    // (may exceed if check_migration also triggers optimize-to-role=Both migration)
     let new_cached = t1.ring.local().cached_epoch;
     assert!(
         new_cached >= shm_epoch,
@@ -4749,9 +4749,9 @@ fn housekeeping_fires_after_lease_refresh_interval() {
     );
 }
 
-/// Housekeeping epoch check fires on DirectChannel after EPOCH_CHECK_INTERVAL
+/// Housekeeping epoch check fires on the role=Both fast path after EPOCH_CHECK_INTERVAL
 /// (4096) send+recv operations. Verified by msg_counter tracking.
-/// DC-local path: each send and recv increments msg_counter independently.
+/// role=Both fast path: each send and recv increments msg_counter independently.
 #[test]
 fn housekeeping_epoch_check_fires_at_4096_interval() {
     let name = unique("hkeep_epoch");
@@ -4973,11 +4973,11 @@ fn msg_counter_wrapping_add_no_panic() {
 // Section 49: Wrapping Sequence Numbers and Co-located Slot Layout
 // ============================================================================
 
-/// Sequence number wrapping near u64::MAX boundary on DirectChannel.
+/// Sequence number wrapping near u64::MAX boundary on the role=Both fast path.
 /// Sets local_head/tail near u64::MAX, sends 100 messages across the boundary.
 /// All messages must arrive correctly with valid slot indices.
 ///
-/// DirectChannel uses the same wrapping arithmetic as SHM backends:
+/// The role=Both fast path uses the same wrapping arithmetic as SHM backends:
 /// index = seq & capacity_mask, seq = seq.wrapping_add(1).
 ///
 /// Robotics: 24/7 robot running at 1MHz wraps u64 after ~584K years. But the
@@ -4986,7 +4986,7 @@ fn msg_counter_wrapping_add_no_panic() {
 fn sequence_wrap_u64_max_direct_channel() {
     let name = unique("seq_wrap_dc");
     let t: Topic<u64> = Topic::new(&name).expect("create");
-    // Initialize as DirectChannel (same-thread POD)
+    // Initialize on the role=Both fast path (same-thread POD)
     t.send(0);
     let _ = t.recv();
     assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
@@ -4994,7 +4994,7 @@ fn sequence_wrap_u64_max_direct_channel() {
     let capacity = t.ring.local().cached_capacity;
     let mask = t.ring.local().cached_capacity_mask;
 
-    // Position sequence near u64::MAX. For DC role=Both, send/recv use
+    // Position sequence near u64::MAX. For role=Both, send/recv use
     // local_head/local_tail directly (no atomics).
     let near_max = u64::MAX - 50;
     let local = t.ring.local();
@@ -5040,7 +5040,7 @@ fn sequence_wrap_u64_max_direct_channel() {
     }
 }
 
-/// Sequence wrapping with large POD type (>56 bytes) on DirectChannel.
+/// Sequence wrapping with large POD type (>56 bytes) on the role=Both fast path.
 /// Verifies the same wrapping arithmetic works for types that would use
 /// separate-seq layout in SHM (not co-located).
 ///
@@ -5140,7 +5140,7 @@ fn colo_layout_selected_for_small_pod_types() {
     // u64: sizeof = 8, 8 + 8 = 16 <= 64 → co-located eligible
     assert!(std::mem::size_of::<u64>() + 8 <= 64);
 
-    // Verify u64 send/recv works through DirectChannel (same math as colo SHM)
+    // Verify u64 send/recv works through the role=Both fast path (same math as colo SHM)
     let name1 = unique("colo_u64");
     let t1: Topic<u64> = Topic::new(&name1).expect("create u64 topic");
     for i in 1..=32u64 {
@@ -5816,7 +5816,7 @@ fn spsc_to_spmc_consumer_join_exactly_once() {
 
 /// Multi-subscriber BROADCAST (softmata-brain 1327): a HORUS SHM topic with 1
 /// publisher and multiple subscribers delivers EVERY message to EVERY subscriber
-/// independently (ROS 2-style pub/sub), matching intra-process (FanoutShm) and
+/// independently (ROS 2-style pub/sub), matching the FanoutShm broadcast and
 /// cross-process (FanoutShm). The same-process SHM detector previously mis-selected
 /// the COMPETING SpmcShm here (shared tail, consumers race — one starves the rest),
 /// which is wrong for pub/sub; fixed to fall through to PodShm (POD) / FanoutShm
@@ -6367,7 +6367,7 @@ fn check_migration_now_immediate_dispatch_swap() {
     t1.send(77);
     let _ = t1.recv();
     // May or may not get the value depending on mode, but no crash
-    // (DC mode recvs immediately, ring modes may need drain)
+    // (role=Both mode recvs immediately, ring modes may need drain)
 }
 
 /// Epoch counter increments exactly once per migration call.
@@ -7211,7 +7211,7 @@ fn crash_full_ring_recovery() {
 /// or produce corrupted data.
 ///
 /// Topic handles are created on the main thread so the adaptive backend
-/// migration (DirectChannel → SpscShm) completes before threads start
+/// migration (role=Both fast path → SpscShm) completes before threads start
 /// sending and receiving.
 #[test]
 fn crash_concurrent_send_recv_no_corruption() {
@@ -7219,7 +7219,7 @@ fn crash_concurrent_send_recv_no_corruption() {
     let barrier = Arc::new(Barrier::new(3));
 
     // Create both handles on the main thread to ensure the backend migration
-    // from DirectChannel to SpscShm happens before any data transfer.
+    // from the role=Both fast path to SpscShm happens before any data transfer.
     let pub_t: Topic<u64> = Topic::new(&name).unwrap();
     let sub_t: Topic<u64> = Topic::new(&name).unwrap();
 
@@ -7382,7 +7382,7 @@ fn topic_role_transitions() {
     assert!(TopicRole::Both.can_recv());
 }
 
-/// POD type (u64) uses same-thread DirectChannel when used on a single thread.
+/// POD type (u64) uses the same-thread role=Both fast path when used on a single thread.
 #[test]
 fn dispatch_pod_type_same_thread_direct_channel() {
     let name = unique("dispatch_pod_dc");
@@ -7392,7 +7392,7 @@ fn dispatch_pod_type_same_thread_direct_channel() {
     assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
 }
 
-/// Non-POD type (String) uses SpscShm on same thread (DirectChannel is POD-only).
+/// Non-POD type (String) uses SpscShm on same thread (the role=Both fast path is POD-only).
 #[test]
 fn dispatch_serde_type_same_thread_spsc_intra() {
     let name = unique("dispatch_serde_spsc");
@@ -8367,9 +8367,9 @@ fn serde_message_exact_slot_boundary() {
     assert_eq!(t.recv(), Some(msg));
 }
 
-/// Serde type: oversized messages are accepted in intra-process mode.
+/// Serde type: oversized messages are accepted on the SHM ring.
 ///
-/// When a serde topic operates within a single process (DirectChannel,
+/// When a serde topic operates within a single process (the role=Both fast path,
 /// SpscShm, etc.), it stores `T` by value in ring buffer slots — no
 /// serialization happens, so `slot_size` limits don't apply. The limit
 /// only kicks in when the backend is SHM-based (cross-process).
@@ -8377,7 +8377,7 @@ fn serde_message_exact_slot_boundary() {
 fn serde_large_message_accepted_intra_process() {
     let t: Topic<Vec<u8>> =
         Topic::with_capacity(&unique("serde_intra"), 4, Some(64)).expect("create");
-    // This is bigger than slot_size but works because intra-process rings
+    // This is bigger than slot_size but works because SHM-backed rings
     // store Vec<u8> by value (no serialization).
     let msg: Vec<u8> = vec![0xFF; 10_000];
     t.send(msg.clone());
@@ -8498,7 +8498,7 @@ fn capacity_fill_drain_refill_cycle() {
 
 /// Serde type with custom slot_size: multiple messages fill and drain.
 ///
-/// Note: The first send triggers a backend migration (Unknown → DirectChannel),
+/// Note: The first send triggers a backend migration (Unknown → role=Both fast path),
 /// which may consume the first message. Subsequent sends go through the ring.
 #[test]
 fn serde_custom_slot_multiple_messages() {
@@ -9068,7 +9068,7 @@ fn e2e_messages_total_matches_send_count_via_slot_read() {
     }
 
     let path = shm_topics_dir().join(&name);
-    // Note: read_latest_slot_bytes may return None for DirectChannel (same-thread)
+    // Note: read_latest_slot_bytes may return None for the role=Both fast path (same-thread)
     // backends because sequence_or_head in SHM is not updated on the fast path.
     // When it IS available (SHM backend), verify consistency.
     if let Some(slot) = read_latest_slot_bytes(&path, 0) {
@@ -9103,7 +9103,7 @@ fn e2e_header_info_and_slot_read_consistent() {
     let path = shm_topics_dir().join(&name);
     let info = read_topic_header_info(&path).expect("header info");
 
-    // Slot read may return None for DirectChannel backends (same-thread).
+    // Slot read may return None for the role=Both fast path (same-thread).
     // When available, verify consistency between both readers.
     if let Some(slot) = read_latest_slot_bytes(&path, 0) {
         assert_eq!(

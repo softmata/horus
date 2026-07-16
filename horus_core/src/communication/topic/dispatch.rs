@@ -321,7 +321,7 @@ macro_rules! epoch_guard_recv {
 
 /// Housekeeping after a successful send or recv: migration check (fast, every
 /// EPOCH_CHECK_INTERVAL msgs) + lease refresh (slower syscall, every
-/// LEASE_REFRESH_INTERVAL msgs).  Used by all non-DirectChannel paths.
+/// LEASE_REFRESH_INTERVAL msgs).  Used by all dispatched (fn-ptr) send/recv paths.
 macro_rules! housekeep_lease {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
@@ -337,8 +337,8 @@ macro_rules! housekeep_lease {
 /// Housekeeping on empty recv: epoch check on EVERY empty recv.
 ///
 /// When recv returns None, the topic may be empty because a cross-process
-/// producer joined and the backend hasn't migrated yet (still reading from
-/// the intra-process heap ring while data is in SHM). Checking the SHM
+/// producer joined and this participant hasn't observed the migration epoch
+/// yet (still pointed at the old SHM ring). Checking the SHM
 /// epoch on every empty recv ensures migration is detected immediately.
 /// Cost: one Relaxed atomic load (~1ns) — negligible for polling loops.
 macro_rules! housekeep_epoch {
@@ -348,7 +348,7 @@ macro_rules! housekeep_epoch {
     };
 }
 
-/// Combined housekeeping for intra-process recv: branch on result.
+/// Combined housekeeping for the dispatched recv path: branch on result.
 /// Epoch check on EVERY recv (not amortized) to detect cross-process joins immediately.
 /// Lease refresh remains amortized (syscall cost).
 macro_rules! housekeep_recv {
