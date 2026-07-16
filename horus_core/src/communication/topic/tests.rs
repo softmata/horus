@@ -3109,12 +3109,13 @@ fn dispatch_same_thread_multiple_instances_use_direct_channel() {
     let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
     pub_t.send(42);
     assert_eq!(sub_t.recv(), Some(42));
-    // Same thread: DirectChannel with cached AtomicU64 head/tail
+    // Same thread, 1p1c: resolves to SpscShm (the role=Both fast path serves
+    // same-instance send/recv over the SHM ring; intra backends were retired).
     assert_eq!(pub_t.mode(), BackendMode::SpscShm);
 }
 
 #[test]
-fn dispatch_cross_thread_migrates_to_spsc_intra() {
+fn dispatch_cross_thread_migrates_to_spsc_shm() {
     let name = unique("spsc_xthread");
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
     pub_t.send(0); // Register as publisher
@@ -3132,9 +3133,10 @@ fn dispatch_cross_thread_migrates_to_spsc_intra() {
     pub_t.send(1);
 
     let mode = handle.join().unwrap();
-    assert!(
-        mode == BackendMode::SpscShm || mode == BackendMode::SpscShm,
-        "Cross-thread 1p1c should migrate to SpscShm or SpscShm, got {:?}",
+    assert_eq!(
+        mode,
+        BackendMode::SpscShm,
+        "Cross-thread 1p1c should migrate to SpscShm, got {:?}",
         mode
     );
 }
