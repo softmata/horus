@@ -12,8 +12,8 @@
 //!    topic names unless the test specifically validates the `topics!` macro.
 //!
 //! 2. **Create Topic handles on the main thread** when testing cross-thread
-//!    send/recv. This ensures the adaptive backend migration (DirectChannel
-//!    → SpscIntra) completes before threads start transferring data. Creating
+//!    send/recv. This ensures the adaptive backend migration (e.g. SpscShm
+//!    → MpscShm) completes before threads start transferring data. Creating
 //!    topics inside `thread::spawn` closures can race with migration.
 //!
 //! 3. **Use unique pool IDs** for `TensorPool` tests (e.g., 9600–9699) to

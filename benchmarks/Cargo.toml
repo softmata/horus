@@ -67,10 +67,6 @@ name = "all_paths_latency"
 path = "src/bin/all_paths_latency.rs"
 
 [[bin]]
-name = "fanout_bench"
-path = "src/bin/fanout_bench.rs"
-
-[[bin]]
 name = "fanout_shm_bench"
 path = "src/bin/fanout_shm_bench.rs"
 

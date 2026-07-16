@@ -8,7 +8,7 @@
 //!
 //! The child process is the same test binary re-invoked with an env var flag.
 //! Parent role = Producer only (no recv), Child role = Consumer only (no send).
-//! This ensures send() goes through fn ptr dispatch (not DirectChannel fast path).
+//! This ensures send() goes through fn ptr dispatch (not the role=Both fast path).
 
 use std::process::{Command, Stdio};
 use std::time::Instant;

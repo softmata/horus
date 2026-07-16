@@ -1,5 +1,5 @@
 //! Loom-based exhaustive concurrency test for the drop-oldest (latest-wins)
-//! seqlock fanout ring shared by `FanoutRing` (heap) and `ShmFanoutRing` (SHM).
+//! seqlock fanout ring used by `ShmFanoutRing` (SHM).
 //!
 //! This models the per-slot-versioned SPSC protocol in
 //! `horus_core::communication::topic::seqlock` with loom's atomics, exploring
@@ -12,7 +12,7 @@
 //! value the producer actually sent — NEVER a torn/garbage value, and never a
 //! stale value while the slot's version says otherwise. (Cross-read FIFO order is
 //! a *sequential* property of the single consumer, exercised by the real
-//! multi-thread stress tests in `fanout.rs` / `shm_fanout.rs`, not a concurrency
+//! multi-thread stress tests in `shm_fanout.rs`, not a concurrency
 //! property loom needs to explore.)
 //!
 //! # Modeling notes

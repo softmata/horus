@@ -766,82 +766,6 @@ fn bench_iox2_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64
 }
 
 // ---------------------------------------------------------------------------
-// FanoutRing benchmark (contention-free MPMC)
-// ---------------------------------------------------------------------------
-
-fn bench_horus_fanout_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64) {
-    use horus_core::communication::topic::fanout::FanoutRing;
-    use std::sync::Arc;
-
-    let msgs_per_pub = 10_000;
-    let ring = Arc::new(FanoutRing::<u64>::new(num_pubs + 1, num_subs + 1, 256));
-
-    // Register endpoints
-    let mut pub_ids = Vec::new();
-    let mut sub_ids = Vec::new();
-    for _ in 0..num_pubs {
-        pub_ids.push(ring.register_publisher().expect("register pub"));
-    }
-    for _ in 0..num_subs {
-        sub_ids.push(ring.register_subscriber().expect("register sub"));
-    }
-
-    let barrier = Arc::new(std::sync::Barrier::new(num_pubs + num_subs));
-
-    // Subscriber threads — measure receive latency
-    let mut sub_handles = Vec::new();
-    for &sid in &sub_ids {
-        let ring = ring.clone();
-        let barrier = barrier.clone();
-        sub_handles.push(thread::spawn(move || {
-            barrier.wait();
-            let mut latencies = Vec::new();
-            let expected = msgs_per_pub * num_pubs;
-            let mut received = 0;
-            let deadline = Instant::now() + std::time::Duration::from_secs(30);
-
-            while received < expected && Instant::now() < deadline {
-                let t0 = Instant::now();
-                if ring.recv_as(sid).is_some() {
-                    latencies.push(t0.elapsed().as_nanos() as u64);
-                    received += 1;
-                } else {
-                    std::hint::spin_loop();
-                }
-            }
-            latencies
-        }));
-    }
-
-    // Publisher threads
-    let mut pub_handles = Vec::new();
-    for &pid in &pub_ids {
-        let ring = ring.clone();
-        let barrier = barrier.clone();
-        pub_handles.push(thread::spawn(move || {
-            barrier.wait();
-            for i in 0..msgs_per_pub {
-                let _ = ring.send_as((pid * msgs_per_pub + i) as u64, pid);
-            }
-        }));
-    }
-
-    for h in pub_handles {
-        h.join().unwrap();
-    }
-
-    let mut all_latencies = Vec::new();
-    for h in sub_handles {
-        all_latencies.extend(h.join().unwrap());
-    }
-
-    if all_latencies.is_empty() {
-        return (0, 0, 0, 0, 0);
-    }
-    compute_stats(all_latencies)
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -942,39 +866,6 @@ fn main() {
     };
     println!("  Winner: {} ({:.1}x faster)\n", w44, r44);
 
-    // --- FanoutRing (contention-free MPMC) ---
-    println!("--- FanoutRing (NEW): 2 publishers, 2 subscribers ---");
-    let (fmin, favg, fmed, fp99, fmax) = bench_horus_fanout_mpmc(2, 2);
-    print_row("horus  fanout 2P/2S", fmin, favg, fmed, fp99, fmax);
-    print_row("iox2   2P/2S (from above)", imin, iavg, imed, ip99, imax);
-    let fw22 = if favg <= iavg { "horus-fanout" } else { "iox2" };
-    let fr22 = if favg <= iavg {
-        iavg as f64 / favg.max(1) as f64
-    } else {
-        favg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", fw22, fr22);
-
-    println!("--- FanoutRing (NEW): 4 publishers, 4 subscribers ---");
-    let (fmin, favg, fmed, fp99, fmax) = bench_horus_fanout_mpmc(4, 4);
-    let (imin4, iavg4, imed4, ip994, imax4) = bench_iox2_mpmc(4, 4);
-    print_row("horus  OLD mpmc 4P/4S", hmin, havg, hmed, hp99, hmax);
-    print_row("horus  fanout 4P/4S", fmin, favg, fmed, fp99, fmax);
-    print_row("iox2   4P/4S", imin4, iavg4, imed4, ip994, imax4);
-    let fw44 = if favg <= iavg4 {
-        "horus-fanout"
-    } else {
-        "iox2"
-    };
-    let fr44 = if favg <= iavg4 {
-        iavg4 as f64 / favg.max(1) as f64
-    } else {
-        favg as f64 / iavg4.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", fw44, fr44);
-
-    // 8P/4S removed — iceoryx2 hits connection limits and hangs
-
     // --- Throughput ---
     println!("--- Send-only throughput (msgs/sec) ---");
     let ht = bench_horus_throughput_u64();
@@ -986,5 +877,4 @@ fn main() {
     println!("  Winner: {} ({:.1}x)\n", tw, tr);
 }
 
-// Cross-process MPMC not benchmarked yet — FanoutRing is intra-process only.
-// For cross-process MPMC, horus uses MpmcShm (SHM CAS path).
+// Cross-process MPMC uses the SHM fan-out path (ShmFanoutRing / FanoutShm).

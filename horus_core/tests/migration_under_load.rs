@@ -1,7 +1,7 @@
 #![allow(unused_must_use, clippy::needless_range_loop)]
 //! Integration tests for topic backend migration during active scheduler execution.
 //!
-//! Validates that backend upgrades (DirectChannel→SpscIntra, SpscIntra→MpscIntra)
+//! Validates that backend upgrades (SpscShm→MpscShm, SpscShm→PodShm, etc.)
 //! work correctly while nodes are actively publishing and subscribing via Topics
 //! under scheduler orchestration.
 //!

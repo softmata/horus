@@ -35,26 +35,29 @@ use std::thread;
 
 /// Regression: Serde types must NOT use DirectChannel backend.
 ///
-/// Original issue: dispatch_serde_type_same_thread_direct_channel assertion failure
-/// Root cause: DirectChannel is a POD-only optimization. Non-POD (serde) types
-///   were incorrectly dispatched to DirectChannel, causing serialization failures.
-/// Fix: The backend selector now routes serde types to SpscIntra even on the
-///   same thread (commit a11d14a).
+/// Original issue: a non-POD (serde) type was misdispatched onto a POD-only
+/// backend, causing serialization failures. Every topic is now SHM-backed and
+/// the serde vs POD choice is made per-dispatch-fn transparently, so a serde
+/// String must still round-trip correctly on an SHM backend.
 #[test]
-fn regression_serde_type_uses_spsc_intra_not_direct_channel() {
+fn regression_serde_type_roundtrips_on_shm_backend() {
     let name = common::unique("reg_serde_dc");
     let t: Topic<String> = Topic::new(&name).unwrap();
 
-    // String is not POD — must not use DirectChannel
+    // String is not POD — the serde send/recv path must round-trip it intact.
     t.send("hello".to_string());
     let received = t.recv();
     assert_eq!(received, Some("hello".to_string()));
 
-    // Verify the backend is NOT DirectChannel (use public backend_name())
+    // The backend is one of the SHM modes (or Unknown before the first
+    // migration check) — never a removed intra/DirectChannel backend.
     let backend = t.backend_name();
-    assert_ne!(
-        backend, "DirectChannel",
-        "Serde type String must not use DirectChannel (POD-only), got {}",
+    assert!(
+        matches!(
+            backend,
+            "SpscShm" | "MpscShm" | "SpmcShm" | "PodShm" | "FanoutShm" | "Unknown"
+        ),
+        "Serde String topic must use an SHM backend, got {}",
         backend
     );
 }

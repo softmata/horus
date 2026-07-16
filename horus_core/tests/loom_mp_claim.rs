@@ -1,5 +1,5 @@
 //! Loom-based exhaustive concurrency test for the CAS slot-claim in the MpscShm
-//! send paths (`send_shm_mp_pod`/`_serde`/`_colo`), which replaced an optimistic
+//! send paths (`send_shm_mp_pod`/`_serde`), which replaced an optimistic
 //! `fetch_add` that could overshoot the ring and overwrite an unconsumed slot
 //! (softmata-brain overshoot bug).
 //!

@@ -3,7 +3,7 @@
 //!
 //! These tests target the EXACT failure modes found in the backend switching
 //! audit. Each test spawns real child processes and exercises cross-process
-//! SHM paths — NOT intra-process DirectChannel.
+//! SHM paths.
 //!
 //! Edge cases tested:
 //! 1. Type mismatch: Process A sends CmdVel, Process B reads as different type
