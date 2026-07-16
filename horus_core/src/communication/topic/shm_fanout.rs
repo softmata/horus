@@ -1,8 +1,8 @@
 //! SHM FanoutRing — cross-process contention-free MPMC via mmap'd SPSC matrix.
 //!
-//! Extends the intra-process [`FanoutRing`](super::fanout::FanoutRing) design to
-//! shared memory. Each (publisher, subscriber) pair gets its own SHM-backed SPSC
-//! channel with cache-line-separated head/tail atomics.
+//! A contention-free fan-out design backed by shared memory. Each
+//! (publisher, subscriber) pair gets its own SHM-backed SPSC channel with
+//! cache-line-separated head/tail atomics.
 //!
 //! # SHM File Layout
 //!
@@ -379,8 +379,7 @@ impl ShmSpscChannel {
 /// Claim the lowest free slot in `[0, limit)` from an endpoint bitmask via CAS.
 ///
 /// Returns `None` when all `limit` slots are set (every endpoint simultaneously
-/// live). The CAS loop makes concurrent claims pick distinct slots. Mirrors the
-/// intra-process `super::fanout::claim_slot`.
+/// live). The CAS loop makes concurrent claims pick distinct slots.
 ///
 /// Test-only: the production cross-process path (`claim_endpoint_locked`) sets a
 /// SPECIFIC flocked slot's bit rather than the lowest-free one, so it does not use
@@ -414,7 +413,6 @@ unsafe impl Sync for ShmSpscChannel {}
 
 /// Cross-process contention-free MPMC ring using a matrix of SHM-backed SPSC channels.
 ///
-/// This is the SHM equivalent of [`FanoutRing`](super::fanout::FanoutRing).
 /// Each publisher-subscriber pair gets a dedicated SPSC channel in shared memory.
 ///
 /// # Usage

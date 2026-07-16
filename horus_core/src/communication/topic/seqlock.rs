@@ -1,9 +1,8 @@
 //! Shared seqlock ring protocol for **drop-oldest (latest-wins)** fanout.
 //!
-//! Both the intra-process [`FanoutRing`](super::fanout) and the SHM
-//! [`ShmFanoutRing`](super::shm_fanout) use this single implementation of the
-//! per-slot-versioned SPSC ring so the tricky lock-free logic lives in exactly
-//! one place (and is covered by one loom model: `tests/loom_fanout.rs`).
+//! The SHM [`ShmFanoutRing`](super::shm_fanout) uses this single implementation
+//! of the per-slot-versioned SPSC ring so the tricky lock-free logic lives in
+//! exactly one place (and is covered by one loom model: `tests/loom_fanout.rs`).
 //!
 //! # Semantics
 //!

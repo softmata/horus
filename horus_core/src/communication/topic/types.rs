@@ -8,22 +8,18 @@ use std::marker::PhantomData;
 // Backend Mode Enum
 // ============================================================================
 
-/// Selected backend mode stored in shared memory
+/// Selected backend mode stored in shared memory.
+///
+/// Every real topic is SHM-backed (a backing file is created and `creator_pid`
+/// is stamped at header init), so only the cross-process shared-memory backends
+/// are ever selected. The numeric discriminants are preserved (not renumbered)
+/// so on-disk/SHM headers written by older builds still decode correctly; the
+/// retired intra-process discriminants (1–5) now decode to `Unknown`.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendMode {
     /// Unknown/uninitialized - will be determined on first use
     Unknown = 0,
-    /// DirectChannel - same thread (~3ns)
-    DirectChannel = 1,
-    /// SpscIntra - same process, 1P1C (~18ns)
-    SpscIntra = 2,
-    /// SpmcIntra - same process, 1P-MC (~24ns)
-    SpmcIntra = 3,
-    /// MpscIntra - same process, MP-1C (~26ns)
-    MpscIntra = 4,
-    /// FanoutIntra - same process, contention-free MPMC via SPSC matrix (~30ns)
-    FanoutIntra = 5,
     /// PodShm - cross process, POD type (~50ns)
     PodShm = 6,
     /// MpscShm - cross process, MP-1C (~65ns)
@@ -39,11 +35,7 @@ pub(crate) enum BackendMode {
 impl From<u8> for BackendMode {
     fn from(v: u8) -> Self {
         match v {
-            1 => BackendMode::DirectChannel,
-            2 => BackendMode::SpscIntra,
-            3 => BackendMode::SpmcIntra,
-            4 => BackendMode::MpscIntra,
-            5 => BackendMode::FanoutIntra,
+            // 1..=5 were the retired intra-process backends — decode to Unknown.
             6 => BackendMode::PodShm,
             7 => BackendMode::MpscShm,
             8 => BackendMode::SpmcShm,
@@ -65,18 +57,6 @@ impl BackendMode {
                 | BackendMode::SpmcShm
                 | BackendMode::SpscShm
                 | BackendMode::FanoutShm
-        )
-    }
-
-    /// Check if this is an intra-process backend
-    pub fn is_intra_process(&self) -> bool {
-        matches!(
-            self,
-            BackendMode::DirectChannel
-                | BackendMode::SpscIntra
-                | BackendMode::SpmcIntra
-                | BackendMode::MpscIntra
-                | BackendMode::FanoutIntra
         )
     }
 }

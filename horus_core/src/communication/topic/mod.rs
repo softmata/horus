@@ -2,22 +2,21 @@
 //!
 //! This module provides fully automatic backend detection for `Topic::new()`.
 //! Users just call `send()`/`recv()` and the system auto-detects the optimal
-//! backend from 10 paths based on topology and access patterns.
+//! shared-memory backend based on topology and access patterns.
+//!
+//! Every topic is SHM-backed (a backing file is created and `creator_pid` is
+//! stamped at header init), so a cross-process consumer that joins later can
+//! read published data immediately. All backends are cross-process:
 //!
 //! ## Detection Matrix
 //!
 //! | Backend | Latency | Detection Criteria |
 //! |---------|---------|-------------------|
-//! | DirectChannel | ~3ns | same_thread |
-//! | SpscIntra | ~18ns | same_process, pubs=1, subs=1 |
-//! | SpmcIntra | ~24ns | same_process, pubs=1, subs>1 |
-//! | MpscIntra | ~26ns | same_process, pubs>1, subs=1 |
-//! | FanoutIntra | ~36ns | same_process, pubs>1, subs>1 |
-//! | FanoutShm | ~40ns | cross_process, pubs>1, subs>1 |
-//! | PodShm | ~50ns | cross_process, is_pod |
-//! | MpscShm | ~65ns | cross_process, pubs>1, subs=1 |
-//! | SpmcShm | ~70ns | cross_process, pubs=1, subs>1 |
-//! | SpscShm | ~85ns | cross_process, pubs=1, subs=1, !is_pod |
+//! | FanoutShm | ~40ns | pubs>1, subs>1, !is_pod (broadcast) |
+//! | PodShm | ~50ns | 1→many / 0→many, is_pod (broadcast) |
+//! | MpscShm | ~65ns | pubs>1, subs<=1 |
+//! | SpmcShm | ~70ns | multi-consumer, non-POD |
+//! | SpscShm | ~85ns | pubs<=1, subs<=1 |
 //!
 //! ## Usage
 //!
@@ -110,24 +109,14 @@ pub mod metrics;
 pub(crate) mod migration;
 pub mod types;
 
-// Shared types and macros — must be declared before ring modules that use the macros
-#[macro_use]
-pub(crate) mod primitives;
-
 // Per-path optimized backend modules
 pub(crate) mod backend;
-pub(crate) mod direct_channel;
 pub(crate) mod dispatch;
-/// Contention-free MPMC via fan-out SPSC matrix.
-pub mod fanout;
-pub(crate) mod mpsc_intra;
 pub(crate) mod registry;
 /// Shared seqlock ring protocol for drop-oldest (latest-wins) fanout.
 pub(crate) mod seqlock;
 /// Cross-process contention-free MPMC via SHM-backed SPSC matrix.
 pub(crate) mod shm_fanout;
-pub(crate) mod spmc_intra;
-pub(crate) mod spsc_intra;
 
 // Shared pool registry for all tensor topic extensions
 pub(crate) mod pool_registry;
@@ -432,12 +421,6 @@ use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};
 
 use backend::BackendStorage;
 
-use direct_channel::DirectSlot;
-
-use mpsc_intra::MpscRing;
-use spmc_intra::SpmcRing;
-use spsc_intra::SpscRing;
-
 // ============================================================================
 // SendBlockingError — returned when send_blocking() cannot deliver
 // ============================================================================
@@ -455,52 +438,6 @@ impl From<SendBlockingError> for crate::error::HorusError {
         crate::error::HorusError::Communication(crate::error::CommunicationError::TopicFull {
             topic: err.to_string(),
         })
-    }
-}
-
-// ============================================================================
-// RingDrain trait — uniform push interface for drain protocol
-// ============================================================================
-
-/// Trait for pushing messages into a ring buffer during migration drain.
-///
-/// so `drain_old_into_ring` can be generic over the target backend.
-trait RingDrain<T> {
-    fn push(&self, msg: T) -> Result<(), T>;
-}
-
-impl<T> RingDrain<T> for SpscRing<T> {
-    #[inline]
-    fn push(&self, msg: T) -> Result<(), T> {
-        self.try_send(msg)
-    }
-}
-
-impl<T> RingDrain<T> for SpmcRing<T> {
-    #[inline]
-    fn push(&self, msg: T) -> Result<(), T> {
-        self.try_send(msg)
-    }
-}
-
-impl<T> RingDrain<T> for MpscRing<T> {
-    #[inline]
-    fn push(&self, msg: T) -> Result<(), T> {
-        self.try_send(msg)
-    }
-}
-
-impl<T: Clone> RingDrain<T> for fanout::FanoutRing<T> {
-    #[inline]
-    fn push(&self, msg: T) -> Result<(), T> {
-        self.try_send(msg)
-    }
-}
-
-impl<T, R: RingDrain<T>> RingDrain<T> for Arc<R> {
-    #[inline]
-    fn push(&self, msg: T) -> Result<(), T> {
-        (**self).push(msg)
     }
 }
 
@@ -866,8 +803,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         if header.magic != TOPIC_MAGIC || (is_stale && storage.is_owner()) {
             if storage.is_owner() {
-                // Fresh or stale SHM — clear and reinitialize.
-                registry::remove_topic(name);
+                // Fresh or stale SHM — reinitialize the header.
                 header.init(
                     type_size,
                     type_align,
@@ -1000,9 +936,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// tail = head to skip stale data from the previous era.
     #[inline(always)]
     fn sync_local(local: &mut LocalState, header: &TopicHeader, skip_stale_broadcast: bool) {
-        // Capture the pre-sync mode/capacity to decide whether this resync crosses
-        // a data-plane boundary (see the local_tail logic below).
-        let old_mode = local.cached_mode;
+        // Capture the pre-sync capacity to decide whether this resync crosses
+        // a data-plane boundary (a capacity grow; see the local_tail logic below).
         let old_capacity = local.cached_capacity;
 
         local.is_same_process = header.is_same_process();
@@ -1031,11 +966,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // where other consumers CAS `header.tail` ahead of us — max() then adopts
         // the shared frontier, skipping what peers already took.)
         //
-        // When the migration CHANGES the data plane (intra <-> SHM, where
-        // `drain_old_into_shm` rewrites messages at fresh positions, or a capacity
-        // grow), the old `local_tail` is meaningless in the new coordinates, so we
-        // must adopt `header.tail`. Fresh handles (`local_tail == 0`) are
-        // unaffected either way: `max(0, header.tail) == header.tail`.
+        // When the migration CHANGES the data plane (a capacity grow, which
+        // rewrites messages at fresh positions), the old `local_tail` is
+        // meaningless in the new coordinates, so we must adopt `header.tail`.
+        // Fresh handles (`local_tail == 0`) are unaffected either way:
+        // `max(0, header.tail) == header.tail`.
         //
         // We key "same data plane" on the topic being SHM-BACKED (creator_pid != 0),
         // not on the OLD mode being cross-process. Every SHM mode
@@ -1047,13 +982,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Unknown`) migrating straight to PodShm would be treated as a data-plane
         // CHANGE, trip the broadcast "skip to head" below, and lose all buffered
         // messages that other processes published (softmata-brain bug #2). The only
-        // real data-plane change on an SHM-backed topic is a heap-ring (`intra`) old
-        // mode or a capacity grow.
+        // Now that every topic is SHM-backed and all backends share the ONE
+        // ShmData ring, the only real data-plane change is a capacity grow.
         // `old_capacity == 0` means this handle has never synced (uninitialized), not a
         // ring resize — treat it as same-plane (there is no prior capacity to differ
         // from). Only a genuine grow (old != new, both nonzero) is a data-plane change.
         let same_data_plane = header.creator_pid != 0
-            && !old_mode.is_intra_process()
             && local.cached_mode.is_cross_process()
             && (old_capacity == 0 || old_capacity == local.cached_capacity);
         local.local_tail = if same_data_plane {
@@ -1334,9 +1268,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     fn initialize_backend(&self) {
         let local = self.local();
         let mode = local.cached_mode;
-        let epoch = local.cached_epoch;
         let is_pod = local.is_pod;
-        let capacity = local.cached_capacity as u32;
 
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         let backend = unsafe { &mut *self.backend.get() };
@@ -1347,12 +1279,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return;
         }
 
-        if mode.is_intra_process() {
-            let cap = if capacity == 0 { 64 } else { capacity };
-            self.init_intra_backend(backend, mode, epoch, cap);
-        } else {
-            self.init_shm_backend(backend, epoch);
-        }
+        // Every topic is SHM-backed — the data plane always lives in the SHM region.
+        self.init_shm_backend(backend);
 
         self.set_dispatch_fn_ptrs(mode, is_pod);
     }
@@ -1360,11 +1288,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// Check if the current backend storage already matches the requested mode.
     fn backend_matches_mode(backend: &BackendStorage<T>, mode: BackendMode) -> bool {
         match (backend, mode) {
-            (BackendStorage::DirectChannel(_), BackendMode::DirectChannel) => true,
-            (BackendStorage::SpscIntra(_), BackendMode::SpscIntra) => true,
-            (BackendStorage::SpmcIntra(_), BackendMode::SpmcIntra) => true,
-            (BackendStorage::MpscIntra(_), BackendMode::MpscIntra) => true,
-            (BackendStorage::FanoutIntra(_), BackendMode::FanoutIntra) => true,
             (BackendStorage::FanoutShm(_), BackendMode::FanoutShm) => true,
             // FanoutShm has its OWN storage variant (a separate ShmFanoutRing),
             // so it is NOT represented by the shared `ShmData` variant. Excluding
@@ -1384,91 +1307,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
-    /// Initialize an intra-process backend (DirectChannel or ring buffer).
-    ///
-    /// Looks up existing rings from the registry first, then creates new ones
-    /// if needed. Drains old data during backend transitions.
-    fn init_intra_backend(
-        &self,
-        backend: &mut BackendStorage<T>,
-        mode: BackendMode,
-        epoch: u64,
-        cap: u32,
-    ) {
-        // First, try to look up an existing ring from the registry.
-        // Another participant may have already created one for this (topic, epoch).
-        if let Some(existing) = registry::lookup_backend(&self.name, epoch) {
-            if self.try_set_backend_from_registry(backend, &existing, mode) {
-                return;
-            }
-        }
-
-        // Create a new intra-process ring, drain old data, and register it.
-        // All 4 ring types (SPSC/SPMC/MPSC/MPMC) follow identical logic:
-        // create → drain old → store_or_get from registry → downcast.
-        macro_rules! create_intra_ring {
-            ($Ring:ty, $Variant:ident, $cap:expr) => {{
-                let new_ring = Arc::new(<$Ring>::new($cap));
-                self.drain_old_into_ring(&new_ring, epoch);
-                let shared = registry::store_or_get_backend(
-                    &self.name,
-                    epoch,
-                    new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                );
-                *backend = if let Ok(ring) = shared.downcast::<$Ring>() {
-                    BackendStorage::$Variant(ring)
-                } else {
-                    BackendStorage::$Variant(new_ring)
-                };
-            }};
-        }
-
-        match mode {
-            BackendMode::DirectChannel => {
-                let new_ring = Arc::new(DirectSlot::new(cap));
-                self.drain_old_into_direct(&new_ring, epoch);
-                let shared = registry::store_or_get_backend(
-                    &self.name,
-                    epoch,
-                    new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                );
-                *backend = if let Ok(slot) = shared.downcast::<DirectSlot<T>>() {
-                    BackendStorage::DirectChannel(slot)
-                } else {
-                    BackendStorage::DirectChannel(new_ring)
-                };
-            }
-            BackendMode::SpscIntra => create_intra_ring!(SpscRing<T>, SpscIntra, cap),
-            BackendMode::SpmcIntra => create_intra_ring!(SpmcRing<T>, SpmcIntra, cap),
-            BackendMode::MpscIntra => create_intra_ring!(MpscRing<T>, MpscIntra, cap),
-            BackendMode::FanoutIntra => {
-                // FanoutRing doesn't implement RingDrain, so we skip draining
-                // (messages from old backend are lost during migration — acceptable
-                // since migration happens when topology changes, not during steady state)
-                let new_ring = Arc::new(fanout::FanoutRing::<T>::new(16, 16, cap as usize));
-                let shared = registry::store_or_get_backend(
-                    &self.name,
-                    epoch,
-                    new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                );
-                *backend = if let Ok(ring) = shared.downcast::<fanout::FanoutRing<T>>() {
-                    BackendStorage::FanoutIntra(ring)
-                } else {
-                    BackendStorage::FanoutIntra(new_ring)
-                };
-            }
-            _ => {
-                // Unrecognized intra-process mode — keep ShmData
-                *backend = BackendStorage::ShmData;
-            }
-        }
-    }
-
     /// Initialize a cross-process SHM backend, restoring cached pointers.
     ///
-    /// Drains old heap ring messages into SHM and restores cached data/seq
-    /// pointers that may have been overwritten by DirectChannel setup.
-    fn init_shm_backend(&self, backend: &mut BackendStorage<T>, epoch: u64) {
+    /// Restores the cached data/seq pointers into the mmap'd storage region.
+    fn init_shm_backend(&self, backend: &mut BackendStorage<T>) {
         let mode = BackendMode::from(self.header().backend_mode.load(Ordering::Acquire));
 
         // FanoutShm: create ShmFanoutRing backed by a separate SHM region
@@ -1519,17 +1361,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
 
         // Standard SHM backends: use ShmData.
-        // Drain old heap ring messages into SHM before switching.
-        self.drain_old_into_shm(epoch);
-
         *backend = BackendStorage::ShmData;
 
-        // Restore SHM cached pointers. DirectChannel setup overwrites
-        // cached_data_ptr/cached_seq_ptr to point at the DirectSlot heap
-        // buffer. SHM dispatch functions rely on these pointing into the
-        // mmap'd storage region. Without this restore, a DC→SHM migration
-        // (e.g., when a cross-process participant joins) would cause SHM
-        // dispatch to read/write the DirectSlot buffer instead of SHM — UB.
+        // Restore SHM cached pointers so the dispatch functions read/write the
+        // mmap'd storage region (they may have been left pointing elsewhere by a
+        // prior init, e.g. a FanoutShm fallback).
         let local = self.local();
         let cap = local.cached_capacity as usize;
         // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
@@ -1546,44 +1382,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// initialization time. After this, `try_send()`/`try_recv()` are single
     /// indirect calls with zero branches.
     fn set_dispatch_fn_ptrs(&self, mode: BackendMode, is_pod: bool) {
-        // Co-located layout: sizeof(T) + 8 <= 64, slot_size == 64
-        // Seq and data share a cache line → single inter-core transfer
-        // for non-SPSC recv paths (MpscShm, SpmcShm, MpmcShm, PodShm).
-        // Disabled for cross-process SHM: when a topic transitions from
-        // DirectChannel to SHM (on second participant), the dispatch must
-        // be consistent across migration boundaries.
-        let colo = is_pod && mem::size_of::<T>() + 8 <= 64 && !mode.is_cross_process();
         let local = self.local();
         let role = local.role;
 
-        if mode == BackendMode::DirectChannel {
-            self.cache_direct_channel_ptrs(local);
-        }
-
         // SAFETY: UnsafeCell accessed from single thread (same guarantee as backend/local)
         unsafe {
-            *self.send_fn.get() = Self::resolve_send_fn(mode, is_pod, colo, role);
-            *self.recv_fn.get() = Self::resolve_recv_fn(mode, is_pod, colo, role);
-        }
-    }
-
-    /// Cache DirectSlot pointers into LocalState so dispatch functions skip
-    /// BackendStorage traversal entirely.
-    fn cache_direct_channel_ptrs(&self, local: &mut LocalState) {
-        // SAFETY: backend UnsafeCell accessed from single thread
-        if let BackendStorage::DirectChannel(slot) = unsafe { &*self.backend.get() } {
-            local.cached_data_ptr = slot.buffer.as_ptr() as *mut u8;
-            local.cached_capacity = slot.capacity;
-            local.cached_capacity_mask = slot.mask;
-            if local.role == TopicRole::Both {
-                // DC-local: plain u64 head/tail (single-instance optimization)
-                local.local_head = slot.head.load(Ordering::Relaxed);
-                local.local_tail = slot.tail.load(Ordering::Relaxed);
-            } else {
-                // DC-cached: cache pointers to atomic head/tail for separate instances
-                local.cached_header_ptr = &slot.head as *const AtomicU64 as *const TopicHeader;
-                local.cached_seq_ptr = &slot.tail as *const AtomicU64 as *mut u8;
-            }
+            *self.send_fn.get() = Self::resolve_send_fn(mode, is_pod, role);
+            *self.recv_fn.get() = Self::resolve_recv_fn(mode, is_pod, role);
         }
     }
 
@@ -1591,24 +1396,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ///
     /// Returns `send_uninitialized` if the role cannot send, ensuring
     /// `ensure_producer()` is called on first send to register the participant.
-    fn resolve_send_fn(
-        mode: BackendMode,
-        is_pod: bool,
-        colo: bool,
-        role: TopicRole,
-    ) -> dispatch::SendFn<T> {
+    fn resolve_send_fn(mode: BackendMode, is_pod: bool, role: TopicRole) -> dispatch::SendFn<T> {
         if !role.can_send() {
             return dispatch::send_uninitialized::<T>;
         }
         match mode {
-            BackendMode::DirectChannel if role == TopicRole::Both => {
-                dispatch::send_direct_channel_local::<T>
-            }
-            BackendMode::DirectChannel => dispatch::send_direct_channel_cached::<T>,
-            BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
-            BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
-            BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
-            BackendMode::FanoutIntra => dispatch::send_fanout_intra::<T>,
             BackendMode::FanoutShm => dispatch::send_fanout_shm::<T>,
             // SpscShm uses the SAME multi-producer-compatible protocol as MpscShm
             // (atomic fetch_add slot claim + per-slot ready flag). This makes the
@@ -1617,7 +1409,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // message one, so there is no incompatible-protocol window on the shared
             // ring and no multi-producer convergence loss (softmata-brain 1327). The
             // 1P case is safe (loom_sp_mp_flag).
-            BackendMode::SpscShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
             BackendMode::SpscShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::SpscShm => dispatch::send_shm_mp_serde::<T>,
             // SpmcShm KEEPS the single-producer send path: its multi-consumer CAS
@@ -1625,12 +1416,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // AFTER the data write (send_shm_sp_* stores head last), which the
             // fetch_add-claim MP path does not provide (it advances head on claim,
             // before the data write). SpmcShm is single-producer, so this is safe.
-            BackendMode::SpmcShm if colo => dispatch::send_shm_sp_pod_colo::<T>,
             BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
             BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
-            BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
-            BackendMode::MpscShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
             BackendMode::MpscShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::MpscShm => dispatch::send_shm_mp_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM serde (handles any topology/type).
@@ -1645,32 +1433,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ///
     /// Returns `recv_uninitialized` if the role cannot recv, ensuring
     /// `ensure_consumer()` is called on first recv to register the participant.
-    fn resolve_recv_fn(
-        mode: BackendMode,
-        is_pod: bool,
-        colo: bool,
-        role: TopicRole,
-    ) -> dispatch::RecvFn<T> {
+    fn resolve_recv_fn(mode: BackendMode, is_pod: bool, role: TopicRole) -> dispatch::RecvFn<T> {
         if !role.can_recv() {
             return dispatch::recv_uninitialized::<T>;
         }
         match mode {
-            BackendMode::DirectChannel if role == TopicRole::Both => {
-                dispatch::recv_direct_channel_local::<T>
-            }
-            BackendMode::DirectChannel => dispatch::recv_direct_channel_cached::<T>,
-            BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
-            BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
-            BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
-            BackendMode::FanoutIntra => dispatch::recv_fanout_intra::<T>,
             BackendMode::FanoutShm => dispatch::recv_fanout_shm::<T>,
-            BackendMode::SpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
             BackendMode::SpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
-            BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
             BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
-            BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
             BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
-            BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
             BackendMode::SpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
@@ -1680,341 +1451,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // when the role is already registered but stale SHM left mode as Unknown.
             BackendMode::Unknown if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
             BackendMode::Unknown => dispatch::recv_shm_mpsc_serde::<T>,
-        }
-    }
-
-    /// Try to set the backend from a registry entry (returns true if successful).
-    fn try_set_backend_from_registry(
-        &self,
-        backend: &mut BackendStorage<T>,
-        existing: &Arc<dyn std::any::Any + Send + Sync>,
-        mode: BackendMode,
-    ) -> bool {
-        match mode {
-            BackendMode::DirectChannel => {
-                if let Ok(slot) = existing.clone().downcast::<DirectSlot<T>>() {
-                    *backend = BackendStorage::DirectChannel(slot);
-                    return true;
-                }
-            }
-            BackendMode::SpscIntra => {
-                if let Ok(ring) = existing.clone().downcast::<SpscRing<T>>() {
-                    *backend = BackendStorage::SpscIntra(ring);
-                    return true;
-                }
-            }
-            BackendMode::SpmcIntra => {
-                if let Ok(ring) = existing.clone().downcast::<SpmcRing<T>>() {
-                    *backend = BackendStorage::SpmcIntra(ring);
-                    return true;
-                }
-            }
-            BackendMode::MpscIntra => {
-                if let Ok(ring) = existing.clone().downcast::<MpscRing<T>>() {
-                    *backend = BackendStorage::MpscIntra(ring);
-                    return true;
-                }
-            }
-            BackendMode::FanoutIntra => {
-                if let Ok(ring) = existing.clone().downcast::<fanout::FanoutRing<T>>() {
-                    *backend = BackendStorage::FanoutIntra(ring);
-                    return true;
-                }
-            }
-            _ => {}
-        }
-        false
-    }
-
-    /// Drain pending SHM messages and old heap ring messages into a ring-based backend.
-    ///
-    /// This is called during backend migration. It:
-    /// 1. Drains any pending SHM messages (using CAS on header.tail to claim each slot)
-    /// 2. Drains the old heap ring from the previous epoch (if any, via registry)
-    fn drain_old_into_ring<R>(&self, new_ring: &R, epoch: u64)
-    where
-        R: RingDrain<T>,
-    {
-        // 1. Drain pending SHM messages
-        self.drain_shm(|msg| {
-            let _ = new_ring.push(msg);
-        });
-
-        // 2. Drain old heap ring from previous epoch
-        if epoch > 0 {
-            if let Some(old) = registry::lookup_backend(&self.name, epoch - 1) {
-                // Try each ring type
-                if let Ok(ring) = old.clone().downcast::<SpscRing<T>>() {
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_ring.push(msg);
-                    }
-                } else if let Ok(ring) = old.clone().downcast::<SpmcRing<T>>() {
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_ring.push(msg);
-                    }
-                } else if let Ok(ring) = old.clone().downcast::<MpscRing<T>>() {
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_ring.push(msg);
-                    }
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_ring.push(msg);
-                    }
-                } else if let Ok(slot) = old.clone().downcast::<DirectSlot<T>>() {
-                    // DirectSlot uses header-based head/tail (already drained by drain_shm)
-                    let _ = slot; // Nothing extra needed
-                }
-            }
-        }
-    }
-
-    /// Drain pending SHM messages and old heap ring messages into a DirectSlot backend.
-    ///
-    /// DirectSlot uses write(seq, value) semantics synchronized through the SHM header.
-    /// SHM messages are drained using the same header atomics.
-    fn drain_old_into_direct(&self, new_slot: &DirectSlot<T>, epoch: u64) {
-        let header = self.header();
-        let local = self.local();
-        let mask = local.cached_capacity_mask;
-
-        // 1. Drain pending SHM messages into DirectSlot's self-contained ring
-        loop {
-            let tail = header.tail.load(Ordering::Acquire);
-            let head = header.sequence_or_head.load(Ordering::Acquire);
-            if tail >= head {
-                break;
-            }
-
-            if header
-                .tail
-                .compare_exchange(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                let index = (tail & mask) as usize;
-                if let Some(msg) = self.read_shm_slot(index) {
-                    let _ = new_slot.try_send(msg);
-                }
-            } else {
-                break;
-            }
-        }
-
-        // 2. Drain old heap ring from previous epoch
-        if epoch > 0 {
-            if let Some(old) = registry::lookup_backend(&self.name, epoch - 1) {
-                if let Ok(ring) = old.clone().downcast::<SpscRing<T>>() {
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_slot.try_send(msg);
-                    }
-                } else if let Ok(ring) = old.clone().downcast::<SpmcRing<T>>() {
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_slot.try_send(msg);
-                    }
-                } else if let Ok(ring) = old.clone().downcast::<MpscRing<T>>() {
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_slot.try_send(msg);
-                    }
-                    while let Some(msg) = ring.try_recv() {
-                        let _ = new_slot.try_send(msg);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Drain pending SHM messages, calling `push_fn` for each message.
-    ///
-    /// Uses CAS on header.tail to atomically claim each slot, preventing
-    /// double-reads if multiple participants drain concurrently.
-    fn drain_shm(&self, mut push_fn: impl FnMut(T)) {
-        let header = self.header();
-        let local = self.local();
-        let mask = local.cached_capacity_mask;
-
-        loop {
-            let tail = header.tail.load(Ordering::Acquire);
-            let head = header.sequence_or_head.load(Ordering::Acquire);
-            if tail >= head {
-                break;
-            }
-
-            if header
-                .tail
-                .compare_exchange(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                let index = (tail & mask) as usize;
-                if let Some(msg) = self.read_shm_slot(index) {
-                    push_fn(msg);
-                }
-            } else {
-                std::hint::spin_loop();
-            }
-        }
-    }
-
-    /// Read a message from SHM slot at the given index.
-    ///
-    /// Returns `None` if the slot data is corrupted (invalid length or
-    /// deserialization failure). This prevents a crashed/malicious peer
-    /// process from panicking this process by writing garbage to SHM.
-    fn read_shm_slot(&self, index: usize) -> Option<T> {
-        let local = self.local();
-        let data_off = Self::data_region_offset(local.cached_capacity as usize);
-        if local.is_pod {
-            // SAFETY: data_off + index * size_of::<T>() is within storage bounds
-            unsafe {
-                let base = self.storage.as_ptr().add(data_off) as *const T;
-                Some(std::ptr::read(base.add(index)))
-            }
-        } else {
-            let slot_size = local.slot_size;
-            let slot_offset = index * slot_size;
-            let max_data_len = slot_size.saturating_sub(16);
-            // SAFETY: slot_ptr is within storage bounds
-            unsafe {
-                let slot_ptr = self.storage.as_ptr().add(data_off + slot_offset);
-                let len_ptr = slot_ptr.add(8) as *const u64;
-                let len = std::ptr::read_volatile(len_ptr) as usize;
-                if len > max_data_len {
-                    log::warn!(
-                        "read_shm_slot: corrupted length {} exceeds slot capacity {} for type {} — dropping message",
-                        len, max_data_len, std::any::type_name::<T>()
-                    );
-                    return None;
-                }
-                let data_ptr = slot_ptr.add(16);
-                let slice = std::slice::from_raw_parts(data_ptr, len);
-                match bincode::deserialize(slice) {
-                    Ok(msg) => Some(msg),
-                    Err(e) => {
-                        log::warn!(
-                            "read_shm_slot: deserialization failed for type {}: {} — dropping message",
-                            std::any::type_name::<T>(), e
-                        );
-                        None
-                    }
-                }
-            }
-        }
-    }
-
-    /// Drain old heap ring messages into SHM when switching from intra to cross-process.
-    ///
-    /// Called during intra→cross-process migration. Reads all pending messages from
-    /// the old heap ring (at epoch-1) and writes them into the SHM data region using
-    /// the header's sequence_or_head atomic.
-    fn drain_old_into_shm(&self, epoch: u64) {
-        if epoch == 0 {
-            return;
-        }
-        let old = match registry::lookup_backend(&self.name, epoch - 1) {
-            Some(b) => b,
-            None => return,
-        };
-
-        let header = self.header();
-        let local = self.local();
-        let mask = local.cached_capacity_mask;
-
-        // Helper: write one message to SHM at the next available slot.
-        //
-        // IMPORTANT: Data must be fully written BEFORE the sequence is published.
-        // The old code used fetch_add(AcqRel) which made the new sequence visible
-        // to SPSC consumers before the data write completed — causing readers to
-        // see zeroed/stale slot data (GitHub issue #37, pool_id=0 crash).
-        //
-        // Fix: load sequence, write data, then store(Release). For SPSC this is
-        // correct — only one publisher drains. For MPSC consumers we also set the
-        // per-slot ready flag.
-        //
-        // NOTE: If multiple publishers drain concurrently (rare MPSC edge case),
-        // load+store can cause one publisher to overwrite another's slot. This
-        // loses at most a few in-flight messages during migration — acceptable
-        // since drain is best-effort and normal send resumes immediately after.
-        let data_off = Self::data_region_offset(local.cached_capacity as usize);
-        let seq_array_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) };
-        let write_to_shm = |msg: T| {
-            if local.is_pod {
-                // Acquire: ensures previous publisher's data writes are visible
-                // before we read the sequence. Without this, ARM/RISC-V can
-                // reorder our data write before this load, causing a concurrent
-                // publisher to overwrite our slot.
-                let seq = header.sequence_or_head.load(Ordering::Acquire);
-                let index = (seq & mask) as usize;
-                // Write data FIRST
-                // SAFETY: data at data_off + index * sizeof(T) is within storage bounds
-                unsafe {
-                    let base = self.storage.as_ptr().add(data_off) as *mut T;
-                    simd_aware_write(base.add(index), msg);
-                    // Set per-slot ready flag (used by MPSC consumers; harmless for SPSC)
-                    let ready_ptr =
-                        &*(seq_array_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-                    ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
-                }
-                // Publish sequence AFTER data — Release ensures data visibility
-                header
-                    .sequence_or_head
-                    .store(seq.wrapping_add(1), Ordering::Release);
-            } else {
-                let slot_size = local.slot_size;
-                match bincode::serialize(&msg) {
-                    Ok(bytes) => {
-                        // Acquire: same ARM/RISC-V safety as POD path above
-                        let seq = header.sequence_or_head.load(Ordering::Acquire);
-                        let index = (seq & mask) as usize;
-                        let slot_offset = index * slot_size;
-                        // Write data FIRST
-                        // SAFETY: slot_ptr is within storage bounds
-                        unsafe {
-                            let slot_ptr = self.storage.as_ptr().add(data_off + slot_offset);
-                            // Format: [8 bytes padding][8 bytes length][data...]
-                            let len_ptr = slot_ptr.add(8) as *mut u64;
-                            std::ptr::write_volatile(len_ptr, bytes.len() as u64);
-                            let data_ptr = slot_ptr.add(16) as *mut u8;
-                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
-                            // Per-slot ready flag for MPSC consumers
-                            let ready_ptr = &*(seq_array_ptr.add(index * 8)
-                                as *const std::sync::atomic::AtomicU64);
-                            ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
-                        }
-                        // Publish sequence AFTER data
-                        header
-                            .sequence_or_head
-                            .store(seq.wrapping_add(1), Ordering::Release);
-                    }
-                    Err(_) => {
-                        // Serialization failure — drop the message
-                    }
-                }
-            }
-        };
-
-        // Try each ring type from the previous epoch
-        if let Ok(ring) = old.clone().downcast::<SpscRing<T>>() {
-            while let Some(msg) = ring.try_recv() {
-                write_to_shm(msg);
-            }
-        } else if let Ok(ring) = old.clone().downcast::<SpmcRing<T>>() {
-            while let Some(msg) = ring.try_recv() {
-                write_to_shm(msg);
-            }
-        } else if let Ok(ring) = old.clone().downcast::<MpscRing<T>>() {
-            while let Some(msg) = ring.try_recv() {
-                write_to_shm(msg);
-            }
-            while let Some(msg) = ring.try_recv() {
-                write_to_shm(msg);
-            }
         }
     }
 
@@ -2179,24 +1615,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // updated after sync_local, not before).
         let header = unsafe { &*self.header_ptr.get() };
 
-        // DirectChannel local path: flush LocalState head/tail back to DirectSlot
-        // atomics before migration. In the local path, head/tail are plain u64s in
-        // LocalState, not atomics in DirectSlot. We need to sync them back so the
-        // drain protocol can read the correct positions.
-        if local.cached_mode == BackendMode::DirectChannel && local.role == TopicRole::Both {
-            // SAFETY: backend UnsafeCell accessed from single thread
-            if let BackendStorage::DirectChannel(slot) = unsafe { &*self.backend.get() } {
-                slot.head.store(local.local_head, Ordering::Relaxed);
-                slot.tail.store(local.local_tail, Ordering::Relaxed);
-            }
-        }
-
-        // Flush batched updates before migration — but ONLY when the current
-        // backend is already SHM-based.  Intra-process backends (DirectChannel,
-        // SpscIntra, etc.) track head/tail in a heap ring, not in the SHM header.
-        // Flushing a heap-ring position into SHM sequence_or_head would create
-        // phantom message slots that were never written to the SHM data region,
-        // causing cross-process subscribers to read garbage (issue #37).
+        // Flush batched updates before migration — but ONLY when the mode is a
+        // real SHM backend (not the not-yet-classified `Unknown`, which has no
+        // meaningful local head/tail to flush).
         //
         // For SHM→SHM transitions (e.g. SpscShm→MpmcShm), the flush is needed
         // because both backends share the SHM header for head/tail tracking:
@@ -2258,13 +1679,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         self.initialize_backend();
 
-        // Re-sync head/tail from SHM after initialize_backend.
-        // drain_old_into_shm() (called by init_shm_backend) may have advanced
-        // SHM sequence_or_head by writing drained heap-ring messages.  Without
-        // this re-read, local_head is stale (set by sync_local above, before
-        // the drain) and the next send would overwrite drained slots.
-        // Use header_ptr (always valid) since cached_header_ptr may have been
-        // repurposed by DirectChannel init.
+        // Re-sync head/tail from SHM after initialize_backend, in case an
+        // auto-grow remapped the storage. Use header_ptr (always valid).
         let header_post = unsafe { &*self.header_ptr.get() };
         local.local_head = header_post.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header_post.tail.load(Ordering::Acquire);
@@ -2661,52 +2077,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
         }
 
-        // Check heap backends first — DirectChannel and intra-process rings track
-        // head/tail independently from the SHM header, so we must query them directly
-        // rather than relying on header.sequence_or_head as a gatekeeper.
+        // FanoutShm is a broadcast fan-out matrix with no shared head, so it has
+        // no meaningful "latest" slot — return None. All other SHM backends fall
+        // through to the header-sequence read below.
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
-            BackendStorage::DirectChannel(slot) => {
-                // In local mode (role==Both), head is tracked in LocalState, not DirectSlot atomics.
-                let local = self.local();
-                let h = if local.role == TopicRole::Both {
-                    local.local_head
-                } else {
-                    slot.head.load(Ordering::Relaxed)
-                };
-                let t = if local.role == TopicRole::Both {
-                    local.local_tail
-                } else {
-                    slot.tail.load(Ordering::Relaxed)
-                };
-                if t >= h {
-                    return None;
-                }
-                let idx = ((h.wrapping_sub(1)) & slot.mask) as usize;
-                // SAFETY: idx within bounds; slot is in [tail, head) so data is initialized.
-                // T: Copy — bitwise copy, no double-free risk.
-                let msg = unsafe {
-                    let s = slot.buffer.get_unchecked(idx);
-                    (*s.get()).assume_init_read()
-                };
-                return Some(msg);
-            }
-            BackendStorage::SpscIntra(ring) => {
-                return ring.read_latest();
-            }
-            BackendStorage::SpmcIntra(ring) => {
-                return ring.read_latest();
-            }
-            BackendStorage::MpscIntra(ring) => {
-                return ring.read_latest();
-            }
-            BackendStorage::FanoutIntra(_) | BackendStorage::FanoutShm(_) => {
-                // FanoutRing doesn't support read_latest (no shared head)
+            BackendStorage::FanoutShm(_) => {
                 return None;
             }
             BackendStorage::ShmData | BackendStorage::Uninitialized => {
                 // Fall through to SHM read below
             }
+            // SAFETY: `_Phantom` is never constructed (see BackendStorage).
+            BackendStorage::_Phantom(_) => unreachable!(),
         }
 
         // SHM path: read from header sequence counter and data region
@@ -2747,40 +2130,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if local.role == TopicRole::Both {
             return local.local_head.wrapping_sub(local.local_tail);
         }
-        // Check heap-backed ring first; fall back to SHM header
-        // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
-        match unsafe { &*self.backend.get() } {
-            BackendStorage::DirectChannel(slot) => {
-                // In local mode (role==Both), head/tail are in LocalState
-                let local = self.local();
-                if local.role == TopicRole::Both {
-                    local.local_head.wrapping_sub(local.local_tail)
-                } else {
-                    slot.pending_count()
-                }
-            }
-            BackendStorage::SpscIntra(ring) => ring.pending_count(),
-            BackendStorage::SpmcIntra(ring) => ring.pending_count(),
-            BackendStorage::MpscIntra(ring) => ring.pending_count(),
-            BackendStorage::FanoutIntra(ring) => ring.pending_count(),
-            _ => {
-                // ShmData, Uninitialized: use SHM header.
-                let header = self.header();
-                let head = header.sequence_or_head.load(Ordering::Acquire);
-                // The SPSC-SHM consumer batches its read position into
-                // `header.tail` (flushed every ~32 messages), so `header.tail`
-                // can lag this consumer's true cursor `local_tail` — making
-                // pending_count report phantom messages that were already
-                // drained. Use whichever position is further ahead. For
-                // multi-consumer SHM the shared `header.tail` advances via CAS
-                // and is already >= local_tail, so this is a no-op there.
-                let tail = header
-                    .tail
-                    .load(Ordering::Acquire)
-                    .max(self.local().local_tail);
-                head.saturating_sub(tail)
-            }
-        }
+        // All non-Both backends (ShmData / FanoutShm / Uninitialized) use the SHM header.
+        let header = self.header();
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        // The SPSC-SHM consumer batches its read position into
+        // `header.tail` (flushed every ~32 messages), so `header.tail`
+        // can lag this consumer's true cursor `local_tail` — making
+        // pending_count report phantom messages that were already
+        // drained. Use whichever position is further ahead. For
+        // multi-consumer SHM the shared `header.tail` advances via CAS
+        // and is already >= local_tail, so this is a no-op there.
+        let tail = header
+            .tail
+            .load(Ordering::Acquire)
+            .max(self.local().local_tail);
+        head.saturating_sub(tail)
     }
 
     /// Get the backend name (for debugging)
@@ -2788,11 +2152,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     pub fn backend_name(&self) -> &'static str {
         match self.mode() {
             BackendMode::Unknown => "Unknown",
-            BackendMode::DirectChannel => "DirectChannel",
-            BackendMode::SpscIntra => "SpscIntra",
-            BackendMode::SpmcIntra => "SpmcIntra",
-            BackendMode::MpscIntra => "MpscIntra",
-            BackendMode::FanoutIntra => "FanoutIntra",
             BackendMode::PodShm => "PodShm",
             BackendMode::SpscShm => "SpscShm",
             BackendMode::SpmcShm => "SpmcShm",
@@ -2869,19 +2228,6 @@ impl<T> Drop for RingTopic<T> {
             }
         }
 
-        // COMM-H1: release this instance's intra-fanout endpoint slots so they can
-        // be reused. Without it a monotonic counter overflowed the fixed 16-slot
-        // matrix after 16 (re)registrations and panicked. (Cross-process FanoutShm
-        // reclaim is separate — a crashed process never runs Drop.)
-        if let BackendStorage::FanoutIntra(ring) = unsafe { &*self.backend.get() } {
-            if let Some(id) = local.fanout_pub_id.take() {
-                ring.deregister_publisher(id);
-            }
-            if let Some(id) = local.fanout_sub_id.take() {
-                ring.deregister_subscriber(id);
-            }
-        }
-
         // COMM-H1 cross-process: on CLEAN drop, clear this instance's FanoutShm
         // endpoint bit + owner PID, THEN release the held flock. A crashed process
         // runs none of this, but the OS releases its flock and a peer reclaims the
@@ -2900,11 +2246,6 @@ impl<T> Drop for RingTopic<T> {
             local.fanout_pub_lock.take();
             local.fanout_sub_lock.take();
         }
-
-        // Registry entries are NOT removed here — other instances may still
-        // reference the same backend Arc. Entries are cleaned up automatically
-        // by store_or_get_backend() when new epochs are created (old epochs
-        // are retained for at most 1 generation).
 
         // Notify network layer (horus_net) that this topic instance is dropped
         notify_topic_lifecycle(TopicLifecycleEvent::Dropped {

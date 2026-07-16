@@ -86,12 +86,6 @@ pub(crate) struct LocalState {
     /// Cached epoch (to detect migrations)
     pub cached_epoch: u64,
 
-    /// FanoutRing publisher ID (registered on first send when mode is FanoutIntra)
-    pub fanout_pub_id: Option<usize>,
-
-    /// FanoutRing subscriber ID (registered on first recv when mode is FanoutIntra)
-    pub fanout_sub_id: Option<usize>,
-
     /// SHM FanoutRing publisher ID (registered on first send when mode is FanoutShm)
     pub fanout_shm_pub_id: Option<usize>,
 
@@ -141,8 +135,6 @@ impl Default for LocalState {
             slot_index: -1,
             slot_size: DEFAULT_SLOT_SIZE,
             cached_epoch: 0,
-            fanout_pub_id: None,
-            fanout_sub_id: None,
             fanout_shm_pub_id: None,
             fanout_shm_sub_id: None,
             fanout_pub_lock: None,
