@@ -246,10 +246,10 @@ mod tests {
     fn migrate_to_same_mode_returns_not_needed() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
+            .store(BackendMode::SpscShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
         assert_eq!(
-            m.try_migrate(BackendMode::SpscIntra),
+            m.try_migrate(BackendMode::SpscShm),
             MigrationResult::NotNeeded
         );
     }
@@ -268,61 +268,61 @@ mod tests {
     // ── try_migrate: valid transitions ──────────────────────────────────
 
     #[test]
-    fn migrate_unknown_to_direct_channel() {
+    fn migrate_unknown_to_pod_shm() {
         let h = make_header(true);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::DirectChannel);
+        let result = m.try_migrate(BackendMode::PodShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::DirectChannel);
+        assert_eq!(h.mode(), BackendMode::PodShm);
     }
 
     #[test]
-    fn migrate_unknown_to_spsc_intra() {
+    fn migrate_unknown_to_spsc_shm() {
         let h = make_header(true);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::SpscIntra);
+        let result = m.try_migrate(BackendMode::SpscShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::SpscIntra);
+        assert_eq!(h.mode(), BackendMode::SpscShm);
     }
 
     #[test]
-    fn migrate_direct_channel_to_spsc_intra() {
+    fn migrate_pod_shm_to_spsc_shm() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::DirectChannel as u8, Ordering::Relaxed);
+            .store(BackendMode::PodShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::SpscIntra);
+        let result = m.try_migrate(BackendMode::SpscShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::SpscIntra);
+        assert_eq!(h.mode(), BackendMode::SpscShm);
     }
 
     #[test]
-    fn migrate_spsc_intra_to_mpsc_intra() {
+    fn migrate_spsc_shm_to_mpsc_shm() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
+            .store(BackendMode::SpscShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::MpscIntra);
+        let result = m.try_migrate(BackendMode::MpscShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::MpscIntra);
+        assert_eq!(h.mode(), BackendMode::MpscShm);
     }
 
     #[test]
-    fn migrate_spsc_intra_to_spmc_intra() {
+    fn migrate_spsc_shm_to_spmc_shm() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
+            .store(BackendMode::SpscShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::SpmcIntra);
+        let result = m.try_migrate(BackendMode::SpmcShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::SpmcIntra);
+        assert_eq!(h.mode(), BackendMode::SpmcShm);
     }
 
     #[test]
-    fn migrate_intra_to_shm() {
+    fn migrate_across_shm_modes() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
+            .store(BackendMode::MpscShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
         let result = m.try_migrate(BackendMode::SpscShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
@@ -333,11 +333,11 @@ mod tests {
     fn migrate_to_fanout() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
+            .store(BackendMode::SpscShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::FanoutIntra);
+        let result = m.try_migrate(BackendMode::FanoutShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::FanoutIntra);
+        assert_eq!(h.mode(), BackendMode::FanoutShm);
     }
 
     #[test]
@@ -365,15 +365,15 @@ mod tests {
         let h = make_header(true);
         let m = BackendMigrator::new(&h);
 
-        let r1 = m.try_migrate(BackendMode::SpscIntra);
+        let r1 = m.try_migrate(BackendMode::SpscShm);
         assert_eq!(r1, MigrationResult::Success { new_epoch: 1 });
         assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 1);
 
-        let r2 = m.try_migrate(BackendMode::MpscIntra);
+        let r2 = m.try_migrate(BackendMode::MpscShm);
         assert_eq!(r2, MigrationResult::Success { new_epoch: 2 });
         assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 2);
 
-        let r3 = m.try_migrate(BackendMode::FanoutIntra);
+        let r3 = m.try_migrate(BackendMode::FanoutShm);
         assert_eq!(r3, MigrationResult::Success { new_epoch: 3 });
         assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 3);
     }
@@ -382,11 +382,11 @@ mod tests {
     fn epoch_unchanged_when_not_needed() {
         let h = make_header(true);
         h.backend_mode
-            .store(BackendMode::SpscIntra as u8, Ordering::Relaxed);
+            .store(BackendMode::SpscShm as u8, Ordering::Relaxed);
         h.migration_epoch.store(5, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
 
-        let result = m.try_migrate(BackendMode::SpscIntra);
+        let result = m.try_migrate(BackendMode::SpscShm);
         assert_eq!(result, MigrationResult::NotNeeded);
         assert_eq!(h.migration_epoch.load(Ordering::Relaxed), 5);
     }
@@ -399,7 +399,7 @@ mod tests {
         // Pre-lock the migration
         assert!(h.try_lock_migration());
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::SpscIntra);
+        let result = m.try_migrate(BackendMode::SpscShm);
         assert_eq!(result, MigrationResult::AlreadyInProgress);
         // Mode unchanged
         assert_eq!(h.mode(), BackendMode::Unknown);
@@ -410,13 +410,13 @@ mod tests {
     fn lock_released_after_successful_migration() {
         let h = make_header(true);
         let m = BackendMigrator::new(&h);
-        m.try_migrate(BackendMode::SpscIntra);
+        m.try_migrate(BackendMode::SpscShm);
         assert!(
             !m.is_migration_in_progress(),
             "Lock should be released after migration"
         );
         // Second migration should also succeed
-        let result = m.try_migrate(BackendMode::MpscIntra);
+        let result = m.try_migrate(BackendMode::MpscShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 2 });
     }
 
@@ -437,7 +437,7 @@ mod tests {
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
         let m = BackendMigrator::new(&h);
-        // Same thread, POD, 1P:1C → DirectChannel
+        // POD, 1P:1C → SpscShm (every topic is SHM-backed)
         let result = m.migrate_to_optimal();
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
         assert_eq!(h.mode(), BackendMode::SpscShm);
@@ -471,7 +471,7 @@ mod tests {
         let h = make_header(true);
         h.register_producer().unwrap();
         h.register_consumer().unwrap();
-        // Optimal is DirectChannel but current is still Unknown
+        // Optimal is SpscShm but current is still Unknown
         let m = BackendMigrator::new(&h);
         assert!(!m.is_optimal());
     }
@@ -508,10 +508,10 @@ mod tests {
                     barrier.wait();
                     // All threads try to migrate at once
                     let target = match i {
-                        0 => BackendMode::SpscIntra,
-                        1 => BackendMode::MpscIntra,
-                        2 => BackendMode::SpmcIntra,
-                        _ => BackendMode::FanoutIntra,
+                        0 => BackendMode::SpscShm,
+                        1 => BackendMode::MpscShm,
+                        2 => BackendMode::SpmcShm,
+                        _ => BackendMode::FanoutShm,
                     };
                     m.try_migrate(target)
                 })
@@ -553,10 +553,10 @@ mod tests {
         let m = BackendMigrator::new(&h);
 
         let chain = [
-            BackendMode::DirectChannel,
-            BackendMode::SpscIntra,
-            BackendMode::MpscIntra,
-            BackendMode::FanoutIntra,
+            BackendMode::PodShm,
+            BackendMode::SpscShm,
+            BackendMode::MpscShm,
+            BackendMode::FanoutShm,
             BackendMode::SpscShm,
             BackendMode::FanoutShm,
         ];
@@ -584,9 +584,9 @@ mod tests {
         h.backend_mode
             .store(BackendMode::FanoutShm as u8, Ordering::Relaxed);
         let m = BackendMigrator::new(&h);
-        let result = m.try_migrate(BackendMode::DirectChannel);
+        let result = m.try_migrate(BackendMode::PodShm);
         assert_eq!(result, MigrationResult::Success { new_epoch: 1 });
-        assert_eq!(h.mode(), BackendMode::DirectChannel);
+        assert_eq!(h.mode(), BackendMode::PodShm);
     }
 
     // ── Topology change timestamp ───────────────────────────────────────
@@ -596,7 +596,7 @@ mod tests {
         let h = make_header(true);
         let before = current_time_ms();
         let m = BackendMigrator::new(&h);
-        m.try_migrate(BackendMode::SpscIntra);
+        m.try_migrate(BackendMode::SpscShm);
         let after = current_time_ms();
 
         let ts = h.last_topology_change_ms.load(Ordering::Relaxed);

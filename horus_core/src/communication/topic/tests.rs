@@ -77,12 +77,16 @@ fn participant_entry_is_24_bytes() {
 
 #[test]
 fn backend_mode_from_integer() {
-    assert_eq!(BackendMode::from(1), BackendMode::DirectChannel);
-    assert_eq!(BackendMode::from(2), BackendMode::SpscIntra);
-    assert_eq!(BackendMode::from(3), BackendMode::SpmcIntra);
-    assert_eq!(BackendMode::from(4), BackendMode::MpscIntra);
-    assert_eq!(BackendMode::from(5), BackendMode::FanoutIntra);
+    // The retired intra-process discriminants (1–5) now decode to Unknown.
+    assert_eq!(BackendMode::from(1), BackendMode::Unknown);
+    assert_eq!(BackendMode::from(2), BackendMode::Unknown);
+    assert_eq!(BackendMode::from(3), BackendMode::Unknown);
+    assert_eq!(BackendMode::from(4), BackendMode::Unknown);
+    assert_eq!(BackendMode::from(5), BackendMode::Unknown);
     assert_eq!(BackendMode::from(6), BackendMode::PodShm);
+    assert_eq!(BackendMode::from(7), BackendMode::MpscShm);
+    assert_eq!(BackendMode::from(8), BackendMode::SpmcShm);
+    assert_eq!(BackendMode::from(9), BackendMode::SpscShm);
     assert_eq!(BackendMode::from(10), BackendMode::FanoutShm);
     assert_eq!(BackendMode::from(11), BackendMode::FanoutShm);
     assert_eq!(BackendMode::from(12), BackendMode::Unknown);
@@ -198,10 +202,10 @@ fn migration_success_increments_epoch() {
         .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
-    match migrator.try_migrate(BackendMode::SpscIntra) {
+    match migrator.try_migrate(BackendMode::SpscShm) {
         MigrationResult::Success { new_epoch } => {
             assert_eq!(new_epoch, 1);
-            assert_eq!(header.mode(), BackendMode::SpscIntra);
+            assert_eq!(header.mode(), BackendMode::SpscShm);
         }
         other => unreachable!("Expected Success, got {:?}", other),
     }
@@ -215,7 +219,7 @@ fn migration_concurrent_lock_returns_already_in_progress() {
 
     let migrator = BackendMigrator::new(&header);
     assert_eq!(
-        migrator.try_migrate(BackendMode::SpscIntra),
+        migrator.try_migrate(BackendMode::SpscShm),
         MigrationResult::AlreadyInProgress
     );
 
@@ -234,7 +238,7 @@ fn epoch_increments_on_successive_migrations() {
     let migrator = BackendMigrator::new(&header);
     for expected_epoch in 1..=5u64 {
         let result = migrator.try_migrate(if expected_epoch % 2 == 1 {
-            BackendMode::SpscIntra
+            BackendMode::SpscShm
         } else {
             BackendMode::FanoutShm
         });
@@ -270,155 +274,8 @@ fn migrate_to_optimal_works() {
 // 7. RING BUFFER UNIT TESTS (direct ring API, no Topic wrapper)
 // ============================================================================
 
-#[test]
-fn spsc_ring_basic_send_recv() {
-    let ring = SpscRing::<u64>::new(8);
-    assert_eq!(ring.pending_count(), 0);
-
-    for i in 0..8u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert_eq!(ring.pending_count(), 8);
-    // Ring full
-    assert!(ring.try_send(99).is_err());
-
-    for i in 0..8u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-    assert_eq!(ring.pending_count(), 0);
-}
-
-#[test]
-fn spsc_ring_wraparound() {
-    let ring = SpscRing::<u32>::new(4);
-    // Fill and drain several times to exercise wraparound
-    for round in 0..10u32 {
-        for i in 0..4 {
-            ring.try_send(round * 4 + i).unwrap();
-        }
-        for i in 0..4 {
-            assert_eq!(ring.try_recv(), Some(round * 4 + i));
-        }
-    }
-}
-
-#[test]
-fn spsc_ring_read_latest() {
-    let ring = SpscRing::<u64>::new(8);
-    assert_eq!(ring.read_latest(), None);
-    ring.try_send(10).unwrap();
-    ring.try_send(20).unwrap();
-    ring.try_send(30).unwrap();
-    assert_eq!(ring.read_latest(), Some(30));
-    // read_latest doesn't advance consumer
-    assert_eq!(ring.try_recv(), Some(10));
-}
-
-#[test]
-fn spmc_ring_competing_consumers() {
-    let ring = Arc::new(SpmcRing::<u64>::new(1024));
-    let n_messages = 1000u64;
-
-    // Fill the ring (1024 capacity > 1000 messages)
-    for i in 0..n_messages {
-        ring.try_send(i).unwrap();
-    }
-
-    // 4 consumers competing for messages
-    let collected = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let barrier = Arc::new(Barrier::new(4));
-    let handles: Vec<_> = (0..4)
-        .map(|_| {
-            let r = ring.clone();
-            let c = collected.clone();
-            let b = barrier.clone();
-            test_spawn(move || {
-                b.wait();
-                let mut local = Vec::new();
-                while let Some(v) = r.try_recv() {
-                    local.push(v);
-                }
-                c.lock().unwrap().extend(local);
-            })
-        })
-        .collect();
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    let mut all = collected.lock().unwrap().clone();
-    all.sort();
-    all.dedup();
-    // Every message received exactly once (competing consumers, not broadcast)
-    assert_eq!(all.len(), n_messages as usize);
-    assert_eq!(*all.first().unwrap(), 0);
-    assert_eq!(*all.last().unwrap(), n_messages - 1);
-}
-
-#[test]
-fn mpsc_ring_multiple_producers() {
-    let ring = Arc::new(MpscRing::<u64>::new(1024));
-    let n_per_producer = 200u64;
-    let n_producers = 4;
-    let total = n_producers * n_per_producer as usize;
-
-    let barrier = Arc::new(Barrier::new(n_producers + 1)); // +1 for consumer
-
-    // Consumer thread runs concurrently to drain the ring
-    let consumer_ring = ring.clone();
-    let consumer_barrier = barrier.clone();
-    let consumer = test_spawn(move || {
-        consumer_barrier.wait();
-        let mut received = Vec::with_capacity(total);
-        while received.len() < total {
-            if let Some(v) = consumer_ring.try_recv() {
-                received.push(v);
-            } else {
-                std::hint::spin_loop();
-            }
-        }
-        received
-    });
-
-    let handles: Vec<_> = (0..n_producers)
-        .map(|pid| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            test_spawn(move || {
-                b.wait();
-                for i in 0..n_per_producer {
-                    let val = pid as u64 * 10000 + i;
-                    while r.try_send(val).is_err() {
-                        std::hint::spin_loop();
-                    }
-                }
-            })
-        })
-        .collect();
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    let received = consumer.join().unwrap();
-    assert_eq!(received.len(), total);
-
-    // Verify each producer's messages are present
-    for pid in 0..n_producers {
-        let base = pid as u64 * 10000;
-        for i in 0..n_per_producer {
-            assert!(
-                received.contains(&(base + i)),
-                "Missing message {} from producer {}",
-                i,
-                pid
-            );
-        }
-    }
-}
-
 // ============================================================================
-// 8. TOPIC SAME-THREAD TESTS (DirectChannel backend)
+// 8. TOPIC SAME-THREAD TESTS (SHM backend, role=Both fast path)
 // ============================================================================
 
 #[test]
@@ -561,56 +418,21 @@ fn topic_same_thread_uses_direct_channel() {
     assert_eq!(t.recv(), Some(1));
 
     // Real topics are SHM-backed (creator_pid set), so a same-thread self-loop
-    // resolves to SpscShm — never the DirectChannel fast path. The exact settled
-    // state may still read Unknown before the first migration check fires; the
-    // invariant is simply "not a heap/DirectChannel backend".
+    // resolves to SpscShm. The exact settled state may still read Unknown before
+    // the first migration check fires; the invariant is simply "an SHM backend".
     let local = t.ring.local();
     assert!(
         matches!(
             local.cached_mode,
             BackendMode::SpscShm | BackendMode::Unknown
         ),
-        "Same-thread real topic must be SHM-backed (or not-yet-migrated), never \
-         the DirectChannel fast path; got {:?}",
+        "Same-thread real topic must be SHM-backed (or not-yet-migrated); got {:?}",
         local.cached_mode
     );
 }
 
-#[test]
-fn topic_read_latest() {
-    // Test read_latest on the raw ring buffers where behavior is well-defined
-    // (Topic-level read_latest has complex interactions with migration and role tracking)
-
-    // SPSC ring: read_latest returns most recent without advancing consumer
-    let spsc = SpscRing::<u64>::new(8);
-    assert_eq!(spsc.read_latest(), None);
-    spsc.try_send(10).unwrap();
-    spsc.try_send(20).unwrap();
-    spsc.try_send(30).unwrap();
-    assert_eq!(spsc.read_latest(), Some(30));
-    assert_eq!(spsc.try_recv(), Some(10)); // consumer not advanced by read_latest
-
-    // MPSC ring: read_latest returns most recent
-    let mpsc = MpscRing::<u64>::new(8);
-    assert_eq!(mpsc.read_latest(), None);
-    mpsc.try_send(100).unwrap();
-    mpsc.try_send(200).unwrap();
-    assert_eq!(mpsc.read_latest(), Some(200));
-
-    // NOTE: FanoutRing (broadcast) intentionally has NO read_latest — it is a
-    // hardcoded `None` stub (fanout.rs), because a broadcast ring has no single
-    // "latest": each subscriber has its own independent cursor. There is therefore
-    // no MPMC/fanout subcase here; asserting a value would test a no-op.
-
-    // SPMC ring: read_latest returns most recent
-    let spmc = SpmcRing::<u64>::new(8);
-    assert_eq!(spmc.read_latest(), None);
-    spmc.try_send(42).unwrap();
-    assert_eq!(spmc.read_latest(), Some(42));
-}
-
 // ============================================================================
-// 9. MULTI-THREAD TESTS (exercises SpscIntra, SpmcIntra, MpscIntra, FanoutIntra)
+// 9. MULTI-THREAD TESTS (exercises SpscShm, SpmcShm, MpscShm, FanoutShm)
 // ============================================================================
 
 #[test]
@@ -822,13 +644,13 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
     let total = n_producers * n_per_producer as usize;
     let total_received = Arc::new(AtomicU64::new(0));
 
-    // Pre-initialize topic to FanoutIntra to avoid migration-related message loss
+    // Pre-initialize topic to FanoutShm to avoid migration-related message loss
     // during the actual multi-threaded test.
     {
         let init_t: Topic<u64> = Topic::new(&name).expect("init");
         init_t.send(0);
         let _ = init_t.recv();
-        init_t.force_migrate(BackendMode::FanoutIntra);
+        init_t.force_migrate(BackendMode::FanoutShm);
     }
 
     let barrier = Arc::new(Barrier::new(n_producers + n_consumers));
@@ -894,7 +716,7 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
     all.sort();
     all.dedup();
     let received = all.len();
-    // Pre-initialized to FanoutIntra, but under parallel test execution
+    // Pre-initialized to FanoutShm, but under parallel test execution
     // CPU scheduling pressure and migration interference can cause loss.
     // Under heavy parallel test execution, message loss can be significant.
     // Verify messages flow correctly, not exact throughput.
@@ -909,118 +731,6 @@ fn topic_cross_thread_multi_p_multi_c_mpmc() {
 // 10. STRESS TESTS — ring saturation and backpressure
 // ============================================================================
 
-#[test]
-fn ring_saturation_spsc_full_then_drain() {
-    let ring = SpscRing::<u64>::new(16);
-    // Fill completely
-    for i in 0..16u64 {
-        ring.try_send(i).unwrap();
-    }
-    // Reject when full
-    assert!(ring.try_send(99).is_err());
-    assert_eq!(ring.pending_count(), 16);
-
-    // Drain partially
-    for i in 0..8u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    // Fill again into the freed slots
-    for i in 16..24u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(99).is_err());
-
-    // Drain everything
-    for i in 8..24u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-#[test]
-fn stress_spsc_sustained_throughput() {
-    let ring = Arc::new(SpscRing::<u64>::new(256));
-    let n = 100_000u64;
-
-    let r = ring.clone();
-    let producer = test_spawn(move || {
-        for i in 0..n {
-            while r.try_send(i).is_err() {
-                std::hint::spin_loop();
-            }
-        }
-    });
-
-    let r = ring.clone();
-    let consumer = test_spawn(move || {
-        let mut count = 0u64;
-        let mut last = None;
-        while count < n {
-            if let Some(v) = r.try_recv() {
-                // Verify FIFO ordering
-                if let Some(prev) = last {
-                    assert_eq!(v, prev + 1, "FIFO violation at count {}", count);
-                }
-                last = Some(v);
-                count += 1;
-            }
-            std::hint::spin_loop();
-        }
-    });
-
-    producer.join().unwrap();
-    consumer.join().unwrap();
-}
-
-#[test]
-fn stress_mpsc_contention() {
-    let ring = Arc::new(MpscRing::<u64>::new(1024));
-    let n_per = 10_000u64;
-    let n_producers = 4;
-    let total = n_producers as u64 * n_per;
-
-    let barrier = Arc::new(Barrier::new(n_producers + 1));
-
-    // Consumer runs concurrently
-    let consumer_ring = ring.clone();
-    let consumer_barrier = barrier.clone();
-    let consumer = test_spawn(move || {
-        consumer_barrier.wait();
-        let mut count = 0u64;
-        while count < total {
-            if consumer_ring.try_recv().is_some() {
-                count += 1;
-            } else {
-                std::hint::spin_loop();
-            }
-        }
-        count
-    });
-
-    let handles: Vec<_> = (0..n_producers)
-        .map(|pid| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            test_spawn(move || {
-                b.wait();
-                for i in 0..n_per {
-                    let val = pid as u64 * 1_000_000 + i;
-                    while r.try_send(val).is_err() {
-                        std::hint::spin_loop();
-                    }
-                }
-            })
-        })
-        .collect();
-
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    let count = consumer.join().unwrap();
-    assert_eq!(count, total);
-}
-
 // ============================================================================
 // 11. TOPIC-LEVEL STRESS TEST — sustained cross-thread with backpressure
 // ============================================================================
@@ -1034,7 +744,7 @@ fn topic_sustained_cross_thread_throughput() {
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
     let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
 
-    // Pre-initialize to SpscIntra to avoid migration losses
+    // Pre-initialize to SpscShm to avoid migration losses
     pub_t.send(0);
     let _ = sub_t.recv();
 
@@ -1120,7 +830,7 @@ fn migration_epoch_visible_across_clones() {
     let epoch_before = t1.ring.header().migration_epoch.load(Ordering::Acquire);
 
     // Force migrate to a heap-backed intra-process mode
-    let result = t1.force_migrate(BackendMode::FanoutIntra);
+    let result = t1.force_migrate(BackendMode::FanoutShm);
     assert!(matches!(result, MigrationResult::Success { .. }));
 
     let epoch_after = t1.ring.header().migration_epoch.load(Ordering::Acquire);
@@ -1143,7 +853,7 @@ fn migration_epoch_visible_across_clones() {
     );
 
     // After check_migration_now, both topics converged to the same backend.
-    // Re-sync t1 to match (it may have been left on FanoutIntra while t2
+    // Re-sync t1 to match (it may have been left on FanoutShm while t2
     // auto-migrated back to DirectChannel).
     t1.check_migration_now();
 
@@ -1190,9 +900,9 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
         let init_t: Topic<u64> = Topic::new(&name).expect("init");
         init_t.send(0);
         let _ = init_t.recv();
-        // Attempt FanoutIntra; skip test if SHM / backend setup fails.
+        // Attempt FanoutShm; skip test if SHM / backend setup fails.
         if !matches!(
-            init_t.force_migrate(BackendMode::FanoutIntra),
+            init_t.force_migrate(BackendMode::FanoutShm),
             MigrationResult::Success { .. }
         ) {
             return;
@@ -1206,7 +916,7 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
     // Background thread: alternate between two modes to keep bumping the epoch.
     let migrator = test_spawn(move || {
         let tm: Topic<u64> = Topic::new(&name_clone).expect("migrator");
-        let modes = [BackendMode::FanoutIntra, BackendMode::SpscIntra];
+        let modes = [BackendMode::FanoutShm, BackendMode::SpscShm];
         let mut idx = 0usize;
         while !stop_clone.load(Ordering::Relaxed) {
             let _ = tm.force_migrate(modes[idx & 1]);
@@ -1559,7 +1269,7 @@ fn robotics_sensor_fusion_pipeline() {
 
     let n_ticks = 500;
 
-    // Pre-initialize backends to avoid DirectChannel→SpscIntra migration race.
+    // Pre-initialize backends to avoid DirectChannel→SpscShm migration race.
     // Create both pub and sub on the same thread, send+recv a warm-up message
     // so the backend is established before threads begin.
     {
@@ -1898,7 +1608,7 @@ fn backend_name_matches_mode() {
     let t: Topic<u64> = Topic::new(unique("bname")).expect("create");
     t.send(1);
     let _ = t.recv();
-    // Same-thread should be DirectChannel
+    // Same-thread 1P:1C real (SHM-backed) topic settles to SpscShm
     assert_eq!(t.backend_name(), "SpscShm");
 }
 
@@ -1965,399 +1675,13 @@ impl Drop for DropCounter {
     }
 }
 
-#[test]
-fn fanout_ring_teardown_drops_resident_nonpod() {
-    // Regression gate for the FanoutIntra non-POD teardown leak (roadmap
-    // roadmap-mrgqzlmb-ixl127 phase 1). Non-POD values still resident in the ring
-    // at teardown must be dropped, not leaked. `recv` makes a bitwise copy, so only
-    // the never-consumed window is ring-owned; consumed slots are the consumer's.
-    //
-    // send 8 / drain 2 into cap-16 (no overwrite): 8 originals dropped (after the
-    // clone in send_as) + 2 consumed clones dropped by the receiver + 6 resident
-    // clones dropped at teardown = 16.
-    let counter = Arc::new(AtomicU64::new(0));
-    {
-        let ring = fanout::FanoutRing::<DropCounter>::new(4, 4, 16);
-        for _ in 0..8 {
-            ring.try_send(DropCounter::new(&counter)).unwrap();
-        }
-        for _ in 0..2 {
-            ring.try_recv().unwrap();
-        }
-    }
-    assert_eq!(
-        counter.load(Ordering::Relaxed),
-        16,
-        "all 8 sent DropCounters (8 originals + 2 consumed + 6 resident-at-teardown) must be dropped"
-    );
-}
-
-#[test]
-fn spsc_ring_drop_pending_messages() {
-    let counter = Arc::new(AtomicU64::new(0));
-    {
-        let ring = SpscRing::<DropCounter>::new(16);
-        for _ in 0..10 {
-            ring.try_send(DropCounter::new(&counter)).unwrap();
-        }
-        // Consume 3, leaving 7 pending
-        for _ in 0..3 {
-            ring.try_recv().unwrap();
-        }
-        // ring drops here with 7 unconsumed messages
-    }
-    // 3 consumed (dropped after recv) + 7 dropped by ring = 10 total
-    assert_eq!(
-        counter.load(Ordering::Relaxed),
-        10,
-        "All DropCounters must be dropped (3 recv'd + 7 pending)"
-    );
-}
-
-#[test]
-fn spmc_ring_drop_pending_messages() {
-    let counter = Arc::new(AtomicU64::new(0));
-    {
-        let ring = SpmcRing::<DropCounter>::new(16);
-        for _ in 0..8 {
-            ring.try_send(DropCounter::new(&counter)).unwrap();
-        }
-        for _ in 0..2 {
-            ring.try_recv().unwrap();
-        }
-    }
-    assert_eq!(
-        counter.load(Ordering::Relaxed),
-        8,
-        "All DropCounters must be dropped (2 recv'd + 6 pending)"
-    );
-}
-
-#[test]
-fn mpsc_ring_drop_pending_messages() {
-    let counter = Arc::new(AtomicU64::new(0));
-    {
-        let ring = MpscRing::<DropCounter>::new(16);
-        for _ in 0..8 {
-            ring.try_send(DropCounter::new(&counter)).unwrap();
-        }
-        for _ in 0..2 {
-            ring.try_recv().unwrap();
-        }
-    }
-    assert_eq!(
-        counter.load(Ordering::Relaxed),
-        8,
-        "All DropCounters must be dropped (2 recv'd + 6 pending)"
-    );
-}
-
-#[test]
-fn direct_channel_drop_pending_messages() {
-    // DirectSlot send/recv are inlined via dispatch functions, but we can
-    // test the Drop impl by manipulating head directly and filling slots.
-    use std::mem::MaybeUninit;
-
-    let counter = Arc::new(AtomicU64::new(0));
-    {
-        let slot = DirectSlot::<DropCounter>::new(16);
-        // Manually fill slots by advancing head — mimics what dispatch::send_direct_channel does
-        for i in 0..5u64 {
-            let index = (i & slot.mask) as usize;
-            // SAFETY: `index` is computed as `i & slot.mask`, which is always in bounds
-            // for `slot.buffer` (mask == capacity - 1, capacity is a power of two).
-            // No other reference to this slot exists yet; we are the sole writer
-            // performing the initial MaybeUninit write before advancing `head`.
-            unsafe {
-                let s = slot.buffer.get_unchecked(index);
-                s.get().write(MaybeUninit::new(DropCounter::new(&counter)));
-            }
-            slot.head.store(i + 1, Ordering::Relaxed);
-        }
-        // Simulate consuming 2 messages
-        for i in 0..2u64 {
-            let index = (i & slot.mask) as usize;
-            // SAFETY: `index` is in bounds (masked by `slot.mask`). Slots 0 and 1
-            // were written in the loop above and `head` was advanced past them, so
-            // the `MaybeUninit` is initialized. We are the only consumer and advance
-            // `tail` afterwards, so this is the unique read of each slot.
-            let msg = unsafe {
-                let s = slot.buffer.get_unchecked(index);
-                (*s.get()).assume_init_read()
-            };
-            drop(msg);
-            slot.tail.store(i + 1, Ordering::Relaxed);
-        }
-        // Drop slot with 3 unconsumed messages
-    }
-    assert_eq!(
-        counter.load(Ordering::Relaxed),
-        5,
-        "All DropCounters must be dropped (2 recv'd + 3 pending)"
-    );
-}
-
-#[test]
-fn ring_drop_with_string_messages_no_leak() {
-    // Strings allocated on the heap — if Drop isn't called, this leaks.
-    // Run under Miri/ASAN to detect leaks.
-    {
-        let ring = SpscRing::<String>::new(8);
-        for i in 0..6 {
-            ring.try_send(format!("message-{}-{}", i, "x".repeat(100)))
-                .unwrap();
-        }
-        ring.try_recv(); // consume 1
-                         // Drop with 5 pending String messages
-    }
-
-    {
-        let ring = fanout::FanoutRing::<Vec<u8>>::new(4, 4, 8);
-        for i in 0..6 {
-            ring.try_send(vec![i as u8; 256]).unwrap();
-        }
-        ring.try_recv();
-        // Drop with 5 pending Vec<u8> messages
-    }
-}
-
 // ============================================================================
 // 28. READ_LATEST CORRECTNESS — empty ring returns None, not UB
 // ============================================================================
 
-#[test]
-fn read_latest_returns_none_on_drained_spsc() {
-    let ring = SpscRing::<u64>::new(8);
-    ring.try_send(1).unwrap();
-    ring.try_send(2).unwrap();
-    ring.try_recv().unwrap(); // consume 1
-    ring.try_recv().unwrap(); // consume 2
-                              // Ring is now fully drained: head=2, tail=2
-    assert_eq!(
-        ring.read_latest(),
-        None,
-        "Drained SPSC ring must return None"
-    );
-}
-
-#[test]
-fn read_latest_returns_none_on_drained_spmc() {
-    let ring = SpmcRing::<u64>::new(8);
-    ring.try_send(1).unwrap();
-    ring.try_recv().unwrap();
-    assert_eq!(
-        ring.read_latest(),
-        None,
-        "Drained SPMC ring must return None"
-    );
-}
-
-#[test]
-fn read_latest_returns_none_on_drained_mpsc() {
-    let ring = MpscRing::<u64>::new(8);
-    ring.try_send(1).unwrap();
-    ring.try_recv().unwrap();
-    assert_eq!(
-        ring.read_latest(),
-        None,
-        "Drained MPSC ring must return None"
-    );
-}
-
-#[test]
-fn read_latest_returns_none_on_drained_mpmc() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 8);
-    ring.try_send(1).unwrap();
-    ring.try_recv().unwrap();
-    assert_eq!(
-        ring.read_latest(),
-        None,
-        "Drained MPMC ring must return None"
-    );
-}
-
-#[test]
-fn read_latest_does_not_interfere_with_recv() {
-    // Verify that read_latest (now clone-based) doesn't prevent recv from working
-    let ring = SpscRing::<String>::new(8);
-    ring.try_send("hello".to_string()).unwrap();
-    ring.try_send("world".to_string()).unwrap();
-
-    // read_latest returns clone of most recent
-    assert_eq!(ring.read_latest(), Some("world".to_string()));
-
-    // recv still works — slot data intact because read_latest cloned
-    assert_eq!(ring.try_recv(), Some("hello".to_string()));
-    assert_eq!(ring.try_recv(), Some("world".to_string()));
-    assert_eq!(ring.try_recv(), None);
-}
-
 // ============================================================================
 // 29. CONCURRENT READ_LATEST STRESS TEST
 // ============================================================================
-
-#[test]
-fn concurrent_read_latest_with_producer_spmc() {
-    let ring = Arc::new(SpmcRing::<u64>::new(1024));
-    let n_messages: u64 = 50_000;
-    let n_readers = 2;
-    let n_consumers = 2;
-    let done = Arc::new(AtomicU64::new(0));
-
-    let barrier = Arc::new(Barrier::new(n_readers + n_consumers + 1));
-
-    // Actual consumers to drain the ring (SPMC: competing CAS on tail)
-    let consumers: Vec<_> = (0..n_consumers)
-        .map(|_| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            let d = done.clone();
-            test_spawn(move || {
-                b.wait();
-                let deadline = Instant::now() + 10_u64.secs();
-                while Instant::now() < deadline {
-                    if r.try_recv().is_some() {
-                        let prev = d.fetch_add(1, Ordering::Relaxed);
-                        if prev + 1 >= n_messages {
-                            break;
-                        }
-                    } else if d.load(Ordering::Relaxed) >= n_messages {
-                        break;
-                    } else {
-                        std::hint::spin_loop();
-                    }
-                }
-            })
-        })
-        .collect();
-
-    // Readers calling read_latest concurrently (non-consuming)
-    let readers: Vec<_> = (0..n_readers)
-        .map(|_| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            let d = done.clone();
-            test_spawn(move || {
-                b.wait();
-                let mut seen_count = 0u64;
-                let mut max_seen = 0u64;
-                let deadline = Instant::now() + 10_u64.secs();
-                while Instant::now() < deadline {
-                    if let Some(v) = r.read_latest() {
-                        assert!(v <= n_messages, "Invalid value: {}", v);
-                        if v > max_seen {
-                            max_seen = v;
-                        }
-                        seen_count += 1;
-                    }
-                    if d.load(Ordering::Relaxed) >= n_messages {
-                        break;
-                    }
-                    std::hint::spin_loop();
-                }
-                (seen_count, max_seen)
-            })
-        })
-        .collect();
-
-    // Producer
-    barrier.wait();
-    for i in 1..=n_messages {
-        while ring.try_send(i).is_err() {
-            std::hint::spin_loop();
-        }
-    }
-
-    for h in consumers {
-        h.join().expect("consumer thread panicked");
-    }
-    for h in readers {
-        let (_seen, _max) = h.join().expect("reader thread panicked");
-        // read_latest may return None if consumers outpace the producer —
-        // the key safety property is no crash/UB, not guaranteed observations.
-    }
-}
-
-#[test]
-fn concurrent_read_latest_with_producer_mpmc() {
-    let ring = Arc::new(fanout::FanoutRing::<u64>::new(4, 4, 1024));
-    let n_messages: u64 = 20_000;
-    let n_readers = 4;
-    let n_consumers = 2;
-    let done = Arc::new(AtomicU64::new(0));
-
-    let barrier = Arc::new(Barrier::new(n_readers + n_consumers + 1));
-
-    // Actual consumers (draining so the ring doesn't fill up)
-    let consumers: Vec<_> = (0..n_consumers)
-        .map(|_| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            let d = done.clone();
-            test_spawn(move || {
-                b.wait();
-                let deadline = Instant::now() + 10_u64.secs();
-                while Instant::now() < deadline {
-                    if r.try_recv().is_some() {
-                        let prev = d.fetch_add(1, Ordering::Relaxed);
-                        if prev + 1 >= n_messages {
-                            break;
-                        }
-                    } else if d.load(Ordering::Relaxed) >= n_messages {
-                        break;
-                    } else {
-                        std::hint::spin_loop();
-                    }
-                }
-            })
-        })
-        .collect();
-
-    // read_latest readers (non-consuming) — these race with consumers.
-    // In MPMC, a consumer can consume slot head-1 between when read_latest
-    // reads head and checks the slot's sequence, so read_latest may often
-    // return None. The safety property is no crash/UB, not guaranteed observations.
-    let readers: Vec<_> = (0..n_readers)
-        .map(|_| {
-            let r = ring.clone();
-            let b = barrier.clone();
-            let d = done.clone();
-            test_spawn(move || {
-                b.wait();
-                let mut seen = 0u64;
-                let deadline = Instant::now() + 10_u64.secs();
-                while Instant::now() < deadline {
-                    if let Some(v) = r.read_latest() {
-                        assert!(v <= n_messages, "Invalid value: {}", v);
-                        seen += 1;
-                    }
-                    if d.load(Ordering::Relaxed) >= n_messages {
-                        break;
-                    }
-                    std::hint::spin_loop();
-                }
-                seen
-            })
-        })
-        .collect();
-
-    // Producer
-    barrier.wait();
-    for i in 1..=n_messages {
-        while ring.try_send(i).is_err() {
-            std::hint::spin_loop();
-        }
-    }
-
-    for h in consumers {
-        h.join().expect("consumer panicked");
-    }
-    for h in readers {
-        let _seen = h.join().expect("reader panicked");
-        // read_latest may rarely succeed when consumers are fast —
-        // the test validates no crash/UB under concurrent access.
-    }
-}
 
 // ============================================================================
 // 30. CONCURRENT MIGRATION STRESS TEST
@@ -2413,10 +1737,10 @@ fn concurrent_migration_during_send_recv() {
                 let t: Topic<u64> = Topic::new(&n).expect("mig");
                 b.wait();
                 let modes = [
-                    BackendMode::SpscIntra,
-                    BackendMode::FanoutIntra,
-                    BackendMode::MpscIntra,
-                    BackendMode::SpmcIntra,
+                    BackendMode::SpscShm,
+                    BackendMode::FanoutShm,
+                    BackendMode::MpscShm,
+                    BackendMode::SpmcShm,
                 ];
                 for i in 0..50 {
                     let mode = modes[(id + i) % modes.len()];
@@ -2479,11 +1803,11 @@ fn rapid_migration_no_crash() {
     let _ = t.recv();
 
     let modes = [
-        BackendMode::DirectChannel,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::FanoutIntra,
+        BackendMode::PodShm,
+        BackendMode::SpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
+        BackendMode::FanoutShm,
         BackendMode::FanoutShm,
     ];
 
@@ -2503,7 +1827,7 @@ fn rapid_migration_no_crash() {
 #[test]
 fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
     let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Pre-initialize to SpscIntra to avoid migration loss
+    // Pre-initialize to SpscShm to avoid migration loss
     let name = unique("tight_spsc");
     let n = 10_000u64;
 
@@ -2511,7 +1835,7 @@ fn topic_cross_thread_1p1c_pre_initialized_99_percent() {
         let init_t: Topic<u64> = Topic::new(&name).expect("init");
         init_t.send(0);
         let _ = init_t.recv();
-        init_t.force_migrate(BackendMode::SpscIntra);
+        init_t.force_migrate(BackendMode::SpscShm);
     }
 
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
@@ -2579,12 +1903,12 @@ fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
     let n_consumers = 3;
     let total = n_producers * n_per_producer as usize;
 
-    // Pre-initialize to FanoutIntra
+    // Pre-initialize to FanoutShm
     {
         let init_t: Topic<u64> = Topic::new(&name).expect("init");
         init_t.send(0);
         let _ = init_t.recv();
-        init_t.force_migrate(BackendMode::FanoutIntra);
+        init_t.force_migrate(BackendMode::FanoutShm);
     }
 
     let total_received = Arc::new(AtomicU64::new(0));
@@ -2648,7 +1972,7 @@ fn topic_cross_thread_mpmc_pre_initialized_99_percent() {
     let mut all = collected.lock().unwrap().clone();
     all.sort();
     all.dedup();
-    // Pre-initialized to FanoutIntra, but under parallel test execution
+    // Pre-initialized to FanoutShm, but under parallel test execution
     // CPU scheduling pressure and migration interference can cause loss.
     // We require at least some messages got through (correctness check).
     assert!(
@@ -2797,11 +2121,11 @@ fn dispatch_survives_all_backend_transitions() {
     let t: Topic<u64> = Topic::new(&name).expect("create");
 
     let modes = [
-        BackendMode::DirectChannel,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::FanoutIntra,
+        BackendMode::PodShm,
+        BackendMode::SpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
+        BackendMode::FanoutShm,
     ];
 
     // Initialize
@@ -2845,28 +2169,28 @@ fn dispatch_migration_during_burst() {
     }
 
     // Migrate mid-stream
-    t.force_migrate(BackendMode::SpscIntra);
+    t.force_migrate(BackendMode::SpscShm);
 
     // Drain what we can
     while let Some(v) = t.recv() {
         received_values.push(v);
     }
 
-    // Burst 2: SpscIntra
+    // Burst 2: SpscShm
     for i in 101..=200 {
         t.send(i);
         sent += 1;
     }
 
     // Migrate again
-    t.force_migrate(BackendMode::FanoutIntra);
+    t.force_migrate(BackendMode::FanoutShm);
 
     // Drain again
     while let Some(v) = t.recv() {
         received_values.push(v);
     }
 
-    // Burst 3: FanoutIntra
+    // Burst 3: FanoutShm
     for i in 201..=300 {
         t.send(i);
         sent += 1;
@@ -3756,235 +3080,13 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
 // 30. RING SATURATION — all variants (SPMC, MPSC, MPMC)
 // ============================================================================
 
-#[test]
-fn ring_saturation_spmc_full_then_drain() {
-    let ring = SpmcRing::<u64>::new(16);
-    for i in 0..16u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(
-        ring.try_send(99).is_err(),
-        "SPMC ring should reject when full"
-    );
-    assert_eq!(ring.pending_count(), 16);
-
-    for i in 0..8u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    for i in 16..24u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(99).is_err());
-
-    for i in 8..24u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-#[test]
-fn ring_saturation_mpsc_full_then_drain() {
-    let ring = MpscRing::<u64>::new(16);
-    for i in 0..16u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(
-        ring.try_send(99).is_err(),
-        "MPSC ring should reject when full"
-    );
-    assert_eq!(ring.pending_count(), 16);
-
-    for i in 0..8u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    for i in 16..24u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(99).is_err());
-
-    for i in 8..24u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-#[test]
-fn fanout_ring_saturation_drops_oldest_never_blocks() {
-    // FanoutRing is a DROP-OLDEST broadcast ring: the producer is NEVER throttled
-    // (real-time contract) and a slow consumer always sees the LATEST data, never a
-    // stale backlog. This replaces the old MpmcRing "reject when full" assertion —
-    // FanoutRing intentionally overwrites the oldest slot instead of rejecting
-    // (fanout.rs `send_as`: "Never fails").
-    let cap = 16usize;
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, cap);
-
-    // Over-fill far past capacity. Every send must succeed — the ring never blocks
-    // or rejects, even when the (single, un-drained) consumer is lapped many times.
-    let n = 1000u64;
-    for i in 0..n {
-        assert!(
-            ring.try_send(i).is_ok(),
-            "drop-oldest ring must never reject or block (send {i})"
-        );
-    }
-
-    // Drain. Under drop-oldest the survivors are the most-recent, contiguous,
-    // in-order suffix of what was sent — at most `cap` of them, and the NEWEST
-    // message always survives (newest-wins).
-    let mut got = Vec::new();
-    while let Some(v) = ring.try_recv() {
-        got.push(v);
-    }
-    assert!(!got.is_empty(), "consumer must see the most recent messages");
-    assert!(
-        got.len() <= cap,
-        "drop-oldest must retain at most capacity ({cap}), retained {}",
-        got.len()
-    );
-    for w in got.windows(2) {
-        assert!(w[0] < w[1], "FIFO order must hold among survivors: {w:?}");
-    }
-    assert_eq!(
-        *got.last().unwrap(),
-        n - 1,
-        "newest message ({}) must survive drop-oldest",
-        n - 1
-    );
-    assert!(
-        got.iter().all(|&v| v >= n - cap as u64),
-        "survivors must be the most-recent {cap} messages: {got:?}"
-    );
-    assert_eq!(ring.try_recv(), None, "ring must be empty after draining");
-}
-
 // ============================================================================
 // 31. FIFO ordering with 200+ messages — all ring variants
 // ============================================================================
 
-#[test]
-fn spmc_ring_fifo_ordering_200_messages() {
-    let ring = SpmcRing::<u64>::new(256);
-    for i in 0..200u64 {
-        ring.try_send(i).unwrap();
-    }
-    for i in 0..200u64 {
-        assert_eq!(
-            ring.try_recv(),
-            Some(i),
-            "SPMC FIFO violation at message {}",
-            i
-        );
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-#[test]
-fn mpsc_ring_fifo_ordering_200_messages() {
-    // Single producer for deterministic FIFO check
-    let ring = MpscRing::<u64>::new(256);
-    for i in 0..200u64 {
-        ring.try_send(i).unwrap();
-    }
-    for i in 0..200u64 {
-        assert_eq!(
-            ring.try_recv(),
-            Some(i),
-            "MPSC FIFO violation at message {}",
-            i
-        );
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-#[test]
-fn mpmc_ring_fifo_ordering_200_messages() {
-    // Single producer, single consumer for deterministic FIFO check
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 256);
-    for i in 0..200u64 {
-        ring.try_send(i).unwrap();
-    }
-    for i in 0..200u64 {
-        assert_eq!(
-            ring.try_recv(),
-            Some(i),
-            "MPMC FIFO violation at message {}",
-            i
-        );
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
 // ============================================================================
 // 32. read_latest under full ring — robotics "freshest sensor data" pattern
 // ============================================================================
-
-#[test]
-fn read_latest_full_ring_spsc_returns_newest() {
-    let ring = SpscRing::<u64>::new(8);
-    // Fill ring completely
-    for i in 0..8u64 {
-        ring.try_send(i).unwrap();
-    }
-    // Sensor pattern: read_latest should return the freshest value
-    assert_eq!(
-        ring.read_latest(),
-        Some(7),
-        "SPSC: should return newest sensor reading"
-    );
-    // Consumer not advanced — all messages still available
-    assert_eq!(ring.pending_count(), 8);
-    assert_eq!(ring.try_recv(), Some(0));
-}
-
-#[test]
-fn read_latest_full_ring_spmc_returns_newest() {
-    let ring = SpmcRing::<u64>::new(8);
-    for i in 0..8u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert_eq!(
-        ring.read_latest(),
-        Some(7),
-        "SPMC: should return newest sensor reading"
-    );
-    assert_eq!(ring.pending_count(), 8);
-}
-
-#[test]
-fn read_latest_full_ring_mpsc_returns_newest() {
-    let ring = MpscRing::<u64>::new(8);
-    for i in 0..8u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert_eq!(
-        ring.read_latest(),
-        Some(7),
-        "MPSC: should return newest sensor reading"
-    );
-    assert_eq!(ring.pending_count(), 8);
-}
-
-#[test]
-fn read_latest_after_partial_drain_returns_newest() {
-    // Simulates: sensor publishes 8 readings, controller drains 5,
-    // sensor publishes 3 more, controller read_latest gets freshest
-    let ring = SpscRing::<u64>::new(8);
-    for i in 0..8u64 {
-        ring.try_send(i).unwrap();
-    }
-    // Controller drains 5
-    for _ in 0..5 {
-        ring.try_recv().unwrap();
-    }
-    // Sensor publishes 3 more
-    for i in 100..103u64 {
-        ring.try_send(i).unwrap();
-    }
-    // read_latest should return the newest of the remaining (102)
-    assert_eq!(ring.read_latest(), Some(102));
-    // Consumer should still start from the oldest unconsumed (5)
-    assert_eq!(ring.try_recv(), Some(5));
-}
 
 // ============================================================================
 // 33. Intra-process dispatch: explicit backend mode verification
@@ -4020,7 +3122,7 @@ fn dispatch_cross_thread_migrates_to_spsc_intra() {
     let recv_name = name.clone();
     let handle = test_spawn(move || {
         let sub_t: Topic<u64> = Topic::new(&recv_name).expect("sub");
-        // First recv triggers migration to SpscIntra
+        // First recv triggers migration to SpscShm
         let _ = sub_t.recv();
         sub_t.mode()
     });
@@ -4031,8 +3133,8 @@ fn dispatch_cross_thread_migrates_to_spsc_intra() {
 
     let mode = handle.join().unwrap();
     assert!(
-        mode == BackendMode::SpscIntra || mode == BackendMode::SpscShm,
-        "Cross-thread 1p1c should migrate to SpscIntra or SpscShm, got {:?}",
+        mode == BackendMode::SpscShm || mode == BackendMode::SpscShm,
+        "Cross-thread 1p1c should migrate to SpscShm or SpscShm, got {:?}",
         mode
     );
 }
@@ -4076,45 +3178,6 @@ fn dispatch_cross_thread_mpsc_mode() {
 // ============================================================================
 // 34. Wraparound correctness — all ring variants (multiple fill-drain cycles)
 // ============================================================================
-
-#[test]
-fn spmc_ring_wraparound() {
-    let ring = SpmcRing::<u32>::new(4);
-    for round in 0..10u32 {
-        for i in 0..4 {
-            ring.try_send(round * 4 + i).unwrap();
-        }
-        for i in 0..4 {
-            assert_eq!(ring.try_recv(), Some(round * 4 + i));
-        }
-    }
-}
-
-#[test]
-fn mpsc_ring_wraparound() {
-    let ring = MpscRing::<u32>::new(4);
-    for round in 0..10u32 {
-        for i in 0..4 {
-            ring.try_send(round * 4 + i).unwrap();
-        }
-        for i in 0..4 {
-            assert_eq!(ring.try_recv(), Some(round * 4 + i));
-        }
-    }
-}
-
-#[test]
-fn mpmc_ring_wraparound() {
-    let ring = fanout::FanoutRing::<u32>::new(4, 4, 4);
-    for round in 0..10u32 {
-        for i in 0..4 {
-            ring.try_send(round * 4 + i).unwrap();
-        }
-        for i in 0..4 {
-            assert_eq!(ring.try_recv(), Some(round * 4 + i));
-        }
-    }
-}
 
 // ============================================================================
 // 35. SHM POD byte-for-byte integrity (robotics sensor data pattern)
@@ -4539,7 +3602,13 @@ fn header_with_topology(
     h
 }
 
-// --- Path 1: 0 pubs, 0 subs → Unknown ---
+// Every topic is SHM-backed, so `detect_optimal_backend` routes purely on
+// (pubs, subs, is_pod): 1:1 → SpscShm; multi-producer/≤1-consumer → MpscShm;
+// 1→many / 0→many / MPMC POD broadcast → PodShm; non-POD multi-consumer →
+// FanoutShm. The same_process/same_thread fixture flags no longer affect the
+// decision (they are retained only so the helper signature is unchanged).
+
+// --- 0 pubs, 0 subs → Unknown ---
 
 #[test]
 fn detect_backend_zero_participants() {
@@ -4547,80 +3616,74 @@ fn detect_backend_zero_participants() {
     assert_eq!(h.detect_optimal_backend(), BackendMode::Unknown);
 }
 
-// --- Path 2: Same thread, 1P, 1C, POD → DirectChannel ---
+// --- 1P, 1C, POD → SpscShm ---
 
 #[test]
-fn detect_backend_same_thread_1p1c_pod_direct_channel() {
-    // Robotics: node internal feedback loop (e.g., PID controller self-test)
+fn detect_backend_1p1c_pod_spsc_shm() {
     let h = header_with_topology(1, 1, true, true, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::DirectChannel);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
 }
 
-// --- Path 3: Same process, different thread, 1P 1C → SpscIntra ---
+// --- 1P, 1C (different thread) → SpscShm ---
 
 #[test]
-fn detect_backend_same_process_diff_thread_1p1c_spsc() {
-    // Robotics: sensor thread → processing thread
+fn detect_backend_1p1c_diff_thread_spsc_shm() {
     let h = header_with_topology(1, 1, true, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
 }
 
-// --- Path 4: Same process, 1P 0C → SpscIntra (anticipating single consumer) ---
+// --- 1P, 0C → SpscShm (anticipating single consumer) ---
 
 #[test]
-fn detect_backend_same_process_1p0c_spsc() {
+fn detect_backend_1p0c_spsc_shm() {
     let h = header_with_topology(1, 0, true, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
 }
 
-// --- Path 5: Same process, 0P 1C → SpscIntra (anticipating single producer) ---
+// --- 0P, 1C → SpscShm (anticipating single producer) ---
 
 #[test]
-fn detect_backend_same_process_0p1c_spsc() {
+fn detect_backend_0p1c_spsc_shm() {
     let h = header_with_topology(0, 1, true, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscIntra);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
 }
 
-// --- Path 6: Same process, 1P, >1C → FanoutIntra (broadcast semantics) ---
+// --- 1P, >1C, POD → PodShm (broadcast on the shared ring) ---
 
 #[test]
-fn detect_backend_same_process_1p_multi_c_fanout() {
-    // Robotics: single sensor → controller + logger + visualizer
-    // FanoutIntra gives each subscriber its own SPSC channel (broadcast).
-    // SpmcIntra has competing consumers — one fast consumer starves others.
+fn detect_backend_1p_multi_c_pod_broadcast() {
+    // Single sensor → controller + logger + visualizer. POD broadcast lands on
+    // PodShm (each subscriber gets every message), NOT competing SpmcShm.
     let h = header_with_topology(1, 3, true, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutIntra);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
 }
 
-// --- Path 7: Same process, >1P, 1C → MpscIntra ---
+// --- >1P, 1C → MpscShm ---
 
 #[test]
-fn detect_backend_same_process_multi_p_1c_mpsc() {
-    // Robotics: multiple sensors → single fusion node
+fn detect_backend_multi_p_1c_mpsc_shm() {
+    // Multiple sensors → single fusion node.
     let h = header_with_topology(3, 1, true, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::MpscIntra);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::MpscShm);
 }
 
-// --- Path 8: Same process, >1P, >1C → FanoutIntra ---
+// --- >1P, >1C, POD → PodShm broadcast ---
 
 #[test]
-fn detect_backend_same_process_multi_p_multi_c_mpmc() {
-    // Robotics: multiple sensors → multiple consumers
-    // Now uses FanoutIntra (contention-free SPSC matrix) instead of old FanoutIntra
+fn detect_backend_mpmc_pod_pod_shm() {
     let h = header_with_topology(2, 2, true, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutIntra);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
 }
 
-// --- Path 9: Cross process, 1P 1C → SpscShm ---
+// --- 1P, 1C → SpscShm ---
 
 #[test]
 fn detect_backend_cross_process_1p1c_spsc_shm() {
-    // Robotics: separate node processes communicating over SHM
     let h = header_with_topology(1, 1, false, false, true);
     assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
 }
 
-// --- Path 10: Cross process, >1P, 1C → MpscShm ---
+// --- >1P, 1C → MpscShm ---
 
 #[test]
 fn detect_backend_cross_process_multi_p_1c_mpsc_shm() {
@@ -4628,16 +3691,15 @@ fn detect_backend_cross_process_multi_p_1c_mpsc_shm() {
     assert_eq!(h.detect_optimal_backend(), BackendMode::MpscShm);
 }
 
-// --- Path 11: Cross process, 1P, >1C → FanoutShm (broadcast semantics) ---
+// --- 1P, >1C, POD → PodShm broadcast ---
 
 #[test]
-fn detect_backend_cross_process_1p_multi_c_fanout_shm() {
-    // FanoutShm gives each subscriber its own SPSC channel in SHM.
+fn detect_backend_cross_process_1p_multi_c_pod_shm() {
     let h = header_with_topology(1, 3, false, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutShm);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
 }
 
-// --- Path 12: Cross process, >1P, >1C, POD → PodShm ---
+// --- >1P, >1C, POD → PodShm ---
 
 #[test]
 fn detect_backend_cross_process_mpmc_pod_shm() {
@@ -4645,41 +3707,31 @@ fn detect_backend_cross_process_mpmc_pod_shm() {
     assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
 }
 
-// --- Path 13: Cross process, >1P, >1C, non-POD → FanoutShm ---
+// --- >1P, >1C, non-POD → FanoutShm ---
 
 #[test]
-fn detect_backend_cross_process_mpmc_non_pod_mpmc_shm() {
+fn detect_backend_cross_process_mpmc_non_pod_fanout_shm() {
     let h = header_with_topology(2, 2, false, false, false);
     assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutShm);
 }
 
-// --- Same-thread non-POD: still DirectChannel when 1p1c ---
+// --- 1P, 1C, non-POD → SpscShm ---
 
 #[test]
-fn detect_backend_same_thread_1p1c_non_pod_still_direct_channel() {
-    // POD flag only matters for SHM path selection, not same-thread
+fn detect_backend_1p1c_non_pod_spsc_shm() {
     let h = header_with_topology(1, 1, true, true, false);
-    // Same-thread 1p1c with non-POD: the detection checks `is_pod` first
-    // According to the match, (true, _, 1, 1, true) → DirectChannel
-    // For non-POD: (true, _, 1, 1, false) does NOT match DirectChannel arm
-    // Falls through to (_, true, 1, 1, _) → SpscIntra
-    let mode = h.detect_optimal_backend();
-    assert!(
-        mode == BackendMode::DirectChannel || mode == BackendMode::SpscIntra,
-        "Same-thread 1p1c non-POD should be DC or SpscIntra, got {:?}",
-        mode
-    );
+    assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
 }
 
-// --- Cross process, 0P >1C → FanoutShm (anticipating, broadcast) ---
+// --- 0P, >1C, POD → PodShm broadcast (anticipating single producer) ---
 
 #[test]
-fn detect_backend_cross_process_0p_multi_c_fanout_shm() {
+fn detect_backend_cross_process_0p_multi_c_pod_shm() {
     let h = header_with_topology(0, 3, false, false, true);
-    assert_eq!(h.detect_optimal_backend(), BackendMode::FanoutShm);
+    assert_eq!(h.detect_optimal_backend(), BackendMode::PodShm);
 }
 
-// --- Cross process, >1P 0C → MpscShm (anticipating) ---
+// --- >1P, 0C → MpscShm (anticipating single consumer) ---
 
 #[test]
 fn detect_backend_cross_process_multi_p_0c_mpsc_shm() {
@@ -5412,196 +4464,6 @@ fn topic_multiple_recv_consumers_independent() {
 // Section 47: Ring buffer edge cases — wrap-around, max sequence, capacity
 // ============================================================================
 
-/// Boundary-precise wrap-around: messages crossing exact capacity boundary.
-/// With capacity=64, send messages 60-70 and verify all arrive correctly.
-/// Robotics: long-running robots continuously send sensor data — wrapping must be seamless.
-#[test]
-fn ring_boundary_precise_wraparound_spsc() {
-    let ring = SpscRing::<u64>::new(64);
-    // Fill to position 60 (drain immediately to advance head+tail)
-    for i in 0..60u64 {
-        ring.try_send(i).unwrap();
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    // Now head=60, tail=60. Send messages 60-70 crossing the capacity=64 boundary.
-    for i in 60..70u64 {
-        assert!(ring.try_send(i).is_ok(), "failed to send at seq {}", i);
-    }
-    // Receive and verify FIFO across the boundary
-    for i in 60..70u64 {
-        let msg = ring
-            .try_recv()
-            .unwrap_or_else(|| panic!("expected message {}", i));
-        assert_eq!(msg, i, "wrong value at seq {}: got {}", i, msg);
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-/// Boundary wrap for MPSC ring — multiple producers crossing boundary.
-#[test]
-fn ring_boundary_precise_wraparound_mpsc() {
-    let ring = MpscRing::<u64>::new(64);
-    // Advance to near boundary
-    for i in 0..60u64 {
-        ring.try_send(i).unwrap();
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    // Send across boundary
-    for i in 60..75u64 {
-        assert!(ring.try_send(i).is_ok(), "failed to send at seq {}", i);
-    }
-    for i in 60..75u64 {
-        let msg = ring
-            .try_recv()
-            .unwrap_or_else(|| panic!("expected message {}", i));
-        assert_eq!(msg, i);
-    }
-}
-
-/// Extended SPSC ring stress: thousands of send/recv cycles to exercise
-/// slot index masking and internal sequence arithmetic over long runs.
-/// Robotics: 24/7 robots running at 1kHz produce billions of messages;
-/// ring index calculation (sequence & mask) must never produce out-of-bounds slots.
-#[test]
-fn ring_extended_sequence_stress_spsc() {
-    let ring = SpscRing::<u64>::new(16);
-    // Run 10,000 send+recv pairs — sequences go well past ring capacity,
-    // exercising the wrapping_add and mask arithmetic repeatedly.
-    for i in 0..10_000u64 {
-        assert!(ring.try_send(i).is_ok(), "failed to send at seq {}", i);
-        let msg = ring
-            .try_recv()
-            .unwrap_or_else(|| panic!("expected msg {}", i));
-        assert_eq!(
-            msg, i,
-            "data corruption at sequence {}: expected {} got {}",
-            i, i, msg
-        );
-    }
-
-    // Also verify batch fill/drain across many cycles
-    for cycle in 0..500u64 {
-        let base = 10_000 + cycle * 16;
-        for j in 0..16u64 {
-            assert!(
-                ring.try_send(base + j).is_ok(),
-                "fill failed cycle {} slot {}",
-                cycle,
-                j
-            );
-        }
-        // Ring should be full
-        assert!(
-            ring.try_send(0xDEAD).is_err(),
-            "ring should be full at cycle {}",
-            cycle
-        );
-        for j in 0..16u64 {
-            let msg = ring
-                .try_recv()
-                .unwrap_or_else(|| panic!("drain failed cycle {} slot {}", cycle, j));
-            assert_eq!(msg, base + j, "corruption cycle {} slot {}", cycle, j);
-        }
-        // Ring should be empty
-        assert_eq!(
-            ring.try_recv(),
-            None,
-            "ring should be empty after drain cycle {}",
-            cycle
-        );
-    }
-}
-
-/// Extended wraparound for MPSC ring — 100 full fill-drain cycles.
-/// MP rings use CAS-based sequences that must remain correct over long runs.
-#[test]
-fn ring_extended_wraparound_mpsc() {
-    let ring = MpscRing::<u64>::new(16);
-    for round in 0..100u64 {
-        let base = round * 16;
-        for i in 0..16u64 {
-            assert!(
-                ring.try_send(base + i).is_ok(),
-                "failed at round {} msg {}",
-                round,
-                i
-            );
-        }
-        for i in 0..16u64 {
-            let msg = ring
-                .try_recv()
-                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
-            assert_eq!(msg, base + i);
-        }
-    }
-}
-
-/// Extended wraparound for SPMC ring — 100 full fill-drain cycles.
-#[test]
-fn ring_extended_wraparound_spmc() {
-    let ring = SpmcRing::<u64>::new(16);
-    for round in 0..100u64 {
-        let base = round * 16;
-        for i in 0..16u64 {
-            assert!(
-                ring.try_send(base + i).is_ok(),
-                "failed at round {} msg {}",
-                round,
-                i
-            );
-        }
-        for i in 0..16u64 {
-            let msg = ring
-                .try_recv()
-                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
-            assert_eq!(msg, base + i);
-        }
-    }
-}
-
-/// Extended wraparound for MPMC ring — 100 full fill-drain cycles.
-#[test]
-fn ring_extended_wraparound_mpmc() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 16);
-    for round in 0..100u64 {
-        let base = round * 16;
-        for i in 0..16u64 {
-            assert!(
-                ring.try_send(base + i).is_ok(),
-                "failed at round {} msg {}",
-                round,
-                i
-            );
-        }
-        for i in 0..16u64 {
-            let msg = ring
-                .try_recv()
-                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
-            assert_eq!(msg, base + i);
-        }
-    }
-}
-
-/// Single-element ring: capacity=1 provides latest-only semantic.
-/// Each send overwrites the only slot. Used for "current state" topics like robot pose.
-#[test]
-fn ring_single_element_capacity_1() {
-    // SpscRing rounds up to power of 2, so capacity=1 → 1 slot
-    let ring = SpscRing::<u64>::new(1);
-
-    // Send fills the single slot
-    ring.try_send(10).unwrap();
-    // Ring is now full (1 slot used)
-    assert!(ring.try_send(20).is_err());
-
-    // Recv drains
-    assert_eq!(ring.try_recv(), Some(10));
-
-    // Send again
-    ring.try_send(30).unwrap();
-    assert_eq!(ring.try_recv(), Some(30));
-}
-
 /// Power-of-two enforcement at Topic level: odd capacities rounded up.
 /// with_capacity(17) → 32, with_capacity(33) → 64, with_capacity(100) → 128.
 #[test]
@@ -5682,34 +4544,6 @@ fn topic_capacity_1_latest_only_semantic() {
     );
 }
 
-/// Sustained wraparound: 10,000 send/recv cycles (each a full capacity fill-drain).
-/// Tests cumulative index correctness over extended operation.
-#[test]
-fn ring_sustained_10k_wraparound_cycles() {
-    let ring = SpscRing::<u64>::new(16);
-    for round in 0..10_000u64 {
-        let base = round * 16;
-        for i in 0..16u64 {
-            assert!(
-                ring.try_send(base + i).is_ok(),
-                "failed at round {} msg {}",
-                round,
-                i
-            );
-        }
-        for i in 0..16u64 {
-            let msg = ring
-                .try_recv()
-                .unwrap_or_else(|| panic!("missing at round {} msg {}", round, i));
-            assert_eq!(msg, base + i, "wrong value at round {} msg {}", round, i);
-        }
-    }
-    // After 160,000 messages, ring should be empty and functional
-    assert_eq!(ring.try_recv(), None);
-    ring.try_send(999).unwrap();
-    assert_eq!(ring.try_recv(), Some(999));
-}
-
 // ============================================================================
 // 48. Epoch Guard and Housekeeping in Dispatch
 // ============================================================================
@@ -5752,7 +4586,7 @@ fn epoch_detected_via_check_migration_now() {
     let epoch_before = t1.ring.local().cached_epoch;
 
     // t2 migrates — SHM epoch advances, process_epoch advances
-    let result = t2.force_migrate(BackendMode::FanoutIntra);
+    let result = t2.force_migrate(BackendMode::FanoutShm);
     assert!(matches!(result, MigrationResult::Success { .. }));
 
     let shm_epoch = t1.ring.header().migration_epoch.load(Ordering::Acquire);
@@ -5792,7 +4626,7 @@ fn check_migration_now_resyncs_epoch() {
 
     // t2 migrates — SHM epoch advances, process_epoch advances,
     // but t1's cached_epoch stays at baseline
-    let _ = t2.force_migrate(BackendMode::FanoutIntra);
+    let _ = t2.force_migrate(BackendMode::FanoutShm);
     let shm_after = t1.ring.header().migration_epoch.load(Ordering::Acquire);
     assert!(shm_after > baseline_epoch, "SHM epoch should advance");
 
@@ -5832,12 +4666,14 @@ fn rapid_topology_changes_detected_via_check() {
     let _ = t2.recv();
     t1.check_migration_now();
 
+    // Avoid SpscShm here: it is the 1P:1C auto-optimal for this topology, so
+    // forcing it can be a no-op (NotNeeded) if the topic already settled there.
     let modes = [
-        BackendMode::FanoutIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::SpscIntra,
-        BackendMode::FanoutIntra,
+        BackendMode::FanoutShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
+        BackendMode::PodShm,
+        BackendMode::FanoutShm,
     ];
 
     for (round, &mode) in modes.iter().enumerate() {
@@ -5864,7 +4700,7 @@ fn rapid_topology_changes_detected_via_check() {
     }
 }
 
-/// Housekeeping fires after LEASE_REFRESH_INTERVAL (1024) messages on SpscIntra.
+/// Housekeeping fires after LEASE_REFRESH_INTERVAL (1024) messages on SpscShm.
 /// Verified by sending >1024 messages with periodic drain (ring capacity = 512).
 /// In a real robot, lease refresh happens ~once per second at 1kHz.
 #[test]
@@ -5872,10 +4708,10 @@ fn housekeeping_fires_after_lease_refresh_interval() {
     let name = unique("hkeep_lease");
     let t: Topic<u64> = Topic::new(&name).expect("create");
 
-    // Initialize and migrate to SpscIntra for lease-based housekeeping
+    // Initialize and migrate to SpscShm for lease-based housekeeping
     t.send(0);
     let _ = t.recv();
-    let _ = t.force_migrate(BackendMode::SpscIntra);
+    let _ = t.force_migrate(BackendMode::SpscShm);
     t.check_migration_now();
 
     // Reset msg_counter for clean measurement
@@ -5964,7 +4800,7 @@ fn housekeeping_sustained_100k_messages_no_skip() {
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
-    let _ = t.force_migrate(BackendMode::SpscIntra);
+    let _ = t.force_migrate(BackendMode::SpscShm);
     t.check_migration_now();
 
     let total = 100_000u64;
@@ -6000,11 +4836,13 @@ fn dispatch_rewired_after_external_migration_and_check() {
     let _ = t2.recv();
     t1.check_migration_now();
 
+    // Avoid SpscShm here: it is the 1P:1C auto-optimal for this topology, so
+    // forcing it can be a no-op (NotNeeded) if the topic already settled there.
     let backends = [
-        (BackendMode::FanoutIntra, "MPMC"),
-        (BackendMode::SpmcIntra, "SPMC"),
-        (BackendMode::MpscIntra, "MPSC"),
-        (BackendMode::SpscIntra, "SPSC"),
+        (BackendMode::FanoutShm, "MPMC"),
+        (BackendMode::SpmcShm, "SPMC"),
+        (BackendMode::MpscShm, "MPSC"),
+        (BackendMode::PodShm, "POD"),
     ];
 
     for (mode, label) in backends {
@@ -6039,7 +4877,7 @@ fn epoch_guard_preserves_fifo_within_epoch() {
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
-    let _ = t.force_migrate(BackendMode::SpscIntra);
+    let _ = t.force_migrate(BackendMode::SpscShm);
     t.check_migration_now();
 
     // Send a sequence of messages within this epoch
@@ -6083,7 +4921,7 @@ fn cached_epoch_diverges_and_resyncs() {
     let synced_epoch = t1.ring.local().cached_epoch;
 
     // t2 migrates — SHM epoch advances
-    let _ = t2.force_migrate(BackendMode::FanoutIntra);
+    let _ = t2.force_migrate(BackendMode::FanoutShm);
     let new_shm = t1.ring.header().migration_epoch.load(Ordering::Acquire);
     assert!(new_shm > synced_epoch, "SHM should advance");
 
@@ -6596,7 +5434,7 @@ fn migration_lock_concurrent_one_winner() {
     let t1_clone = t1.clone();
     let h1 = test_spawn(move || {
         b1.wait();
-        let result = t1_clone.force_migrate(BackendMode::FanoutIntra);
+        let result = t1_clone.force_migrate(BackendMode::FanoutShm);
         r1.lock().unwrap().push(result);
     });
 
@@ -6605,7 +5443,7 @@ fn migration_lock_concurrent_one_winner() {
     let t2_clone = t2.clone();
     let h2 = test_spawn(move || {
         b2.wait();
-        let result = t2_clone.force_migrate(BackendMode::SpscIntra);
+        let result = t2_clone.force_migrate(BackendMode::SpscShm);
         r2.lock().unwrap().push(result);
     });
 
@@ -6662,7 +5500,7 @@ fn migration_lock_sequential_different_threads() {
 
     // First migration in a spawned thread
     let t1c = t1.clone();
-    let h = test_spawn(move || t1c.force_migrate(BackendMode::FanoutIntra));
+    let h = test_spawn(move || t1c.force_migrate(BackendMode::FanoutShm));
     let result1 = h.join().unwrap();
     assert!(
         matches!(result1, MigrationResult::Success { .. }),
@@ -6672,7 +5510,7 @@ fn migration_lock_sequential_different_threads() {
 
     // Lock must be released — second migration in another thread
     let t1c = t1.clone();
-    let h = test_spawn(move || t1c.force_migrate(BackendMode::SpscIntra));
+    let h = test_spawn(move || t1c.force_migrate(BackendMode::SpscShm));
     let result2 = h.join().unwrap();
     assert!(
         matches!(result2, MigrationResult::Success { .. }),
@@ -6976,7 +5814,7 @@ fn spsc_to_spmc_consumer_join_exactly_once() {
 
 /// Multi-subscriber BROADCAST (softmata-brain 1327): a HORUS SHM topic with 1
 /// publisher and multiple subscribers delivers EVERY message to EVERY subscriber
-/// independently (ROS 2-style pub/sub), matching intra-process (FanoutIntra) and
+/// independently (ROS 2-style pub/sub), matching intra-process (FanoutShm) and
 /// cross-process (FanoutShm). The same-process SHM detector previously mis-selected
 /// the COMPETING SpmcShm here (shared tail, consumers race — one starves the rest),
 /// which is wrong for pub/sub; fixed to fall through to PodShm (POD) / FanoutShm
@@ -7305,7 +6143,7 @@ fn force_migrate_swaps_backend_and_epoch() {
     let mode_before = t1.ring.header().mode();
 
     // t2 force-migrates to a different mode
-    let result = t2.force_migrate(BackendMode::FanoutIntra);
+    let result = t2.force_migrate(BackendMode::FanoutShm);
     assert!(
         matches!(result, MigrationResult::Success { .. }),
         "force_migrate should succeed: {:?}",
@@ -7323,7 +6161,7 @@ fn force_migrate_swaps_backend_and_epoch() {
 
     // SHM mode changed
     let mode_after = t1.ring.header().mode();
-    assert_eq!(mode_after, BackendMode::FanoutIntra);
+    assert_eq!(mode_after, BackendMode::FanoutShm);
     assert_ne!(mode_before, mode_after, "Mode should change");
 
     // t1 detects epoch change via check_migration_now and re-initializes dispatch
@@ -7357,7 +6195,7 @@ fn epoch_propagation_via_process_epoch() {
     let epoch_base = t1.ring.local().cached_epoch;
 
     // t1 migrates
-    let _ = t1.force_migrate(BackendMode::FanoutIntra);
+    let _ = t1.force_migrate(BackendMode::FanoutShm);
 
     // t2 and t3 detect via check_migration_now
     t2.check_migration_now();
@@ -7511,7 +6349,7 @@ fn check_migration_now_immediate_dispatch_swap() {
     let epoch_before = t1.ring.local().cached_epoch;
 
     // t2 migrates — epoch advances in SHM
-    let _ = t2.force_migrate(BackendMode::FanoutIntra);
+    let _ = t2.force_migrate(BackendMode::FanoutShm);
 
     // t1 hasn't sent 4096 messages, so amortized check won't fire.
     // But check_migration_now should detect immediately.
@@ -7543,10 +6381,10 @@ fn epoch_increments_exactly_once_per_migration() {
     let _ = t.recv();
 
     let modes = [
-        BackendMode::FanoutIntra,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
+        BackendMode::PodShm,
+        BackendMode::SpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
         BackendMode::FanoutShm,
     ];
 
@@ -7731,53 +6569,6 @@ fn different_topic_names_are_independent() {
 // ============================================================================
 
 #[test]
-fn registry_store_and_lookup() {
-    let name = &unique("reg_store");
-    let backend: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(8));
-    let stored = registry::store_or_get_backend(name, 100, backend.clone());
-    // Should return the same Arc (same pointer)
-    assert!(Arc::ptr_eq(&stored, &backend));
-
-    // Lookup should find it
-    let found = registry::lookup_backend(name, 100);
-    assert!(found.is_some());
-    assert!(Arc::ptr_eq(&found.unwrap(), &backend));
-}
-
-#[test]
-fn registry_store_deduplicates() {
-    let name = &unique("reg_dedup");
-    let first: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(8));
-    let second: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(8));
-
-    let stored1 = registry::store_or_get_backend(name, 200, first.clone());
-    let stored2 = registry::store_or_get_backend(name, 200, second.clone());
-
-    // Both should return the FIRST backend (first-writer-wins)
-    assert!(Arc::ptr_eq(&stored1, &first));
-    assert!(Arc::ptr_eq(&stored2, &first));
-}
-
-#[test]
-fn registry_lookup_missing_returns_none() {
-    let found = registry::lookup_backend("nonexistent_topic_xyz", 999);
-    assert!(found.is_none());
-}
-
-#[test]
-fn registry_remove_topic() {
-    let name = &unique("reg_remove");
-    let backend: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(4));
-    registry::store_or_get_backend(name, 300, backend);
-
-    assert!(registry::lookup_backend(name, 300).is_some());
-
-    registry::remove_topic(name);
-
-    assert!(registry::lookup_backend(name, 300).is_none());
-}
-
-#[test]
 fn registry_epoch_notify_store_and_load() {
     let name = &unique("reg_epoch");
     let epoch = registry::get_or_create_process_epoch(name);
@@ -7794,23 +6585,6 @@ fn registry_epoch_get_or_create_is_idempotent() {
     let e2 = registry::get_or_create_process_epoch(name);
     // Same Arc — same underlying AtomicU64
     assert!(Arc::ptr_eq(&e1, &e2));
-}
-
-#[test]
-fn registry_different_epochs_coexist() {
-    let name = &unique("reg_multi_epoch");
-    let b1: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u32>::new(4));
-    let b2: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u32>::new(8));
-
-    registry::store_or_get_backend(name, 1, b1.clone());
-    registry::store_or_get_backend(name, 2, b2.clone());
-
-    let found1 = registry::lookup_backend(name, 1);
-    let found2 = registry::lookup_backend(name, 2);
-    assert!(found1.is_some());
-    assert!(found2.is_some());
-    assert!(Arc::ptr_eq(&found1.unwrap(), &b1));
-    assert!(Arc::ptr_eq(&found2.unwrap(), &b2));
 }
 
 // ============================================================================
@@ -8435,7 +7209,7 @@ fn crash_full_ring_recovery() {
 /// or produce corrupted data.
 ///
 /// Topic handles are created on the main thread so the adaptive backend
-/// migration (DirectChannel → SpscIntra) completes before threads start
+/// migration (DirectChannel → SpscShm) completes before threads start
 /// sending and receiving.
 #[test]
 fn crash_concurrent_send_recv_no_corruption() {
@@ -8443,7 +7217,7 @@ fn crash_concurrent_send_recv_no_corruption() {
     let barrier = Arc::new(Barrier::new(3));
 
     // Create both handles on the main thread to ensure the backend migration
-    // from DirectChannel to SpscIntra happens before any data transfer.
+    // from DirectChannel to SpscShm happens before any data transfer.
     let pub_t: Topic<u64> = Topic::new(&name).unwrap();
     let sub_t: Topic<u64> = Topic::new(&name).unwrap();
 
@@ -8555,54 +7329,24 @@ fn backend_mode_cross_process_variants() {
             "{:?} should be cross-process",
             mode
         );
-        assert!(
-            !mode.is_intra_process(),
-            "{:?} should NOT be intra-process",
-            mode
-        );
     }
 }
 
-/// BackendMode::is_intra_process returns true for all heap variants.
+/// BackendMode::Unknown is not a cross-process backend.
 #[test]
-fn backend_mode_intra_process_variants() {
-    let intra = [
-        BackendMode::DirectChannel,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::FanoutIntra,
-    ];
-    for mode in &intra {
-        assert!(
-            mode.is_intra_process(),
-            "{:?} should be intra-process",
-            mode
-        );
-        assert!(
-            !mode.is_cross_process(),
-            "{:?} should NOT be cross-process",
-            mode
-        );
-    }
-}
-
-/// BackendMode::Unknown is neither cross nor intra process.
-#[test]
-fn backend_mode_unknown_is_neither() {
+fn backend_mode_unknown_is_not_cross_process() {
     assert!(!BackendMode::Unknown.is_cross_process());
-    assert!(!BackendMode::Unknown.is_intra_process());
 }
 
 /// BackendMode roundtrip: variant → u8 → variant.
 #[test]
 fn backend_mode_u8_roundtrip() {
     let modes = [
-        BackendMode::DirectChannel,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::FanoutIntra,
+        BackendMode::PodShm,
+        BackendMode::SpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
+        BackendMode::FanoutShm,
         BackendMode::PodShm,
         BackendMode::MpscShm,
         BackendMode::SpmcShm,
@@ -8646,7 +7390,7 @@ fn dispatch_pod_type_same_thread_direct_channel() {
     assert_eq!(t.ring.local().cached_mode, BackendMode::SpscShm);
 }
 
-/// Non-POD type (String) uses SpscIntra on same thread (DirectChannel is POD-only).
+/// Non-POD type (String) uses SpscShm on same thread (DirectChannel is POD-only).
 #[test]
 fn dispatch_serde_type_same_thread_spsc_intra() {
     let name = unique("dispatch_serde_spsc");
@@ -9321,352 +8065,15 @@ fn send_blocking_cross_thread_producer_consumer() {
 
 // -- SPSC Ring Edge Cases --
 
-/// SPSC: single-slot ring — fill, drain, refill cycle.
-#[test]
-fn spsc_ring_single_slot() {
-    let ring = spsc_intra::SpscRing::<u64>::new(1);
-    ring.try_send(42).unwrap();
-    assert!(ring.try_send(43).is_err()); // full
-    assert_eq!(ring.try_recv(), Some(42));
-    assert_eq!(ring.try_recv(), None); // empty
-    ring.try_send(99).unwrap(); // refill
-    assert_eq!(ring.try_recv(), Some(99));
-}
-
-/// SPSC: exact capacity fill and drain.
-#[test]
-fn spsc_ring_exact_capacity_fill_drain() {
-    let cap = 16u32;
-    let ring = spsc_intra::SpscRing::<u64>::new(cap);
-
-    // Fill exactly to capacity
-    for i in 0..cap as u64 {
-        assert!(ring.try_send(i).is_ok(), "Send {} should succeed", i);
-    }
-    // Next send must fail (full)
-    assert!(ring.try_send(9999).is_err(), "Ring should be full");
-    assert_eq!(ring.pending_count(), cap as u64);
-
-    // Drain exactly
-    for i in 0..cap as u64 {
-        assert_eq!(ring.try_recv(), Some(i), "FIFO violation at {}", i);
-    }
-    assert_eq!(ring.try_recv(), None, "Ring should be empty");
-    assert_eq!(ring.pending_count(), 0);
-}
-
-/// SPSC: recv from empty ring returns None.
-#[test]
-fn spsc_ring_recv_empty() {
-    let ring = spsc_intra::SpscRing::<u64>::new(4);
-    assert_eq!(ring.try_recv(), None);
-    assert_eq!(ring.pending_count(), 0);
-}
-
-/// SPSC: multiple wrap-around cycles preserve FIFO.
-#[test]
-fn spsc_ring_multi_wraparound_fifo() {
-    let ring = spsc_intra::SpscRing::<u64>::new(4);
-    // 10 full cycles through a 4-slot ring
-    for cycle in 0..10u64 {
-        for i in 0..4u64 {
-            let val = cycle * 4 + i;
-            ring.try_send(val).unwrap();
-        }
-        for i in 0..4u64 {
-            let expected = cycle * 4 + i;
-            assert_eq!(ring.try_recv(), Some(expected));
-        }
-    }
-}
-
-/// SPSC: read_latest returns most recent without consuming.
-#[test]
-fn spsc_ring_read_latest_non_consuming() {
-    let ring = spsc_intra::SpscRing::<u64>::new(4);
-    ring.try_send(1).unwrap();
-    ring.try_send(2).unwrap();
-    ring.try_send(3).unwrap();
-
-    assert_eq!(ring.read_latest(), Some(3));
-    assert_eq!(ring.pending_count(), 3, "read_latest should not consume");
-}
-
-/// SPSC: pending_count tracks correctly during interleaved send/recv.
-#[test]
-fn spsc_ring_pending_count_interleaved() {
-    let ring = spsc_intra::SpscRing::<u64>::new(8);
-    assert_eq!(ring.pending_count(), 0);
-
-    ring.try_send(1).unwrap();
-    ring.try_send(2).unwrap();
-    assert_eq!(ring.pending_count(), 2);
-
-    ring.try_recv();
-    assert_eq!(ring.pending_count(), 1);
-
-    ring.try_send(3).unwrap();
-    ring.try_send(4).unwrap();
-    assert_eq!(ring.pending_count(), 3);
-}
-
 // -- MPSC Ring Edge Cases --
-
-/// MPSC: single-slot ring — send, recv, refill cycle.
-///
-/// Note: MPSC/MPMC rings use sequence-based slot tracking where capacity=1
-/// cannot distinguish "slot written" from "slot available" (both map to
-/// the same sequence value). So we test the send-recv-send cycle rather
-/// than asserting the second send fails while the first is unconsumed.
-#[test]
-fn mpsc_ring_single_slot() {
-    let ring = mpsc_intra::MpscRing::<u64>::new(1);
-    ring.try_send(42).unwrap();
-    assert_eq!(ring.try_recv(), Some(42));
-    assert_eq!(ring.try_recv(), None); // empty after drain
-                                       // Refill works
-    ring.try_send(99).unwrap();
-    assert_eq!(ring.try_recv(), Some(99));
-}
-
-/// MPSC: exact capacity fill and drain.
-#[test]
-fn mpsc_ring_exact_capacity_fill_drain() {
-    let cap = 16u32;
-    let ring = mpsc_intra::MpscRing::<u64>::new(cap);
-
-    for i in 0..cap as u64 {
-        assert!(ring.try_send(i).is_ok(), "Send {} should succeed", i);
-    }
-    assert!(ring.try_send(9999).is_err(), "Ring should be full");
-
-    for i in 0..cap as u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-/// MPSC: recv from empty ring returns None.
-#[test]
-fn mpsc_ring_recv_empty() {
-    let ring = mpsc_intra::MpscRing::<u64>::new(4);
-    assert_eq!(ring.try_recv(), None);
-}
-
-/// MPSC: multi-wraparound preserves ordering for single producer.
-#[test]
-fn mpsc_ring_multi_wraparound_fifo() {
-    let ring = mpsc_intra::MpscRing::<u64>::new(4);
-    for cycle in 0..10u64 {
-        for i in 0..4u64 {
-            let val = cycle * 4 + i;
-            ring.try_send(val).unwrap();
-        }
-        for i in 0..4u64 {
-            let expected = cycle * 4 + i;
-            assert_eq!(ring.try_recv(), Some(expected));
-        }
-    }
-}
-
-/// MPSC: read_latest returns most recent without consuming.
-#[test]
-fn mpsc_ring_read_latest_non_consuming() {
-    let ring = mpsc_intra::MpscRing::<u64>::new(4);
-    ring.try_send(10).unwrap();
-    ring.try_send(20).unwrap();
-    ring.try_send(30).unwrap();
-
-    assert_eq!(ring.read_latest(), Some(30));
-    assert_eq!(ring.pending_count(), 3);
-}
 
 // -- SPMC Ring Edge Cases --
 
-/// SPMC: single-slot ring — fill, drain, refill.
-#[test]
-fn spmc_ring_single_slot() {
-    let ring = spmc_intra::SpmcRing::<u64>::new(1);
-    ring.try_send(42).unwrap();
-    assert!(ring.try_send(43).is_err());
-    assert_eq!(ring.try_recv(), Some(42));
-    assert_eq!(ring.try_recv(), None);
-    ring.try_send(99).unwrap();
-    assert_eq!(ring.try_recv(), Some(99));
-}
-
-/// SPMC: exact capacity fill and drain.
-#[test]
-fn spmc_ring_exact_capacity_fill_drain() {
-    let cap = 16u32;
-    let ring = spmc_intra::SpmcRing::<u64>::new(cap);
-
-    for i in 0..cap as u64 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(9999).is_err());
-
-    for i in 0..cap as u64 {
-        assert_eq!(ring.try_recv(), Some(i));
-    }
-    assert_eq!(ring.try_recv(), None);
-}
-
-/// SPMC: recv from empty ring returns None.
-#[test]
-fn spmc_ring_recv_empty() {
-    let ring = spmc_intra::SpmcRing::<u64>::new(4);
-    assert_eq!(ring.try_recv(), None);
-}
-
-/// SPMC: multi-wraparound FIFO with single consumer.
-#[test]
-fn spmc_ring_multi_wraparound_fifo() {
-    let ring = spmc_intra::SpmcRing::<u64>::new(4);
-    for cycle in 0..10u64 {
-        for i in 0..4u64 {
-            ring.try_send(cycle * 4 + i).unwrap();
-        }
-        for i in 0..4u64 {
-            assert_eq!(ring.try_recv(), Some(cycle * 4 + i));
-        }
-    }
-}
-
-/// SPMC: read_latest returns most recent without consuming.
-#[test]
-fn spmc_ring_read_latest_non_consuming() {
-    let ring = spmc_intra::SpmcRing::<u64>::new(4);
-    ring.try_send(10).unwrap();
-    ring.try_send(20).unwrap();
-    ring.try_send(30).unwrap();
-
-    assert_eq!(ring.read_latest(), Some(30));
-    assert_eq!(ring.pending_count(), 3);
-}
-
 // -- MPMC Ring Edge Cases --
-
-/// MPMC: single-slot ring — send, recv, refill cycle.
-///
-/// Same caveat as MPSC: sequence-based rings with capacity=1 can't block
-/// a second send while the first is unconsumed.
-#[test]
-fn mpmc_ring_single_slot() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 1);
-    ring.try_send(42).unwrap();
-    assert_eq!(ring.try_recv(), Some(42));
-    assert_eq!(ring.try_recv(), None); // empty after drain
-                                       // Refill works
-    ring.try_send(99).unwrap();
-    assert_eq!(ring.try_recv(), Some(99));
-}
-
-/// MPMC: recv from empty ring returns None.
-#[test]
-fn mpmc_ring_recv_empty() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 4);
-    assert_eq!(ring.try_recv(), None);
-}
-
-/// MPMC: multi-wraparound FIFO with single producer/consumer.
-#[test]
-fn mpmc_ring_multi_wraparound_fifo() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 4);
-    for cycle in 0..10u64 {
-        for i in 0..4u64 {
-            ring.try_send(cycle * 4 + i).unwrap();
-        }
-        for i in 0..4u64 {
-            assert_eq!(ring.try_recv(), Some(cycle * 4 + i));
-        }
-    }
-}
 
 // -- Cross-ring capacity rounding --
 
-/// All rings: capacity=1 gives exactly 1 usable slot.
-///
-/// SPSC/SPMC reliably reject a second send when full. MPSC/MPMC use
-/// sequence-based slots where capacity=1 can't distinguish "written" from
-/// "available", so we only test the send-recv-send cycle for those.
-#[test]
-fn all_rings_capacity_one_gives_one_slot() {
-    // SPSC and SPMC: can verify "full" rejection
-    let spsc = spsc_intra::SpscRing::<u64>::new(1);
-    spsc.try_send(1).unwrap();
-    assert!(spsc.try_send(2).is_err());
-
-    let spmc = spmc_intra::SpmcRing::<u64>::new(1);
-    spmc.try_send(1).unwrap();
-    assert!(spmc.try_send(2).is_err());
-
-    // MPSC and MPMC: verify send-recv cycle works at capacity=1
-    let mpsc = mpsc_intra::MpscRing::<u64>::new(1);
-    mpsc.try_send(1).unwrap();
-    assert_eq!(mpsc.try_recv(), Some(1));
-    mpsc.try_send(2).unwrap();
-    assert_eq!(mpsc.try_recv(), Some(2));
-
-    let mpmc = fanout::FanoutRing::<u64>::new(4, 4, 1);
-    mpmc.try_send(1).unwrap();
-    assert_eq!(mpmc.try_recv(), Some(1));
-    mpmc.try_send(2).unwrap();
-    assert_eq!(mpmc.try_recv(), Some(2));
-}
-
 // -- Cross-thread speed mismatch tests --
-
-/// SPSC: fast producer, slow consumer — no messages lost.
-#[test]
-fn spsc_ring_fast_producer_slow_consumer() {
-    let ring = Arc::new(spsc_intra::SpscRing::<u64>::new(64));
-    let r = ring.clone();
-
-    let total_msgs = 1000u64;
-    let sent = Arc::new(AtomicU64::new(0));
-    let received = Arc::new(AtomicU64::new(0));
-    let sent_c = sent.clone();
-    let recv_c = received.clone();
-
-    let producer = test_spawn(move || {
-        for i in 0..total_msgs {
-            loop {
-                if ring.try_send(i).is_ok() {
-                    sent_c.fetch_add(1, Ordering::Relaxed);
-                    break;
-                }
-                thread::yield_now();
-            }
-        }
-    });
-
-    let consumer = test_spawn(move || {
-        let start = Instant::now();
-        while recv_c.load(Ordering::Relaxed) < total_msgs && start.elapsed() < 5_u64.secs() {
-            if r.try_recv().is_some() {
-                recv_c.fetch_add(1, Ordering::Relaxed);
-            } else {
-                // Slow consumer: sleep a bit
-                thread::sleep(10_u64.us());
-            }
-        }
-    });
-
-    producer.join().unwrap();
-    consumer.join().unwrap();
-
-    assert_eq!(
-        sent.load(Ordering::Relaxed),
-        total_msgs,
-        "All messages should be sent"
-    );
-    assert_eq!(
-        received.load(Ordering::Relaxed),
-        total_msgs,
-        "All messages should be received (no loss)"
-    );
-}
 
 // ============================================================================
 // METRICS MODULE TESTS
@@ -9802,8 +8209,8 @@ fn local_state_constants() {
 fn local_state_mutable_fields() {
     let mut ls = local_state::LocalState::default();
 
-    ls.cached_mode = BackendMode::SpscIntra;
-    assert_eq!(ls.cached_mode, BackendMode::SpscIntra);
+    ls.cached_mode = BackendMode::SpscShm;
+    assert_eq!(ls.cached_mode, BackendMode::SpscShm);
 
     ls.role = types::TopicRole::Producer;
     assert_eq!(ls.role, types::TopicRole::Producer);
@@ -9864,212 +8271,6 @@ fn local_state_msg_counter_lease_refresh_boundary() {
 // ============================================================================
 // PRIMITIVES MODULE TESTS
 // ============================================================================
-
-/// CachePadded has 64-byte alignment for false-sharing prevention.
-#[test]
-fn cache_padded_alignment_is_64() {
-    assert_eq!(std::mem::align_of::<primitives::CachePadded<u64>>(), 64);
-    assert_eq!(
-        std::mem::align_of::<primitives::CachePadded<AtomicU64>>(),
-        64
-    );
-}
-
-/// CachePadded size is at least 64 bytes (one cache line).
-#[test]
-fn cache_padded_size_at_least_64() {
-    assert!(std::mem::size_of::<primitives::CachePadded<u64>>() >= 64);
-    assert!(std::mem::size_of::<primitives::CachePadded<AtomicU64>>() >= 64);
-}
-
-/// CachePadded preserves inner value.
-#[test]
-fn cache_padded_preserves_value() {
-    let cp = primitives::CachePadded(42u64);
-    assert_eq!(cp.0, 42);
-
-    let cp_a = primitives::CachePadded(AtomicU64::new(99));
-    assert_eq!(cp_a.0.load(Ordering::Relaxed), 99);
-}
-
-/// alloc_uninit_buffer creates buffer of correct length.
-#[test]
-fn alloc_uninit_buffer_correct_length() {
-    let buf = primitives::alloc_uninit_buffer::<u64>(16);
-    assert_eq!(buf.len(), 16);
-}
-
-/// alloc_uninit_buffer with zero capacity.
-#[test]
-fn alloc_uninit_buffer_zero_capacity() {
-    let buf = primitives::alloc_uninit_buffer::<u64>(0);
-    assert_eq!(buf.len(), 0);
-}
-
-/// alloc_uninit_buffer with capacity=1.
-#[test]
-fn alloc_uninit_buffer_one_slot() {
-    let buf = primitives::alloc_uninit_buffer::<u64>(1);
-    assert_eq!(buf.len(), 1);
-}
-
-/// alloc_mp_slots creates slots with correct initial sequences.
-#[test]
-fn alloc_mp_slots_sequence_initialization() {
-    let slots = primitives::alloc_mp_slots::<u64>(8);
-    assert_eq!(slots.len(), 8);
-    for (i, slot) in slots.iter().enumerate() {
-        assert_eq!(
-            slot.sequence.load(Ordering::Relaxed),
-            i as u64,
-            "Slot {} should have sequence {}",
-            i,
-            i
-        );
-    }
-}
-
-/// alloc_mp_slots with zero capacity.
-#[test]
-fn alloc_mp_slots_zero_capacity() {
-    let slots = primitives::alloc_mp_slots::<u64>(0);
-    assert_eq!(slots.len(), 0);
-}
-
-/// alloc_mp_slots with capacity=1.
-#[test]
-fn alloc_mp_slots_one_slot() {
-    let slots = primitives::alloc_mp_slots::<u64>(1);
-    assert_eq!(slots.len(), 1);
-    assert_eq!(slots[0].sequence.load(Ordering::Relaxed), 0);
-}
-
-/// alloc_mp_slots large capacity has correct sequences.
-#[test]
-fn alloc_mp_slots_large_capacity() {
-    let cap = 1024;
-    let slots = primitives::alloc_mp_slots::<u64>(cap);
-    assert_eq!(slots.len(), cap);
-    assert_eq!(slots[0].sequence.load(Ordering::Relaxed), 0);
-    assert_eq!(
-        slots[cap - 1].sequence.load(Ordering::Relaxed),
-        (cap - 1) as u64
-    );
-}
-
-/// Ring buffer capacity auto-sizing: next_power_of_two behavior.
-#[test]
-fn capacity_auto_sizing_power_of_two() {
-    // Capacity 3 → rounds to 4
-    let ring = spsc_intra::SpscRing::<u64>::new(3);
-    // Can fit 4 items (rounded up from 3)
-    for i in 0..4 {
-        assert!(ring.try_send(i).is_ok(), "Should fit {} in cap-4 ring", i);
-    }
-    assert!(ring.try_send(99).is_err(), "Ring should be full at 4");
-
-    // Capacity 5 → rounds to 8
-    let ring2 = spsc_intra::SpscRing::<u64>::new(5);
-    for i in 0..8 {
-        assert!(ring2.try_send(i).is_ok(), "Should fit {} in cap-8 ring", i);
-    }
-    assert!(ring2.try_send(99).is_err(), "Ring should be full at 8");
-}
-
-/// Capacity of 0 should still create a usable ring via next_power_of_two.
-/// 0u32.next_power_of_two() = 1.
-#[test]
-fn capacity_auto_sizing_zero_rounds_to_one() {
-    let ring = spsc_intra::SpscRing::<u64>::new(0);
-    ring.try_send(42).unwrap();
-    // Capacity 1 means second send should fail
-    assert!(ring.try_send(43).is_err());
-    assert_eq!(ring.try_recv(), Some(42));
-}
-
-/// Capacity that is already a power-of-two stays unchanged.
-#[test]
-fn capacity_auto_sizing_exact_power_of_two_unchanged() {
-    let ring = spsc_intra::SpscRing::<u64>::new(16);
-    for i in 0..16 {
-        ring.try_send(i).unwrap();
-    }
-    assert!(ring.try_send(99).is_err());
-}
-
-/// MpSlot data can be written and read back.
-#[test]
-fn mp_slot_write_and_read() {
-    let slots = primitives::alloc_mp_slots::<u64>(4);
-    // Write to slot 0
-    // SAFETY: `slots[0].data` is a freshly allocated `UnsafeCell<MaybeUninit<u64>>`.
-    // No other reference exists; we perform the initial write before any reader
-    // could observe the sequence number we store afterwards.
-    unsafe {
-        slots[0].data.get().write(std::mem::MaybeUninit::new(42u64));
-    }
-    // Mark as written
-    slots[0].sequence.store(1, Ordering::Release);
-
-    // Read back
-    // SAFETY: We just wrote an initialized `u64` into `slots[0].data` above and
-    // stored the sequence number, confirming the slot is fully written. This is
-    // a single-threaded test so there is no concurrent mutation; `assume_init_read`
-    // on a fully initialized `MaybeUninit<u64>` (a `Copy` type) is sound.
-    let val = unsafe { (*slots[0].data.get()).assume_init_read() };
-    assert_eq!(val, 42);
-}
-
-/// ring_pending_count returns correct values for SPSC ring.
-#[test]
-fn ring_pending_count_accuracy() {
-    let ring = spsc_intra::SpscRing::<u64>::new(8);
-    assert_eq!(ring.pending_count(), 0);
-
-    ring.try_send(1).unwrap();
-    assert_eq!(ring.pending_count(), 1);
-
-    ring.try_send(2).unwrap();
-    ring.try_send(3).unwrap();
-    assert_eq!(ring.pending_count(), 3);
-
-    ring.try_recv();
-    assert_eq!(ring.pending_count(), 2);
-
-    ring.try_recv();
-    ring.try_recv();
-    assert_eq!(ring.pending_count(), 0);
-}
-
-/// ring_pending_count returns correct values for MPSC ring.
-#[test]
-fn ring_pending_count_mpsc_accuracy() {
-    let ring = mpsc_intra::MpscRing::<u64>::new(8);
-    assert_eq!(ring.pending_count(), 0);
-
-    ring.try_send(10).unwrap();
-    ring.try_send(20).unwrap();
-    assert_eq!(ring.pending_count(), 2);
-
-    ring.try_recv();
-    assert_eq!(ring.pending_count(), 1);
-}
-
-/// ring_pending_count returns correct values for MPMC ring.
-#[test]
-fn ring_pending_count_mpmc_accuracy() {
-    let ring = fanout::FanoutRing::<u64>::new(4, 4, 8);
-    assert_eq!(ring.pending_count(), 0);
-
-    ring.try_send(10).unwrap();
-    ring.try_send(20).unwrap();
-    ring.try_send(30).unwrap();
-    assert_eq!(ring.pending_count(), 3);
-
-    ring.try_recv();
-    ring.try_recv();
-    assert_eq!(ring.pending_count(), 1);
-}
 
 // ============================================================================
 // MESSAGE SIZE LIMIT AND CAPACITY BOUNDARY TESTS
@@ -10167,7 +8368,7 @@ fn serde_message_exact_slot_boundary() {
 /// Serde type: oversized messages are accepted in intra-process mode.
 ///
 /// When a serde topic operates within a single process (DirectChannel,
-/// SpscIntra, etc.), it stores `T` by value in ring buffer slots — no
+/// SpscShm, etc.), it stores `T` by value in ring buffer slots — no
 /// serialization happens, so `slot_size` limits don't apply. The limit
 /// only kicks in when the backend is SHM-based (cross-process).
 #[test]
