@@ -4,9 +4,12 @@
 //!
 //! ## Methodology
 //!
-//! **Intra-process** (DirectChannel, SpscIntra, MpscIntra, SpmcIntra, MpmcIntra):
+//! **Same-process** (SpscShm self-loop, then SpscShm/MpscShm/PodShm cross-thread):
 //! - Measures `send()` latency via RDTSC with overhead subtraction
-//! - Producer and consumer in same process, consumer on separate core
+//! - Producer and consumer in same process, consumer on separate core. Every
+//!   topic is SHM-backed, so these hit the same backends as cross-process —
+//!   latency is set by core locality (a same-thread self-loop stays L1-hot; the
+//!   moment the consumer runs on another core you pay cross-core cache coherence)
 //!
 //! **Cross-process** (SpscShm, MpscShm, SpmcShm, PodShm):
 //! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.timestamp_ns`
@@ -14,9 +17,9 @@
 //! - Requires `constant_tsc` for cross-core TSC synchronization
 //! - No `yield_now()` or `sleep()` in measurement hot loops
 //!
-//! **Note**: MpmcShm only activates for non-POD types (POD multi-pub/sub gets PodShm).
-//! Since CmdVel is POD, MpmcShm is not directly benchmarked here — it shares the same
-//! dispatch paths as PodShm with added serialization overhead.
+//! **Note**: non-POD many-to-many resolves to FanoutShm. Since CmdVel is POD,
+//! multi-pub/sub here resolves to PodShm broadcast, so FanoutShm is not directly
+//! benchmarked (it shares the SHM SPSC matrix with added serialization overhead).
 //!
 //! ## Statistical Analysis
 //!
@@ -178,27 +181,27 @@ fn main() {
 
     let mut results: Vec<ScenarioResult> = Vec::new();
 
-    // === Intra-process (5 scenarios) ===
-    println!("─── Intra-Process {}", "─".repeat(BOX_W - 19));
+    // === Same-process (5 scenarios, all SHM) ===
+    println!("─── Same-Process {}", "─".repeat(BOX_W - 18));
     println!();
 
-    let r = bench_direct_channel(&timer);
+    let r = bench_same_thread_selfloop(&timer);
     print_detail(&r);
     results.push(r);
 
-    let r = bench_spsc_intra(&timer);
+    let r = bench_spsc_same_proc(&timer);
     print_detail(&r);
     results.push(r);
 
-    let r = bench_mpsc_intra(&timer);
+    let r = bench_mpsc_same_proc(&timer);
     print_detail(&r);
     results.push(r);
 
-    let r = bench_spmc_intra(&timer);
+    let r = bench_spmc_same_proc(&timer);
     print_detail(&r);
     results.push(r);
 
-    let r = bench_mpmc_intra(&timer);
+    let r = bench_mpmc_same_proc(&timer);
     print_detail(&r);
     results.push(r);
 
@@ -371,17 +374,17 @@ fn validate_platform(platform: &PlatformInfo) {
 }
 
 // ============================================================================
-// Intra-Process Benchmarks
+// Same-Process Benchmarks
 // ============================================================================
 
-/// DirectChannel -- same thread, no atomics.
-/// Measures send() latency with RDTSC overhead subtracted.
+/// Same-thread self-loop (role=Both) -- one Topic instance sends and receives.
+/// Resolves to SpscShm and takes the role=Both inlined fast path; measures
+/// send() latency with RDTSC overhead subtracted. This is the L1-hot case.
 ///
 /// **Batched sends**: We send in batches of 128, then drain outside the
 /// measurement window. This avoids icache/branch-predictor pollution from
-/// alternating send/recv calls, which inflated DirectChannel latency to
-/// ~36ns vs SpscIntra's ~7ns despite DirectChannel being simpler.
-fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
+/// alternating send/recv calls, which inflated the self-loop send latency.
+fn bench_same_thread_selfloop(timer: &PrecisionTimer) -> ScenarioResult {
     let topic: Topic<CmdVel> = Topic::new("bench_dc_v2").unwrap();
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
     let cal = timer.calibration();
@@ -418,7 +421,7 @@ fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "SameThread",
         backend,
-        expected_backend: "DirectChannel",
+        expected_backend: "SpscShm",
         measurement: "send",
         latencies_ns: latencies,
         total_sent: ITERATIONS,
@@ -430,9 +433,9 @@ fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// SpscIntra -- cross-thread 1P-1C.
+/// Same-process cross-thread 1P-1C (resolves to SpscShm).
 /// Measures send() latency on producer thread while consumer spins on another core.
-fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+fn bench_spsc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
     let topic_name = format!("bench_si_v2_{}", std::process::id());
     let producer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
@@ -447,7 +450,7 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let ready = Arc::new(AtomicBool::new(false));
     let ready_c = ready.clone();
 
-    // Pre-fill ring to establish SpscIntra before consumer starts
+    // Pre-fill ring to establish SpscShm before consumer starts
     for _ in 0..2000 {
         producer.send(msg);
     }
@@ -506,7 +509,7 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossThread-1P1C",
         backend,
-        expected_backend: "Intra",
+        expected_backend: "SpscShm",
         measurement: "send",
         latencies_ns: latencies,
         total_sent: ITERATIONS,
@@ -518,10 +521,10 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// MpscIntra -- cross-thread 2P-1C.
+/// Same-process cross-thread 2P-1C (resolves to MpscShm).
 /// Measures send() latency on main thread while second producer runs on another core.
 /// Multi-producer contention via CAS loop.
-fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+fn bench_mpsc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
     let topic_name = format!("bench_mi_{}", std::process::id());
     let producer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
@@ -573,7 +576,7 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     let p2_ready_c = p2_ready.clone();
     let p2_handle = thread::spawn(move || {
         let _ = set_cpu_affinity(CORE_PUB2);
-        // Send to register as 2nd publisher, triggers MpscIntra migration
+        // Send to register as 2nd publisher, triggers MpscShm migration
         for _ in 0..2000 {
             producer2.send(msg);
         }
@@ -616,7 +619,7 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossThread-MP1C",
         backend,
-        expected_backend: "Intra",
+        expected_backend: "MpscShm",
         measurement: "send",
         latencies_ns: latencies,
         total_sent: ITERATIONS,
@@ -628,9 +631,9 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// SpmcIntra -- cross-thread 1P-2C.
-/// Measures send() latency while 2 consumer threads compete via CAS.
-fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+/// Same-process 1-producer / 2-consumer, POD (resolves to PodShm broadcast).
+/// Each consumer receives every message (broadcast semantics, no tail contention).
+fn bench_spmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
     let topic_name = format!("bench_smi_{}", std::process::id());
     let producer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let consumer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
@@ -732,7 +735,7 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossThread-1PMC",
         backend,
-        expected_backend: "Intra",
+        expected_backend: "PodShm",
         measurement: "send",
         latencies_ns: latencies,
         total_sent: ITERATIONS,
@@ -744,9 +747,9 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// MpmcIntra -- cross-thread 2P-2C.
+/// Same-process 2-producer / 2-consumer, POD (resolves to PodShm broadcast).
 /// Measures send() latency with multi-producer contention and multi-consumer drain.
-fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+fn bench_mpmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
     let topic_name = format!("bench_mmi_{}", std::process::id());
     let producer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let consumer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
@@ -871,7 +874,7 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossThread-MPMC",
         backend,
-        expected_backend: "Intra",
+        expected_backend: "PodShm",
         measurement: "send",
         latencies_ns: latencies,
         total_sent: ITERATIONS,
@@ -1259,7 +1262,7 @@ fn collect_cross_proc(
     // Phase 2: Measurement -- ZERO overhead hot loop
     // No Instant::now(), no unnecessary branches. Pure spin on recv().
     // RDTSC overhead (serialize+rdtsc on producer + rdtscp on consumer) is subtracted
-    // from each sample, same as intra-process measurements.
+    // from each sample, same as the same-process measurements.
     let mut latencies = Vec::with_capacity(iterations as usize);
     last_recv_cycles = rdtsc();
     polls = 0;
@@ -1989,7 +1992,7 @@ fn print_methodology(cal: &RdtscCalibration) {
         "    Instant::now(): ~{}ns (for comparison)",
         times[times.len() / 2]
     );
-    println!("    Intra-process: RDTSC overhead subtracted from each sample");
+    println!("    Same-process: RDTSC overhead subtracted from each sample");
     println!(
         "    Cross-process: RDTSC overhead subtracted (rdtsc on producer + rdtscp on consumer)"
     );

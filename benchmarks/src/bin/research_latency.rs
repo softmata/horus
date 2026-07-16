@@ -2,7 +2,7 @@
 //!
 //! Extends the measurement methodology from `all_paths_latency` with:
 //! - **Sustained mode**: 60-second continuous measurement per backend (detects tail latency)
-//! - **Size sweep**: Tests all intra-process backends at 6 message sizes (8B–64KB)
+//! - **Size sweep**: Tests the same-process SHM path at 6 message sizes (8B–64KB)
 //! - **CSV output**: Raw samples for external analysis (one row per measurement)
 //!
 //! ## Usage
@@ -131,7 +131,7 @@ fn measure_spsc<T: Copy + Send + Sync + Serialize + serde::de::DeserializeOwned 
 
     let pub_topic: Topic<T> = Topic::new(&topic_name).expect("pub topic");
 
-    // Consumer on separate thread (forces SpscIntra backend)
+    // Consumer on separate thread (forces the cross-thread SpscShm path)
     let topic_name_clone = topic_name.clone();
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = running.clone();
@@ -440,19 +440,19 @@ fn main() {
     );
     println!("{}", "─".repeat(95));
 
-    // ── Same-thread (DirectChannel) — size sweep ──────────────────────
+    // ── Same-thread self-loop (SpscShm) — size sweep ──────────────────
 
     macro_rules! bench_same_thread {
         ($type:ty, $size:expr, $label:expr, $ctor:expr) => {{
-            let mut samples = measure_latency::<$type>("direct", $size, duration, $ctor);
+            let mut samples = measure_latency::<$type>("selfloop", $size, duration, $ctor);
             let stats = compute_stats(&mut samples);
-            print_stats("DirectChannel", $label, &stats);
+            print_stats("SpscShm-loop", $label, &stats);
             if let Some(ref mut w) = csv_writer {
                 for &s in &samples {
-                    writeln!(w, "DirectChannel,same_thread,{},{}", $size, s).unwrap();
+                    writeln!(w, "SpscShm-loop,same_thread,{},{}", $size, s).unwrap();
                 }
             }
-            all_results.push(($label, "DirectChannel", $size, stats));
+            all_results.push(($label, "SpscShm-loop", $size, stats));
         }};
     }
 
@@ -464,19 +464,19 @@ fn main() {
 
     println!("{}", "─".repeat(95));
 
-    // ── Cross-thread (SpscIntra) — size sweep ─────────────────────────
+    // ── Cross-thread (SpscShm) — size sweep ───────────────────────────
 
     macro_rules! bench_spsc {
         ($type:ty, $size:expr, $label:expr, $ctor:expr) => {{
             let mut samples = measure_spsc::<$type>("spsc", $size, duration, $ctor);
             let stats = compute_stats(&mut samples);
-            print_stats("SpscIntra", $label, &stats);
+            print_stats("SpscShm", $label, &stats);
             if let Some(ref mut w) = csv_writer {
                 for &s in &samples {
-                    writeln!(w, "SpscIntra,cross_thread,{},{}", $size, s).unwrap();
+                    writeln!(w, "SpscShm,cross_thread,{},{}", $size, s).unwrap();
                 }
             }
-            all_results.push(($label, "SpscIntra", $size, stats));
+            all_results.push(($label, "SpscShm", $size, stats));
         }};
     }
 

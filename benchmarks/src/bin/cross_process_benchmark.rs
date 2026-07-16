@@ -2,7 +2,7 @@
 //!
 //! TRUE cross-process IPC measurement required for academic validity.
 //! Spawns separate producer and consumer processes to measure actual
-//! inter-process communication latency (not intra-process).
+//! inter-process communication latency (not same-process).
 //!
 //! ## Methodology
 //!

@@ -822,7 +822,7 @@ fn main() {
 
     // --- Cross-thread (forces atomic/SHM backend) ---
     println!("--- Cross-Thread Ping-Pong (one-way latency) ---");
-    println!("  (Forces horus into SpscIntra atomic backend)");
+    println!("  (Forces horus onto the cross-thread SpscShm backend)");
     println!();
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_cross_thread_pingpong();
     let (imin, iavg, imed, ip99, imax) = bench_iox2_cross_thread_pingpong();
