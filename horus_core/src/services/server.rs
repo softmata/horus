@@ -249,18 +249,35 @@ fn run_server_loop<Req, Res>(
             // Route response to per-client topic if specified,
             // otherwise fall back to shared response topic.
             if let Some(ref topic_name) = client_response_topic {
-                let client_topic = client_topics.entry(topic_name.clone()).or_insert_with(|| {
-                    Topic::new_with_kind(
+                // Lazily create + cache the per-client response topic. The name is
+                // CLIENT-SUPPLIED and maps to an shm path, so creation is fallible
+                // (empty / >255 chars / invalid chars all reject). A malformed name
+                // must NOT panic this thread — that would take the whole service down
+                // for every other client. On failure, log and drop just this response;
+                // the offending client will time out and can retry.
+                if !client_topics.contains_key(topic_name) {
+                    match Topic::new_with_kind(
                         topic_name,
                         crate::communication::TopicKind::ServiceResponse as u8,
-                    )
-                    .unwrap_or_else(|_| {
-                        // Fallback: if per-client topic creation fails,
-                        // this shouldn't happen in normal operation.
-                        panic!("Failed to create per-client response topic: {}", topic_name);
-                    })
-                });
-                client_topic.send(response);
+                    ) {
+                        Ok(topic) => {
+                            client_topics.insert(topic_name.clone(), topic);
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "service '{}': dropping response for request {} — \
+                                 invalid client response_topic {:?}: {}",
+                                svc_name,
+                                request_id,
+                                topic_name,
+                                e
+                            );
+                        }
+                    }
+                }
+                if let Some(client_topic) = client_topics.get(topic_name) {
+                    client_topic.send(response);
+                }
             } else {
                 // Legacy path: shared response topic (for backward compat)
                 res_topic.send(response);
@@ -648,5 +665,64 @@ mod tests {
         let inner = result.unwrap();
         assert!(inner.is_some());
         assert_eq!(inner.unwrap().v, 10);
+    }
+
+    // A service for the malformed-response_topic liveness regression.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct PanicReproReq {
+        v: i64,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct PanicReproRes {
+        v: i64,
+    }
+    struct PanicReproService;
+    impl Service for PanicReproService {
+        type Request = PanicReproReq;
+        type Response = PanicReproRes;
+        fn name() -> &'static str {
+            "srv_panic_repro_svc"
+        }
+    }
+
+    // Regression: a client-supplied `response_topic` that `Topic::new_with_kind`
+    // rejects (here: >255 chars) must NOT panic the server thread. Before the fix the
+    // drain loop did `.unwrap_or_else(|_| panic!(...))` on the client string, killing
+    // the single server thread — so every subsequent call timed out. After the fix the
+    // poison request is logged + skipped and the server keeps serving other clients.
+    #[test]
+    fn malformed_response_topic_does_not_kill_server() {
+        let _server = ServiceServerBuilder::<PanicReproService>::new()
+            .poll_interval(Duration::from_millis(1))
+            .on_request(|req| Ok(PanicReproRes { v: req.v * 2 }))
+            .build()
+            .unwrap();
+
+        // Inject a raw request whose response_topic the transport will reject
+        // (>255 chars) — what a buggy / non-conforming client could send.
+        let raw_req: Topic<ServiceRequest<PanicReproReq>> =
+            Topic::new(&PanicReproService::request_topic()).unwrap();
+        raw_req.send(ServiceRequest {
+            request_id: 1,
+            payload: PanicReproReq { v: 7 },
+            response_topic: Some("z".repeat(300)),
+        });
+
+        // Give the server a few poll cycles to drain the poison request.
+        std::thread::sleep(Duration::from_millis(20));
+
+        // The server must still be alive: a well-formed client call still succeeds.
+        let mut client =
+            crate::services::client::ServiceClient::<PanicReproService>::with_poll_interval(
+                Duration::from_millis(1),
+            )
+            .unwrap();
+        let result = client.call(PanicReproReq { v: 21 }, Duration::from_secs(2));
+        assert!(
+            result.is_ok(),
+            "server thread must survive a malformed response_topic; got {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().v, 42);
     }
 }
