@@ -948,13 +948,49 @@ pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
         }
     }
 
-    // Fallback: Check for installed packages in cache
-    let cache_dir =
-        crate::paths::cache_dir().unwrap_or_else(|_| install::home_dir().join(".horus/cache"));
-    let cache_versioned = cache_dir.join("horus@0.1.0");
-    if cache_versioned.exists() {
-        log::debug!("found HORUS source in cache: {:?}", cache_versioned);
-        return Ok(cache_versioned);
+    // Fallback: source cached by the installer as <cache>/horus@<version>.
+    //
+    // Two cache roots are searched because the codebase has historically used
+    // both: horus_sys::platform::cache_dir() is XDG (~/.cache/horus), while
+    // install.sh/uninstall.sh and `horus clean` manage ~/.horus/cache. Checking
+    // both means the source is found regardless of which one wrote it.
+    //
+    // Prefer the version matching this CLI binary; otherwise accept any cached
+    // horus@* tree. The version used to be hardcoded to "0.1.0", which meant the
+    // cache escape hatch could never hit once the workspace moved past it.
+    // Every candidate is validated by the same horus/Cargo.toml marker used above.
+    let mut cache_roots: Vec<PathBuf> = Vec::new();
+    if let Ok(xdg_cache) = crate::paths::cache_dir() {
+        cache_roots.push(xdg_cache);
+    }
+    let legacy_cache = install::home_dir().join(".horus/cache");
+    if !cache_roots.contains(&legacy_cache) {
+        cache_roots.push(legacy_cache);
+    }
+
+    for cache_dir in &cache_roots {
+        let exact = cache_dir.join(format!("horus@{}", env!("CARGO_PKG_VERSION")));
+        if exact.join("horus/Cargo.toml").exists() {
+            log::debug!("found HORUS source in cache (exact version): {:?}", exact);
+            return Ok(exact);
+        }
+    }
+
+    for cache_dir in &cache_roots {
+        let Ok(entries) = std::fs::read_dir(cache_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_horus_pkg = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("horus@"));
+            if is_horus_pkg && path.join("horus/Cargo.toml").exists() {
+                log::debug!("found HORUS source in cache: {:?}", path);
+                return Ok(path);
+            }
+        }
     }
 
     log::warn!("HORUS source directory not found in any known location");

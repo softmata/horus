@@ -16,7 +16,14 @@ set -e
 
 # --- Config ---
 REPO="softmata/horus"
-BRANCH="release"
+# Branch to build from. There is no long-lived "release" branch on origin —
+# tags (v*.*.*) are cut from main, so main is the source of truth here.
+BRANCH="${HORUS_INSTALL_BRANCH:-main}"
+# Where the source tree is kept after building. `horus run` compiles user
+# projects against horus as *path* dependencies (see cargo_gen.rs ->
+# find_horus_source_dir), so the source must outlive the install or no Rust
+# project can ever be built.
+HORUS_CACHE="$HOME/.horus/cache"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -164,13 +171,43 @@ fi
 # GitHub release asset URL
 RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.${ASSET_EXT}"
 
+# The source tree is required regardless of how we obtain the binary: `horus
+# run`/`horus build` generate .horus/Cargo.toml with horus as *path*
+# dependencies. A binary-only install produces a CLI that cannot build a single
+# Rust project. So: always fetch source into the cache, and treat a pre-built
+# binary purely as a way to skip the compile step.
+
+if ! command -v git &>/dev/null; then
+    fail "git is required"
+    exit 1
+fi
+
+info "Fetching HORUS source (${BRANCH})..."
+CLONE_DIR=$(mktemp -d)
+if ! git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1; then
+    fail "Failed to clone https://github.com/${REPO}.git (branch: ${BRANCH})"
+    rm -rf "$CLONE_DIR"
+    exit 1
+fi
+
+# Version the cache dir by the crate version so multiple installs coexist and
+# find_horus_source_dir() can prefer the tree matching the running CLI.
+SRC_VERSION=$(grep -m1 '^version' "${CLONE_DIR}/horus_core/Cargo.toml" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+[ -n "$SRC_VERSION" ] || SRC_VERSION="unknown"
+HORUS_SRC_DIR="${HORUS_CACHE}/horus@${SRC_VERSION}"
+
+mkdir -p "$HORUS_CACHE"
+rm -rf "$HORUS_SRC_DIR"
+mv "$CLONE_DIR" "$HORUS_SRC_DIR"
+ok "Source cached at ~/.horus/cache/horus@${SRC_VERSION}"
+
 info "Checking for pre-built binary..."
 
 TMPDIR=$(mktemp -d)
 HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
 
 if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
-    # --- Fast path: pre-built binary ---
+    # --- Fast path: pre-built binary, skip the compile ---
     info "Extracting binary..."
     if [ "$OS" = "windows" ]; then
         unzip -q "${TMPDIR}/${ASSET_NAME}.zip" -d "$TMPDIR"
@@ -183,10 +220,9 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
     ok "Downloaded pre-built binary"
 
 else
-    # --- Slow path: build from source ---
+    # --- Slow path: compile the cached source ---
     rm -rf "$TMPDIR"
     warn "No pre-built binary for ${OS}-${ARCH} — building from source (~3-5 min)"
-    info "Older releases ship source-only; future tagged releases will include binaries."
     echo ""
 
     # Dependencies
@@ -202,18 +238,12 @@ else
     fi
     ok "Dependencies ready"
 
-    # Clone
-    info "Cloning release branch..."
-    CLONE_DIR=$(mktemp -d)
-    git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1
-    ok "Source cloned"
-
     # Build — cargo shows its own progress
     echo ""
     info "Building from source (this takes a few minutes)..."
     echo ""
     BUILD_START=$(date +%s)
-    cd "$CLONE_DIR"
+    cd "$HORUS_SRC_DIR"
     # Force stable toolchain — nightly may have compiler bugs
     # First try with LTO (smaller binary). If LLVM crashes (SIGILL — known
     # bug on some CPUs), retry without LTO.
@@ -232,20 +262,19 @@ else
     build_elapsed=$(($(date +%s) - BUILD_START))
     echo ""
 
-    # Install binary
-    if [ -f "target/release/${BINARY_NAME}" ]; then
-        cp "target/release/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    # Install binary. CARGO_TARGET_DIR may redirect the output tree, so ask
+    # cargo where it actually put things rather than assuming ./target.
+    BUILT_BIN="${CARGO_TARGET_DIR:-${HORUS_SRC_DIR}/target}/release/${BINARY_NAME}"
+    if [ -f "$BUILT_BIN" ]; then
+        cp "$BUILT_BIN" "${INSTALL_DIR}/${BINARY_NAME}"
         chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
         ok "Built and installed in ${build_elapsed}s"
     else
-        fail "Build succeeded but binary not found"
+        fail "Build succeeded but binary not found at ${BUILT_BIN}"
         echo "    Report issues: https://github.com/${REPO}/issues"
         exit 1
     fi
-
-    # Cleanup
     cd /
-    rm -rf "$CLONE_DIR"
 fi
 
 # --- Verify ---

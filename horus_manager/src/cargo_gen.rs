@@ -104,10 +104,15 @@ pub fn generate(
     // ── Dependencies ─────────────────────────────────────────────────────
     writeln!(cargo, "[dependencies]").unwrap();
 
-    // Add horus core path deps
-    if let Ok(horus_source) = crate::commands::run::find_horus_source_dir() {
-        write_horus_path_deps(&mut cargo, &horus_source, manifest);
-    }
+    // Add horus core path deps.
+    //
+    // This is not optional: without it `[dependencies]` is emitted empty and the
+    // user's project fails with a wall of `cannot find type Topic/Scheduler`
+    // rustc errors instead of the actionable message find_horus_source_dir()
+    // already produces. Propagate that message rather than swallowing it.
+    let horus_source = crate::commands::run::find_horus_source_dir()
+        .context("Cannot generate .horus/Cargo.toml without the HORUS source tree")?;
+    write_horus_path_deps(&mut cargo, &horus_source, manifest);
 
     // Add user deps from horus.toml
     write_deps_section(&mut cargo, &manifest.dependencies, project_dir, &horus_dir)?;
@@ -616,8 +621,13 @@ pub fn generate_workspace(
     {
         writeln!(root_cargo, "[workspace.dependencies]").unwrap();
 
-        // Auto-inject horus core path deps
-        if let Ok(horus_source) = crate::commands::run::find_horus_source_dir() {
+        // Auto-inject horus core path deps. Required — see the note on the
+        // single-package path above; an empty section yields unresolvable
+        // imports in every workspace member.
+        {
+            let horus_source = crate::commands::run::find_horus_source_dir().context(
+                "Cannot generate .horus/Cargo.toml workspace without the HORUS source tree",
+            )?;
             for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
                 let dep_path = horus_source.join(dep_name);
                 if dep_path.exists() && dep_path.join("Cargo.toml").exists() {

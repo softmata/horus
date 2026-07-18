@@ -448,12 +448,13 @@ use horus_macros::node;
 node! {
     Controller {
         pub {
-            cmd_vel: CmdVel -> "motors.cmd_vel",
+            cmd_vel: Twist -> "motors.cmd_vel",
         }
 
         tick {
             // Your control logic here
-            let msg = CmdVel::new(1.0, 0.0);
+            // Twist::new_2d(forward_m_s, yaw_rad_s) — drive straight at 1 m/s
+            let msg = Twist::new_2d(1.0, 0.0);
 
             self.cmd_vel.send(msg);
         }
@@ -477,7 +478,7 @@ fn main() -> Result<()> {
 use horus::prelude::*;
 
 struct Controller {
-    cmd_vel: Option<Topic<CmdVel>>,
+    cmd_vel: Option<Topic<Twist>>,
 }
 
 impl Controller {
@@ -499,7 +500,8 @@ impl Node for Controller {
 
     fn tick(&mut self) {
         // Your control logic here
-        let msg = CmdVel::new(1.0, 0.0);
+        // Twist::new_2d(forward_m_s, yaw_rad_s) — drive straight at 1 m/s
+        let msg = Twist::new_2d(1.0, 0.0);
         if let Some(ref topic) = self.cmd_vel {
             topic.send(msg);
         }
@@ -581,7 +583,7 @@ def controller(node):
     # Your control logic here
     # Check for incoming messages
     if node.has_msg("sensors.data"):
-        sensor_data = node.get("sensors.data")
+        sensor_data = node.recv("sensors.data")
         # Process sensor data...
 
     # Send control commands
@@ -1978,22 +1980,55 @@ mod tests {
         );
     }
 
+    /// The generated project must only use types reachable from
+    /// `horus::prelude::*`. `CmdVel` moved to the `horus_robotics` crate, which
+    /// cargo_gen never injects as a dependency — a template using it produces a
+    /// project that cannot compile. `Twist` is the prelude equivalent.
     #[test]
-    fn main_rs_both_variants_send_cmd_vel() {
+    fn main_rs_both_variants_send_twist_not_cmd_vel() {
         let dir = tempfile::tempdir().unwrap();
 
         create_main_rs(dir.path(), false).unwrap();
         let plain = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
         assert!(
-            plain.contains("CmdVel::new("),
-            "non-macro variant should send CmdVel"
+            plain.contains("Twist::new_2d("),
+            "non-macro variant should send Twist"
+        );
+        assert!(
+            !plain.contains("CmdVel"),
+            "non-macro variant must not reference CmdVel (lives in horus_robotics, never injected)"
         );
 
         create_main_rs(dir.path(), true).unwrap();
         let macro_ver = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
         assert!(
-            macro_ver.contains("CmdVel::new("),
-            "macro variant should send CmdVel"
+            macro_ver.contains("Twist::new_2d("),
+            "macro variant should send Twist"
+        );
+        assert!(
+            !macro_ver.contains("CmdVel"),
+            "macro variant must not reference CmdVel (lives in horus_robotics, never injected)"
+        );
+    }
+
+    /// The Python user API (horus_py/horus/__init__.py) exposes recv/recv_all/
+    /// has_msg/send — there is no `Node.get`. The template used to call
+    /// `node.get(...)` guarded by `has_msg(...)`, so it only raised
+    /// AttributeError once a message actually arrived: a project that looks
+    /// fine until the moment a publisher shows up.
+    #[test]
+    fn main_py_uses_recv_not_get() {
+        let dir = tempfile::tempdir().unwrap();
+        create_main_py(dir.path()).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
+
+        assert!(
+            content.contains("node.recv("),
+            "python template should read messages with node.recv()"
+        );
+        assert!(
+            !content.contains("node.get("),
+            "python template must not call node.get() — no such method on horus.Node"
         );
     }
 

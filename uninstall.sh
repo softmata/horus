@@ -131,7 +131,10 @@ detect_platform() {
 PLATFORM="$(detect_platform)"
 
 # Determine installation paths (platform-aware)
-INSTALL_DIR="$HOME/.cargo/bin"
+# install.sh's find_install_dir() prefers ~/.cargo/bin but falls back to
+# ~/.local/bin when Rust isn't present — which is exactly the pre-built-binary
+# user. Check both, or uninstall silently leaves the binary behind.
+INSTALL_DIRS=("$HOME/.cargo/bin" "$HOME/.local/bin")
 HORUS_DIR="$HOME/.horus"
 CACHE_DIR="$HORUS_DIR/cache"
 TARGET_DIR="$HORUS_DIR/target"
@@ -235,11 +238,13 @@ calculate_sizes() {
     local total_size=0
 
     # Binaries
-    for bin in "${BINARIES[@]}"; do
-        if [ -f "$INSTALL_DIR/$bin" ]; then
-            size=$(du -k "$INSTALL_DIR/$bin" 2>/dev/null | cut -f1)
-            total_size=$((total_size + size))
-        fi
+    for install_dir in "${INSTALL_DIRS[@]}"; do
+        for bin in "${BINARIES[@]}"; do
+            if [ -f "$install_dir/$bin" ]; then
+                size=$(du -k "$install_dir/$bin" 2>/dev/null | cut -f1)
+                total_size=$((total_size + size))
+            fi
+        done
     done
 
     # HORUS directory
@@ -266,12 +271,14 @@ echo ""
 # Binaries
 echo -e "  ${CYAN}Binaries:${NC}"
 BINARY_COUNT=0
-for bin in "${BINARIES[@]}"; do
-    if [ -f "$INSTALL_DIR/$bin" ]; then
-        size=$(du -h "$INSTALL_DIR/$bin" 2>/dev/null | cut -f1)
-        echo -e "    [x] $INSTALL_DIR/$bin ($size)"
-        BINARY_COUNT=$((BINARY_COUNT + 1))
-    fi
+for install_dir in "${INSTALL_DIRS[@]}"; do
+    for bin in "${BINARIES[@]}"; do
+        if [ -f "$install_dir/$bin" ]; then
+            size=$(du -h "$install_dir/$bin" 2>/dev/null | cut -f1)
+            echo -e "    [x] $install_dir/$bin ($size)"
+            BINARY_COUNT=$((BINARY_COUNT + 1))
+        fi
+    done
 done
 [ $BINARY_COUNT -eq 0 ] && echo -e "    ${YELLOW}(no binaries found)${NC}"
 
@@ -366,14 +373,16 @@ init_uninstall_progress 6
 update_uninstall_progress "Removing binaries"
 echo ""
 
-for bin in "${BINARIES[@]}"; do
-    # Try both with and without .exe extension (Windows compat)
-    for ext in "" ".exe"; do
-        if [ -f "$INSTALL_DIR/${bin}${ext}" ]; then
-            rm -f "$INSTALL_DIR/${bin}${ext}"
-            echo -e "  ${GREEN}[+]${NC} Removed ${bin}${ext}"
-            REMOVED=$((REMOVED + 1))
-        fi
+for install_dir in "${INSTALL_DIRS[@]}"; do
+    for bin in "${BINARIES[@]}"; do
+        # Try both with and without .exe extension (Windows compat)
+        for ext in "" ".exe"; do
+            if [ -f "$install_dir/${bin}${ext}" ]; then
+                rm -f "$install_dir/${bin}${ext}"
+                echo -e "  ${GREEN}[+]${NC} Removed ${bin}${ext} from ${install_dir}"
+                REMOVED=$((REMOVED + 1))
+            fi
+        done
     done
 done
 
@@ -473,6 +482,19 @@ if [ "$PLATFORM" = "macos" ]; then
     if [ -d "$HORUS_CACHES" ]; then
         rm -rf "$HORUS_CACHES"
         echo -e "  ${GREEN}[+]${NC} Removed macOS Caches"
+        REMOVED=$((REMOVED + 1))
+    fi
+fi
+
+# Linux/BSD: clean the XDG config dir.
+# horus_sys::platform::config_dir() resolves to $XDG_CONFIG_HOME/horus (default
+# ~/.config/horus) on non-macOS/Windows. It holds auth.json (registry
+# credentials) and workspaces.json — leaving it behind leaks credentials.
+if [ "$PLATFORM" != "macos" ] && [ "$PLATFORM" != "windows" ]; then
+    HORUS_XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/horus"
+    if [ -d "$HORUS_XDG_CONFIG" ]; then
+        rm -rf "$HORUS_XDG_CONFIG"
+        echo -e "  ${GREEN}[+]${NC} Removed ${HORUS_XDG_CONFIG} (credentials + workspace registry)"
         REMOVED=$((REMOVED + 1))
     fi
 fi
