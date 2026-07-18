@@ -166,6 +166,90 @@ horus-docs `validate-docs.js`: 278 pages, 0 errors.
   project note claims horus does not compile on Windows — that note appears
   stale, but I could not compile-verify Windows here.
 
+---
+
+# Round 2 — full documented-journey conformance (2026-07-18)
+
+Goal: behave like a user reading horus-docs and make every documented journey
+real, not just the install path. Verified against a frozen substrate: source
+cached at `~/.horus/cache/horus@0.2.0` from branch HEAD, isolated `HOME`,
+`PYTHONUSERBASE=/home/neos/.local`, shared warm `CARGO_TARGET_DIR`, per-run
+`HORUS_NAMESPACE` for shm isolation.
+
+## C1 — CRITICAL: the entire C++ journey was unreachable (FIXED, `ea83e2af`)
+`horus new --cpp` scaffolds `src/main.cpp`, but:
+- `detect_language()` (`run/deps.rs:142`) mapped only `.rs`/`.py`. A test
+  asserted `.cpp` *errors*, locking the gap in.
+- `auto_detect_main_file()` (`run/mod.rs:757`) listed only `main.rs`/`main.py`,
+  so `horus build` failed "No main file detected" — and the remedy text did not
+  mention C++ at all.
+- `build_project()` had no `"cpp"` arm and bailed "Unsupported language: cpp",
+  though the two run paths below it already dispatched to `build_cpp`.
+
+The C++ pipeline (`run_cpp.rs`, `cmake_gen.rs`) was fully implemented and simply
+could not be reached. Docs (`getting-started/cpp.mdx`) promise
+`horus new my-robot --cpp && horus run` works, so: DOCS_ARE_RIGHT_CODE_WRONG.
+
+## C2 — CRITICAL: C++ projects could not link the bindings (FIXED, `acf90f8e`)
+Even once reachable, `#include <horus/horus.hpp>` failed. Nothing wired
+horus_cpp's headers or library:
+- `horus new --cpp` wrote a **root** `CMakeLists.txt`, which (a) violates the
+  documented convention that native build files live in `.horus/` and never the
+  project root, (b) *shadows* the generated one (`run_cpp` prefers a root file),
+  and (c) used `find_package(horus QUIET)` — which never resolves, so it fell
+  through to "building without horus bindings" while `main.cpp` includes the
+  header unconditionally.
+- `cmake_gen` only added the project's own `../include`.
+
+Fix: stop scaffolding the root file; `cmake_gen` emits wiring guarded on
+`HORUS_CPP_INCLUDE`/`HORUS_CPP_LIB`; `run_cpp::ensure_horus_cpp()` resolves the
+source tree, builds the `horus_cpp` staticlib on demand, and passes both via
+`-D` so host paths stay out of the generated file.
+
+## C3 — CRITICAL: C++ `Scheduler::spin()` ignored every rate setting (FIXED, `acf90f8e`)
+`scheduler_impl.hpp` busy-looped on `horus_scheduler_tick_once()`:
+
+```cpp
+while (is_running()) { horus_scheduler_tick_once(inner_); }
+// "For now, spin = repeated tick_once. Real spin() would call scheduler_run()."
+```
+
+`scheduler_run` existed in Rust (`scheduler_ffi.rs:115`) but was never exposed
+through the C API, so C++ had no way to reach the real run loop.
+
+**Measured**: a node declaring `tick_rate(100_hz)` published 334,721 messages in
+3s = **~111,000 Hz**, pinning a core at ~100% CPU. For a real-time robotics
+framework driving hardware, a control loop running 1000x its declared rate is a
+safety-relevant defect, not a performance nit.
+
+Fix: expose `horus_scheduler_run()`, declare it in `horus_c.h`, and have
+`spin()` delegate to the Rust run loop (which honors tick rate, per-node rates,
+budgets and miss policies).
+
+**After**: ~90 Hz measured for a 100 Hz config (matching Rust's 88 Hz), 1.4% CPU.
+
+### Verified C++ journey (end to end, clean project)
+`horus new finalbot --cpp` -> `horus build` (3.1s warm) -> run -> `horus topic
+list` shows `cmd_vel` at ~90 Hz -> `horus topic echo cmd_vel` prints
+`linear: 0.300, angular: 0.000`, exactly what the template publishes.
+
+### C++ caveat
+The `spin()` fix has **no automated regression guard**. A rate assertion needs a
+C++ runtime test, and the C++ gtest suite is not part of the Rust test gate.
+Nothing would catch a reintroduction of the busy-loop except the comment left in
+the header. Worth a follow-up runtime test.
+
+## Corrections — two observations that did NOT reproduce
+Recorded so neither is mistaken for a real defect:
+- **`horus topic echo` on C++ topics**: appeared to print nothing. It was stdout
+  block-buffering under `| head` combined with a `timeout` kill. Writing to a
+  file shows it works correctly and decodes `CmdVel` field-wise.
+- **Python "No module named pip"** (reported in Round 1 as a sandbox limit): the
+  real cause was my isolated `HOME` hiding pip, which lives in the real
+  `~/.local`. With `PYTHONUSERBASE` set, pip and `import horus` both work, so the
+  Python surface *is* verifiable here. Round 1's "Python e2e not fully driven"
+  caveat was overstated.
+
 ## Correction to an earlier observation
 An initial run of `horus topic list` printed "No active topics found" while the
 node was up. This did **not** reproduce: with the same binary and a live node it
