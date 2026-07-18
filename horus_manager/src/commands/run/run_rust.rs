@@ -338,6 +338,20 @@ pub fn execute_build_only(
                 );
             }
         }
+        "cpp" => {
+            // Mirrors the "cpp" arms in the run paths below: cmake_gen writes
+            // .horus/CMakeLists.txt and build_cpp drives cmake. Without this arm
+            // `horus build` in a `horus new --cpp` project bailed with
+            // "Unsupported language: cpp" even though the C++ pipeline exists.
+            let project_dir = std::env::current_dir()?;
+            let build_start = std::time::Instant::now();
+            let binary = super::run_cpp::build_cpp(&project_dir, release, None)?;
+            cli_output::success(&format!(
+                "Built: {} ({:.1}s)",
+                binary.display(),
+                build_start.elapsed().as_secs_f64()
+            ));
+        }
         _ => bail!("Unsupported language: {}", language),
     }
 

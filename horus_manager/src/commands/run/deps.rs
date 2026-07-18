@@ -143,12 +143,17 @@ pub(crate) fn detect_language(file: &Path) -> Result<String> {
     match file.extension().and_then(|s| s.to_str()) {
         Some("rs") => Ok("rust".to_string()),
         Some("py") => Ok("python".to_string()),
+        // C++ is a first-class target: `horus new --cpp` scaffolds src/main.cpp,
+        // cmake_gen generates .horus/CMakeLists.txt and run_cpp::build_cpp drives
+        // cmake. Without these extensions that whole path was unreachable and a
+        // freshly created C++ project failed with "No main file detected".
+        Some("cpp") | Some("cc") | Some("cxx") => Ok("cpp".to_string()),
         _ => bail!(
             "Unsupported file type: {}\n\n{}\n  {} Supported: {}\n  {} Got: {}",
             file.display(),
             "Supported file types:".yellow(),
             "-".cyan(),
-            ".rs (Rust), .py (Python)".green(),
+            ".rs (Rust), .py (Python), .cpp/.cc/.cxx (C++)".green(),
             "-".cyan(),
             file.extension()
                 .and_then(|s| s.to_str())
@@ -635,9 +640,18 @@ mod tests {
         assert_eq!(detect_language(Path::new("main.py")).unwrap(), "python");
     }
 
+    /// C++ is a supported target — `horus new --cpp` scaffolds src/main.cpp and
+    /// run_cpp::build_cpp drives cmake. This used to assert `.cpp` was an error,
+    /// which locked in the gap that made a fresh C++ project unbuildable.
+    #[test]
+    fn detect_language_cpp() {
+        assert_eq!(detect_language(Path::new("main.cpp")).unwrap(), "cpp");
+        assert_eq!(detect_language(Path::new("main.cc")).unwrap(), "cpp");
+        assert_eq!(detect_language(Path::new("main.cxx")).unwrap(), "cpp");
+    }
+
     #[test]
     fn detect_language_unsupported() {
-        detect_language(Path::new("main.cpp")).unwrap_err();
         detect_language(Path::new("main.js")).unwrap_err();
         detect_language(Path::new("noext")).unwrap_err();
     }

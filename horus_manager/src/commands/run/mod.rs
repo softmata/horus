@@ -720,7 +720,7 @@ fn resolve_glob_pattern(pattern: &str) -> Result<Vec<ExecutionTarget>> {
                 if path.is_file() && !ignore.should_ignore_file(&path) {
                     // Only include executable file types
                     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                        if matches!(ext, "rs" | "py" | "horus") {
+                        if matches!(ext, "rs" | "py" | "cpp" | "cc" | "cxx" | "horus") {
                             files.push(path);
                         }
                     }
@@ -734,7 +734,7 @@ fn resolve_glob_pattern(pattern: &str) -> Result<Vec<ExecutionTarget>> {
         bail!("No executable files found matching pattern: {}\n\n{}\n  {} Supported extensions: {}\n  {} Check pattern: {}",
             pattern.green(),
             "No matches found:".yellow(),
-            "\u{2022}".cyan(), ".rs, .py, .horus".green(),
+            "\u{2022}".cyan(), ".rs, .py, .cpp, .horus".green(),
             "\u{2022}".cyan(), "Use quotes around patterns like \"nodes/*.py\"".dimmed()
         );
     }
@@ -754,8 +754,15 @@ pub(crate) fn auto_detect_main_file() -> Result<PathBuf> {
     // Load ignore patterns from horus.toml
     let ignore = load_ignore_patterns();
 
-    // Check for main files in priority order (Rust and Python only)
-    let candidates = ["main.rs", "main.py", "src/main.rs", "src/main.py"];
+    // Check for main files in priority order (Rust, Python, C++)
+    let candidates = [
+        "main.rs",
+        "main.py",
+        "main.cpp",
+        "src/main.rs",
+        "src/main.py",
+        "src/main.cpp",
+    ];
 
     for candidate in &candidates {
         let path = PathBuf::from(candidate);
@@ -776,7 +783,10 @@ pub(crate) fn auto_detect_main_file() -> Result<PathBuf> {
         .filter(|e| {
             let path = e.path();
             if let Some(ext) = path.extension() {
-                matches!(ext.to_str(), Some("rs") | Some("py")) && !ignore.should_ignore_file(&path)
+                matches!(
+                    ext.to_str(),
+                    Some("rs") | Some("py") | Some("cpp") | Some("cc") | Some("cxx")
+                ) && !ignore.should_ignore_file(&path)
             } else {
                 false
             }
@@ -789,7 +799,7 @@ pub(crate) fn auto_detect_main_file() -> Result<PathBuf> {
 
     bail!("No main file detected.\n\n{}\n  {} Create a main file: {}\n  {} Or specify a file: {}\n  {} Or run from directory: {}",
         "Solutions:".yellow(),
-        "\u{2022}".cyan(), "main.rs or main.py".green(),
+        "\u{2022}".cyan(), "main.rs, main.py or main.cpp".green(),
         "\u{2022}".cyan(), "horus run myfile.rs".green(),
         "\u{2022}".cyan(), "horus run src/".green()
     )
