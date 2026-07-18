@@ -608,32 +608,17 @@ if __name__ == "__main__":
 }
 
 fn create_cpp_project(project_path: &Path, name: &str) -> Result<()> {
-    // Create CMakeLists.txt
-    let cmake_content = format!(
-        r#"cmake_minimum_required(VERSION 3.20)
-project({name} LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Find HORUS C++ bindings
-find_package(horus QUIET)
-
-# Collect sources
-file(GLOB_RECURSE SOURCES src/*.cpp src/*.cc src/*.cxx)
-
-add_executable(${{PROJECT_NAME}} ${{SOURCES}})
-
-if(horus_FOUND)
-    target_link_libraries(${{PROJECT_NAME}} PRIVATE horus::horus)
-else()
-    message(STATUS "HORUS not found — building without horus bindings.")
-    message(STATUS "Install horus_cpp or use FetchContent to add it.")
-endif()
-"#
-    );
-    fs::write(project_path.join("CMakeLists.txt"), cmake_content)?;
+    // No root CMakeLists.txt is written on purpose.
+    //
+    // horus.toml is the single source of truth and native build files are
+    // generated into .horus/ — never the project root. A root CMakeLists.txt
+    // additionally *shadowed* the generated one (run_cpp prefers the root file
+    // when present), and the version scaffolded here used
+    // `find_package(horus QUIET)`, which never resolves — so it silently fell
+    // through to "building without horus bindings" while src/main.cpp includes
+    // <horus/horus.hpp> unconditionally, failing at the first compile.
+    //
+    // cmake_gen::generate() now emits the include/link wiring from horus.toml.
 
     // Create src/main.cpp
     let cpp_content = format!(

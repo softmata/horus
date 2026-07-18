@@ -72,6 +72,26 @@ pub(crate) fn build_cpp(
         .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
         .arg(format!("-DCMAKE_BUILD_TYPE={}", build_type));
 
+    // ── HORUS C++ bindings ──────────────────────────────────────────────
+    // The generated CMakeLists consumes HORUS_CPP_INCLUDE / HORUS_CPP_LIB.
+    // Resolving them here keeps host paths out of the generated file.
+    match ensure_horus_cpp(release) {
+        Ok((include_dir, lib_path)) => {
+            configure_cmd.arg(format!("-DHORUS_CPP_INCLUDE={}", include_dir.display()));
+            configure_cmd.arg(format!("-DHORUS_CPP_LIB={}", lib_path.display()));
+        }
+        Err(e) => {
+            // Not fatal on its own: a project may not use the bindings at all.
+            // The compiler produces the real error if it includes horus headers.
+            log::warn!("HORUS C++ bindings unavailable: {e:#}");
+            eprintln!(
+                "{} HORUS C++ bindings unavailable — {}",
+                cli_output::ICON_WARN.yellow(),
+                e
+            );
+        }
+    }
+
     // ── Cross-compilation toolchain ─────────────────────────────────────
     // Priority: explicit target_arch > horus.toml [cpp].toolchain
     let effective_target = target_arch.map(String::from).or_else(|| {
@@ -200,6 +220,63 @@ pub(super) fn execute_cpp_binary(binary: &Path, args: &[String]) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve the HORUS C++ bindings: header include dir + compiled static library.
+///
+/// Returns `(include_dir, lib_path)`. The headers ship in the source tree at
+/// `horus_cpp/include`; the library is produced by building the `horus_cpp`
+/// crate (crate-type includes `staticlib`). Built on demand and cached by
+/// cargo, so the cost is paid once per source tree and profile.
+fn ensure_horus_cpp(release: bool) -> Result<(PathBuf, PathBuf)> {
+    let source = super::run_rust::find_horus_source_dir()
+        .context("could not locate the HORUS source tree (needed for horus_cpp headers)")?;
+
+    let include_dir = source.join("horus_cpp/include");
+    if !include_dir.join("horus/horus.hpp").exists() {
+        bail!(
+            "horus_cpp headers not found at {}",
+            include_dir.display()
+        );
+    }
+
+    let profile_dir = if release { "release" } else { "debug" };
+    let lib_path = source
+        .join("target")
+        .join(profile_dir)
+        .join("libhorus_cpp.a");
+
+    if !lib_path.exists() {
+        eprintln!(
+            "{} Building HORUS C++ bindings (first C++ build in this tree)...",
+            cli_output::ICON_INFO.cyan()
+        );
+        let mut cmd = Command::new("cargo");
+        cmd.current_dir(&source)
+            .arg("build")
+            .arg("-p")
+            .arg("horus_cpp")
+            .arg("--no-default-features");
+        if release {
+            cmd.arg("--release");
+        }
+        // horus_cpp lives in the horus workspace; keep its artifacts there so the
+        // path above resolves regardless of any inherited CARGO_TARGET_DIR.
+        cmd.env("CARGO_TARGET_DIR", source.join("target"));
+
+        let status = cmd
+            .status()
+            .context("failed to invoke cargo to build horus_cpp")?;
+        if !status.success() {
+            bail!("cargo build -p horus_cpp failed");
+        }
+    }
+
+    if !lib_path.exists() {
+        bail!("horus_cpp built but {} was not produced", lib_path.display());
+    }
+
+    Ok((include_dir, lib_path))
 }
 
 /// Generate `.horus/CMakeLists.txt` from `horus.toml` if no root CMakeLists.txt exists.

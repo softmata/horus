@@ -47,6 +47,8 @@ bool            horus_scheduler_is_running(const HorusScheduler* sched);
 bool            horus_scheduler_has_full_rt(const HorusScheduler* sched);
 int             horus_scheduler_get_name(const HorusScheduler* sched, char* buf, size_t buf_len);
 int             horus_scheduler_tick_once(HorusScheduler* sched);
+/* Blocks until stopped, honoring the configured tick rate. Backs Scheduler::spin(). */
+int             horus_scheduler_run(HorusScheduler* sched);
 uint32_t        horus_scheduler_node_count(const HorusScheduler* sched);
 int             horus_scheduler_node_name_at(const HorusScheduler* sched, uint32_t index, char* buf, size_t buf_len);
 

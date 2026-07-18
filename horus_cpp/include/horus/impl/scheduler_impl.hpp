@@ -106,11 +106,14 @@ inline NodeBuilder Scheduler::add(LambdaNode& node) {
 }
 
 inline void Scheduler::spin() {
-    if (horus_scheduler_tick_once(inner_) != 0) {
-        // For now, spin = repeated tick_once. Real spin() would call scheduler_run().
-    }
-    while (is_running()) {
-        horus_scheduler_tick_once(inner_);
+    // Delegates to the Rust scheduler's run loop, which honors the configured
+    // tick rate, per-node rates, budgets and miss policies.
+    //
+    // This used to busy-loop on tick_once(), which ignored every rate setting —
+    // a node declaring tick_rate(100_hz) actually spun at ~111 kHz and pinned a
+    // core. Do not reintroduce that: tick_once() is for manual/test stepping.
+    if (horus_scheduler_run(inner_) != 0) {
+        throw Error("scheduler run failed");
     }
 }
 

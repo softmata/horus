@@ -314,6 +314,27 @@ pub fn generate(
         target_name
     )?;
 
+    // HORUS C++ bindings. run_cpp::build_cpp resolves the horus source tree and
+    // passes these in with -D, so the generated file stays free of host paths.
+    // Without this a scaffolded project fails on `#include <horus/horus.hpp>`.
+    writeln!(cmake, "  if(HORUS_CPP_INCLUDE)")?;
+    writeln!(
+        cmake,
+        "    target_include_directories({} PRIVATE ${{HORUS_CPP_INCLUDE}})",
+        target_name
+    )?;
+    writeln!(cmake, "  endif()")?;
+    writeln!(cmake, "  if(HORUS_CPP_LIB)")?;
+    writeln!(
+        cmake,
+        // pthread/dl/m are required by the horus_cpp static library. Linked by
+        // plain name rather than via find_package(Threads) so that the
+        // "no dependencies => no find_package lines" property still holds.
+        "    target_link_libraries({} PRIVATE ${{HORUS_CPP_LIB}} pthread ${{CMAKE_DL_LIBS}} m)",
+        target_name
+    )?;
+    writeln!(cmake, "  endif()")?;
+
     // Link libraries
     if !cpp_deps.is_empty() {
         let targets: Vec<&str> = cpp_deps.iter().map(|d| d.cmake_target.as_str()).collect();

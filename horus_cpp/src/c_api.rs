@@ -60,6 +60,22 @@ pub unsafe extern "C" fn horus_scheduler_is_running(sched: *const FfiScheduler) 
         .is_some_and(scheduler_ffi::scheduler_is_running)
 }
 
+/// Run the scheduler until stopped. Blocks. Returns 0 on clean shutdown, -1 on error.
+///
+/// This is what `horus::Scheduler::spin()` calls. Without it, spin() had to
+/// busy-loop on `tick_once`, which ignored the configured tick rate entirely and
+/// ran control loops at whatever speed the CPU allowed.
+#[no_mangle]
+pub unsafe extern "C" fn horus_scheduler_run(sched: *mut FfiScheduler) -> i32 {
+    match sched.as_mut() {
+        Some(s) => match scheduler_ffi::scheduler_run(s) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        },
+        None => -1,
+    }
+}
+
 /// Execute a single tick. Returns 0 on success, -1 on error.
 #[no_mangle]
 pub unsafe extern "C" fn horus_scheduler_tick_once(sched: *mut FfiScheduler) -> i32 {
