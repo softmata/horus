@@ -1,6 +1,6 @@
 //! Message command - Message type introspection
 //!
-//! Lists and inspects HORUS message types defined in horus_library.
+//! Lists and inspects HORUS message types defined in horus_types.
 
 use crate::cli_output;
 use colored::*;
@@ -272,42 +272,40 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
 fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     let mut messages = Vec::new();
 
-    // Find the horus_library messages directory.
-    // Search strategy (in order):
-    //   1. HORUS_SOURCE_DIR env var (explicit override)
-    //   2. Relative to the horus binary location
-    //   3. Known install paths
+    // Find the message type definitions.
+    //
+    // These used to live in `horus_library/messages`, but horus_library was
+    // removed (commit 7b430279, "decomposed into horus_types + horus-tf +
+    // horus-robotics"). Every search path here pointed at that deleted
+    // directory, so `horus msg list/info/hash` could not succeed on any
+    // install — and the error told the user to set HORUS_SOURCE_DIR, which
+    // could not help either. The universal IPC types now live in
+    // `horus_types/src`.
     let mut search_paths: Vec<std::path::PathBuf> = Vec::new();
 
-    // 1. HORUS_SOURCE_DIR env var
+    // 1. HORUS_SOURCE_DIR env var (explicit override, kept for compatibility)
     if let Ok(source_dir) = std::env::var("HORUS_SOURCE_DIR") {
-        search_paths.push(Path::new(&source_dir).join("horus_library/messages"));
+        search_paths.push(Path::new(&source_dir).join("horus_types/src"));
     }
 
-    // 2. Relative to executable location
+    // 2. The canonical source-tree resolution used by the rest of the CLI.
+    //    This is what makes the command work on a normal install, where the
+    //    source is cached at ~/.horus/cache/horus@<version> (it also honors
+    //    $HORUS_SOURCE and the well-known checkout locations).
+    if let Ok(source_root) = crate::commands::run::find_horus_source_dir() {
+        search_paths.push(source_root.join("horus_types/src"));
+    }
+
+    // 3. Relative to the executable, for running out of a build tree.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            // Binary might be in target/debug or target/release
             for ancestor in [exe_dir, exe_dir.parent().unwrap_or(exe_dir)] {
-                search_paths.push(ancestor.join("horus_library/messages"));
-                search_paths.push(ancestor.join("../horus_library/messages"));
-                search_paths.push(ancestor.join("../../horus_library/messages"));
+                search_paths.push(ancestor.join("horus_types/src"));
+                search_paths.push(ancestor.join("../horus_types/src"));
+                search_paths.push(ancestor.join("../../horus_types/src"));
             }
         }
     }
-
-    // 3. Known install/development paths
-    if let Some(home) = dirs::home_dir() {
-        search_paths.push(home.join(".horus/library/messages"));
-        search_paths.push(home.join("horus/horus_library/messages"));
-        search_paths.push(home.join("softmata/horus/horus_library/messages"));
-    }
-    // 3b. HORUS_SOURCE env var (used by horus run for workspace resolution)
-    if let Ok(source_root) = std::env::var("HORUS_SOURCE") {
-        search_paths.push(Path::new(&source_root).join("horus_library/messages"));
-    }
-    search_paths.push(Path::new("/opt/horus/library/messages").to_path_buf());
-    search_paths.push(Path::new("/usr/local/share/horus/messages").to_path_buf());
 
     let mut messages_dir = None;
     for path in &search_paths {
@@ -319,9 +317,9 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
 
     let messages_dir = messages_dir.ok_or_else(|| {
         HorusError::Config(ConfigError::Other(
-            "Could not find horus_library/messages directory.\n  \
-             Set HORUS_SOURCE_DIR to the root of your HORUS source tree,\n  \
-             e.g.: export HORUS_SOURCE_DIR=/path/to/horus"
+            "Could not find the HORUS message definitions (horus_types/src).\n  \
+             Re-run the installer, or point HORUS_SOURCE at your HORUS source tree,\n  \
+             e.g.: export HORUS_SOURCE=/path/to/horus"
                 .to_string(),
         ))
     })?;
@@ -1404,7 +1402,7 @@ pub struct WithGap {
     /// Helper: create a temp messages directory with sample .rs files
     fn setup_messages_dir() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         // control.rs
@@ -1567,8 +1565,9 @@ pub struct Range {
             std::env::set_var("HORUS_SOURCE", v);
         }
 
-        // The fake HORUS_SOURCE_DIR won't work, but fallback paths (e.g.
-        // ~/softmata/horus/horus_library/messages) may still succeed.
+        // The fake HORUS_SOURCE_DIR won't work, but fallback paths (e.g. a real
+        // source tree at ~/softmata/horus, or the installer's cached copy) may
+        // still succeed on a developer machine.
         match result {
             Ok(msgs) => {
                 // Fallback path found messages — they should be well-formed
@@ -1581,8 +1580,8 @@ pub struct Range {
                 // No fallback path found — error should mention the missing directory
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("messages") || msg.contains("HORUS_SOURCE_DIR"),
-                    "error should mention messages directory or HORUS_SOURCE_DIR, got: {msg}"
+                    msg.contains("message definitions") || msg.contains("HORUS_SOURCE"),
+                    "error should mention the message definitions or HORUS_SOURCE, got: {msg}"
                 );
             }
         }
@@ -1772,7 +1771,7 @@ pub struct Range {
     fn show_message_with_empty_fields() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         fs::write(msgs_dir.join("empty.rs"), "pub struct EmptyMsg {}\n").unwrap();
@@ -1857,7 +1856,7 @@ pub struct Range {
     fn list_messages_empty_dir() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
@@ -1873,7 +1872,7 @@ pub struct Range {
     fn list_messages_empty_dir_with_filter() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         std::env::set_var("HORUS_SOURCE_DIR", tmp.path().to_str().unwrap());
@@ -2041,7 +2040,7 @@ pub struct Msg {
     fn discover_messages_via_horus_source_env() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         fs::write(
@@ -2079,7 +2078,7 @@ pub struct Msg {
     fn show_message_displays_doc() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         fs::write(
@@ -2111,7 +2110,7 @@ pub struct DocMsg {
     fn show_message_json_with_fields() {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let msgs_dir = tmp.path().join("horus_library").join("messages");
+        let msgs_dir = tmp.path().join("horus_types").join("src");
         fs::create_dir_all(&msgs_dir).unwrap();
 
         fs::write(

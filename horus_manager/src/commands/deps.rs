@@ -19,6 +19,31 @@ pub enum DepsAction {
     Audit,
 }
 
+/// Directory to run cargo from for a HORUS project.
+///
+/// horus.toml is the source of truth and Cargo.toml is generated into `.horus/`
+/// — never the project root. Running cargo from the root therefore fails with
+/// "could not find `Cargo.toml`". Prefer the generated manifest, and fall back
+/// to a root Cargo.toml for plain cargo projects.
+fn cargo_dir(root: &Path) -> std::path::PathBuf {
+    let generated = root.join(".horus");
+    if generated.join("Cargo.toml").exists() {
+        return generated;
+    }
+    root.to_path_buf()
+}
+
+/// Warn when no Cargo manifest exists yet, so cargo's raw error doesn't confuse.
+fn warn_if_no_manifest(root: &Path) {
+    if !root.join(".horus/Cargo.toml").exists() && !root.join("Cargo.toml").exists() {
+        eprintln!(
+            "  {} No Cargo.toml yet — run {} first to generate .horus/Cargo.toml",
+            "!".yellow(),
+            "horus build".cyan()
+        );
+    }
+}
+
 /// Run `horus deps <action>`.
 pub fn run_deps(action: DepsAction, extra_args: Vec<String>) -> Result<()> {
     let ctx = dispatch::detect_context(&std::env::current_dir()?);
@@ -39,7 +64,8 @@ fn run_tree(ctx: &dispatch::ProjectContext, extra_args: &[String]) -> Result<()>
         let mut cmd = Command::new("cargo");
         cmd.arg("tree");
         cmd.args(extra_args);
-        cmd.current_dir(&ctx.root);
+        warn_if_no_manifest(&ctx.root);
+        cmd.current_dir(cargo_dir(&ctx.root));
         cmd.status()?;
         ran = true;
     }
@@ -139,7 +165,8 @@ fn run_why(ctx: &dispatch::ProjectContext, pkg: &str, extra_args: &[String]) -> 
         let mut cmd = Command::new("cargo");
         cmd.args(["tree", "-i", pkg]);
         cmd.args(extra_args);
-        cmd.current_dir(&ctx.root);
+        warn_if_no_manifest(&ctx.root);
+        cmd.current_dir(cargo_dir(&ctx.root));
         cmd.status()?;
         ran = true;
     }
@@ -175,7 +202,8 @@ fn run_outdated(ctx: &dispatch::ProjectContext, extra_args: &[String]) -> Result
             let mut cmd = Command::new("cargo");
             cmd.args(["outdated"]);
             cmd.args(extra_args);
-            cmd.current_dir(&ctx.root);
+            warn_if_no_manifest(&ctx.root);
+            cmd.current_dir(cargo_dir(&ctx.root));
             cmd.status()?;
             ran = true;
         } else {
@@ -316,7 +344,8 @@ fn run_audit(ctx: &dispatch::ProjectContext, extra_args: &[String]) -> Result<()
             let mut cmd = Command::new("cargo");
             cmd.args(["audit"]);
             cmd.args(extra_args);
-            cmd.current_dir(&ctx.root);
+            warn_if_no_manifest(&ctx.root);
+            cmd.current_dir(cargo_dir(&ctx.root));
             cmd.status()?;
             ran = true;
         } else {
