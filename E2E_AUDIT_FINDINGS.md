@@ -103,3 +103,71 @@ cd my_robot && horus build
 The build is healthy. The *product* is not reachable by a new user: install
 fails (F1+F2); if it succeeded the user still could not build a project (F3+F4);
 if that were fixed the template still would not compile (F5).
+
+---
+
+# Resolution (branch `fix/e2e-install-first-run`, commit cbdd0d8d)
+
+| # | Status | Fix |
+|---|--------|-----|
+| F1 | FIXED | `BRANCH` defaults to `main` (`HORUS_INSTALL_BRANCH` overrides) |
+| F2 | **NOT FIXED — needs CI** | install.sh logic now degrades gracefully to a source build, but publishing the assets requires a successful `release.yml` run. Cannot be verified from here. |
+| F3 | FIXED | Source cached at `~/.horus/cache/horus@<version>`; prebuilt binary now only skips the compile step |
+| F4 | FIXED | Error propagated with `.context(...)` instead of `if let Ok` |
+| F5 | FIXED | Templates use `Twist::new_2d()`; test retargeted + negative assertion |
+| F6 | FIXED | Cache lookup prefers `horus@<CARGO_PKG_VERSION>`, falls back to any `horus@*` |
+| F7 | FIXED | uninstall checks `~/.cargo/bin` **and** `~/.local/bin` |
+| F8 | FIXED | uninstall removes `$XDG_CONFIG_HOME/horus` on Linux/BSD |
+| F9 | FIXED | Python template uses `node.recv()`; regression test added |
+| F10 | FIXED | Two cache roots existed (`~/.cache/horus` XDG vs `~/.horus/cache`); both are now searched |
+
+F9/F10 were found while verifying the F3/F5 fixes:
+- **F9** — the Python template called `node.get()`, which does not exist
+  (`horus_py/horus/__init__.py` has recv/recv_all/has_msg/send). It sat behind
+  `if node.has_msg(...)`, so it raised AttributeError only once a publisher
+  appeared — a project that looks fine until it isn't.
+- **F10** — `paths::cache_dir()` resolves to `~/.cache/horus` (XDG), but
+  install.sh/uninstall.sh and `horus clean` manage `~/.horus/cache`. The
+  installer wrote one and the resolver read the other.
+
+## Verification performed
+Clean-room, isolated `HOME`, source present *only* in the cache (no dev checkout):
+1. `horus new bot -r` — OK
+2. template contains `Twist`, zero `CmdVel` occurrences
+3. `horus build` — generates correct path deps, compiles
+4. binary produced at `.horus/target/debug/bot`
+5. `horus node list` — node Running
+6. `horus topic list` — `motors.cmd_vel`, 269 msgs, 88 Hz, active
+7. `horus topic echo motors.cmd_vel` — `Type: Twist`, payload
+   `00 00 00 00 00 00 f0 3f` = `1.0f64` = `Twist::new_2d(1.0, 0.0)`
+8. `uninstall.sh` in the same isolated HOME: removed the binary from the
+   `~/.local/bin` fallback and the credential file; correctly kept the cargo
+   registry. Real `$HOME` verified untouched afterwards.
+
+Tests 3080 passed / 0 failed. Clippy clean. `bash -n` clean on both scripts.
+horus-docs `validate-docs.js`: 278 pages, 0 errors.
+
+## Known remaining issues (NOT fixed)
+- **F2 / release.yml** — no GitHub Release has ever carried binaries. Until a
+  tagged run of `release.yml` succeeds, every install compiles from source
+  (~1-5 min). Needs a CI run to verify; not verifiable in this environment.
+- **`horus node list` TICKS always 0** — cosmetic. The node ticks correctly
+  (proved by 88 Hz / 269 msgs on the topic), but the live-count override at
+  `discovery/nodes.rs:114-130` never fires, so the column stays 0. Pre-existing,
+  unrelated to these fixes.
+- **Python e2e not fully driven** — `horus run` on a Python project resolves
+  deps via `pip`, which is absent in this sandbox (`No module named pip`). The
+  template fix (F9) is verified by test and inspection; the full Python
+  new→run journey was *not* executed end to end.
+- **Windows support claim** — `installation.mdx` lists Windows as fully
+  supported. Left unchanged: `horus_sys` has real Windows implementations
+  (`CreateFileMappingW`), `release.yml` builds `x86_64-pc-windows-msvc`, and
+  `reference/platform-support.mdx` is self-consistent. Flagging only because a
+  project note claims horus does not compile on Windows — that note appears
+  stale, but I could not compile-verify Windows here.
+
+## Correction to an earlier observation
+An initial run of `horus topic list` printed "No active topics found" while the
+node was up. This did **not** reproduce: with the same binary and a live node it
+reports the topic correctly (item 6 above). The first observation was a timing
+artifact, not a defect. Recorded here so it is not mistaken for a real finding.
