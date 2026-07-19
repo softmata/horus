@@ -22,7 +22,6 @@
 // construction on recv — ~8x faster send, ~3x faster recv vs the old approach.
 
 use horus::communication::Topic;
-use horus::memory::TensorHandle;
 use horus_core::memory::{DepthImage, Image, PointCloud};
 use horus_types::{
     Accel, AccelStamped, Clock, DiagnosticReport, DiagnosticStatus, DiagnosticValue, EmergencyStop,
@@ -528,21 +527,40 @@ impl PyTopic {
                     .handle
                     .as_ref()
                     .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
-                handle.pool().retain(handle.tensor());
-                let descriptor = *handle.tensor();
                 let log_msg = format!(
                     "Tensor(shape={:?}, dtype={})",
                     handle.shape(),
                     handle.dtype()
                 );
+                // The tensor was allocated in a process-local pool (from_numpy uses
+                // a scratch pool), but the receiver reads from THIS topic's shared
+                // pool. Sending the source descriptor as-is pointed the receiver at
+                // a slot in the wrong pool → data_ptr() null on recv. Allocate in
+                // the topic's pool and copy the bytes in, so the descriptor refers
+                // to the pool the receiver actually reads — the same pattern
+                // Topic<Tensor>::send_handle expects and Image already follows.
                 let topic_ref = topic.clone();
-                let success = py.detach(|| {
-                    topic_ref
-                        .write()
-                        .expect("topic lock poisoned")
-                        .send(descriptor);
-                    true
-                });
+                let shape = handle.shape().to_vec();
+                let dtype = handle.dtype();
+                let device = handle.device();
+                let src_bytes = handle
+                    .data_slice()
+                    .map_err(|e| PyRuntimeError::new_err(format!("tensor read failed: {e}")))?;
+                let success = py.detach(|| -> PyResult<bool> {
+                    let t = topic_ref.read().expect("topic lock poisoned");
+                    let dst = t
+                        .alloc_tensor(&shape, dtype, device)
+                        .map_err(|e| PyRuntimeError::new_err(format!("pool alloc failed: {e}")))?;
+                    {
+                        let dst_bytes = dst.data_slice_mut().map_err(|e| {
+                            PyRuntimeError::new_err(format!("tensor write failed: {e}"))
+                        })?;
+                        let n = src_bytes.len().min(dst_bytes.len());
+                        dst_bytes[..n].copy_from_slice(&src_bytes[..n]);
+                    }
+                    t.send_handle(&dst);
+                    Ok(true)
+                })?;
                 if node.is_some() {
                     log_ipc_event(
                         py,
@@ -681,10 +699,14 @@ impl PyTopic {
             }
             TopicType::Tensor(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
-                if let Some(descriptor) = msg_opt {
-                    let pool = { topic_ref.read().expect("topic lock").pool() };
-                    let handle = TensorHandle::new(descriptor, pool);
+                // recv_handle wraps TensorHandle::from_owned: the sender already
+                // bumped the refcount (via send_handle) and from_owned validates
+                // the descriptor's pool_id matches this topic's pool — guarding
+                // against a cross-pool descriptor instead of silently handing back
+                // a null data pointer.
+                let msg_opt =
+                    py.detach(|| topic_ref.read().expect("topic lock poisoned").recv_handle());
+                if let Some(handle) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
                             py,

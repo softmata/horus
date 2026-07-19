@@ -535,16 +535,22 @@ impl PyTensorHandle {
     /// Returns a numpy array that shares memory with this tensor.
     /// Changes to the numpy array will be visible in the tensor and vice versa.
     fn numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = slf.borrow();
-        let handle = inner
-            .handle
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
-
-        if handle.is_cuda() {
-            return Err(PyTypeError::new_err(
-                "Cannot convert CUDA tensor to numpy. Use .cpu() first or access via torch.",
-            ));
+        // Scope the borrow to the validity check only. `numpy.asarray(slf)` reads
+        // `slf.__array_interface__`, which takes `slf.borrow_mut()` to record its
+        // view_keepalive — so holding an immutable borrow across the asarray call
+        // panics with "Already borrowed". (Was masked before recv delivered real
+        // data; the borrow conflict only surfaces once asarray runs to completion.)
+        {
+            let inner = slf.borrow();
+            let handle = inner
+                .handle
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
+            if handle.is_cuda() {
+                return Err(PyTypeError::new_err(
+                    "Cannot convert CUDA tensor to numpy. Use .cpu() first or access via torch.",
+                ));
+            }
         }
 
         // Use numpy.asarray with our __array_interface__
@@ -556,21 +562,17 @@ impl PyTensorHandle {
     ///
     /// Returns a PyTorch tensor that shares memory with this tensor.
     fn torch<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = slf.borrow();
-        let handle = inner
-            .handle
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
-
-        let torch = py.import("torch")?;
-
-        if handle.is_cuda() {
-            // Use __cuda_array_interface__
-            torch.call_method1("as_tensor", (slf,))
-        } else {
-            // Use __array_interface__
-            torch.call_method1("as_tensor", (slf,))
+        // See numpy(): torch.as_tensor(slf) also reads the array-interface getter,
+        // which borrows_mut, so the validity-check borrow must be dropped first.
+        {
+            let inner = slf.borrow();
+            inner
+                .handle
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
         }
+        let torch = py.import("torch")?;
+        torch.call_method1("as_tensor", (slf,))
     }
 
     /// Create a slice of the first dimension

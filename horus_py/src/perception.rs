@@ -577,6 +577,43 @@ impl PyLandmark {
 // ============================================
 
 /// List of detections with batch operations
+/// Coerce a Python object into a perception [`PyDetection`].
+///
+/// Accepts a perception `Detection` directly, or the messages `Detection`
+/// (`PyDetectionMsg`, what `horus.Detection` resolves to) — both hold identical
+/// fields. This bridges the two `#[pyclass(name = "Detection")]` types so
+/// `DetectionList` works with the `Detection` users actually construct.
+fn coerce_detection(obj: &Bound<'_, PyAny>) -> PyResult<PyDetection> {
+    if let Ok(d) = obj.extract::<PyDetection>() {
+        return Ok(d);
+    }
+    let m = obj
+        .extract::<crate::messages::PyDetectionMsg>()
+        .map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "expected a Detection object (horus.Detection or a DetectionList element)",
+            )
+        })?;
+    let b = m.inner.bbox;
+    Ok(PyDetection {
+        bbox: PyBoundingBox2D {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+        },
+        confidence: m.inner.confidence,
+        class_id: m.inner.class_id,
+        class_name: {
+            // class_name is a null-padded [u8; 32] in the message representation.
+            let raw = &m.inner.class_name;
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            String::from_utf8_lossy(&raw[..end]).into_owned()
+        },
+        instance_id: m.inner.instance_id,
+    })
+}
+
 #[pyclass(from_py_object, name = "DetectionList")]
 #[derive(Debug, Clone)]
 pub struct PyDetectionList {
@@ -594,13 +631,26 @@ impl PyDetectionList {
 
     /// Create from list of detections
     #[staticmethod]
-    fn from_list(detections: Vec<PyDetection>) -> Self {
-        Self { detections }
+    fn from_list(detections: Vec<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let detections = detections
+            .iter()
+            .map(coerce_detection)
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Self { detections })
     }
 
-    /// Add a detection
-    fn append(&mut self, detection: PyDetection) {
-        self.detections.push(detection);
+    /// Add a detection.
+    ///
+    /// Accepts either a perception `Detection` or the message `Detection`
+    /// exported as `horus.Detection`. Two distinct `#[pyclass(name = "Detection")]`
+    /// types exist — perception's `PyDetection` (this list's element) and
+    /// messages' `PyDetectionMsg` (the topic message, which wins the `horus.Detection`
+    /// name because it is registered last). Without this coercion,
+    /// `DetectionList().append(horus.Detection(...))` raised
+    /// "'Detection' object is not an instance of 'Detection'".
+    fn append(&mut self, detection: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.detections.push(coerce_detection(detection)?);
+        Ok(())
     }
 
     /// Get number of detections
