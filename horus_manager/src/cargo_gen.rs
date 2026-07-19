@@ -113,6 +113,7 @@ pub fn generate(
     let horus_source = crate::commands::run::find_horus_source_dir()
         .context("Cannot generate .horus/Cargo.toml without the HORUS source tree")?;
     write_horus_path_deps(&mut cargo, &horus_source, manifest);
+    write_implicit_deps(&mut cargo, manifest);
 
     // Add user deps from horus.toml
     write_deps_section(&mut cargo, &manifest.dependencies, project_dir, &horus_dir)?;
@@ -223,6 +224,22 @@ fn write_bin_entry(cargo: &mut String, name: &str, path: &str) {
 }
 
 /// Write horus core/library/macros path dependencies.
+/// Write implicit dependencies every HORUS project needs but that are not
+/// declared in horus.toml.
+///
+/// serde: the canonical `message!` macro and the documented
+/// `#[derive(Serialize, Deserialize)]` pattern both expand to `serde::Serialize`
+/// / `serde::Deserialize`, so serde must be a *direct* dependency of the user's
+/// crate — it is not enough for horus to depend on it transitively. Without this
+/// a fresh project using `message!` fails to compile with
+/// "cannot find crate `serde`", contradicting the macro's "zero configuration"
+/// promise. Skipped if the user declared serde themselves.
+fn write_implicit_deps(cargo: &mut String, manifest: &HorusManifest) {
+    if !manifest.dependencies.contains_key("serde") {
+        writeln!(cargo, "serde = {{ version = \"1\", features = [\"derive\"] }}").unwrap();
+    }
+}
+
 fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &HorusManifest) {
     // Detect hardware features from manifest
     let hw_features: Vec<&str> = manifest
@@ -640,6 +657,13 @@ pub fn generate_workspace(
                     .unwrap();
                 }
             }
+            // serde is implicit — see write_implicit_deps. Members opt in via
+            // `serde = { workspace = true }` (added in generate_member_cargo).
+            writeln!(
+                root_cargo,
+                "serde = {{ version = \"1\", features = [\"derive\"] }}"
+            )
+            .unwrap();
         }
 
         // User workspace deps
@@ -744,6 +768,12 @@ fn generate_member_cargo(
     // Horus core deps as workspace = true
     for dep_name in &["horus", "horus_core", "horus_macros"] {
         writeln!(cargo, "{}.workspace = true", dep_name).unwrap();
+    }
+    // serde is implicit (see write_implicit_deps): the message! macro and the
+    // documented derive pattern both need serde as a direct dep. Provided at the
+    // workspace level; members opt in here. Skip if the member declared it.
+    if !member_manifest.dependencies.contains_key("serde") {
+        writeln!(cargo, "serde = {{ workspace = true }}").unwrap();
     }
 
     for (name, dep) in &member_manifest.dependencies {
