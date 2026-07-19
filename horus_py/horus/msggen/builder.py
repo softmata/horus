@@ -119,6 +119,25 @@ def build_messages(force: bool = False, verbose: bool = True) -> bool:
             print("No custom messages registered. Nothing to build.")
         return True
 
+    # build_messages() compiles a Rust extension with maturin, which needs the
+    # horus_py source crate. A pip-installed wheel has no Cargo.toml at the
+    # package root, so maturin would fail with a confusing error. Detect that up
+    # front and point users at the no-build runtime path instead.
+    horus_py_root = get_horus_py_root()
+    if not (horus_py_root / "Cargo.toml").exists():
+        raise RuntimeError(
+            "build_messages() requires a horus_py source checkout — it compiles a "
+            "Rust extension with maturin — but this looks like a pip-installed "
+            f"package (no Cargo.toml at {horus_py_root}).\n\n"
+            "For an installed HORUS, use runtime dict topics instead: send a plain "
+            "dict of primitives over a bare-string topic, no build step required:\n"
+            "    node.send('robot.status', {'battery': 85, 'ok': True})\n"
+            "    data = node.recv('robot.status')   # -> dict\n\n"
+            "See 'Without a build step: dict topics' in the message-design docs. "
+            "Compiled custom messages via build_messages() are for development "
+            "against a horus_py source tree."
+        )
+
     # Check if rebuild is needed
     if not force and not check_needs_rebuild():
         if verbose:
