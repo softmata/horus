@@ -529,6 +529,12 @@ fn execute_multiple_files(
 
         let mut cmd = exec_info.create_command(&args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // We pipe stdout/stderr to prefix each line with [node]. CPython
+        // full-buffers stdout when it is a pipe rather than a TTY, so without
+        // this a multi-node Python launch shows nothing until the processes
+        // exit (the docs show live per-node output). Force line-unbuffered
+        // output; harmless for Rust (line-buffered already) and C++ children.
+        cmd.env("PYTHONUNBUFFERED", "1");
 
         match cmd.spawn() {
             Ok(mut child) => {
