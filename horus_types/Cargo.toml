@@ -1,6 +1,6 @@
 [package]
 name = "horus_types"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 authors = ["HORUS Contributors"]
 description = "Universal IPC message types for HORUS — math primitives, diagnostics, time sync, and generic messages. Used by all horus verticals."

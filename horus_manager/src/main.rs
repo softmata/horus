@@ -11,7 +11,7 @@ use horus_manager::commands;
 #[derive(Parser)]
 #[command(name = "horus")]
 #[command(about = "Real-time robotics framework with zero-copy IPC and deterministic scheduling")]
-#[command(version = "0.2.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(propagate_version = true)]
 #[command(disable_help_subcommand = true)]
 #[command(help_template = "\
