@@ -326,6 +326,68 @@ only in `~/.horus/cache`:
   reaches Python only after a wheel rebuild (`maturin develop`). The Rust RT path
   (built from the fixed source) confirms the fix at 49.8/50 Hz.
 
+---
+
+# Round 4 — remaining open bugs resolved (2026-07-19)
+
+The five follow-up items (#9–#13) that Round 3 recorded but did not fix. All
+Python-binding fixes verified against a rebuilt wheel (`maturin develop` into an
+isolated venv); all shm repros run against a cleaned `/dev/shm`.
+
+## #10 — FIXED: Python Tensor topic round-trip returned garbage (`2b53c68c`)
+`send` shipped the source descriptor unchanged, but `from_numpy` allocates in a
+process-local scratch pool while the receiver reads the topic's shared pool —
+`data_ptr()` came back null. Now `send` allocates in the topic pool
+(`alloc_tensor`) and copies bytes in (the `send_handle` contract, as Image
+already did); `recv` uses `recv_handle`/`from_owned`, which validates the
+descriptor's `pool_id`. Fixing delivery exposed a latent borrow bug —
+`Tensor.numpy()`/`torch()` held an immutable borrow across `numpy.asarray(slf)`,
+which takes `borrow_mut` for `view_keepalive` → "Already borrowed" panic; scoped
+the borrow. Verified: same-process and cross-topic f32/f64 round-trips match
+exactly; Image still round-trips.
+
+## #11 — FIXED: `DetectionList.append(horus.Detection(...))` rejected (`2b53c68c`)
+Two `#[pyclass(name = "Detection")]` exist — perception's `PyDetection` (list
+element) and messages' `PyDetectionMsg` (topic message, which wins the
+`horus.Detection` name by registering last). `append` wanted the former; users
+construct the latter. `append`/`from_list` now coerce either into the stored
+type via a lossless field copy. Verified: append, `__getitem__`, `from_list`.
+
+## #12 — FIXED: `horus record export` empty for RT nodes (`6e610d6c`)
+The main-thread scheduler records each node's inputs per tick; the RT executor
+only called `begin_tick`/`end_tick`. Since any `.rate()` node (all Python nodes,
+default rate=30) runs on the RT executor, RT recordings held only metadata.
+Added the same input capture to `tick_node`, gated on `is_active_tick()` (zero
+cost when not recording). Verified: a 2-node `.rate(50)` project under
+`.with_recording()` — subscriber captures 86/87 snapshots with the real Twist
+payload; publisher captures none. Was 0.
+
+## #13 — FIXED: `build_messages()` failed confusingly for pip users (`eb2c44be`)
+It compiles a Rust extension via maturin, which needs the source crate; a wheel
+install has no Cargo.toml at the package root. Now detects that and raises a
+clear error pointing at the no-build dict-topic path. (Making compiled custom
+messages work for wheel users — shipping the codegen crate in the wheel — is a
+packaging decision left for the maintainer.)
+
+## #9 — REFUTED: the "segfault" was binary version skew, not a race
+Controlled comparison, identical nodes/namespace/concurrency, only the wheel
+version varied:
+- **Stale prebuilt `~/.local` wheel** (older horus_core, shm pool v3): one
+  process **segfaults** every trial (2/2).
+- **Wheel rebuilt from current HEAD** (matching horus_core, v4): clean every
+  trial (3/3); `horus run "nodes/*.py"` with 3 nodes runs with 0 crashes.
+
+So concurrent same-namespace scheduler startup is **not** a code race — the
+crash was a shared-memory layout mismatch between mismatched binary versions in
+the test environment (the same v3/v4 skew that manufactured 47 phantom test
+failures in Round 3). With consistent builds the documented multi-node pattern
+works. **Latent hardening follow-up** (separate, lower priority): a cross-version
+shm attach segfaults instead of erroring cleanly — one path already guards
+(`pool_registry.rs:67` → "expected 4, got 3"); some other startup shm structure
+dereferences an old-format region without a version check. Locating it needs a
+backtrace from a symbol-built old-version binary; not attempted rather than
+guessed.
+
 ## Documentation corrections (code is authoritative; docs drifted)
 ~50 confirmed doc divergences, applied against the real API. Dominant clusters:
 - Python message constructors are flattened scalars, not nested/array kwargs
