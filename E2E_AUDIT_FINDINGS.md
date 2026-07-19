@@ -369,24 +369,34 @@ clear error pointing at the no-build dict-topic path. (Making compiled custom
 messages work for wheel users — shipping the codegen crate in the wheel — is a
 packaging decision left for the maintainer.)
 
-## #9 — REFUTED: the "segfault" was binary version skew, not a race
-Controlled comparison, identical nodes/namespace/concurrency, only the wheel
-version varied:
-- **Stale prebuilt `~/.local` wheel** (older horus_core, shm pool v3): one
-  process **segfaults** every trial (2/2).
-- **Wheel rebuilt from current HEAD** (matching horus_core, v4): clean every
-  trial (3/3); `horus run "nodes/*.py"` with 3 nodes runs with 0 crashes.
+## #9 — REAL race in the shipped wheel; not reproduced on current HEAD
+(An earlier note in this file called this "version skew" — that was **wrong**.
+No trial ever mixed shm versions; both processes were always the same build. It
+is a genuine intermittent concurrency race, corrected here.)
 
-So concurrent same-namespace scheduler startup is **not** a code race — the
-crash was a shared-memory layout mismatch between mismatched binary versions in
-the test environment (the same v3/v4 skew that manufactured 47 phantom test
-failures in Round 3). With consistent builds the documented multi-node pattern
-works. **Latent hardening follow-up** (separate, lower priority): a cross-version
-shm attach segfaults instead of erroring cleanly — one path already guards
-(`pool_registry.rs:67` → "expected 4, got 3"); some other startup shm structure
-dereferences an old-format region without a version check. Locating it needs a
-backtrace from a symbol-built old-version binary; not attempted rather than
+Two schedulers starting concurrently in one `HORUS_NAMESPACE`, `/dev/shm`
+cleaned each trial, both processes the **same** build:
+- **Shipped prebuilt wheel**: **24 segfaults / 50 processes (~48%)** over 25
+  trials — a real, high-frequency concurrent-startup memory-safety race.
+- **Rebuilt from current HEAD**: **0 segfaults / 60 processes** over 30 trials;
+  `horus run "nodes/*.py"` (3 nodes) runs with 0 crashes.
+
+Given the old ~48% rate, the probability of 0/60 clean if the race were still
+present is ≈ `0.52^60 ≈ 1e-17` — strong statistical evidence the race is
+**eliminated** in current HEAD, not merely timing-masked.
+
+**Honest caveats:** (1) the specific fix was **not bisected** — the shipped
+wheel predates a lot of horus_core work; the fix landed somewhere between it and
+HEAD and is **not** from this session's changes (the rate-gate and record
+changes don't touch startup shm). (2) A related latent hardening gap remains: a
+genuinely cross-version shm attach still segfaults instead of erroring cleanly —
+one path guards (`pool_registry.rs:67` → "expected 4, got 3"); some startup
+structure does not. Pinning the exact fix / the unguarded structure needs a
+backtrace from a symbol-built reproducing binary; not attempted rather than
 guessed.
+
+**Release implication:** publish the `horus` binary and the `horus-robotics`
+PyPI wheel from the **same commit** so users never run mismatched builds.
 
 ## Documentation corrections (code is authoritative; docs drifted)
 ~50 confirmed doc divergences, applied against the real API. Dominant clusters:
