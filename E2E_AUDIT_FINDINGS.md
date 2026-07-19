@@ -303,6 +303,29 @@ session (ASAN/valgrind under two concurrent starts) rather than a blind patch �
 see task tracker. **A memory-safety bug in a safety-critical framework; high
 priority for follow-up.**
 
+## R6 — HIGH: the canonical `message!` macro produced non-compiling projects (FIXED, `8753a7b3`)
+Root cause of the whole "cannot find derive macro Serialize" cluster. The
+`message!` macro (horus's advertised "zero configuration" way to define a
+message) expands to `serde::Serialize`/`serde::Deserialize`, which need serde as
+a **direct** dependency — but cargo_gen never injected it. A fresh `horus new -r`
+project using `message!` failed with `error[E0433]: cannot find module or crate
+serde`. Fix: cargo_gen injects `serde = { version = "1", features = ["derive"] }`
+into generated projects (single-package and workspace), skipped if the user
+declared it. Verified: a `message!` project now compiles and links (was broken);
+default template still builds.
+
+## Final acceptance test (fresh clone of the fixed branch, isolated HOME)
+`horus new` → `build` → `run` → introspect, all three languages, source present
+only in `~/.horus/cache`:
+- **Rust**: builds; `motors.cmd_vel` active; a `.rate(50.hz())` RT node measures
+  **49.8 Hz** (was ~25 before R1); `message!` project compiles + links.
+- **C++**: builds (cmake + auto-built bindings); publishes `cmd_vel` (272 msgs).
+- **Python**: `horus new -p` → `horus run` publishes `motors.cmd_vel` (187 msgs).
+  ⚠️ measured 14 Hz for a 30 Hz template — this is the **prebuilt Python wheel**
+  in the sandbox still carrying the old rt_executor; the R1 fix is in source and
+  reaches Python only after a wheel rebuild (`maturin develop`). The Rust RT path
+  (built from the fixed source) confirms the fix at 49.8/50 Hz.
+
 ## Documentation corrections (code is authoritative; docs drifted)
 ~50 confirmed doc divergences, applied against the real API. Dominant clusters:
 - Python message constructors are flattened scalars, not nested/array kwargs
