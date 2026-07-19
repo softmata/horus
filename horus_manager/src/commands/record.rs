@@ -550,16 +550,43 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
         let mut file = std::fs::File::create(&output)
             .map_err(|e| horus_internal!("Failed to create output file: {}", e))?;
 
-        // Use serde_json for proper escaping of all string values
+        // Use serde_json for proper escaping of all string values.
+        // Include the per-tick snapshots (tick, timestamp, inputs/outputs) — not
+        // just metadata — so the export can actually be scripted against, as the
+        // docs describe ("grep for the integral crossing a threshold, plot the
+        // spike"). Output byte payloads are hex-encoded per topic, mirroring the
+        // CSV exporter.
         let mut recording_entries = Vec::new();
         for path in &recordings {
             if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path) {
+                let snapshots: Vec<_> = recording
+                    .snapshots
+                    .iter()
+                    .map(|snapshot| {
+                        let hex_map = |m: &std::collections::HashMap<String, Vec<u8>>| {
+                            m.iter()
+                                .map(|(k, v)| {
+                                    let hex: String =
+                                        v.iter().map(|b| format!("{:02x}", b)).collect();
+                                    (k.clone(), serde_json::Value::String(hex))
+                                })
+                                .collect::<serde_json::Map<String, serde_json::Value>>()
+                        };
+                        serde_json::json!({
+                            "tick": snapshot.tick,
+                            "timestamp_us": snapshot.timestamp_us,
+                            "inputs": hex_map(&snapshot.inputs),
+                            "outputs": hex_map(&snapshot.outputs),
+                        })
+                    })
+                    .collect();
                 recording_entries.push(serde_json::json!({
                     "node_name": recording.node_name,
                     "node_id": recording.node_id,
                     "first_tick": recording.first_tick,
                     "last_tick": recording.last_tick,
                     "snapshot_count": recording.snapshots.len(),
+                    "snapshots": snapshots,
                 }));
             }
         }
