@@ -580,12 +580,30 @@ impl RtExecutor {
                     continue;
                 }
 
-                // Per-node rate limiting
+                // Per-node rate limiting.
+                //
+                // Tolerance is essential, not cosmetic: `loop_start` is sampled
+                // at the top of the loop (line ~561) but `last_tick` is stamped
+                // *inside* tick_node (after the gate), so the measured
+                // `loop_start - last_tick` for an on-time tick lands a hair under
+                // one period. With a strict `elapsed < period` and a loop that
+                // sleeps exactly `tick_period` (== the fastest node's period),
+                // the boundary tick was rejected and the node fired only every
+                // *other* loop — halving the effective rate of every RT node.
+                //
+                // Accept the tick once we are within half a loop period of the
+                // target. The tolerance is bounded by tick_period/2 (at most half
+                // the fastest node's period), so a slower node can never fire a
+                // full period early — it just stops losing its boundary tick.
                 if let Some(rate_hz) = node.rate_hz {
-                    if let Some(last_tick) = node.last_tick {
-                        let elapsed = loop_start.duration_since(last_tick).as_secs_f64();
-                        if rate_hz > 0.0 && elapsed < 1.0 / rate_hz {
-                            continue;
+                    if rate_hz > 0.0 {
+                        if let Some(last_tick) = node.last_tick {
+                            let elapsed = loop_start.duration_since(last_tick).as_secs_f64();
+                            let period = 1.0 / rate_hz;
+                            let tolerance = 0.5 * tick_period.as_secs_f64();
+                            if elapsed < period - tolerance {
+                                continue;
+                            }
                         }
                     }
                 }
@@ -751,6 +769,47 @@ mod tests {
 
         assert_eq!(returned_nodes.len(), 1);
         assert!(count.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    }
+
+    /// Regression guard for the per-node rate gate.
+    ///
+    /// The gate samples `loop_start` before `last_tick` is stamped and the loop
+    /// sleeps exactly one `tick_period`, so a strict `elapsed < period` rejected
+    /// every on-time boundary tick and an RT node ran at *half* its configured
+    /// rate. This asserts a 100 Hz node ticks close to 100/s, not ~50/s.
+    ///
+    /// The band [70, 135] over 1s cleanly separates correct (~100) from the old
+    /// halving bug (~50) while tolerating scheduler jitter under CI load.
+    #[test]
+    fn test_rt_executor_honors_configured_rate_not_half() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered("rate_100hz", count.clone());
+        node.rate_hz = Some(100.0);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        std::thread::sleep(1000_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        executor.stop();
+
+        let ticks = count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            ticks >= 70,
+            "100 Hz node ticked only {ticks} times in ~1s — the rate gate is \
+             halving (or worse-throttling) the configured rate"
+        );
+        assert!(
+            ticks <= 135,
+            "100 Hz node ticked {ticks} times in ~1s — gate is over-firing"
+        );
     }
 
     #[test]
