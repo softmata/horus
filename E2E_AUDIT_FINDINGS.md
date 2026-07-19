@@ -250,6 +250,84 @@ Recorded so neither is mistaken for a real defect:
   Python surface *is* verifiable here. Round 1's "Python e2e not fully driven"
   caveat was overstated.
 
+---
+
+# Round 3 — full documented-journey conformance sweep (2026-07-19)
+
+Drove *every runnable instruction* in horus-docs against the frozen substrate
+(17-chunk extract+verify workflow: 3488 code blocks seen, 488 classified
+runnable, 111 reported failures, 59 confirmed after verification). Fixes below;
+the bulk (~50 API-drift items) are documentation corrections applied by a
+separate fixing pass. The genuine **product** bugs the sweep surfaced:
+
+## R1 — CRITICAL: RT nodes ran at half their configured rate (FIXED, `da159311`)
+The headline product bug. Every RT node (`.rate()`/`.budget()`/`.deadline()`)
+ticked at exactly half its configured frequency. `rt_executor.rs` samples
+`loop_start` before `last_tick` is stamped (inside tick_node) and sleeps exactly
+`tick_period`, so the strict `elapsed < period` gate rejected every on-time
+boundary tick — the node fired only every other loop. Fix: accept within half a
+loop period (`elapsed < period - tick_period/2`). Verified: single 100 Hz node
+→ 100.0 Hz (was ~50); mixed 100+20 Hz → 99.9 + 20.0 Hz (slow node not
+over-fired). Added a non-flaky regression test. **This is the shared root cause
+of the earlier "Python ~55% of rate" observation** — the Python RT path uses the
+same executor.
+
+## R2 — HIGH: multi-node Python launches showed no output (FIXED, `14244690`)
+`horus run "nodes/*.py"` pipes each child's stdout to prefix `[node]`; CPython
+full-buffers a piped stdout, so the documented live per-node output never
+appeared (for a long-running node, never). Fix: `PYTHONUNBUFFERED=1` on piped
+children. Verified: application output now streams line-by-line.
+
+## R3 — HIGH: `horus msg` and `horus deps` broken on any install (FIXED, `0a186a61`)
+- `horus msg list/info/hash` searched only `horus_library/messages` — a crate
+  removed in 7b430279. Could never succeed. Now resolves `horus_types/src` via
+  the same source resolution as everything else.
+- `horus deps tree/why/outdated/audit` ran cargo from the project root (no
+  Cargo.toml by design — it's in `.horus/`). Now runs from `.horus/`.
+
+## R4 — MEDIUM: `horus record export --format json` dropped all payloads (FIXED, `a25ea817`)
+JSON export emitted metadata only (525 bytes for a 1193-tick recording), making
+the documented "script the export" use case impossible, while the CSV export
+already carried per-tick payloads. Added the `snapshots` array (tick,
+timestamp_us, inputs, outputs; bytes hex-encoded). Verified against a 253-tick
+recording.
+
+## R5 — SERIOUS, NOT FIXED: concurrent same-namespace scheduler startup segfaults
+Two schedulers starting concurrently in the same HORUS_NAMESPACE race in the SHM
+layer and **one segfaults** (reproduced with two plain `python3 node.py`;
+different namespaces are fine). This breaks the documented multi-node Python
+pattern (`horus run "nodes/*.py"`). It is NOT the control topic (created with
+`.ok()`, graceful). Root cause is a TOCTOU race in concurrent SHM
+namespace/topic/registry creation during startup. Left for a proper debugging
+session (ASAN/valgrind under two concurrent starts) rather than a blind patch —
+see task tracker. **A memory-safety bug in a safety-critical framework; high
+priority for follow-up.**
+
+## Documentation corrections (code is authoritative; docs drifted)
+~50 confirmed doc divergences, applied against the real API. Dominant clusters:
+- Python message constructors are flattened scalars, not nested/array kwargs
+  (`Twist(linear_x=…)` not `Twist(linear=[…])`; `Pose3D(x,y,z,qx…)`;
+  `Imu(accel_x…)`; `Detection(class_name=…)`; `StereoInfo(...)` no `fx`).
+- `horus.msggen`: real API is `register_message`, not the ghost
+  `define_message`/`define_numpy_message` (7 pages).
+- Python TransformFrame: `register_frame`/`tf`/`tf_at`/`wait_for_transform`, not
+  `lookup`/`add_frame`; and the root frame must be registered before use (6 pages).
+- Rust custom messages: use the `message!` macro, not manual `derive(Serialize)`
+  under the prelude (serde isn't re-exported) — affected many tutorials/recipes.
+- Rust robotics types (`CmdVel`/`Imu`) live in `horus_robotics`, not injected —
+  recipes should use `Twist` from the prelude or declare the dep.
+- `scheduler.run()` not `scheduler.build()?.run()`; `Topic(type, capacity)` not
+  `Topic(name, type)`; `Node.recv(topic)` has no `timeout=`; no `node.state`;
+  `[package]` not `[project]`; C++ examples need `#include <cmath>`; no
+  `RouterClient`/`horus router`; `horus run` has no `--project`.
+
+## Corrections — observations that did NOT reproduce (not defects)
+- `horus topic echo` / `horus topic list` printing nothing for C++ topics: stdout
+  block-buffering under `| head` + a `timeout` kill. Writing to a file shows both
+  work (C++ `cmd_vel` decodes `linear: 0.300`).
+- Python "No module named pip": the isolated test HOME hid the real `~/.local`
+  pip; with `PYTHONUSERBASE` set the whole Python journey is verifiable.
+
 ## Correction to an earlier observation
 An initial run of `horus topic list` printed "No active topics found" while the
 node was up. This did **not** reproduce: with the same binary and a live node it
