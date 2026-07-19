@@ -3,12 +3,12 @@
 #
 # One-line install:
 #   curl -fsSL https://horusrobotics.dev/install | bash
-#   curl -fsSL https://github.com/softmata/horus/raw/release/install.sh | bash
+#   curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 #
 # Flow:
 #   1. Detect OS and architecture
 #   2. Try downloading pre-built binary from GitHub Releases (fast)
-#   3. If unavailable, clone release branch and build from source (slow)
+#   3. Clone the source (default branch: main), cache it, and build from source
 #   4. Install to ~/.cargo/bin/horus or ~/.local/bin/horus
 #   5. Verify and configure PATH
 
