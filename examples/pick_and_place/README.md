@@ -30,15 +30,15 @@ TaskCommander                    PickPlaceServer
 
 ## ROS2 Equivalent
 
-| ROS2 | Horus |
-|------|-------|
-| `action_msgs/GoalStatus` | `GoalStatus` enum |
-| `ActionServer` (rclpy/rclcpp) | `ActionServerBuilder::new().on_execute(...)` |
-| `ActionClient.send_goal_async()` | `SyncActionClient::send_goal_and_wait()` |
-| `goal_handle.publish_feedback()` | `handle.publish_feedback(...)` |
-| `goal_handle.succeed()` | `handle.succeed(result)` |
-| `goal_handle.abort()` | `handle.abort(result)` |
-| `goal_handle.canceled()` | `handle.cancel(result)` |
+| ROS2                             | Horus                                        |
+|----------------------------------|----------------------------------------------|
+| `action_msgs/GoalStatus`         | `GoalStatus` enum                            |
+| `ActionServer` (rclpy/rclcpp)    | `ActionServerBuilder::new().on_execute(...)` |
+| `ActionClient.send_goal_async()` | `SyncActionClient::send_goal_and_wait()`     |
+| `goal_handle.publish_feedback()` | `handle.publish_feedback(...)`               |
+| `goal_handle.succeed()`          | `handle.succeed(result)`                     |
+| `goal_handle.abort()`            | `handle.abort(result)`                       |
+| `goal_handle.canceled()`         | `handle.cancel(result)`                      |
 
 ## Key Patterns
 

@@ -39,18 +39,18 @@ Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#i
 
 HORUS is a real-time distributed middleware that replaces DDS with shared-memory ring buffers and lock-free synchronization. Built for any system where latency, determinism, and safety matter — robotics, industrial automation, autonomous vehicles, trading systems, game engines, and more.
 
-| | **HORUS** | **ROS2** |
-|---|---|---|
-| IPC latency | **11–196 ns** (shared memory) | 50–500 µs (DDS) |
-| Scheduling | Deterministic, 5 execution classes | Best-effort callbacks |
-| RT support | Built-in (budget, deadline, watchdog) | Manual DDS QoS |
-| Safety | Graduated watchdog, auto safe-state, BlackBox | Application-level |
-| AI + RT | Same process — AsyncIo for GPU, RT for motors | Separate processes |
-| GPU tensors | DLPack zero-copy (PyTorch/JAX native) | Serialize → deserialize |
-| Languages | **Rust + Python + C++** (same shared memory) | C++ + Python (DDS serialization) |
-| Config | Single `horus.toml` | package.xml + CMakeLists.txt + launch files |
-| Setup | `horus new && horus run` | colcon build + source install + launch |
-
+|             | **HORUS**                                     | **ROS2**                                    |
+|-------------|-----------------------------------------------|---------------------------------------------|
+| IPC latency | **11–196 ns** (shared memory)                 | 50–500 µs (DDS)                             |
+| Scheduling  | Deterministic, 5 execution classes            | Best-effort callbacks                       |
+| RT support  | Built-in (budget, deadline, watchdog)         | Manual DDS QoS                              |
+| Safety      | Graduated watchdog, auto safe-state, BlackBox | Application-level                           |
+| AI + RT     | Same process — AsyncIo for GPU, RT for motors | Separate processes                          |
+| GPU tensors | DLPack zero-copy (PyTorch/JAX native)         | Serialize → deserialize                     |
+| Languages   | **Rust + Python + C++** (same shared memory)  | C++ + Python (DDS serialization)            |
+| Config      | Single `horus.toml`                           | package.xml + CMakeLists.txt + launch files |
+| Setup       | `horus new && horus run`                      | colcon build + source install + launch      |
+    
 ---
 
 ## Quick Start
@@ -269,17 +269,17 @@ horus doctor                    # ecosystem health check
 
 Measured with RDTSC cycle counting, Tukey IQR outlier filtering, bootstrap 95% CIs on Intel i9-14900K. [Full methodology →](benchmarks/)
 
-| Topology | HORUS | ROS2 (DDS) |
-|----------|-------|------------|
-| Same-process pub/sub | **91 ns** | ~50 µs (**550x**) |
-| Cross-process | **171 ns** | ~100 µs (**585x**) |
-| 1 pub → 3 subs | **80 ns** | ~70 µs (**875x**) |
+| Topology             | HORUS      | ROS2 (DDS)         |
+|----------------------|------------|--------------------|
+| Same-process pub/sub | **91 ns**  | ~50 µs (**550x**)  |
+| Cross-process        | **171 ns** | ~100 µs (**585x**) |
+| 1 pub → 3 subs       | **80 ns**  | ~70 µs (**875x**)  |
 
-| vs iceoryx2 | HORUS | iceoryx2 | Speedup |
-|-------------|-------|----------|---------|
-| Same-thread | 11 ns | 69 ns | **6.3x** |
-| Cross-process | 170 ns | 361 ns | **2.1x** |
-| Throughput | 95 M msg/s | 22 M msg/s | **4.3x** |
+| vs iceoryx2   | HORUS      | iceoryx2   | Speedup  |
+|---------------|------------|------------|----------|
+| Same-thread   | 11 ns      | 69 ns      | **6.3x** |
+| Cross-process | 170 ns     | 361 ns     | **2.1x** |
+| Throughput    | 95 M msg/s | 22 M msg/s | **4.3x** |
 
 Scales near-linearly to 100 nodes (14% degradation) and O(1) to 1,000 topics.
 

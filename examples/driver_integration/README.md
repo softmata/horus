@@ -35,13 +35,13 @@ gripper = { node = "GripperDriver" }
 
 ## ROS2 Equivalent
 
-| ROS2 | Horus |
-|------|-------|
-| `ros2_control` hardware_interface | `[drivers]` in horus.toml + Terra HAL |
-| `controller_manager` | `Scheduler` with driver nodes at high priority |
-| `micro-ros-agent` | Terra serial/I2C/CAN drivers |
-| Custom `LifecycleNode` hardware driver | Node with `init()`/`tick()`/`shutdown()` |
-| `robot_state_publisher` | Driver node publishes to topic directly |
+| ROS2                                   | Horus                                          |
+|----------------------------------------|------------------------------------------------|
+| `ros2_control` hardware_interface      | `[drivers]` in horus.toml + Terra HAL          |
+| `controller_manager`                   | `Scheduler` with driver nodes at high priority |
+| `micro-ros-agent`                      | Terra serial/I2C/CAN drivers                   |
+| Custom `LifecycleNode` hardware driver | Node with `init()`/`tick()`/`shutdown()`       |
+| `robot_state_publisher`                | Driver node publishes to topic directly        |
 
 ## Key Patterns
 

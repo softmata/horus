@@ -54,15 +54,15 @@ node! {
 
 #### Sections
 
-| Section | Required | Syntax | Purpose |
-|---------|----------|--------|---------|
-| `pub {}` | No | `name: Type -> "topic"` | Publishers |
-| `sub {}` | No | `name: Type -> "topic"` | Subscribers |
-| `data {}` | No | `name: Type = default` | Internal state |
-| `tick {}` | **Yes** | `tick { ... }` | Main loop |
-| `init {}` | No | `init { ... }` | Setup logic |
-| `shutdown {}` | No | `shutdown { ... }` | Cleanup logic |
-| `impl {}` | No | `fn method(&self) { ... }` | Helper methods |
+| Section       | Required | Syntax                     | Purpose        |
+|---------------|----------|----------------------------|----------------|
+| `pub {}`      | No       | `name: Type -> "topic"`    | Publishers     |
+| `sub {}`      | No       | `name: Type -> "topic"`    | Subscribers    |
+| `data {}`     | No       | `name: Type = default`     | Internal state |
+| `tick {}`     | **Yes**  | `tick { ... }`             | Main loop      |
+| `init {}`     | No       | `init { ... }`             | Setup logic    |
+| `shutdown {}` | No       | `shutdown { ... }`         | Cleanup logic  |
+| `impl {}`     | No       | `fn method(&self) { ... }` | Helper methods |
 
 ### `message!` - Message Types
 
