@@ -18,12 +18,12 @@ CameraSimulator (30Hz) → ObjectDetector (10Hz) → ObjectTracker (10Hz) → Lo
 
 ## ROS2 Equivalent
 
-| ROS2 | Horus |
-|------|-------|
-| `image_transport` + `cv_bridge` | `Topic<CameraFrame>` + `read_latest()` |
-| `darknet_ros` / `yolov5_ros` | ObjectDetector node with confidence filtering |
-| `sort_tracker` / `deep_sort` | ObjectTracker with IoU matching |
-| `rqt_image_view` | `horus topic echo tracked_objects` |
+| ROS2                            | Horus                                         |
+|---------------------------------|-----------------------------------------------|
+| `image_transport` + `cv_bridge` | `Topic<CameraFrame>` + `read_latest()`        |
+| `darknet_ros` / `yolov5_ros`    | ObjectDetector node with confidence filtering |
+| `sort_tracker` / `deep_sort`    | ObjectTracker with IoU matching               |
+| `rqt_image_view`                | `horus topic echo tracked_objects`            |
 
 ## Key Patterns
 

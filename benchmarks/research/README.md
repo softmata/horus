@@ -50,50 +50,50 @@ For reproducible results:
 ### Message Sizes
 
 Standard sizes matching real robotics data:
-| Size | Robotics Equivalent |
-|------|-------------------|
-| 8B | CmdVel (linear + angular) |
-| 64B | IMU (orientation + angular_vel + linear_acc) |
-| 256B | JointState (16 joints) |
-| 1KB | Odometry with covariance |
-| 8KB | LaserScan (360 ranges) |
-| 64KB | Small point cloud |
+| Size | Robotics Equivalent                          |
+|------|----------------------------------------------|
+| 8B   | CmdVel (linear + angular)                    |
+| 64B  | IMU (orientation + angular_vel + linear_acc) |
+| 256B | JointState (16 joints)                       |
+| 1KB  | Odometry with covariance                     |
+| 8KB  | LaserScan (360 ranges)                       |
+| 64KB | Small point cloud                            |
 
 ### Backend Paths
 
 HORUS auto-detects the optimal IPC backend:
-| Backend | Topology | Latency |
-|---------|----------|---------|
-| DirectChannel | Same thread | ~3ns |
-| SpscIntra | Same process, 1P:1C | ~18ns |
-| SpmcIntra | Same process, 1P:MC | ~24ns |
-| MpscIntra | Same process, MP:1C | ~26ns |
-| MpmcIntra | Same process, MP:MC | ~36ns |
-| PodShm | Cross-process, POD type | ~50ns |
-| SpscShm | Cross-process, 1P:1C | ~85ns |
-| MpscShm | Cross-process, MP:1C | ~65ns |
-| SpmcShm | Cross-process, 1P:MC | ~70ns |
-| MpmcShm | Cross-process, MP:MC | ~167ns |
+| Backend       | Topology                | Latency |
+|---------------|-------------------------|---------|
+| DirectChannel | Same thread             | ~3ns    |
+| SpscIntra     | Same process, 1P:1C     | ~18ns   |
+| SpmcIntra     | Same process, 1P:MC     | ~24ns   |
+| MpscIntra     | Same process, MP:1C     | ~26ns   |
+| MpmcIntra     | Same process, MP:MC     | ~36ns   |
+| PodShm        | Cross-process, POD type | ~50ns   |
+| SpscShm       | Cross-process, 1P:1C    | ~85ns   |
+| MpscShm       | Cross-process, MP:1C    | ~65ns   |
+| SpmcShm       | Cross-process, 1P:MC    | ~70ns   |
+| MpmcShm       | Cross-process, MP:MC    | ~167ns  |
 
 ## Benchmark Binaries
 
-| Binary | Purpose |
-|--------|---------|
-| `raw_baselines` | Hardware floor: memcpy, atomic, mmap (no HORUS) |
-| `all_paths_latency` | All 10 backend paths with RDTSC precision |
-| `cross_process_benchmark` | True inter-process IPC latency |
-| `robotics_messages_benchmark` | Real message types (CmdVel, Imu, LaserScan) |
-| `determinism_benchmark` | Bit-identical replay verification |
-| `scalability_benchmark` | Node and topic count scaling |
-| **Extended Suite** | |
-| `raw_baselines` | Hardware floor (memcpy, atomic, mmap) |
-| `research_latency` | Sustained measurement + size sweep, all topologies |
-| `research_throughput` | Per-second throughput timeseries |
-| `research_jitter` | RT tick jitter + IPC under CPU contention |
-| `research_scalability` | Node scaling (1-100) + topic scaling (1-1000) |
-| `competitor_comparison` | HORUS vs raw UDP (+ Zenoh with `--features zenoh`) |
-| **Python** | |
-| `research_bench_python.py` | Python IPC latency, FFI overhead, image zero-copy |
+| Binary                        | Purpose                                            |
+|-------------------------------|----------------------------------------------------|
+| `raw_baselines`               | Hardware floor: memcpy, atomic, mmap (no HORUS)    |
+| `all_paths_latency`           | All 10 backend paths with RDTSC precision          |
+| `cross_process_benchmark`     | True inter-process IPC latency                     |
+| `robotics_messages_benchmark` | Real message types (CmdVel, Imu, LaserScan)        |
+| `determinism_benchmark`       | Bit-identical replay verification                  |
+| `scalability_benchmark`       | Node and topic count scaling                       |
+| **Extended Suite**            |                                                    |
+| `raw_baselines`               | Hardware floor (memcpy, atomic, mmap)              |
+| `research_latency`            | Sustained measurement + size sweep, all topologies |
+| `research_throughput`         | Per-second throughput timeseries                   |
+| `research_jitter`             | RT tick jitter + IPC under CPU contention          |
+| `research_scalability`        | Node scaling (1-100) + topic scaling (1-1000)      |
+| `competitor_comparison`       | HORUS vs raw UDP (+ Zenoh with `--features zenoh`) |
+| **Python**                    |                                                    |
+| `research_bench_python.py`    | Python IPC latency, FFI overhead, image zero-copy  |
 
 ## Reproducing Results
 

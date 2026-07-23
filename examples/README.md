@@ -11,38 +11,38 @@ Ten complete robotics applications covering every workflow a ROS2 developer need
 | [python_robot](python_robot/) | **Python** | Same as differential_drive — the Python starting point |
 
 ### Core Robotics
-| Example | Language | What you'll learn |
-|---------|----------|-------------------|
-| [robot_arm](robot_arm/) | Rust | Services, frame transforms (TransformFrame), trajectory control |
-| [sensor_navigation](sensor_navigation/) | Rust | Multi-rate scheduling, sensor pipelines, reactive control |
-| [camera_perception](camera_perception/) | Rust | CV pipeline: camera → object detection → tracking (IoU, SORT) |
+| Example                                 | Language | What you'll learn                                               |
+|-----------------------------------------|----------|-----------------------------------------------------------------|
+| [robot_arm](robot_arm/)                 | Rust     | Services, frame transforms (TransformFrame), trajectory control |
+| [sensor_navigation](sensor_navigation/) | Rust     | Multi-rate scheduling, sensor pipelines, reactive control       |
+| [camera_perception](camera_perception/) | Rust     | CV pipeline: camera → object detection → tracking (IoU, SORT)   |
 
 ### Advanced
-| Example | Language | What you'll learn |
-|---------|----------|-------------------|
-| [multi_robot](multi_robot/) | Rust | Namespaced topics, launch files, fleet coordination |
-| [quadruped](quadruped/) | Rust | Real-time nodes, budgets, deadlines, IMU feedback |
-| [pick_and_place](pick_and_place/) | Rust | **Actions**: goal lifecycle, feedback, cancellation |
+| Example                           | Language | What you'll learn                                   |
+|-----------------------------------|----------|-----------------------------------------------------|
+| [multi_robot](multi_robot/)       | Rust     | Namespaced topics, launch files, fleet coordination |
+| [quadruped](quadruped/)           | Rust     | Real-time nodes, budgets, deadlines, IMU feedback   |
+| [pick_and_place](pick_and_place/) | Rust     | **Actions**: goal lifecycle, feedback, cancellation |
 
 ### Production
-| Example | Language | What you'll learn |
-|---------|----------|-------------------|
-| [driver_integration](driver_integration/) | Rust | Hardware drivers via `[drivers]` config, Terra HAL, custom drivers |
-| [record_replay](record_replay/) | Rust | Session recording, blackbox forensics, deterministic replay |
+| Example                                   | Language | What you'll learn                                                  |
+|-------------------------------------------|----------|--------------------------------------------------------------------|
+| [driver_integration](driver_integration/) | Rust     | Hardware drivers via `[drivers]` config, Terra HAL, custom drivers |
+| [record_replay](record_replay/)           | Rust     | Session recording, blackbox forensics, deterministic replay        |
 
 ## ROS2 Migration Guide
 
-| ROS2 Workflow | Horus Example |
-|---------------|---------------|
+| ROS2 Workflow                 | Horus Example                          |
+|-------------------------------|----------------------------------------|
 | Publisher/Subscriber tutorial | `differential_drive` or `python_robot` |
-| tf2 and frame transforms | `robot_arm` |
-| nav2 sensor pipeline | `sensor_navigation` |
-| darknet_ros / YOLO detection | `camera_perception` |
-| Multi-robot swarm | `multi_robot` |
-| ros2_control hardware | `driver_integration` |
-| MoveIt pick-and-place | `pick_and_place` |
-| rosbag2 record/play | `record_replay` |
-| Legged robot control | `quadruped` |
+| tf2 and frame transforms      | `robot_arm`                            |
+| nav2 sensor pipeline          | `sensor_navigation`                    |
+| darknet_ros / YOLO detection  | `camera_perception`                    |
+| Multi-robot swarm             | `multi_robot`                          |
+| ros2_control hardware         | `driver_integration`                   |
+| MoveIt pick-and-place         | `pick_and_place`                       |
+| rosbag2 record/play           | `record_replay`                        |
+| Legged robot control          | `quadruped`                            |
 
 ## Prerequisites
 

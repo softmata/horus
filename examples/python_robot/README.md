@@ -15,13 +15,13 @@ The same differential-drive example as `differential_drive/`, but written entire
 
 Every ROS2 tutorial starts with a Python publisher/subscriber. This is the horus equivalent — same concepts, simpler API:
 
-| ROS2 | Horus |
-|------|-------|
-| `rclpy.create_node()` | `horus.Node(name=..., tick=...)` |
-| `node.create_publisher(CmdVel, 'cmd_vel', 10)` | `pubs=["cmd_vel"]` |
-| `node.create_subscription(CmdVel, 'cmd_vel', cb, 10)` | `subs=["cmd_vel"]` |
-| `rclpy.spin(node)` | `horus.run(node)` |
-| `node.get_logger().info(...)` | `node.log_info(...)` |
+| ROS2                                                  | Horus                            |
+|-------------------------------------------------------|----------------------------------|
+| `rclpy.create_node()`                                 | `horus.Node(name=..., tick=...)` |
+| `node.create_publisher(CmdVel, 'cmd_vel', 10)`        | `pubs=["cmd_vel"]`               |
+| `node.create_subscription(CmdVel, 'cmd_vel', cb, 10)` | `subs=["cmd_vel"]`               |
+| `rclpy.spin(node)`                                    | `horus.run(node)`                |
+| `node.get_logger().info(...)`                         | `node.log_info(...)`             |
 
 ## Run
 

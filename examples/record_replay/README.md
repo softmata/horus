@@ -19,13 +19,13 @@ Horus's replacement for ROS2's rosbag2. Record everything during a run, analyze 
 
 ## ROS2 Equivalent
 
-| ROS2 | Horus |
-|------|-------|
-| `ros2 bag record -a` | `horus run --record` or `.with_recording()` |
-| `ros2 bag play recording.db3` | `horus record replay <session>` |
-| `ros2 bag info recording.db3` | `horus record info <session>` |
-| Manual crash debugging | `horus blackbox -a` (automatic anomaly detection) |
-| No deterministic replay | `.deterministic(true)` guarantees identical outputs |
+| ROS2                          | Horus                                               |
+|-------------------------------|-----------------------------------------------------|
+| `ros2 bag record -a`          | `horus run --record` or `.with_recording()`         |
+| `ros2 bag play recording.db3` | `horus record replay <session>`                     |
+| `ros2 bag info recording.db3` | `horus record info <session>`                       |
+| Manual crash debugging        | `horus blackbox -a` (automatic anomaly detection)   |
+| No deterministic replay       | `.deterministic(true)` guarantees identical outputs |
 
 ## Key Advantage Over rosbag2
 
