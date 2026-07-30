@@ -29,12 +29,43 @@ const ESTOP_MAX_FUTURE_SKEW_NS: u64 = 5_000_000_000; // 5s in the future
 /// Emitted at most once: acting on the UNAUTHENTICATED networked e-stop channel.
 static ESTOP_UNAUTH_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// Emitted at most once: rejected an e-stop whose authentication tag failed.
+static ESTOP_FORGERY_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Domain separator mixed into every e-stop MAC.
+///
+/// Binds a tag to *this* channel and wire version, so a tag captured from any
+/// future MACed channel that shares `HORUS_ESTOP_KEY` cannot be replayed as an
+/// e-stop.
+const ESTOP_MAC_DOMAIN: &[u8] = b"horus.estop.v1";
+
 /// E-stop message wire format (compact, no serde):
 /// `[host_id_hash:u16][reason_len:u16][reason:bytes][timestamp_ns:u64]`
 /// Total overhead: 12 bytes + reason string.
 ///
+/// When `HORUS_ESTOP_KEY` is configured a 32-byte HMAC-SHA256 tag is appended:
+/// `[...body...][tag:32]`. The tag covers `ESTOP_MAC_DOMAIN || body`, so
+/// `reason_len` — which determines where the body ends — is itself
+/// authenticated and cannot be shifted to relocate the tag.
+///
+/// Appending is backward compatible on the decode side: `decode_estop` reads
+/// fixed offsets derived from `reason_len` and ignores trailing bytes.
+///
 /// Encode an e-stop message.
 pub fn encode_estop(peer_id_hash: u16, reason: &str) -> Vec<u8> {
+    encode_estop_with_key(peer_id_hash, reason, crate::mac::estop_key())
+}
+
+/// `encode_estop` with an explicit key.
+///
+/// The process key comes from a `OnceLock` over an env var, which a test cannot
+/// vary. This seam lets the authenticated and unauthenticated paths both be
+/// tested in one process.
+pub fn encode_estop_with_key(
+    peer_id_hash: u16,
+    reason: &str,
+    key: Option<&[u8; 32]>,
+) -> Vec<u8> {
     let reason_bytes = reason.as_bytes();
     let reason_len = reason_bytes.len().min(200) as u16; // cap reason at 200 bytes
     let now_ns = SystemTime::now()
@@ -42,12 +73,54 @@ pub fn encode_estop(peer_id_hash: u16, reason: &str) -> Vec<u8> {
         .unwrap_or_default()
         .as_nanos() as u64;
 
-    let mut buf = Vec::with_capacity(12 + reason_len as usize);
+    let mut buf = Vec::with_capacity(12 + reason_len as usize + crate::mac::TAG_LEN);
     buf.extend_from_slice(&peer_id_hash.to_le_bytes());
     buf.extend_from_slice(&reason_len.to_le_bytes());
     buf.extend_from_slice(&reason_bytes[..reason_len as usize]);
     buf.extend_from_slice(&now_ns.to_le_bytes());
+
+    if let Some(key) = key {
+        let tag = estop_tag(key, &buf);
+        buf.extend_from_slice(&tag);
+    }
     buf
+}
+
+/// Compute the authentication tag over an e-stop body.
+fn estop_tag(key: &[u8; 32], body: &[u8]) -> [u8; crate::mac::TAG_LEN] {
+    let mut msg = Vec::with_capacity(ESTOP_MAC_DOMAIN.len() + body.len());
+    msg.extend_from_slice(ESTOP_MAC_DOMAIN);
+    msg.extend_from_slice(body);
+    crate::mac::hmac_sha256(key, &msg)
+}
+
+/// Verify the tag on a received e-stop packet.
+///
+/// `body_len` is the length of the canonical body as computed from the decoded
+/// `reason_len` — not from `data.len()`, which an attacker controls freely.
+/// Returns `false` if the tag is absent, short, or wrong.
+fn verify_estop_tag(key: &[u8; 32], data: &[u8], body_len: usize) -> bool {
+    let Some(tag) = data.get(body_len..body_len + crate::mac::TAG_LEN) else {
+        return false; // no tag present, or truncated
+    };
+    let expected = estop_tag(key, &data[..body_len]);
+    crate::mac::ct_eq(tag, &expected)
+}
+
+/// Length of the canonical (MAC-covered) e-stop body, derived from the wire
+/// `reason_len` rather than from `data.len()`.
+///
+/// Returns `None` for a packet too short to hold the body it declares.
+fn estop_body_len(data: &[u8]) -> Option<usize> {
+    if data.len() < 12 {
+        return None;
+    }
+    let reason_len = u16::from_le_bytes([data[2], data[3]]) as usize;
+    let body_len = 4 + reason_len + 8;
+    if data.len() < body_len {
+        return None;
+    }
+    Some(body_len)
 }
 
 /// Decode an e-stop message. Returns (host_id_hash, reason, timestamp_ns).
@@ -97,14 +170,40 @@ pub fn decode_estop(data: &[u8]) -> Option<(u16, String, u64)> {
 ///     The LOCAL safety path (watchdog/deadline e-stop in horus_core) is
 ///     independent and unaffected by either setting.
 ///
-/// Genuine authenticated networked e-stop needs a future provisioned, off-wire
-/// key (planned `HORUS_ESTOP_KEY`) used to MAC each e-stop packet. Until that
-/// exists, `Warn` is loud-by-design and `Off` is available for hardened fleets.
+/// Genuine authenticated networked e-stop needs a provisioned, off-wire key.
+/// That key now exists: set `HORUS_ESTOP_KEY` (see `crate::mac`). When it is
+/// set, every e-stop packet carries an HMAC-SHA256 tag and an untagged or
+/// wrongly-tagged packet is **rejected outright**, regardless of policy —
+/// this is the actual fix for GHSA-3frr-c2j9-hhr7. When it is unset, behaviour
+/// is unchanged (`Warn` is loud-by-design, `Off` available) so an upgrade never
+/// silently severs a fleet's existing e-stop path.
 pub fn handle_remote_estop(data: &[u8], policy: EstopRemotePolicy) -> bool {
+    handle_remote_estop_with_key(data, policy, crate::mac::estop_key())
+}
+
+/// `handle_remote_estop` with an explicit key. See `encode_estop_with_key`.
+pub fn handle_remote_estop_with_key(
+    data: &[u8],
+    policy: EstopRemotePolicy,
+    key: Option<&[u8; 32]>,
+) -> bool {
     let (host_id, reason, timestamp) = match decode_estop(data) {
         Some(v) => v,
         None => return false,
     };
+
+    // Authentication gate. Only active when a key is provisioned; when active it
+    // precedes every other check so a forged packet cannot even reach the logs.
+    if let Some(key) = key {
+        crate::mac::estop_authenticated(); // one-time "hardened path active" notice
+        let Some(body_len) = estop_body_len(data) else {
+            return false;
+        };
+        if !verify_estop_tag(key, data, body_len) {
+            warn_unauthenticated_rejected();
+            return false;
+        }
+    }
 
     // Freshness / replay guard (NOT authentication — see doc above).
     if !is_fresh_estop(timestamp) {
@@ -148,12 +247,33 @@ fn is_fresh_estop(timestamp_ns: u64) -> bool {
 }
 
 /// Emit the "networked e-stop is unauthenticated" warning at most once per process.
+///
+/// The reach claim here is deliberately not "this LAN": the replicator binds
+/// `0.0.0.0` (`transport/udp.rs`), so the packet can come from any host able to
+/// route a datagram to this port, not merely a link-local neighbour.
 fn warn_unauthenticated_once() {
     if !ESTOP_UNAUTH_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!(
             "[horus_net] WARNING: acting on a NETWORKED e-stop, which is \
-             UNAUTHENTICATED — any peer on this LAN can halt the fleet. Set \
-             HORUS_ESTOP_REMOTE=off to ignore remote e-stop. (This warning fires once.)"
+             UNAUTHENTICATED — any host that can reach this UDP port (the socket \
+             binds 0.0.0.0, so not just the local subnet) can halt the fleet. \
+             Set HORUS_ESTOP_KEY on every node to authenticate e-stop, or \
+             HORUS_ESTOP_REMOTE=off to ignore remote e-stop. (Fires once.)"
+        );
+    }
+}
+
+/// Emit the "rejected an unauthenticated e-stop" warning at most once per process.
+///
+/// Rate-limited to once because the whole point of the reject path is that an
+/// attacker can drive it at line rate; logging every rejection would hand them a
+/// disk-fill and an RT-jitter primitive.
+fn warn_unauthenticated_rejected() {
+    if !ESTOP_FORGERY_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[horus_net] WARNING: REJECTED a remote e-stop with a missing or invalid \
+             authentication tag. Either a peer is misconfigured (HORUS_ESTOP_KEY must \
+             match on every node) or someone is forging e-stop packets. (Fires once.)"
         );
     }
 }
@@ -373,6 +493,158 @@ mod tests {
                 Some((host, ref r, _ts)) if host == 0xBEEF && r == reason
             )),
             "at least one sent packet must decode_estop() to (0xBEEF, reason)"
+        );
+    }
+
+    // ─── Authenticated e-stop (GHSA-3frr-c2j9-hhr7 remediation) ─────────────
+    //
+    // These use the `_with_key` seams so both postures are exercised in one
+    // process; the production entry points read the same key from a OnceLock.
+
+    const KEY_A: [u8; 32] = [0x11; 32];
+    const KEY_B: [u8; 32] = [0x22; 32];
+
+    #[test]
+    fn keyed_estop_round_trips() {
+        let pkt = encode_estop_with_key(0x1234, "keyed halt", Some(&KEY_A));
+        assert!(
+            handle_remote_estop_with_key(&pkt, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "a correctly tagged e-stop must still halt"
+        );
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_untagged_packet() {
+        // This is the actual advisory scenario: an attacker who has read the
+        // wire format sends a well-formed but untagged e-stop.
+        let forged = encode_estop_with_key(0xDEAD, "forged halt", None);
+        assert!(
+            !handle_remote_estop_with_key(&forged, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "an untagged e-stop must be rejected once a key is provisioned"
+        );
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_wrong_key() {
+        let pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_B));
+        assert!(
+            !handle_remote_estop_with_key(&pkt, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "a tag from a different key must not verify"
+        );
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_flipped_tag_bit() {
+        let mut pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        let last = pkt.len() - 1;
+        pkt[last] ^= 0x01;
+        assert!(
+            !handle_remote_estop_with_key(&pkt, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "a single flipped tag bit must fail verification"
+        );
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_tampered_reason() {
+        // The reason is inside the MAC-covered body, so editing it in flight
+        // must invalidate the tag rather than change what gets logged.
+        let mut pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        pkt[4] = b'H'; // first byte of "halt"
+        assert!(!handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Warn,
+            Some(&KEY_A)
+        ));
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_truncated_tag() {
+        let mut pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        pkt.truncate(pkt.len() - 1);
+        assert!(
+            !handle_remote_estop_with_key(&pkt, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "a short tag must be rejected, not read out of bounds"
+        );
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_reason_len_shifted_to_relocate_tag() {
+        // reason_len decides where the body ends and the tag begins. If it were
+        // not itself authenticated, an attacker could shrink it so that some of
+        // the original reason bytes are reinterpreted as the tag. It is inside
+        // the MAC, so this must fail.
+        let mut pkt = encode_estop_with_key(0x1234, "a-longer-reason-string", Some(&KEY_A));
+        pkt[2] = 4; // claim reason_len = 4
+        pkt[3] = 0;
+        assert!(!handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Warn,
+            Some(&KEY_A)
+        ));
+    }
+
+    #[test]
+    fn keyed_receiver_rejects_oversized_reason_len_without_panicking() {
+        // u16::MAX reason_len against a short buffer — must return false, not
+        // index out of bounds on the network thread.
+        let mut pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        pkt[2] = 0xFF;
+        pkt[3] = 0xFF;
+        assert!(!handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Warn,
+            Some(&KEY_A)
+        ));
+    }
+
+    #[test]
+    fn unkeyed_receiver_still_accepts_untagged_packet() {
+        // Backward compatibility: upgrading one node must not sever a fleet's
+        // existing e-stop path. Without a key, behaviour is exactly as before.
+        let pkt = encode_estop_with_key(0x1234, "halt", None);
+        assert!(handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Warn,
+            None
+        ));
+    }
+
+    #[test]
+    fn unkeyed_receiver_accepts_tagged_packet() {
+        // A hardened sender talking to a not-yet-upgraded receiver: the trailing
+        // tag is simply ignored, so a rolling upgrade does not drop e-stops.
+        let pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        assert!(handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Warn,
+            None
+        ));
+    }
+
+    #[test]
+    fn policy_off_still_wins_over_a_valid_tag() {
+        let pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        assert!(
+            !handle_remote_estop_with_key(&pkt, EstopRemotePolicy::Off, Some(&KEY_A)),
+            "HORUS_ESTOP_REMOTE=off must suppress even an authenticated e-stop"
+        );
+    }
+
+    #[test]
+    fn stale_timestamp_still_rejected_when_keyed() {
+        // Authentication must not replace the anti-replay window. A tag captured
+        // an hour ago is still a valid tag.
+        let pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        let body_len = estop_body_len(&pkt).unwrap();
+        let mut stale = pkt[..body_len].to_vec();
+        let off = body_len - 8;
+        stale[off..].copy_from_slice(&(now_ns() - 3_600_000_000_000).to_le_bytes());
+        // Re-tag so the packet is authentic but old.
+        let tag = estop_tag(&KEY_A, &stale);
+        stale.extend_from_slice(&tag);
+        assert!(
+            !handle_remote_estop_with_key(&stale, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "freshness window must still apply to authenticated packets"
         );
     }
 }

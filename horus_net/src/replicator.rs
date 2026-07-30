@@ -77,6 +77,14 @@ pub struct Replicator {
     log_drain: crate::log_replication::LogDrain,
     estop_broadcaster: crate::estop::EstopBroadcaster,
     last_presence_cleanup: Instant,
+    // ── Inbound admission control (GHSA-3frr-c2j9-hhr7) ──
+    /// Source-address allowlist, applied to every datagram before any parsing.
+    peer_filter: crate::netfilter::PeerFilter,
+    /// Per-system-topic token buckets, so halting the fleet is not free.
+    system_limits: crate::netfilter::SystemTopicLimits,
+    /// Count of datagrams dropped by `peer_filter`, logged at most once.
+    filtered_count: u64,
+    filtered_logged: bool,
 }
 
 impl Replicator {
@@ -153,6 +161,10 @@ impl Replicator {
             log_drain: crate::log_replication::LogDrain::new(id_hash),
             estop_broadcaster: crate::estop::EstopBroadcaster::new(),
             last_presence_cleanup: Instant::now(),
+            peer_filter: crate::netfilter::PeerFilter::from_env(),
+            system_limits: crate::netfilter::SystemTopicLimits::default(),
+            filtered_count: 0,
+            filtered_logged: false,
         })
     }
 
@@ -241,6 +253,33 @@ impl Replicator {
     /// Fragment and data both funnel into `process_incoming_message`, which
     /// dispatches system topics (presence / logs / estop) and normal imports.
     fn process_packet(&mut self, buf: &[u8], from: SocketAddr) {
+        // 0. Source admission control (GHSA-3frr-c2j9-hhr7).
+        //
+        //    This must be the FIRST thing every datagram meets. The socket binds
+        //    0.0.0.0, and the system-topic dispatch further down returns early —
+        //    before the import guard — so `_horus.estop`, `_horus.logs` and
+        //    `_horus.presence` were reachable by any routable host. Reordering the
+        //    guard would not have helped: `ImportExportGuard::allow_import` returns
+        //    `true` unconditionally for system topics. Filtering here covers all
+        //    five packet kinds and all three system topics with one check.
+        //
+        //    Default posture is private/loopback/link-local only; set
+        //    HORUS_NET_ALLOW_PEERS to widen or narrow it. This limits *reach*, not
+        //    identity — HORUS_ESTOP_KEY (crate::mac) is what authenticates the
+        //    safety channel.
+        if !self.peer_filter.admits(from) {
+            self.filtered_count += 1;
+            if !self.filtered_logged {
+                self.filtered_logged = true;
+                eprintln!(
+                    "[horus_net] Dropped a datagram from {from} — outside the allowed \
+                     peer range. Set HORUS_NET_ALLOW_PEERS to admit it (further drops \
+                     are counted, not logged)."
+                );
+            }
+            return;
+        }
+
         // 1. Discovery announcement — self-filters on the bit-7 discriminator, so a
         //    real heartbeat/ack/fragment/data packet no longer matches here.
         if let Some(ann) = decode_announcement(buf, from) {
@@ -363,16 +402,33 @@ impl Replicator {
         let logs_hash = wire::topic_hash(crate::registry::SYSTEM_TOPIC_LOGS);
         let estop_hash = wire::topic_hash(crate::registry::SYSTEM_TOPIC_ESTOP);
 
+        // Each system topic is metered by its own token bucket. The source has
+        // already passed `peer_filter`, but a permitted-but-hostile LAN host could
+        // otherwise halt-and-log at line rate; on an RT node that is a jitter and
+        // disk-fill primitive as much as a safety one. E-stop's bucket is sized to
+        // pass a genuine triple-redundant burst (see `SystemTopicLimits`).
         if msg.topic_hash == presence_hash {
-            self.presence_receiver.handle_broadcast(&msg.payload);
+            if self.system_limits.presence.take() {
+                self.presence_receiver.handle_broadcast(&msg.payload);
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
             return;
         }
         if msg.topic_hash == logs_hash {
-            crate::log_replication::handle_remote_logs(&msg.payload);
+            if self.system_limits.logs.take() {
+                crate::log_replication::handle_remote_logs(&msg.payload);
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
             return;
         }
         if msg.topic_hash == estop_hash {
-            crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
+            if self.system_limits.estop.take() {
+                crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
             return;
         }
 
