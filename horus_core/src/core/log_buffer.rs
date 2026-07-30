@@ -2,7 +2,7 @@ use crate::memory::platform::shm_logs_path;
 use log::error;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -215,17 +215,26 @@ impl SharedLogBuffer {
         capacity: usize,
     ) -> crate::error::HorusResult<Self> {
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            let _ = horus_sys::shm::create_shm_dir_all(parent);
         }
 
         let total_size = HEADER_SIZE + (capacity * SLOT_SIZE);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        // Owner-only. These buffers hold the robot's log and error history; with
+        // the default `0o666 & !umask` they were observed on disk as 0o664 —
+        // readable by every local user and writable by the owner's group, which
+        // makes them a tamper target as well as a disclosure one.
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(horus_sys::shm::SHM_FILE_MODE);
+        }
+        let file = opts.open(path)?;
+        // `mode` only applies when the file is created; tighten a buffer left
+        // behind by an older run too.
+        horus_sys::shm::harden_shm_file(path);
 
         let metadata = file.metadata()?;
         if metadata.len() == 0 {

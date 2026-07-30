@@ -66,6 +66,23 @@ use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+/// `OpenOptions` for creating a pool file: exclusive create, owner-only.
+///
+/// Without an explicit mode, `create_new` yields `0o666 & !umask` — 0o664 under
+/// the common `umask 002`. A tensor pool is a multi-gigabyte window onto live
+/// camera and lidar data, so that made it readable, and writable, by any other
+/// user in the owner's group.
+fn shm_create_new_opts() -> OpenOptions {
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(horus_sys::shm::SHM_FILE_MODE);
+    }
+    opts
+}
+
 /// Magic number for pool validation
 const POOL_MAGIC: u64 = 0x484F5255535F5450; // "HORUS_TP" in hex
 
@@ -249,7 +266,10 @@ impl TensorPool {
     /// If the pool already exists, it will be opened. Otherwise, a new pool is created.
     pub fn new(pool_id: u32, config: TensorPoolConfig) -> HorusResult<Self> {
         let shm_dir = shm_base_dir().join("tensors");
-        std::fs::create_dir_all(&shm_dir)?;
+        // Owner-only. A bare create_dir_all here produced 0o775 under the common
+        // umask 002, leaving multi-gigabyte pools of live camera/lidar tensor
+        // data readable — and group-writable — by every other local user.
+        horus_sys::shm::create_shm_dir_all(&shm_dir)?;
 
         let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
 
@@ -264,10 +284,7 @@ impl TensorPool {
         // Atomically try to be the creator: `create_new` maps to O_CREAT|O_EXCL,
         // guaranteeing exactly one winner even when many threads/processes race.
         // The previous path.exists() + create(true) pattern had a TOCTOU window.
-        let (file, is_owner) = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
+        let (file, is_owner) = match shm_create_new_opts()
             .open(&shm_path)
         {
             Ok(file) => {
@@ -464,7 +481,8 @@ impl TensorPool {
         backend: Box<dyn PoolBackend>,
     ) -> HorusResult<Self> {
         let shm_dir = shm_base_dir().join("tensors");
-        std::fs::create_dir_all(&shm_dir)?;
+        // Owner-only — see TensorPool::new for why a bare create_dir_all is wrong.
+        horus_sys::shm::create_shm_dir_all(&shm_dir)?;
 
         let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
 
@@ -482,10 +500,7 @@ impl TensorPool {
             data_offset
         };
 
-        let (file, is_owner) = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
+        let (file, is_owner) = match shm_create_new_opts()
             .open(&shm_path)
         {
             Ok(file) => {

@@ -385,22 +385,48 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
         )))
     })?;
     let gateway_dir = shm_topics_dir().join(".service_gateway");
-    std::fs::create_dir_all(&gateway_dir).map_err(|e| {
+    // Owner-only: a bare create_dir_all here was one of the paths that left
+    // /dev/shm/horus_<ns> at 0o775, and these files carry request payloads.
+    horus_sys::shm::create_shm_dir_all(&gateway_dir).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
             "Failed to create service gateway dir '{}': {}\n  Is a HORUS server running?",
             gateway_dir.display(),
             e
         )))
     })?;
-    let req_file = gateway_dir.join(format!("{}.request.json", resolved_name));
+    // The request filename carries the request id. It used to be a fixed
+    // `{service}.request.json`, so two concurrent `horus service call`
+    // invocations silently clobbered each other's request — the loser either
+    // hung until timeout or received a reply to a request it never made.
+    let req_file = gateway_dir.join(format!("{}.request.{}.json", resolved_name, request_id));
     let res_file = gateway_dir.join(format!("{}.response.{}.json", resolved_name, request_id));
-    std::fs::write(&req_file, &json_bytes).map_err(|e| {
+    horus_sys::shm::write_shm_file_new(&req_file, &json_bytes).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
             "Failed to write request file '{}': {}",
             req_file.display(),
             e
         )))
     })?;
+
+    // Both gateway files live in /dev/shm, which is RAM. Every early return
+    // below must clear them or the pages are leaked for the lifetime of the
+    // machine; the previous code cleaned up the request on timeout but never
+    // the response, so a server that replied just after the client gave up left
+    // a file behind forever.
+    struct GatewayCleanup {
+        req: std::path::PathBuf,
+        res: std::path::PathBuf,
+    }
+    impl Drop for GatewayCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.req);
+            let _ = std::fs::remove_file(&self.res);
+        }
+    }
+    let _cleanup = GatewayCleanup {
+        req: req_file.clone(),
+        res: res_file.clone(),
+    };
 
     // Poll for response using raw SHM byte reading (avoids cross-process recv issues)
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));

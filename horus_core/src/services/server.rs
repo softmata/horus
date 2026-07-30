@@ -199,6 +199,13 @@ fn run_server_loop<Req, Res>(
     // writes the response to .service_gateway/{svc_name}.response.{id}.json.
     let gateway_dir = crate::memory::shm_topics_dir().join(".service_gateway");
 
+    /// How often to look for orphaned response files.
+    const GATEWAY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+    /// How long an uncollected response may sit in /dev/shm before being reaped.
+    /// Comfortably longer than the CLI's default call timeout.
+    const GATEWAY_ORPHAN_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+    let mut last_gateway_sweep = std::time::Instant::now();
+
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -209,9 +216,31 @@ fn run_server_loop<Req, Res>(
         // CLI writes JSON to .service_gateway/{svc_name}.request.json
         // Server reads it, processes, writes response to .service_gateway/{svc_name}.response.{id}.json
         {
-            let req_file = gateway_dir.join(format!("{}.request.json", svc_name));
-            if let Ok(data) = std::fs::read(&req_file) {
-                let _ = std::fs::remove_file(&req_file);
+            // Requests are named `{svc}.request.{id}.json`, one file per call, so
+            // concurrent clients no longer overwrite a single fixed filename.
+            // Collect first, then handle: the handler can be slow and we must not
+            // hold a ReadDir across it.
+            let prefix = format!("{}.request.", svc_name);
+            let mut pending: Vec<std::path::PathBuf> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&gateway_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else { continue };
+                    if name.starts_with(&prefix) && name.ends_with(".json") {
+                        pending.push(entry.path());
+                    }
+                }
+            }
+
+            for req_file in pending {
+                let Ok(data) = std::fs::read(&req_file) else {
+                    continue;
+                };
+                // Claim the request by removing it before running the handler, so
+                // a second server instance cannot double-execute it.
+                if std::fs::remove_file(&req_file).is_err() {
+                    continue;
+                }
                 if let Ok(json_req) =
                     serde_json::from_slice::<ServiceRequest<serde_json::Value>>(&data)
                 {
@@ -228,8 +257,35 @@ fn run_server_loop<Req, Res>(
                         let res_file =
                             gateway_dir.join(format!("{}.response.{}.json", svc_name, request_id));
                         let _ = serde_json::to_vec(&response).map(|bytes| {
-                            let _ = std::fs::write(&res_file, &bytes);
+                            let _ = horus_sys::shm::write_shm_file_new(&res_file, &bytes);
                         });
+                    }
+                }
+            }
+
+            // Sweep responses no client ever collected. The client removes its own
+            // files on every exit path, but it can be SIGKILLed between the server
+            // writing a response and the client reading it — and /dev/shm is RAM,
+            // so an orphan is a permanent leak rather than a stale file on disk.
+            if last_gateway_sweep.elapsed() >= GATEWAY_SWEEP_INTERVAL {
+                last_gateway_sweep = std::time::Instant::now();
+                let res_prefix = format!("{}.response.", svc_name);
+                if let Ok(entries) = std::fs::read_dir(&gateway_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let Some(name) = name.to_str() else { continue };
+                        if !(name.starts_with(&res_prefix) && name.ends_with(".json")) {
+                            continue;
+                        }
+                        let stale = entry
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.elapsed().ok())
+                            .is_some_and(|age| age >= GATEWAY_ORPHAN_TTL);
+                        if stale {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
                     }
                 }
             }
