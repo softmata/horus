@@ -20,7 +20,7 @@ impl ShmRegion {
     /// Create or open a shared memory region using Windows API (pagefile-backed).
     pub fn new(name: &str, size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");
-        anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
+        super::validate_region_name(name)?;
         use windows_sys::Win32::Foundation::{
             CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, INVALID_HANDLE_VALUE,
         };

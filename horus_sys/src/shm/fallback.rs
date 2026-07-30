@@ -23,6 +23,12 @@ pub struct ShmRegion {
 impl ShmRegion {
     /// Create or open a shared memory region.
     pub fn new(name: &str, size: usize) -> Result<Self> {
+        super::validate_region_name(name)?;
+        // NOTE: this backend is only compiled for platforms that are neither
+        // Linux, macOS nor Windows. It stores regions in a fixed, world-writable
+        // /tmp path with no namespace and opens them via exists()-then-open,
+        // which is a symlink/TOCTOU hazard. It is not hardened here because it
+        // is unreachable on every supported target; see the audit notes.
         let horus_shm_dir = PathBuf::from("/tmp/horus/topics");
         std::fs::create_dir_all(&horus_shm_dir)
             .with_context(|| format!("Failed to create SHM dir: {}", horus_shm_dir.display()))?;

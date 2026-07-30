@@ -27,7 +27,10 @@ impl ShmRegion {
     /// Create or open a shared memory region.
     pub fn new(name: &str, mut size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");
-        anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
+        // Rejects absolute paths and `..` components, which `join` below would
+        // otherwise honour — turning a topic name into an arbitrary-path
+        // create-and-mmap primitive.
+        super::validate_region_name(name)?;
         let horus_shm_dir = super::shm_topics_dir();
         // Mode 0o700: only the owner can list or access the SHM directory.
         std::fs::DirBuilder::new()
@@ -43,7 +46,9 @@ impl ShmRegion {
 
         // Use the topic name directly — the directory is already horus-specific
         // (/dev/shm/horus_{namespace}/topics/). No "horus_" prefix needed.
-        let path = horus_shm_dir.join(name);
+        // `topic_shm_path` is the single definition of this mapping; horus_net
+        // must use it too rather than rebuilding the name.
+        let path = super::topic_shm_path(name);
 
         // Create parent directory if the name contains "/" (legacy topic names)
         if let Some(parent) = path.parent() {

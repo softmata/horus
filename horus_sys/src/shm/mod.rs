@@ -114,6 +114,81 @@ pub fn shm_topics_dir() -> PathBuf {
     shm_base_dir().join("topics")
 }
 
+/// Canonical on-disk path of a topic's SHM backing file.
+///
+/// This is the **single definition** of the topic-name → path mapping. Anything
+/// that opens a topic's backing file directly — notably `horus_net`'s SHM
+/// reader and writer — must go through here rather than reconstructing the name,
+/// which is how the replication seam silently diverged for four months (the
+/// network side was still building `horus_<name>` after the prefix was dropped
+/// here in 2026-03-29).
+///
+/// Callers must have validated `name` with [`validate_region_name`] first;
+/// `ShmRegion::new` does so on every path that reaches it.
+pub fn topic_shm_path(name: &str) -> PathBuf {
+    shm_topics_dir().join(name)
+}
+
+/// Maximum length of a single path component, matching Linux `NAME_MAX`.
+const NAME_MAX: usize = 255;
+
+/// Maximum total length of a region name.
+const REGION_NAME_MAX: usize = 512;
+
+/// Reject region names that could escape the topics directory.
+///
+/// `ShmRegion::new` used to pass the caller's name straight into
+/// `shm_topics_dir().join(name)` with no checks. Two properties of
+/// `PathBuf::join` make that dangerous:
+///
+///   * joining an **absolute** path discards the base entirely, so
+///     `Topic::new("/home/user/.bashrc")` targets that file, not a topic;
+///   * `..` components are not normalised away, so
+///     `Topic::new("../../../tmp/x")` escapes the topics directory.
+///
+/// Either one turns a topic name from any untrusted source — a CLI argument, a
+/// launch file, `horus.toml`, a Python caller — into a create-and-mmap
+/// primitive over an arbitrary path, as the running user.
+///
+/// A single embedded `/` remains legal: legacy hierarchical topic names rely on
+/// it, and `ShmRegion::new` creates the intermediate directory. Only traversal
+/// and absolute/rooted forms are rejected.
+pub fn validate_region_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
+    anyhow::ensure!(
+        name.len() <= REGION_NAME_MAX,
+        "SHM region name is too long ({} bytes, max {REGION_NAME_MAX})",
+        name.len()
+    );
+    anyhow::ensure!(
+        !name.contains('\0'),
+        "SHM region name must not contain a NUL byte"
+    );
+    // Absolute (POSIX or Windows UNC) — `join` would discard the topics dir.
+    anyhow::ensure!(
+        !name.starts_with('/') && !name.starts_with('\\'),
+        "SHM region name must be relative, got absolute path {name:?}"
+    );
+    // Windows drive-relative, e.g. `C:evil` — also escapes the base.
+    let bytes = name.as_bytes();
+    anyhow::ensure!(
+        !(bytes.len() >= 2 && bytes[1] == b':'),
+        "SHM region name must not be drive-qualified, got {name:?}"
+    );
+
+    for component in name.split(['/', '\\']) {
+        anyhow::ensure!(
+            component != ".." && component != ".",
+            "SHM region name must not contain a {component:?} path component, got {name:?}"
+        );
+        anyhow::ensure!(
+            component.len() <= NAME_MAX,
+            "SHM region name component exceeds {NAME_MAX} bytes in {name:?}"
+        );
+    }
+    Ok(())
+}
+
 /// Nodes directory for node presence files.
 pub fn shm_nodes_dir() -> PathBuf {
     shm_base_dir().join("nodes")

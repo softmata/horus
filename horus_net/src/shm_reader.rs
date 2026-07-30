@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use horus_core::communication::topic::read_latest_slot_bytes;
-use horus_sys::shm::shm_topics_dir;
+use horus_sys::shm::topic_shm_path;
 
 use crate::priority::Encoding;
 
@@ -39,9 +39,11 @@ pub struct ShmRingReader {
 impl ShmRingReader {
     /// Create a reader for a specific topic.
     pub fn new(topic_name: &str) -> Self {
-        // SHM file naming: shm_topics_dir()/horus_{sanitized_name}
-        let sanitized = topic_name.replace(['.', '/'], "_");
-        let shm_path = shm_topics_dir().join(format!("horus_{sanitized}"));
+        // The path must come from the same helper `ShmRegion::new` uses. This
+        // previously built `horus_<sanitized>`, which stopped matching when the
+        // `horus_` prefix was dropped on 2026-03-29 — so the export side of LAN
+        // replication silently read nothing for four months.
+        let shm_path = topic_shm_path(topic_name);
 
         Self {
             shm_path,
@@ -133,13 +135,30 @@ mod tests {
     }
 
     #[test]
-    fn shm_path_sanitization() {
-        let reader = ShmRingReader::new("robot.front_lidar.scan");
-        let expected_suffix = "horus_robot_front_lidar_scan";
-        assert!(
-            reader.shm_path.to_str().unwrap().ends_with(expected_suffix),
-            "path {:?} should end with {expected_suffix}",
-            reader.shm_path
+    fn reader_path_matches_where_horus_core_actually_writes() {
+        // This test previously asserted the mangled `horus_robot_front_lidar_scan`
+        // form, which is how the export seam stayed broken for four months with a
+        // green suite: the test encoded the bug rather than the contract. The
+        // contract is `ShmRegion::new`'s path, and nothing else.
+        let name = "robot.front_lidar.scan";
+        let reader = ShmRingReader::new(name);
+        assert_eq!(
+            reader.shm_path,
+            topic_shm_path(name),
+            "reader must open exactly the file ShmRegion::new creates"
         );
+        assert!(
+            reader.shm_path.ends_with(name),
+            "the topic name is used verbatim — no prefix, no character mangling"
+        );
+    }
+
+    #[test]
+    fn reader_and_writer_agree_on_the_path() {
+        // The two halves of the replication seam diverging is the original bug;
+        // pin them to each other so they cannot drift apart again silently.
+        let name = "robot.imu";
+        let reader = ShmRingReader::new(name);
+        assert_eq!(reader.shm_path, topic_shm_path(name));
     }
 }

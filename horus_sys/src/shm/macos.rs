@@ -54,7 +54,10 @@ impl ShmRegion {
     /// Create or open a shared memory region using shm_open (RAM-backed).
     pub fn new(name: &str, size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");
-        anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
+        // `shm_open` takes a flat name, so traversal is not a filesystem concern
+        // here — but the same names must be rejected on every platform so a
+        // topic that is refused on Linux is not silently accepted on macOS.
+        super::validate_region_name(name)?;
         use std::ffi::CString;
 
         let shm_name = format!("/horus_{}_{}", super::shm_namespace(), name);
