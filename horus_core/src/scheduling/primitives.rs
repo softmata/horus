@@ -67,6 +67,114 @@ pub(crate) fn honor_safe_state_request(
     }
 }
 
+/// Apply a `DegradationAction` to a node an executor owns.
+///
+/// Counterpart to `Scheduler::apply_degradation_action`, which reaches its
+/// node through `self.nodes[i]` and therefore only ever covers BestEffort
+/// nodes. The RT executor computed the action and merely PRINTED it, so
+/// `ReduceRate`, `Isolate` and `Kill` were produced and discarded — the
+/// documented graceful-degradation ladder did nothing for the RT nodes it
+/// exists to protect.
+///
+/// Health is written to the node AND mirrored into the shared control map so
+/// the main thread, the registry and `horus node status` see one consistent
+/// value across all five execution groups.
+pub(crate) fn apply_degradation_action(
+    node: &mut RegisteredNode,
+    action: super::safety_monitor::DegradationAction,
+    monitors: &super::types::SharedMonitors,
+) {
+    use super::safety_monitor::DegradationAction;
+    use super::types::NodeHealthState;
+
+    let set_health = |node: &mut RegisteredNode, state: NodeHealthState| {
+        node.health_state.store(state);
+        monitors.node_controls.set_health(node.name.as_ref(), state);
+    };
+
+    match action {
+        DegradationAction::None => {}
+        DegradationAction::Warn(ref name) => {
+            if monitors.verbose {
+                crate::terminal::print_line(&format!(
+                    " Degradation: '{name}' — sustained timing violations, monitoring"
+                ));
+            }
+        }
+        DegradationAction::ReduceRate {
+            node: ref name,
+            new_rate_hz,
+        } => {
+            node.rate_hz = Some(new_rate_hz);
+            node.last_tick = Some(Instant::now());
+            if monitors.verbose {
+                crate::terminal::print_line(&format!(
+                    " Degradation: '{name}' — reducing rate to {new_rate_hz:.1} Hz"
+                ));
+            }
+        }
+        DegradationAction::Isolate(ref name) => {
+            set_health(node, NodeHealthState::Isolated);
+            let target = &mut node.node;
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                target.enter_safe_state()
+            }))
+            .is_err();
+            if panicked {
+                node.is_stopped = true;
+            }
+            crate::terminal::print_line(&format!(
+                " Degradation: '{name}' — isolated, entered safe state{}",
+                if panicked {
+                    " FAILED (panicked) — node stopped"
+                } else {
+                    ""
+                }
+            ));
+            if let Some(ref monitor) = monitors.safety {
+                monitor.record_degrade_activation();
+            }
+        }
+        DegradationAction::Kill(ref name) => {
+            set_health(node, NodeHealthState::Isolated);
+            let target = &mut node.node;
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = target.shutdown();
+            }))
+            .is_err();
+            node.is_stopped = true;
+            crate::terminal::print_line(&format!(
+                " KILL: '{name}' — permanently removed from execution after shutdown(){}",
+                if panicked { " (shutdown panicked)" } else { "" }
+            ));
+            if let Some(ref monitor) = monitors.safety {
+                monitor.record_degrade_activation();
+            }
+        }
+        DegradationAction::RestoreRate {
+            node: ref name,
+            original_rate_hz,
+        } => {
+            node.rate_hz = Some(original_rate_hz);
+            node.last_tick = Some(Instant::now());
+            set_health(node, NodeHealthState::Healthy);
+            if monitors.verbose {
+                crate::terminal::print_line(&format!(
+                    " Recovery: '{name}' — restored to {original_rate_hz:.1} Hz"
+                ));
+            }
+        }
+        DegradationAction::Deisolate(ref name) => {
+            set_health(node, NodeHealthState::Warning);
+            if monitors.verbose {
+                crate::terminal::print_line(&format!(
+                    " Recovery: '{name}' — de-isolated, resuming at reduced rate"
+                ));
+            }
+        }
+    }
+}
+
 /// Executes a single node tick with timing measurement and panic isolation.
 ///
 /// This is the minimal execution primitive: measure time, call `tick()`, catch panics.

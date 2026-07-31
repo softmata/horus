@@ -3326,7 +3326,10 @@ fn test_watchdog_ladder_reaches_executor_hosted_nodes() {
     scheduler.node_controls = Some(controls.clone());
 
     assert_eq!(controls.health("rt_actuator"), NodeHealthState::Healthy);
-    assert!(scheduler.nodes.is_empty(), "test premise: node is not owned");
+    assert!(
+        scheduler.nodes.is_empty(),
+        "test premise: node is not owned"
+    );
 
     // Past 1x the 40ms timeout, short of 2x → Warning.
     std::thread::sleep(Duration::from_millis(50));

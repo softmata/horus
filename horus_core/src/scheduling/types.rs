@@ -16,9 +16,31 @@ use crate::core::{Miss, Node, NodeInfo, RtStats};
 ///
 /// Transitions:
 /// - `Healthy` → `Warning` (1x timeout): node is slow, logged but still ticked
-/// - `Warning` → `Unhealthy` (2x timeout): node is skipped in tick loop
+/// - `Warning` → `Unhealthy` (2x timeout): recorded and reported
 /// - `Unhealthy` → `Isolated` (3x timeout, critical node): `enter_safe_state()` called
 /// - Any → `Healthy`: node ticks successfully (recovery)
+///
+/// # Why watchdog-derived states do NOT suppress ticking
+///
+/// These states are observability, not a gate — a node whose watchdog is
+/// overdue keeps being offered ticks. That is deliberate. The watchdog answers
+/// "did this node tick recently", and the tick loop is what feeds it, so
+/// suppressing on watchdog health is self-reinforcing: a node marked
+/// `Unhealthy` at 2x would stop feeding, reach 3x, and latch a system-wide
+/// emergency stop. A transient overrun — one page fault, one scheduling
+/// hiccup — would reliably halt the robot a few hundred milliseconds later.
+///
+/// Suppressing and *also* feeding the watchdog is not the answer either: it
+/// makes the 3x rung unreachable for any node that got as far as `Unhealthy`,
+/// silently capping the ladder one rung short of the safing it exists to
+/// perform.
+///
+/// Stopping a node is the job of the separate degradation ladder, whose
+/// `DegradationAction::Kill` sets `is_stopped` — a flag every executor and the
+/// main loop honour — and whose `Isolate` safes the node while leaving it able
+/// to demonstrate recovery. The main loop additionally suppresses
+/// `Unhealthy`/`Isolated` nodes with a periodic probe tick; that predates this
+/// note and applies only to nodes it still owns.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -27,9 +49,10 @@ pub enum NodeHealthState {
     Healthy = 0,
     /// Watchdog warning (1x timeout elapsed) — node still ticks, but logged.
     Warning = 1,
-    /// Unhealthy (2x timeout) — node is skipped in tick loop.
+    /// Unhealthy (2x timeout) — recorded and reported; see the type-level note
+    /// on why this does not by itself stop the node being ticked.
     Unhealthy = 2,
-    /// Isolated (3x timeout on critical node) — `enter_safe_state()` called, node skipped.
+    /// Isolated (3x timeout on critical node) — `enter_safe_state()` called.
     Isolated = 3,
 }
 

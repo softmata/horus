@@ -638,8 +638,7 @@ pub fn register_plugin_after_install(
                  directory {}",
                 real.display(),
                 root.display()
-            )
-            .into());
+            ));
         }
     }
 
@@ -2607,7 +2606,8 @@ mod tests {
         assert!(resolve_within_package(pkg, "bin/../../escape").is_none());
 
         // Ordinary in-package paths still resolve.
-        let ok = resolve_within_package(pkg, "bin/horus-sim").expect("in-package path must resolve");
+        let ok =
+            resolve_within_package(pkg, "bin/horus-sim").expect("in-package path must resolve");
         assert_eq!(ok, pkg.join("bin/horus-sim"));
         assert!(resolve_within_package(pkg, "horus-sim").is_some());
     }
