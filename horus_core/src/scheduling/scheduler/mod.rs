@@ -3817,6 +3817,12 @@ impl Scheduler {
                         .as_nanos() as u64;
 
                     for sf in &self.nodes[i].subscription_freshness {
+                        // Observe the publisher's message counter first. Without
+                        // this the timestamp below is the one stamped at build()
+                        // and never touched since, so the check degenerates into
+                        // a fixed countdown from startup that fires on a HEALTHY
+                        // topic — and with SafeState/Stop, halts the node for it.
+                        sf.refresh(now_ns);
                         let last = sf
                             .last_received_ns
                             .load(std::sync::atomic::Ordering::Relaxed);

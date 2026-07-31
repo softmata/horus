@@ -880,17 +880,15 @@ impl<'a> NodeBuilder<'a> {
     ) -> Self {
         self.config
             .subscription_freshness
-            .push(super::types::SubscriptionFreshness {
-                topic: topic.to_string(),
+            .push(super::types::SubscriptionFreshness::new(
+                topic.to_string(),
                 timeout,
                 policy,
-                last_received_ns: std::sync::atomic::AtomicU64::new(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64,
-                ),
-            });
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            ));
         self
     }
 

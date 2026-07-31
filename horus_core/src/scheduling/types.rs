@@ -456,9 +456,98 @@ pub struct SubscriptionFreshness {
     pub timeout: Duration,
     /// What to do when the topic goes stale.
     pub policy: StalePolicy,
-    /// Last time a message was received on this topic (nanoseconds since epoch).
-    /// Updated by the scheduler when Topic::recv() returns Some.
+    /// Last time a message was observed on this topic (nanoseconds since epoch).
+    ///
+    /// Refreshed by [`SubscriptionFreshness::refresh`], which the scheduler
+    /// calls before every staleness check.
     pub last_received_ns: AtomicU64,
+    /// Lazily-mapped topic header, used to observe the publisher's
+    /// `messages_total` counter. `None` once we have decided the topic is not
+    /// mappable; re-attempted while it is still absent, because a topic may be
+    /// created after the subscriber starts.
+    counter_map: Mutex<Option<memmap2::Mmap>>,
+    /// Last `messages_total` we observed, to detect that new data arrived.
+    last_count: AtomicU64,
+}
+
+impl SubscriptionFreshness {
+    /// Build a freshness tracker, stamped as of `now_ns`.
+    pub fn new(topic: String, timeout: Duration, policy: StalePolicy, now_ns: u64) -> Self {
+        Self {
+            topic,
+            timeout,
+            policy,
+            last_received_ns: AtomicU64::new(now_ns),
+            counter_map: Mutex::new(None),
+            last_count: AtomicU64::new(u64::MAX), // sentinel: nothing observed yet
+        }
+    }
+
+    /// Observe the topic and refresh `last_received_ns` if new data has arrived.
+    ///
+    /// # Why this exists
+    ///
+    /// `last_received_ns` was stamped once at `build()` and **never written
+    /// again** — the field's own doc claimed the scheduler updated it on
+    /// `Topic::recv()`, and nothing did. So `.subscribe_with_timeout()`, whose
+    /// entire purpose is to detect a topic that has gone quiet, degenerated
+    /// into a fixed countdown from startup that fires on a perfectly healthy
+    /// topic. With `StalePolicy::SafeState` or `Stop` that means a node enters
+    /// its safe state, or halts, *because data is flowing normally*.
+    ///
+    /// The scheduler cannot see a user's `Topic::recv()` call — it happens
+    /// inside `tick()`. But every publisher increments `messages_total` in the
+    /// topic's SHM header on every send, so watching that counter is a true
+    /// "new data exists" signal, and reading it is one relaxed atomic load from
+    /// an already-mapped page.
+    ///
+    /// A topic that has never been created is deliberately NOT treated as
+    /// fresh: no data has arrived, which is exactly what the timeout is for.
+    pub fn refresh(&self, now_ns: u64) {
+        use crate::communication::topic::shm_layout as layout;
+
+        let mut guard = match self.counter_map.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.is_none() {
+            // Retry while absent — the publisher may start after we do.
+            let path = horus_sys::shm::topic_shm_path(&self.topic);
+            if let Ok(file) = std::fs::File::open(&path) {
+                if file.metadata().map(|m| m.len() as usize).unwrap_or(0) >= layout::HEADER_SIZE {
+                    // SAFETY: read-only map of a file we just verified is at
+                    // least HEADER_SIZE bytes.
+                    if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+                        let magic = u64::from_ne_bytes(
+                            map[layout::OFF_MAGIC..layout::OFF_MAGIC + 8]
+                                .try_into()
+                                .unwrap_or([0; 8]),
+                        );
+                        if magic == layout::MAGIC {
+                            *guard = Some(map);
+                        }
+                    }
+                }
+            }
+        }
+        let Some(ref map) = *guard else { return };
+
+        // SAFETY: OFF_MESSAGES_TOTAL is inside the header, which we validated is
+        // mapped, and the field is 8-byte aligned in a page-aligned mapping. The
+        // publisher writes it as an AtomicU64, so it must be read as one.
+        let total = unsafe {
+            let ptr = map.as_ptr().add(layout::OFF_MESSAGES_TOTAL) as *const AtomicU64;
+            (*ptr).load(Ordering::Relaxed)
+        };
+
+        let previous = self.last_count.swap(total, Ordering::Relaxed);
+        // u64::MAX is the "nothing observed yet" sentinel: adopt the current
+        // count without claiming data arrived, so a subscriber that starts long
+        // after the publisher does not get a free refresh.
+        if previous != u64::MAX && total != previous {
+            self.last_received_ns.store(now_ns, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Policy for handling stale subscriptions (no new data within timeout).
@@ -622,5 +711,122 @@ impl SharedMonitors {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod subscription_freshness_tests {
+    use super::*;
+    use crate::communication::Topic;
+
+    fn now_ns() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    }
+
+    fn unique(tag: &str) -> String {
+        format!("freshness_{}_{}", tag, std::process::id())
+    }
+
+    fn last(sf: &SubscriptionFreshness) -> u64 {
+        sf.last_received_ns.load(Ordering::Relaxed)
+    }
+
+    /// `last_received_ns` was stamped once at `build()` and never written again,
+    /// while the field's own doc claimed the scheduler updated it on
+    /// `Topic::recv()`. So a stale-data safety watchdog became a fixed countdown
+    /// from startup that fired on a HEALTHY topic — and with SafeState/Stop,
+    /// halted the node for it.
+    #[test]
+    fn publishing_refreshes_the_freshness_timestamp() {
+        let name = unique("live");
+        let mut topic: Topic<u64> = Topic::new(&name).expect("topic");
+
+        let sf = SubscriptionFreshness::new(
+            name.clone(),
+            Duration::from_millis(50),
+            StalePolicy::Warn,
+            now_ns(),
+        );
+        sf.refresh(now_ns()); // adopt the current counter
+        let baseline = last(&sf);
+
+        std::thread::sleep(Duration::from_millis(5));
+        let _ = topic.send(42);
+        sf.refresh(now_ns());
+
+        assert!(
+            last(&sf) > baseline,
+            "a published message must refresh the timestamp (was {baseline}, now {})",
+            last(&sf)
+        );
+    }
+
+    /// The end-to-end property: publishing faster than the timeout must never be
+    /// judged stale. Before the fix this failed as soon as `timeout` elapsed
+    /// from construction, no matter how much traffic there was.
+    #[test]
+    fn a_healthy_topic_never_exceeds_its_timeout() {
+        let name = unique("healthy");
+        let mut topic: Topic<u64> = Topic::new(&name).expect("topic");
+        let timeout = Duration::from_millis(60);
+
+        let sf = SubscriptionFreshness::new(name.clone(), timeout, StalePolicy::Warn, now_ns());
+        sf.refresh(now_ns());
+
+        for i in 0..10u64 {
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = topic.send(i);
+            let t = now_ns();
+            sf.refresh(t);
+            let elapsed = t.saturating_sub(last(&sf));
+            assert!(
+                elapsed <= timeout.as_nanos() as u64,
+                "iteration {i}: a topic published every 20ms was judged stale against a \
+                 60ms timeout (elapsed {}ms)",
+                elapsed / 1_000_000
+            );
+        }
+    }
+
+    /// The converse — a genuinely quiet topic must STILL be detected, or the fix
+    /// would have traded a false positive for a false negative.
+    #[test]
+    fn a_silent_topic_does_go_stale() {
+        let name = unique("silent");
+        let _topic: Topic<u64> = Topic::new(&name).expect("topic");
+        let timeout = Duration::from_millis(30);
+
+        let sf = SubscriptionFreshness::new(name.clone(), timeout, StalePolicy::Warn, now_ns());
+        sf.refresh(now_ns());
+
+        std::thread::sleep(Duration::from_millis(90));
+        let t = now_ns();
+        sf.refresh(t); // no traffic — must not refresh
+        assert!(
+            t.saturating_sub(last(&sf)) > timeout.as_nanos() as u64,
+            "a topic with no traffic must still be detected as stale"
+        );
+    }
+
+    /// A topic no publisher ever created has delivered no data — exactly what
+    /// the timeout is for. It must not be masked as fresh.
+    #[test]
+    fn a_topic_that_does_not_exist_yet_is_not_treated_as_fresh() {
+        let sf = SubscriptionFreshness::new(
+            unique("never_created"),
+            Duration::from_millis(20),
+            StalePolicy::Warn,
+            now_ns(),
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        let t = now_ns();
+        sf.refresh(t);
+        assert!(
+            t.saturating_sub(last(&sf)) > Duration::from_millis(20).as_nanos() as u64,
+            "an absent topic must not be reported fresh"
+        );
     }
 }
