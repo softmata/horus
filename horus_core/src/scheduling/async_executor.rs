@@ -66,11 +66,31 @@ impl AsyncExecutor {
 
     /// Stop the async I/O executor and reclaim its nodes.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
-        self.handle
-            .take()
-            .expect("Async I/O thread handle already consumed")
-            .join()
-            .expect("Async I/O thread panicked")
+        // Degrade instead of panicking, matching EventExecutor::stop.
+        //
+        // Both `expect`s used to fire on the MAIN thread during teardown: a
+        // panic anywhere inside a async i/o node's tick killed only that
+        // executor thread (there is no `panic = "abort"` in the release
+        // profile), and the panic then re-surfaced here — turning an orderly
+        // scheduler shutdown into a panic at exactly the moment a robot is
+        // trying to stop. Any remaining shutdown work, including safing other
+        // nodes, was skipped.
+        //
+        // The nodes owned by a panicked thread cannot be reclaimed, so an empty
+        // Vec is the honest result; it is reported rather than swallowed.
+        let Some(handle) = self.handle.take() else {
+            print_line("[Async I/O] Warning: thread handle already consumed — nothing to join");
+            return Vec::new();
+        };
+        match handle.join() {
+            Ok(nodes) => nodes,
+            Err(_) => {
+                print_line(
+                    "[Async I/O] Warning: executor thread panicked; its nodes could not be reclaimed",
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Main function for the async I/O thread.
