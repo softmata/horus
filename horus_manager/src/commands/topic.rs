@@ -8,7 +8,6 @@ use crate::progress::format_bytes;
 use colored::*;
 use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
-use horus_core::memory::shm_topics_dir;
 use std::io::{IsTerminal, Write};
 use std::time::Instant;
 

@@ -350,6 +350,7 @@ const ESTOP_IMPLAUSIBLE_SKEW_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// So a skew that cannot possibly be drift is reported as `ClockUnusable`
 /// instead of `Stale`, and the caller decides — see `handle_remote_estop_with_key`.
+#[cfg(test)]
 fn classify_estop_freshness(timestamp_ns: u64) -> Freshness {
     let now_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -410,6 +411,7 @@ fn classify_estop_freshness_at(timestamp_ns: u64, now_ns: u64) -> Freshness {
 }
 
 /// True if `timestamp_ns` is within the freshness window of now.
+#[cfg(test)]
 fn is_fresh_estop(timestamp_ns: u64) -> bool {
     classify_estop_freshness(timestamp_ns) == Freshness::Fresh
 }

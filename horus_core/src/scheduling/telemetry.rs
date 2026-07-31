@@ -345,9 +345,25 @@ fn http_post_blocking(url: &str, snapshot: &TelemetrySnapshot) -> Result<(), Str
 
     let json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
 
-    let url_stripped = url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://");
+    // Refuse https:// rather than silently downgrading it.
+    //
+    // This stripped the scheme and then connected with a PLAIN TcpStream,
+    // defaulting to port 80 — so an operator who configured
+    // `telemetry = "https://metrics.example.com/ingest"` got their robot's node
+    // names, tick rates, deadline misses and internal state POSTed in cleartext,
+    // to a different port than they asked for, while believing TLS was in force.
+    //
+    // horus_core has no TLS stack and adding one is not a decision to make here.
+    // Failing loudly is the correct behaviour when a security-relevant scheme
+    // cannot be honoured: silently doing something weaker is what made this a
+    // finding.
+    if url.starts_with("https://") {
+        return Err(format!(
+            "telemetry endpoint {url:?} requests HTTPS, which this exporter does not              support — it speaks cleartext HTTP only. Refusing to downgrade. Use an              http:// endpoint on a trusted network, or terminate TLS in a local sidecar              and point telemetry at that."
+        ));
+    }
+
+    let url_stripped = url.trim_start_matches("http://");
     let (host_port, path) = if let Some(idx) = url_stripped.find('/') {
         (&url_stripped[..idx], &url_stripped[idx..])
     } else {
@@ -429,6 +445,32 @@ mod tests {
     /// A generous 200 ms budget is used to allow for scheduling jitter; a
     /// blocking connect would typically take ~75 s (OS TCP timeout) and would
     /// trigger the 200 ms assertion failure well before then.
+    #[test]
+    fn https_endpoint_is_refused_not_silently_downgraded() {
+        // This used to strip the scheme and connect with a plain TcpStream on
+        // port 80 — cleartext, wrong port, no warning. An operator who wrote
+        // https:// got the exact opposite of what they asked for.
+        let snapshot = TelemetrySnapshot {
+            timestamp_secs: 0,
+            scheduler_name: "test".to_string(),
+            uptime_secs: 0.0,
+            metrics: Vec::new(),
+        };
+        let err = http_post_blocking("https://metrics.example.com/ingest", &snapshot)
+            .expect_err("https:// must not be accepted by a cleartext-only exporter");
+        assert!(
+            err.contains("HTTPS"),
+            "the error must name the reason, got: {err}"
+        );
+        // And it must fail BEFORE opening a socket: the host above is not
+        // resolvable here, so a connect error would also be an Err — the
+        // message check above is what distinguishes refusal from downgrade.
+        assert!(
+            !err.contains("Connect failed"),
+            "refusal must happen before any connection attempt, got: {err}"
+        );
+    }
+
     #[test]
     fn http_export_is_non_blocking() {
         // Port 19999 is unlikely to have a server, so the background thread

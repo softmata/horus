@@ -124,19 +124,60 @@ impl RuntimeParams {
     /// Loads parameters from `.horus/config/params.yaml` if present,
     /// otherwise uses built-in defaults.
     pub fn new() -> HorusResult<Self> {
-        let mut initial_params = BTreeMap::new();
+        // Three layers, lowest precedence first: built-in defaults, then
+        // params.yaml, then HORUS_PARAM_* env vars. Each layer overrides
+        // individual KEYS of the one below it; it never replaces the whole map.
+        //
+        // This used to start from an empty map and apply defaults only `if
+        // initial_params.is_empty()`, which had two consequences:
+        //
+        //   * A single `HORUS_PARAM_CAMERA_FPS=60` from a launch file made the
+        //     map non-empty and therefore suppressed the ENTIRE built-in set —
+        //     including `emergency_stop_distance`, `collision_threshold`,
+        //     `max_speed` and `acceleration_limit`. Setting one unrelated
+        //     parameter silently deleted every safety default. The intent test
+        //     `test_params_intent_default_values_sensible` asserts those keys
+        //     exist and passed only because no env var happened to be set.
+        //
+        //   * The same for a params.yaml that set any one key.
+        let mut initial_params = Self::default_params();
 
-        // Try to load from .horus/config/params.yaml in current project
+        // Layer 2: .horus/config/params.yaml in the current project.
         let params_file = PathBuf::from(".horus/config/params.yaml");
         if params_file.exists() {
-            if let Ok(yaml_str) = std::fs::read_to_string(&params_file) {
-                if let Ok(loaded) = serde_yaml::from_str::<BTreeMap<String, Value>>(&yaml_str) {
-                    initial_params = loaded;
-                }
+            // A params.yaml that exists but cannot be read or parsed is a hard
+            // error, not a reason to continue on built-in defaults. On a robot
+            // those defaults are looser than whatever the operator wrote — a
+            // typo in the file would silently restore `max_speed = 1.0` and
+            // `emergency_stop_distance = 0.3` with no diagnostic anywhere.
+            // Failing startup is recoverable; running with limits nobody chose
+            // is not.
+            let yaml_str = std::fs::read_to_string(&params_file).map_err(|e| {
+                HorusError::InvalidInput(ValidationError::Other(format!(
+                    "parameter file {} exists but could not be read: {e}. \
+                     Refusing to start on built-in defaults — fix the file or remove it.",
+                    params_file.display()
+                )))
+            })?;
+            // An empty file parses to `null`, not to an empty map; treat it as
+            // "no overrides" rather than an error.
+            let loaded: BTreeMap<String, Value> = if yaml_str.trim().is_empty() {
+                BTreeMap::new()
+            } else {
+                serde_yaml::from_str(&yaml_str).map_err(|e| {
+                    HorusError::InvalidInput(ValidationError::Other(format!(
+                        "parameter file {} is malformed: {e}. \
+                         Refusing to start on built-in defaults — fix the file or remove it.",
+                        params_file.display()
+                    )))
+                })?
+            };
+            for (key, value) in loaded {
+                initial_params.insert(key, value);
             }
         }
 
-        // Load HORUS_PARAM_* env vars (override YAML values).
+        // Layer 3: HORUS_PARAM_* env vars (highest precedence).
         // Launch files set these via `horus_manager/src/commands/launch.rs`.
         for (key, val) in std::env::vars() {
             if let Some(param_name) = key.strip_prefix("HORUS_PARAM_") {
@@ -144,11 +185,6 @@ impl RuntimeParams {
                 let value = parse_env_value(&val);
                 initial_params.insert(name, value);
             }
-        }
-
-        // If empty, set defaults
-        if initial_params.is_empty() {
-            initial_params = Self::default_params();
         }
 
         Ok(Self {
@@ -583,12 +619,19 @@ impl Clone for RuntimeParams {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self::new().unwrap_or_else(|e| {
+            // Fall back to the built-in defaults, NOT an empty map: a caller
+            // that reached Default has no way to handle the error, and a robot
+            // with no `emergency_stop_distance` at all is worse off than one
+            // with the built-in value. Callers that need to refuse startup on a
+            // bad params.yaml should use `new()`, which returns the error.
             eprintln!(
-                "Failed to initialize RuntimeParams: {}. Using empty params.",
+                "[PARAMS] Failed to initialize RuntimeParams: {}. \
+                 Falling back to BUILT-IN DEFAULTS — any values in \
+                 .horus/config/params.yaml are NOT in effect.",
                 e
             );
             Self {
-                params: Arc::new(RwLock::new(BTreeMap::new())),
+                params: Arc::new(RwLock::new(Self::default_params())),
                 metadata: Arc::new(RwLock::new(BTreeMap::new())),
                 versions: Arc::new(RwLock::new(BTreeMap::new())),
                 persist_path: None,
