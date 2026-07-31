@@ -147,6 +147,17 @@ impl PyDepthImage {
         let dict = PyDict::new(py);
 
         let shape = vec![this.inner.height() as i64, this.inner.width() as i64];
+        // See PyImage::__array_interface__: the shape is built from wire fields
+        // and the export hands numpy a raw pointer into the pool slot.
+        match (this.inner.height() as u64).checked_mul(this.inner.width() as u64) {
+            Some(n) if tensor.element_count_fits(n) => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "depth image dimensions exceed the tensor's allocation — refusing to \
+                     expose an out-of-bounds view to numpy",
+                ))
+            }
+        }
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
         dict.set_item("typestr", tensor.dtype.numpy_typestr())?;
 
