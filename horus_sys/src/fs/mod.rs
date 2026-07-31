@@ -359,15 +359,21 @@ fn harden_existing_dir(path: &Path) {
     if !meta.is_dir() {
         return;
     }
-    // Only our own directories.
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: getuid() is always safe; it reads process credentials.
-        let uid = unsafe { libc::getuid() };
-        if meta.uid() != uid {
-            return;
-        }
+    // Only our own directories. This guard must NOT be gated on Linux: the
+    // function is `cfg(unix)`, so gating the ownership check more narrowly than
+    // the function itself compiled it out on macOS and left the chmod below
+    // applying to any directory handed in — the exact opposite of what the doc
+    // comment above promises. `geteuid` and `MetadataExt::uid` are available on
+    // every unix target.
+    //
+    // Effective uid, matching `horus_sys::shm::harden_existing_dir`: it is what
+    // the kernel actually checks for the chmod.
+    // SAFETY: geteuid is always safe; it takes no arguments and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if meta.uid() != euid {
+        return;
     }
+
     let current = meta.permissions().mode() & 0o777;
     let tightened = current & 0o700;
     if tightened != current {
