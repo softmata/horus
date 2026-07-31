@@ -1990,8 +1990,8 @@ pub fn trust_publisher_key(name: &str, key: &str) -> Result<()> {
 
     // Validate before storing: a malformed key here becomes a confusing
     // "verification error" on every later install of that publisher.
-    let bytes = hex::decode(&hex_key)
-        .map_err(|e| anyhow::anyhow!("public key is not valid hex: {e}"))?;
+    let bytes =
+        hex::decode(&hex_key).map_err(|e| anyhow::anyhow!("public key is not valid hex: {e}"))?;
     if bytes.len() != 32 {
         anyhow::bail!(
             "public key must be 32 bytes (64 hex chars), got {} bytes",
@@ -2032,7 +2032,10 @@ pub fn list_publisher_keys() -> Result<()> {
     names.sort();
 
     if names.is_empty() {
-        println!("No publisher keys trusted yet ({} is empty).", dir.display());
+        println!(
+            "No publisher keys trusted yet ({} is empty).",
+            dir.display()
+        );
         return Ok(());
     }
 

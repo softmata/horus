@@ -2782,8 +2782,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
             AuthCommands::SigningKey => commands::pkg::run_keygen(),
             AuthCommands::TrustPublisher { name, key } => {
-                horus_manager::registry::trust_publisher_key(&name, &key)
-                    .map_err(HorusError::from)
+                horus_manager::registry::trust_publisher_key(&name, &key).map_err(HorusError::from)
             }
             AuthCommands::Publishers => {
                 horus_manager::registry::list_publisher_keys().map_err(HorusError::from)

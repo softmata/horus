@@ -342,5 +342,4 @@ mod tests {
         // A name with no key on file yields None, not a guess.
         assert!(publisher_key_path("definitely-not-installed-xyz", None).is_none());
     }
-
 }
