@@ -97,28 +97,6 @@ static_assert(offsetof(horus::msg::BoundingBox3D, pitch) == 28,
 static_assert(offsetof(horus::msg::BoundingBox3D, yaw) == 32, 
     "horus::msg::BoundingBox3D::yaw must be at Rust offset 32");
 
-// horus_robotics::CameraInfo
-static_assert(sizeof(horus::msg::CameraInfo) == 368, 
-    "horus::msg::CameraInfo must match Rust horus_robotics::CameraInfo (368 bytes)");
-static_assert(offsetof(horus::msg::CameraInfo, width) == 360, 
-    "horus::msg::CameraInfo::width must be at Rust offset 360");
-static_assert(offsetof(horus::msg::CameraInfo, height) == 364, 
-    "horus::msg::CameraInfo::height must be at Rust offset 364");
-static_assert(offsetof(horus::msg::CameraInfo, distortion_model) == 192, 
-    "horus::msg::CameraInfo::distortion_model must be at Rust offset 192");
-static_assert(offsetof(horus::msg::CameraInfo, distortion_coefficients) == 0, 
-    "horus::msg::CameraInfo::distortion_coefficients must be at Rust offset 0");
-static_assert(offsetof(horus::msg::CameraInfo, camera_matrix) == 208, 
-    "horus::msg::CameraInfo::camera_matrix must be at Rust offset 208");
-static_assert(offsetof(horus::msg::CameraInfo, rectification_matrix) == 280, 
-    "horus::msg::CameraInfo::rectification_matrix must be at Rust offset 280");
-static_assert(offsetof(horus::msg::CameraInfo, projection_matrix) == 64, 
-    "horus::msg::CameraInfo::projection_matrix must be at Rust offset 64");
-static_assert(offsetof(horus::msg::CameraInfo, frame_id) == 160, 
-    "horus::msg::CameraInfo::frame_id must be at Rust offset 160");
-static_assert(offsetof(horus::msg::CameraInfo, timestamp_ns) == 352, 
-    "horus::msg::CameraInfo::timestamp_ns must be at Rust offset 352");
-
 // horus_robotics::ContactInfo
 static_assert(sizeof(horus::msg::ContactInfo) == 136, 
     "horus::msg::ContactInfo must match Rust horus_robotics::ContactInfo (136 bytes)");
@@ -579,38 +557,6 @@ static_assert(offsetof(horus::msg::PidConfig, anti_windup) == 48,
 static_assert(offsetof(horus::msg::PidConfig, timestamp_ns) == 56, 
     "horus::msg::PidConfig::timestamp_ns must be at Rust offset 56");
 
-// horus_robotics::PlaneDetection
-static_assert(sizeof(horus::msg::PlaneDetection) == 128, 
-    "horus::msg::PlaneDetection must match Rust horus_robotics::PlaneDetection (128 bytes)");
-static_assert(offsetof(horus::msg::PlaneDetection, coefficients) == 0, 
-    "horus::msg::PlaneDetection::coefficients must be at Rust offset 0");
-static_assert(offsetof(horus::msg::PlaneDetection, center) == 64, 
-    "horus::msg::PlaneDetection::center must be at Rust offset 64");
-static_assert(offsetof(horus::msg::PlaneDetection, normal) == 88, 
-    "horus::msg::PlaneDetection::normal must be at Rust offset 88");
-static_assert(offsetof(horus::msg::PlaneDetection, size) == 32, 
-    "horus::msg::PlaneDetection::size must be at Rust offset 32");
-static_assert(offsetof(horus::msg::PlaneDetection, inlier_count) == 120, 
-    "horus::msg::PlaneDetection::inlier_count must be at Rust offset 120");
-static_assert(offsetof(horus::msg::PlaneDetection, confidence) == 124, 
-    "horus::msg::PlaneDetection::confidence must be at Rust offset 124");
-static_assert(offsetof(horus::msg::PlaneDetection, plane_type) == 48, 
-    "horus::msg::PlaneDetection::plane_type must be at Rust offset 48");
-static_assert(offsetof(horus::msg::PlaneDetection, timestamp_ns) == 112, 
-    "horus::msg::PlaneDetection::timestamp_ns must be at Rust offset 112");
-
-// horus_robotics::PointField
-static_assert(sizeof(horus::msg::PointField) == 28, 
-    "horus::msg::PointField must match Rust horus_robotics::PointField (28 bytes)");
-static_assert(offsetof(horus::msg::PointField, name) == 0, 
-    "horus::msg::PointField::name must be at Rust offset 0");
-static_assert(offsetof(horus::msg::PointField, offset) == 16, 
-    "horus::msg::PointField::offset must be at Rust offset 16");
-static_assert(offsetof(horus::msg::PointField, datatype) == 24, 
-    "horus::msg::PointField::datatype must be at Rust offset 24");
-static_assert(offsetof(horus::msg::PointField, count) == 20, 
-    "horus::msg::PointField::count must be at Rust offset 20");
-
 // horus_robotics::RangeSensor
 static_assert(sizeof(horus::msg::RangeSensor) == 32, 
     "horus::msg::RangeSensor must match Rust horus_robotics::RangeSensor (32 bytes)");
@@ -626,20 +572,6 @@ static_assert(offsetof(horus::msg::RangeSensor, range) == 16,
     "horus::msg::RangeSensor::range must be at Rust offset 16");
 static_assert(offsetof(horus::msg::RangeSensor, timestamp_ns) == 24, 
     "horus::msg::RangeSensor::timestamp_ns must be at Rust offset 24");
-
-// horus_robotics::RegionOfInterest
-static_assert(sizeof(horus::msg::RegionOfInterest) == 20, 
-    "horus::msg::RegionOfInterest must match Rust horus_robotics::RegionOfInterest (20 bytes)");
-static_assert(offsetof(horus::msg::RegionOfInterest, x_offset) == 0, 
-    "horus::msg::RegionOfInterest::x_offset must be at Rust offset 0");
-static_assert(offsetof(horus::msg::RegionOfInterest, y_offset) == 4, 
-    "horus::msg::RegionOfInterest::y_offset must be at Rust offset 4");
-static_assert(offsetof(horus::msg::RegionOfInterest, width) == 8, 
-    "horus::msg::RegionOfInterest::width must be at Rust offset 8");
-static_assert(offsetof(horus::msg::RegionOfInterest, height) == 12, 
-    "horus::msg::RegionOfInterest::height must be at Rust offset 12");
-static_assert(offsetof(horus::msg::RegionOfInterest, do_rectify) == 16, 
-    "horus::msg::RegionOfInterest::do_rectify must be at Rust offset 16");
 
 // horus_robotics::SegmentationMask
 static_assert(sizeof(horus::msg::SegmentationMask) == 64, 
@@ -672,18 +604,6 @@ static_assert(offsetof(horus::msg::ServoCommand, enable) == 12,
     "horus::msg::ServoCommand::enable must be at Rust offset 12");
 static_assert(offsetof(horus::msg::ServoCommand, timestamp_ns) == 16, 
     "horus::msg::ServoCommand::timestamp_ns must be at Rust offset 16");
-
-// horus_robotics::StereoInfo
-static_assert(sizeof(horus::msg::StereoInfo) == 752, 
-    "horus::msg::StereoInfo must match Rust horus_robotics::StereoInfo (752 bytes)");
-static_assert(offsetof(horus::msg::StereoInfo, left_camera) == 0, 
-    "horus::msg::StereoInfo::left_camera must be at Rust offset 0");
-static_assert(offsetof(horus::msg::StereoInfo, right_camera) == 368, 
-    "horus::msg::StereoInfo::right_camera must be at Rust offset 368");
-static_assert(offsetof(horus::msg::StereoInfo, baseline) == 736, 
-    "horus::msg::StereoInfo::baseline must be at Rust offset 736");
-static_assert(offsetof(horus::msg::StereoInfo, depth_scale) == 744, 
-    "horus::msg::StereoInfo::depth_scale must be at Rust offset 744");
 
 // horus_robotics::Temperature
 static_assert(sizeof(horus::msg::Temperature) == 56, 

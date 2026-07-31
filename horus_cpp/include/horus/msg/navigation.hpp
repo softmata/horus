@@ -4,46 +4,79 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "geometry.hpp"
 
 namespace horus { namespace msg {
 
-/// Navigation goal (2D target)
+/// Navigation goal specification — mirrors Rust `horus_robotics::NavGoal` (72 bytes)
 struct NavGoal {
-    double target_x;
-    double target_y;
-    double target_theta;
-    float tolerance;
+    Pose2D target_pose;        // target pose to reach
+    double tolerance_position; // meters
+    double tolerance_angle;    // radians
+    double timeout_seconds;    // max time to reach goal (0 = no limit)
+    uint8_t priority;          // 0 = highest
+    uint32_t goal_id;          // unique goal identifier
     uint64_t timestamp_ns;
 };
 
-/// Navigation goal result
+/// Goal status codes — Rust `horus_robotics::GoalStatus` is #[repr(u8)],
+/// carried in `GoalResult::status` as a raw uint8_t.
+enum : uint8_t {
+    GOAL_STATUS_PENDING   = 0,
+    GOAL_STATUS_ACTIVE    = 1,
+    GOAL_STATUS_SUCCEEDED = 2,
+    GOAL_STATUS_ABORTED   = 3,
+    GOAL_STATUS_CANCELLED = 4,
+    GOAL_STATUS_PREEMPTED = 5,
+    GOAL_STATUS_TIMED_OUT = 6,
+};
+
+/// Goal status feedback — mirrors Rust `horus_robotics::GoalResult` (104 bytes)
 struct GoalResult {
-    bool success;
-    float distance_error;
-    float angle_error;
+    uint32_t goal_id;
+    uint8_t status;            // GoalStatus (repr(u8)), see GOAL_STATUS_* above
+    double distance_to_goal;   // meters
+    double eta_seconds;        // estimated time to reach goal
+    float progress;            // 0.0 to 1.0
+    uint8_t error_message[64]; // null-terminated, empty if no error
     uint64_t timestamp_ns;
 };
 
-/// Single waypoint in a path
+/// Waypoint in a path — mirrors Rust `horus_robotics::Waypoint` (104 bytes)
 struct Waypoint {
-    double x;
-    double y;
-    double heading;
-    float velocity;
+    Pose2D pose;            // pose at this waypoint
+    Twist velocity;         // desired velocity at this point
+    double time_from_start; // seconds
+    float curvature;        // 1/radius
+    uint8_t stop_required;  // Rust bool (1 byte): 0 = continue, 1 = stop here
+};
+
+/// Navigation path — mirrors Rust `horus_robotics::NavPath` (26720 bytes)
+struct NavPath {
+    Waypoint waypoints[256];  // fixed waypoint buffer
+    uint16_t waypoint_count;  // number of valid waypoints
+    double total_length;      // meters
+    double duration_seconds;  // estimated time to complete path
+    uint8_t frame_id[32];     // null-terminated coordinate frame
+    uint8_t algorithm[32];    // null-terminated planner name
     uint64_t timestamp_ns;
 };
 
-/// Velocity obstacle for collision avoidance
+/// Velocity obstacle for dynamic obstacle avoidance —
+/// mirrors Rust `horus_robotics::VelocityObstacle` (48 bytes)
 struct VelocityObstacle {
-    double center[2];
-    double velocity[2];
-    double radius;
+    double position[2];  // meters [x, y]
+    double velocity[2];  // m/s [x, y]
+    float radius;        // meters
+    float time_horizon;  // seconds, for collision prediction
+    uint32_t obstacle_id;
 };
 
-/// Path plan with fixed waypoint buffer
+/// Path plan for zero-copy IPC —
+/// mirrors Rust `horus_robotics::PathPlan` (3096 bytes)
 struct PathPlan {
-    float waypoint_data[768];     // 256 waypoints x 3 floats (x, y, heading)
-    float goal_pose[3];           // [x, y, theta]
+    float waypoint_data[768]; // 256 waypoints x 3 floats (x, y, theta)
+    float goal_pose[3];       // [x, y, theta]
     uint16_t waypoint_count;
     uint64_t timestamp_ns;
 };

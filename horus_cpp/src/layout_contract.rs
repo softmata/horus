@@ -51,12 +51,17 @@
 /// declaration order.
 macro_rules! layout_contract_types {
     ($mac:ident) => {
+        // NOTE: horus_robotics::{CameraInfo, RegionOfInterest, StereoInfo,
+        // PointField, PlaneDetection} are deliberately ABSENT. They are
+        // repr(Rust), so they have no guaranteed layout and cannot be pinned by
+        // any C++ struct; they were withdrawn from the C ABI in c_api.rs rather
+        // than mirrored. See the note at the end of the impl_pod_topic_c_api!
+        // list for how to restore them.
         $mac! {
     horus_robotics::AudioFrame => { samples num_samples sample_rate channels encoding _pad timestamp_ns frame_id },
     horus_robotics::BatteryState => { voltage current charge capacity percentage power_supply_status temperature cell_voltages cell_count timestamp_ns },
     horus_robotics::BoundingBox2D => { x y width height },
     horus_robotics::BoundingBox3D => { cx cy cz length width height roll pitch yaw },
-    horus_robotics::CameraInfo => { width height distortion_model distortion_coefficients camera_matrix rectification_matrix projection_matrix frame_id timestamp_ns },
     horus_robotics::ContactInfo => { state contact_force contact_normal contact_point stiffness damping confidence contact_start_time frame_id timestamp_ns },
     horus_robotics::Detection => { bbox confidence class_id class_name instance_id },
     horus_robotics::Detection3D => { bbox confidence class_id class_name velocity_x velocity_y velocity_z instance_id },
@@ -83,13 +88,9 @@ macro_rules! layout_contract_types {
     horus_robotics::Odometry => { pose twist pose_covariance twist_covariance frame_id child_frame_id timestamp_ns },
     horus_robotics::PathPlan => { waypoint_data goal_pose waypoint_count timestamp_ns },
     horus_robotics::PidConfig => { controller_id kp ki kd integral_limit output_limit anti_windup timestamp_ns },
-    horus_robotics::PlaneDetection => { coefficients center normal size inlier_count confidence plane_type timestamp_ns },
-    horus_robotics::PointField => { name offset datatype count },
     horus_robotics::RangeSensor => { sensor_type field_of_view min_range max_range range timestamp_ns },
-    horus_robotics::RegionOfInterest => { x_offset y_offset width height do_rectify },
     horus_robotics::SegmentationMask => { width height num_classes mask_type timestamp_ns seq frame_id },
     horus_robotics::ServoCommand => { servo_id position speed enable timestamp_ns },
-    horus_robotics::StereoInfo => { left_camera right_camera baseline depth_scale },
     horus_robotics::Temperature => { temperature variance frame_id timestamp_ns },
     horus_robotics::TrackedObject => { bbox predicted_bbox track_id confidence class_id velocity_x velocity_y accel_x accel_y age hits time_since_update state class_name },
     horus_robotics::TrackingHeader => { num_tracks frame_id timestamp_ns total_tracks active_tracks },

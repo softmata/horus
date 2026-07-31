@@ -643,10 +643,10 @@ impl_pod_topic_c_api!(bounding_box_2d, horus_robotics::BoundingBox2D);
 impl_pod_topic_c_api!(bounding_box_3d, horus_robotics::BoundingBox3D);
 impl_pod_topic_c_api!(detection, horus_robotics::Detection);
 impl_pod_topic_c_api!(detection_3d, horus_robotics::Detection3D);
-// Vision (3 — CompressedImage has Vec)
-impl_pod_topic_c_api!(camera_info, horus_robotics::CameraInfo);
-impl_pod_topic_c_api!(region_of_interest, horus_robotics::RegionOfInterest);
-impl_pod_topic_c_api!(stereo_info, horus_robotics::StereoInfo);
+// Vision — WITHDRAWN, see the repr(Rust) note at the bottom of this list.
+// impl_pod_topic_c_api!(camera_info, horus_robotics::CameraInfo);
+// impl_pod_topic_c_api!(region_of_interest, horus_robotics::RegionOfInterest);
+// impl_pod_topic_c_api!(stereo_info, horus_robotics::StereoInfo);
 // Navigation (5 — OccupancyGrid/CostMap have Vec)
 impl_pod_topic_c_api!(goal_result, horus_robotics::GoalResult);
 impl_pod_topic_c_api!(waypoint, horus_robotics::Waypoint);
@@ -680,9 +680,32 @@ impl_pod_topic_c_api!(audio_frame, horus_robotics::AudioFrame);
 // Clock (2)
 impl_pod_topic_c_api!(clock, horus_types::Clock);
 impl_pod_topic_c_api!(time_reference, horus_types::TimeReference);
-// Perception (2)
-impl_pod_topic_c_api!(point_field, horus_robotics::PointField);
-impl_pod_topic_c_api!(plane_detection, horus_robotics::PlaneDetection);
+// Perception — WITHDRAWN, see the repr(Rust) note below.
+// impl_pod_topic_c_api!(point_field, horus_robotics::PointField);
+// impl_pod_topic_c_api!(plane_detection, horus_robotics::PlaneDetection);
+
+// ─── Withdrawn from the C ABI: types without #[repr(C)] ─────────────────────
+//
+// horus_robotics::{CameraInfo, RegionOfInterest, StereoInfo, PointField,
+// PlaneDetection} are declared WITHOUT #[repr(C)] — they are repr(Rust).
+//
+// Rust makes no layout guarantee for repr(Rust): the compiler may reorder
+// fields, and is explicitly permitted to change that ordering between releases.
+// Every entry point this macro generates is a raw `ptr::read` / `ptr::write` of
+// the Rust type through a pointer a C++ caller supplied, so exposing a
+// repr(Rust) type over the C ABI is unsound BY CONSTRUCTION: there is no C++
+// struct that can be guaranteed to match, and any that appears to match today
+// can silently stop matching after a toolchain upgrade — with no diagnostic,
+// because the sizes still agree.
+//
+// That is strictly worse than a compile error, so these five are withdrawn
+// rather than mirrored. The C++ structs have been removed from
+// include/horus/msg/vision.hpp and perception headers for the same reason.
+//
+// To restore them, add #[repr(C)] to the five structs in horus-robotics
+// (src/messages/{vision,perception}.rs), bump the pinned rev in the manifests,
+// re-enable the lines above, and regenerate the layout contract. The contract's
+// `contract_covers_every_bound_type` test will then require them to be pinned.
 
 // ─── JsonWireMessage Topic C API ─────────────────────────────────────────────
 

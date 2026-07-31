@@ -8,19 +8,30 @@
 
 namespace horus { namespace msg {
 
-/// 2D LiDAR scan — 360 fixed range readings
+// NOTE: every struct below mirrors a `#[repr(C)]` Rust struct byte-for-byte.
+// The Rust definition is the contract; these are plain aggregates so that
+// `offsetof` is valid and the layout can be asserted in layout_contract.hpp.
+// Rust `bool` would map to uint8_t — none of the types here use one.
+
+/// 2D LiDAR scan — 360 fixed range readings.
+/// Mirrors Rust `horus_robotics::LaserScan` (1480 bytes).
+/// NOTE: this type spells the limits `range_min`/`range_max`, while
+/// `RangeSensor` below spells them `min_range`/`max_range`. That asymmetry
+/// exists in the Rust source and must NOT be harmonized.
 struct LaserScan {
     float ranges[360];       // meters (0 = invalid)
-    float angle_min;         // radians
-    float angle_max;         // radians
-    float min_range;         // meters
-    float max_range;         // meters
+    float angle_min;         // radians — start angle of the scan
+    float angle_max;         // radians — end angle of the scan
+    float range_min;         // meters — minimum valid range
+    float range_max;         // meters — maximum valid range
+    float angle_increment;   // radians — angular resolution
     float time_increment;    // seconds between measurements
     float scan_time;         // seconds for full scan
     uint64_t timestamp_ns;
 };
 
-/// Inertial Measurement Unit — orientation + angular velocity + linear acceleration
+/// Inertial Measurement Unit — orientation + angular velocity + linear acceleration.
+/// Mirrors Rust `horus_robotics::Imu` (304 bytes).
 struct Imu {
     double orientation[4];                   // quaternion [x,y,z,w]
     double orientation_covariance[9];        // 3x3 row-major (-1 = no data)
@@ -31,16 +42,22 @@ struct Imu {
     uint64_t timestamp_ns;
 };
 
-/// Odometry — pose + velocity with covariance
+/// Odometry — pose + velocity with covariance and frame identifiers.
+/// Mirrors Rust `horus_robotics::Odometry` (736 bytes).
 struct Odometry {
     Pose2D pose;
     Twist twist;
-    double pose_covariance[36];   // 6x6 row-major
-    double twist_covariance[36];  // 6x6 row-major
+    double pose_covariance[36];    // 6x6 row-major
+    double twist_covariance[36];   // 6x6 row-major
+    uint8_t frame_id[32];          // null-terminated, e.g. "odom" / "map"
+    uint8_t child_frame_id[32];    // null-terminated, e.g. "base_link"
     uint64_t timestamp_ns;
 };
 
-/// Range sensor (ultrasonic/infrared)
+/// Range sensor (ultrasonic/infrared).
+/// Mirrors Rust `horus_robotics::RangeSensor` (32 bytes).
+/// NOTE: spells the limits `min_range`/`max_range` — the opposite of
+/// `LaserScan` above. This matches the Rust source; do not "fix" it.
 struct RangeSensor {
     uint8_t sensor_type;  // 0=ultrasonic, 1=infrared
     float field_of_view;  // radians
@@ -50,64 +67,78 @@ struct RangeSensor {
     uint64_t timestamp_ns;
 };
 
-/// Battery state monitoring
+/// Battery state monitoring.
+/// Mirrors Rust `horus_robotics::BatteryState` (104 bytes).
 struct BatteryState {
-    float voltage;        // volts
-    float current;        // amperes (negative = discharging)
-    float charge;         // amp-hours (NaN if unknown)
-    float capacity;       // amp-hours (NaN if unknown)
-    float percentage;     // 0.0-1.0 (NaN if unknown)
-    uint8_t health;       // 0=unknown, 1=good, 2=overheat, 3=dead, 4=overvoltage, 5=bad_cell
-    uint8_t status;       // 0=unknown, 1=charging, 2=discharging, 3=not_charging, 4=full
+    float voltage;                 // volts
+    float current;                 // amperes (negative = discharging)
+    float charge;                  // amp-hours (NaN if unknown)
+    float capacity;                // amp-hours (NaN if unknown)
+    float percentage;              // PERCENT, 0-100 (NOT 0.0-1.0)
+    uint8_t power_supply_status;   // 0=unknown, 1=charging, 2=discharging, 3=full
+    float temperature;             // degrees Celsius
+    float cell_voltages[16];       // per-cell volts
+    uint8_t cell_count;            // number of valid entries in cell_voltages
     uint64_t timestamp_ns;
 };
 
-/// GPS/GNSS fix
+/// GPS/GNSS fix.
+/// Mirrors Rust `horus_robotics::NavSatFix` (128 bytes).
 struct NavSatFix {
-    double latitude;      // degrees (positive = North)
-    double longitude;     // degrees (positive = East)
-    double altitude;      // meters above WGS84
-    double position_covariance[9]; // diagonal [lat,lon,alt]
-    int8_t status;        // -1=no fix, 0=fix, 1=SBAS, 2=GBAS
-    uint8_t satellites;   // visible satellites
+    double latitude;                    // degrees (positive = North)
+    double longitude;                   // degrees (positive = East)
+    double altitude;                    // meters above WGS84 ellipsoid
+    double position_covariance[9];      // [lat,lon,alt] diagonal
+    uint8_t position_covariance_type;   // 0=unknown, 1=approximated, 2=diagonal_known, 3=known
+    uint8_t status;                     // 0=no_fix, 1=fix, 2=sbas_fix, 3=gbas_fix
+    uint16_t satellites_visible;        // number of satellites visible
+    float hdop;                         // horizontal dilution of precision
+    float vdop;                         // vertical dilution of precision
+    float speed;                        // ground speed, m/s
+    float heading;                      // course/heading, degrees
     uint64_t timestamp_ns;
 };
 
-/// Magnetometer reading
+/// Magnetometer reading.
+/// Mirrors Rust `horus_robotics::MagneticField` (136 bytes).
 struct MagneticField {
     double magnetic_field[3];             // Tesla [x,y,z]
-    double magnetic_field_covariance[9];  // 3x3 row-major
-    uint8_t frame_id[32];
+    double magnetic_field_covariance[9];  // 3x3 row-major ([0] = -1 if unknown)
+    uint8_t frame_id[32];                 // null-terminated
     uint64_t timestamp_ns;
 };
 
-/// Temperature sensor
+/// Temperature sensor.
+/// Mirrors Rust `horus_robotics::Temperature` (56 bytes).
 struct Temperature {
     double temperature;   // degrees Celsius
     double variance;      // 0 if exact
-    uint8_t frame_id[32];
+    uint8_t frame_id[32]; // null-terminated
     uint64_t timestamp_ns;
 };
 
-/// Pressure sensor
+/// Pressure sensor (barometer, etc.).
+/// Mirrors Rust `horus_robotics::FluidPressure` (56 bytes).
 struct FluidPressure {
     double fluid_pressure; // Pascals
-    double variance;
-    uint8_t frame_id[32];
+    double variance;       // 0 if exact
+    uint8_t frame_id[32];  // null-terminated
     uint64_t timestamp_ns;
 };
 
-/// Light sensor
+/// Light sensor.
+/// Mirrors Rust `horus_robotics::Illuminance` (56 bytes).
 struct Illuminance {
     double illuminance;   // Lux
-    double variance;
-    uint8_t frame_id[32];
+    double variance;      // 0 if exact
+    uint8_t frame_id[32]; // null-terminated
     uint64_t timestamp_ns;
 };
 
-/// Joint state — positions, velocities, efforts for up to 16 joints
+/// Joint state — positions, velocities, efforts for up to 16 joints.
+/// Mirrors Rust `horus_robotics::JointState` (912 bytes).
 struct JointState {
-    uint8_t names[16][32];    // null-terminated joint names
+    uint8_t names[16][32];    // null-terminated joint names (max 31 chars)
     uint8_t joint_count;
     double positions[16];     // radians or meters
     double velocities[16];    // rad/s or m/s
