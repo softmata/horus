@@ -785,7 +785,14 @@ pub(crate) fn prompt_system_package_choice_run(
 fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let lock_path = Path::new(HORUS_LOCK);
 
-    let mut lockfile = HorusLockfile::new();
+    // Load-then-mutate. `HorusLockfile::new()` produced a BLANK lockfile, so
+    // every `horus run`/`horus build` whose config hash had changed silently
+    // replaced the file with one containing only that hash — discarding the
+    // toolchain pins, system-dep pins, features and package set that
+    // `horus lock` and `horus doctor` had recorded. The reproducibility
+    // guarantee the lockfile exists to provide was erased by the ordinary
+    // build path.
+    let mut lockfile = HorusLockfile::load_from(lock_path).unwrap_or_default();
     lockfile.config_hash = config_hash.clone();
 
     lockfile

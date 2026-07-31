@@ -100,9 +100,9 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
             println!("    {} {}", "PID:".dimmed(), node.process_id);
             println!("    {} {:.1}%", "CPU:".dimmed(), node.cpu_usage);
             println!(
-                "    {} {} bytes",
+                "    {} {}",
                 "Memory:".dimmed(),
-                format_bytes(node.memory_usage)
+                format_bytes(node.memory_usage.saturating_mul(1024))
             );
             println!("    {} {}", "Ticks:".dimmed(), node.tick_count);
             println!("    {} {} Hz", "Rate:".dimmed(), node.actual_rate_hz);
@@ -291,7 +291,7 @@ pub fn node_info(name: &str) -> HorusResult<()> {
     println!(
         "    {} {}",
         "Memory:".dimmed(),
-        format_bytes(node.memory_usage)
+        format_bytes(node.memory_usage.saturating_mul(1024))
     );
     println!("    {} {} Hz", "Tick Rate:".dimmed(), node.actual_rate_hz);
     println!("    {} {}", "Total Ticks:".dimmed(), node.tick_count);

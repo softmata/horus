@@ -162,6 +162,7 @@ impl Watchdog {
     }
 
     /// Check if watchdog has expired (simple boolean).
+    #[cfg(test)]
     pub(crate) fn check(&self) -> bool {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns().saturating_sub(last_ns);
@@ -751,6 +752,13 @@ impl SafetyMonitor {
     /// `AtomicU64`/`AtomicBool` fields, so reading them requires no
     /// HashMap mutation.  Multiple threads can call `check_watchdogs`
     /// concurrently without blocking each other.
+    /// Legacy 1x-timeout expiry check.
+    ///
+    /// No longer on the scheduler path: it triggered a system-wide emergency
+    /// stop at 1x while `check_watchdogs_graduated` — which runs in the same
+    /// tick — classifies 1x as `Warning` ("log, keep ticking"). Retained for
+    /// tests that pin the 1x semantics directly.
+    #[cfg(test)]
     pub(crate) fn check_watchdogs(&self, expired: &mut Vec<String>) {
         expired.clear();
         for (name, watchdog) in self.watchdogs.read().iter() {

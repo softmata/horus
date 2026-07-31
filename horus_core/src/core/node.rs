@@ -403,7 +403,12 @@ impl NodeInfo {
 
         if let Some(start_time) = self.tick_start_time {
             let duration = start_time.elapsed();
-            let duration_ms = duration.as_millis() as f64;
+            // `as_millis() as f64` TRUNCATES: every tick under 1 ms recorded
+            // exactly 0.0. HORUS budgets are quoted in microseconds, so that is
+            // essentially every RT node — avg/max/last/min tick duration all
+            // read 0.0, and the documented 100 ms Warning threshold could never
+            // be approached from below.
+            let duration_ms = duration.as_secs_f64() * 1000.0;
 
             self.metrics.total_ticks += 1;
             self.metrics.successful_ticks += 1;
@@ -447,7 +452,8 @@ impl NodeInfo {
 
             if let Some(start_time) = self.tick_start_time {
                 let duration = start_time.elapsed();
-                self.metrics.last_tick_duration_ms = duration.as_millis() as f64;
+                // Sub-millisecond ticks truncated to 0.0 — see the success path.
+                self.metrics.last_tick_duration_ms = duration.as_secs_f64() * 1000.0;
                 self.tick_start_time = None;
             }
         }
@@ -1012,5 +1018,43 @@ mod tests {
 
         let empty: Vec<i32> = vec![];
         assert_eq!(empty.log_summary(), "Vec[0 items]");
+    }
+}
+
+#[cfg(test)]
+mod sub_millisecond_metrics_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Sub-millisecond ticks must not record as 0.0.
+    ///
+    /// `as_millis() as f64` truncates, so every tick under 1 ms read exactly
+    /// 0.0 — and HORUS budgets are quoted in microseconds, so that is
+    /// essentially every RT node. avg/max/last/min tick duration were all zero
+    /// and the documented 100 ms Warning threshold could never be approached.
+    #[test]
+    fn sub_millisecond_durations_are_not_truncated_to_zero() {
+        let to_ms = |d: Duration| d.as_secs_f64() * 1000.0;
+
+        assert!(
+            to_ms(Duration::from_micros(200)) > 0.0,
+            "a 200us tick — a typical RT budget — must not record as 0.0"
+        );
+        assert!(
+            (to_ms(Duration::from_micros(200)) - 0.2).abs() < 1e-9,
+            "200us must be 0.2ms"
+        );
+        assert!(
+            (to_ms(Duration::from_micros(1500)) - 1.5).abs() < 1e-9,
+            "1500us must be 1.5ms, not 1.0"
+        );
+
+        // The old expression, for contrast — this is what was being stored.
+        assert_eq!(
+            Duration::from_micros(200).as_millis() as f64,
+            0.0,
+            "documents the defect: truncation made a 200us tick indistinguishable \
+             from no work at all"
+        );
     }
 }

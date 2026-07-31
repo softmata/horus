@@ -166,11 +166,6 @@ pub(crate) struct MonitorState {
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
     pub working_dir: PathBuf,
-    /// Pre-allocated buffer for `check_watchdogs()`.
-    ///
-    /// Reused every tick to avoid the heap allocation that a `-> Vec<String>`
-    /// return would require.  Passed by `&mut` into `SafetyMonitor::check_watchdogs`.
-    pub watchdog_expired_buf: Vec<String>,
     /// Pre-allocated buffer for graduated watchdog results.
     pub watchdog_graduated_buf: Vec<(String, super::safety_monitor::WatchdogSeverity)>,
 }
@@ -340,7 +335,6 @@ impl Scheduler {
                 profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                watchdog_expired_buf: Vec::new(),
                 watchdog_graduated_buf: Vec::new(),
             },
             replay: None,
@@ -2353,11 +2347,28 @@ impl Scheduler {
 
                 // Create control topic for CLI commands (horus node kill/pause/resume)
                 let ctl_topic_name = format!("horus.ctl.{}", self.scheduler_name);
-                self.control_topic = crate::communication::Topic::new_with_kind(
+                // `.ok()` discarded a real failure with no log at any verbosity.
+                // `new_with_kind` is fallible — the topic name embeds the
+                // user-supplied scheduler name, which must pass topic-name
+                // validation, and SHM can be exhausted. When it failed, every
+                // `horus node kill/pause/resume` silently did nothing: the
+                // operator's control channel was simply absent and the only
+                // symptom was commands having no effect.
+                self.control_topic = match crate::communication::Topic::new_with_kind(
                     &ctl_topic_name,
                     crate::communication::TopicKind::System as u8,
-                )
-                .ok();
+                ) {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        print_line(&format!(
+                            "[SCHEDULER] WARNING: control topic '{}' could not be created ({}) — \
+                             operator control (horus node kill/pause/resume) is UNAVAILABLE \
+                             for this scheduler",
+                            ctl_topic_name, e
+                        ));
+                        None
+                    }
+                };
 
                 // Shared monitors for all executor threads
                 let shared_monitors = super::types::SharedMonitors {
@@ -2935,8 +2946,21 @@ impl Scheduler {
                 }
             }
 
-            // Also run the classic expired check for backward compat logging
-            monitor.check_watchdogs(&mut self.monitor.watchdog_expired_buf);
+            // The legacy `check_watchdogs` call used to run here, described as
+            // "backward compat logging". It is not only logging: it triggers a
+            // system-wide emergency stop as soon as ANY watchdog is 1x over its
+            // timeout.
+            //
+            // `check_watchdogs_graduated` runs immediately above and classifies
+            // that same node as `Warning`, which is documented as "log, keep
+            // ticking", escalating to Isolated + e-stop only at 3x. So the
+            // graduated policy was overridden in the very same tick by the call
+            // underneath it: a node a hair over 1x halted the whole scheduler.
+            // On a robot that is a spurious full stop where the configured
+            // policy asked for a log line.
+            //
+            // The graduated path already owns the 3x emergency stop, so the
+            // legacy call is removed rather than reordered.
 
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
