@@ -286,7 +286,18 @@ impl Replicator {
             if ann.peer_id == self.peer_id {
                 return;
             }
-            if self.secret_hash != [0u8; 4] && ann.has_secret && ann.secret_hash != self.secret_hash
+            // Fails CLOSED. This used to also require `ann.has_secret`, so a
+            // peer that simply cleared the has_secret flag bit skipped the check
+            // entirely and HORUS_NET_SECRET filtered nobody. When we have a
+            // secret configured, an announcement must carry a matching one.
+            //
+            // Still only a filter, not authentication: the hash is a
+            // non-cryptographic FNV-1a value broadcast in cleartext, so anyone
+            // who can see the traffic can replay it. HORUS_ESTOP_KEY is the
+            // authenticated channel; this just stops accidental cross-fleet
+            // mixing from silently succeeding.
+            if self.secret_hash != [0u8; 4]
+                && (!ann.has_secret || ann.secret_hash != self.secret_hash)
             {
                 return;
             }

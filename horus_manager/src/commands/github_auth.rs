@@ -75,8 +75,17 @@ pub fn login() -> HorusResult<()> {
     println!("Logging in to HORUS registry with GitHub...");
     println!();
 
+    // CSRF state. Any local process can connect to a loopback port, so without
+    // this a co-resident attacker can hit our callback with THEIR authorization
+    // code and make us persist THEIR registry token — after which `horus
+    // publish` uploads the user's packages to the attacker's account.
+    let state = generate_oauth_state();
+
     // Open browser with CLI port so the server redirects back to us
-    let auth_url = format!("{}/auth/github?cli_port={}", registry_url, port);
+    let auth_url = format!(
+        "{}/auth/github?cli_port={}&state={}",
+        registry_url, port, state
+    );
     println!("{} Opening browser for GitHub authentication...", "".cyan());
 
     if open::that(&auth_url).is_err() {
@@ -92,7 +101,7 @@ pub fn login() -> HorusResult<()> {
     println!("  {} Press Ctrl+C to cancel", "Tip:".dimmed());
 
     // Wait for the OAuth callback (with timeout)
-    let result = wait_for_oauth_callback(&listener, &registry_url);
+    let result = wait_for_oauth_callback(&listener, &registry_url, &state);
 
     match result {
         Ok((api_key, username)) => {
@@ -131,10 +140,45 @@ pub fn login() -> HorusResult<()> {
     }
 }
 
+/// Generate an unguessable OAuth `state` value.
+///
+/// Uses the OS CSPRNG. `getrandom(2)` on Linux, `/dev/urandom` as the portable
+/// fallback — never a PRNG seeded from the clock or the pid, both of which an
+/// attacker on the same machine knows.
+fn generate_oauth_state() -> String {
+    let mut bytes = [0u8; 32];
+    let filled = {
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut bytes))
+            .is_ok()
+    };
+    if !filled {
+        // Refusing to fall back to a weak source: a predictable state is worse
+        // than none, because it looks like protection. The caller treats an
+        // empty state as "no CSRF protection available" and says so.
+        return String::new();
+    }
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Constant-time string comparison for the OAuth state.
+fn state_matches(expected: &str, received: &str) -> bool {
+    if expected.len() != received.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in expected.bytes().zip(received.bytes()) {
+        diff |= a ^ b;
+    }
+    std::hint::black_box(diff) == 0
+}
+
 /// Wait for the OAuth callback on the local server, exchange the auth code for an API key.
 fn wait_for_oauth_callback(
     listener: &TcpListener,
     registry_url: &str,
+    expected_state: &str,
 ) -> std::result::Result<(String, String), String> {
     // Set a 5-minute timeout for the OAuth flow
     listener.set_nonblocking(false).ok();
@@ -175,9 +219,29 @@ fn wait_for_oauth_callback(
 
     let auth_code = extract_query_param(path, "code");
     let username = extract_query_param(path, "user").unwrap_or_default();
+    let received_state = extract_query_param(path, "state");
+
+    // CSRF check. The registry lives in a separate repository, so it may not
+    // echo `state` back yet: require a match when one IS returned (the hardened
+    // path activates the moment the registry supports it), and warn loudly but
+    // continue when one is not, so upgrading the CLI does not break login
+    // against today's registry. Never silently accept a MISMATCH.
+    let state_ok = match (&received_state, expected_state.is_empty()) {
+        (Some(got), false) => state_matches(expected_state, got),
+        (Some(_), true) => false, // we could not generate one; cannot verify
+        (None, _) => {
+            println!(
+                "  {} The registry did not return an OAuth `state` parameter, so this login\n     \
+                 could not be CSRF-verified. Any local process able to reach the callback\n     \
+                 port could have supplied this authorization code.",
+                crate::cli_output::ICON_WARN.yellow()
+            );
+            true
+        }
+    };
 
     // Send a response to the browser
-    let html_body = if auth_code.is_some() {
+    let html_body = if auth_code.is_some() && state_ok {
         "<html><body style='font-family:system-ui;text-align:center;padding:60px'>\
          <h1 style='color:#22c55e'>Authentication successful!</h1>\
          <p>You can close this window and return to the terminal.</p>\
@@ -196,6 +260,15 @@ fn wait_for_oauth_callback(
     );
     let _ = stream.write_all(response.as_bytes());
     drop(stream);
+
+    if !state_ok {
+        return Err(
+            "OAuth state mismatch — the callback did not come from the login this command \
+             started. Refusing to exchange the authorization code. If this repeats, another \
+             process on this machine may be trying to plant its own registry token."
+                .to_string(),
+        );
+    }
 
     let auth_code = auth_code.ok_or("No auth code in callback")?;
 
@@ -240,10 +313,18 @@ fn url_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                result.push(byte);
-                i += 3;
-                continue;
+            // Parse the two hex digits from BYTES, not by slicing the &str.
+            // `&input[i + 1..i + 3]` panics when either index falls inside a
+            // multi-byte UTF-8 character, and this input is the request line of
+            // an unauthenticated connection to the loopback listener — so any
+            // local process could crash `horus auth login` with one request.
+            let hex = [bytes[i + 1], bytes[i + 2]];
+            if let Ok(hex) = std::str::from_utf8(&hex) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    result.push(byte);
+                    i += 3;
+                    continue;
+                }
             }
         } else if bytes[i] == b'+' {
             result.push(b' ');
@@ -1745,5 +1826,53 @@ mod tests {
         let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.api_key, valid_token);
         assert!(validate_token(&parsed.api_key));
+    }
+}
+
+#[cfg(test)]
+mod oauth_state_tests {
+    use super::{generate_oauth_state, state_matches, url_decode};
+
+    #[test]
+    fn generated_state_is_long_and_unpredictable() {
+        let a = generate_oauth_state();
+        let b = generate_oauth_state();
+        assert_eq!(a.len(), 64, "32 bytes hex-encoded");
+        assert_ne!(a, b, "two logins must not share a state value");
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn state_matches_is_exact() {
+        let s = "a".repeat(64);
+        assert!(state_matches(&s, &s));
+        let mut wrong = s.clone();
+        wrong.replace_range(0..1, "b");
+        assert!(!state_matches(&s, &wrong), "first-byte difference");
+        let mut wrong_last = s.clone();
+        wrong_last.replace_range(63..64, "b");
+        assert!(!state_matches(&s, &wrong_last), "last-byte difference");
+        assert!(!state_matches(&s, ""), "empty must never match");
+        assert!(!state_matches(&s, &"a".repeat(63)), "length must matter");
+    }
+
+    #[test]
+    fn url_decode_does_not_panic_on_multibyte_boundaries() {
+        // The request line comes from an unauthenticated loopback connection, so
+        // slicing a &str on a byte index used to let any local process crash
+        // `horus auth login`.
+        for input in [
+            "%C3%A9",       // valid percent-encoded UTF-8
+            "café%",        // trailing '%' with a multi-byte char before it
+            "%é9",          // '%' followed by a multi-byte char
+            "%",
+            "%A",
+            "日本語%FF",
+            "a+b%20c",
+        ] {
+            let _ = url_decode(input); // must not panic
+        }
+        assert_eq!(url_decode("a+b%20c"), "a b c");
+        assert_eq!(url_decode("%C3%A9"), "é");
     }
 }

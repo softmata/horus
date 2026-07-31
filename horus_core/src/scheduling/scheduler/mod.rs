@@ -2524,9 +2524,27 @@ impl Scheduler {
                 blackbox.is_some(),
             );
 
-            // 3. Write crash report to /tmp (best-effort, no allocation beyond the format above)
+            // 3. Write crash report to /tmp (best-effort, no allocation beyond the format above).
+            //
+            // create_new, not fs::write: the path is fully predictable
+            // (/tmp/horus_crash_<pid>.log) and /tmp is world-writable, so
+            // fs::write would happily follow a symlink another local user
+            // planted there and truncate whatever it points at, as this user.
+            // O_EXCL means a pre-planted path makes us skip the report instead.
+            // Mode 0600 because the report carries node names and internal state.
             let crash_path = std::env::temp_dir().join(format!("horus_crash_{}.log", pid));
-            let _ = std::fs::write(&crash_path, &report);
+            let _ = {
+                use std::io::Write;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                opts.open(&crash_path)
+                    .and_then(|mut f| f.write_all(report.as_bytes()))
+            };
 
             // 4. Also print to stderr (visible in logs)
             eprintln!("{}", report);
