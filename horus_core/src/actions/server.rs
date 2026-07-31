@@ -634,9 +634,45 @@ where
 
     /// Accept and start executing a goal.
     fn accept_goal(&mut self, request: GoalRequest<A::Goal>) {
+        let goal_id = request.goal_id;
+
+        // `goal_id` arrives on a topic, so it is whatever the publisher wrote,
+        // and it keys both `active_goals` and `goal_threads`. Admitting a
+        // second goal under an id that is already live corrupts the first one:
+        //
+        //   * `active_goals.insert` replaces its `GoalState`, and with it the
+        //     `cancel_requested` / `preempt_requested` Arcs that the RUNNING
+        //     callback is polling through its `ServerGoalHandle`. The running
+        //     goal becomes permanently uncancellable — cancel and preempt set
+        //     flags nothing reads.
+        //   * `goal_threads.insert` returns the previous `JoinHandle` and drops
+        //     it, DETACHING that thread. It is then missing from the map that
+        //     `drain()` joins on shutdown, so the callback can outlive the
+        //     server while still driving an actuator.
+        //
+        // This is the same defect as the C++ FFI action server (fixed
+        // separately); the Rust server has the identical shape and was missed.
+        //
+        // Unlike the C++ side — where the id is `(pid << 32) | counter` and
+        // ordinary PID reuse collides — `GoalId` here wraps a v4 UUID, so an
+        // accidental collision is not a realistic concern. The vector is a
+        // publisher that reuses or replays an id: goal requests arrive over a
+        // topic any local process can write, and nothing bound the id to the
+        // client that minted it. Cheap to refuse, and refusing is correct
+        // regardless of how the collision arose.
+        if self.active_goals.contains_key(&goal_id) {
+            log::warn!(
+                "ActionServer '{}': rejecting goal {} — that id is already active. \
+                 Accepting it would make the running goal uncancellable.",
+                A::name(),
+                goal_id
+            );
+            self.publish_status(goal_id, GoalStatus::Rejected);
+            return;
+        }
+
         self.goals_accepted.fetch_add(1, Ordering::Relaxed);
 
-        let goal_id = request.goal_id;
         log::info!("ActionServer '{}': Accepted goal {}", A::name(), goal_id);
 
         // Create goal state
@@ -1275,6 +1311,81 @@ mod tests {
     // ========================================================================
     // Server negative and edge case tests
     // ========================================================================
+
+    /// A duplicate goal id must be rejected, not admitted over a live goal.
+    ///
+    /// Admitting it replaced the running goal's `GoalState` — including the
+    /// `cancel_requested`/`preempt_requested` Arcs its callback is polling —
+    /// and dropped its `JoinHandle`, detaching the thread from the map that
+    /// `drain()` joins at shutdown. The running goal became uncancellable and
+    /// could outlive the server while still driving an actuator.
+    #[test]
+    fn duplicate_goal_id_is_rejected_and_leaves_the_live_goal_intact() {
+        use std::sync::atomic::{AtomicUsize, Ordering as O};
+        use std::sync::Arc as StdArc;
+
+        static STARTS: AtomicUsize = AtomicUsize::new(0);
+        STARTS.store(0, O::SeqCst);
+
+        let running = StdArc::new(AtomicBool::new(true));
+        let running_cb = running.clone();
+
+        let mut server = ActionServerBuilder::<TestAction>::new()
+            .on_goal(|_goal| GoalResponse::Accept)
+            .on_cancel(|_id| CancelResponse::Accept)
+            .on_execute(move |handle| {
+                STARTS.fetch_add(1, O::SeqCst);
+                // Hold the goal open until the test releases it, polling the
+                // cancel flag the way a real handler does.
+                while running_cb.load(Ordering::SeqCst) && !handle.is_cancel_requested() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                handle.succeed(TestResult { success: true })
+            })
+            .max_concurrent_goals(Some(4))
+            .build();
+
+        let id = GoalId::new();
+        let req = |id: GoalId| GoalRequest {
+            goal_id: id,
+            goal: TestGoal { target: 1.0 },
+            priority: GoalPriority::default(),
+            timestamp: Duration::from_secs(0),
+        };
+
+        server.accept_goal(req(id));
+        assert_eq!(server.active_goals.len(), 1, "first goal must be admitted");
+        let first_cancel = server.active_goals[&id].cancel_requested.clone();
+
+        // Same id again — a replaying or buggy publisher.
+        server.accept_goal(req(id));
+
+        assert_eq!(
+            server.active_goals.len(),
+            1,
+            "a duplicate goal id must not add a second entry"
+        );
+        assert!(
+            StdArc::ptr_eq(&first_cancel, &server.active_goals[&id].cancel_requested),
+            "the live goal's cancel flag was REPLACED — it is now uncancellable"
+        );
+        assert_eq!(
+            server.goal_threads.len(),
+            1,
+            "a duplicate must not detach the first goal's thread"
+        );
+
+        // Release the handler and let the server shut down cleanly.
+        running.store(false, Ordering::SeqCst);
+        for (_id, join) in server.goal_threads.drain() {
+            let _ = join.join();
+        }
+        assert_eq!(
+            STARTS.load(O::SeqCst),
+            1,
+            "a duplicate goal id must not start a second execution"
+        );
+    }
 
     #[test]
     fn test_preemption_policy_variants() {

@@ -2032,7 +2032,10 @@ mod system_package_name_tests {
             "zlib1g",
             "lib32z1",
         ] {
-            assert!(is_safe_system_package_name(name), "{name} should be allowed");
+            assert!(
+                is_safe_system_package_name(name),
+                "{name} should be allowed"
+            );
         }
     }
 
@@ -2069,7 +2072,10 @@ mod system_package_name_tests {
             "pkg\"quote",
             "pkg\0nul",
         ] {
-            assert!(!is_safe_system_package_name(name), "{name:?} must be rejected");
+            assert!(
+                !is_safe_system_package_name(name),
+                "{name:?} must be rejected"
+            );
         }
     }
 

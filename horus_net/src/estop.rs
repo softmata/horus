@@ -64,11 +64,7 @@ pub fn encode_estop(peer_id_hash: u16, reason: &str) -> Vec<u8> {
 /// The process key comes from a `OnceLock` over an env var, which a test cannot
 /// vary. This seam lets the authenticated and unauthenticated paths both be
 /// tested in one process.
-pub fn encode_estop_with_key(
-    peer_id_hash: u16,
-    reason: &str,
-    key: Option<&[u8; 32]>,
-) -> Vec<u8> {
+pub fn encode_estop_with_key(peer_id_hash: u16, reason: &str, key: Option<&[u8; 32]>) -> Vec<u8> {
     let reason_bytes = reason.as_bytes();
     let reason_len = reason_bytes.len().min(200) as u16; // cap reason at 200 bytes
     let now_ns = SystemTime::now()
@@ -367,11 +363,7 @@ fn classify_estop_freshness(timestamp_ns: u64) -> Freshness {
 /// replay band — the original tests used a one-hour-old timestamp, which lands
 /// in `Stale`, and asserted the buggy `ClockUnusable` behaviour as correct.
 fn classify_estop_freshness_at(timestamp_ns: u64, now_ns: u64) -> Freshness {
-    let skew = if now_ns >= timestamp_ns {
-        now_ns - timestamp_ns
-    } else {
-        timestamp_ns - now_ns
-    };
+    let skew = now_ns.abs_diff(timestamp_ns);
     if skew >= ESTOP_IMPLAUSIBLE_SKEW_NS {
         // Only OUR OWN clock being unset justifies bypassing freshness.
         //
@@ -853,7 +845,7 @@ mod tests {
     const UNSET_CLOCK_TS: u64 = 1_000_000_000; // ~1 second after the epoch
 
     #[test]
-    fn a_decades_skewed_packet_is_STALE_when_our_own_clock_is_set() {
+    fn a_decades_skewed_packet_is_stale_when_our_own_clock_is_set() {
         // This test previously asserted the OPPOSITE and was wrong. Deciding
         // "clock unusable" from the skew magnitude is attacker-controllable: it
         // turned every packet older than a day into an accept, so a captured
@@ -872,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_unusable_requires_OUR_clock_to_be_unset() {
+    fn clock_unusable_requires_our_clock_to_be_unset() {
         // The only case that legitimately bypasses freshness: this machine
         // cannot tell the time. Simulated by injecting an epoch-era `now`.
         let unset_now = 2_000_000_000; // ~2s after the epoch

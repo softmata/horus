@@ -474,11 +474,11 @@ impl Replicator {
             //
             // Unkeyed deployments keep the original ordering — there is nothing
             // to authenticate against, so the bucket is the only defence there.
-            if crate::mac::estop_key().is_some() {
-                if !crate::estop::estop_packet_is_authentic(&msg.payload) {
-                    self.metrics.record_topic_drop(msg.topic_hash);
-                    return;
-                }
+            if crate::mac::estop_key().is_some()
+                && !crate::estop::estop_packet_is_authentic(&msg.payload)
+            {
+                self.metrics.record_topic_drop(msg.topic_hash);
+                return;
             }
             if self.system_limits.estop.take() {
                 crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);

@@ -18,7 +18,7 @@ use std::time::{Instant, SystemTime};
 ///
 /// Strips `..`, absolute prefixes, and any OS-specific separators so the
 /// resulting string is always a single, flat filename component.
-fn sanitize_path_component(name: &str) -> String {
+pub(crate) fn sanitize_path_component(name: &str) -> String {
     let path = std::path::Path::new(name);
     let safe: String = path
         .components()
@@ -333,11 +333,10 @@ pub trait Recording: Serialize + serde::de::DeserializeOwned + Sized {
                         let mut decompressed = Vec::new();
                         {
                             use std::io::Read;
-                            let decoder =
-                                zstd::stream::read::Decoder::new(compressed.as_slice())
-                                    .map_err(|e| {
-                                        std::io::Error::other(format!("zstd decompress: {}", e))
-                                    })?;
+                            let decoder = zstd::stream::read::Decoder::new(compressed.as_slice())
+                                .map_err(|e| {
+                                std::io::Error::other(format!("zstd decompress: {}", e))
+                            })?;
                             let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
                             limited.read_to_end(&mut decompressed).map_err(|e| {
                                 std::io::Error::other(format!("zstd decompress: {}", e))

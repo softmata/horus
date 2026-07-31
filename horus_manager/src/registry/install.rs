@@ -2589,7 +2589,25 @@ pub(crate) fn is_safe_python_requirement(spec: &str) -> bool {
     }
     spec.chars().all(|c| {
         c.is_ascii_alphanumeric()
-            || matches!(c, '.' | '-' | '_' | '[' | ']' | ',' | '=' | '<' | '>' | '!' | '~' | '*' | '+' | ' ' | ';' | '\'' | '"')
+            || matches!(
+                c,
+                '.' | '-'
+                    | '_'
+                    | '['
+                    | ']'
+                    | ','
+                    | '='
+                    | '<'
+                    | '>'
+                    | '!'
+                    | '~'
+                    | '*'
+                    | '+'
+                    | ' '
+                    | ';'
+                    | '\''
+                    | '"'
+            )
     }) && !spec.contains('/')
         && !spec.contains('\\')
 }
@@ -2610,7 +2628,10 @@ mod python_requirement_tests {
             "scipy~=1.11",
             "pkg; python_version >= '3.9'",
         ] {
-            assert!(is_safe_python_requirement(spec), "{spec:?} should be allowed");
+            assert!(
+                is_safe_python_requirement(spec),
+                "{spec:?} should be allowed"
+            );
         }
     }
 
@@ -2642,7 +2663,10 @@ mod python_requirement_tests {
             "/abs/path",
             "..\\windows\\path",
         ] {
-            assert!(!is_safe_python_requirement(spec), "{spec:?} must be rejected");
+            assert!(
+                !is_safe_python_requirement(spec),
+                "{spec:?} must be rejected"
+            );
         }
     }
 

@@ -256,7 +256,8 @@ impl TokenBucket {
             return;
         }
         self.last = now;
-        self.tokens = (self.tokens + elapsed.as_secs_f64() * self.refill_per_sec).min(self.capacity);
+        self.tokens =
+            (self.tokens + elapsed.as_secs_f64() * self.refill_per_sec).min(self.capacity);
     }
 }
 

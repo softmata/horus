@@ -1000,7 +1000,10 @@ mod tests {
 
     // ── .subscribe_with_timeout() must not be silently unenforced ──
 
-    fn with_freshness(reg: NodeRegistration, policy: super::super::types::StalePolicy) -> NodeRegistration {
+    fn with_freshness(
+        reg: NodeRegistration,
+        policy: super::super::types::StalePolicy,
+    ) -> NodeRegistration {
         let mut reg = reg;
         reg.subscription_freshness
             .push(super::super::types::SubscriptionFreshness::new(

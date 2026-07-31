@@ -1982,13 +1982,19 @@ mod untrusted_header_tests {
     use std::io::Write;
 
     fn tmp(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("horus_hdr_untrusted_{}_{}", tag, std::process::id()))
+        std::env::temp_dir().join(format!(
+            "horus_hdr_untrusted_{}_{}",
+            tag,
+            std::process::id()
+        ))
     }
 
     /// Build a topic file whose header declares `capacity` but a DIFFERENT
     /// `cap_mask` — the shape a hostile file takes.
     fn write_header(path: &std::path::Path, capacity: u32, cap_mask: u32, type_size: u32) {
-        let total = TOPIC_HEADER_SIZE + (capacity as usize) * 8 + (capacity as usize) * (type_size as usize);
+        let total = TOPIC_HEADER_SIZE
+            + (capacity as usize) * 8
+            + (capacity as usize) * (type_size as usize);
         let mut buf = vec![0u8; total];
         buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
         buf[12..16].copy_from_slice(&type_size.to_ne_bytes());

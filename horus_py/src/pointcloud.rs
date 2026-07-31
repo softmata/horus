@@ -117,7 +117,9 @@ impl PyPointCloud {
         ];
         // See PyImage::__array_interface__: point_count/fields_per_point come off
         // the wire and the export hands numpy a raw pointer into the pool slot.
-        match (this.inner.point_count() as u64)
+        match this
+            .inner
+            .point_count()
             .checked_mul(this.inner.fields_per_point() as u64)
         {
             Some(n) if tensor.element_count_fits(n) => {}

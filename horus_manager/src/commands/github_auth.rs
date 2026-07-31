@@ -1878,9 +1878,9 @@ mod oauth_state_tests {
         // slicing a &str on a byte index used to let any local process crash
         // `horus auth login`.
         for input in [
-            "%C3%A9",       // valid percent-encoded UTF-8
-            "café%",        // trailing '%' with a multi-byte char before it
-            "%é9",          // '%' followed by a multi-byte char
+            "%C3%A9", // valid percent-encoded UTF-8
+            "café%",  // trailing '%' with a multi-byte char before it
+            "%é9",    // '%' followed by a multi-byte char
             "%",
             "%A",
             "日本語%FF",

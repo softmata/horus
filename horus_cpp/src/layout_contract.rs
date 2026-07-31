@@ -191,8 +191,7 @@ mod tests {
 
     /// Path of the committed contract header.
     fn contract_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("include/horus/layout_contract.hpp")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include/horus/layout_contract.hpp")
     }
 
     /// Rewrite the committed contract. Run explicitly after changing a message
@@ -235,9 +234,12 @@ mod tests {
     /// test suite still runs on a machine without one.
     #[test]
     fn cpp_headers_satisfy_the_contract() {
-        let cxx = ["g++", "clang++"]
-            .into_iter()
-            .find(|c| std::process::Command::new(c).arg("--version").output().is_ok());
+        let cxx = ["g++", "clang++"].into_iter().find(|c| {
+            std::process::Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok()
+        });
         let Some(cxx) = cxx else {
             eprintln!("skipping: no C++ compiler on PATH");
             return;
@@ -290,7 +292,9 @@ mod tests {
             let Some(rest) = line.trim().strip_prefix("impl_pod_topic_c_api!(") else {
                 continue;
             };
-            let Some((_, ty)) = rest.split_once(',') else { continue };
+            let Some((_, ty)) = rest.split_once(',') else {
+                continue;
+            };
             let ty = ty.trim().trim_end_matches(");").trim();
             let name = ty.rsplit("::").next().unwrap_or(ty);
             if !rendered.contains(&format!("sizeof(horus::msg::{name})")) {

@@ -512,6 +512,43 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
 }
 
 /// Classify how a message payload should be displayed without printing.
+/// Neutralise terminal control sequences before printing untrusted bytes.
+///
+/// Everything printed by `horus topic echo` is publisher-controlled: field
+/// values, JSON payloads and the header's `type_name` all come off a SHM topic
+/// that any local process can write. Written straight to a terminal, an ESC in
+/// that data is not text — it is a command. `\x1b]0;...\x07` rewrites the window
+/// title, `\x1b[2J` clears the scrollback an operator is reading during an
+/// incident, and on terminals with response-style sequences enabled the output
+/// can be turned back into input.
+///
+/// The `PodText` arm of `classify_message` already refused anything outside
+/// ASCII graphic + whitespace. Its siblings — `PodFields`, `Json` and the
+/// `type_name` shown next to a hex dump — did not, so the guard only covered
+/// the one format that was least likely to carry structured text.
+///
+/// Tab and newline are kept because the output is deliberately multi-line;
+/// every other C0 control, DEL, and the C1 range are rendered as visible
+/// escapes so the operator can see that something odd was published.
+fn sanitize_for_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\t' | '\n' => out.push(c),
+            // C0 controls and DEL
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            // C1 controls (U+0080..U+009F) — reachable via valid UTF-8
+            c if (0x80..=0x9f).contains(&(c as u32)) => {
+                out.push_str(&format!("\\u{{{:04x}}}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn classify_message(data: &[u8], is_pod: bool, type_name: &str) -> MessageFormat {
     if is_pod {
         // Try field decoding for known types
@@ -542,10 +579,20 @@ fn print_message(data: &[u8], seq: usize, is_pod: bool, type_name: &str) {
 
     match classify_message(data, is_pod, type_name) {
         MessageFormat::PodFields(fields) => {
-            println!("[{}] #{}: {}", timestamp.to_string().dimmed(), seq, fields);
+            println!(
+                "[{}] #{}: {}",
+                timestamp.to_string().dimmed(),
+                seq,
+                sanitize_for_terminal(&fields)
+            );
         }
         MessageFormat::PodText(text) => {
-            println!("[{}] #{}: {}", timestamp.to_string().dimmed(), seq, text);
+            println!(
+                "[{}] #{}: {}",
+                timestamp.to_string().dimmed(),
+                seq,
+                sanitize_for_terminal(&text)
+            );
         }
         MessageFormat::PodHex => {
             println!(
@@ -554,16 +601,16 @@ fn print_message(data: &[u8], seq: usize, is_pod: bool, type_name: &str) {
                 seq,
                 data.len(),
                 if type_name.is_empty() {
-                    "POD"
+                    "POD".to_string()
                 } else {
-                    type_name
+                    sanitize_for_terminal(type_name)
                 }
             );
             print_hex_dump(data, 64);
         }
         MessageFormat::Json(pretty) => {
             println!("[{}] #{}:", timestamp.to_string().dimmed(), seq);
-            println!("{}", pretty);
+            println!("{}", sanitize_for_terminal(&pretty));
         }
         MessageFormat::BincodeHex => {
             println!(
@@ -1354,5 +1401,48 @@ mod tests {
             "Should say not found, got: {}",
             err
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_sanitize_tests {
+    use super::sanitize_for_terminal;
+
+    #[test]
+    fn escape_sequences_from_a_publisher_cannot_reach_the_terminal() {
+        // A publisher writes a string field containing an OSC title-set and a
+        // clear-screen. Both must come out as visible text, not as commands.
+        let hostile = "temp\x1b]0;pwned\x07 ok\x1b[2J";
+        let out = sanitize_for_terminal(hostile);
+        assert!(!out.contains('\x1b'), "ESC survived: {out:?}");
+        assert!(out.contains("\\x1b"), "ESC must be shown visibly: {out:?}");
+        assert!(
+            out.contains("temp") && out.contains("ok"),
+            "text lost: {out:?}"
+        );
+    }
+
+    #[test]
+    fn newline_and_tab_survive_because_the_output_is_multiline() {
+        let s = "a\tb\nc";
+        assert_eq!(sanitize_for_terminal(s), "a\tb\nc");
+    }
+
+    #[test]
+    fn c1_controls_are_neutralised_too() {
+        // U+009B is CSI — a single-character control introducer that some
+        // terminals honour, reachable through perfectly valid UTF-8.
+        let out = sanitize_for_terminal("x\u{9b}2J");
+        assert!(!out.contains('\u{9b}'), "C1 CSI survived: {out:?}");
+        assert!(
+            out.contains("\\u{009b}"),
+            "expected visible escape: {out:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_text_is_untouched() {
+        let s = "linear_x: 0.5, angular_z: -1.25 — 温度 42°C";
+        assert_eq!(sanitize_for_terminal(s), s);
     }
 }

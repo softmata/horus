@@ -133,7 +133,22 @@ impl Scheduler {
         // cadence instead of a blind default. Reconstructing per-tick timing
         // would require loading and aligning every node's snapshot timeline.
         let mut timestamps_ns: Vec<u64> = Vec::new();
+        // `total_ticks` is a field of an untrusted recording file — these get
+        // shared and archived — and it sizes a Vec<u64> one entry per tick. A
+        // few bytes of JSON declaring 2^60 ticks asks for exabytes and OOMs the
+        // process before any node is loaded. Bound it: 100M ticks is 800 MB of
+        // timestamps and over a day of wall clock at 1 kHz, far past any real
+        // recording, so anything beyond it is corruption or an attack.
+        const MAX_REPLAY_TICKS: u64 = 100_000_000;
         let total_ticks = scheduler_recording.total_ticks;
+        if total_ticks > MAX_REPLAY_TICKS {
+            return Err(crate::error::HorusError::InvalidInput(
+                crate::error::ValidationError::Other(format!(
+                    "recording declares {total_ticks} ticks, above the {MAX_REPLAY_TICKS} \
+                     replay limit — refusing to allocate. The file is corrupt or hostile."
+                )),
+            ));
+        }
         if total_ticks > 0 {
             let period_ns = replay_tick_period_ns(
                 scheduler_recording.started_at,
@@ -176,7 +191,14 @@ impl Scheduler {
             .unwrap_or_default();
 
         for (node_id, relative_path) in &scheduler_recording.node_recordings {
-            let node_path = session_dir.join(relative_path);
+            // `relative_path` comes verbatim out of the recording file. Joined
+            // unchecked, `../../../..` escapes the session directory entirely
+            // and `add_replay` then opens and deserialises whatever it lands
+            // on. Every other path field from this file is already flattened
+            // through `sanitize_path_component`; this one was missed.
+            let node_path = session_dir.join(
+                crate::scheduling::record_replay::sanitize_path_component(relative_path),
+            );
             if node_path.exists() {
                 let priority = priority_map.get(node_id.as_str()).copied().unwrap_or(0);
                 if let Err(e) = scheduler.add_replay(node_path, priority) {

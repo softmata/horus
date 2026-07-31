@@ -358,7 +358,7 @@ except ImportError as e:
                     // instead — no quoting, no escaping, nothing to get wrong.
                     let import_check = std::process::Command::new("python3")
                         .arg("-c")
-                        .arg(&import_script)
+                        .arg(import_script)
                         .arg(py_path)
                         .output();
 

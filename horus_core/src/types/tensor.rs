@@ -642,7 +642,10 @@ mod tests {
         // allocation must be refused before any consumer turns it into a
         // zero-copy numpy/torch view.
         let mut t = Tensor::new(1, 0, 0, 0, &[4, 4], TensorDtype::F32, Device::CPU);
-        assert!(t.descriptor_is_within_allocation(), "honest descriptor is fine");
+        assert!(
+            t.descriptor_is_within_allocation(),
+            "honest descriptor is fine"
+        );
 
         // Claim a much larger shape while leaving `size` alone.
         t.shape[0] = 4096;

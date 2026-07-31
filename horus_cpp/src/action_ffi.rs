@@ -750,8 +750,7 @@ mod tests {
         // Ordinary PID reuse produces this: `goal_id` is `(pid << 32) | counter`,
         // so a client that exits mid-goal and a new process inheriting its PID
         // collide without anyone being hostile.
-        static STARTS: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
+        static STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         static SAW_CANCEL: AtomicBool = AtomicBool::new(false);
         static HIT_GUARD: AtomicBool = AtomicBool::new(false);
         STARTS.store(0, Ordering::SeqCst);
@@ -798,7 +797,7 @@ mod tests {
         // Publish a second goal reusing the SAME id, straight onto the goal
         // topic — this is what a colliding client's send looks like on the wire.
         {
-            let mut dup: Topic<JsonWireMessage> =
+            let dup: Topic<JsonWireMessage> =
                 Topic::new(format!("{}.goal", name)).expect("goal topic");
             let wire = JsonWireMessage::from_json("{}", goal_id, 0).expect("wire");
             dup.send(wire);

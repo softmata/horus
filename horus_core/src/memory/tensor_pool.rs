@@ -284,9 +284,7 @@ impl TensorPool {
         // Atomically try to be the creator: `create_new` maps to O_CREAT|O_EXCL,
         // guaranteeing exactly one winner even when many threads/processes race.
         // The previous path.exists() + create(true) pattern had a TOCTOU window.
-        let (file, is_owner) = match shm_create_new_opts()
-            .open(&shm_path)
-        {
+        let (file, is_owner) = match shm_create_new_opts().open(&shm_path) {
             Ok(file) => {
                 file.set_len(mmap_size as u64)?;
                 (file, true)
@@ -505,9 +503,7 @@ impl TensorPool {
             data_offset
         };
 
-        let (file, is_owner) = match shm_create_new_opts()
-            .open(&shm_path)
-        {
+        let (file, is_owner) = match shm_create_new_opts().open(&shm_path) {
             Ok(file) => {
                 file.set_len(mmap_size as u64)?;
                 (file, true)

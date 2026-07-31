@@ -319,7 +319,7 @@ fn apply_seccomp_filter() -> io::Result<()> {
 
     #[cfg(target_arch = "x86_64")]
     {
-    apply_seccomp_filter_x86_64()
+        apply_seccomp_filter_x86_64()
     }
 }
 
@@ -720,13 +720,10 @@ mod tests {
     #[test]
     fn test_long_lived_deliberately_does_not_block_sockets() {
         let mut cmd = Command::new("/bin/bash");
-        cmd.args([
-            "-c",
-            "exec 5<>/dev/tcp/127.0.0.1/9 2>/dev/null; echo $?",
-        ])
-        .env_clear()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        cmd.args(["-c", "exec 5<>/dev/tcp/127.0.0.1/9 2>/dev/null; echo $?"])
+            .env_clear()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
 
         // SAFETY: as above — only async-signal-safe libc calls.
         unsafe {

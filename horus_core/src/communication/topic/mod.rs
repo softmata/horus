@@ -106,11 +106,11 @@
 pub(crate) mod header;
 pub(crate) mod local_state;
 pub mod metrics;
+pub(crate) mod migration;
 /// Authoritative byte layout of a topic's SHM region, for out-of-crate readers
 /// and writers (`horus_net`). Offsets are `offset_of!`-asserted against
 /// `TopicHeader`, so drift is a build failure.
 pub mod shm_layout;
-pub(crate) mod migration;
 pub mod types;
 
 // Per-path optimized backend modules

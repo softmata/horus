@@ -579,11 +579,7 @@ mod tests {
     fn import_spec_allowlist() {
         assert_eq!(
             ImportConfig::parse("cmd_vel, robot.imu ,tf"),
-            ImportConfig::AllowList(vec![
-                "cmd_vel".into(),
-                "robot.imu".into(),
-                "tf".into()
-            ])
+            ImportConfig::AllowList(vec!["cmd_vel".into(), "robot.imu".into(), "tf".into()])
         );
     }
 

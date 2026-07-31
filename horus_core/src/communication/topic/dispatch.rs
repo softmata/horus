@@ -1381,9 +1381,8 @@ pub(super) fn recv_shm_pod_broadcast<
     // index*8 is within bounds (index < capacity, array has capacity entries).
     // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM;
     // index*8 is within bounds (index < capacity).
-    let ready_ptr = unsafe {
-        &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64)
-    };
+    let ready_ptr =
+        unsafe { &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64) };
     let v1 = ready_ptr.load(Ordering::Acquire);
     // A write is in progress on this slot right now.
     if v1 & SLOT_WRITING != 0 {

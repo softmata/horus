@@ -509,6 +509,33 @@ pub struct PluginInfo {
     pub description: String,
 }
 
+/// Warn once per process when the plugin sandbox has no syscall filter.
+///
+/// The seccomp deny table is x86_64 syscall numbers, so it is only applied on
+/// x86_64 (see `sandbox`). On other Linux architectures the rlimit and
+/// FD-cleanup parts of the sandbox still run, but syscall filtering does not —
+/// and an operator who read "plugins are sandboxed" should be told which half
+/// they are getting rather than left to assume.
+///
+/// Emitted from the parent, before fork: `pre_exec` runs in the child between
+/// fork and exec, where allocating or locking would be unsafe.
+#[cfg(target_os = "linux")]
+fn warn_if_seccomp_unavailable() {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "[horus] WARNING: plugin syscall filtering (seccomp) is NOT active on this \
+                 architecture — the deny table is x86_64 syscall numbers. Resource limits \
+                 and fd cleanup still apply. Plugins can open sockets and make syscalls \
+                 that would be blocked on x86_64. (Fires once.)"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,32 +882,5 @@ mod tests {
             msg.contains("untrusted project-local plugin"),
             "expected trust-gate refusal, got: {msg}"
         );
-    }
-}
-
-/// Warn once per process when the plugin sandbox has no syscall filter.
-///
-/// The seccomp deny table is x86_64 syscall numbers, so it is only applied on
-/// x86_64 (see `sandbox`). On other Linux architectures the rlimit and
-/// FD-cleanup parts of the sandbox still run, but syscall filtering does not —
-/// and an operator who read "plugins are sandboxed" should be told which half
-/// they are getting rather than left to assume.
-///
-/// Emitted from the parent, before fork: `pre_exec` runs in the child between
-/// fork and exec, where allocating or locking would be unsafe.
-#[cfg(target_os = "linux")]
-fn warn_if_seccomp_unavailable() {
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static WARNED: AtomicBool = AtomicBool::new(false);
-        if !WARNED.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "[horus] WARNING: plugin syscall filtering (seccomp) is NOT active on this \
-                 architecture — the deny table is x86_64 syscall numbers. Resource limits \
-                 and fd cleanup still apply. Plugins can open sockets and make syscalls \
-                 that would be blocked on x86_64. (Fires once.)"
-            );
-        }
     }
 }

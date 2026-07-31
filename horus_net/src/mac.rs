@@ -443,7 +443,10 @@ mod tests {
     fn hmac_rfc4231_case6_long_key() {
         // 131-byte key — exercises the "hash the key down" branch.
         let key = [0xaau8; 131];
-        let tag = hmac_sha256(&key, b"Test Using Larger Than Block-Size Key - Hash Key First");
+        let tag = hmac_sha256(
+            &key,
+            b"Test Using Larger Than Block-Size Key - Hash Key First",
+        );
         assert_eq!(
             hex(&tag),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
@@ -505,7 +508,9 @@ mod adversarial_tests {
     fn block_boundary_lengths_are_correct() {
         // Known vector: 56 bytes, from FIPS 180-4.
         assert_eq!(
-            hex(&sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            hex(&sha256(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
         // Every boundary length must at least terminate and differ from its

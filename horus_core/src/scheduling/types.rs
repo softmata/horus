@@ -742,7 +742,7 @@ mod subscription_freshness_tests {
     #[test]
     fn publishing_refreshes_the_freshness_timestamp() {
         let name = unique("live");
-        let mut topic: Topic<u64> = Topic::new(&name).expect("topic");
+        let topic: Topic<u64> = Topic::new(&name).expect("topic");
 
         let sf = SubscriptionFreshness::new(
             name.clone(),
@@ -754,7 +754,7 @@ mod subscription_freshness_tests {
         let baseline = last(&sf);
 
         std::thread::sleep(Duration::from_millis(5));
-        let _ = topic.send(42);
+        topic.send(42);
         sf.refresh(now_ns());
 
         assert!(
@@ -770,7 +770,7 @@ mod subscription_freshness_tests {
     #[test]
     fn a_healthy_topic_never_exceeds_its_timeout() {
         let name = unique("healthy");
-        let mut topic: Topic<u64> = Topic::new(&name).expect("topic");
+        let topic: Topic<u64> = Topic::new(&name).expect("topic");
         let timeout = Duration::from_millis(60);
 
         let sf = SubscriptionFreshness::new(name.clone(), timeout, StalePolicy::Warn, now_ns());
@@ -778,7 +778,7 @@ mod subscription_freshness_tests {
 
         for i in 0..10u64 {
             std::thread::sleep(Duration::from_millis(20));
-            let _ = topic.send(i);
+            topic.send(i);
             let t = now_ns();
             sf.refresh(t);
             let elapsed = t.saturating_sub(last(&sf));

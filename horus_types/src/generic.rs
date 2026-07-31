@@ -984,6 +984,9 @@ mod log_summary_utf8_tests {
         let json = serde_json::to_vec(&value).unwrap();
         let msg = GenericMessage::new(json).expect("payload fits a GenericMessage");
         let summary = msg.log_summary(); // must not panic
-        assert!(summary.contains("bytes total"), "should have been truncated");
+        assert!(
+            summary.contains("bytes total"),
+            "should have been truncated"
+        );
     }
 }

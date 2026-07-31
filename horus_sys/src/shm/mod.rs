@@ -489,8 +489,13 @@ pub struct TopicMeta {
 /// Called by ShmRegion::create on macOS/Windows when the creator owns the region.
 /// On Linux this is also called for consistency, but discovery can use the SHM file directly.
 pub fn write_topic_meta(name: &str, size: usize) -> anyhow::Result<()> {
+    // Must not be a bare create_dir_all: that skipped both the ownership gate
+    // and the 0o700 mode, so whichever code path happened to touch the tree
+    // FIRST decided its permissions. A process that published before anything
+    // else ran left `topics/` world-readable, silently undoing
+    // `create_shm_dir_all` for every later caller.
     let dir = shm_topics_dir();
-    std::fs::create_dir_all(&dir)?;
+    create_shm_dir_all(&dir)?;
     let meta = TopicMeta {
         name: name.to_string(),
         size,
@@ -1435,8 +1440,8 @@ mod tests {
     fn validate_allows_dots_inside_a_component() {
         // Topic names are dot-separated by convention; only a component that IS
         // "." or ".." is a traversal.
-        assert!(validate_region_name("robot..imu").is_ok());
-        assert!(validate_region_name("...").is_ok());
+        validate_region_name("robot..imu").unwrap();
+        validate_region_name("...").unwrap();
     }
 
     #[test]
@@ -1479,7 +1484,12 @@ mod tests {
 
         for p in [&root, &root.join("a"), &nested] {
             let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, SHM_DIR_MODE, "{} should be 0700, was {mode:o}", p.display());
+            assert_eq!(
+                mode,
+                SHM_DIR_MODE,
+                "{} should be 0700, was {mode:o}",
+                p.display()
+            );
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1517,7 +1527,10 @@ mod tests {
 
         write_shm_file_new(&path, b"secret payload").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, SHM_FILE_MODE, "gateway files must be 0600, was {mode:o}");
+        assert_eq!(
+            mode, SHM_FILE_MODE,
+            "gateway files must be 0600, was {mode:o}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"secret payload");
 
         // create_new semantics: a second write must fail rather than follow or
@@ -1566,9 +1579,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("horus_own_ok_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         // Absent is fine — we are about to create it.
-        assert!(verify_shm_dir_ownership(&dir).is_ok());
+        verify_shm_dir_ownership(&dir).unwrap();
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(verify_shm_dir_ownership(&dir).is_ok());
+        verify_shm_dir_ownership(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
