@@ -315,10 +315,41 @@ pub trait Recording: Serialize + serde::de::DeserializeOwned + Sized {
                         // Version 2: zstd-compressed bincode
                         let mut compressed = Vec::new();
                         reader.read_to_end(&mut compressed)?;
-                        let decompressed =
-                            zstd::decode_all(compressed.as_slice()).map_err(|e| {
+                        // Bound the OUTPUT, not just the input.
+                        //
+                        // A recording file is untrusted input — it is a path a
+                        // user passes on the command line, and files get shared
+                        // and archived. `zstd::decode_all` allocates whatever the
+                        // stream expands to, so a few kilobytes of crafted input
+                        // can demand many gigabytes: a decompression bomb that
+                        // OOMs the process before any of the bincode validation
+                        // below ever runs.
+                        //
+                        // Streaming with `take` caps the expansion. The limit is
+                        // far above any genuine recording (they are node ticks,
+                        // not media) while staying well inside a robot
+                        // controller's RAM.
+                        const MAX_DECOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+                        let mut decompressed = Vec::new();
+                        {
+                            use std::io::Read;
+                            let decoder =
+                                zstd::stream::read::Decoder::new(compressed.as_slice())
+                                    .map_err(|e| {
+                                        std::io::Error::other(format!("zstd decompress: {}", e))
+                                    })?;
+                            let mut limited = decoder.take(MAX_DECOMPRESSED_BYTES + 1);
+                            limited.read_to_end(&mut decompressed).map_err(|e| {
                                 std::io::Error::other(format!("zstd decompress: {}", e))
                             })?;
+                        }
+                        if decompressed.len() as u64 > MAX_DECOMPRESSED_BYTES {
+                            return Err(std::io::Error::other(format!(
+                                "recording expands beyond the {} GiB decompression limit — \
+                                 refusing to continue (possible decompression bomb)",
+                                MAX_DECOMPRESSED_BYTES / (1024 * 1024 * 1024)
+                            )));
+                        }
                         bincode::deserialize(&decompressed)
                             .map_err(|e| std::io::Error::other(e.to_string()))
                     }

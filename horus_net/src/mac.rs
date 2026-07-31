@@ -21,9 +21,14 @@
 //!
 //! ## Key provisioning
 //!
-//! `HORUS_ESTOP_KEY` holds the shared secret. It is never transmitted. The raw
-//! string is hashed to a 32-byte key so operators can use a passphrase of any
-//! length without a separate KDF step.
+//! `HORUS_ESTOP_KEY` holds the shared secret. It is never transmitted.
+//!
+//! **Recommended: 64 hex characters** (`openssl rand -hex 32`), which is taken
+//! as raw key material verbatim and has no guessing surface. Anything else is
+//! treated as a passphrase and stretched with PBKDF2-HMAC-SHA256 — see
+//! [`derive_estop_key`] for why a bare `sha256(passphrase)`, which is what this
+//! originally did, is not adequate when every packet on the wire is an offline
+//! verifier for a guess.
 //!
 //! When a key is configured, an e-stop without a valid tag is **rejected**. When
 //! no key is configured, behaviour is unchanged (the loud one-time warning in
@@ -251,10 +256,84 @@ pub fn estop_key() -> Option<&'static [u8; 32]> {
         if trimmed.is_empty() {
             return None;
         }
-        // Hash the passphrase to a fixed-width key so any length works.
-        Some(sha256(trimmed.as_bytes()))
+        Some(derive_estop_key(trimmed))
     })
     .as_ref()
+}
+
+/// Iteration count for the passphrase KDF.
+///
+/// OWASP's current figure for PBKDF2-HMAC-SHA256. Paid once, at first use,
+/// behind a `OnceLock` — never on the packet path.
+const ESTOP_KDF_ITERATIONS: u32 = 600_000;
+
+/// Salt for the passphrase KDF. Fixed, and domain-separated.
+///
+/// A per-deployment salt would be better, but there is nowhere to put one: the
+/// key is provisioned as a bare environment variable and both ends must derive
+/// the same bytes without exchanging anything. The iteration count is what
+/// carries the cost here; the salt only separates this use from any other.
+const ESTOP_KDF_SALT: &[u8] = b"horus.estop.kdf.v1";
+
+/// Turn `HORUS_ESTOP_KEY` into 32 bytes of key material.
+///
+/// # Why this is not just `sha256(passphrase)`
+///
+/// It used to be, with the reasoning "so operators can use a passphrase of any
+/// length without a separate KDF step". That is one unsalted SHA-256 iteration —
+/// and every e-stop on the wire carries `(body, HMAC(key, domain||body))`, which
+/// is a **complete offline verifier for a guess**. A candidate cost one SHA-256
+/// plus one HMAC: a few hundred nanoseconds on a CPU, billions per second on a
+/// GPU. With no salt, one precomputed table served every HORUS deployment in the
+/// world.
+///
+/// Two paths now:
+///
+/// * **64 hex characters** are taken as raw 32-byte key material, verbatim. This
+///   is the recommended provisioning (`openssl rand -hex 32`) and has no
+///   guessing surface at all, so stretching it would only add startup latency.
+/// * **Anything else** is treated as a passphrase and stretched with
+///   PBKDF2-HMAC-SHA256, which is iterated HMAC and therefore builds on the
+///   primitives already in this module — no new dependency, preserving the
+///   crate's zero-dependency property.
+pub fn derive_estop_key(secret: &str) -> [u8; 32] {
+    if let Some(raw) = parse_hex32(secret) {
+        return raw;
+    }
+    pbkdf2_hmac_sha256(secret.as_bytes(), ESTOP_KDF_SALT, ESTOP_KDF_ITERATIONS)
+}
+
+/// Parse exactly 64 hex characters into 32 bytes. `None` for anything else.
+fn parse_hex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// PBKDF2-HMAC-SHA256 producing exactly 32 bytes (RFC 8018).
+///
+/// dkLen equals the hash width, so a single block suffices:
+/// `T1 = U1 ^ U2 ^ ... ^ Uc`, where `U1 = PRF(P, S || INT(1))` and
+/// `Ui = PRF(P, U(i-1))`.
+fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    let mut block = Vec::with_capacity(salt.len() + 4);
+    block.extend_from_slice(salt);
+    block.extend_from_slice(&1u32.to_be_bytes()); // INT(1), big-endian
+
+    let mut u = hmac_sha256(password, &block);
+    let mut out = u;
+    for _ in 1..iterations {
+        u = hmac_sha256(password, &u);
+        for (o, x) in out.iter_mut().zip(u.iter()) {
+            *o ^= *x;
+        }
+    }
+    out
 }
 
 /// True if an e-stop key is configured, i.e. remote e-stop is authenticated.
@@ -492,5 +571,77 @@ mod adversarial_tests {
         let _ = hmac_sha256(b"", b"");
         let _ = sha256(b"");
         assert!(ct_eq(b"", b""));
+    }
+}
+
+#[cfg(test)]
+mod kdf_tests {
+    use super::*;
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// PBKDF2-HMAC-SHA256, RFC 6070-style vector (the SHA-256 variant published
+    /// in RFC 7914 §11 / widely cross-checked): P="password", S="salt", c=1.
+    #[test]
+    fn pbkdf2_matches_the_published_vector_c1() {
+        let dk = pbkdf2_hmac_sha256(b"password", b"salt", 1);
+        assert_eq!(
+            hex(&dk),
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
+    }
+
+    #[test]
+    fn pbkdf2_matches_the_published_vector_c2() {
+        let dk = pbkdf2_hmac_sha256(b"password", b"salt", 2);
+        assert_eq!(
+            hex(&dk),
+            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"
+        );
+    }
+
+    #[test]
+    fn pbkdf2_matches_the_published_vector_c4096() {
+        let dk = pbkdf2_hmac_sha256(b"password", b"salt", 4096);
+        assert_eq!(
+            hex(&dk),
+            "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"
+        );
+    }
+
+    /// 64 hex characters are raw key material and must be used verbatim — the
+    /// recommended provisioning has no guessing surface, so stretching it would
+    /// only add startup latency.
+    #[test]
+    fn hex_key_material_is_used_verbatim() {
+        let hexkey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let derived = derive_estop_key(hexkey);
+        assert_eq!(hex(&derived), hexkey);
+    }
+
+    #[test]
+    fn a_passphrase_is_stretched_not_hashed_once() {
+        // The old behaviour was exactly sha256(passphrase). It must no longer be.
+        let pass = "correct horse battery staple";
+        assert_ne!(
+            derive_estop_key(pass),
+            sha256(pass.as_bytes()),
+            "a passphrase must be stretched, not hashed once — every packet on the \
+             wire is an offline verifier for a guess"
+        );
+    }
+
+    #[test]
+    fn near_hex_inputs_are_treated_as_passphrases() {
+        // Wrong length, or a non-hex character, must fall through to the KDF
+        // rather than being silently mis-parsed.
+        assert_ne!(derive_estop_key(&"a".repeat(63)), [0u8; 32]);
+        let almost = format!("{}z", "0".repeat(63));
+        assert_ne!(derive_estop_key(&almost), [0u8; 32]);
+        // And a 63-char hex string must NOT be read as raw material.
+        let short = "0".repeat(63);
+        assert_ne!(derive_estop_key(&short)[..8], [0u8; 8]);
     }
 }
