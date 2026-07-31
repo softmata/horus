@@ -63,6 +63,84 @@ enum ExecutionTarget {
     Multiple(Vec<PathBuf>),
 }
 
+/// Translate `[network]` from horus.toml into the `HORUS_NET_*` environment
+/// the runtime actually reads.
+///
+/// The whole `[network]` section was parsed into `manifest::NetworkConfig` and
+/// then never read by anything — a dead struct. `safety.on_link_lost`,
+/// `import` and `deny_export` were therefore silently inert, which means the
+/// documented comms-loss safe-state never fired and `ImportMode::Deny` /
+/// `AllowList` were unreachable in shipped code (the import guard was
+/// permanently `Auto`). The 2026-07-30 audit flagged that as a live safety gap.
+///
+/// An environment variable already set by the operator wins: an explicit
+/// `HORUS_NET_*=...` on the command line should not be silently overridden by
+/// a value in a project file.
+fn apply_network_config(cmd: &mut std::process::Command) {
+    let manifest_path = Path::new(HORUS_TOML);
+    if !manifest_path.exists() {
+        return;
+    }
+    let Ok(manifest) = HorusManifest::load_from(manifest_path) else {
+        return;
+    };
+    let Some(net) = manifest.network.as_ref() else {
+        return;
+    };
+
+    let mut set = |key: &str, value: String| {
+        if std::env::var_os(key).is_none() {
+            cmd.env(key, value);
+        }
+    };
+
+    if net.enabled == Some(false) {
+        set("HORUS_NO_NETWORK", "1".to_string());
+    }
+    if let Some(secret) = net.secret.as_ref() {
+        set("HORUS_NET_SECRET", secret.clone());
+    }
+    if let Some(deny) = net.deny_export.as_ref() {
+        if !deny.is_empty() {
+            set("HORUS_NET_DENY_EXPORT", deny.join(","));
+        }
+    }
+    if let Some(opt) = net.optimize.as_ref() {
+        if !opt.is_empty() {
+            set("HORUS_NET_OPTIMIZERS", opt.join(","));
+        }
+    }
+    if let Some(import) = net.import.as_ref() {
+        // `import` is a toml::Value because it accepts either a mode string
+        // ("auto" / "deny") or a list of allowed topic patterns.
+        let rendered = match import {
+            toml::Value::String(s) => Some(s.clone()),
+            toml::Value::Array(items) => {
+                let patterns: Vec<String> = items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                (!patterns.is_empty()).then(|| patterns.join(","))
+            }
+            _ => None,
+        };
+        if let Some(rendered) = rendered {
+            set("HORUS_NET_IMPORT", rendered);
+        }
+    }
+    if let Some(safety) = net.safety.as_ref() {
+        if let Some(ms) = safety.heartbeat_ms {
+            set("HORUS_NET_HEARTBEAT_MS", ms.to_string());
+        }
+        if let Some(n) = safety.missed_threshold {
+            set("HORUS_NET_MISSED_THRESHOLD", n.to_string());
+        }
+        if let Some(action) = safety.on_link_lost.as_ref() {
+            set("HORUS_NET_ON_LINK_LOST", action.clone());
+        }
+    }
+}
+
 pub fn execute_run(
     files: Vec<PathBuf>,
     args: Vec<String>,
@@ -535,6 +613,7 @@ fn execute_multiple_files(
         // exit (the docs show live per-node output). Force line-unbuffered
         // output; harmless for Rust (line-buffered already) and C++ children.
         cmd.env("PYTHONUNBUFFERED", "1");
+        apply_network_config(&mut cmd);
 
         match cmd.spawn() {
             Ok(mut child) => {
