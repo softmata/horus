@@ -202,10 +202,19 @@ rm -rf "$HORUS_SRC_DIR"
 mv "$CLONE_DIR" "$HORUS_SRC_DIR"
 ok "Source cached at ~/.horus/cache/horus@${SRC_VERSION}"
 
-info "Checking for pre-built binary..."
-
 TMPDIR=$(mktemp -d)
-HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
+
+# HORUS_BUILD_FROM_SOURCE=1 skips the pre-built binary entirely and compiles the
+# cached source. This is the documented escape hatch when the checksum
+# verification below cannot run (no sha256sum/shasum) or when a user does not
+# want to trust a release artifact — so it has to actually exist.
+if [ "${HORUS_BUILD_FROM_SOURCE:-0}" = "1" ]; then
+    info "HORUS_BUILD_FROM_SOURCE=1 — skipping the pre-built binary"
+    HTTP_CODE="000"
+else
+    info "Checking for pre-built binary..."
+    HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
+fi
 
 if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
     # --- Fast path: pre-built binary, skip the compile ---

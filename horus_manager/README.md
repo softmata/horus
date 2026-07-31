@@ -84,7 +84,16 @@ horus deploy pi@192.168.1.50 --run --arch aarch64
 ## Configuration
 
 - `HORUS_REGISTRY_URL` - Registry endpoint (default: https://api.horusrobotics.dev)
-- `HORUS_API_KEY` - CLI authentication token
+
+Authentication uses `~/.horus/auth.json`, written by `horus auth login` (or
+`horus auth generate-key`). There is deliberately **no `HORUS_API_KEY`
+environment variable**: this README previously documented one, but nothing has
+ever read it — `registry::helpers::get_api_key` reads `auth.json` and nothing
+else, so anyone who set it got "not authenticated" with no explanation.
+
+If you need non-interactive auth (CI), write `auth.json` from a secret store
+rather than exporting a token: an environment variable is visible in `/proc` to
+every process running as you, and tends to end up in CI logs.
 
 `horus run` auto-detects Rust projects (Cargo.toml), Python files (.py), and glob patterns (`horus run "nodes/*.py"`).
 
