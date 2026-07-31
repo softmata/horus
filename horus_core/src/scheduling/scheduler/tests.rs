@@ -5206,3 +5206,39 @@ fn test_robotics_no_order_random_add_sequence() {
     // E depends on D
     assert_ordered(&log, "ro_D", "ro_E");
 }
+
+/// A scheduler with no RT nodes and no watchdog must STILL have a safety
+/// monitor, because that is what an emergency stop latches onto.
+///
+/// `apply_safety_config` used to create the monitor only when
+/// `watchdog_active || has_rt_nodes`. `SharedMonitors.estop` is derived from
+/// `monitor.safety`, so on an ordinary non-RT process — perception, teleop,
+/// logging — it was `None`: a networked emergency stop had nothing to latch,
+/// printed to stderr, and the robot kept running while `SafetyState` reported
+/// Normal. E-stop is not an RT-only feature.
+#[test]
+fn safety_monitor_exists_even_with_no_rt_nodes_or_watchdog() {
+    let _guard = lock_scheduler();
+
+    let mut scheduler = Scheduler::new();
+    scheduler.add(CounterNode::new("plain_a"));
+    scheduler.add(CounterNode::new("plain_b"));
+
+    // Exactly the default: no .rate(), no .budget(), no .watchdog().
+    let config = scheduler.pending_config.clone();
+    scheduler.apply_safety_config(&config.realtime);
+
+    assert!(
+        !scheduler.nodes.iter().any(|n| n.is_rt_node),
+        "precondition: this scheduler has no RT nodes"
+    );
+    assert_eq!(
+        config.realtime.watchdog_timeout_ms, 0,
+        "precondition: no watchdog is configured"
+    );
+    assert!(
+        scheduler.monitor.safety.is_some(),
+        "a non-RT scheduler must still have a safety monitor — otherwise a \
+         networked emergency stop has nothing to latch and is only a stderr print"
+    );
+}

@@ -1149,9 +1149,25 @@ impl Scheduler {
     fn apply_safety_config(&mut self, rt: &super::config::RealTimeConfig) {
         let has_rt_nodes = self.nodes.iter().any(|n| n.is_rt_node);
         let watchdog_active = rt.watchdog_timeout_ms > 0;
-        if watchdog_active || has_rt_nodes {
-            let monitor = SafetyMonitor::new(rt.max_deadline_misses);
 
+        // The monitor is created UNCONDITIONALLY. It used to exist only when
+        // `watchdog_active || has_rt_nodes`, which quietly made emergency stop a
+        // property of having configured a watchdog.
+        //
+        // `SharedMonitors.estop` is `self.monitor.safety.as_ref().map(..)`, so on
+        // a scheduler of purely non-RT nodes — a perfectly ordinary perception
+        // or teleop process — it was `None`. An emergency stop arriving over the
+        // network then had nothing to latch: it printed to stderr and the robot
+        // kept running. `SafetyState` would have gone on reporting Normal.
+        //
+        // E-stop is not an RT-only feature and must not be contingent on
+        // unrelated configuration. The monitor is a couple of maps and some
+        // atomics; creating it always costs nothing measurable, and the
+        // per-node watchdog/budget registration below stays exactly as
+        // conditional as it was.
+        let monitor = SafetyMonitor::new(rt.max_deadline_misses);
+
+        {
             let global_watchdog_timeout = rt.watchdog_timeout_ms.ms();
 
             for registered in self.nodes.iter() {
@@ -1174,7 +1190,13 @@ impl Scheduler {
 
             self.monitor.safety = Some(monitor);
             if self.pending_config.monitoring.verbose {
-                print_line("Safety monitor configured for RT nodes");
+                if watchdog_active || has_rt_nodes {
+                    print_line("Safety monitor configured for RT nodes");
+                } else {
+                    print_line(
+                        "Safety monitor active (emergency stop only — no RT nodes or watchdog configured)",
+                    );
+                }
             }
         }
     }
