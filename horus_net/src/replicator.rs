@@ -854,31 +854,15 @@ impl Replicator {
 
     /// Send a system topic payload to all known peers + multicast.
     fn send_system_topic(&mut self, topic_name: &str, payload: &[u8]) {
-        let topic_hash = wire::topic_hash(topic_name);
-        let priority = Priority::for_system_topic(topic_name);
-        let reliability = Reliability::for_system_topic(topic_name);
-
-        let header = PacketHeader::new(PacketFlags::empty(), self.peer_id_hash, self.packet_seq);
-        let msg = wire::MessageHeader {
-            topic_hash,
-            payload_len: payload.len() as u32,
-            timestamp_ns: 0,
-            sequence: 0,
-            priority,
-            reliability,
-            encoding: Encoding::Bincode, // system topics use their own encoding
-            source_host: (self.peer_id_hash & 0xFF) as u8,
+        // Share the framing (and therefore the monotonic sequence) with the
+        // e-stop path. This used to build its own header with a hard-coded
+        // `sequence: 0`, which the receiver's dedup — which runs ahead of the
+        // system-topic dispatch — reads as "already seen" for every message
+        // after the first. Presence and log replication were being deduped away
+        // after their first packet for exactly the same reason e-stop was.
+        let Some(buf) = self.frame_system_topic(topic_name, payload) else {
+            return; // too large for a single datagram; presence should be small
         };
-
-        // Encode: packet header + message header + payload
-        let total = PacketHeader::SIZE + wire::MessageHeader::SIZE + payload.len();
-        if total > wire::MAX_UDP_PAYLOAD {
-            return; // Too large for single packet — skip (presence should be small)
-        }
-        let mut buf = vec![0u8; total];
-        header.encode(&mut buf[..PacketHeader::SIZE]);
-        msg.encode(&mut buf[PacketHeader::SIZE..PacketHeader::SIZE + wire::MessageHeader::SIZE]);
-        buf[PacketHeader::SIZE + wire::MessageHeader::SIZE..].copy_from_slice(payload);
 
         // Send to multicast
         if let Some(mcast) = self.multicast_addr() {
