@@ -593,6 +593,35 @@ impl WatchdogFeeder {
     }
 }
 
+/// Handle allowing an executor thread to latch the scheduler's emergency stop.
+///
+/// Counterpart to [`WatchdogFeeder`]: executor threads own their nodes and have
+/// no `SafetyMonitor` reference, so without this they cannot report an e-stop —
+/// see [`SafetyMonitor::estop_trigger`] for what that silently cost.
+#[derive(Clone, Debug)]
+pub(crate) struct EstopTrigger {
+    emergency_stop: Arc<AtomicBool>,
+    state: Arc<Mutex<SafetyState>>,
+}
+
+impl EstopTrigger {
+    /// Latch the emergency stop. Semantics are identical to
+    /// `SafetyMonitor::trigger_emergency_stop`, including the rising-edge gate
+    /// that queues a fleet broadcast exactly once per episode.
+    pub(crate) fn trigger(&self, reason: String) {
+        // Latch FIRST — the safety action must not depend on logging.
+        let rising_edge = !self.emergency_stop.swap(true, Ordering::SeqCst);
+        *self.state.lock() = SafetyState::EmergencyStop;
+        if rising_edge {
+            *PENDING_LOCAL_ESTOP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(reason.clone());
+        }
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), " EMERGENCY STOP: {}", reason);
+    }
+}
+
 impl SafetyMonitor {
     pub(crate) fn new(max_deadline_misses: u64) -> Self {
         Self {
@@ -648,6 +677,27 @@ impl SafetyMonitor {
     pub(crate) fn feed_watchdog(&self, node_name: &str) {
         if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.feed();
+        }
+    }
+
+    /// Produce a trigger handle that shares this monitor's e-stop latch.
+    ///
+    /// Executor threads own their nodes and never see the `SafetyMonitor`, so
+    /// before this existed the RT executor's two emergency-stop branches could
+    /// only do `running.store(false)` — a plain shutdown flag. The latch was
+    /// never set, so `get_state()` kept reporting `Normal`, no blackbox
+    /// `EmergencyStop` event was written, and — worst — `PENDING_LOCAL_ESTOP`
+    /// was never populated, so `take_pending_local_estop()` returned `None` and
+    /// horus_net never broadcast. **A real RT e-stop halted this robot silently
+    /// and never told the fleet.**
+    ///
+    /// Shares the same `Arc`s the monitor itself uses, so a trigger through the
+    /// handle is indistinguishable from one on the main thread — including the
+    /// rising-edge gate that decides whether to queue a fleet broadcast.
+    pub(crate) fn estop_trigger(&self) -> EstopTrigger {
+        EstopTrigger {
+            emergency_stop: self.emergency_stop.clone(),
+            state: self.state.clone(),
         }
     }
 
@@ -3052,5 +3102,68 @@ mod loom_tests {
         let copied = policy; // Copy
         assert_eq!(policy, cloned);
         assert_eq!(policy, copied);
+    }
+}
+
+#[cfg(test)]
+mod estop_trigger_tests {
+    use super::*;
+
+    /// An executor thread must be able to latch the e-stop exactly as the main
+    /// thread does. Before `EstopTrigger` existed, the RT executor could only
+    /// set a shutdown flag, so a real RT emergency stop left the monitor
+    /// reporting Normal and queued nothing for the fleet broadcast.
+    #[test]
+    fn trigger_from_a_handle_latches_state_like_the_monitor() {
+        let monitor = SafetyMonitor::new(10);
+        let trigger = monitor.estop_trigger();
+
+        assert!(!monitor.is_emergency_stop());
+        assert_eq!(monitor.get_state(), SafetyState::Normal);
+
+        trigger.trigger("rt node blew its budget".to_string());
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "the handle must latch the SAME AtomicBool the monitor reads"
+        );
+        assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+    }
+
+    /// The fleet-broadcast queue is what horus_net drains. A local-origin e-stop
+    /// raised from an executor thread must populate it, or peer robots are never
+    /// told this one stopped.
+    #[test]
+    fn trigger_queues_the_fleet_broadcast_on_the_rising_edge() {
+        let _ = take_pending_local_estop(); // clear any prior test's edge
+        let monitor = SafetyMonitor::new(10);
+        let trigger = monitor.estop_trigger();
+
+        trigger.trigger("deadline miss escalated".to_string());
+        let pending = take_pending_local_estop();
+        assert!(
+            pending.is_some_and(|r| r.contains("deadline miss escalated")),
+            "a rising-edge e-stop from an executor must queue the broadcast"
+        );
+    }
+
+    /// Anti-storm invariant: only the transition into e-stop announces. A second
+    /// trigger while already latched must not re-queue, or a fleet already
+    /// halting gets a broadcast per tick.
+    #[test]
+    fn a_second_trigger_does_not_requeue_a_broadcast() {
+        let _ = take_pending_local_estop();
+        let monitor = SafetyMonitor::new(10);
+        let trigger = monitor.estop_trigger();
+
+        trigger.trigger("first".to_string());
+        let _ = take_pending_local_estop();
+
+        trigger.trigger("second".to_string());
+        assert!(
+            take_pending_local_estop().is_none(),
+            "already latched — not a rising edge, so no second broadcast"
+        );
+        assert!(monitor.is_emergency_stop(), "the latch still holds");
     }
 }

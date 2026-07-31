@@ -2302,6 +2302,7 @@ impl Scheduler {
                     // watchdog map (the same Arc check_watchdogs reads), so their
                     // critical nodes are fed and don't spuriously e-stop.
                     watchdog: self.monitor.safety.as_ref().map(|m| m.watchdog_feeder()),
+                    estop: self.monitor.safety.as_ref().map(|m| m.estop_trigger()),
                 };
 
                 if !groups.rt_nodes.is_empty() {

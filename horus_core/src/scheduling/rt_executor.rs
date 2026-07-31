@@ -313,6 +313,19 @@ impl RtExecutor {
                         ));
                         let _ = node.node.shutdown();
                         node.is_stopped = true;
+                        // Latch the SafetyMonitor before signalling the thread to
+                        // exit. `running.store(false)` alone is a plain shutdown
+                        // flag: it leaves get_state() reporting Normal, writes no
+                        // blackbox EmergencyStop, and never populates
+                        // PENDING_LOCAL_ESTOP — so horus_net had nothing to
+                        // broadcast and peer robots were never told this one
+                        // emergency-stopped.
+                        if let Some(ref estop) = monitors.estop {
+                            estop.trigger(format!(
+                                "RT node '{}' budget violation ({:?} > {:?}) with BudgetPolicy::EmergencyStop",
+                                node.name, tr.duration, tick_budget
+                            ));
+                        }
                         // Signal stop via running flag — RT thread will exit
                         running.store(false, Ordering::SeqCst);
                     }
@@ -363,6 +376,14 @@ impl RtExecutor {
                             "[RT-thread] Emergency stop triggered by '{}'",
                             node.name
                         ));
+                        // See the budget branch: without this the e-stop is a
+                        // silent local shutdown that the fleet never hears about.
+                        if let Some(ref estop) = monitors.estop {
+                            estop.trigger(format!(
+                                "RT node '{}' deadline miss escalated to emergency stop",
+                                node.name
+                            ));
+                        }
                         running.store(false, Ordering::SeqCst);
                     }
                 }
@@ -712,6 +733,7 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
         }
     }
 
@@ -1241,6 +1263,7 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
         };
 
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
@@ -1321,6 +1344,7 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
         };
 
         let running = Arc::new(AtomicBool::new(true));

@@ -503,6 +503,17 @@ pub(crate) struct SharedMonitors {
     /// RT node was never fed and its watchdog spuriously e-stopped the fleet
     /// (FIX #2). Same Arc the main-thread `check_watchdogs` reads.
     pub watchdog: Option<super::safety_monitor::WatchdogFeeder>,
+    /// E-stop latch handle sharing the scheduler `SafetyMonitor`'s state
+    /// (`None` when no safety monitor is configured).
+    ///
+    /// Counterpart to `watchdog`. Executor threads own their nodes and have no
+    /// `SafetyMonitor` reference, so the RT executor's emergency-stop branches
+    /// previously did only `running.store(false)` — a plain shutdown flag. The
+    /// latch was never set, `get_state()` kept reporting Normal, no blackbox
+    /// EmergencyStop was written, and `PENDING_LOCAL_ESTOP` was never populated,
+    /// so horus_net never broadcast: a real RT e-stop halted this robot silently
+    /// and never told the fleet.
+    pub estop: Option<super::safety_monitor::EstopTrigger>,
 }
 
 /// Shared atomic control flags for each node, keyed by name.
