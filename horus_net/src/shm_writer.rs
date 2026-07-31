@@ -194,16 +194,29 @@ impl ShmRingWriter {
             return false; // SHM file too small (should be unreachable after open_path)
         }
 
+        let new_head = head.wrapping_add(1);
+        let ready_off = layout::seq_slot_offset(index);
+
+        // Seqlock write phase — mark BEFORE touching the data.
+        //
+        // This ring's reader may be `recv_shm_pod_broadcast`, which validates the
+        // stamp, copies, then re-checks it. That re-check only works if every
+        // writer marks the slot first: a writer that just copies and then stamps
+        // leaves the two reads agreeing on bytes it is already overwriting, and
+        // the torn read is accepted. horus_core's own producer does this; so must
+        // this one, or the fix over there is defeated from over here.
+        self.publish_ready(ready_off, new_head | layout::SLOT_WRITING);
+        fence(Ordering::Release);
+
         self.mmap[slot_start..slot_end].copy_from_slice(payload);
 
         // Order the payload write ahead of both publish points.
         fence(Ordering::Release);
 
-        let new_head = head.wrapping_add(1);
         // POD readiness lives in the sequence array; publish there as well as on
         // the head so the data survives an SpscShm -> MpscShm migration, matching
         // what dispatch::send_shm_sp_pod does.
-        self.publish_ready(layout::seq_slot_offset(index), new_head);
+        self.publish_ready(ready_off, new_head);
         self.publish_head(new_head);
         self.bump_messages_total();
 
@@ -233,14 +246,20 @@ impl ShmRingWriter {
         // both loses the length and forges a readiness value.
         let len_off = slot_start + layout::SERDE_SLOT_LEN_OFF;
         let data_off = slot_start + layout::SERDE_SLOT_DATA_OFF;
+        let new_head = head.wrapping_add(1);
+        // Serde readiness is the first word of the slot itself.
+        let ready_off = slot_start + layout::SERDE_SLOT_READY_OFF;
+
+        // Seqlock write phase — see write_pod for why the marker is required.
+        self.publish_ready(ready_off, new_head | layout::SLOT_WRITING);
+        fence(Ordering::Release);
+
         self.mmap[len_off..len_off + 8].copy_from_slice(&(payload.len() as u64).to_le_bytes());
         self.mmap[data_off..data_off + payload.len()].copy_from_slice(payload);
 
         fence(Ordering::Release);
 
-        let new_head = head.wrapping_add(1);
-        // Serde readiness is the first word of the slot itself.
-        self.publish_ready(slot_start + layout::SERDE_SLOT_READY_OFF, new_head);
+        self.publish_ready(ready_off, new_head);
         self.publish_head(new_head);
         self.bump_messages_total();
 
@@ -454,5 +473,30 @@ mod tests {
             !expected.to_string_lossy().contains("horus_robot"),
             "the legacy horus_ prefix must not be reintroduced"
         );
+    }
+
+    #[test]
+    fn pod_write_clears_the_writing_marker_when_done() {
+        // The ring this writer feeds may be read by
+        // recv_shm_pod_broadcast, whose torn-read defence is "stamp, copy,
+        // re-check". That only works if every writer marks the slot BEFORE
+        // touching the data — otherwise the reader's two stamp reads agree on
+        // bytes this writer is already overwriting. Assert the marker is not
+        // left set, which would make the slot permanently unreadable.
+        let path = tmp("pod_marker");
+        make_pod_region(&path, 4, 8);
+        let mut w = ShmRingWriter::open_path("t", &path).expect("region must open");
+        assert!(w.write(&[9; 8], Encoding::PodLe));
+
+        let bytes = std::fs::read(&path).unwrap();
+        let off = layout::seq_slot_offset(0);
+        let ready = u64::from_ne_bytes(bytes[off..off + 8].try_into().unwrap());
+        assert_eq!(
+            ready & layout::SLOT_WRITING,
+            0,
+            "the writing marker must be cleared by the done stamp"
+        );
+        assert_eq!(ready, 1, "done stamp is seq+1");
+        let _ = std::fs::remove_file(&path);
     }
 }

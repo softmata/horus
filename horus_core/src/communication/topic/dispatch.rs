@@ -71,20 +71,7 @@
 
 use std::sync::atomic::{fence, AtomicBool, Ordering};
 
-/// High bit of a per-slot ready stamp, set while the PodShm broadcast producer
-/// is writing that slot.
-///
-/// Broadcast has no backpressure and overwrites the oldest slot, so a consumer
-/// can be mid-copy when a lapping producer clobbers the same slot. The marker is
-/// the "writing" phase of a Boehm seqlock: set before the data write, cleared by
-/// the done stamp after it.
-///
-/// A high bit rather than the `seqlock` module's `pos << 1` tagging because the
-/// ready array is shared with the MpscShm and SpscShm paths, which compare
-/// against `seq + 1`, and a PodShm topic can migrate to those backends. Sequence
-/// numbers are u64 counters that will not reach 2^63, so the bit is free, and a
-/// non-broadcast consumer simply reads "not ready" while it is set.
-const SLOT_WRITING: u64 = 1 << 63;
+use super::shm_layout::SLOT_WRITING;
 
 use serde::{de::DeserializeOwned, Serialize};
 

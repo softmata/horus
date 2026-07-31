@@ -94,6 +94,24 @@ pub const SERDE_SLOT_DATA_OFF: usize = 16;
 /// Bytes of per-slot overhead ahead of the payload in a serde slot.
 pub const SERDE_SLOT_OVERHEAD: usize = SERDE_SLOT_DATA_OFF;
 
+/// High bit of a per-slot ready stamp, set while a producer is writing that slot.
+///
+/// Part of the **shared** ring protocol, not an internal of any one backend:
+/// `PodShm` broadcast overwrites without backpressure, so a consumer can be
+/// mid-copy when a producer laps onto the same slot. The marker is the "writing"
+/// phase of a Boehm seqlock — set before the data write, cleared by the done
+/// stamp after it — and a consumer's re-check is **insufficient without it**,
+/// because a producer that has started writing has not yet bumped the stamp.
+///
+/// EVERY writer into a topic ring must honour this, including out-of-crate ones
+/// (`horus_net`'s `ShmRingWriter`). A writer that skips it reopens the torn-read
+/// window for readers that are otherwise correct.
+///
+/// A high bit rather than a `pos << 1` tagging because stamps are compared
+/// against `seq + 1` by the MpscShm and SpscShm paths and topics migrate between
+/// backends; sequence numbers are u64 counters that will not reach 2^63.
+pub const SLOT_WRITING: u64 = 1 << 63;
+
 // ─── Derived geometry ───────────────────────────────────────────────────────
 
 /// Byte offset of the per-slot ready-flag array (`capacity` × `u64`).
