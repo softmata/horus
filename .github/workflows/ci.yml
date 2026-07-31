@@ -268,6 +268,15 @@ jobs:
         env:
           RUST_LOG: loom=debug
 
+      # PodShm broadcast is the DEFAULT backend for POD types and its producer
+      # has no backpressure, so a lapping producer can overwrite a slot the
+      # consumer is mid-copy. The model's `naive` variant reproduces the old
+      # protocol and FAILS, which is what proves this test is not vacuous.
+      - name: Loom — PodShm broadcast seqlock (horus_core)
+        run: cargo test -p horus_core --test loom_pod_broadcast -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
       - name: Loom — watchdog / PRNG / deterministic clock (horus_core)
         run: cargo test -p horus_core --test loom_concurrency -- --nocapture
         env:
