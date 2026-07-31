@@ -735,6 +735,28 @@ pub fn read_latest_slot_bytes(
     // read_unaligned handles any alignment for the u32 slot_size field.
     let slot_size = unsafe { std::ptr::read_unaligned(base.add(80) as *const u32) } as usize;
 
+    // `cap_mask` comes straight out of the file, and `last_written` below is
+    // computed as `(write_idx - 1) & cap_mask`. The size check further down
+    // validates the mapping against `capacity`, NOT against the mask — so a file
+    // declaring `capacity = 8` (passing that check) together with
+    // `cap_mask = 0xFFFF_FFFF` yields a slot index up to 4 billion and a
+    // `slot_start` far outside the mapping.
+    //
+    // In the POD branch that is a slice index past the end, i.e. a panic — on
+    // whichever thread is reading, and with no `panic = "abort"` that silently
+    // kills just that thread. In the serde branch it is worse: `data_len` is
+    // pulled with `read_unaligned` at the attacker-chosen offset, which is an
+    // out-of-bounds READ rather than a checked index.
+    //
+    // These files are not trusted input in theory only — this function is how
+    // `horus topic echo` and horus_net's export reader consume topics, and
+    // `/dev/shm` is walked across namespaces. Require the mask to be exactly the
+    // one a power-of-two ring implies, the same check `ShmRingWriter::open_path`
+    // already makes on the write side.
+    if capacity == 0 || !capacity.is_power_of_two() || cap_mask != capacity - 1 {
+        return None;
+    }
+
     let is_pod = is_pod_raw == POD_YES;
 
     // ── 4. Guard: nothing written yet, or no new data since last poll ─────────
@@ -1951,5 +1973,70 @@ mod tests {
         assert!(
             read_topic_header_info(std::path::Path::new("/tmp/horus_nonexistent_42")).is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod untrusted_header_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("horus_hdr_untrusted_{}_{}", tag, std::process::id()))
+    }
+
+    /// Build a topic file whose header declares `capacity` but a DIFFERENT
+    /// `cap_mask` — the shape a hostile file takes.
+    fn write_header(path: &std::path::Path, capacity: u32, cap_mask: u32, type_size: u32) {
+        let total = TOPIC_HEADER_SIZE + (capacity as usize) * 8 + (capacity as usize) * (type_size as usize);
+        let mut buf = vec![0u8; total];
+        buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
+        buf[12..16].copy_from_slice(&type_size.to_ne_bytes());
+        buf[20] = POD_YES;
+        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // write_idx = 1
+        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
+        buf[76..80].copy_from_slice(&cap_mask.to_ne_bytes());
+        buf[80..84].copy_from_slice(&type_size.to_ne_bytes());
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&buf).unwrap();
+    }
+
+    /// `last_written` is `(write_idx - 1) & cap_mask`, and the size check
+    /// validates the mapping against `capacity` — NOT the mask. A file declaring
+    /// a small capacity with a huge mask therefore produced a slot offset far
+    /// outside the mapping: a slice panic in the POD branch, and in the serde
+    /// branch a raw `read_unaligned` OUT OF BOUNDS.
+    ///
+    /// These files are real untrusted input — this is how `horus topic echo` and
+    /// horus_net's export reader consume topics, across `/dev/shm` namespaces.
+    #[test]
+    fn a_cap_mask_wider_than_capacity_is_rejected_not_indexed() {
+        let path = tmp("wide_mask");
+        write_header(&path, 8, 0xFFFF_FFFF, 8);
+        assert!(
+            read_latest_slot_bytes(&path, 0).is_none(),
+            "a mask inconsistent with capacity must be refused, not used as an index"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_non_power_of_two_capacity_is_rejected() {
+        let path = tmp("bad_cap");
+        write_header(&path, 7, 6, 8);
+        assert!(read_latest_slot_bytes(&path, 0).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_consistent_header_still_reads() {
+        // The guard must not reject legitimate files.
+        let path = tmp("good");
+        write_header(&path, 8, 7, 8);
+        assert!(
+            read_latest_slot_bytes(&path, 0).is_some(),
+            "a well-formed ring must still be readable"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

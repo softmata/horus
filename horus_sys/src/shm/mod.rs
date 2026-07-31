@@ -541,11 +541,38 @@ pub fn list_topic_metas() -> Vec<TopicMeta> {
         }
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(meta) = serde_json::from_str::<TopicMeta>(&content) {
+                // The NAME inside a .meta file is attacker-controlled.
+                //
+                // `list_all_horus_namespaces` enumerates `/dev/shm`, which is
+                // mode 1777, so it walks OTHER USERS' `horus_*` trees and parses
+                // whatever JSON it finds there. Downstream consumers join this
+                // name into a path (`horus topic echo/hz/bw` all do
+                // `shm_topics_dir().join(&topic_name)`), so a name containing
+                // `..` or an absolute path escapes the topics directory in the
+                // reader's process.
+                //
+                // `ShmRegion::new` validates on the WRITE path, but nothing did
+                // on the READ path — and reading is exactly where the untrusted
+                // data enters. Reject here, at the single parse boundary, so no
+                // consumer can ever be handed one.
+                if validate_region_name(&meta.name).is_err() {
+                    continue;
+                }
                 metas.push(meta);
             }
         }
     }
     metas
+}
+
+/// Canonical topic path for a name that came from an UNTRUSTED source.
+///
+/// Use this instead of `topic_shm_path` whenever the name was read out of a
+/// `.meta` file, a discovery scan, or anything else another process wrote.
+/// Returns `None` for a name that would escape the topics directory.
+pub fn topic_shm_path_checked(name: &str) -> Option<PathBuf> {
+    validate_region_name(name).ok()?;
+    Some(topic_shm_path(name))
 }
 
 // ============================================================================
@@ -1645,5 +1672,73 @@ mod tests {
         );
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod untrusted_meta_tests {
+    use super::*;
+
+    /// `.meta` files are parsed out of `/dev/shm`, which is mode 1777 — so
+    /// `list_all_horus_namespaces` walks OTHER USERS' `horus_*` trees and reads
+    /// whatever JSON is there. The `name` inside is therefore attacker-chosen,
+    /// and consumers join it into a path. `ShmRegion::new` validated on the
+    /// WRITE path; nothing validated on the READ path, which is where the
+    /// untrusted data actually enters.
+    #[test]
+    fn topic_shm_path_checked_refuses_escaping_names() {
+        for hostile in [
+            "../../../../etc/passwd",
+            "/etc/passwd",
+            "a/../../../b",
+            "..",
+            "C:evil",
+        ] {
+            assert!(
+                topic_shm_path_checked(hostile).is_none(),
+                "{hostile:?} must be refused before it becomes a path"
+            );
+        }
+    }
+
+    #[test]
+    fn topic_shm_path_checked_allows_real_names() {
+        for ok in ["cmd_vel", "robot.imu", "legacy/hierarchical"] {
+            let p = topic_shm_path_checked(ok).expect("legitimate name");
+            assert!(p.starts_with(shm_topics_dir()));
+        }
+    }
+
+    #[test]
+    fn list_topic_metas_drops_entries_whose_name_escapes() {
+        use std::io::Write;
+        let dir = shm_topics_dir();
+        if create_shm_dir_all(&dir).is_err() {
+            return; // no writable SHM tree in this environment
+        }
+        let hostile = dir.join("zz_hostile_probe.meta");
+        let good = dir.join("zz_good_probe.meta");
+        let _ = std::fs::File::create(&hostile).map(|mut f| {
+            let _ = f.write_all(
+                br#"{"name":"../../../../tmp/pwned","size":4096,"creator_pid":1,"created_at":0}"#,
+            );
+        });
+        let _ = std::fs::File::create(&good).map(|mut f| {
+            let _ = f.write_all(
+                br#"{"name":"zz_good_probe","size":4096,"creator_pid":1,"created_at":0}"#,
+            );
+        });
+
+        let metas = list_topic_metas();
+        assert!(
+            !metas.iter().any(|m| m.name.contains("..")),
+            "a .meta declaring an escaping name must be dropped at the parse boundary"
+        );
+        // The well-formed neighbour must still be returned — the filter must not
+        // be a blanket rejection.
+        assert!(metas.iter().any(|m| m.name == "zz_good_probe"));
+
+        let _ = std::fs::remove_file(&hostile);
+        let _ = std::fs::remove_file(&good);
     }
 }

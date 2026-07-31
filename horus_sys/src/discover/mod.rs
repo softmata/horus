@@ -276,6 +276,12 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
             if path.extension().is_some_and(|e| e == "meta") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(meta) = serde_json::from_str::<crate::shm::TopicMeta>(&content) {
+                        // The name is attacker-controlled: this scan walks
+                        // /dev/shm (mode 1777) and parses other users' .meta
+                        // files, and consumers join the name into a path.
+                        if crate::shm::validate_region_name(&meta.name).is_err() {
+                            continue;
+                        }
                         let alive = is_process_alive(meta.creator_pid);
                         topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                             name: meta.name,
@@ -326,6 +332,10 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
                 if path.extension().is_some_and(|e| e == "meta") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if let Ok(meta) = serde_json::from_str::<crate::shm::TopicMeta>(&content) {
+                            // Same untrusted-name rejection as the scan above.
+                            if crate::shm::validate_region_name(&meta.name).is_err() {
+                                continue;
+                            }
                             let alive = is_process_alive(meta.creator_pid);
                             topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                                 name: meta.name,

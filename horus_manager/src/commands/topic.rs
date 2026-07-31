@@ -157,7 +157,17 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
             name
         ))));
     };
-    let topic_path = shm_topics_dir().join(&topic.topic_name);
+    // Defence in depth: the name came from a discovery scan, which parses .meta
+    // files out of /dev/shm — mode 1777, so it walks other users' trees. The
+    // parse boundary in horus_sys now rejects escaping names, but joining an
+    // untrusted name into a path is the actual dangerous act, so refuse it here
+    // too rather than rely on a filter one crate away staying correct.
+    let Some(topic_path) = horus_sys::shm::topic_shm_path_checked(&topic.topic_name) else {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "refusing to open topic {:?}: the name escapes the topics directory",
+            topic.topic_name
+        ))));
+    };
 
     println!(
         "{} Echoing topic: {}",
@@ -692,7 +702,17 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
             name
         ))));
     };
-    let topic_path = shm_topics_dir().join(&topic.topic_name);
+    // Defence in depth: the name came from a discovery scan, which parses .meta
+    // files out of /dev/shm — mode 1777, so it walks other users' trees. The
+    // parse boundary in horus_sys now rejects escaping names, but joining an
+    // untrusted name into a path is the actual dangerous act, so refuse it here
+    // too rather than rely on a filter one crate away staying correct.
+    let Some(topic_path) = horus_sys::shm::topic_shm_path_checked(&topic.topic_name) else {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "refusing to open topic {:?}: the name escapes the topics directory",
+            topic.topic_name
+        ))));
+    };
     let window_size = window.unwrap_or(10);
     if window_size == 0 {
         return Err(HorusError::Config(ConfigError::Other(
@@ -823,7 +843,17 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
             name
         ))));
     };
-    let topic_path = shm_topics_dir().join(&topic.topic_name);
+    // Defence in depth: the name came from a discovery scan, which parses .meta
+    // files out of /dev/shm — mode 1777, so it walks other users' trees. The
+    // parse boundary in horus_sys now rejects escaping names, but joining an
+    // untrusted name into a path is the actual dangerous act, so refuse it here
+    // too rather than rely on a filter one crate away staying correct.
+    let Some(topic_path) = horus_sys::shm::topic_shm_path_checked(&topic.topic_name) else {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "refusing to open topic {:?}: the name escapes the topics directory",
+            topic.topic_name
+        ))));
+    };
     let window_size = window.unwrap_or(100);
     if window_size == 0 {
         return Err(HorusError::Config(ConfigError::Other(
