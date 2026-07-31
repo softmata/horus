@@ -28,6 +28,9 @@
 // FFI wrapper modules — each contains opaque types + FFI functions
 mod action_ffi;
 mod c_api;
+/// Cross-language layout contract — asserts every C++ message struct against
+/// the Rust type the C ABI actually reads and writes through it.
+pub mod layout_contract;
 mod node_ffi;
 mod params_ffi;
 mod pool_ffi;
