@@ -371,6 +371,13 @@ impl NodeRegistration {
     /// Requires `RtAwareAllocator` as `#[global_allocator]` in the binary.
     /// Without it, this flag is a no-op (safe for prototyping).
     ///
+    /// Also requires the node to be **RT-classified** — allocation checking is
+    /// performed by the RT executor only. `.rate()`, `.budget()` or
+    /// `.deadline()` make a node RT; `.compute()`, `.event()` and `.async_io()`
+    /// do not. Setting `.no_alloc()` on a non-RT node is a build-time error
+    /// rather than a silently ignored flag, so you cannot be given false
+    /// assurance that a tick was checked when it was not.
+    ///
     /// # Example
     /// ```rust,ignore
     /// scheduler.add(motor_ctrl)
@@ -588,6 +595,39 @@ impl NodeRegistration {
                 }
                 .into());
             }
+        }
+
+        // `.no_alloc()` is enforced ONLY by the RT executor (rt_executor.rs calls
+        // enter_rt_context around the tick). A node that is not RT-classified
+        // runs on the main loop or on the Compute/Event/AsyncIo executors, none
+        // of which enter that context — so the flag silently does nothing.
+        //
+        // The doc comment on `no_alloc()` warns that the flag is a no-op without
+        // `RtAwareAllocator` as the global allocator, but says nothing about
+        // execution class, and every documented example pairs it with `.rate()`
+        // (which makes the node RT). A user who writes `.compute().no_alloc()`
+        // therefore believes allocations in `tick()` will panic, and gets no
+        // check at all — false assurance about the one property they asked to
+        // have verified. Say so instead of accepting it silently.
+        if self.no_alloc && !self.is_rt && !matches!(self.execution_class, ExecutionClass::Rt) {
+            let class_name = match &self.execution_class {
+                ExecutionClass::Compute => ".compute()",
+                ExecutionClass::AsyncIo => ".async_io()",
+                ExecutionClass::Event(_) => ".event()",
+                _ => "best-effort (no .rate()/.budget()/.deadline())",
+            };
+            return Err(ValidationError::Conflict {
+                field_a: ".no_alloc()".into(),
+                field_b: class_name.into(),
+                reason: format!(
+                    "node '{}' sets .no_alloc(), but allocation checking is only performed by \
+                     the RT executor — on {} it would be silently ignored. Add .rate(), \
+                     .budget() or .deadline() to make this an RT node, or drop .no_alloc() \
+                     rather than rely on a check that will not run.",
+                    node_name, class_name
+                ),
+            }
+            .into());
         }
 
         // Validate execution class vs is_rt flag consistency
@@ -913,6 +953,40 @@ mod tests {
 
     fn stub(name: &str) -> Box<dyn Node> {
         Box::new(StubNode(name.to_string()))
+    }
+
+    // ── .no_alloc() must not be silently inert ──
+    //
+    // Allocation checking is performed by the RT executor only. A non-RT node
+    // runs on the main loop or a Compute/Event/AsyncIo executor, none of which
+    // enter that context, so the flag would do nothing while the user believes
+    // their tick is being checked.
+
+    #[test]
+    fn no_alloc_on_a_compute_node_is_rejected() {
+        let mut reg = NodeRegistration::new(stub("worker")).compute().no_alloc();
+        let err = reg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no_alloc") && msg.contains("compute"),
+            "error must name both the flag and the class, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn no_alloc_on_an_rt_node_is_accepted() {
+        let mut reg = NodeRegistration::new(stub("motor"))
+            .rate(1000_u64.hz())
+            .no_alloc();
+        reg.validate()
+            .expect("the documented pairing .rate() + .no_alloc() must stay valid");
+    }
+
+    #[test]
+    fn no_alloc_alone_is_rejected_rather_than_silently_ignored() {
+        let mut reg = NodeRegistration::new(stub("plain")).no_alloc();
+        let err = reg.validate().unwrap_err();
+        assert!(format!("{err}").contains("no_alloc"));
     }
 
     // ── NodeRegistration::new defaults ──
