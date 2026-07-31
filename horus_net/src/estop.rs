@@ -151,6 +151,26 @@ pub fn decode_estop(data: &[u8]) -> Option<(u16, String, u64)> {
     Some((host_id_hash, reason, timestamp_ns))
 }
 
+/// Whether `data` carries a valid authentication tag for the configured key.
+///
+/// Exposed so the replicator can reject forged packets BEFORE they consume a
+/// rate-limit token. Charging the limiter first let an attacker spend the
+/// e-stop budget with packets that do nothing, so the next genuine halt was
+/// dropped — turning a limiter meant to stop a forced halt into a way to
+/// suppress a real one.
+///
+/// Returns `true` when no key is configured: there is nothing to verify, and the
+/// caller keeps the original ordering in that case.
+pub fn estop_packet_is_authentic(data: &[u8]) -> bool {
+    let Some(key) = crate::mac::estop_key() else {
+        return true;
+    };
+    let Some(body_len) = estop_body_len(data) else {
+        return false;
+    };
+    verify_estop_tag(key, data, body_len)
+}
+
 /// Handle a received e-stop broadcast. May trigger the local emergency stop.
 ///
 /// Returns `true` if this call acted on the e-stop (triggered the external stop),

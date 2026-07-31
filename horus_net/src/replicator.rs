@@ -457,6 +457,29 @@ impl Replicator {
             return;
         }
         if msg.topic_hash == estop_hash {
+            // Authenticate BEFORE charging the rate limit.
+            //
+            // Charging first meant a forged flood — packets that fail the MAC and
+            // do nothing — drained the bucket, so the very next GENUINE halt was
+            // dropped for want of a token. The limiter existed to stop an
+            // attacker halting the fleet at line rate; ordering it ahead of
+            // authentication let the attacker use it to SUPPRESS a halt instead,
+            // which is the strictly worse direction.
+            //
+            // With a key provisioned, a forged packet is now rejected without
+            // spending anything, and only packets that could actually halt the
+            // robot consume budget. Verification is an HMAC over at most a few
+            // hundred bytes and the source has already passed `peer_filter`, so
+            // the CPU an unauthenticated flood can buy is bounded.
+            //
+            // Unkeyed deployments keep the original ordering — there is nothing
+            // to authenticate against, so the bucket is the only defence there.
+            if crate::mac::estop_key().is_some() {
+                if !crate::estop::estop_packet_is_authentic(&msg.payload) {
+                    self.metrics.record_topic_drop(msg.topic_hash);
+                    return;
+                }
+            }
             if self.system_limits.estop.take() {
                 crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
             } else {
@@ -1105,6 +1128,9 @@ mod tests {
 
     #[test]
     fn a_second_estop_episode_is_not_deduped_away() {
+        // Guards two properties at once: a LATER episode must halt (the original
+        // sequence-0 regression), and no unauthenticated cache upstream of the
+        // MAC may drop a system-topic message.
         // Regression guard for a trap introduced BY the framing fix. Framed
         // system messages take the normal data path, which runs
         // reliability.dedup_messages BEFORE the system-topic dispatch.
@@ -1152,12 +1178,18 @@ mod tests {
         rep.process_packet(&ep1, from);
         assert!(fired.load(Ordering::SeqCst), "episode 1 must halt");
 
-        // A retry of episode 1 is byte-identical, so it SHOULD be deduped.
+        // A byte-identical retry now REACHES the handler again, because system
+        // topics are deliberately exempt from deduplication: dedup runs upstream
+        // of the MAC on a cache keyed by an unauthenticated 16-bit sender id, so
+        // one forged packet could otherwise poison it and permanently silence
+        // this peer's e-stops. Re-delivering a halt is harmless — the e-stop
+        // latches and the fleet re-broadcast is gated on a rising edge — whereas
+        // suppressing one is not.
         fired.store(false, Ordering::SeqCst);
         rep.process_packet(&ep1, from);
         assert!(
-            !fired.load(Ordering::SeqCst),
-            "a byte-identical retry is redundancy, not a new halt"
+            fired.load(Ordering::SeqCst),
+            "a retry must still halt; suppressing it is the dangerous direction"
         );
 
         // The genuinely new episode must get through.
