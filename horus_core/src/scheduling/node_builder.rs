@@ -597,6 +597,44 @@ impl NodeRegistration {
             }
         }
 
+        // `.subscribe_with_timeout()` is enforced ONLY on the main-thread tick
+        // path (scheduler/mod.rs, which resolves nodes through `self.nodes`).
+        // After the class partition `self.nodes` holds ONLY BestEffort nodes, so
+        // for an RT/Compute/Event/AsyncIo node the staleness check never runs at
+        // all — the tracker is constructed, the timeout is stored, and nothing
+        // ever evaluates it.
+        //
+        // This is a stale-INPUT safety watchdog: a user attaches it to a node
+        // consuming a sensor topic precisely so the node reacts when that sensor
+        // goes quiet. Silently not running it on the RT node driving an actuator
+        // is the worst possible place to omit it, so refuse the configuration
+        // rather than hand back false assurance — the same call made for
+        // `.no_alloc()` just below.
+        if !self.subscription_freshness.is_empty()
+            && !matches!(self.execution_class, ExecutionClass::BestEffort)
+        {
+            let class_name = match &self.execution_class {
+                ExecutionClass::Rt => ".rate()/.budget()/.deadline() (RT)",
+                ExecutionClass::Compute => ".compute()",
+                ExecutionClass::AsyncIo => ".async_io()",
+                ExecutionClass::Event(_) => ".event()",
+                _ => "this execution class",
+            };
+            return Err(ValidationError::Conflict {
+                field_a: ".subscribe_with_timeout()".into(),
+                field_b: class_name.into(),
+                reason: format!(
+                    "node '{}' declares a subscription-freshness timeout, but staleness is \
+                     only checked on the main-thread tick path — on {} it would never be \
+                     evaluated. Drop the execution-class hint so the node runs on the main \
+                     loop, or remove .subscribe_with_timeout() rather than rely on a stale-\
+                     data watchdog that will not run.",
+                    node_name, class_name
+                ),
+            }
+            .into());
+        }
+
         // `.no_alloc()` is enforced ONLY by the RT executor (rt_executor.rs calls
         // enter_rt_context around the tick). A node that is not RT-classified
         // runs on the main loop or on the Compute/Event/AsyncIo executors, none
@@ -959,6 +997,48 @@ mod tests {
     // runs on the main loop or a Compute/Event/AsyncIo executor, none of which
     // enter that context, so the flag would do nothing while the user believes
     // their tick is being checked.
+
+    // ── .subscribe_with_timeout() must not be silently unenforced ──
+
+    fn with_freshness(reg: NodeRegistration, policy: super::super::types::StalePolicy) -> NodeRegistration {
+        let mut reg = reg;
+        reg.subscription_freshness
+            .push(super::super::types::SubscriptionFreshness::new(
+                "lidar.scan".to_string(),
+                Duration::from_millis(100),
+                policy,
+                0,
+            ));
+        reg
+    }
+
+    #[test]
+    fn subscription_timeout_on_a_compute_node_is_rejected() {
+        // Staleness is only checked on the main-thread path, so on an executor
+        // class the watchdog is constructed, stored, and never evaluated — a
+        // stale-INPUT safety watchdog silently not running on exactly the node
+        // classes that drive actuators.
+        use super::super::types::StalePolicy;
+        let mut reg = with_freshness(
+            NodeRegistration::new(stub("worker")).compute(),
+            StalePolicy::SafeState,
+        );
+        let err = reg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("subscribe_with_timeout") && msg.contains("compute"),
+            "the error must name the feature and the class, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscription_timeout_on_a_best_effort_node_is_accepted() {
+        // The main loop DOES evaluate it there, so this must keep working.
+        use super::super::types::StalePolicy;
+        let mut reg = with_freshness(NodeRegistration::new(stub("plain")), StalePolicy::Warn);
+        reg.validate()
+            .expect("BestEffort nodes are checked on the main tick path");
+    }
 
     #[test]
     fn no_alloc_on_a_compute_node_is_rejected() {
