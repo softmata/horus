@@ -26,8 +26,8 @@ pyo3 = { version = "0.29", features = ["abi3-py39", "num-bigint", "num-complex"]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
-horus-tf = { git = "https://github.com/softmata/horus-tf.git", features = ["wait"] }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git", rev = "631483a226dc8158a08ffb2c51087b3d02237041" }
+horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c", features = ["wait"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

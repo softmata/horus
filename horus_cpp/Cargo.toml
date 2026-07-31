@@ -16,8 +16,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 horus_core = { path = "../horus_core", default-features = false }
 horus_types = { path = "../horus_types" }
-horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
-horus-tf = { git = "https://github.com/softmata/horus-tf.git" }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git", rev = "631483a226dc8158a08ffb2c51087b3d02237041" }
+horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c" }
 horus_cpp_macros = { path = "../horus_cpp_macros" }
 cxx = "1.0"
 paste = "1.0"

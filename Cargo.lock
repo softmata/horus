@@ -1650,7 +1650,7 @@ dependencies = [
 [[package]]
 name = "horus-robotics"
 version = "0.2.0"
-source = "git+https://github.com/softmata/horus-robotics.git#631483a226dc8158a08ffb2c51087b3d02237041"
+source = "git+https://github.com/softmata/horus-robotics.git?rev=631483a226dc8158a08ffb2c51087b3d02237041#631483a226dc8158a08ffb2c51087b3d02237041"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -1667,7 +1667,7 @@ dependencies = [
 [[package]]
 name = "horus-tf"
 version = "0.2.0"
-source = "git+https://github.com/softmata/horus-tf.git#d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c"
+source = "git+https://github.com/softmata/horus-tf.git?rev=d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c#d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c"
 dependencies = [
  "bytemuck",
  "horus_core",
