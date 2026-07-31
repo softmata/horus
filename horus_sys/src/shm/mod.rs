@@ -153,8 +153,11 @@ pub const SHM_FILE_MODE: u32 = 0o600;
 /// everyone in the owner's group, which contradicts the "Process Isolation:
 /// Shared memory with proper permissions" claim in SECURITY.md.
 ///
-/// The repair pass only ever *removes* permission bits, and only on paths this
-/// user owns, so it can never widen access or fight another user's ownership.
+/// The repair pass masks rather than assigns, so it only ever *removes*
+/// permission bits, and only on paths this user owns — it can never widen
+/// access or fight another user's ownership. (Assigning the target mode outright
+/// would add owner bits to a stricter-than-target path; the log-system test
+/// `mmap_readonly_dir_returns_error` catches exactly that.)
 pub fn create_shm_dir_all(path: &Path) -> std::io::Result<()> {
     // Refuse to build inside a tree someone else pre-created. /dev/shm is mode
     // 1777 and the namespace defaults to the fixed literal "default", so the
@@ -271,9 +274,15 @@ fn harden_existing_dir(path: &Path) {
         if meta.uid() != euid {
             return; // not ours to change
         }
+        // Clear the group and other bits, and ONLY those. Assigning
+        // SHM_DIR_MODE outright would *add* owner bits — a 0o444 directory
+        // would come back 0o700, i.e. writable — which is the opposite of
+        // hardening and broke `mmap_readonly_dir_returns_error`. Masking can
+        // only ever turn bits off.
         let mode = meta.permissions().mode() & 0o777;
-        if mode & !SHM_DIR_MODE != 0 {
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(SHM_DIR_MODE));
+        let narrowed = mode & SHM_DIR_MODE;
+        if narrowed != mode {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(narrowed));
         }
     }
     #[cfg(not(unix))]
@@ -303,9 +312,12 @@ pub fn harden_shm_file(path: &Path) {
         if meta.uid() != euid {
             return;
         }
+        // Mask, never assign — see `harden_existing_dir`. A 0o400 file must
+        // stay 0o400, not gain owner-write.
         let mode = meta.permissions().mode() & 0o777;
-        if mode & !SHM_FILE_MODE != 0 {
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(SHM_FILE_MODE));
+        let narrowed = mode & SHM_FILE_MODE;
+        if narrowed != mode {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(narrowed));
         }
     }
     #[cfg(not(unix))]
@@ -1589,5 +1601,49 @@ mod tests {
         let p = topic_shm_path("robot.imu");
         assert_eq!(p.parent().unwrap(), shm_topics_dir());
         assert_eq!(p.file_name().unwrap(), "robot.imu");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_masks_and_never_adds_owner_bits() {
+        // Regression guard. harden_* used to ASSIGN the target mode, so a 0o444
+        // directory came back 0o700 — gaining owner-write, i.e. the opposite of
+        // hardening. horus_core's `mmap_readonly_dir_returns_error` caught it:
+        // a deliberately read-only directory became writable and the test's
+        // "creation must fail" premise evaporated.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("horus_harden_ro_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        harden_shm_dir(&dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o400,
+            "must only CLEAR bits (0o444 & 0o700 = 0o400), never add owner-write"
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_a_readonly_file_does_not_make_it_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("horus_harden_rofile_{}", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        harden_shm_file(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400,
+            "0o444 & 0o600 = 0o400 — group/other cleared, owner-write NOT added"
+        );
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_file(&path);
     }
 }
