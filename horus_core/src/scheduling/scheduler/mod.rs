@@ -260,6 +260,12 @@ pub struct Scheduler {
     /// Set by finalize_config() when require_rt() was used but high-severity
     /// degradations occurred. Checked by run()/tick_once() to return Err.
     rt_require_failed: bool,
+    /// A duplicate node name seen at registration, reported by `run()`.
+    ///
+    /// Node names key the watchdog map, the SHM registry slot and the
+    /// pause/kill flags, so two nodes sharing a name share one watchdog and a
+    /// hang in either is masked by the other's feed.
+    duplicate_node_name: Option<String>,
 }
 
 impl Default for Scheduler {
@@ -350,6 +356,7 @@ impl Scheduler {
             lifecycle_start_hooks: Vec::new(),
             lifecycle_handles: Vec::new(),
             rt_require_failed: false,
+            duplicate_node_name: None,
         };
 
         // Network discovery is enabled by default (like ROS2).
@@ -1604,14 +1611,17 @@ impl Scheduler {
         // Silently letting the second registration alias the first is the worst
         // of the options: refusing is loud, and renaming behind the operator's
         // back would make `horus node kill <name>` target something they did not
-        // ask for. This is a programming error, caught at registration.
+        // ask for.
+        //
+        // Recorded and failed from `run()` rather than panicked. A duplicate
+        // name is reachable from a generated launch file and from horus.toml, so
+        // it is CONFIGURATION, not a programmer typo — and `add()` returns
+        // `&mut Self` with no error channel. This is the same deferred-failure
+        // pattern `require_rt()` already uses: record here, return `Err` from
+        // `run()`. Panicking in a robot process, in a release profile with no
+        // `panic = "abort"`, would be a worse failure than the one being fixed.
         if self.nodes.iter().any(|n| n.name.as_ref() == node_name) {
-            panic!(
-                "duplicate node name {node_name:?}: node names key the watchdog map, the SHM \
-                 registry slot and the pause/kill control flags, so two nodes sharing one name \
-                 share one watchdog — a hang in either is masked by the other's feed. Give each \
-                 node a distinct name."
-            );
+            self.duplicate_node_name = Some(node_name.clone());
         }
 
         let context = NodeInfo::new(node_name.clone());
@@ -1897,6 +1907,20 @@ impl Scheduler {
     /// ```
     pub fn tick_once(&mut self) -> HorusResult<()> {
         self.finalize_and_init();
+        if let Some(ref dup) = self.duplicate_node_name {
+            return Err(crate::error::Error::InvalidInput(
+                crate::error::ValidationError::InvalidValue {
+                    field: "node name".into(),
+                    value: dup.clone(),
+                    reason: format!(
+                        "duplicate node name {dup:?}: node names key the watchdog map, the SHM \
+                         registry slot and the pause/kill control flags, so two nodes sharing one \
+                         name share one watchdog — a hang in either is masked by the other's \
+                         feed. Give each node a distinct name."
+                    ),
+                },
+            ));
+        }
         if self.rt_require_failed {
             return Err(crate::error::Error::Resource(
                 crate::error::ResourceError::Unsupported {
@@ -2221,6 +2245,20 @@ impl Scheduler {
         duration: Option<Duration>,
     ) -> HorusResult<()> {
         self.finalize_and_init();
+        if let Some(ref dup) = self.duplicate_node_name {
+            return Err(crate::error::Error::InvalidInput(
+                crate::error::ValidationError::InvalidValue {
+                    field: "node name".into(),
+                    value: dup.clone(),
+                    reason: format!(
+                        "duplicate node name {dup:?}: node names key the watchdog map, the SHM \
+                         registry slot and the pause/kill control flags, so two nodes sharing one \
+                         name share one watchdog — a hang in either is masked by the other's \
+                         feed. Give each node a distinct name."
+                    ),
+                },
+            ));
+        }
         if self.rt_require_failed {
             return Err(crate::error::Error::Resource(
                 crate::error::ResourceError::Unsupported {

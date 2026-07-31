@@ -1646,10 +1646,12 @@ fn test_zero_nodes_exits_cleanly() {
 /// slot (`horus node list` shows one) and one control flag (`horus node pause`
 /// hits both).
 ///
-/// Aliasing safety state silently is worse than refusing, so registration now
-/// panics: it is a setup-time programming error, not a runtime condition.
+/// Aliasing safety state silently is worse than refusing. A duplicate name is
+/// reachable from a generated launch file and from horus.toml — configuration,
+/// not a programmer typo — so it is recorded at registration and reported as an
+/// error from `run()`, the same deferred-failure pattern `require_rt()` uses.
+/// Panicking in a robot process would be a worse failure than the one fixed.
 #[test]
-#[should_panic(expected = "duplicate node name")]
 fn test_duplicate_node_names_are_refused() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
@@ -1663,6 +1665,19 @@ fn test_duplicate_node_names_are_refused() {
         .add(CounterNode::new("motor_ctrl"))
         .order(1)
         .build();
+
+    let err = scheduler
+        .run_for(100_u64.ms())
+        .expect_err("a duplicate node name must fail the run, not alias a watchdog");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("duplicate node name"),
+        "the error must name the problem, got: {msg}"
+    );
+    assert!(
+        msg.contains("motor_ctrl"),
+        "the error must name the offending node, got: {msg}"
+    );
 }
 
 /// Node that fails in init(): scheduler catches it, other nodes continue.
