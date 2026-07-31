@@ -33,10 +33,22 @@
 //!
 //! # Compatibility note
 //!
-//! Seccomp is verified against `AUDIT_ARCH_X86_64`.  On other architectures the
-//! filter is not applied (the `apply` function returns `Ok(())` without doing
-//! anything on non-Linux platforms or non-x86_64 Linux at runtime).  The rlimit
-//! and FD-cleanup steps run on all Linux architectures.
+//! Seccomp is verified against `AUDIT_ARCH_X86_64`, and the syscall filter is
+//! therefore applied ONLY on x86_64 Linux — the syscall numbers in the deny
+//! table are architecture-specific, and the BPF architecture guard kills any
+//! process whose `seccomp_data.arch` does not match.
+//!
+//! This was previously stated here as fact while the code did not implement it:
+//! the module is gated on `target_os = "linux"` alone, so on aarch64 Linux
+//! (Raspberry Pi, Jetson — essentially every robot controller that is not a dev
+//! laptop) the guard fired on the plugin's FIRST syscall and the kernel killed
+//! it with SIGSYS. Every plugin, unconditionally. `apply_seccomp_filter` now
+//! carries the `cfg(target_arch)` gate that makes this paragraph true.
+//!
+//! The rlimit and FD-cleanup steps are architecture-independent and run on all
+//! Linux architectures, so the sandbox degrades rather than disappearing — but
+//! syscall filtering is genuinely absent off x86_64, and `PluginExecutor` warns
+//! once per process so that is visible rather than assumed.
 //!
 //! # Why path-based file isolation is not provided here
 //!
@@ -242,6 +254,40 @@ fn set_no_new_privs() -> io::Result<()> {
 /// Architecture: x86-64 only.  On any other architecture the filter header
 /// kills the process to prevent filter bypass via ABI mismatch.
 fn apply_seccomp_filter() -> io::Result<()> {
+    // Architecture gate — the module doc has always PROMISED this, and until now
+    // the code did not implement it.
+    //
+    // The BPF program below opens with the standard architecture guard: if
+    // `seccomp_data.arch != AUDIT_ARCH_X86_64` it returns
+    // SECCOMP_RET_KILL_PROCESS. That guard is correct and necessary (syscall
+    // NUMBERS differ per architecture, so applying an x86_64 table elsewhere
+    // would block the wrong calls) — but the filter was installed on ALL Linux,
+    // because `plugins::sandbox` is gated on `target_os = "linux"` alone.
+    //
+    // On aarch64 Linux — Raspberry Pi, Jetson, essentially every robot
+    // controller that is not a dev laptop — the guard therefore fired on the
+    // plugin's FIRST syscall and the kernel killed it outright. Every plugin,
+    // unconditionally, with SIGSYS and no diagnostic.
+    //
+    // Skip the syscall filter where its table does not apply. The rlimit and
+    // FD-cleanup steps in `apply` are architecture-independent and still run, so
+    // the sandbox degrades rather than disappearing. The caller warns once so
+    // "seccomp is not active here" is visible rather than assumed.
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        return Ok(());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+    apply_seccomp_filter_x86_64()
+    }
+}
+
+/// The x86_64 syscall filter. Split out so the architecture gate above is the
+/// only place that decides whether it runs.
+#[cfg(target_arch = "x86_64")]
+fn apply_seccomp_filter_x86_64() -> io::Result<()> {
     // Syscalls we want to block.  Stored as a flat array so each entry produces
     // exactly two BPF instructions (JEQ + RET).  The `ret` field is the
     // seccomp return code when the syscall matches.

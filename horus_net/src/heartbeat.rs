@@ -187,11 +187,24 @@ impl SafetyHeartbeat {
                 state.last_sent = now;
             }
 
-            // Check for missed heartbeats
+            // Check for missed heartbeats.
+            //
+            // Divide in NANOSECONDS, not milliseconds. `interval.as_millis()` is
+            // 0 for any sub-millisecond heartbeat interval, and integer division
+            // by zero PANICS — on the replicator thread, which the release
+            // profile lets unwind alone (no panic="abort"). The process would
+            // survive with networking silently dead, `is_running()` still
+            // reporting true, and no networked e-stop, for a configuration that
+            // is merely aggressive rather than invalid.
             let since_last = now.duration_since(state.last_received);
-            let expected_count = (since_last.as_millis() / self.interval.as_millis()).max(1) as u32;
+            let interval_ns = self.interval.as_nanos().max(1);
+            let expected_count = (since_last.as_nanos() / interval_ns).max(1) as u32;
 
-            if expected_count > self.missed_threshold && state.link_alive {
+            // `>=`, not `>`. The field documents itself as "Number of missed
+            // heartbeats before declaring link dead", so a threshold of 3 must
+            // declare the link dead on the 3rd missed beat — `>` waited for the
+            // 4th, one full interval of extra latency before a safety action.
+            if expected_count >= self.missed_threshold && state.link_alive {
                 state.link_alive = false;
                 state.missed_count = expected_count;
 
@@ -440,5 +453,74 @@ mod tests {
         );
         assert_eq!(LinkLostAction::from_str("stop"), LinkLostAction::Stop);
         assert_eq!(LinkLostAction::from_str("unknown"), LinkLostAction::Warn);
+    }
+}
+
+#[cfg(test)]
+mod unit_safety_tests {
+    use super::*;
+    use crate::transport::Transport;
+    use std::net::SocketAddr;
+
+    /// Minimal transport that swallows sends — `tick` needs one, and this test
+    /// is about the arithmetic, not the wire.
+    struct NullTransport;
+    impl Transport for NullTransport {
+        fn send_to(&self, _buf: &[u8], _addr: SocketAddr) -> std::io::Result<usize> {
+            Ok(0)
+        }
+        fn recv_from(&self, _buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "null"))
+        }
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok("127.0.0.1:0".parse().unwrap())
+        }
+        fn join_multicast(&self, _group: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn raw_fd(&self) -> i32 {
+            -1
+        }
+    }
+
+    /// A sub-millisecond heartbeat interval used to panic the replicator thread
+    /// via integer division by zero (`interval.as_millis()` == 0). The release
+    /// profile has no `panic = "abort"`, so that unwound the horus-net thread
+    /// alone: the process lived on with networking silently dead — including
+    /// networked e-stop — while `is_running()` kept returning true.
+    #[test]
+    fn a_sub_millisecond_interval_does_not_panic() {
+        let mut hb = SafetyHeartbeat::with_config(
+            [7u8; 16],
+            Duration::from_micros(500),
+            3,
+            LinkLostAction::Warn,
+        );
+        hb.add_peer([9u8; 16], "127.0.0.1:9100".parse().unwrap());
+        std::thread::sleep(Duration::from_millis(5));
+        // Must not panic on the division.
+        let mut seq = 0u32;
+        let _ = hb.tick(&NullTransport, 0, &mut seq);
+    }
+
+    /// The field documents itself as "Number of missed heartbeats before
+    /// declaring link dead", so a threshold of 3 must act on the 3rd missed
+    /// beat. `>` waited for the 4th — one whole interval of extra latency before
+    /// a safety action fires.
+    #[test]
+    fn threshold_acts_on_the_nth_missed_beat_not_the_n_plus_first() {
+        let interval = Duration::from_millis(10);
+        let mut hb = SafetyHeartbeat::with_config([1u8; 16], interval, 3, LinkLostAction::Warn);
+        let peer = [2u8; 16];
+        hb.add_peer(peer, "127.0.0.1:9100".parse().unwrap());
+
+        // Exactly 3 intervals of silence must be enough to declare the link dead.
+        std::thread::sleep(interval * 3 + Duration::from_millis(3));
+        let mut seq = 0u32;
+        let _ = hb.tick(&NullTransport, 0, &mut seq);
+        assert!(
+            !hb.is_link_alive(&peer),
+            "a threshold of 3 must declare the link dead at 3 missed beats, not 4"
+        );
     }
 }

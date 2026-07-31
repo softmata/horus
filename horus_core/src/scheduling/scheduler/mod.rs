@@ -521,7 +521,33 @@ impl Scheduler {
     ///     .tick_rate(100_u64.hz());
     /// ```
     pub fn watchdog(mut self, timeout: Duration) -> Self {
-        self.pending_config.realtime.watchdog_timeout_ms = timeout.as_millis() as u64;
+        // The config stores whole milliseconds and treats 0 as DISABLED
+        // (`watchdog_active = watchdog_timeout_ms > 0`). A plain
+        // `as_millis() as u64` therefore turned any sub-millisecond timeout into
+        // 0 — so `scheduler.watchdog(500_u64.us())`, an entirely reasonable RT
+        // setting, SILENTLY TURNED THE WATCHDOG OFF. The user asked for a
+        // tighter safety timeout and got none, with no diagnostic.
+        //
+        // Round up to the 1ms floor the storage can represent rather than
+        // truncating to "disabled": a slightly-looser watchdog is a safety
+        // feature, and no watchdog is not. Say so, because silently changing a
+        // safety timeout is its own problem — the operator needs to know the
+        // value actually in force.
+        let ms = timeout.as_millis() as u64;
+        self.pending_config.realtime.watchdog_timeout_ms = if timeout.is_zero() {
+            0 // explicit disable — honour it
+        } else if ms == 0 {
+            crate::hlog!(
+                warn,
+                "watchdog({:?}) is below the 1ms resolution the scheduler config stores; \
+                 using 1ms. Sub-millisecond watchdogs are not supported — previously this \
+                 truncated to 0, which DISABLED the watchdog entirely.",
+                timeout
+            );
+            1
+        } else {
+            ms
+        };
         self
     }
 
