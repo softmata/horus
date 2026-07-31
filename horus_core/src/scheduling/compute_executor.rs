@@ -160,6 +160,13 @@ impl ComputeExecutor {
                 continue;
             }
 
+            // Safing requested by the main thread's watchdog ladder. Applied
+            // to EVERY node this executor owns, not just the ones ticking this
+            // pass — an Isolated node is precisely one that is not ticking.
+            for node in nodes.iter_mut() {
+                super::primitives::honor_safe_state_request(node, &monitors);
+            }
+
             // Update last_tick for rate-limited nodes
             let now = Instant::now();
             for &i in &ready_indices {

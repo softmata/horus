@@ -3260,7 +3260,11 @@ fn test_apply_config_records_every_section_in_pending_config() {
         "cpu_cores never reached pending_config, so finalize_config could not apply it"
     );
     assert_eq!(
-        scheduler.pending_config.monitoring.telemetry_endpoint.as_deref(),
+        scheduler
+            .pending_config
+            .monitoring
+            .telemetry_endpoint
+            .as_deref(),
         Some("file:///dev/null")
     );
     assert_eq!(scheduler.pending_config.monitoring.black_box_size_mb, 4);
@@ -3274,7 +3278,10 @@ fn test_apply_config_does_not_clobber_earlier_builders() {
 
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new().cores(&[6, 7]);
-    assert_eq!(scheduler.pending_config.resources.cpu_cores, Some(vec![6, 7]));
+    assert_eq!(
+        scheduler.pending_config.resources.cpu_cores,
+        Some(vec![6, 7])
+    );
 
     // Default config leaves cpu_cores None — that must mean "unspecified",
     // not "reset to all cores".
@@ -3285,6 +3292,72 @@ fn test_apply_config_does_not_clobber_earlier_builders() {
         Some(vec![6, 7]),
         "an unset field in the incoming config wiped an earlier .cores() call"
     );
+}
+
+/// The graduated watchdog ladder must reach nodes the scheduler does not own.
+///
+/// `check_safety_monitors` resolved every expiring node through
+/// `self.nodes.iter_mut().find(..)`. After the class partition that vector
+/// holds ONLY BestEffort nodes, so for an RT/Compute/Event/AsyncIo node the
+/// `find` missed and the whole ladder was skipped: no Warning, no Unhealthy,
+/// no Isolated, no `enter_safe_state()`. The executors fed the watchdog
+/// correctly; its expiry simply produced nothing.
+///
+/// The node here is deliberately absent from `self.nodes` — that is exactly
+/// the state `std::mem::take` leaves the scheduler in for an executor-hosted
+/// node, and it is the condition the old code silently ignored.
+#[test]
+fn test_watchdog_ladder_reaches_executor_hosted_nodes() {
+    use crate::scheduling::safety_monitor::SafetyMonitor;
+    use crate::scheduling::types::{NodeControlMap, NodeHealthState};
+
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new();
+
+    // An executor-hosted critical node: registered with the safety monitor and
+    // in the shared control map, but NOT in `self.nodes`.
+    let monitor = Arc::new(SafetyMonitor::new(100));
+    monitor.add_critical_node("rt_actuator".to_string(), Duration::from_millis(40));
+
+    let controls = Arc::new(NodeControlMap::default());
+    controls.register("rt_actuator");
+
+    scheduler.monitor.safety = Some(monitor.clone());
+    scheduler.node_controls = Some(controls.clone());
+
+    assert_eq!(controls.health("rt_actuator"), NodeHealthState::Healthy);
+    assert!(scheduler.nodes.is_empty(), "test premise: node is not owned");
+
+    // Past 1x the 40ms timeout, short of 2x → Warning.
+    std::thread::sleep(Duration::from_millis(50));
+    scheduler.check_safety_monitors();
+    assert_eq!(
+        controls.health("rt_actuator"),
+        NodeHealthState::Warning,
+        "a 1x watchdog overrun on an executor-hosted node produced no transition"
+    );
+
+    // Past 2x, short of 3x → Unhealthy.
+    std::thread::sleep(Duration::from_millis(40));
+    scheduler.check_safety_monitors();
+    assert_eq!(controls.health("rt_actuator"), NodeHealthState::Unhealthy);
+
+    // Past 3x → Isolated, safing requested from the owning executor, e-stop latched
+    // because this thread cannot verify that the safing actually happened.
+    std::thread::sleep(Duration::from_millis(40));
+    scheduler.check_safety_monitors();
+    assert_eq!(controls.health("rt_actuator"), NodeHealthState::Isolated);
+    assert!(
+        controls.take_safe_state_request("rt_actuator"),
+        "Isolated was recorded but no safing was ever requested from the executor"
+    );
+    assert!(
+        monitor.is_emergency_stop(),
+        "a critical node 3x over its watchdog must e-stop — the executor thread that \
+         would honour the safing request may itself be stuck inside the hung tick()"
+    );
+    // Consumed exactly once.
+    assert!(!controls.take_safe_state_request("rt_actuator"));
 }
 
 #[test]

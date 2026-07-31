@@ -296,10 +296,11 @@ fn test_safety_scenario_healthy_nodes_survive_sibling_kill() {
     let monitor_after_phase1 = counters.monitor.load(Ordering::SeqCst);
     let motor_after_phase1 = counters.motor.load(Ordering::SeqCst);
 
-    // Phase 2: Run 100 more tick_once() calls. The motor should be
-    // dead (is_stopped=true), so its tick count must not increase.
+    // Phase 2: Run more tick_once() calls. The motor should be dead
+    // (is_stopped=true), so it must not resume normal ticking.
     // The other 3 nodes must keep ticking.
-    for _ in 0..100 {
+    const PHASE2_TICKS: u64 = 100;
+    for _ in 0..PHASE2_TICKS {
         let _ = scheduler.tick_once();
     }
 
@@ -311,11 +312,24 @@ fn test_safety_scenario_healthy_nodes_survive_sibling_kill() {
     // Motor tick count must not have increased in phase 2 (if it was killed)
     if let Some(stats) = scheduler.safety_stats() {
         if stats.degrade_activations() > 0 {
-            assert_eq!(
-                motor_after_phase1, motor_after_phase2,
-                "Killed motor's tick count must not increase in phase 2. \
-                 phase1={}, phase2={}",
-                motor_after_phase1, motor_after_phase2
+            // A suppressed node is now re-ticked once every
+            // `HEALTH_PROBE_INTERVAL` (100) scheduler passes so it can be seen
+            // recovering — see "a degraded node could never recover"
+            // (85d3aa1b). Exact equality encoded the older permanent-suppression
+            // contract and now fails by exactly the number of probes that fired.
+            // The property under test is unchanged: the killed motor must not
+            // resume NORMAL ticking.
+            let probes = motor_after_phase2 - motor_after_phase1;
+            let max_probes = PHASE2_TICKS.div_ceil(100) + 1;
+            assert!(
+                probes <= max_probes,
+                "Killed motor should only receive health probes in phase 2, \
+                 not normal ticks. phase1={}, phase2={} (increase {}, \
+                 max expected probes {})",
+                motor_after_phase1,
+                motor_after_phase2,
+                probes,
+                max_probes
             );
         }
     }

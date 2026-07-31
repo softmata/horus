@@ -664,9 +664,7 @@ impl Replicator {
                     for (sub_id_hash, addr) in &sub_addrs {
                         if msg.priority == Priority::Immediate
                             || msg.priority == Priority::RealTime
-                            || self
-                                .flow_control
-                                .should_send(*sub_id_hash, msg.topic_hash)
+                            || self.flow_control.should_send(*sub_id_hash, msg.topic_hash)
                         {
                             let _ = self.transport.send_to(&send_buf[..len], *addr);
                             self.metrics.record_send(self.peer_id_hash, len);

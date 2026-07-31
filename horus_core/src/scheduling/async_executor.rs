@@ -125,6 +125,13 @@ impl AsyncExecutor {
 
                 // Classify which nodes should tick this cycle
                 let mut ready_indices = Vec::new();
+                // Safing requested by the main thread's watchdog ladder,
+                // applied to EVERY node this executor owns — an Isolated node
+                // is precisely one that is not in `ready_indices`.
+                for node in nodes.iter_mut() {
+                    super::primitives::honor_safe_state_request(node, &monitors);
+                }
+
                 for (i, node) in nodes.iter().enumerate() {
                     if !node.initialized
                         || node.is_stopped

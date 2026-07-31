@@ -640,6 +640,24 @@ pub struct NodeControlMap {
 pub struct NodeControl {
     pub paused: std::sync::atomic::AtomicBool,
     pub stopped: std::sync::atomic::AtomicBool,
+    /// Graduated watchdog health, mirrored here for EVERY node.
+    ///
+    /// `RegisteredNode.health_state` only exists for nodes the scheduler still
+    /// owns, and after the class partition that is BestEffort nodes alone.
+    /// The watchdog ladder runs on the main thread — the only one a hung node
+    /// cannot block — so it needs somewhere to record the health of a node
+    /// living on an executor. This map is registered for all five groups.
+    pub health: AtomicHealthState,
+    /// Set by the main thread when the ladder reaches Critical on a node the
+    /// scheduler does not own; cleared by the executor that does, which then
+    /// calls `enter_safe_state()` on it.
+    ///
+    /// Safing needs `&mut dyn Node`, which lives in the executor thread, so it
+    /// cannot be a direct call from the ladder. The limit this leaves is real
+    /// and deliberate: a node hung INSIDE `tick()` blocks the very thread that
+    /// would honour the request, so it will not be safed by its own executor.
+    /// That case is what the e-stop escalation exists for.
+    pub safe_state_requested: std::sync::atomic::AtomicBool,
 }
 
 impl NodeControlMap {
@@ -648,7 +666,59 @@ impl NodeControlMap {
         map.entry(name.to_string()).or_insert_with(|| NodeControl {
             paused: std::sync::atomic::AtomicBool::new(false),
             stopped: std::sync::atomic::AtomicBool::new(false),
+            health: AtomicHealthState::default(),
+            safe_state_requested: std::sync::atomic::AtomicBool::new(false),
         });
+    }
+
+    /// Record a node's graduated-watchdog health. Unknown names are ignored.
+    pub fn set_health(&self, name: &str, state: NodeHealthState) {
+        if let Some(c) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            c.health.store(state);
+        }
+    }
+
+    /// Read a node's graduated-watchdog health. Unknown names read `Healthy`.
+    pub fn health(&self, name: &str) -> NodeHealthState {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|c| c.health.load())
+            .unwrap_or(NodeHealthState::Healthy)
+    }
+
+    /// Ask the executor that owns `name` to safe the node on its next pass.
+    pub fn request_safe_state(&self, name: &str) {
+        if let Some(c) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            c.safe_state_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Consume a pending safing request, returning whether one was set.
+    ///
+    /// Clears the flag, so a request is honoured exactly once per raise.
+    pub fn take_safe_state_request(&self, name: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|c| {
+                c.safe_state_requested
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+            })
+            .unwrap_or(false)
     }
 
     pub fn is_paused(&self, name: &str) -> bool {

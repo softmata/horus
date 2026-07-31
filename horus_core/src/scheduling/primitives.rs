@@ -22,6 +22,51 @@ pub(crate) struct TickResult {
     pub result: std::thread::Result<()>,
 }
 
+/// Honour a pending safe-state request raised by the main thread's watchdog
+/// ladder, if this node has one.
+///
+/// The ladder runs on the main thread — the only one a hung node cannot block
+/// — but `enter_safe_state()` needs `&mut dyn Node`, which the executor owns.
+/// So Critical raises a flag in the shared control map and the owning executor
+/// consumes it here, once per raise.
+///
+/// Every executor must call this at the top of its per-node pass. Skipping it
+/// in one executor means nodes of that class are marked Isolated and never
+/// actually safed.
+pub(crate) fn honor_safe_state_request(
+    node: &mut RegisteredNode,
+    monitors: &super::types::SharedMonitors,
+) {
+    if !monitors
+        .node_controls
+        .take_safe_state_request(node.name.as_ref())
+    {
+        return;
+    }
+
+    let target = &mut node.node;
+    let panicked =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| target.enter_safe_state()))
+            .is_err();
+
+    if panicked {
+        // It did not reach a safe state. Stop it; the e-stop was already
+        // latched by the ladder when it raised the request.
+        node.is_stopped = true;
+        if monitors.verbose {
+            crate::terminal::print_line(&format!(
+                " Watchdog critical: '{}' PANICKED in enter_safe_state on its executor",
+                node.name
+            ));
+        }
+    } else if monitors.verbose {
+        crate::terminal::print_line(&format!(
+            " Watchdog critical: '{}' entered safe state on its executor",
+            node.name
+        ));
+    }
+}
+
 /// Executes a single node tick with timing measurement and panic isolation.
 ///
 /// This is the minimal execution primitive: measure time, call `tick()`, catch panics.

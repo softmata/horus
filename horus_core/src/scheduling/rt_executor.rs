@@ -641,6 +641,11 @@ impl RtExecutor {
                     continue;
                 }
 
+                // Safing requested by the main thread's watchdog ladder. Runs
+                // before the pause/stop gates: an Isolated node must reach its
+                // safe state even if it is also about to be stopped.
+                super::primitives::honor_safe_state_request(node, &monitors);
+
                 // Check shared control flags (set by CLI: horus node pause/kill)
                 if monitors.node_controls.is_stopped(node.name.as_ref()) {
                     node.is_stopped = true;
@@ -770,6 +775,57 @@ mod tests {
             estop: None,
             safety: None,
         }
+    }
+
+    /// The executor half of the graduated watchdog ladder.
+    ///
+    /// The ladder runs on the main thread (the only one a hung node cannot
+    /// block) and cannot call `enter_safe_state()` itself — that needs
+    /// `&mut dyn Node`, which the executor owns. So Critical raises a flag in
+    /// the shared control map, and the executor must consume it. If it does
+    /// not, an executor-hosted node is marked Isolated and never actually
+    /// safed: a worse outcome than no ladder, because the state says it was.
+    #[test]
+    fn test_executor_honors_safe_state_request() {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        struct SafeableNode {
+            safed: Arc<AtomicBool>,
+        }
+        impl Node for SafeableNode {
+            fn name(&self) -> &str {
+                "safeable"
+            }
+            fn tick(&mut self) {}
+            fn enter_safe_state(&mut self) {
+                self.safed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let safed = Arc::new(AtomicBool::new(false));
+        let mut registered = make_rt_registered("safeable", Arc::new(AtomicU64::new(0)));
+        registered.node =
+            super::super::types::NodeKind::new(Box::new(SafeableNode { safed: safed.clone() }));
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("safeable");
+
+        // Nothing pending → the node is left alone.
+        super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
+        assert!(!safed.load(std::sync::atomic::Ordering::SeqCst));
+
+        monitors.node_controls.request_safe_state("safeable");
+        super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
+        assert!(
+            safed.load(std::sync::atomic::Ordering::SeqCst),
+            "the executor never called enter_safe_state despite a pending request"
+        );
+
+        // Honoured exactly once per raise, not on every subsequent pass.
+        safed.store(false, std::sync::atomic::Ordering::SeqCst);
+        super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
+        assert!(!safed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     struct CounterNode {

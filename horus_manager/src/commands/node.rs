@@ -105,7 +105,11 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
                 format_bytes(node.memory_usage.saturating_mul(1024))
             );
             println!("    {} {}", "Ticks:".dimmed(), node.tick_count);
-            println!("    {} {} Hz", "Target Rate:".dimmed(), node.configured_rate_hz);
+            println!(
+                "    {} {} Hz",
+                "Target Rate:".dimmed(),
+                node.configured_rate_hz
+            );
             if node.error_count > 0 {
                 println!(
                     "    {} {}",
@@ -293,7 +297,11 @@ pub fn node_info(name: &str) -> HorusResult<()> {
         "Memory:".dimmed(),
         format_bytes(node.memory_usage.saturating_mul(1024))
     );
-    println!("    {} {} Hz", "Target Rate:".dimmed(), node.configured_rate_hz);
+    println!(
+        "    {} {} Hz",
+        "Target Rate:".dimmed(),
+        node.configured_rate_hz
+    );
     println!("    {} {}", "Total Ticks:".dimmed(), node.tick_count);
     println!(
         "    {} {}",

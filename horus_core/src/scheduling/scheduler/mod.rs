@@ -2980,6 +2980,31 @@ impl Scheduler {
                 use super::safety_monitor::WatchdogSeverity;
                 use super::types::NodeHealthState;
 
+                // Nodes the scheduler still owns are handled inline below.
+                // After the class partition `self.nodes` holds ONLY BestEffort
+                // nodes, so for an RT/Compute/Event/AsyncIo node this `find`
+                // misses and — before this branch existed — the entire ladder
+                // was skipped: no Warning, no Unhealthy, no Isolated, and no
+                // `enter_safe_state()`. The watchdog was fed correctly by the
+                // executors (SCHED-H2) and its expiry produced nothing. On an
+                // RT node driving an actuator that is the worst place to have
+                // a silent watchdog.
+                //
+                // The REACTION has to stay on the main thread: it is the only
+                // one a hung node cannot block. Health is recorded in the
+                // shared control map, which is registered for all five groups;
+                // safing is requested there and performed by the executor that
+                // owns the node, because `enter_safe_state()` needs `&mut dyn
+                // Node`.
+                if !self.nodes.iter().any(|n| n.name.as_ref() == node_name) {
+                    if let Some(ref controls) = self.node_controls {
+                        Self::apply_remote_health_transition(
+                            controls, node_name, severity, monitor,
+                        );
+                    }
+                    continue;
+                }
+
                 if let Some(registered) =
                     self.nodes.iter_mut().find(|n| n.name.as_ref() == node_name)
                 {
@@ -3039,6 +3064,14 @@ impl Scheduler {
                             }
                         }
                     }
+
+                    // Mirror into the shared map so `controls.health()` is a
+                    // complete view across all five execution groups rather
+                    // than only the ones the scheduler owns.
+                    let now = registered.health_state.load();
+                    if let Some(ref controls) = self.node_controls {
+                        controls.set_health(node_name, now);
+                    }
                 }
             }
 
@@ -3072,6 +3105,65 @@ impl Scheduler {
             }
         }
         false
+    }
+
+    /// Run the graduated watchdog ladder for a node the scheduler does not own.
+    ///
+    /// Companion to the inline arm in `check_safety_monitors`, for nodes that
+    /// `std::mem::take` moved onto an executor. The transitions are identical;
+    /// only where they are recorded differs, and safing becomes a request the
+    /// owning executor honours instead of a direct call.
+    fn apply_remote_health_transition(
+        controls: &super::types::NodeControlMap,
+        node_name: &str,
+        severity: &super::safety_monitor::WatchdogSeverity,
+        monitor: &super::safety_monitor::SafetyMonitor,
+    ) {
+        use super::safety_monitor::WatchdogSeverity;
+        use super::types::NodeHealthState;
+
+        let current = controls.health(node_name);
+        match severity {
+            WatchdogSeverity::Ok => {}
+            WatchdogSeverity::Warning => {
+                if current == NodeHealthState::Healthy {
+                    controls.set_health(node_name, NodeHealthState::Warning);
+                    print_line(&format!(
+                        " Watchdog warning: '{}' (1x timeout) — marking Warning",
+                        node_name
+                    ));
+                }
+            }
+            WatchdogSeverity::Expired => {
+                if current != NodeHealthState::Unhealthy && current != NodeHealthState::Isolated {
+                    controls.set_health(node_name, NodeHealthState::Unhealthy);
+                    print_line(&format!(
+                        " Watchdog expired: '{}' (2x timeout) — marking Unhealthy",
+                        node_name
+                    ));
+                }
+            }
+            WatchdogSeverity::Critical => {
+                if current != NodeHealthState::Isolated {
+                    controls.set_health(node_name, NodeHealthState::Isolated);
+                    controls.request_safe_state(node_name);
+                    print_line(&format!(
+                        " Watchdog critical: '{}' (3x timeout) — Isolated, safing requested \
+                         from its executor",
+                        node_name
+                    ));
+                    // No `trigger_emergency_stop` here: `check_watchdogs_graduated`
+                    // already latches it for any critical node at 3x, and every
+                    // node in this buffer is critical (watchdogs are only ever
+                    // registered through `add_critical_node`). That latch is also
+                    // what covers the gap this arm cannot close — a node hung
+                    // INSIDE `tick()` blocks the very executor thread that would
+                    // honour the safing request, so the request may never be
+                    // consumed. The e-stop does not depend on that thread.
+                    debug_assert!(monitor.is_emergency_stop());
+                }
+            }
+        }
     }
 
     /// Periodic registry snapshot, failure logging, blackbox tick, and telemetry export.
