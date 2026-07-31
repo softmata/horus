@@ -33,7 +33,12 @@ pub struct ReliabilityLayer {
     /// Latched messages awaiting ACK. Keyed by (topic_hash, sequence).
     latched: HashMap<(u32, u32), LatchedEntry>,
     /// Dedup state per (peer_hash, topic_hash) → last seen sequence.
+    ///
+    /// Bounded by `netfilter::MAX_TRACKED_KEYS` — see `FlowController::state`
+    /// for why an uncapped wire-keyed map is a remote OOM.
     dedup: HashMap<(u16, u32), u32>,
+    /// Whether the cap-hit warning has already been emitted.
+    dedup_cap_warned: bool,
 }
 
 impl ReliabilityLayer {
@@ -41,6 +46,7 @@ impl ReliabilityLayer {
         Self {
             latched: HashMap::new(),
             dedup: HashMap::new(),
+            dedup_cap_warned: false,
         }
     }
 
@@ -119,7 +125,9 @@ impl ReliabilityLayer {
                 return false; // Duplicate or old
             }
         }
-        self.dedup.insert(key, sequence);
+        if crate::netfilter::enforce_key_cap(&mut self.dedup, &mut self.dedup_cap_warned) {
+            self.dedup.insert(key, sequence);
+        }
         true
     }
 

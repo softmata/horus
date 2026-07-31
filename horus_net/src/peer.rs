@@ -47,6 +47,8 @@ pub struct PeerTable {
     miss_threshold: u32,
     /// Discovery interval (for calculating staleness).
     discovery_interval_secs: f64,
+    /// Whether the peer-table-full warning has already been emitted.
+    cap_warned: bool,
 }
 
 impl PeerTable {
@@ -64,6 +66,7 @@ impl PeerTable {
             peers: HashMap::new(),
             miss_threshold,
             discovery_interval_secs: 1.0,
+            cap_warned: false,
         }
     }
 
@@ -77,6 +80,36 @@ impl PeerTable {
             existing.alive = true;
             existing.secret_hash = announcement.secret_hash;
         } else {
+            // Announcements are unauthenticated and peer_id is attacker-chosen,
+            // so an uncapped table is both a memory DoS and a CPU one: every
+            // announcement triggers an O(peers x topics) rematch. Evict a dead
+            // peer to make room; if every slot holds a live peer, drop the new
+            // announcement rather than grow without bound.
+            if self.peers.len() >= crate::netfilter::MAX_PEERS {
+                let victim = self
+                    .peers
+                    .iter()
+                    .filter(|(_, p)| !p.alive)
+                    .min_by_key(|(_, p)| p.last_seen)
+                    .map(|(id, _)| *id);
+                match victim {
+                    Some(id) => {
+                        self.peers.remove(&id);
+                    }
+                    None => {
+                        if !self.cap_warned {
+                            self.cap_warned = true;
+                            eprintln!(
+                                "[horus_net] Peer table is full ({} live peers); ignoring further \
+                                 announcements. If this is not a real fleet of that size, a host \
+                                 is forging peer ids — check HORUS_NET_ALLOW_PEERS. (Fires once.)",
+                                crate::netfilter::MAX_PEERS
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
             self.peers.insert(
                 announcement.peer_id,
                 PeerInfo {
@@ -190,6 +223,32 @@ impl PeerTable {
     }
 
     /// Get a peer by ID.
+    /// The `type_hash` a peer at `addr` announced for `topic_name`, if any.
+    ///
+    /// Used by the import path to check that an inbound message's declared type
+    /// matches the local one. The wire `MessageHeader` has no `type_hash` field,
+    /// so the announcement is the only place this information exists; the import
+    /// check previously compared the local *type* hash against the wire *topic*
+    /// hash, which are hashes of different strings and so never matched.
+    ///
+    /// Matching is on the source address rather than `PacketHeader.sender_id_hash`
+    /// because that field is only 16 bits and trivially collided.
+    ///
+    /// This is a corruption guard, not an authentication control: a peer chooses
+    /// what it announces. Payload *size* is enforced separately and
+    /// unconditionally by `ShmRingWriter::write_pod`.
+    pub fn announced_type_hash(&self, addr: SocketAddr, topic_name: &str) -> Option<u32> {
+        self.peers
+            .values()
+            .find(|p| p.addr.ip() == addr.ip())
+            .and_then(|p| {
+                p.topics
+                    .iter()
+                    .find(|t| t.name == topic_name)
+                    .map(|t| t.type_hash)
+            })
+    }
+
     pub fn get(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
         self.peers.get(peer_id)
     }
@@ -329,6 +388,7 @@ mod tests {
             peers: HashMap::new(),
             miss_threshold: 3,
             discovery_interval_secs: 0.01, // 10ms for fast testing
+            cap_warned: false,
         };
 
         table.update_peer(&make_announcement([1; 16], vec![imu_pub()]));
@@ -349,6 +409,7 @@ mod tests {
             peers: HashMap::new(),
             miss_threshold: 3,
             discovery_interval_secs: 0.01,
+            cap_warned: false,
         };
 
         table.update_peer(&make_announcement([1; 16], vec![imu_pub()]));
@@ -368,6 +429,7 @@ mod tests {
             peers: HashMap::new(),
             miss_threshold: 3,
             discovery_interval_secs: 0.01,
+            cap_warned: false,
         };
 
         table.update_peer(&make_announcement([1; 16], vec![imu_sub()]));
@@ -412,5 +474,84 @@ mod tests {
         let data_addr = peer.data_addr();
         assert_eq!(data_addr.port(), 9200);
         assert_eq!(data_addr.ip().to_string(), "192.168.1.10");
+    }
+
+    // ─── Peer-table capacity (unauthenticated announcement flood) ───────────
+
+    #[test]
+    fn peer_table_is_capped_against_forged_peer_ids() {
+        let mut table = PeerTable::new();
+        // Announcements are unauthenticated and peer_id is attacker-chosen.
+        for i in 0..(crate::netfilter::MAX_PEERS * 4) {
+            let mut id = [0u8; 16];
+            id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            table.update_peer(&make_announcement(id, vec![imu_pub()]));
+            assert!(
+                table.total_count() <= crate::netfilter::MAX_PEERS,
+                "peer table exceeded its cap at iteration {i}: {}",
+                table.total_count()
+            );
+        }
+        assert_eq!(table.total_count(), crate::netfilter::MAX_PEERS);
+    }
+
+    #[test]
+    fn peer_table_evicts_a_dead_peer_before_refusing_a_new_one() {
+        let mut table = PeerTable::new();
+        for i in 0..crate::netfilter::MAX_PEERS {
+            let mut id = [0u8; 16];
+            id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            table.update_peer(&make_announcement(id, vec![imu_pub()]));
+        }
+        assert_eq!(table.total_count(), crate::netfilter::MAX_PEERS);
+
+        // Mark one dead, then announce a genuinely new peer: it must get in.
+        let mut dead_id = [0u8; 16];
+        dead_id[..8].copy_from_slice(&0u64.to_le_bytes());
+        table.peers.get_mut(&dead_id).unwrap().alive = false;
+
+        let mut fresh = [0u8; 16];
+        fresh[..8].copy_from_slice(&9999u64.to_le_bytes());
+        table.update_peer(&make_announcement(fresh, vec![imu_pub()]));
+
+        assert!(
+            table.get(&fresh).is_some(),
+            "a new peer must displace a dead one rather than be dropped"
+        );
+        assert!(table.get(&dead_id).is_none(), "the dead peer was evicted");
+        assert_eq!(table.total_count(), crate::netfilter::MAX_PEERS);
+    }
+
+    #[test]
+    fn existing_peers_still_update_when_the_table_is_full() {
+        // The cap must only gate INSERTS. A live fleet at capacity must keep
+        // refreshing its own peers or they would all be declared dead.
+        let mut table = PeerTable::new();
+        for i in 0..crate::netfilter::MAX_PEERS {
+            let mut id = [0u8; 16];
+            id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            table.update_peer(&make_announcement(id, vec![imu_pub()]));
+        }
+        let mut known = [0u8; 16];
+        known[..8].copy_from_slice(&5u64.to_le_bytes());
+        let mut ann = make_announcement(known, vec![imu_pub()]);
+        ann.data_port = 9999;
+        table.update_peer(&ann);
+        assert_eq!(table.get(&known).unwrap().data_port, 9999);
+    }
+
+    // ─── Announced type-hash lookup (import type check) ─────────────────────
+
+    #[test]
+    fn announced_type_hash_returns_the_peers_declared_type() {
+        let mut table = PeerTable::new();
+        table.update_peer(&make_announcement([1u8; 16], vec![imu_pub()]));
+        let from: SocketAddr = "192.168.1.10:40000".parse().unwrap();
+        // Matches on IP, not port: the data port differs from the announce port.
+        assert_eq!(table.announced_type_hash(from, "imu"), Some(100));
+        assert_eq!(table.announced_type_hash(from, "unknown_topic"), None);
+
+        let other: SocketAddr = "10.9.9.9:9100".parse().unwrap();
+        assert_eq!(table.announced_type_hash(other, "imu"), None);
     }
 }

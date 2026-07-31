@@ -284,6 +284,56 @@ impl Default for SystemTopicLimits {
     }
 }
 
+// ─── Bounded attacker-keyed maps ────────────────────────────────────────────
+
+/// Maximum entries in any map keyed on values an unauthenticated peer chooses.
+///
+/// `FlowController::state` and `ReliabilityLayer::dedup` are both keyed on
+/// `(sender_id_hash, topic_hash)` — 16 bits of sender and 32 bits of topic, all
+/// taken straight off the wire before any guard runs. Neither had a cap or an
+/// eviction policy, so a peer that varies either field grows them without limit
+/// until the process is OOM-killed.
+///
+/// A real deployment has tens of live (peer, topic) pairs; four thousand means
+/// something is wrong.
+pub const MAX_TRACKED_KEYS: usize = 4096;
+
+/// Maximum peers retained in the peer table.
+///
+/// Announcements are unauthenticated and the peer id is attacker-chosen, so
+/// without a cap one host can insert unboundedly many peers — each of which also
+/// multiplies the O(peers x topics) rematch performed on every announcement.
+pub const MAX_PEERS: usize = 256;
+
+/// Enforce [`MAX_TRACKED_KEYS`] on a wire-keyed map, returning `true` if the
+/// caller may insert a new key.
+///
+/// At the cap the map is cleared wholesale rather than evicted one entry at a
+/// time. That is deliberate: tracking an LRU or insertion order costs memory and
+/// time on the receive hot path, and the state being dropped is soft — flow
+/// control loses its loss estimate and dedup loses its high-water sequence, both
+/// of which rebuild within a few messages. Bounding the memory absolutely
+/// matters more than preserving statistics under what is, by construction, an
+/// attack or a gross misconfiguration.
+pub fn enforce_key_cap<K, V>(map: &mut std::collections::HashMap<K, V>, warned: &mut bool) -> bool
+where
+    K: std::hash::Hash + Eq,
+{
+    if map.len() < MAX_TRACKED_KEYS {
+        return true;
+    }
+    map.clear();
+    if !*warned {
+        *warned = true;
+        eprintln!(
+            "[horus_net] Per-peer tracking table hit its {MAX_TRACKED_KEYS}-entry cap and was \
+             reset. This normally means a peer is varying its sender or topic hash — check \
+             HORUS_NET_ALLOW_PEERS. (Fires once.)"
+        );
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +472,37 @@ mod tests {
     fn estop_budget_is_more_generous_than_logs() {
         let l = SystemTopicLimits::default();
         assert!(l.estop.capacity > l.logs.capacity);
+    }
+
+    #[test]
+    fn key_cap_bounds_a_wire_keyed_map() {
+        use std::collections::HashMap;
+        let mut m: HashMap<(u16, u32), u32> = HashMap::new();
+        let mut warned = false;
+        // Simulate a peer varying its topic hash on every packet.
+        for i in 0..(MAX_TRACKED_KEYS as u32 * 3) {
+            if enforce_key_cap(&mut m, &mut warned) {
+                m.insert((0, i), i);
+            }
+            assert!(
+                m.len() <= MAX_TRACKED_KEYS,
+                "map must never exceed the cap, was {}",
+                m.len()
+            );
+        }
+        assert!(warned, "hitting the cap must warn at least once");
+    }
+
+    #[test]
+    fn key_cap_is_transparent_below_the_limit() {
+        use std::collections::HashMap;
+        let mut m: HashMap<(u16, u32), u32> = HashMap::new();
+        let mut warned = false;
+        for i in 0..100 {
+            assert!(enforce_key_cap(&mut m, &mut warned));
+            m.insert((0, i), i);
+        }
+        assert_eq!(m.len(), 100, "normal traffic must not be disturbed");
+        assert!(!warned, "no warning below the cap");
     }
 }

@@ -452,14 +452,29 @@ impl Replicator {
         // types on the same topic name.
         if let Some(ref name) = topic_name {
             if let Some(local_entry) = self.registry.get_entry(name) {
+                // Compare like with like. This used to be
+                // `local_entry.type_hash != msg.topic_hash` — a hash of the TYPE
+                // name against a hash of the TOPIC name. Those are hashes of
+                // different strings, so the condition was true for every message
+                // on any topic with a registered type, and every legitimate
+                // import was rejected. `InMessage` has no type_hash field at all
+                // (the 24-byte MessageHeader has no room for one), so the peer's
+                // discovery announcement is the only source of its type identity.
+                //
+                // A peer chooses what it announces, so this catches accidental
+                // type mismatch between machines — its stated purpose — and is
+                // not a defence against a hostile peer. Payload size is checked
+                // unconditionally in ShmRingWriter::write_pod, which is what
+                // actually stops a wrong-sized write.
+                let remote_type_hash = self.peers.announced_type_hash(from, name).unwrap_or(0);
                 if local_entry.type_hash != 0
-                    && msg.topic_hash != 0
-                    && local_entry.type_hash != msg.topic_hash
+                    && remote_type_hash != 0
+                    && local_entry.type_hash != remote_type_hash
                 {
                     self.metrics.record_type_mismatch();
                     eprintln!(
-                        "[horus_net] Type mismatch on topic '{}': local hash={:#x}, remote hash={:#x}. Rejecting import.",
-                        name, local_entry.type_hash, msg.topic_hash
+                        "[horus_net] Type mismatch on topic '{}': local type hash={:#x}, peer-announced type hash={:#x}. Rejecting import.",
+                        name, local_entry.type_hash, remote_type_hash
                     );
                     return;
                 }
@@ -731,8 +746,27 @@ impl Replicator {
         // the send seam is unit-tested at EstopBroadcaster::broadcast in estop.rs.
         if let Some(reason) = horus_core::scheduling::take_pending_local_estop() {
             let payload = crate::estop::encode_estop(self.peer_id_hash, &reason);
-            self.estop_broadcaster
-                .broadcast(&self.transport, payload, mcast, &peer_addrs);
+            // MUST be framed. EstopBroadcaster used to be handed the bare e-stop
+            // body, which every receiver then dropped at the magic check in
+            // PacketHeader::decode — so a genuine cross-machine e-stop never
+            // propagated, while a forged one (framed correctly by the attacker)
+            // did. Framing here rather than inside the broadcaster keeps the
+            // retry copies byte-identical to the first send.
+            match self.frame_system_topic(crate::registry::SYSTEM_TOPIC_ESTOP, &payload) {
+                Some(framed) => {
+                    self.estop_broadcaster
+                        .broadcast(&self.transport, framed, mcast, &peer_addrs);
+                }
+                None => {
+                    // Only reachable if the reason string somehow exceeded a
+                    // datagram; encode_estop caps it at 200 bytes. Never drop an
+                    // e-stop silently.
+                    eprintln!(
+                        "[horus_net] CRITICAL: local e-stop could not be framed for \
+                         broadcast (reason too long); peers will NOT be notified"
+                    );
+                }
+            }
         }
 
         // Presence cleanup (every 5s)
@@ -745,6 +779,42 @@ impl Replicator {
     // ═══════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════
+
+    /// Wrap a system-topic payload in the wire framing every receiver expects.
+    ///
+    /// `process_packet` dispatches on `PacketHeader::decode`, which rejects
+    /// anything whose first four bytes are not the HORS magic. A payload sent
+    /// without this framing is therefore silently dropped by every peer — which
+    /// is exactly what was happening to networked e-stop (see the call site in
+    /// `handle_timer`). Returns `None` if the framed packet would exceed one
+    /// datagram.
+    fn frame_system_topic(&self, topic_name: &str, payload: &[u8]) -> Option<Vec<u8>> {
+        let topic_hash = wire::topic_hash(topic_name);
+        let priority = Priority::for_system_topic(topic_name);
+        let reliability = Reliability::for_system_topic(topic_name);
+
+        let header = PacketHeader::new(PacketFlags::empty(), self.peer_id_hash, self.packet_seq);
+        let msg = wire::MessageHeader {
+            topic_hash,
+            payload_len: payload.len() as u32,
+            timestamp_ns: 0,
+            sequence: 0,
+            priority,
+            reliability,
+            encoding: Encoding::Bincode,
+            source_host: (self.peer_id_hash & 0xFF) as u8,
+        };
+
+        let total = PacketHeader::SIZE + wire::MessageHeader::SIZE + payload.len();
+        if total > wire::MAX_UDP_PAYLOAD {
+            return None;
+        }
+        let mut buf = vec![0u8; total];
+        header.encode(&mut buf[..PacketHeader::SIZE]);
+        msg.encode(&mut buf[PacketHeader::SIZE..PacketHeader::SIZE + wire::MessageHeader::SIZE]);
+        buf[PacketHeader::SIZE + wire::MessageHeader::SIZE..].copy_from_slice(payload);
+        Some(buf)
+    }
 
     /// Send a system topic payload to all known peers + multicast.
     fn send_system_topic(&self, topic_name: &str, payload: &[u8]) {

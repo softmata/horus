@@ -69,13 +69,20 @@ impl RecvState {
 /// Flow controller — tracks loss rates, will do rate adaptation in Phase 2.
 pub struct FlowController {
     /// Per (peer_id_hash, topic_hash) receive state.
+    ///
+    /// Bounded by `netfilter::MAX_TRACKED_KEYS`: both halves of the key come
+    /// straight off the wire before any guard runs, so without a cap a peer that
+    /// varies either field grows this map until the process is OOM-killed.
     state: HashMap<(u16, u32), RecvState>,
+    /// Whether the cap-hit warning has already been emitted.
+    cap_warned: bool,
 }
 
 impl FlowController {
     pub fn new() -> Self {
         Self {
             state: HashMap::new(),
+            cap_warned: false,
         }
     }
 
@@ -106,7 +113,7 @@ impl FlowController {
             {
                 state.last_sequence = sequence;
             }
-        } else {
+        } else if crate::netfilter::enforce_key_cap(&mut self.state, &mut self.cap_warned) {
             self.state.insert(key, RecvState::new(sequence));
         }
     }
