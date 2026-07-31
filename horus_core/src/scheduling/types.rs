@@ -603,6 +603,21 @@ pub(crate) struct SharedMonitors {
     /// so horus_net never broadcast: a real RT e-stop halted this robot silently
     /// and never told the fleet.
     pub estop: Option<super::safety_monitor::EstopTrigger>,
+    /// The scheduler's `SafetyMonitor` itself, for timing AGGREGATION.
+    ///
+    /// `watchdog` and `estop` are narrow handles; deadline and degradation
+    /// accounting is stateful across ticks and across nodes, so the executor
+    /// needs the monitor.
+    ///
+    /// Without it, `max_deadline_misses` and the graduated degradation ladder
+    /// were dead code on any normally-configured robot. Both live in
+    /// `check_timing_violations`, gated on `self.nodes[i].is_rt_node` — but the
+    /// class partition MOVES every RT node out of `self.nodes` into this
+    /// executor, leaving only BestEffort nodes behind, for which the gate is
+    /// false. So the ceiling only ever counted in deterministic/replay mode,
+    /// while `.rate()` — the very thing that makes a node RT — guaranteed it
+    /// would not.
+    pub safety: Option<std::sync::Arc<super::safety_monitor::SafetyMonitor>>,
 }
 
 /// Shared atomic control flags for each node, keyed by name.

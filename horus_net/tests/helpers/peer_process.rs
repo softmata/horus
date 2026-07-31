@@ -11,11 +11,25 @@ use std::time::{Duration, Instant};
 use horus_core::communication::{read_latest_slot_bytes, write_topic_slot_bytes, Topic};
 use horus_robotics::messages::vision::CompressedImage;
 use horus_robotics::{CmdVel, Imu, JointState, LaserScan, Odometry};
-use horus_sys::shm::shm_topics_dir;
+use horus_sys::shm::topic_shm_path;
 use horus_types::Pose2D;
 
+/// Resolve a topic's backing file.
+///
+/// This used to be `shm_topics_dir().join(format!("horus_{name}"))`. The
+/// `horus_` prefix went away with the SHM-only rework, and `cross_process.rs`
+/// was updated to drop it — but this helper, which is the *writer* side of the
+/// same tests, was not. So the peer wrote `horus_<topic>` while the test read
+/// `<topic>`, the writer still printed `WROTE_RAW <n>`, and 16 of 22 tests
+/// failed with "should read data from SHM". That is the same mangled-filename
+/// defect that left the horus_net replication seam dead for four months, and it
+/// is why these failures were previously written off as environmental.
+///
+/// Delegates to `horus_sys::shm::topic_shm_path`, which the security pass made
+/// the single definition of the name→path mapping — rather than hand-rolling a
+/// fourth copy of it here.
 fn shm_path(name: &str) -> std::path::PathBuf {
-    shm_topics_dir().join(format!("horus_{name}"))
+    topic_shm_path(name)
 }
 
 fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>(

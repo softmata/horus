@@ -232,10 +232,11 @@ impl HorusTestRuntime {
     /// `discover_nodes()` / `discover_shared_memory()` call re-scans.
     #[allow(dead_code)]
     pub fn refresh_discovery(&self) {
-        // The cache is a module-private lazy_static in horus_manager.
-        // We cannot access it directly from an integration test.  Instead
-        // we simply wait long enough for the cache TTL (250 ms) to expire.
-        std::thread::sleep(300_u64.ms());
+        // Previously this slept past the cache TTL, because the cache was a
+        // module-private lazy_static with no way in from an integration test.
+        // `horus_manager::discovery::invalidate_cache()` now exists, so this is
+        // deterministic instead of timing-dependent — and 300 ms faster per call.
+        horus_manager::discovery::invalidate_cache();
     }
 
     // ── Readiness ───────────────────────────────────────────────────────

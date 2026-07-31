@@ -5242,3 +5242,109 @@ fn safety_monitor_exists_even_with_no_rt_nodes_or_watchdog() {
          networked emergency stop has nothing to latch and is only a stderr print"
     );
 }
+
+/// `apply_config` — the sole sink for the Python configuration surface — must
+/// arm the watchdog it is given.
+///
+/// It used to call `apply_safety_config` eagerly. Its only caller is
+/// `PyScheduler::new`, which runs before any node is added, so the monitor was
+/// built over an empty node list and registered zero critical nodes.
+/// `finalize_config` then rebuilt the monitor from `pending_config` — where the
+/// value had never been recorded — and replaced it. Every Python
+/// `Scheduler(watchdog_ms=N)` therefore ran with an empty watchdog map.
+#[test]
+fn apply_config_watchdog_survives_finalize_and_registers_nodes() {
+    let _guard = lock_scheduler();
+
+    let mut scheduler = Scheduler::new();
+    let mut config = crate::scheduling::config::SchedulerConfig::default();
+    config.realtime.watchdog_timeout_ms = 250;
+
+    // Python order: configure first, add nodes afterwards.
+    scheduler.apply_config(config);
+    // An RT node — what `horus.Node(..., rate=..)` produces, and what
+    // `apply_safety_config` documents itself as watchdogging.
+    scheduler
+        .add(CounterNode::new("py_wd_rt"))
+        .rate(100_u64.hz())
+        .build();
+
+    assert_eq!(
+        scheduler.pending_config.realtime.watchdog_timeout_ms, 250,
+        "apply_config must record the watchdog in pending_config, or finalize_config \
+         will rebuild the monitor without it"
+    );
+
+    scheduler.finalize_config();
+
+    let safety = scheduler
+        .monitor
+        .safety
+        .as_ref()
+        .expect("a configured watchdog must produce a safety monitor");
+    assert!(
+        safety.critical_node_count() > 0,
+        "the watchdog must actually be registered against the nodes — an empty \
+         watchdog map means check_watchdogs iterates nothing and the timeout is inert"
+    );
+}
+
+/// The RT executor must be able to reach the SafetyMonitor.
+///
+/// `max_deadline_misses` and the graduated degradation ladder live in the main
+/// loop's `check_timing_violations`, gated on `is_rt_node`. But the class
+/// partition moves every RT node OUT of `Scheduler::nodes` into RtExecutor,
+/// leaving only BestEffort nodes behind — for which that gate is false. So
+/// `.rate()`, the very thing that makes a node RT, guaranteed its deadline
+/// misses would never be counted: the ceiling only worked in deterministic
+/// mode, where the partition does not happen.
+///
+/// This asserts the handle exists. Exercising an actual miss needs RT
+/// scheduling privileges this machine does not have.
+#[test]
+fn shared_monitors_carry_a_safety_handle_for_executors() {
+    let _guard = lock_scheduler();
+
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(CounterNode::new("agg_rt"))
+        .rate(100_u64.hz())
+        .build();
+    let config = scheduler.pending_config.clone();
+    scheduler.apply_safety_config(&config.realtime);
+
+    assert!(
+        scheduler.monitor.safety.is_some(),
+        "precondition: an RT node produces a safety monitor"
+    );
+
+    // This is what run() hands to every executor thread.
+    let shared = crate::scheduling::types::SharedMonitors {
+        profiler: scheduler.monitor.profiler.clone(),
+        blackbox: scheduler.monitor.blackbox.clone(),
+        verbose: false,
+        registry: Default::default(),
+        registry_slots: Default::default(),
+        node_controls: Default::default(),
+        clock: scheduler.clock.clone(),
+        tick_period: scheduler.tick.period,
+        watchdog: scheduler.monitor.safety.as_ref().map(|m| m.watchdog_feeder()),
+        estop: scheduler.monitor.safety.as_ref().map(|m| m.estop_trigger()),
+        safety: scheduler.monitor.safety.clone(),
+    };
+
+    assert!(
+        shared.safety.is_some(),
+        "executors must receive the SafetyMonitor — without it max_deadline_misses \
+         and the degradation ladder are dead code for every RT node"
+    );
+    // And it must be the SAME monitor, not a copy: the miss counter is what
+    // max_deadline_misses compares against.
+    let m = shared.safety.as_ref().unwrap();
+    m.record_deadline_miss("agg_rt");
+    assert_eq!(
+        scheduler.monitor.safety.as_ref().unwrap().consecutive_misses("agg_rt"),
+        m.consecutive_misses("agg_rt"),
+        "the executor's handle must share state with the scheduler's monitor"
+    );
+}

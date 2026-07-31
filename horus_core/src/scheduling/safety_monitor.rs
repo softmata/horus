@@ -646,6 +646,16 @@ impl SafetyMonitor {
 
     /// Add a critical node that must be monitored.
     ///
+    /// Number of nodes registered as critical (i.e. actually watchdogged).
+    ///
+    /// Exposed so callers can assert the watchdog was really armed: an empty
+    /// set means `check_watchdogs` iterates nothing and the configured timeout
+    /// is inert, which is indistinguishable from a working watchdog at runtime.
+    #[cfg(test)]
+    pub fn critical_node_count(&self) -> usize {
+        self.critical_nodes.read().len()
+    }
+
     /// Takes `&self` (not `&mut self`) because `critical_nodes` is protected by an
     /// interior `RwLock`; this allows callers holding a shared reference to safely
     /// register new nodes at any time.

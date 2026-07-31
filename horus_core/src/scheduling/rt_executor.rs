@@ -263,6 +263,12 @@ impl RtExecutor {
 
         // tick budget check via TimingEnforcer
         if let Some(tick_budget) = node.tick_budget {
+            // Budget overrun feeds the monitor too — same reasoning as the
+            // deadline path below: this node is not in `Scheduler::nodes`, so
+            // the main loop's budget accounting never sees it.
+            if let Some(ref monitor) = monitors.safety {
+                let _ = monitor.check_tick_budget(&node.name, tr.duration);
+            }
             if let Some(budget_result) =
                 TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
             {
@@ -346,6 +352,34 @@ impl RtExecutor {
                 }
                 if let Some(ref mut stats) = node.rt_stats {
                     stats.record_deadline_miss();
+                }
+                // Aggregate into the scheduler's SafetyMonitor.
+                //
+                // `stats.record_deadline_miss()` above is NODE-LOCAL. The
+                // monitor-side accounting — `max_deadline_misses` and the
+                // graduated degradation ladder — lives in the main loop's
+                // `check_timing_violations`, gated on `is_rt_node`. But the class
+                // partition moves every RT node OUT of `Scheduler::nodes` and
+                // into this executor, leaving only BestEffort nodes behind, for
+                // which that gate is false. So `.rate()` — the very thing that
+                // makes a node RT — guaranteed its misses were never counted:
+                // the ceiling only ever worked in deterministic/replay mode,
+                // where the partition does not happen.
+                if let Some(ref monitor) = monitors.safety {
+                    monitor.record_deadline_miss(&node.name);
+                    let consecutive = monitor.consecutive_misses(&node.name);
+                    let action =
+                        monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
+                    if !matches!(action, super::safety_monitor::DegradationAction::None) {
+                        // The executor owns its nodes, so it applies the rate
+                        // part itself; anything stronger is reported and left to
+                        // the deadline-action dispatch below, which already
+                        // handles SafeMode and EmergencyStop.
+                        print_line(&format!(
+                            "[RT-thread] Degradation for '{}': {:?} after {} consecutive misses",
+                            node.name, action, consecutive
+                        ));
+                    }
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
                 if let Some(ref bb) = monitors.blackbox {
@@ -734,6 +768,7 @@ mod tests {
             tick_period: Duration::from_millis(1),
             watchdog: None,
             estop: None,
+            safety: None,
         }
     }
 
@@ -1264,6 +1299,7 @@ mod tests {
             tick_period: Duration::from_millis(1),
             watchdog: None,
             estop: None,
+            safety: None,
         };
 
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
@@ -1345,6 +1381,7 @@ mod tests {
             tick_period: Duration::from_millis(1),
             watchdog: None,
             estop: None,
+            safety: None,
         };
 
         let running = Arc::new(AtomicBool::new(true));

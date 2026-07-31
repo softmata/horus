@@ -9,12 +9,30 @@ mod harness;
 
 use harness::{HorusTestRuntime, TestNodeConfig};
 use horus_core::core::DurationExt;
-use horus_manager::discovery::discover_nodes;
+use horus_manager::discovery::{
+    discover_nodes as discover_nodes_cached, invalidate_cache, NodeStatus,
+};
 use std::time::Instant;
+
+/// Discovery is cached with a ~250 ms TTL (`DISCOVERY_CACHE_MS`), which is
+/// right for a CLI and wrong for this file: every test here mutates the SHM
+/// tree and then immediately reads it back, so a cached answer is guaranteed to
+/// describe the *previous* state.
+///
+/// This shadows the real `discover_nodes` so every call site — including the
+/// ones inside churn loops — goes through the invalidation. Without it only the
+/// first test in the binary passed: each later test filtered for its own node
+/// prefix against the prior test's cached list and matched zero.
+fn discover_nodes() -> horus_core::error::HorusResult<Vec<NodeStatus>> {
+    invalidate_cache();
+    discover_nodes_cached()
+}
 
 fn clean_shm() {
     let _ = std::fs::remove_dir_all(horus_sys::shm::shm_nodes_dir());
     let _ = std::fs::remove_dir_all(horus_sys::shm::shm_topics_dir());
+    // The tree we just deleted is exactly what the cache describes.
+    invalidate_cache();
 }
 
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

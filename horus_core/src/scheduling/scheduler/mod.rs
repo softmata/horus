@@ -160,7 +160,7 @@ pub(crate) struct TickState {
 /// monitoring. Lock contention is negligible since monitoring calls are fast
 /// and executors tick at different cadences.
 pub(crate) struct MonitorState {
-    pub safety: Option<SafetyMonitor>,
+    pub safety: Option<std::sync::Arc<SafetyMonitor>>,
     pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
     pub telemetry: Option<super::telemetry::TelemetryManager>,
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
@@ -1105,8 +1105,33 @@ impl Scheduler {
             Duration::from_millis(10) // 100Hz fallback for invalid rate
         };
 
-        // RT safety and OS-level optimizations
-        self.apply_safety_config(&config.realtime);
+        // Record the safety knobs in `pending_config` instead of applying them
+        // NOW.
+        //
+        // `apply_config` is the sole sink for the Python configuration surface
+        // (`Scheduler(watchdog_ms=..)`, `run(.., watchdog_ms=..)`,
+        // `SchedulerConfig.with_watchdog()`), and its only caller is
+        // `PyScheduler::new` — which runs BEFORE any node has been added. So the
+        // eager `apply_safety_config` here built a monitor over an empty node
+        // list and registered zero critical nodes. `finalize_config` then runs
+        // after the nodes exist, rebuilds the monitor from `pending_config` —
+        // where these values had never been written — and REPLACES the eager
+        // one. Net effect: every Python watchdog configuration ended with an
+        // empty watchdog map and nothing was ever checked. The Rust `.watchdog()`
+        // builder was unaffected because it writes `pending_config` directly.
+        //
+        // Merged field-wise, NOT as a wholesale `self.pending_config = config`:
+        // horus_py calls the deterministic/name/cores/max_deadline_misses/
+        // verbose/telemetry builders BEFORE `apply_config`, so overwriting the
+        // whole struct would silently discard them.
+        self.pending_config.realtime.watchdog_timeout_ms = config.realtime.watchdog_timeout_ms;
+        self.pending_config.realtime.max_deadline_misses = config.realtime.max_deadline_misses;
+        if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
+            self.pending_config.timing.global_rate_hz = config.timing.global_rate_hz;
+        }
+
+        // OS-level optimizations are applied eagerly on purpose: they touch the
+        // process (mlockall, scheduling class) and do not depend on the node set.
         self.apply_rt_optimizations(&config.realtime, &config.resources);
 
         // require_rt() enforcement: fail if high-severity degradations occurred
@@ -1188,7 +1213,7 @@ impl Scheduler {
                 }
             }
 
-            self.monitor.safety = Some(monitor);
+            self.monitor.safety = Some(std::sync::Arc::new(monitor));
             if self.pending_config.monitoring.verbose {
                 if watchdog_active || has_rt_nodes {
                     print_line("Safety monitor configured for RT nodes");
@@ -1370,7 +1395,7 @@ impl Scheduler {
         node_name: &str,
         watchdog_timeout: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
-        if let Some(ref mut monitor) = self.monitor.safety {
+        if let Some(ref monitor) = self.monitor.safety {
             monitor.add_critical_node(node_name.to_string(), watchdog_timeout);
             Ok(self)
         } else {
@@ -1406,7 +1431,7 @@ impl Scheduler {
         node_name: &str,
         budget: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
-        if let Some(ref mut monitor) = self.monitor.safety {
+        if let Some(ref monitor) = self.monitor.safety {
             monitor.set_tick_budget(node_name.to_string(), budget);
             Ok(self)
         } else {
@@ -2351,6 +2376,12 @@ impl Scheduler {
                     // critical nodes are fed and don't spuriously e-stop.
                     watchdog: self.monitor.safety.as_ref().map(|m| m.watchdog_feeder()),
                     estop: self.monitor.safety.as_ref().map(|m| m.estop_trigger()),
+                    // FIX: the class partition moves every RT node out of
+                    // `self.nodes`, so `check_timing_violations` — gated on
+                    // `is_rt_node` — never sees them and `max_deadline_misses`
+                    // plus the whole degradation ladder were dead code on any
+                    // normally-configured robot. Give the executor the monitor.
+                    safety: self.monitor.safety.clone(),
                 };
 
                 if !groups.rt_nodes.is_empty() {

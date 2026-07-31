@@ -387,6 +387,7 @@ mod tests {
             tick_period: Duration::from_millis(1),
             watchdog: None,
             estop: None,
+            safety: None,
         }
     }
 

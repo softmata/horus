@@ -63,9 +63,18 @@ fn test_estop_long_reason_truncated() {
 fn test_presence_receiver_handles_valid_data() {
     use horus_net::presence::PresenceReceiver;
 
-    // Manually build a minimal presence broadcast payload
+    // Manually build a minimal presence broadcast payload.
+    //
+    // The namespace must match what `PresenceReceiver` computes locally, which
+    // is `HORUS_NAMESPACE` (falling back to "default"). Hard-coding "default"
+    // made this test pass only when that variable happened to be unset —
+    // `ci.yml`'s test job sets `HORUS_NAMESPACE: ci_<run_id>`, so the receiver
+    // took the `namespace != self.local_namespace` early return and wrote no
+    // file, and the assertion below blamed the write path for a mismatch the
+    // test itself introduced.
+    let ns_owned = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    let ns = ns_owned.as_bytes();
     let mut payload = Vec::new();
-    let ns = b"default";
     payload.extend_from_slice(&(ns.len() as u16).to_le_bytes());
     payload.extend_from_slice(ns);
     let hid = b"abcd";
