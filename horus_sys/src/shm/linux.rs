@@ -32,17 +32,17 @@ impl ShmRegion {
         // create-and-mmap primitive.
         super::validate_region_name(name)?;
         let horus_shm_dir = super::shm_topics_dir();
-        // Mode 0o700: only the owner can list or access the SHM directory.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&horus_shm_dir)
-            .with_context(|| {
-                format!(
-                    "Failed to create SHM directory: {}",
-                    horus_shm_dir.display()
-                )
-            })?;
+        // Mode 0o700 and owner-verified: /dev/shm is 1777 and the namespace is a
+        // predictable literal, so a local user can pre-create this tree and hand
+        // us attacker-controlled ring headers. create_shm_dir_all refuses to
+        // build inside a base directory we do not own, and tightens the mode of
+        // one an older build already created too loosely.
+        super::create_shm_dir_all(&horus_shm_dir).with_context(|| {
+            format!(
+                "Failed to create SHM directory: {}",
+                horus_shm_dir.display()
+            )
+        })?;
 
         // Use the topic name directly — the directory is already horus-specific
         // (/dev/shm/horus_{namespace}/topics/). No "horus_" prefix needed.

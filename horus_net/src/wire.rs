@@ -427,10 +427,30 @@ pub struct InMessage {
 // ─── Encode/Decode Full Packets ─────────────────────────────────────────────
 
 /// Encode a single data message into a packet buffer.
-/// Returns the number of bytes written.
+///
+/// Returns the number of bytes written, or 0 if `buf` is too small to hold the
+/// framed message. Callers MUST treat 0 as "not encoded" and skip the send.
+///
+/// This used to `assert!` on an undersized buffer. Every caller runs on the
+/// single `horus-net` thread, the release profile is `panic = unwind` (there is
+/// no `panic = "abort"` in the workspace), and `Replicator::run` is spawned with
+/// no `catch_unwind` — so the assert would unwind exactly that thread and leave
+/// the process alive with networking permanently dead, while
+/// `ReplicatorHandle::is_running()` kept returning true. Silent, unrecoverable
+/// loss of replication (including e-stop) is a worse outcome than a dropped
+/// oversized message, so this reports rather than panics.
 pub fn encode_single(header: &PacketHeader, msg: &OutMessage, buf: &mut [u8]) -> usize {
     let total = PacketHeader::SIZE + MessageHeader::SIZE + msg.payload.len();
-    assert!(buf.len() >= total, "buffer too small for packet");
+    if buf.len() < total {
+        eprintln!(
+            "[horus_net] Dropping a {}-byte message on topic hash {:#x} — it does not fit \
+             the {}-byte send buffer",
+            msg.payload.len(),
+            msg.topic_hash,
+            buf.len()
+        );
+        return 0;
+    }
 
     header.encode(&mut buf[..PacketHeader::SIZE]);
 
@@ -535,6 +555,34 @@ mod tests {
     #[test]
     fn message_header_size() {
         assert_eq!(MessageHeader::SIZE, 24);
+    }
+
+    #[test]
+    fn encode_single_reports_instead_of_panicking_on_a_small_buffer() {
+        // This used to assert!, which would unwind the single horus-net thread
+        // and leave the process alive with replication permanently dead.
+        let header = PacketHeader::new(PacketFlags::empty(), 1, 1);
+        let msg = OutMessage {
+            topic_name: "t".into(),
+            topic_hash: 0xABCD,
+            payload: vec![0u8; 512],
+            timestamp_ns: 0,
+            sequence: 0,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::PodLe,
+        };
+        let mut small = [0u8; 64];
+        assert_eq!(
+            encode_single(&header, &msg, &mut small),
+            0,
+            "an undersized buffer must report 0, not panic"
+        );
+
+        // And the happy path still works.
+        let mut big = [0u8; 4096];
+        let n = encode_single(&header, &msg, &mut big);
+        assert_eq!(n, PacketHeader::SIZE + MessageHeader::SIZE + 512);
     }
 
     #[test]

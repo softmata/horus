@@ -162,17 +162,35 @@ elif $check_only; then
     echo -e "  ${YELLOW}${WARN}${NC} RT limits need configuration"
     echo "  Fix: Run this script without --check"
 else
-    cat > "$LIMITS_FILE" << 'LIMEOF'
+    # Scope the grant to the invoking user, never `*`.
+    #
+    # A `*` domain hands EVERY account on the machine rtprio 99, unlimited
+    # memlock and nice -20. Any local user can then lock all of RAM, or run a
+    # SCHED_FIFO 99 spinner that preempts the kernel's own threads — and on a
+    # robot, preempts the very control loops these limits exist to protect.
+    RT_USER="${SUDO_USER:-}"
+    if [ -z "$RT_USER" ] || [ "$RT_USER" = "root" ]; then
+        echo -e "  ${YELLOW}${WARN}${NC} Could not determine the invoking user (SUDO_USER unset)."
+        echo -e "  ${YELLOW}${WARN}${NC} Skipping RT limits. Re-run as: sudo $0"
+        echo -e "      Or add these lines to $LIMITS_FILE for the account running HORUS:"
+        echo -e "        <user>  -  rtprio   99"
+        echo -e "        <user>  -  memlock  unlimited"
+    else
+        cat > "$LIMITS_FILE" << LIMEOF
 # HORUS Real-Time Scheduling Limits
-# Allow all users to use RT scheduling and lock memory
-# Required for SCHED_FIFO, mlockall, and deterministic control loops
-*    soft    rtprio     99
-*    hard    rtprio     99
-*    soft    memlock    unlimited
-*    hard    memlock    unlimited
-*    soft    nice       -20
-*    hard    nice       -20
+# Scoped to the user that ran setup-realtime.sh. Required for SCHED_FIFO,
+# mlockall and deterministic control loops.
+#
+# Do NOT widen the domain to '*': granting rtprio 99 to every account lets any
+# local user starve the control loops these limits exist to protect.
+$RT_USER    soft    rtprio     99
+$RT_USER    hard    rtprio     99
+$RT_USER    soft    memlock    unlimited
+$RT_USER    hard    memlock    unlimited
+$RT_USER    soft    nice       -20
+$RT_USER    hard    nice       -20
 LIMEOF
+    fi
     echo -e "  ${GREEN}${OK}${NC} Created $LIMITS_FILE"
     echo -e "  ${YELLOW}${WARN}${NC} LOG OUT and LOG BACK IN for limits to take effect"
 fi
@@ -197,7 +215,13 @@ elif $check_only; then
 else
     # Increase /dev/shm for Raspberry Pi and other memory-constrained systems
     if ! grep -q "/dev/shm" /etc/fstab 2>/dev/null || ! grep -q "size=" /etc/fstab 2>/dev/null; then
-        echo "tmpfs /dev/shm tmpfs defaults,size=512M 0 0" >> /etc/fstab
+        # nosuid,nodev are REQUIRED here, not optional hardening: they are part
+        # of the kernel's own default mount for /dev/shm, and `defaults` alone
+        # silently drops them. /dev/shm is world-writable (mode 1777), so
+        # without nosuid any local user can drop a setuid-root binary there and
+        # execute it, and without nodev they can create device nodes. Writing
+        # this line with bare `defaults` permanently downgrades the system.
+        echo "tmpfs /dev/shm tmpfs defaults,nosuid,nodev,size=512M 0 0" >> /etc/fstab
         mount -o remount /dev/shm 2>/dev/null || true
         echo -e "  ${GREEN}${OK}${NC} Increased /dev/shm to 512MB"
     fi

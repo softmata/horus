@@ -596,6 +596,10 @@ impl Replicator {
 
                 let mut send_buf = [0u8; 65536];
                 let len = wire::encode_single(&header, &frag_msg, &mut send_buf);
+                // 0 = did not fit; skip rather than send a truncated packet.
+                if len == 0 {
+                    continue;
+                }
 
                 for _ in 0..copies {
                     for addr in &sub_addrs {
@@ -666,6 +670,9 @@ impl Replicator {
             };
             let mut buf = [0u8; 65536];
             let len = wire::encode_single(&header, &msg, &mut buf);
+            if len == 0 {
+                continue; // did not fit; skip rather than send an empty datagram
+            }
             // Resend to all known peers (latched = broadcast)
             for peer in self.peers.alive_peers() {
                 let _ = self.transport.send_to(&buf[..len], peer.data_addr());

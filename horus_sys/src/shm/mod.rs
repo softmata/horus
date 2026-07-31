@@ -156,6 +156,12 @@ pub const SHM_FILE_MODE: u32 = 0o600;
 /// The repair pass only ever *removes* permission bits, and only on paths this
 /// user owns, so it can never widen access or fight another user's ownership.
 pub fn create_shm_dir_all(path: &Path) -> std::io::Result<()> {
+    // Refuse to build inside a tree someone else pre-created. /dev/shm is mode
+    // 1777 and the namespace defaults to the fixed literal "default", so the
+    // base path is predictable and racing us to it is trivial.
+    verify_shm_dir_ownership(&shm_base_dir())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string()))?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -180,6 +186,60 @@ pub fn create_shm_dir_all(path: &Path) -> std::io::Result<()> {
         }
     } else {
         harden_existing_dir(path);
+    }
+    Ok(())
+}
+
+/// Verify that an existing SHM directory is safe to use.
+///
+/// `/dev/shm` and `/tmp` are mode 1777, so any local user can pre-create
+/// `/dev/shm/horus_<namespace>` before the first HORUS process starts. The
+/// namespace is the fixed literal `"default"` unless `HORUS_NAMESPACE` is set,
+/// so the path is entirely predictable. Whoever wins that race owns the whole
+/// IPC tree: they can hand every subsequent HORUS process attacker-controlled
+/// ring headers, or simply hold the tree at a mode that locks the real user out.
+///
+/// Returns an error if the path exists but is not a directory we own, or is a
+/// symlink. Only ownership is enforced here — the mode is repaired separately by
+/// [`harden_existing_dir`], which can only ever tighten it.
+pub fn verify_shm_dir_ownership(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // symlink_metadata, not metadata: a symlink planted here must be
+        // rejected outright, not followed to whatever it points at.
+        let meta = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        anyhow::ensure!(
+            !meta.file_type().is_symlink(),
+            "SHM path {} is a symlink; refusing to use it. Another user may have \
+             planted it — remove it and restart.",
+            path.display()
+        );
+        anyhow::ensure!(
+            meta.is_dir(),
+            "SHM path {} exists but is not a directory; refusing to use it.",
+            path.display()
+        );
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        anyhow::ensure!(
+            meta.uid() == euid,
+            "SHM directory {} is owned by uid {}, not this process's uid {}. \
+             Refusing to use it: a directory pre-created by another user lets them \
+             feed this process attacker-controlled IPC state. Remove it, or set \
+             HORUS_NAMESPACE to a private namespace.",
+            path.display(),
+            meta.uid(),
+            euid
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
     Ok(())
 }
@@ -1444,6 +1504,67 @@ mod tests {
             "an already-stricter mode must be left alone, not relaxed to 0600"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_accepts_our_own_dir_and_absent_paths() {
+        let dir = std::env::temp_dir().join(format!("horus_own_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Absent is fine — we are about to create it.
+        assert!(verify_shm_dir_ownership(&dir).is_ok());
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(verify_shm_dir_ownership(&dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_rejects_a_symlink_instead_of_following_it() {
+        // The pre-creation attack: /dev/shm is 1777 and the namespace is a fixed
+        // predictable literal, so another user can plant a symlink here.
+        let base = std::env::temp_dir().join(format!("horus_own_link_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = verify_shm_dir_ownership(&link).unwrap_err().to_string();
+        assert!(
+            err.contains("symlink"),
+            "a symlinked SHM dir must be refused, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_rejects_a_non_directory() {
+        let path = std::env::temp_dir().join(format!("horus_own_file_{}", std::process::id()));
+        std::fs::write(&path, b"not a dir").unwrap();
+        assert!(verify_shm_dir_ownership(&path).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_rejects_a_dir_owned_by_another_uid() {
+        // /tmp itself is root-owned and mode 1777 — exactly the shape of the
+        // directory an attacker pre-creates. Skip when running as root, where
+        // the ownership test is vacuous.
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let err = verify_shm_dir_ownership(Path::new("/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("owned by uid"),
+            "a foreign-owned SHM dir must be refused, got: {err}"
+        );
     }
 
     #[test]
