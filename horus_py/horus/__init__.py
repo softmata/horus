@@ -452,7 +452,16 @@ class Node:
             failure_policy: Error policy — ``"fatal"``, ``"restart"``, ``"skip"``, ``"ignore"``
             compute: CPU-bound execution (thread pool). Mutually exclusive with ``on`` and async.
             on: Event-driven — tick when this topic receives data. Mutually exclusive with ``compute``.
-            priority: OS scheduling priority (lower = higher priority)
+            priority: SCHED_FIFO real-time priority, 1-99 — **HIGHER means more
+                urgent**, so 99 is the most urgent and 1 the least. This
+                docstring previously said "lower = higher priority", which is
+                inverted: a user following it and setting ``priority=1`` for
+                their most safety-critical node was giving it the LOWEST
+                real-time priority on the system. The value is passed straight
+                through to the Rust builder, whose own docs say "1-99, higher =
+                more priority" and whose example uses ``.priority(99)`` for a
+                safety monitor. Requires CAP_SYS_NICE or root; degrades
+                gracefully if unavailable.
             core: Pin to CPU core index
             watchdog: Per-node watchdog timeout in seconds
             default_capacity: Topic ring buffer capacity (default: 1024)

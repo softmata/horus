@@ -37,7 +37,18 @@ pub struct LaunchNode {
     #[serde(default)]
     pub package: Option<String>,
 
-    /// Node priority (lower = higher priority)
+    /// Node priority — SCHED_FIFO 1-99, **HIGHER means more urgent**.
+    ///
+    /// Two corrections recorded here rather than left implicit:
+    ///
+    /// 1. This said "lower = higher priority", which is inverted for
+    ///    SCHED_FIFO. A user setting `priority = 1` on their most critical node
+    ///    was asking for the LOWEST real-time priority.
+    /// 2. **The value is currently inert.** It is exported to the child as
+    ///    `HORUS_NODE_PRIORITY` (below) and nothing in the workspace reads that
+    ///    variable, so setting it in a launch file has no runtime effect. Use
+    ///    `.priority()` on the Rust builder, or `priority=` on the Python
+    ///    `Node`, both of which do reach the scheduler.
     #[serde(default)]
     pub priority: Option<i32>,
 
@@ -1141,6 +1152,9 @@ fn launch_node(
     // Set HORUS-specific environment
     cmd.env("HORUS_NODE_NAME", &node.name);
     if let Some(priority) = node.priority {
+        // NOTE: nothing in the workspace reads HORUS_NODE_PRIORITY, so this is
+        // currently a no-op — kept because removing it would silently drop the
+        // only trace of a user's configured value. See the `priority` field doc.
         cmd.env("HORUS_NODE_PRIORITY", priority.to_string());
     }
     if let Some(rate) = node.rate_hz {

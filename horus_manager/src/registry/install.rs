@@ -558,7 +558,7 @@ impl RegistryClient {
                 return Err(anyhow!(
                     "Package {} is signed but no local public key found to verify the signature.\n\
                      Install the publisher's public key to ~/.horus/signing_key.pub before installing.\n\
-                     If you trust this package without verification, use --skip-verify.",
+                     Package verification failure is fatal — there is no override.",
                     package_name
                 ));
             }
@@ -583,9 +583,39 @@ impl RegistryClient {
         );
         match self.client.get(&checksum_url).send() {
             Ok(resp) if resp.status().is_success() => {
-                if let Ok(json) = resp.json::<serde_json::Value>() {
-                    if let Some(expected) = json.get("checksum").and_then(|v| v.as_str()) {
-                        if !expected.is_empty() && expected != checksum {
+                // Fail CLOSED on a 200 that carries no usable checksum.
+                //
+                // The `_ =>` arm below already treats a failed FETCH as fatal, so
+                // that is this code's actual policy. But a 200 whose body was
+                // unparseable, lacked the `checksum` field, or carried an empty
+                // one fell through every `if let` and reached the success path —
+                // installing the package with NO verification and no warning.
+                // The permissive branch was reachable by anything able to shape
+                // the response, which is exactly the party verification exists to
+                // defend against.
+                let expected = resp
+                    .json::<serde_json::Value>()
+                    .ok()
+                    .and_then(|json| {
+                        json.get("checksum")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .filter(|s| !s.is_empty());
+
+                let Some(expected) = expected else {
+                    return Err(anyhow!(
+                        "Checksum verification failed for {}@{}: the registry returned a \
+                         success response with no usable checksum.\n\
+                         Refusing to install an unverified package — this is the same \
+                         outcome as an unreachable registry, which is already fatal.",
+                        package_name,
+                        version_str
+                    ));
+                };
+                {
+                    {
+                        if expected != checksum {
                             return Err(anyhow!(
                                 "Checksum mismatch for {}@{}!\n\
                                  Expected: {}\n\
@@ -609,7 +639,7 @@ impl RegistryClient {
                 eprintln!(
                     "\n{} Warning: Could not verify package checksum for {}@{}.\n\
                      The registry may be unreachable or the package may have been tampered with.\n\
-                     Use --skip-verify to install anyway.",
+                     Verification failure is fatal — there is no override flag.",
                     crate::cli_output::ICON_WARN.yellow(),
                     package_name,
                     version_str
@@ -992,8 +1022,21 @@ impl RegistryClient {
         hasher.update(&bytes);
         let actual_checksum = format!("{:x}", hasher.finalize());
 
-        if let Some(ref expected) = expected_checksum {
-            if !expected.is_empty() && expected != &actual_checksum {
+        // Fail CLOSED when the binary artifact arrives with no X-Horus-Checksum
+        // header, or an empty one. Previously both fell out of the `if let` and
+        // installed unverified — and this is the FAST path, the one most
+        // installs take.
+        let expected_checksum = expected_checksum.filter(|c| !c.is_empty());
+        let Some(ref expected) = expected_checksum else {
+            return Err(anyhow!(
+                "Binary artifact for {}@{} arrived with no X-Horus-Checksum header.\n\
+                 Refusing to install an unverified binary.",
+                package_name,
+                version_str
+            ));
+        };
+        {
+            if expected != &actual_checksum {
                 return Err(anyhow!(
                     "Checksum mismatch for binary artifact {}@{} ({})!\n\
                      Expected: {}\n\
