@@ -398,6 +398,23 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     // `{service}.request.json`, so two concurrent `horus service call`
     // invocations silently clobbered each other's request — the loser either
     // hung until timeout or received a reply to a request it never made.
+    // The service name is a CLI argument that is about to become a filename in
+    // the gateway directory, so `..` or a `/` in it escapes that directory and
+    // makes this an arbitrary-path write as the invoking user. Reject rather
+    // than sanitise: a name containing these characters is not a service the
+    // server could have registered under.
+    if resolved_name.is_empty()
+        || resolved_name.contains('/')
+        || resolved_name.contains('\\')
+        || resolved_name.contains("..")
+        || resolved_name.contains('\0')
+        || resolved_name.len() > 128
+    {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "invalid service name {resolved_name:?}: must not contain path separators, \
+             '..', or NUL, and must be at most 128 characters"
+        ))));
+    }
     let req_file = gateway_dir.join(format!("{}.request.{}.json", resolved_name, request_id));
     let res_file = gateway_dir.join(format!("{}.response.{}.json", resolved_name, request_id));
     horus_sys::shm::write_shm_file_new(&req_file, &json_bytes).map_err(|e| {

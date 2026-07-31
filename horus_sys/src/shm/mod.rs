@@ -244,6 +244,14 @@ pub fn verify_shm_dir_ownership(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Tighten an existing directory to [`SHM_DIR_MODE`] if we own it.
+///
+/// Public wrapper for callers that create a directory through some other route
+/// (e.g. the blackbox recorder) and need the same owner-only guarantee.
+pub fn harden_shm_dir(path: &Path) {
+    harden_existing_dir(path)
+}
+
 /// Tighten one existing directory to [`SHM_DIR_MODE`], if we own it and it is
 /// currently looser. Silent no-op otherwise.
 fn harden_existing_dir(path: &Path) {
@@ -544,7 +552,14 @@ pub fn is_shm_file_stale(path: &std::path::Path) -> bool {
 
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return true,
+        // "Cannot open" is NOT "stale". Callers act on this by UNLINKING the
+        // file, so treating an open failure as stale turns any transient
+        // EACCES/EMFILE/ENFILE — or a file owned by another user — into a
+        // delete of a live topic. Absent means genuinely gone; everything else
+        // is conservatively not-stale, matching how the errno cases below are
+        // already handled.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
     };
 
     let fd = file.as_raw_fd();

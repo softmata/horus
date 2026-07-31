@@ -212,6 +212,42 @@ impl Tensor {
         &self.strides[..(self.ndim as usize).min(MAX_TENSOR_DIMS)]
     }
 
+    /// Byte extent the shape/strides descriptor actually addresses.
+    ///
+    /// For a strided layout the last addressable byte is
+    /// `sum_i (shape[i] - 1) * strides[i] + element_size`, which is what a
+    /// consumer handing this descriptor to numpy or torch will read up to.
+    /// Returns `None` on overflow.
+    #[inline]
+    pub fn addressed_extent_bytes(&self) -> Option<u64> {
+        let elem = self.dtype.element_size() as u64;
+        let mut extent: u64 = elem;
+        for (&dim, &stride) in self.shape().iter().zip(self.strides().iter()) {
+            if dim == 0 {
+                return Some(0); // empty tensor addresses nothing
+            }
+            extent = extent.checked_add(dim.checked_sub(1)?.checked_mul(stride)?)?;
+        }
+        Some(extent)
+    }
+
+    /// Whether this descriptor's shape/strides stay inside its own allocation.
+    ///
+    /// A `Tensor` descriptor travels over a topic, so `shape`, `strides`, `ndim`
+    /// and `size` all arrive from another process. `shape()`/`strides()` clamp
+    /// `ndim`, but nothing checked the described extent against `size` — so a
+    /// descriptor claiming a large shape made every zero-copy consumer
+    /// (numpy via `__array_interface__`, torch via `__cuda_array_interface__`)
+    /// read past the end of the pool slot. Callers that expose the raw pointer
+    /// MUST check this first.
+    #[inline]
+    pub fn descriptor_is_within_allocation(&self) -> bool {
+        match self.addressed_extent_bytes() {
+            Some(extent) => extent <= self.size,
+            None => false, // overflow — reject
+        }
+    }
+
     /// Get total number of elements
     #[inline]
     pub fn numel(&self) -> u64 {
@@ -581,5 +617,43 @@ mod tests {
         _copy.shape[0] = 1;
         assert_eq!(t.pool_id, 1, "original must be unaffected by copy mutation");
         assert_eq!(t.shape[0], 480);
+    }
+
+    #[test]
+    fn descriptor_bounds_reject_an_oversized_shape() {
+        // A Tensor descriptor arrives over a topic, so shape/strides/size all
+        // come from another process. A shape that addresses more bytes than the
+        // allocation must be refused before any consumer turns it into a
+        // zero-copy numpy/torch view.
+        let mut t = Tensor::new(1, 0, 0, 0, &[4, 4], TensorDtype::F32, Device::CPU);
+        assert!(t.descriptor_is_within_allocation(), "honest descriptor is fine");
+
+        // Claim a much larger shape while leaving `size` alone.
+        t.shape[0] = 4096;
+        t.shape[1] = 4096;
+        assert!(
+            !t.descriptor_is_within_allocation(),
+            "a shape larger than the allocation must be rejected"
+        );
+    }
+
+    #[test]
+    fn descriptor_bounds_reject_overflowing_strides() {
+        let mut t = Tensor::new(1, 0, 0, 0, &[2, 2], TensorDtype::F32, Device::CPU);
+        t.strides[0] = u64::MAX;
+        assert!(
+            !t.descriptor_is_within_allocation(),
+            "stride arithmetic that overflows must reject, not wrap"
+        );
+    }
+
+    #[test]
+    fn descriptor_bounds_allow_an_empty_tensor() {
+        let mut t = Tensor::new(1, 0, 0, 0, &[2, 2], TensorDtype::F32, Device::CPU);
+        t.shape[0] = 0;
+        assert!(
+            t.descriptor_is_within_allocation(),
+            "a zero-length dimension addresses nothing and is legal"
+        );
     }
 }

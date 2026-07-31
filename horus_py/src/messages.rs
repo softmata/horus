@@ -909,17 +909,17 @@ impl PyJointState {
 
     #[getter]
     fn positions(&self) -> Vec<f64> {
-        self.inner.positions[..self.inner.joint_count as usize].to_vec()
+        self.inner.positions[..(self.inner.joint_count as usize).min(self.inner.positions.len())].to_vec()
     }
 
     #[getter]
     fn velocities(&self) -> Vec<f64> {
-        self.inner.velocities[..self.inner.joint_count as usize].to_vec()
+        self.inner.velocities[..(self.inner.joint_count as usize).min(self.inner.velocities.len())].to_vec()
     }
 
     #[getter]
     fn efforts(&self) -> Vec<f64> {
-        self.inner.efforts[..self.inner.joint_count as usize].to_vec()
+        self.inner.efforts[..(self.inner.joint_count as usize).min(self.inner.efforts.len())].to_vec()
     }
 
     #[getter]
@@ -3291,19 +3291,19 @@ impl PyJointCommand {
     }
     #[getter]
     fn positions(&self) -> Vec<f64> {
-        self.inner.positions[..self.inner.joint_count as usize].to_vec()
+        self.inner.positions[..(self.inner.joint_count as usize).min(self.inner.positions.len())].to_vec()
     }
     #[getter]
     fn velocities(&self) -> Vec<f64> {
-        self.inner.velocities[..self.inner.joint_count as usize].to_vec()
+        self.inner.velocities[..(self.inner.joint_count as usize).min(self.inner.velocities.len())].to_vec()
     }
     #[getter]
     fn efforts(&self) -> Vec<f64> {
-        self.inner.efforts[..self.inner.joint_count as usize].to_vec()
+        self.inner.efforts[..(self.inner.joint_count as usize).min(self.inner.efforts.len())].to_vec()
     }
     #[getter]
     fn modes(&self) -> Vec<u8> {
-        self.inner.modes[..self.inner.joint_count as usize].to_vec()
+        self.inner.modes[..(self.inner.joint_count as usize).min(self.inner.modes.len())].to_vec()
     }
     #[getter]
     fn timestamp_ns(&self) -> u64 {

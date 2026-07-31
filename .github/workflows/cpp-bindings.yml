@@ -52,7 +52,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -112,7 +112,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -176,7 +176,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -295,7 +295,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++ python3 python3-pip
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -357,7 +357,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Setup Shared Memory
         run: |
@@ -413,7 +413,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++
 
       - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
           components: rust-src
 
@@ -477,7 +477,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++
 
       - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
           components: rust-src
 
@@ -543,7 +543,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++ valgrind
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Setup Shared Memory
         run: |
@@ -596,7 +596,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
@@ -660,12 +660,12 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++ lcov
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@ae83f8e2d0da9969dc5a35e824115e142fd3c341 # cargo-llvm-cov
 
       - name: Setup Shared Memory
         run: |
@@ -730,7 +730,7 @@ jobs:
                --ignore-errors inconsistent,format
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: merged-lcov.info
           flags: horus_cpp
@@ -762,7 +762,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config g++
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Setup Shared Memory
         run: |

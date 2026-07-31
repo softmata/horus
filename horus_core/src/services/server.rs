@@ -206,6 +206,11 @@ fn run_server_loop<Req, Res>(
     const GATEWAY_ORPHAN_TTL: std::time::Duration = std::time::Duration::from_secs(120);
     let mut last_gateway_sweep = std::time::Instant::now();
 
+    /// Cap on distinct client-supplied response topics cached per service.
+    /// Each is a live SHM region plus an fd; the name comes off the wire.
+    const MAX_CLIENT_RESPONSE_TOPICS: usize = 64;
+    let mut client_topic_cap_warned = false;
+
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -311,7 +316,27 @@ fn run_server_loop<Req, Res>(
                 // must NOT panic this thread — that would take the whole service down
                 // for every other client. On failure, log and drop just this response;
                 // the offending client will time out and can retry.
-                if !client_topics.contains_key(topic_name) {
+                if !client_topics.contains_key(topic_name)
+                    && client_topics.len() >= MAX_CLIENT_RESPONSE_TOPICS
+                {
+                    // Each entry is a live SHM region and an open fd, and the
+                    // name is CLIENT-SUPPLIED — so an unbounded cache lets one
+                    // co-resident client exhaust /dev/shm and the process fd
+                    // limit by varying its response_topic. Refuse new names past
+                    // the cap rather than grow; the affected client times out
+                    // and retries, while every already-served client keeps
+                    // working.
+                    if !client_topic_cap_warned {
+                        client_topic_cap_warned = true;
+                        log::warn!(
+                            "Service '{}': per-client response-topic cache hit its {} entry \
+                             cap; refusing new client-supplied topic names. A client may be \
+                             varying response_topic to exhaust shared memory.",
+                            svc_name,
+                            MAX_CLIENT_RESPONSE_TOPICS
+                        );
+                    }
+                } else if !client_topics.contains_key(topic_name) {
                     match Topic::new_with_kind(
                         topic_name,
                         crate::communication::TopicKind::ServiceResponse as u8,

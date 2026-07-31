@@ -48,7 +48,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust Nightly with MIRI
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
           components: miri
 
@@ -108,7 +108,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
           components: rust-src
 
@@ -148,7 +148,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
           components: rust-src
 

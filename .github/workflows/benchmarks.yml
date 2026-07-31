@@ -38,7 +38,7 @@ jobs:
         fetch-depth: 0  # Need full history for baseline comparison
 
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       with:
         components: rustfmt, clippy
 

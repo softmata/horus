@@ -1367,11 +1367,32 @@ impl RegistryClient {
                 for dep in py_deps {
                     println!("    - {}", dep);
                 }
-                // Auto-install with pip
+                // Auto-install with pip.
+                //
+                // `py_deps` comes from REGISTRY-SUPPLIED package metadata, i.e.
+                // from whoever published the package. A requirement beginning
+                // with `-` is read by pip as an OPTION, and pip accepts
+                // `--index-url` / `-i` (fetch from an attacker's index) and
+                // `--editable` with a local path, so an unvalidated spec is
+                // remote code execution as the invoking user. `--` ends option
+                // parsing as defence in depth; the validation is the control.
                 let mut failed_deps = Vec::new();
                 for dep in py_deps {
+                    if !is_safe_python_requirement(dep) {
+                        eprintln!(
+                            "  {} Refusing python dependency {:?} — a requirement that begins \
+                             with '-' is read as an option by pip, which can redirect the \
+                             install to another index or execute local code. Install it by hand \
+                             if it is genuinely needed.",
+                            crate::cli_output::ICON_WARN.yellow(),
+                            dep
+                        );
+                        failed_deps.push(dep.as_str());
+                        continue;
+                    }
                     let status = std::process::Command::new("pip3")
-                        .args(["install", "--quiet", dep])
+                        .args(["install", "--quiet", "--"])
+                        .arg(dep)
                         .status();
                     match status {
                         Ok(s) if s.success() => {
@@ -2493,5 +2514,99 @@ mod sec1_signature_tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Whether `spec` is safe to hand to `pip install` as a requirement.
+///
+/// Registry package metadata supplies these, so they are attacker-controlled for
+/// anyone who can publish. pip treats a leading `-` as an option — `-i URL`
+/// silently redirects the install to another package index, and `-e <path>`
+/// runs a local setup.py — so the leading character is the whole ballgame.
+///
+/// Accepts the PEP 508 shapes that appear in practice: a name, optional extras,
+/// optional version specifiers, optional environment marker.
+pub(crate) fn is_safe_python_requirement(spec: &str) -> bool {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.len() > 256 {
+        return false;
+    }
+    // Must start with a package-name character, never an option or a path.
+    if !spec
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    // No shell metacharacters, whitespace-separated extra arguments, URLs or
+    // path separators — none of which belong in a plain requirement.
+    if spec.contains("://") {
+        return false;
+    }
+    spec.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '.' | '-' | '_' | '[' | ']' | ',' | '=' | '<' | '>' | '!' | '~' | '*' | '+' | ' ' | ';' | '\'' | '"')
+    }) && !spec.contains('/')
+        && !spec.contains('\\')
+}
+
+#[cfg(test)]
+mod python_requirement_tests {
+    use super::is_safe_python_requirement;
+
+    #[test]
+    fn accepts_real_requirements() {
+        for spec in [
+            "numpy",
+            "numpy==1.26.4",
+            "torch>=2.0,<3.0",
+            "opencv-python",
+            "requests[security]",
+            "pyyaml!=6.0",
+            "scipy~=1.11",
+            "pkg; python_version >= '3.9'",
+        ] {
+            assert!(is_safe_python_requirement(spec), "{spec:?} should be allowed");
+        }
+    }
+
+    #[test]
+    fn rejects_specs_pip_would_read_as_options() {
+        // The actual RCE vector: pip honours -i/--index-url (fetch from an
+        // attacker's index) and -e <path> (run a local setup.py). These come
+        // from registry-supplied package metadata.
+        for spec in [
+            "-i",
+            "--index-url=https://evil.example/simple",
+            "-e",
+            "--editable=.",
+            "-rrequirements.txt",
+        ] {
+            assert!(
+                !is_safe_python_requirement(spec),
+                "{spec:?} must be rejected — a leading dash is an option to pip"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_urls_and_paths() {
+        for spec in [
+            "https://evil.example/pkg.tar.gz",
+            "git+https://evil.example/x.git",
+            "./local/path",
+            "/abs/path",
+            "..\\windows\\path",
+        ] {
+            assert!(!is_safe_python_requirement(spec), "{spec:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_and_overlong() {
+        assert!(!is_safe_python_requirement(""));
+        assert!(!is_safe_python_requirement("   "));
+        assert!(!is_safe_python_requirement(&"a".repeat(257)));
     }
 }
