@@ -496,6 +496,30 @@ pub struct CancelRequest {
 }
 
 impl CancelRequest {
+    /// A cancel request that targets EVERY goal on the server.
+    ///
+    /// `horus action cancel_goal <name>` with no id has always advertised
+    /// cancel-all, but the wire type had no way to express it — the CLI encoded
+    /// a `{"cancel_all": true}` JSON blob that the server, which subscribes as
+    /// `Topic<CancelRequest>`, could not decode at all. So the command printed
+    /// "Cancel request sent" and nothing whatsoever happened.
+    ///
+    /// The nil UUID is the sentinel: `GoalId::new()` is always v4 and therefore
+    /// never nil, so this cannot collide with a real goal.
+    pub fn cancel_all() -> Self {
+        Self {
+            goal_id: GoalId(Uuid::nil()),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// True if this request targets every goal rather than one.
+    pub fn is_cancel_all(&self) -> bool {
+        self.goal_id.0.is_nil()
+    }
+
     /// Create a new cancel request.
     pub fn new(goal_id: GoalId) -> Self {
         Self {

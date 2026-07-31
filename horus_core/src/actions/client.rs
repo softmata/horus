@@ -415,12 +415,36 @@ where
 
     /// Handle a status update.
     fn handle_status_update(&self, update: GoalStatusUpdate) {
-        let goals = self.goals.read();
-        if let Some(state) = goals.get(&update.goal_id) {
-            let mut state = state.write();
-            state.status = update.status;
-            state.updated_at = Instant::now();
+        {
+            let goals = self.goals.read();
+            if let Some(state) = goals.get(&update.goal_id) {
+                let mut state = state.write();
+                state.status = update.status;
+                state.updated_at = Instant::now();
+            }
         }
+
+        // Prune goals that terminate WITHOUT ever producing a result message.
+        //
+        // Pruning happened exclusively in `handle_result`, so a rejected goal —
+        // the server declines it and no result is ever sent — stayed in
+        // `self.goals` forever. The map is scanned per tick, so a client that
+        // gets refused repeatedly accumulated both memory and per-tick cost.
+        //
+        // ONLY `Rejected` is safe to prune here. The other terminal statuses are
+        // published alongside a result message and the status generally arrives
+        // FIRST, so removing on any terminal status makes the result land on a
+        // missing entry and the caller sees "Missing result". That is exactly
+        // what happened when this was first written to key off `is_terminal()`,
+        // and `action_concurrent` caught it.
+        //
+        // Goals that go terminal without a result for any other reason — e.g.
+        // the server abandoning a non-cooperative goal after `goal_timeout` —
+        // are collected by the sweep below rather than raced here.
+        if update.status == GoalStatus::Rejected {
+            self.goals.write().remove(&update.goal_id);
+        }
+        self.sweep_stale_terminal_goals();
 
         // Call status callback
         if let Some(ref callback) = *self.status_callback.read() {
@@ -467,6 +491,22 @@ where
         if result_msg.status.is_terminal() {
             self.goals.write().remove(&result_msg.goal_id);
         }
+    }
+
+    /// Drop goals that reached a terminal status but never received a result.
+    ///
+    /// The server can legitimately finish a goal without a result message — it
+    /// abandons a goal that ignored `goal_timeout`, for instance. Those entries
+    /// would otherwise sit in the map forever. A generous grace period keeps
+    /// this clear of the normal status-then-result ordering, which is the race
+    /// that made the naive "prune on any terminal status" version wrong.
+    fn sweep_stale_terminal_goals(&self) {
+        const TERMINAL_GRACE: Duration = Duration::from_secs(30);
+        let mut goals = self.goals.write();
+        goals.retain(|_id, state| {
+            let s = state.read();
+            !(s.status.is_terminal() && s.updated_at.elapsed() > TERMINAL_GRACE)
+        });
     }
 
     /// Register a goal handle.

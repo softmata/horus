@@ -283,6 +283,14 @@ struct GoalState {
     preempt_requested: Arc<AtomicBool>,
     started_at: Instant,
     received_at: Instant,
+    /// Set once the goal has passed `goal_timeout` and been asked to stop, so
+    /// the request (and its log line) is not repeated on every subsequent tick.
+    timeout_signalled: bool,
+    /// Set once the goal has ignored that request for a further grace period.
+    /// An abandoned goal no longer occupies a concurrency slot and its client
+    /// has been told the goal is Aborted, but its thread is still tracked in
+    /// `goal_threads` so shutdown joins it rather than detaching it.
+    abandoned: bool,
 }
 
 /// Callback types for action server.
@@ -442,6 +450,16 @@ pub struct ActionServerNode<A: Action> {
     // Goal execution runs on a dedicated thread per goal so the tick loop stays
     // responsive to cancel/preempt/new-goal requests while a goal runs.
     goal_threads: HashMap<GoalId, JoinHandle<()>>,
+
+    /// Cached path of the CLI JSON-gateway goal file, built once in `init()`.
+    ///
+    /// `tick()` used to rebuild this every call — a `PathBuf` join plus a
+    /// `format!` — and then `fs::read` it. On an RT node with `.no_alloc()`
+    /// that allocation panics the tick, every tick; without `.no_alloc()` it is
+    /// still a filesystem syscall in a hard-real-time loop.
+    gateway_goal_path: Option<std::path::PathBuf>,
+    /// Last time the JSON gateway file was polled (see `GATEWAY_POLL_INTERVAL`).
+    last_gateway_poll: Option<Instant>,
     // Feedback + completion events produced by goal threads, dispatched to
     // action topics by `tick()` (single producer per topic).
     events: ServerEvents<A>,
@@ -485,6 +503,8 @@ where
             active_goals: HashMap::new(),
             goal_queue: VecDeque::new(),
             goal_threads: HashMap::new(),
+            gateway_goal_path: None,
+            last_gateway_poll: None,
             events: Arc::new(Mutex::new(Vec::new())),
             goals_received: AtomicU64::new(0),
             goals_accepted: AtomicU64::new(0),
@@ -555,7 +575,7 @@ where
     /// performs the enqueue (returning `Queue`), which the caller must NOT treat
     /// as a rejection.
     fn admit_goal(&mut self, request: &GoalRequest<A::Goal>) -> GoalAdmission {
-        let active_count = self.active_goals.len();
+        let active_count = self.occupied_slots();
         let max_concurrent = self.config.max_concurrent_goals.unwrap_or(usize::MAX);
 
         if active_count < max_concurrent {
@@ -687,6 +707,8 @@ where
             preempt_requested: preempt_requested.clone(),
             started_at: now,
             received_at: now,
+            timeout_signalled: false,
+            abandoned: false,
         };
 
         self.active_goals.insert(goal_id, state);
@@ -878,6 +900,26 @@ where
 
     /// Handle an incoming cancel request.
     fn handle_cancel(&mut self, request: CancelRequest) {
+        // Cancel-all was advertised by the CLI but never implemented here, so
+        // `horus action cancel_goal <name>` (no id) did nothing at all.
+        if request.is_cancel_all() {
+            let all: Vec<GoalId> = self
+                .active_goals
+                .keys()
+                .copied()
+                .chain(self.goal_queue.iter().map(|g| g.goal_id))
+                .collect();
+            log::info!(
+                "ActionServer '{}': cancel-all requested — {} goal(s)",
+                A::name(),
+                all.len()
+            );
+            for goal_id in all {
+                self.handle_cancel(CancelRequest::new(goal_id));
+            }
+            return;
+        }
+
         log::debug!(
             "ActionServer '{}': Cancel request for goal {}",
             A::name(),
@@ -964,29 +1006,78 @@ where
 
     /// Check for timed-out goals.
     fn check_timeouts(&mut self) {
-        if let Some(timeout) = self.config.goal_timeout {
-            let timed_out: Vec<GoalId> = self
-                .active_goals
-                .iter()
-                .filter(|(_, state)| state.started_at.elapsed() > timeout)
-                .map(|(id, _)| *id)
-                .collect();
+        let Some(timeout) = self.config.goal_timeout else {
+            return;
+        };
 
-            for goal_id in timed_out {
-                log::warn!("ActionServer '{}': Goal {} timed out", A::name(), goal_id);
-                if let Some(state) = self.active_goals.get(&goal_id) {
-                    // Signal timeout as abort
+        // This used to re-set `cancel_requested` and re-emit the warning on
+        // EVERY tick for as long as the goal stayed over its timeout, and it
+        // never did anything else. So `goal_timeout` bounded nothing: a
+        // cooperative handler had already stopped on the first request, and a
+        // handler that never polls `is_cancel_requested()` — the only case the
+        // timeout exists for — kept its concurrency slot forever while the log
+        // filled at tick rate.
+        //
+        // Now it is a two-stage deadline. First crossing: ask once. Still
+        // running a full timeout later: give up on it. The thread cannot be
+        // killed (Rust has no safe thread cancellation), but the goal can stop
+        // occupying a slot and the client can be told the truth instead of
+        // waiting forever. The JoinHandle deliberately stays in `goal_threads`
+        // so shutdown still joins it — dropping it here would detach the
+        // thread, which is the defect fixed in `accept_goal`.
+        let mut to_abandon: Vec<GoalId> = Vec::new();
+
+        for (goal_id, state) in self.active_goals.iter_mut() {
+            if state.abandoned {
+                continue;
+            }
+            let elapsed = state.started_at.elapsed();
+            if !state.timeout_signalled {
+                if elapsed > timeout {
+                    log::warn!(
+                        "ActionServer '{}': goal {} exceeded its {:?} timeout — requesting cancel",
+                        A::name(),
+                        goal_id,
+                        timeout
+                    );
                     state.cancel_requested.store(true, Ordering::Release);
+                    state.timeout_signalled = true;
                 }
+            } else if elapsed > timeout.saturating_mul(2) {
+                to_abandon.push(*goal_id);
             }
         }
+
+        for goal_id in to_abandon {
+            log::error!(
+                "ActionServer '{}': goal {} ignored the cancel request for a further {:?} — \
+                 reporting Aborted and releasing its slot. Its thread is still running and \
+                 will be joined at shutdown; the execute callback is not cooperating.",
+                A::name(),
+                goal_id,
+                timeout
+            );
+            if let Some(state) = self.active_goals.get_mut(&goal_id) {
+                state.abandoned = true;
+            }
+            self.publish_status(goal_id, GoalStatus::Aborted);
+        }
+    }
+
+    /// Number of goals occupying a concurrency slot.
+    ///
+    /// Excludes goals abandoned by `check_timeouts`: their threads are still
+    /// alive and still tracked for joining, but a non-cooperative handler must
+    /// not block the server from accepting new work forever.
+    fn occupied_slots(&self) -> usize {
+        self.active_goals.values().filter(|s| !s.abandoned).count()
     }
 
     /// Process queued goals.
     fn process_goal_queue(&mut self) {
         let max_concurrent = self.config.max_concurrent_goals.unwrap_or(usize::MAX);
 
-        while self.active_goals.len() < max_concurrent {
+        while self.occupied_slots() < max_concurrent {
             if let Some(request) = self.goal_queue.pop_front() {
                 self.accept_goal(request);
             } else {
@@ -1066,6 +1157,13 @@ where
     fn init(&mut self) -> HorusResult<()> {
         let action_name = A::name();
 
+        // Build the CLI gateway path once, off the tick path.
+        self.gateway_goal_path = Some(
+            crate::memory::shm_topics_dir()
+                .join(".service_gateway")
+                .join(format!("{}.goal.json", action_name)),
+        );
+
         // Create communication links with proper TopicKind for discovery.
         // TopicKind allows `horus action list` to identify action topics
         // without relying solely on naming conventions.
@@ -1107,35 +1205,55 @@ where
 
         // JSON gateway: accept goals from CLI (horus action send-goal).
         // CLI writes JSON to .service_gateway/{action}.goal.json.
-        {
-            let gateway_dir = crate::memory::shm_topics_dir().join(".service_gateway");
-            let goal_file = gateway_dir.join(format!("{}.goal.json", A::name()));
-            if let Ok(data) = std::fs::read(&goal_file) {
-                let _ = std::fs::remove_file(&goal_file);
-                if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&data) {
-                    // Extract fields from the JSON goal request
-                    let goal_id_str = json_val
-                        .get("goal_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("cli-goal")
-                        .to_string();
-                    let priority = json_val
-                        .get("priority")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(128) as u8;
-                    if let Some(payload) = json_val.get("payload").cloned() {
-                        if let Ok(goal) = serde_json::from_value::<A::Goal>(payload) {
-                            let goal_uuid = uuid::Uuid::parse_str(&goal_id_str)
-                                .unwrap_or_else(|_| uuid::Uuid::new_v4());
-                            let goal_req = GoalRequest {
-                                goal_id: GoalId(goal_uuid),
-                                priority: GoalPriority(priority),
-                                goal,
-                                timestamp: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default(),
-                            };
-                            self.handle_goal(goal_req);
+        //
+        // The path is built once in `init()` and the file is polled at a bounded
+        // rate rather than on every tick. Previously this did a PathBuf join, a
+        // `format!` and an `fs::read` per tick, so an RT action server built with
+        // `.no_alloc()` panicked on its first tick and a plain RT one took a
+        // filesystem syscall inside its deadline. A CLI-issued goal is a
+        // human-scale event; polling it at 20 Hz is ample.
+        //
+        // Note the remaining allocation: when a goal IS present, `fs::read` and
+        // the serde_json decode allocate. That is unavoidable for a JSON
+        // gateway and only happens on the rare tick that actually receives one —
+        // but it does mean `.no_alloc()` and the CLI gateway remain mutually
+        // exclusive at the moment a goal arrives.
+        const GATEWAY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+        let poll_gateway = match self.last_gateway_poll {
+            None => true,
+            Some(last) => last.elapsed() >= GATEWAY_POLL_INTERVAL,
+        };
+        if poll_gateway {
+            self.last_gateway_poll = Some(Instant::now());
+            let goal_file = self.gateway_goal_path.clone();
+            if let Some(goal_file) = goal_file {
+                if let Ok(data) = std::fs::read(&goal_file) {
+                    let _ = std::fs::remove_file(&goal_file);
+                    if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&data) {
+                        // Extract fields from the JSON goal request
+                        let goal_id_str = json_val
+                            .get("goal_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("cli-goal")
+                            .to_string();
+                        let priority = json_val
+                            .get("priority")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(128) as u8;
+                        if let Some(payload) = json_val.get("payload").cloned() {
+                            if let Ok(goal) = serde_json::from_value::<A::Goal>(payload) {
+                                let goal_uuid = uuid::Uuid::parse_str(&goal_id_str)
+                                    .unwrap_or_else(|_| uuid::Uuid::new_v4());
+                                let goal_req = GoalRequest {
+                                    goal_id: GoalId(goal_uuid),
+                                    priority: GoalPriority(priority),
+                                    goal,
+                                    timestamp: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default(),
+                                };
+                                self.handle_goal(goal_req);
+                            }
                         }
                     }
                 }
@@ -1385,6 +1503,94 @@ mod tests {
             1,
             "a duplicate goal id must not start a second execution"
         );
+    }
+
+    /// `goal_timeout` must actually bound a non-cooperative goal.
+    ///
+    /// It used to re-set `cancel_requested` and re-log on EVERY tick forever,
+    /// and do nothing else — so a handler that never polls the flag (the only
+    /// case the timeout exists for) kept its concurrency slot permanently.
+    #[test]
+    fn goal_timeout_escalates_and_releases_the_slot() {
+        use std::sync::atomic::Ordering as O;
+        use std::sync::Arc as StdArc;
+
+        let hold = StdArc::new(AtomicBool::new(true));
+        let hold_cb = hold.clone();
+
+        let mut server = ActionServerBuilder::<TestAction>::new()
+            .on_goal(|_| GoalResponse::Accept)
+            .on_cancel(|_| CancelResponse::Accept)
+            .on_execute(move |handle| {
+                // Deliberately NEVER polls is_cancel_requested().
+                while hold_cb.load(O::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                handle.succeed(TestResult { success: true })
+            })
+            .max_concurrent_goals(Some(1))
+            .build();
+        server.config.goal_timeout = Some(Duration::from_millis(20));
+
+        let id = GoalId::new();
+        server.accept_goal(GoalRequest {
+            goal_id: id,
+            goal: TestGoal { target: 1.0 },
+            priority: GoalPriority::default(),
+            timestamp: Duration::from_secs(0),
+        });
+        assert_eq!(server.occupied_slots(), 1);
+
+        // First crossing: asks once.
+        std::thread::sleep(Duration::from_millis(30));
+        server.check_timeouts();
+        assert!(
+            server.active_goals[&id].timeout_signalled,
+            "timeout must request cancellation on first crossing"
+        );
+        assert!(
+            !server.active_goals[&id].abandoned,
+            "must not give up on the first crossing — a cooperative handler needs a chance"
+        );
+        assert_eq!(server.occupied_slots(), 1, "slot still held during grace");
+
+        // Still running a full timeout later: give up, free the slot.
+        std::thread::sleep(Duration::from_millis(30));
+        server.check_timeouts();
+        assert!(
+            server.active_goals[&id].abandoned,
+            "a goal ignoring cancel past the grace period must be abandoned"
+        );
+        assert_eq!(
+            server.occupied_slots(),
+            0,
+            "an abandoned goal must not hold a concurrency slot forever"
+        );
+        // The thread is still tracked so shutdown joins it — NOT detached.
+        assert_eq!(
+            server.goal_threads.len(),
+            1,
+            "the thread must stay tracked for joining, not be detached"
+        );
+
+        hold.store(false, O::SeqCst);
+        for (_id, join) in server.goal_threads.drain() {
+            let _ = join.join();
+        }
+    }
+
+    /// A cancel-all request must reach every goal.
+    #[test]
+    fn cancel_all_sentinel_targets_every_goal() {
+        let req = CancelRequest::cancel_all();
+        assert!(req.is_cancel_all(), "nil UUID must mean cancel-all");
+        // A real goal id must never be mistaken for cancel-all.
+        for _ in 0..64 {
+            assert!(
+                !CancelRequest::new(GoalId::new()).is_cancel_all(),
+                "a v4 goal id must never look like the cancel-all sentinel"
+            );
+        }
     }
 
     #[test]

@@ -19,7 +19,7 @@
 //! writer in question is fed by **unauthenticated network data**. Copied layout
 //! knowledge with no compile-time link to the struct it describes is the root
 //! cause, so this module fixes that rather than just the offsets: each constant
-//! is tied to the real field by an `offset_of!` assertion in [`static_asserts`],
+//! is tied to the real field by an `offset_of!` assertion in `static_asserts`,
 //! which is a `const` block — reordering a `TopicHeader` field is now a **build
 //! failure**, not a four-month-old data corruption bug.
 //!
@@ -40,10 +40,10 @@
 //! This trips people up, so it is stated plainly: the per-slot ready word that a
 //! multi-producer consumer gates on is
 //!
-//!   * for **POD** topics, in `SEQ_ARRAY` at [`seq_slot_offset`] — see
+//!   * for **POD** topics, in `SEQ_ARRAY` at `seq_slot_offset` — see
 //!     `dispatch::send_shm_sp_pod`;
 //!   * for **serde** topics, the first 8 bytes *of the slot itself* at
-//!     [`SERDE_SLOT_READY_OFF`] — see `dispatch::send_shm_mp_serde`.
+//!     `SERDE_SLOT_READY_OFF` — see `dispatch::send_shm_mp_serde`.
 //!
 //! Both store `sequence + 1`. A writer that publishes only
 //! `sequence_or_head` is visible to `SpscShm` consumers but invisible to

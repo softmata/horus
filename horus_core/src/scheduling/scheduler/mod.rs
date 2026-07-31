@@ -3674,8 +3674,20 @@ impl Scheduler {
                 });
             if let Some(outputs) = replay_outputs {
                 for (topic, data) in &outputs {
-                    let shm_dir = crate::memory::platform::shm_topics_dir();
-                    let topic_path = shm_dir.join(format!("horus_{}", topic));
+                    // This built `horus_{topic}` — the filename convention that
+                    // commit df51c2f3 removed everywhere else on 2026-03-29. The
+                    // real file has a different name, so `exists()` was always
+                    // false and replay's SHM injection has been silently inert
+                    // ever since: replayed outputs reached no subscriber, and
+                    // nothing reported it because a missing path is indistinguishable
+                    // from "no such topic" here.
+                    //
+                    // Use the single shared helper, so this path cannot drift
+                    // from the writers again — the same divergence that killed
+                    // the horus_net <-> horus_core seam for four months.
+                    let Some(topic_path) = horus_sys::shm::topic_shm_path_checked(topic) else {
+                        continue;
+                    };
                     if topic_path.exists() {
                         crate::communication::write_topic_slot_bytes(&topic_path, data);
                     }

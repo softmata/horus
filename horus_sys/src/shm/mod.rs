@@ -204,7 +204,9 @@ pub fn create_shm_dir_all(path: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if the path exists but is not a directory we own, or is a
 /// symlink. Only ownership is enforced here — the mode is repaired separately by
-/// [`harden_existing_dir`], which can only ever tighten it.
+/// `harden_existing_dir`, which can only ever tighten it. (Not an intra-doc
+/// link: that helper is private, and rustdoc rejects a public item linking to
+/// it under `-D warnings`.)
 pub fn verify_shm_dir_ownership(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
