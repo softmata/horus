@@ -696,11 +696,21 @@ impl Replicator {
                 LinkLostAction::Warn => {
                     // Already logged by heartbeat.tick()
                 }
-                LinkLostAction::SafeState | LinkLostAction::Stop => {
+                LinkLostAction::SafeState => {
+                    // Distinct from Stop. An operator who configured
+                    // `safety.on_link_lost = "safe_state"` chose per-node safing
+                    // over halting the robot; routing both here to
+                    // `trigger_external_emergency_stop` gave them the full halt
+                    // and preserved their choice only in the log line.
+                    horus_core::scheduling::trigger_external_safe_state(format!(
+                        "Network peer {:02X?}... lost — entering safe state",
+                        &peer_id[..4]
+                    ));
+                }
+                LinkLostAction::Stop => {
                     horus_core::scheduling::trigger_external_emergency_stop(format!(
-                        "Network peer {:02X?}... lost — {:?} action triggered",
-                        &peer_id[..4],
-                        action
+                        "Network peer {:02X?}... lost — emergency stop",
+                        &peer_id[..4]
                     ));
                 }
             }

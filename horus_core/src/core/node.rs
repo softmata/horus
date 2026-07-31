@@ -1023,7 +1023,6 @@ mod tests {
 
 #[cfg(test)]
 mod sub_millisecond_metrics_tests {
-    use super::*;
     use std::time::Duration;
 
     /// Sub-millisecond ticks must not record as 0.0.

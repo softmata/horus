@@ -78,6 +78,7 @@ impl Scheduler {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: crate::core::Miss::Warn,

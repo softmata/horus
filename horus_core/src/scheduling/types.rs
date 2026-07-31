@@ -116,6 +116,7 @@ mod execution_class_tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -363,6 +364,13 @@ pub(crate) struct RegisteredNode {
     pub(crate) deadline: Option<Duration>,
     pub(crate) recorder: Option<NodeRecorder>,
     pub(crate) is_stopped: bool,
+    /// Cycle counter for the suppressed-node probe tick.
+    ///
+    /// `Unhealthy` and `Isolated` were absorbing states: recovery is only
+    /// evaluated after a tick, and the tick gate refused those states. A node
+    /// degraded once could never return, even though
+    /// `NodeDegradationState::recovery_counter` documents recovery as intended.
+    pub(crate) health_probe_counter: u64,
     pub(crate) is_paused: bool,
     /// Per-node real-time statistics (populated for RT nodes)
     pub(crate) rt_stats: Option<RtStats>,

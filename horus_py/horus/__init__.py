@@ -314,7 +314,14 @@ def now() -> float:
 def dt() -> float:
     """Timestep for this tick in seconds.
 
-    Normal mode: actual elapsed. Deterministic mode: fixed 1/rate.
+    The NOMINAL timestep — ``1/rate`` for a node with ``rate=`` set, otherwise
+    the scheduler tick period — in both normal and deterministic mode. This
+    previously said "Normal mode: actual elapsed", which the runtime has never
+    done.
+
+    Deliberate: a control loop integrating with a fixed timestep is reproducible
+    on replay, and a ``dt`` that absorbed jitter would hide the timing failures
+    HORUS reports as deadline misses. For real elapsed time, read the clock.
     """
     return _time_dt()
 

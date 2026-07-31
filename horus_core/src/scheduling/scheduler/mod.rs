@@ -1675,6 +1675,7 @@ impl Scheduler {
             deadline,
             recorder,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats,
             miss_policy,
@@ -2144,6 +2145,9 @@ impl Scheduler {
         // loop polls, so the scheduler actually stops.
         if let Some(ref safety) = self.monitor.safety {
             safety.install_emergency_stop_hook();
+            // Companion to the e-stop hook: `safety.on_link_lost = "safe_state"`
+            // must produce per-node safing, not the full halt that `stop` means.
+            safety.install_safe_state_hook();
         }
 
         // Auto-enable mlockall if: RT nodes present, system permits it, and user didn't
@@ -3691,7 +3695,35 @@ impl Scheduler {
                 health,
                 NodeHealthState::Unhealthy | NodeHealthState::Isolated
             ) {
-                return false;
+                // Probe tick: admit a suppressed node once every
+                // HEALTH_PROBE_INTERVAL cycles so it can demonstrate recovery.
+                //
+                // These were ABSORBING states. The only code that can promote a
+                // node back to healthy runs after a tick, and this gate refused
+                // the tick — so a node degraded once, however transiently (a
+                // page fault, a one-off scheduling hiccup), stayed suppressed
+                // for the life of the process with no way back.
+                //
+                // That recovery was intended is not a guess:
+                // `NodeDegradationState::recovery_counter` exists and is
+                // documented as "Consecutive successful ticks since rate was
+                // reduced (for recovery)" — a counter nothing could ever
+                // increment, because nothing could ever tick.
+                //
+                // A periodic probe is the cheapest thing that makes recovery
+                // reachable without weakening suppression: a genuinely broken
+                // node fails its probe and is re-suppressed immediately, so the
+                // cost of being wrong is one tick per interval.
+                const HEALTH_PROBE_INTERVAL: u64 = 100;
+                let probe = self.nodes[i].health_probe_counter.wrapping_add(1);
+                self.nodes[i].health_probe_counter = probe;
+                if probe % HEALTH_PROBE_INTERVAL != 0 {
+                    return false;
+                }
+                print_line(&format!(
+                    "[HEALTH] probe tick for suppressed node '{}' ({:?})",
+                    self.nodes[i].name, health
+                ));
             }
         }
 

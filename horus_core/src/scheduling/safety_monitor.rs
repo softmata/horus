@@ -42,6 +42,46 @@ pub fn trigger_external_emergency_stop(reason: String) {
     }
 }
 
+/// Global hook for the SAFE-STATE response, distinct from emergency stop.
+///
+/// `safety.on_link_lost` offers `warn`, `safe_state` and `stop`. `safe_state`
+/// and `stop` both used to call `trigger_external_emergency_stop`, so an
+/// operator who deliberately chose the milder option — per-node safing rather
+/// than halting the robot — got the full scheduler halt anyway. The only trace
+/// of their choice was the `{:?}` in the log line.
+///
+/// Two named options that do the same thing means one of them is a lie, and on
+/// a safety knob that is the defect class this audit kept finding. This hook is
+/// the milder response: ask nodes to enter their safe state and keep the
+/// scheduler running, so the robot stays observable and controllable.
+static SAFE_STATE_HOOK: RwLock<Option<Box<dyn Fn(String) + Send + Sync>>> = RwLock::new(None);
+
+/// Set the global safe-state hook. Installed by the Scheduler at startup.
+pub fn set_safe_state_hook(hook: impl Fn(String) + Send + Sync + 'static) {
+    *SAFE_STATE_HOOK.write() = Some(Box::new(hook));
+}
+
+/// Request the SAFE-STATE response from an external system (e.g. horus_net).
+///
+/// Unlike [`trigger_external_emergency_stop`] this does NOT latch: nodes are
+/// asked to enter a safe state, and the scheduler keeps ticking. If no hook is
+/// installed it falls back to the emergency stop, because failing safe is the
+/// correct direction when the milder response is unavailable — and it says so,
+/// rather than silently downgrading the operator's choice.
+pub fn trigger_external_safe_state(reason: String) {
+    let guard = SAFE_STATE_HOOK.read();
+    if let Some(hook) = guard.as_ref() {
+        hook(reason);
+    } else {
+        drop(guard);
+        eprintln!(
+            "[horus] safe-state requested but no scheduler hook is installed; \
+             escalating to emergency stop: {reason}"
+        );
+        trigger_external_emergency_stop(reason);
+    }
+}
+
 // ============================================================================
 // Pending LOCAL-origin e-stop signal — the SEND half of networked e-stop.
 // ============================================================================
@@ -86,6 +126,12 @@ fn now_ns() -> u64 {
 pub enum SafetyState {
     /// Normal operation
     Normal,
+    /// A safe-state response is in force: nodes have been asked to enter their
+    /// safe state, but the scheduler is still running and still observable.
+    ///
+    /// Distinct from `EmergencyStop` because `safety.on_link_lost` offers both
+    /// `safe_state` and `stop`; collapsing them made the milder choice a lie.
+    SafeState,
     /// Emergency stop triggered
     EmergencyStop,
 }
@@ -99,10 +145,18 @@ pub enum BudgetPolicy {
     /// The graduated degradation path will handle it over time.
     #[default]
     Warn,
-    /// Immediately stop the node after a budget violation.
-    /// The node will have shutdown() called and be permanently removed.
-    /// Safer than mid-tick interruption — waits for tick to complete,
-    /// then prevents all future ticks.
+    /// Stop the node once a tick exceeds **twice** its budget.
+    ///
+    /// Deliberate hysteresis, and the docs previously described a 1x trigger
+    /// that the code does not implement. A single 1x overrun is logged and
+    /// recorded but not acted on: under real RT jitter — a page fault, an IRQ,
+    /// a cache miss — an occasional 1.0-2.0x tick is normal, and killing a
+    /// control node for one of them is a worse outcome than the overrun. A
+    /// sustained 2x overrun is a different signal and does stop the node.
+    ///
+    /// The node has shutdown() called and is permanently removed. Safer than
+    /// mid-tick interruption — waits for the tick to complete, then prevents
+    /// all future ticks. Use `EmergencyStop` if any overrun must halt the robot.
     Enforce,
     /// Trigger emergency stop on budget violation (for critical nodes).
     EmergencyStop,
@@ -1070,6 +1124,24 @@ impl SafetyMonitor {
     /// `trigger_emergency_stop`: latch the flag FIRST (safety-critical), log LAST and
     /// non-fatally. The captured `Arc`s point at the same flag/state the scheduler's
     /// tick loop polls, so the external trigger latches the running scheduler.
+    /// Install the SAFE-STATE hook: mark the monitor degraded and let the
+    /// scheduler's tick loop safe the affected nodes, without latching e-stop.
+    ///
+    /// Deliberately does NOT set `emergency_stop`: that flag ends the run loop,
+    /// which is exactly the outcome an operator choosing `safe_state` over
+    /// `stop` asked to avoid.
+    pub(crate) fn install_safe_state_hook(&self) {
+        let state = Arc::clone(&self.state);
+        set_safe_state_hook(move |reason| {
+            *state.lock() = SafetyState::SafeState;
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                " SAFE STATE (external): {reason} — nodes safing, scheduler continues"
+            );
+        });
+    }
+
     pub(crate) fn install_emergency_stop_hook(&self) {
         let emergency_stop = Arc::clone(&self.emergency_stop);
         let state = Arc::clone(&self.state);

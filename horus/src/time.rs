@@ -8,7 +8,7 @@
 //! | Function | Normal mode | Deterministic mode | Outside tick() |
 //! |----------|-------------|-------------------|----------------|
 //! | `now()` | Wall clock | Virtual SimClock | Wall clock (fallback) |
-//! | `dt()` | Real elapsed | Fixed 1/rate | `Duration::ZERO` |
+//! | `dt()` | Nominal 1/rate | Nominal 1/rate | `Duration::ZERO` |
 //! | `elapsed()` | Wall elapsed | Accumulated virtual | `Duration::ZERO` |
 //! | `tick()` | Tick number | Tick number | 0 |
 //! | `rng()` | System entropy | Tick-seeded | System entropy |
@@ -124,8 +124,22 @@ pub fn since(earlier: TimeStamp) -> Duration {
 
 /// Timestep for this tick. THE way to get dt in horus.
 ///
-/// - Normal mode: actual elapsed since last tick
-/// - Deterministic mode: fixed `1/rate` (e.g., 10ms for 100Hz)
+/// **`dt()` is the NOMINAL timestep, not the measured one**: `1/rate` for a node
+/// with `.rate()` set, otherwise the scheduler tick period. It is the same value
+/// in normal and deterministic mode. (This previously documented normal mode as
+/// "actual elapsed since last tick", which the code has never done.)
+///
+/// That is deliberate. HORUS is a deterministic real-time kernel: a control loop
+/// integrating with a fixed timestep produces the same output for the same
+/// inputs, on this run and on replay. A `dt()` that silently absorbed jitter
+/// would hide exactly the timing failures HORUS exists to detect — a late tick
+/// is reported as a deadline miss and handled by the node's `Miss` policy, not
+/// smuggled into the control maths.
+///
+/// If you need the real elapsed time — for profiling, or a filter that must
+/// account for actual sample spacing — read the clock directly rather than
+/// treating `dt()` as a measurement.
+///
 /// - Outside `tick()`: `Duration::ZERO`
 ///
 /// # Example
