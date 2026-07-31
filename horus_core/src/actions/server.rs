@@ -566,7 +566,25 @@ where
         match self.config.preemption_policy {
             PreemptionPolicy::RejectNew => GoalAdmission::Reject,
             PreemptionPolicy::PreemptOld => {
-                // Preempt the oldest goal to make room.
+                // `preempt_goal` only RAISES A FLAG — the preempted goal's own
+                // thread has to notice it and exit, which is asynchronous and,
+                // if the user's execute callback ignores the flag, may never
+                // happen. Accepting immediately therefore did not free a slot:
+                // `active_goals` grew past `max_concurrent_goals` on every
+                // preemption.
+                //
+                // Both of these are DEFAULTS (PreemptOld, and a limit of 1), so
+                // a client sending goals in a burst got one live goal thread
+                // each, unbounded — a resource exhaustion, and on a robot,
+                // several concurrent actuator commands where the operator had
+                // configured exactly one.
+                //
+                // Only preempt when no preemption is already in flight. That
+                // bounds the table at max_concurrent + 1 instead of unbounded,
+                // without blocking the caller waiting for a thread to wind down.
+                if self.pending_preemptions() > 0 {
+                    return GoalAdmission::Reject;
+                }
                 if let Some(oldest_id) = self.get_oldest_goal_id() {
                     self.preempt_goal(oldest_id);
                     GoalAdmission::Accept
@@ -706,6 +724,16 @@ where
     }
 
     /// Preempt an active goal.
+    /// Number of active goals that have been asked to preempt but have not yet
+    /// exited. Preemption is cooperative — see `preempt_goal` — so these still
+    /// occupy a slot.
+    fn pending_preemptions(&self) -> usize {
+        self.active_goals
+            .values()
+            .filter(|s| s.preempt_requested.load(Ordering::Acquire))
+            .count()
+    }
+
     fn preempt_goal(&mut self, goal_id: GoalId) {
         if let Some(state) = self.active_goals.get(&goal_id) {
             log::info!("ActionServer '{}': Preempting goal {}", A::name(), goal_id);

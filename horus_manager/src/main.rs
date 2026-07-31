@@ -3083,10 +3083,32 @@ fn which_monitor_binary() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 2. Check project .horus/bin/
-    let local = std::path::PathBuf::from(".horus/bin/horus-monitor");
-    if local.exists() {
-        return Some(local);
+    // 2. Project-local .horus/bin/ — OPT-IN ONLY.
+    //
+    // This is a CWD-relative path, and it used to be checked unconditionally,
+    // BEFORE PATH. So `cd`ing into a cloned repository that ships
+    // `.horus/bin/horus-monitor` and running `horus monitor` executed that
+    // binary directly: no trust gate, no signature check, none of the sandbox
+    // that `plugins::executor` applies — and it SHADOWED a properly installed
+    // one. Cloning a repo should not be sufficient to run code.
+    //
+    // `.horus/` is generated build output (see CLAUDE.md — never hand-authored),
+    // so a repo carrying a binary there is already anomalous. Kept behind an
+    // explicit opt-in rather than deleted, for the workflow where a developer
+    // genuinely builds the monitor into their own project tree.
+    let local_opt_in = std::env::var("HORUS_ALLOW_LOCAL_PLUGINS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if local_opt_in {
+        let local = std::path::PathBuf::from(".horus/bin/horus-monitor");
+        if local.exists() {
+            eprintln!(
+                "{} Running horus-monitor from the project-local .horus/bin/ \
+                 (HORUS_ALLOW_LOCAL_PLUGINS is set). This binary is NOT trust-checked.",
+                "Warning:".yellow().bold()
+            );
+            return Some(local);
+        }
     }
 
     // 3. Check PATH
