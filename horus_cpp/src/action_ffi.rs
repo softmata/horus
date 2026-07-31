@@ -457,6 +457,44 @@ pub fn action_server_process(server: &mut FfiActionServer) {
     };
     for wire in goals {
         let goal_id = wire.msg_id;
+
+        // A goal_id is a WIRE value: it is `msg_id` on a message read from a SHM
+        // topic, so it is whatever the publisher put there. It is also the key
+        // for `cancel_flags` and `threads` — i.e. it keys thread lifetime and
+        // the cancellation path.
+        //
+        // Accepting a second goal with an id that is already in flight silently
+        // corrupts both:
+        //
+        //   * `cancel_flags.insert` replaces the first goal's flag, so the first
+        //     goal becomes PERMANENTLY UNCANCELLABLE — a cancel or preempt for
+        //     it sets a flag nothing reads, while its handler keeps running. For
+        //     an action that is driving an arm or a base, that is a stop command
+        //     that does nothing.
+        //   * `threads.insert` returns the first JoinHandle and drops it,
+        //     DETACHING that thread. It is then absent from the map that `Drop`
+        //     drains, so the server can be torn down while the thread is still
+        //     inside the C++ execute handler.
+        //   * whichever goal completes first removes BOTH entries, so the other
+        //     goal is never joined and its flag is gone too.
+        //
+        // This does not need a hostile publisher. `goal_id` is
+        // `(pid << 32) | counter` (see `client_pid_of`), so a client that exits
+        // while a goal is in flight, and a new process that inherits its PID and
+        // starts counting from zero, collide on ordinary PID reuse.
+        //
+        // The id is ambiguous, so the goal is not answerable: reject it and say
+        // so, rather than accept it and break the goal already running.
+        if server.cancel_flags.contains_key(&goal_id) {
+            eprintln!(
+                "[ACTION] {}: rejecting goal {} — that goal id is already in flight. \
+                 Accepting it would make the running goal uncancellable.",
+                server.name, goal_id
+            );
+            publish_status(server, goal_id, FfiGoalStatus::Rejected);
+            continue;
+        }
+
         let goal_json = wire.to_json().unwrap_or_else(|| "null".to_string());
         let goal_bytes = goal_json.into_bytes();
 
@@ -694,6 +732,105 @@ mod tests {
         assert!(
             SAW_CANCEL.load(Ordering::SeqCst),
             "running goal must observe the topic cancel"
+        );
+        assert!(
+            !HIT_GUARD.load(Ordering::SeqCst),
+            "goal ran to its guard instead of being canceled"
+        );
+    }
+
+    #[test]
+    fn duplicate_goal_id_cannot_hijack_a_running_goal() {
+        // `goal_id` is `msg_id` on a message read off a SHM topic, and it keys
+        // both `cancel_flags` and `threads`. A second goal carrying an id that
+        // is already in flight used to overwrite the first goal's cancel flag —
+        // leaving the running goal permanently uncancellable — and drop its
+        // JoinHandle, detaching the thread from the map `Drop` drains.
+        //
+        // Ordinary PID reuse produces this: `goal_id` is `(pid << 32) | counter`,
+        // so a client that exits mid-goal and a new process inheriting its PID
+        // collide without anyone being hostile.
+        static STARTS: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        static SAW_CANCEL: AtomicBool = AtomicBool::new(false);
+        static HIT_GUARD: AtomicBool = AtomicBool::new(false);
+        STARTS.store(0, Ordering::SeqCst);
+        SAW_CANCEL.store(false, Ordering::SeqCst);
+        HIT_GUARD.store(false, Ordering::SeqCst);
+
+        extern "C" fn accept(_: *const u8, _: usize) -> u8 {
+            0
+        }
+        extern "C" fn execute(h: *mut FfiActionGoalHandle, _: *const u8, _: usize) {
+            let handle = unsafe { &mut *h };
+            STARTS.fetch_add(1, Ordering::SeqCst);
+            for _ in 0..500 {
+                if action_goal_is_cancel_requested(handle) {
+                    SAW_CANCEL.store(true, Ordering::SeqCst);
+                    action_goal_canceled(handle, r#"{"canceled":true}"#);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(3));
+            }
+            HIT_GUARD.store(true, Ordering::SeqCst);
+            action_goal_succeed(handle, r#"{"canceled":false}"#);
+        }
+
+        let name = format!("act_dup_goal.{}", std::process::id());
+        let mut server = action_server_new(&name);
+        action_server_set_accept_handler(&mut server, accept);
+        action_server_set_execute_handler(&mut server, execute);
+
+        let client = action_client_new(&name);
+        std::thread::sleep(Duration::from_millis(50));
+        let handle = action_client_send_goal(&client, "{}").unwrap();
+        let goal_id = goal_handle_id(&handle);
+
+        assert!(
+            drive_for(
+                &mut server,
+                || STARTS.load(Ordering::SeqCst) >= 1,
+                Duration::from_secs(3)
+            ),
+            "first goal never started executing"
+        );
+
+        // Publish a second goal reusing the SAME id, straight onto the goal
+        // topic — this is what a colliding client's send looks like on the wire.
+        {
+            let mut dup: Topic<JsonWireMessage> =
+                Topic::new(format!("{}.goal", name)).expect("goal topic");
+            let wire = JsonWireMessage::from_json("{}", goal_id, 0).expect("wire");
+            dup.send(wire);
+        }
+
+        // Give process() several passes to observe (and reject) the duplicate.
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            action_server_process(&mut server);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(
+            STARTS.load(Ordering::SeqCst),
+            1,
+            "a duplicate goal id must not start a second execution"
+        );
+
+        // The decisive assertion: the ORIGINAL goal must still be cancellable.
+        action_client_cancel(&client, goal_id);
+        assert!(
+            drive_for(
+                &mut server,
+                || SAW_CANCEL.load(Ordering::SeqCst) || HIT_GUARD.load(Ordering::SeqCst),
+                Duration::from_secs(3)
+            ),
+            "handler never resolved after the cancel"
+        );
+        assert!(
+            SAW_CANCEL.load(Ordering::SeqCst),
+            "a duplicate goal id stole the running goal's cancel flag — \
+             the original goal became uncancellable"
         );
         assert!(
             !HIT_GUARD.load(Ordering::SeqCst),
