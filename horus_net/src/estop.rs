@@ -32,6 +32,9 @@ static ESTOP_UNAUTH_WARNED: AtomicBool = AtomicBool::new(false);
 /// Emitted at most once: rejected an e-stop whose authentication tag failed.
 static ESTOP_FORGERY_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// Emitted at most once: a clock skew too large to be drift.
+static ESTOP_CLOCK_WARNED: AtomicBool = AtomicBool::new(false);
+
 /// Domain separator mixed into every e-stop MAC.
 ///
 /// Binds a tag to *this* channel and wire version, so a tag captured from any
@@ -206,13 +209,42 @@ pub fn handle_remote_estop_with_key(
     }
 
     // Freshness / replay guard (NOT authentication — see doc above).
-    if !is_fresh_estop(timestamp) {
-        eprintln!(
-            "[horus_net] Ignoring stale/implausible remote e-stop from host {:04x} \
-             (timestamp outside freshness window)",
-            host_id
-        );
-        return false;
+    match classify_estop_freshness(timestamp) {
+        Freshness::Fresh => {}
+        Freshness::Stale => {
+            eprintln!(
+                "[horus_net] Ignoring stale/implausible remote e-stop from host {:04x} \
+                 (timestamp outside the {}s freshness window)",
+                host_id,
+                ESTOP_MAX_AGE_NS / 1_000_000_000
+            );
+            return false;
+        }
+        Freshness::ClockUnusable => {
+            // The two clocks differ by more than a day, so this is not drift —
+            // one of them is simply unset. Embedded controllers without a
+            // battery-backed RTC boot at the epoch and sync only once NTP
+            // reaches them, and this comparison is against ABSOLUTE wall time.
+            //
+            // Treating that as "stale" silently discarded EVERY remote e-stop
+            // for as long as the clock was unset, which is the dangerous
+            // direction of failure: a fleet-wide halt never reaches the node.
+            //
+            // If the packet is AUTHENTICATED, honour it. The MAC already proves
+            // it came from the key holder, halting is the safe action, and the
+            // authors' own rule for this channel is that "honoring a
+            // slightly-skewed real one is safer than discarding it" — a
+            // decades-skewed one is the same argument, more so.
+            //
+            // If it is NOT authenticated, keep rejecting — an unauthenticated
+            // packet with an arbitrary timestamp is exactly the replay this
+            // guard exists for — but say so loudly, because otherwise the
+            // operator has no way to discover that their e-stop is inert.
+            warn_estop_clock_unusable(host_id, key.is_some());
+            if key.is_none() {
+                return false;
+            }
+        }
     }
 
     // Policy gate.
@@ -232,18 +264,74 @@ pub fn handle_remote_estop_with_key(
 }
 
 /// True if `timestamp_ns` (Unix nanoseconds) is within the freshness window of now.
-fn is_fresh_estop(timestamp_ns: u64) -> bool {
+/// Outcome of the freshness check, distinguishing "stale" from "this machine's
+/// clock is not usable for comparison at all".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Freshness {
+    /// Within the replay window — act.
+    Fresh,
+    /// Outside the window, but both clocks look plausible: a genuine stale or
+    /// replayed packet.
+    Stale,
+    /// The skew is far too large to be clock drift — one of the two clocks is
+    /// simply not set. See `is_fresh_estop` for why this is not "stale".
+    ClockUnusable,
+}
+
+/// Skew beyond which the difference cannot be drift and must be an unset clock.
+///
+/// A day is far outside any plausible NTP/PTP error yet far inside the decades
+/// of offset an unsynchronised clock produces.
+const ESTOP_IMPLAUSIBLE_SKEW_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+/// Classify `timestamp_ns` (Unix nanoseconds) against this machine's clock.
+///
+/// # Why this returns three states rather than a bool
+///
+/// The freshness window is a ±5s comparison of two **absolute wall clocks**, and
+/// nothing in HORUS requires fleet clocks to be synchronised — the requirement
+/// was not stated anywhere until this comment.
+///
+/// Embedded robot controllers frequently have no battery-backed RTC and boot at
+/// or near the Unix epoch, syncing only once NTP reaches them. On such a node
+/// `now_ns` is ~0 while a correct peer stamps ~1.8e18, so `timestamp_ns - now_ns`
+/// is decades — vastly outside the 5s window. Treated as a bool, that made the
+/// robot **silently discard every remote emergency stop** for as long as its
+/// clock was unset, with no log line and no other symptom. The direction of that
+/// failure is the dangerous one: a fleet-wide halt does not reach the node.
+///
+/// So a skew that cannot possibly be drift is reported as `ClockUnusable`
+/// instead of `Stale`, and the caller decides — see `handle_remote_estop_with_key`.
+fn classify_estop_freshness(timestamp_ns: u64) -> Freshness {
     let now_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    if now_ns >= timestamp_ns {
+    let skew = if now_ns >= timestamp_ns {
+        now_ns - timestamp_ns
+    } else {
+        timestamp_ns - now_ns
+    };
+    if skew >= ESTOP_IMPLAUSIBLE_SKEW_NS {
+        return Freshness::ClockUnusable;
+    }
+    let within = if now_ns >= timestamp_ns {
         // Past (or equal): reject if older than the max age (replay).
         now_ns - timestamp_ns <= ESTOP_MAX_AGE_NS
     } else {
         // Future: reject if further ahead than the skew tolerance (desync/garbage).
         timestamp_ns - now_ns <= ESTOP_MAX_FUTURE_SKEW_NS
+    };
+    if within {
+        Freshness::Fresh
+    } else {
+        Freshness::Stale
     }
+}
+
+/// True if `timestamp_ns` is within the freshness window of now.
+fn is_fresh_estop(timestamp_ns: u64) -> bool {
+    classify_estop_freshness(timestamp_ns) == Freshness::Fresh
 }
 
 /// Emit the "networked e-stop is unauthenticated" warning at most once per process.
@@ -260,6 +348,34 @@ fn warn_unauthenticated_once() {
              Set HORUS_ESTOP_KEY on every node to authenticate e-stop, or \
              HORUS_ESTOP_REMOTE=off to ignore remote e-stop. (Fires once.)"
         );
+    }
+}
+
+/// Emit the "this machine's clock cannot be compared" warning at most once.
+///
+/// Rate-limited like the others: the condition persists until NTP lands, so an
+/// unlimited log would flood for the whole boot window.
+fn warn_estop_clock_unusable(host_id: u16, authenticated: bool) {
+    if !ESTOP_CLOCK_WARNED.swap(true, Ordering::Relaxed) {
+        if authenticated {
+            eprintln!(
+                "[horus_net] WARNING: remote e-stop from host {:04x} differs from this \
+                 machine's clock by more than a day — one of the two clocks is not set. \
+                 ACTING on it anyway because it is authenticated (HORUS_ESTOP_KEY). \
+                 Synchronise clocks (NTP/PTP): e-stop freshness compares ABSOLUTE wall \
+                 time. (Fires once.)",
+                host_id
+            );
+        } else {
+            eprintln!(
+                "[horus_net] WARNING: REJECTING remote e-stop from host {:04x} — its \
+                 timestamp differs from this machine's clock by more than a day, so one \
+                 of the two clocks is not set, and the packet is UNAUTHENTICATED. \
+                 Remote e-stop is INERT on this node until clocks are synchronised \
+                 (NTP/PTP) or HORUS_ESTOP_KEY is provisioned. (Fires once.)",
+                host_id
+            );
+        }
     }
 }
 
@@ -646,5 +762,77 @@ mod tests {
             !handle_remote_estop_with_key(&stale, EstopRemotePolicy::Warn, Some(&KEY_A)),
             "freshness window must still apply to authenticated packets"
         );
+    }
+
+    // ─── Unsynchronised clocks (safety-critical) ────────────────────────────
+
+    /// Timestamp an embedded controller with no battery-backed RTC produces
+    /// before NTP lands: at/near the Unix epoch.
+    const UNSET_CLOCK_TS: u64 = 1_000_000_000; // ~1 second after the epoch
+
+    #[test]
+    fn a_decades_skewed_timestamp_is_classified_as_unusable_not_stale() {
+        // The distinction is the whole fix: "stale" is discarded, "unusable"
+        // means one of the clocks is simply not set.
+        assert_eq!(
+            classify_estop_freshness(UNSET_CLOCK_TS),
+            Freshness::ClockUnusable
+        );
+        // A genuinely old-but-plausible packet is still Stale, not Unusable.
+        assert_eq!(
+            classify_estop_freshness(now_ns() - 60_000_000_000),
+            Freshness::Stale
+        );
+        assert_eq!(classify_estop_freshness(now_ns()), Freshness::Fresh);
+    }
+
+    #[test]
+    fn authenticated_estop_still_halts_when_the_clock_is_unset() {
+        // THE BUG: a robot whose clock has not synced silently discarded every
+        // remote e-stop. Authenticated packets must now still halt — the MAC
+        // proves origin, and halting is the safe direction.
+        let mut pkt = encode_estop_with_key(0x1234, "fleet halt", Some(&KEY_A));
+        let body_len = estop_body_len(&pkt).unwrap();
+        let off = body_len - 8;
+        pkt.truncate(body_len);
+        pkt[off..].copy_from_slice(&UNSET_CLOCK_TS.to_le_bytes());
+        let tag = estop_tag(&KEY_A, &pkt);
+        pkt.extend_from_slice(&tag);
+
+        assert!(
+            handle_remote_estop_with_key(&pkt, EstopRemotePolicy::Warn, Some(&KEY_A)),
+            "an authenticated e-stop must halt even when this machine's clock is unset"
+        );
+    }
+
+    #[test]
+    fn unauthenticated_estop_with_an_unset_clock_is_still_rejected() {
+        // Without a MAC, an arbitrary timestamp is exactly the replay the
+        // freshness guard exists for — keep rejecting, but the operator now
+        // gets a log line saying why.
+        let mut pkt = encode_estop_with_key(0x1234, "halt", None);
+        let off = pkt.len() - 8;
+        pkt[off..].copy_from_slice(&UNSET_CLOCK_TS.to_le_bytes());
+        assert!(!handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Warn,
+            None
+        ));
+    }
+
+    #[test]
+    fn policy_off_still_wins_over_an_unset_clock() {
+        let mut pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
+        let body_len = estop_body_len(&pkt).unwrap();
+        let off = body_len - 8;
+        pkt.truncate(body_len);
+        pkt[off..].copy_from_slice(&UNSET_CLOCK_TS.to_le_bytes());
+        let tag = estop_tag(&KEY_A, &pkt);
+        pkt.extend_from_slice(&tag);
+        assert!(!handle_remote_estop_with_key(
+            &pkt,
+            EstopRemotePolicy::Off,
+            Some(&KEY_A)
+        ));
     }
 }
