@@ -89,9 +89,23 @@ impl ImportExportGuard {
 
     /// Check if exporting this topic to the network should be allowed.
     pub fn allow_export(&self, topic_name: &str) -> bool {
-        // System topics always bypass guards
+        // System topics bypass the guard only when the operator has not asked
+        // for anything narrower. They used to bypass it UNCONDITIONALLY — the
+        // same shape as the import-side bug behind GHSA-3frr-c2j9-hhr7 — which
+        // meant `_horus.logs` (every Error and Warning line this node emits) and
+        // `_horus.presence` (its full node inventory) were exported to any host
+        // that announced an interest, and an operator who put them in
+        // `deny_export` was silently ignored.
+        //
+        // `ExportMode::All` is still the default and still exports them, so
+        // zero-config LAN replication is unchanged; the difference is that
+        // `deny_export = ["_horus.logs"]` now actually works.
         if crate::registry::is_system_topic(topic_name) {
-            return true;
+            return match &self.export_mode {
+                ExportMode::All => true,
+                ExportMode::AllowList(patterns) => glob_match_any(topic_name, patterns),
+                ExportMode::DenyList(patterns) => !glob_match_any(topic_name, patterns),
+            };
         }
         match &self.export_mode {
             ExportMode::All => true,
@@ -323,5 +337,53 @@ mod tests {
         assert!(glob_match("robot.front.scan", "robot.*.scan"));
         assert!(glob_match("robot.rear.scan", "robot.*.scan"));
         assert!(!glob_match("robot.front.imu", "robot.*.scan"));
+    }
+
+    #[test]
+    fn system_topics_respect_an_explicit_deny_export() {
+        // Regression guard: system topics used to bypass allow_export
+        // UNCONDITIONALLY, so _horus.logs (every Error/Warning line) and
+        // _horus.presence (the node inventory) were exported to any announcer
+        // and an operator's deny_export entry was silently ignored.
+        let reg = std::sync::Arc::new(TopicRegistry::new());
+        let guard = ImportExportGuard::new(
+            ImportMode::Auto,
+            ExportMode::DenyList(vec!["_horus.logs".into()]),
+            Some(reg),
+        );
+        assert!(
+            !guard.allow_export("_horus.logs"),
+            "an explicit deny_export on a system topic must be honoured"
+        );
+        assert!(
+            guard.allow_export("_horus.presence"),
+            "system topics not named in the deny list still export"
+        );
+    }
+
+    #[test]
+    fn system_topics_still_export_by_default() {
+        // The default must not change: zero-config LAN replication depends on
+        // presence and logs flowing without configuration.
+        let reg = std::sync::Arc::new(TopicRegistry::new());
+        let guard = ImportExportGuard::new_default(reg);
+        assert!(guard.allow_export("_horus.logs"));
+        assert!(guard.allow_export("_horus.presence"));
+        assert!(guard.allow_export("_horus.estop"));
+    }
+
+    #[test]
+    fn system_topics_honour_an_allowlist() {
+        let reg = std::sync::Arc::new(TopicRegistry::new());
+        let guard = ImportExportGuard::new(
+            ImportMode::Auto,
+            ExportMode::AllowList(vec!["imu".into()]),
+            Some(reg),
+        );
+        assert!(guard.allow_export("imu"));
+        assert!(
+            !guard.allow_export("_horus.logs"),
+            "an allowlist that does not name a system topic must exclude it"
+        );
     }
 }

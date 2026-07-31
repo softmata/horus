@@ -234,7 +234,23 @@ impl Replicator {
 
     fn handle_incoming(&mut self) {
         let mut buf = [0u8; 65536];
-        loop {
+        // Bounded drain. This used to loop until the socket was empty, which
+        // never happens under a sustained inbound rate — and because `run()`
+        // dispatches the Timer as a SIBLING match arm, reached only after this
+        // returns, a flood starved every periodic safety action: outbound
+        // heartbeats, peer liveness, reassembly GC, and the e-stop broadcast
+        // drain. (The local halt is latched in `safety_monitor`, so the fleet
+        // notification was delayed rather than lost — which is what keeps this
+        // out of critical — but delay is not acceptable for an e-stop.)
+        //
+        // The budget is sized for legitimate throughput, not just for attack
+        // mitigation: at the 50ms timer interval this still admits ~5k
+        // datagrams/sec of real traffic before the cap binds, well above what a
+        // LAN robot fleet produces. Anything left in the socket is read on the
+        // next wakeup; the event loop is edge-triggered but the timer fires
+        // every TIMER_INTERVAL regardless, so nothing is stranded.
+        const MAX_DATAGRAMS_PER_WAKEUP: usize = 256;
+        for _ in 0..MAX_DATAGRAMS_PER_WAKEUP {
             match self.transport.recv_from(&mut buf) {
                 Ok((n, from)) => {
                     self.metrics.record_recv(self.peer_id_hash, n);
