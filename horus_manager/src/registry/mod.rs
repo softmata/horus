@@ -6,7 +6,7 @@ mod publish;
 mod tests;
 
 // Re-export all public types and functions
-pub use helpers::generate_signing_keypair;
+pub use helpers::{generate_signing_keypair, list_publisher_keys, trust_publisher_key};
 
 use crate::config::CARGO_TOML;
 use crate::dependency_resolver::{DependencySpec, PackageProvider};

@@ -86,7 +86,7 @@ Publishing & Deploy:
   undeprecate       Remove deprecation from a package
   owner             Manage owners and transfer ownership
   deploy            Deploy project to a remote robot
-  auth              Authentication (login, api-key, signing-key)
+  auth              Authentication (login, api-key, signing-key, trust-publisher)
 
 Native Tools:
   env               Set up shell integration (cargo/pip/cmake proxy)
@@ -1098,6 +1098,17 @@ enum AuthCommands {
     /// Generate ed25519 signing key pair for package signing
     #[command(name = "signing-key")]
     SigningKey,
+    /// Trust a publisher's public key for package signature verification
+    #[command(name = "trust-publisher")]
+    TrustPublisher {
+        /// Publisher name — must match the package owner (or the package name)
+        name: String,
+        /// Path to the publisher's .pub file, or the 64-char hex key itself
+        key: String,
+    },
+    /// List publisher keys trusted for signature verification
+    #[command(name = "publishers")]
+    Publishers,
     /// Logout from HORUS registry
     Logout,
     /// Show current authenticated user
@@ -2770,6 +2781,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 commands::github_auth::generate_key(name, environment)
             }
             AuthCommands::SigningKey => commands::pkg::run_keygen(),
+            AuthCommands::TrustPublisher { name, key } => {
+                horus_manager::registry::trust_publisher_key(&name, &key)
+                    .map_err(HorusError::from)
+            }
+            AuthCommands::Publishers => {
+                horus_manager::registry::list_publisher_keys().map_err(HorusError::from)
+            }
             AuthCommands::Logout => commands::github_auth::logout(),
             AuthCommands::Whoami => commands::github_auth::whoami(),
             AuthCommands::Keys { command: keys_cmd } => match keys_cmd {

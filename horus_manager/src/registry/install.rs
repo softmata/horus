@@ -56,6 +56,62 @@ impl Drop for TempDirGuard {
     }
 }
 
+/// Verify a package signature against a trusted PUBLISHER key.
+///
+/// Returns `Ok(())` when the signature verified, or when no publisher key is
+/// on file for this package — the two are distinguished in the log, not by the
+/// return type, because they mean different things and only one is a failure.
+///
+/// The previous behaviour read `keys_dir()/signing_key.pub`, which is the
+/// INSTALLING USER'S own public key, as the anchor for every package. That
+/// cannot authenticate a publisher: with no local keypair every signed package
+/// became uninstallable, with someone else's keypair an authentic package was
+/// reported as tampered with, and it succeeded only for packages the installer
+/// had signed themselves. A signature that cannot be bound to a publisher is
+/// unverifiable, not invalid, so it is reported loudly and does not abort the
+/// install; a signature that CAN be bound and fails is still fatal.
+fn verify_against_publisher_key(
+    bytes: &[u8],
+    sig_hex: &str,
+    package_name: &str,
+    owner: Option<&str>,
+    what: &str,
+) -> Result<()> {
+    let Some(pub_path) = crate::paths::publisher_key_path(package_name, owner) else {
+        let dir = crate::paths::publisher_keys_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|_| "<publisher key directory>".to_string());
+        let key_name = owner.unwrap_or(package_name);
+        eprintln!(
+            "  WARNING: {what} for {package_name} is signed, but no publisher key is on file \
+             — the signature cannot be checked.\n           To verify future installs, place \
+             the publisher's key at {dir}/{key_name}.pub"
+        );
+        log::warn!("no publisher key for {package_name}; signature not verified");
+        return Ok(());
+    };
+
+    match verify_package_signature(bytes, sig_hex, &pub_path) {
+        Ok(true) => {
+            log::info!(
+                "{what} signature verified for {package_name} against {}",
+                pub_path.display()
+            );
+            Ok(())
+        }
+        Ok(false) => Err(anyhow!(
+            "{what} signature verification FAILED for {package_name}. It does not match the \
+             publisher key at {}. The package may have been tampered with.",
+            pub_path.display()
+        )),
+        Err(e) => Err(anyhow!(
+            "Signature verification error for {package_name}: {e}. Check the publisher key \
+             file at {}",
+            pub_path.display()
+        )),
+    }
+}
+
 /// Verify an Ed25519 signature against a local public key file.
 /// Returns Ok(true) if valid, Ok(false) if invalid, Err on format/IO errors.
 pub(crate) fn verify_package_signature(
@@ -524,49 +580,16 @@ impl RegistryClient {
             bytes
         };
 
-        // Verify Ed25519 signature
-        let pub_key_path = crate::paths::keys_dir()
-            .ok()
-            .map(|d| d.join("signing_key.pub"));
-        let has_public_key = pub_key_path.as_ref().is_some_and(|p| p.exists());
-
+        // Verify the Ed25519 publisher signature against a trusted PUBLISHER
+        // key, never against the installing user's own key.
         if let Some(ref sig_hex) = pkg_signature {
-            if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
-                match verify_package_signature(&bytes, sig_hex, &pub_path) {
-                    Ok(true) => {
-                        log::info!("Package signature verified for {}", package_name);
-                    }
-                    Ok(false) => {
-                        return Err(anyhow!(
-                            "Package signature verification FAILED for {}. \
-                             The package may have been tampered with. \
-                             If you trust this package, remove your local public key.",
-                            package_name
-                        ));
-                    }
-                    Err(e) => {
-                        // Crypto/IO errors are hard failures — don't silently continue
-                        return Err(anyhow!(
-                            "Signature verification error for {}: {}. \
-                             Check your public key file at ~/.horus/signing_key.pub",
-                            package_name,
-                            e
-                        ));
-                    }
-                }
-            } else {
-                return Err(anyhow!(
-                    "Package {} is signed but no local public key found to verify the signature.\n\
-                     Install the publisher's public key to ~/.horus/signing_key.pub before installing.\n\
-                     Package verification failure is fatal — there is no override.",
-                    package_name
-                ));
-            }
-        } else if has_public_key {
-            // Public key configured but package is unsigned — warn the user
+            verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Package")?;
+        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
+            // A publisher key is on file for this package but it arrived
+            // unsigned — that is a downgrade, and worth saying so.
             log::warn!(
-                "Package {} is NOT signed, but you have a signing key configured. \
-                 This package's integrity cannot be verified.",
+                "Package {} is NOT signed, but a publisher key is on file for it. \
+                 Its integrity cannot be verified.",
                 package_name
             );
         }
@@ -1062,55 +1085,11 @@ impl RegistryClient {
         // authentication; a signature the registry cannot forge (it lacks the private
         // key) is. Same policy as source install: a signed binary MUST verify against a
         // configured public key; an unsigned binary only warns when a key is configured.
-        let pub_key_path = crate::paths::keys_dir()
-            .ok()
-            .map(|d| d.join("signing_key.pub"));
-        let has_public_key = pub_key_path.as_ref().is_some_and(|p| p.exists());
-
         if let Some(ref sig_hex) = pkg_signature {
-            if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
-                match verify_package_signature(&bytes, sig_hex, &pub_path) {
-                    Ok(true) => {
-                        log::info!(
-                            "Binary signature verified for {}@{} ({})",
-                            package_name,
-                            version_str,
-                            target_triple
-                        );
-                    }
-                    Ok(false) => {
-                        return Err(anyhow!(
-                            "Binary signature verification FAILED for {}@{} ({}). \
-                             The pre-built binary may have been tampered with. \
-                             If you trust this package, remove your local public key.",
-                            package_name,
-                            version_str,
-                            target_triple
-                        ));
-                    }
-                    Err(e) => {
-                        // Crypto/IO errors are hard failures — don't silently continue.
-                        return Err(anyhow!(
-                            "Signature verification error for {}: {}. \
-                             Check your public key file at ~/.horus/signing_key.pub",
-                            package_name,
-                            e
-                        ));
-                    }
-                }
-            } else {
-                return Err(anyhow!(
-                    "Pre-built binary for {} is signed but no local public key was found to \
-                     verify it.\n\
-                     Install the publisher's public key to ~/.horus/signing_key.pub before \
-                     installing.",
-                    package_name
-                ));
-            }
-        } else if has_public_key {
-            // Public key configured but the binary is unsigned — warn the user.
+            verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Pre-built binary")?;
+        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
             log::warn!(
-                "Pre-built binary for {} is NOT signed, but you have a signing key configured. \
+                "Pre-built binary for {} is NOT signed, but a publisher key is on file for it. \
                  Its integrity cannot be verified.",
                 package_name
             );

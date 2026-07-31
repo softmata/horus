@@ -201,10 +201,16 @@ HORUS_TOPIC_IMPL(msg::BoundingBox2D, bounding_box_2d)
 HORUS_TOPIC_IMPL(msg::BoundingBox3D, bounding_box_3d)
 HORUS_TOPIC_IMPL(msg::Detection,     detection)
 HORUS_TOPIC_IMPL(msg::Detection3D,   detection_3d)
-// Vision (3)
-HORUS_TOPIC_IMPL(msg::CameraInfo,       camera_info)
-HORUS_TOPIC_IMPL(msg::RegionOfInterest, region_of_interest)
-HORUS_TOPIC_IMPL(msg::StereoInfo,       stereo_info)
+// Vision (0)
+// CameraInfo, RegionOfInterest and StereoInfo were WITHDRAWN from the C ABI.
+// They are repr(Rust) upstream in horus-robotics, so they have no guaranteed
+// layout and cannot be pinned by any C++ struct — a mirror that matches today
+// can silently stop matching after a toolchain bump. `c_api.rs` dropped them
+// and `layout_contract.rs` documents the absence; these declarations were left
+// behind, so every C++ translation unit including <horus/horus.hpp> failed to
+// compile with "'CameraInfo' is not a member of 'horus::msg'".
+// To restore: add #[repr(C)] upstream, re-add to impl_pod_topic_c_api! and to
+// layout_contract_types!, then reinstate the HORUS_TOPIC_IMPL lines here.
 // Navigation (5)
 HORUS_TOPIC_IMPL(msg::GoalResult,       goal_result)
 HORUS_TOPIC_IMPL(msg::Waypoint,         waypoint)
@@ -239,9 +245,9 @@ HORUS_TOPIC_IMPL(msg::AudioFrame, audio_frame)
 // Clock (2)
 HORUS_TOPIC_IMPL(msg::Clock,         clock)
 HORUS_TOPIC_IMPL(msg::TimeReference, time_reference)
-// Perception (2)
-HORUS_TOPIC_IMPL(msg::PointField,     point_field)
-HORUS_TOPIC_IMPL(msg::PlaneDetection, plane_detection)
+// Perception (0)
+// PointField and PlaneDetection were WITHDRAWN from the C ABI for the same
+// reason as the Vision types above — repr(Rust) upstream, so unpinnable.
 
 #undef HORUS_TOPIC_IMPL
 

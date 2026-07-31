@@ -41,8 +41,50 @@ pub fn blackbox_dir() -> Result<PathBuf> {
 }
 
 /// Get the signing keys directory.
+///
+/// Holds the user's OWN publishing identity: `signing_key` (private) and
+/// `signing_key.pub`. This is an identity, NOT a trust anchor — see
+/// [`publisher_keys_dir`].
 pub fn keys_dir() -> Result<PathBuf> {
     Ok(horus_sys::platform::data_dir().join("keys"))
+}
+
+/// Directory holding trusted PUBLISHER public keys, one file per publisher.
+///
+/// Separate from [`keys_dir`] on purpose. Package-signature verification used
+/// to read `keys_dir()/signing_key.pub` — the installing user's own public
+/// key — as the trust anchor for every package, which cannot authenticate
+/// anyone but the installer. The outcomes were: no local keypair meant every
+/// signed package was uninstallable; a keypair from a different publisher
+/// meant an authentic package was reported as tampered with; and it verified
+/// only for packages the installer had signed themselves.
+///
+/// Keys live at `publishers/<name>.pub` where `<name>` is the package owner,
+/// falling back to the package name. Same file format as `signing_key.pub`.
+pub fn publisher_keys_dir() -> Result<PathBuf> {
+    Ok(keys_dir()?.join("publishers"))
+}
+
+/// Resolve the trust anchor for a package, if one has been installed.
+///
+/// Tries `publishers/<owner>.pub` first, then `publishers/<package>.pub`.
+/// Returns `None` when no publisher key is on file — the caller must then
+/// treat the signature as unverifiable rather than as invalid.
+pub fn publisher_key_path(package_name: &str, owner: Option<&str>) -> Option<PathBuf> {
+    let dir = publisher_keys_dir().ok()?;
+    // Only ever a bare file name inside the directory — the owner and package
+    // strings come from registry metadata, so a `../` in either must not
+    // escape into the rest of the data directory.
+    let candidate = |name: &str| -> Option<PathBuf> {
+        if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
+            return None;
+        }
+        let p = dir.join(format!("{name}.pub"));
+        p.exists().then_some(p)
+    };
+    owner
+        .and_then(candidate)
+        .or_else(|| candidate(package_name))
 }
 
 /// Get the path to the out-of-repo plugin trust store.
@@ -271,4 +313,34 @@ mod tests {
             }
         }
     }
+    // ── publisher key store (CLI-TRUST-05) ──────────────────────────────
+
+    /// The publisher trust store must be a DIFFERENT location from the user's
+    /// own publishing identity. Verification used to read
+    /// `keys_dir()/signing_key.pub` — the installing user's own public key —
+    /// as the anchor for every package, which can authenticate nobody but the
+    /// installer.
+    #[test]
+    fn publisher_keys_dir_is_separate_from_own_identity() {
+        let own = keys_dir().unwrap();
+        let publishers = publisher_keys_dir().unwrap();
+        assert_ne!(own, publishers);
+        assert!(publishers.starts_with(&own));
+        assert_ne!(publishers, own.join("signing_key.pub"));
+    }
+
+    /// Owner and package names come from registry metadata, so they are
+    /// untrusted input that becomes a file name. A traversal must not reach
+    /// outside the store — e.g. resolving to the user's own `signing_key.pub`
+    /// and reinstating exactly the bug this store replaces.
+    #[test]
+    fn publisher_key_path_rejects_traversal() {
+        assert!(publisher_key_path("../signing_key", None).is_none());
+        assert!(publisher_key_path("pkg", Some("../signing_key")).is_none());
+        assert!(publisher_key_path("a/b", None).is_none());
+        assert!(publisher_key_path("", None).is_none());
+        // A name with no key on file yields None, not a guess.
+        assert!(publisher_key_path("definitely-not-installed-xyz", None).is_none());
+    }
+
 }

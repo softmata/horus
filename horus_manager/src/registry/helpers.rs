@@ -1965,6 +1965,84 @@ impl RegistryClient {
 // ============================================================================
 
 /// Generate an Ed25519 signing keypair for package signing
+/// Install a publisher's public key into the trust store.
+///
+/// `key` is either a path to a `.pub` file or the 64-character hex encoding of
+/// the Ed25519 verifying key — the same form `horus auth signing-key` prints.
+///
+/// This store is what package-signature verification consults. It is kept
+/// separate from `keys_dir()/signing_key.pub`, which is the user's OWN
+/// publishing identity and can only ever authenticate the user themselves.
+pub fn trust_publisher_key(name: &str, key: &str) -> Result<()> {
+    if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
+        anyhow::bail!(
+            "invalid publisher name {name:?} — it becomes a file name in the trust store, \
+             so it may not contain path separators or `..`"
+        );
+    }
+
+    let raw = if std::path::Path::new(key).exists() {
+        fs::read_to_string(key)?
+    } else {
+        key.to_string()
+    };
+    let hex_key = raw.trim().to_string();
+
+    // Validate before storing: a malformed key here becomes a confusing
+    // "verification error" on every later install of that publisher.
+    let bytes = hex::decode(&hex_key)
+        .map_err(|e| anyhow::anyhow!("public key is not valid hex: {e}"))?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "public key must be 32 bytes (64 hex chars), got {} bytes",
+            bytes.len()
+        );
+    }
+
+    let dir = crate::paths::publisher_keys_dir()?;
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{name}.pub"));
+    fs::write(&path, &hex_key)?;
+
+    println!(" Trusted publisher key for {name}");
+    println!("   Stored at: {}", path.display());
+    println!("   Packages owned by {name} will now have their signatures verified.");
+    Ok(())
+}
+
+/// List the publisher keys currently trusted.
+pub fn list_publisher_keys() -> Result<()> {
+    let dir = crate::paths::publisher_keys_dir()?;
+    if !dir.exists() {
+        println!("No publisher keys trusted yet.");
+        println!("   Add one with: horus auth trust-publisher <name> <key-or-file>");
+        println!("   They will be stored in {}", dir.display());
+        return Ok(());
+    }
+
+    let mut names: Vec<String> = fs::read_dir(&dir)?
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".pub"))
+                .map(str::to_string)
+        })
+        .collect();
+    names.sort();
+
+    if names.is_empty() {
+        println!("No publisher keys trusted yet ({} is empty).", dir.display());
+        return Ok(());
+    }
+
+    println!("Trusted publisher keys ({}):", dir.display());
+    for n in names {
+        println!("   {n}");
+    }
+    Ok(())
+}
+
 pub fn generate_signing_keypair() -> Result<()> {
     use ed25519_dalek::SigningKey;
     use rand::RngCore;
