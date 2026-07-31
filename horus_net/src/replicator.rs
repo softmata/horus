@@ -85,6 +85,11 @@ pub struct Replicator {
     /// Count of datagrams dropped by `peer_filter`, logged at most once.
     filtered_count: u64,
     filtered_logged: bool,
+    /// Monotonic sequence stamped on framed system-topic messages.
+    ///
+    /// Shared across the three system topics; dedup is keyed per topic, so a
+    /// shared counter still yields a strictly increasing sequence for each.
+    system_seq: u32,
 }
 
 impl Replicator {
@@ -165,6 +170,7 @@ impl Replicator {
             system_limits: crate::netfilter::SystemTopicLimits::default(),
             filtered_count: 0,
             filtered_logged: false,
+            system_seq: 0,
         })
     }
 
@@ -806,17 +812,29 @@ impl Replicator {
     /// is exactly what was happening to networked e-stop (see the call site in
     /// `handle_timer`). Returns `None` if the framed packet would exceed one
     /// datagram.
-    fn frame_system_topic(&self, topic_name: &str, payload: &[u8]) -> Option<Vec<u8>> {
+    fn frame_system_topic(&mut self, topic_name: &str, payload: &[u8]) -> Option<Vec<u8>> {
         let topic_hash = wire::topic_hash(topic_name);
         let priority = Priority::for_system_topic(topic_name);
         let reliability = Reliability::for_system_topic(topic_name);
 
+        // Sequence MUST advance per episode. Framed system messages take the
+        // normal data path on the receiver, which runs
+        // `reliability.dedup_messages` BEFORE the system-topic dispatch, and
+        // `is_new_message` drops anything whose sequence is <= the last seen for
+        // that (sender, topic). A fixed 0 would therefore deliver the FIRST
+        // e-stop episode and silently drop every later one, forever — which is
+        // exactly the failure mode framing was added to fix.
+        //
+        // Retries deliberately reuse the already-framed bytes, so they keep the
+        // same sequence and are still deduped. That is the point of the
+        // triple-redundant send.
+        self.system_seq = self.system_seq.wrapping_add(1);
         let header = PacketHeader::new(PacketFlags::empty(), self.peer_id_hash, self.packet_seq);
         let msg = wire::MessageHeader {
             topic_hash,
             payload_len: payload.len() as u32,
             timestamp_ns: 0,
-            sequence: 0,
+            sequence: self.system_seq,
             priority,
             reliability,
             encoding: Encoding::Bincode,
@@ -835,7 +853,7 @@ impl Replicator {
     }
 
     /// Send a system topic payload to all known peers + multicast.
-    fn send_system_topic(&self, topic_name: &str, payload: &[u8]) {
+    fn send_system_topic(&mut self, topic_name: &str, payload: &[u8]) {
         let topic_hash = wire::topic_hash(topic_name);
         let priority = Priority::for_system_topic(topic_name);
         let reliability = Reliability::for_system_topic(topic_name);
@@ -1082,6 +1100,72 @@ mod tests {
         assert!(
             fired.load(Ordering::SeqCst),
             "estop data packet must dispatch to the estop handler"
+        );
+    }
+
+    #[test]
+    fn a_second_estop_episode_is_not_deduped_away() {
+        // Regression guard for a trap introduced BY the framing fix. Framed
+        // system messages take the normal data path, which runs
+        // reliability.dedup_messages BEFORE the system-topic dispatch.
+        // is_new_message drops anything whose sequence is <= the last seen for
+        // that (sender, topic) — so a fixed sequence of 0 would deliver the FIRST
+        // e-stop episode and silently drop every later one, forever.
+        //
+        // Retries reuse the already-framed bytes and SHOULD still dedup; a new
+        // episode carries a new sequence and must get through.
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired2 = fired.clone();
+        horus_core::scheduling::set_emergency_stop_hook(move |_reason| {
+            fired2.store(true, Ordering::SeqCst);
+        });
+
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+
+        // Frame two independent episodes exactly as handle_timer does.
+        let ep1 = rep
+            .frame_system_topic(
+                crate::registry::SYSTEM_TOPIC_ESTOP,
+                &crate::estop::encode_estop(0xABCD, "episode one"),
+            )
+            .expect("episode 1 must frame");
+        let ep2 = rep
+            .frame_system_topic(
+                crate::registry::SYSTEM_TOPIC_ESTOP,
+                &crate::estop::encode_estop(0xABCD, "episode two"),
+            )
+            .expect("episode 2 must frame");
+
+        // The two episodes must not carry the same wire sequence.
+        let seq1 = wire::MessageHeader::decode(&ep1[PacketHeader::SIZE..])
+            .unwrap()
+            .sequence;
+        let seq2 = wire::MessageHeader::decode(&ep2[PacketHeader::SIZE..])
+            .unwrap()
+            .sequence;
+        assert_ne!(
+            seq1, seq2,
+            "each e-stop episode needs its own sequence or dedup eats it"
+        );
+
+        rep.process_packet(&ep1, from);
+        assert!(fired.load(Ordering::SeqCst), "episode 1 must halt");
+
+        // A retry of episode 1 is byte-identical, so it SHOULD be deduped.
+        fired.store(false, Ordering::SeqCst);
+        rep.process_packet(&ep1, from);
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "a byte-identical retry is redundancy, not a new halt"
+        );
+
+        // The genuinely new episode must get through.
+        fired.store(false, Ordering::SeqCst);
+        rep.process_packet(&ep2, from);
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "a LATER e-stop episode must still halt — this is the regression"
         );
     }
 }

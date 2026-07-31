@@ -226,18 +226,27 @@ fn wait_for_oauth_callback(
     // path activates the moment the registry supports it), and warn loudly but
     // continue when one is not, so upgrading the CLI does not break login
     // against today's registry. Never silently accept a MISMATCH.
+    // A missing `state` must NOT be a free pass: the attacker picks the branch,
+    // so "warn and continue when absent" is defeated by simply omitting the
+    // parameter. Absent is therefore fatal by default, with an explicit,
+    // documented opt-out for the window before the registry echoes state back.
+    let allow_missing = std::env::var("HORUS_AUTH_ALLOW_MISSING_STATE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     let state_ok = match (&received_state, expected_state.is_empty()) {
         (Some(got), false) => state_matches(expected_state, got),
         (Some(_), true) => false, // we could not generate one; cannot verify
-        (None, _) => {
+        (None, _) if allow_missing => {
             println!(
-                "  {} The registry did not return an OAuth `state` parameter, so this login\n     \
-                 could not be CSRF-verified. Any local process able to reach the callback\n     \
-                 port could have supplied this authorization code.",
+                "  {} HORUS_AUTH_ALLOW_MISSING_STATE is set and the registry returned no\n     \
+                 OAuth `state`, so this login was NOT CSRF-verified. Any local process able\n     \
+                 to reach the callback port could have supplied this authorization code.",
                 crate::cli_output::ICON_WARN.yellow()
             );
             true
         }
+        (None, _) => false,
     };
 
     // Send a response to the browser
@@ -262,12 +271,19 @@ fn wait_for_oauth_callback(
     drop(stream);
 
     if !state_ok {
-        return Err(
+        return Err(if received_state.is_none() {
+            "the OAuth callback carried no `state` parameter, so it could not be verified \
+             as belonging to this login. Refusing to exchange the authorization code — any \
+             local process able to reach the callback port could have supplied it.\n  \
+             If your registry does not yet return `state`, you can opt out for now with \
+             HORUS_AUTH_ALLOW_MISSING_STATE=1, or use `horus auth generate-key` instead."
+                .to_string()
+        } else {
             "OAuth state mismatch — the callback did not come from the login this command \
              started. Refusing to exchange the authorization code. If this repeats, another \
              process on this machine may be trying to plant its own registry token."
-                .to_string(),
-        );
+                .to_string()
+        });
     }
 
     let auth_code = auth_code.ok_or("No auth code in callback")?;

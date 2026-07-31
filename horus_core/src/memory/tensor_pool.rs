@@ -292,6 +292,11 @@ impl TensorPool {
                 (file, true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // `mode` on the create path only applies when the file is
+                // created, so a pool left by an older build is still 0664.
+                // Narrow it here too; the 0700 parent makes this defence in
+                // depth rather than the only barrier.
+                horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
                 let actual_size = file.metadata()?.len();
                 if actual_size < mmap_size as u64 {
@@ -508,6 +513,11 @@ impl TensorPool {
                 (file, true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // `mode` on the create path only applies when the file is
+                // created, so a pool left by an older build is still 0664.
+                // Narrow it here too; the 0700 parent makes this defence in
+                // depth rather than the only barrier.
+                horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
                 let actual_size = file.metadata()?.len();
                 if actual_size < mmap_size as u64 {
