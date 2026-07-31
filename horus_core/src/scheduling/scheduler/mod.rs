@@ -1590,6 +1590,30 @@ impl Scheduler {
 
         let node_name = node.name().to_string();
 
+        // Refuse a duplicate node name.
+        //
+        // Node names are the identity key for several pieces of per-node state
+        // that are keyed by string, not by index: the SafetyMonitor's watchdog
+        // map, the SHM registry slot, and the NodeControlMap paused/stopped
+        // flags. Two nodes called `arm_ctrl` therefore SHARE one watchdog — so
+        // the healthy one's feed keeps refreshing the hung one's deadline and
+        // the stall is never detected — plus one registry slot (so `horus node
+        // list` shows one of them) and one control flag (so `horus node pause`
+        // hits both).
+        //
+        // Silently letting the second registration alias the first is the worst
+        // of the options: refusing is loud, and renaming behind the operator's
+        // back would make `horus node kill <name>` target something they did not
+        // ask for. This is a programming error, caught at registration.
+        if self.nodes.iter().any(|n| n.name.as_ref() == node_name) {
+            panic!(
+                "duplicate node name {node_name:?}: node names key the watchdog map, the SHM \
+                 registry slot and the pause/kill control flags, so two nodes sharing one name \
+                 share one watchdog — a hang in either is masked by the other's feed. Give each \
+                 node a distinct name."
+            );
+        }
+
         let context = NodeInfo::new(node_name.clone());
 
         // Create node recorder if recording is enabled

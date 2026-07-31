@@ -319,8 +319,6 @@ impl NodeTimingState {
     pub(crate) fn record_tick(&mut self, actual: Duration) -> Option<BudgetViolation> {
         let actual_us = actual.as_micros() as u64;
         self.ring.record(actual_us);
-        // Successful tick resets consecutive miss counter
-        self.consecutive_misses = 0;
 
         if let Some(budget) = self.budget {
             if actual > budget {
@@ -336,6 +334,17 @@ impl NodeTimingState {
                 ));
             }
         }
+
+        // Reset the consecutive-miss run only on a tick that did NOT violate.
+        //
+        // This used to run unconditionally at the TOP of the function, before
+        // the budget check. For a node that overruns its budget and misses its
+        // deadline on the same tick — the common case, since an overrunning
+        // tick is exactly what blows the deadline — the sequence was: clear to
+        // 0 here, then `record_miss` increments to 1. Pinned at 1 forever, so
+        // `evaluate_degradation`, whose ladder starts at 3 consecutive misses,
+        // could never fire for the nodes in the worst trouble.
+        self.consecutive_misses = 0;
         None
     }
 

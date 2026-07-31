@@ -1631,40 +1631,38 @@ fn test_zero_nodes_exits_cleanly() {
     assert!(result.is_ok(), "Zero-node scheduler should exit cleanly");
 }
 
-/// Duplicate node names: two nodes with the same name can be added.
-/// Both should be present (Vec-based storage, not HashMap).
-/// Robotics: misconfigured launch file with duplicate node names.
+/// Duplicate node names are REFUSED at registration.
+///
+/// This test previously asserted the opposite — "Both duplicate-named nodes
+/// should be added" — while its own comment identified the case as a
+/// "misconfigured launch file". It was pinning a defect.
+///
+/// Node names are the identity key for per-node state that is keyed by string
+/// rather than by index: the SafetyMonitor's watchdog map, the SHM registry
+/// slot, and the pause/kill control flags. Two nodes called `motor_ctrl`
+/// therefore share ONE watchdog, so the healthy one's feed keeps refreshing the
+/// hung one's deadline and the stall is never detected — the watchdog reports
+/// healthy for a node that has stopped ticking. They also share one registry
+/// slot (`horus node list` shows one) and one control flag (`horus node pause`
+/// hits both).
+///
+/// Aliasing safety state silently is worse than refusing, so registration now
+/// panics: it is a setup-time programming error, not a runtime condition.
 #[test]
-fn test_duplicate_node_names_both_added() {
+#[should_panic(expected = "duplicate node name")]
+fn test_duplicate_node_names_are_refused() {
     let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    let counter1 = Arc::new(AtomicUsize::new(0));
-    let counter2 = Arc::new(AtomicUsize::new(0));
 
     scheduler
-        .add(CounterNode::with_counter("motor_ctrl", counter1.clone()))
+        .add(CounterNode::new("motor_ctrl"))
         .order(0)
         .build();
+    // Same name — must not be allowed to alias the first node's watchdog.
     scheduler
-        .add(CounterNode::with_counter("motor_ctrl", counter2.clone()))
+        .add(CounterNode::new("motor_ctrl"))
         .order(1)
         .build();
-
-    // Both nodes should exist
-    let nodes = scheduler.node_list();
-    assert_eq!(nodes.len(), 2, "Both duplicate-named nodes should be added");
-
-    // Both should tick
-    let result = scheduler.run_for(500_u64.ms());
-    result.unwrap();
-    assert!(
-        counter1.load(Ordering::SeqCst) > 0,
-        "First duplicate node should tick"
-    );
-    assert!(
-        counter2.load(Ordering::SeqCst) > 0,
-        "Second duplicate node should tick"
-    );
 }
 
 /// Node that fails in init(): scheduler catches it, other nodes continue.
@@ -5328,7 +5326,11 @@ fn shared_monitors_carry_a_safety_handle_for_executors() {
         node_controls: Default::default(),
         clock: scheduler.clock.clone(),
         tick_period: scheduler.tick.period,
-        watchdog: scheduler.monitor.safety.as_ref().map(|m| m.watchdog_feeder()),
+        watchdog: scheduler
+            .monitor
+            .safety
+            .as_ref()
+            .map(|m| m.watchdog_feeder()),
         estop: scheduler.monitor.safety.as_ref().map(|m| m.estop_trigger()),
         safety: scheduler.monitor.safety.clone(),
     };
@@ -5343,7 +5345,12 @@ fn shared_monitors_carry_a_safety_handle_for_executors() {
     let m = shared.safety.as_ref().unwrap();
     m.record_deadline_miss("agg_rt");
     assert_eq!(
-        scheduler.monitor.safety.as_ref().unwrap().consecutive_misses("agg_rt"),
+        scheduler
+            .monitor
+            .safety
+            .as_ref()
+            .unwrap()
+            .consecutive_misses("agg_rt"),
         m.consecutive_misses("agg_rt"),
         "the executor's handle must share state with the scheduler's monitor"
     );
