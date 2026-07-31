@@ -3170,6 +3170,123 @@ fn test_name_appears_in_status() {
     );
 }
 
+/// `.no_alloc()` must actually be in force on whichever path runs the node.
+///
+/// Deterministic mode spawns no executors — every node, RT ones included,
+/// ticks on the main thread. The build-time check in `node_builder` accepts
+/// `.rate().no_alloc()` because it only knows the node is RT-classified, so
+/// before the fix this configuration passed validation and then ran with no
+/// allocation checking whatsoever: precisely the false assurance that check
+/// exists to prevent.
+///
+/// The observable property is the allocator context itself. The test binary
+/// has no `RtAwareAllocator` as `#[global_allocator]`, so an allocation here
+/// would not panic — but `is_rt_context()` is what the allocator consults,
+/// and it must be true during the tick.
+#[test]
+fn test_no_alloc_enforced_on_deterministic_main_thread_path() {
+    use crate::memory::rt_allocator;
+    use std::sync::atomic::AtomicBool;
+
+    struct ProbeNode {
+        in_rt_context: Arc<AtomicBool>,
+        ticks: Arc<AtomicUsize>,
+    }
+
+    impl Node for ProbeNode {
+        fn name(&self) -> &str {
+            "alloc_probe"
+        }
+        fn tick(&mut self) {
+            // Warmup tick is exempt by design, so only record from tick 2 on.
+            if self.ticks.fetch_add(1, Ordering::SeqCst) > 0 && rt_allocator::is_rt_context() {
+                self.in_rt_context.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    let _guard = lock_scheduler();
+    let in_rt_context = Arc::new(AtomicBool::new(false));
+    let ticks = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new().deterministic(true).tick_rate(100_u64.hz());
+    scheduler
+        .add(ProbeNode {
+            in_rt_context: in_rt_context.clone(),
+            ticks: ticks.clone(),
+        })
+        .rate(100_u64.hz())
+        .no_alloc()
+        .build()
+        .unwrap();
+
+    for _ in 0..4 {
+        scheduler.tick_once().unwrap();
+    }
+
+    assert!(ticks.load(Ordering::SeqCst) >= 2, "node did not tick");
+    assert!(
+        in_rt_context.load(Ordering::SeqCst),
+        "a .no_alloc() node ticked on the deterministic main-thread path without \
+         entering the alloc-free context — the flag was silently doing nothing"
+    );
+    // The context must not leak past the tick.
+    assert!(!rt_allocator::is_rt_context());
+}
+
+/// `apply_config` is the sole sink for the Python configuration surface, and
+/// `finalize_config` re-reads `pending_config` after the nodes exist. Any
+/// section `apply_config` applies eagerly without recording it there is lost:
+/// `resources` was only PRINTED, so Python-supplied CPU cores produced a log
+/// line and no pinning, and the `HORUS_RT_CORES` fallback then saw an
+/// unconfigured process.
+#[test]
+fn test_apply_config_records_every_section_in_pending_config() {
+    use crate::scheduling::config::SchedulerConfig;
+
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new();
+
+    let mut config = SchedulerConfig::default();
+    config.resources.cpu_cores = Some(vec![2, 3]);
+    config.monitoring.telemetry_endpoint = Some("file:///dev/null".to_string());
+    config.monitoring.black_box_size_mb = 4;
+
+    scheduler.apply_config(config);
+
+    assert_eq!(
+        scheduler.pending_config.resources.cpu_cores,
+        Some(vec![2, 3]),
+        "cpu_cores never reached pending_config, so finalize_config could not apply it"
+    );
+    assert_eq!(
+        scheduler.pending_config.monitoring.telemetry_endpoint.as_deref(),
+        Some("file:///dev/null")
+    );
+    assert_eq!(scheduler.pending_config.monitoring.black_box_size_mb, 4);
+}
+
+/// The merge must not clobber builder calls horus_py makes BEFORE
+/// `apply_config` with this struct's defaults.
+#[test]
+fn test_apply_config_does_not_clobber_earlier_builders() {
+    use crate::scheduling::config::SchedulerConfig;
+
+    let _guard = lock_scheduler();
+    let mut scheduler = Scheduler::new().cores(&[6, 7]);
+    assert_eq!(scheduler.pending_config.resources.cpu_cores, Some(vec![6, 7]));
+
+    // Default config leaves cpu_cores None — that must mean "unspecified",
+    // not "reset to all cores".
+    scheduler.apply_config(SchedulerConfig::default());
+
+    assert_eq!(
+        scheduler.pending_config.resources.cpu_cores,
+        Some(vec![6, 7]),
+        "an unset field in the incoming config wiped an earlier .cores() call"
+    );
+}
+
 #[test]
 fn test_deterministic_builder() {
     let _guard = lock_scheduler();

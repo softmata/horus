@@ -1131,6 +1131,36 @@ impl Scheduler {
             self.pending_config.timing.global_rate_hz = config.timing.global_rate_hz;
         }
 
+        // The same merge for the remaining sections, for the same reason:
+        // `finalize_config` re-reads `self.pending_config` after the nodes
+        // exist and re-applies resources, monitoring and recording from it.
+        // Anything applied only eagerly here was either overwritten by the
+        // deferred pass or — for `resources` — never applied at all, since
+        // `apply_config` merely PRINTED the requested cores. A Python caller
+        // passing cpu_cores got a log line and no pinning, and the
+        // `HORUS_RT_CORES` fallback below then saw `cpu_cores.is_none()` and
+        // treated the process as unconfigured.
+        //
+        // Each field is merged only when the incoming value is actually set,
+        // so the builders horus_py calls BEFORE apply_config are not clobbered
+        // by this struct's defaults.
+        if config.resources.cpu_cores.is_some() {
+            self.pending_config.resources.cpu_cores = config.resources.cpu_cores.clone();
+        }
+        if config.monitoring.black_box_size_mb > 0 {
+            self.pending_config.monitoring.black_box_size_mb = config.monitoring.black_box_size_mb;
+        }
+        if config.monitoring.telemetry_endpoint.is_some() {
+            self.pending_config.monitoring.telemetry_endpoint =
+                config.monitoring.telemetry_endpoint.clone();
+        }
+        if config.monitoring.verbose {
+            self.pending_config.monitoring.verbose = true;
+        }
+        if config.recording.is_some() {
+            self.pending_config.recording = config.recording.clone();
+        }
+
         // OS-level optimizations are applied eagerly on purpose: they touch the
         // process (mlockall, scheduling class) and do not depend on the node set.
         self.apply_rt_optimizations(&config.realtime, &config.resources);
@@ -3901,7 +3931,26 @@ impl Scheduler {
             registered.tick_budget,
         );
 
+        // `.no_alloc()` must hold on whichever path actually runs the node.
+        // The build-time check in node_builder refuses the flag on a non-RT
+        // node because only the RT executor entered the alloc-free context —
+        // but in deterministic mode NO executors are spawned and every node,
+        // RT ones included, ticks right here on the main thread. That node
+        // passes the build check and then gets no allocation checking at all,
+        // which is exactly the false assurance the build check exists to
+        // prevent. Mirror rt_executor::tick_node, warmup exemption and all:
+        // one-time lazy init (a Topic's SHM backend on first recv/send) may
+        // allocate, so alloc-freedom is enforced from the second tick on.
+        let enforce_no_alloc = registered.no_alloc && tick_number > 0;
+        if enforce_no_alloc {
+            crate::memory::rt_allocator::enter_rt_context(&registered.name);
+        }
+
         let tr = super::primitives::NodeRunner::run_tick(&mut registered.node);
+
+        if enforce_no_alloc {
+            crate::memory::rt_allocator::leave_rt_context();
+        }
 
         clear_tick_context();
         clear_node_context();
