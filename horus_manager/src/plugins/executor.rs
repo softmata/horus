@@ -419,6 +419,26 @@ impl PluginExecutor {
 
         cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
+        // Apply the long-lived subset of the sandbox. `execute_binary` applies
+        // all four controls; this path applied NONE, so a plugin launched by
+        // `horus run --sim` inherited every fd the CLI had open — the trust
+        // store, the SHM topic descriptors — and ran without
+        // PR_SET_NO_NEW_PRIVS, so a setuid bit on the plugin binary escalated.
+        //
+        // The other two controls are deliberately not applied here and the gap
+        // is real; `sandbox::apply_long_lived` documents exactly why (the CPU
+        // cap SIGKILLs a simulator in about a minute, and the seccomp deny list
+        // would EPERM its X11 socket).
+        #[cfg(target_os = "linux")]
+        {
+            let plugin_dir = binary.parent().map(|p| p.to_path_buf());
+            // SAFETY: the closure calls only async-signal-safe libc functions
+            // (close, close_range, prctl). No Rust allocator is used.
+            unsafe {
+                cmd.pre_exec(move || super::sandbox::apply_long_lived(plugin_dir.as_deref()));
+            }
+        }
+
         let child = cmd.spawn().map_err(|e| {
             anyhow!(
                 "Failed to launch plugin '{}' ({}): {}",
