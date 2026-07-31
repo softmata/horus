@@ -174,8 +174,22 @@ fn get_process_start_time(pid: u32) -> String {
         if let Some(fields) = parse_stat_fields(&stat) {
             if fields.len() > 19 {
                 if let Ok(start_jiffies) = fields[19].parse::<u64>() {
+                    // field 19 is seconds-from-BOOT to process start, not process
+                    // age. Reported raw it was monotonically INVERTED — the newest
+                    // process showed the largest number and one started at boot
+                    // showed "0s" — and it grew with host uptime rather than with
+                    // the process. Subtract from system uptime to get real age.
                     let start_secs = start_jiffies / 100;
-                    return super::format_duration(std::time::Duration::from_secs(start_secs));
+                    let age_secs = std::fs::read_to_string("/proc/uptime")
+                        .ok()
+                        .and_then(|u| {
+                            u.split_whitespace()
+                                .next()
+                                .and_then(|s| s.parse::<f64>().ok())
+                        })
+                        .map(|uptime| (uptime as u64).saturating_sub(start_secs))
+                        .unwrap_or(0);
+                    return super::format_duration(std::time::Duration::from_secs(age_secs));
                 }
             }
         }

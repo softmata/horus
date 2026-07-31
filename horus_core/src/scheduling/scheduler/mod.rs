@@ -3717,7 +3717,7 @@ impl Scheduler {
                 const HEALTH_PROBE_INTERVAL: u64 = 100;
                 let probe = self.nodes[i].health_probe_counter.wrapping_add(1);
                 self.nodes[i].health_probe_counter = probe;
-                if probe % HEALTH_PROBE_INTERVAL != 0 {
+                if !probe.is_multiple_of(HEALTH_PROBE_INTERVAL) {
                     return false;
                 }
                 print_line(&format!(

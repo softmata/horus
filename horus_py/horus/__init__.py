@@ -24,8 +24,14 @@ Communication: ``Topic``, ``Node``, ``Scheduler``
 Common Mistakes:
 
 1. **Budget/deadline units** - budget and deadline are in SECONDS, not microseconds.
-   Wrong: ``scheduler.add(node, budget=300)``  (300 seconds!)
-   Right: ``scheduler.add(node, budget=300 * us)``  (300 microseconds)
+   Wrong: ``Node(tick=fn, budget=300)``  (300 seconds!)
+   Right: ``Node(tick=fn, budget=300 * us)``  (300 microseconds), then
+   ``scheduler.add(node)``.
+
+   Note the shape: budget and deadline are ``Node(...)`` arguments.
+   ``scheduler.add()`` does not accept them — copying the old ``Right:`` line
+   verbatim raised ``TypeError: add() got an unexpected keyword argument
+   'budget'``.
    The ``us`` and ``ms`` constants are available: ``from horus import us, ms``
 
 2. **Topic type** - ``Topic(int)`` or ``Topic(42)`` raises TypeError.
@@ -295,7 +301,7 @@ except Exception:
     __version__ = "0.2.0"
 
 # Time unit constants for readable budget/deadline values.
-# Usage: sched.add(motor, budget=300 * us, deadline=900 * us)
+# Usage: sched.add(Node(tick=motor_fn, budget=300 * us, deadline=900 * us))
 us = 1e-6   # microseconds → seconds
 ms = 1e-3   # milliseconds → seconds
 

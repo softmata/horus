@@ -48,7 +48,7 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
                     "cpu_usage": n.cpu_usage,
                     "memory_usage": n.memory_usage,
                     "tick_count": n.tick_count,
-                    "rate_hz": n.actual_rate_hz,
+                    "configured_rate_hz": n.configured_rate_hz,
                     "error_count": n.error_count,
                     "category": format!("{:?}", n.category),
                     "is_remote": n.is_remote,
@@ -105,7 +105,7 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
                 format_bytes(node.memory_usage.saturating_mul(1024))
             );
             println!("    {} {}", "Ticks:".dimmed(), node.tick_count);
-            println!("    {} {} Hz", "Rate:".dimmed(), node.actual_rate_hz);
+            println!("    {} {} Hz", "Target Rate:".dimmed(), node.configured_rate_hz);
             if node.error_count > 0 {
                 println!(
                     "    {} {}",
@@ -198,7 +198,7 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
                 truncate_name(&node.name, 25),
                 status,
                 node.priority,
-                node.actual_rate_hz,
+                node.configured_rate_hz,
                 node.tick_count,
                 source
             );
@@ -293,7 +293,7 @@ pub fn node_info(name: &str) -> HorusResult<()> {
         "Memory:".dimmed(),
         format_bytes(node.memory_usage.saturating_mul(1024))
     );
-    println!("    {} {} Hz", "Tick Rate:".dimmed(), node.actual_rate_hz);
+    println!("    {} {} Hz", "Target Rate:".dimmed(), node.configured_rate_hz);
     println!("    {} {}", "Total Ticks:".dimmed(), node.tick_count);
     println!(
         "    {} {}",

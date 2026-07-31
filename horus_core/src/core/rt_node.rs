@@ -126,7 +126,11 @@ impl RtStats {
         self.last_execution
     }
 
-    /// Jitter (variance in execution time) in microseconds.
+    /// Mean absolute deviation of execution time, in microseconds.
+    ///
+    /// Not a variance despite the historical name — it is an EMA of
+    /// `|sample - avg|`. Multiply by 1.2533 for an approximate standard
+    /// deviation.
     pub fn jitter_us(&self) -> f64 {
         self.jitter_us
     }
@@ -143,11 +147,21 @@ impl RtStats {
 
     /// Approximate P99 tick duration in nanoseconds.
     ///
-    /// Uses Welford's online variance: `avg + 2.33 * stddev` approximates
-    /// the 99th percentile for roughly normal distributions. Not exact but
-    /// O(1) and requires no ring buffer.
+    /// `avg + 2.33 * stddev` approximates the 99th percentile for roughly
+    /// normal distributions. O(1), no ring buffer.
+    ///
+    /// `jitter_us` is an EMA of ABSOLUTE DEVIATION (mean absolute deviation),
+    /// not variance — see `record_tick`. The old expression took its square
+    /// root, which was wrong twice over: it treated a MAD as a variance, and
+    /// `sqrt(microseconds)` has units of sqrt(time) and cannot meaningfully be
+    /// added to `avg_execution_us`. The result therefore depended on the unit
+    /// the value happened to be stored in rather than on the physical jitter.
+    ///
+    /// For a normal distribution stddev = 1.2533 * MAD, so that factor converts
+    /// it properly.
     pub fn p99_approx_ns(&self) -> u64 {
-        let stddev = self.jitter_us.sqrt();
+        const MAD_TO_STDDEV: f64 = 1.2533;
+        let stddev = self.jitter_us * MAD_TO_STDDEV;
         let p99_us = self.avg_execution_us + 2.33 * stddev;
         (p99_us * 1000.0) as u64 // convert us to ns
     }

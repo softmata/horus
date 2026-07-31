@@ -58,7 +58,13 @@ pub struct NodeStatus {
     pub category: ProcessCategory,
     pub tick_count: u64,
     pub error_count: u32,
-    pub actual_rate_hz: u32,
+    /// The rate the node was CONFIGURED with, not the rate it is achieving.
+    ///
+    /// Named `actual_rate_hz` and rendered as "Rate:", it read as measured
+    /// throughput — so a node configured at 1000 Hz but managing 200 Hz still
+    /// showed 1000, and the shortfall an operator is looking for was invisible.
+    /// `f64` because the `as u32` cast rendered `.rate(0.5.hz())` as 0.
+    pub configured_rate_hz: f64,
     pub publishers: Vec<TopicInfo>,
     pub subscribers: Vec<TopicInfo>,
     /// Live tick count from SHM SchedulerRegistry (None if registry unavailable).
