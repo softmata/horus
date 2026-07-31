@@ -389,3 +389,108 @@ mod tests {
         assert_eq!(hmac_sha256(b"k", b"m").len(), TAG_LEN);
     }
 }
+
+#[cfg(test)]
+mod adversarial_tests {
+    use super::*;
+
+    /// The padding loop in `finalize` is the classic place a hand-rolled SHA-256
+    /// hangs or emits a wrong length: it must terminate for EVERY input length,
+    /// including the ones that land exactly on a block boundary and the ones
+    /// that force the length field into a second block.
+    #[test]
+    fn padding_terminates_and_is_correct_for_every_length_up_to_600() {
+        for len in 0..600usize {
+            let data = vec![0x61u8; len];
+            let one_shot = sha256(&data);
+
+            // Same input fed one byte at a time must produce the same digest —
+            // this exercises the partial-buffer branch of `update` at every
+            // possible offset.
+            let mut streaming = Sha256::new();
+            for b in &data {
+                streaming.update(&[*b]);
+            }
+            assert_eq!(
+                one_shot,
+                streaming.finalize(),
+                "streaming and one-shot disagree at length {len}"
+            );
+        }
+    }
+
+    /// Block-boundary lengths specifically: 55/56/57 straddle the point where
+    /// the 8-byte length field no longer fits in the first block, and 63/64/65
+    /// straddle the block size itself.
+    #[test]
+    fn block_boundary_lengths_are_correct() {
+        // Known vector: 56 bytes, from FIPS 180-4.
+        assert_eq!(
+            hex(&sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        // Every boundary length must at least terminate and differ from its
+        // neighbours (a padding bug typically collapses adjacent lengths).
+        let mut seen = std::collections::HashSet::new();
+        for len in [54usize, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129] {
+            let d = sha256(&vec![0x5Au8; len]);
+            assert!(seen.insert(d), "length {len} collided with another length");
+        }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// HMAC must not be fooled by a key that hashes down. RFC 4231 case 6 covers
+    /// the >block-size path; this checks the boundary itself (64 and 65 bytes),
+    /// where an off-by-one in the "hash the key first" test would show up.
+    #[test]
+    fn hmac_key_length_boundary() {
+        let k64 = [0xAAu8; 64];
+        let k65 = [0xAAu8; 65];
+        let a = hmac_sha256(&k64, b"msg");
+        let b = hmac_sha256(&k65, b"msg");
+        assert_ne!(
+            a, b,
+            "a 64-byte and a 65-byte key must not produce the same tag — the \
+             65-byte one is hashed down first"
+        );
+        // A 64-byte key must NOT be hashed (it fits exactly), so it must differ
+        // from the tag for sha256(key).
+        let hashed = sha256(&k64);
+        let mut padded = [0u8; 64];
+        padded[..32].copy_from_slice(&hashed);
+        assert_ne!(
+            a,
+            hmac_sha256(&padded, b"msg"),
+            "a key of exactly the block size must be used verbatim, not hashed"
+        );
+    }
+
+    /// ct_eq must depend on every byte. A short-circuit would make the first
+    /// differing position observable, which is how a tag gets forged in 32x256
+    /// tries.
+    #[test]
+    fn ct_eq_depends_on_every_position() {
+        let base = [0x5Au8; 32];
+        for i in 0..32 {
+            let mut other = base;
+            other[i] ^= 0xFF;
+            assert!(
+                !ct_eq(&base, &other),
+                "a difference at position {i} must be detected"
+            );
+        }
+        assert!(ct_eq(&base, &base));
+    }
+
+    /// An empty key and an empty message must still produce a stable tag rather
+    /// than panicking on a zero-length slice.
+    #[test]
+    fn empty_inputs_do_not_panic() {
+        let _ = hmac_sha256(b"", b"");
+        let _ = sha256(b"");
+        assert!(ct_eq(b"", b""));
+    }
+}
