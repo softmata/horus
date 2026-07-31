@@ -105,6 +105,18 @@ pub(crate) fn apply_degradation_action(
             node: ref name,
             new_rate_hz,
         } => {
+            // Widen the watchdog by the same factor the rate shrank by.
+            // The tick is what feeds the watchdog, so halving the rate halves
+            // the feed frequency; leaving the timeout fixed would turn the
+            // GENTLEST rung of the ladder into an escalation for any node
+            // whose watchdog margin was under 2x its period — 1x, 2x, then
+            // Critical, which latches a fleet-wide e-stop. Rate-reducing a
+            // struggling node must not be a slower route to halting the robot.
+            if let (Some(monitor), Some(old_rate)) = (monitors.safety.as_ref(), node.rate_hz) {
+                if new_rate_hz > 0.0 && old_rate > new_rate_hz {
+                    monitor.scale_watchdog(node.name.as_ref(), old_rate / new_rate_hz);
+                }
+            }
             node.rate_hz = Some(new_rate_hz);
             node.last_tick = Some(Instant::now());
             if monitors.verbose {
@@ -155,6 +167,10 @@ pub(crate) fn apply_degradation_action(
             node: ref name,
             original_rate_hz,
         } => {
+            // Back to the configured window now the node ticks at full rate.
+            if let Some(monitor) = monitors.safety.as_ref() {
+                monitor.scale_watchdog(node.name.as_ref(), 1.0);
+            }
             node.rate_hz = Some(original_rate_hz);
             node.last_tick = Some(Instant::now());
             set_health(node, NodeHealthState::Healthy);

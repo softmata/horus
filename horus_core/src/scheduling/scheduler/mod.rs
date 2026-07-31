@@ -4424,6 +4424,17 @@ impl Scheduler {
                 ref node,
                 new_rate_hz,
             } => {
+                // Widen the watchdog by the same factor — see
+                // `primitives::apply_degradation_action`. The tick feeds the
+                // watchdog, so halving the rate halves the feed frequency, and
+                // a fixed timeout would make the gentlest rung escalate.
+                if let (Some(monitor), Some(old_rate)) =
+                    (self.monitor.safety.as_ref(), self.nodes[i].rate_hz)
+                {
+                    if new_rate_hz > 0.0 && old_rate > new_rate_hz {
+                        monitor.scale_watchdog(self.nodes[i].name.as_ref(), old_rate / new_rate_hz);
+                    }
+                }
                 self.nodes[i].rate_hz = Some(new_rate_hz);
                 self.nodes[i].last_tick = Some(Instant::now());
                 print_line(&format!(
@@ -4465,6 +4476,9 @@ impl Scheduler {
                 ref node,
                 original_rate_hz,
             } => {
+                if let Some(monitor) = self.monitor.safety.as_ref() {
+                    monitor.scale_watchdog(self.nodes[i].name.as_ref(), 1.0);
+                }
                 self.nodes[i].rate_hz = Some(original_rate_hz);
                 self.nodes[i].last_tick = Some(Instant::now());
                 self.nodes[i].health_state.store(NodeHealthState::Healthy);

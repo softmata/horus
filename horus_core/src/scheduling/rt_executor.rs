@@ -922,6 +922,64 @@ mod tests {
         assert!(node.is_stopped, "Kill must actually remove the node");
     }
 
+    /// `ReduceRate` must widen the node's watchdog by the same factor.
+    ///
+    /// The tick is what feeds the watchdog, so halving a node's rate halves how
+    /// often it feeds. With a fixed timeout, the GENTLEST rung of the ladder
+    /// becomes an escalation for any node whose watchdog margin was under 2x
+    /// its period: 1x, 2x, then Critical — which latches a fleet-wide
+    /// emergency stop. Rate-reducing a struggling node must not be a slower
+    /// route to halting the robot.
+    #[test]
+    fn test_reduce_rate_widens_the_watchdog() {
+        use super::super::safety_monitor::{DegradationAction, SafetyMonitor};
+        use std::sync::atomic::AtomicU64;
+        use std::time::Duration;
+
+        let monitor = Arc::new(SafetyMonitor::new(100));
+        // Watchdog margin of 1.5x the 100Hz period — survives at full rate,
+        // would not survive a halving.
+        monitor.add_critical_node("throttled".to_string(), Duration::from_millis(15));
+
+        let mut monitors = test_monitors();
+        monitors.safety = Some(monitor.clone());
+        monitors.node_controls.register("throttled");
+
+        let mut node = make_rt_registered("throttled", Arc::new(AtomicU64::new(0)));
+        node.rate_hz = Some(100.0);
+
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::ReduceRate {
+                node: "throttled".to_string(),
+                new_rate_hz: 50.0,
+            },
+            &monitors,
+        );
+        assert_eq!(node.rate_hz, Some(50.0));
+        assert_eq!(
+            monitor.watchdog_timeout("throttled"),
+            Some(Duration::from_millis(30)),
+            "the watchdog window must widen with the halved tick rate, or the \
+             node trips its own watchdog for slowing down as instructed"
+        );
+
+        // Restoring the rate restores the configured window exactly — the
+        // scaling is relative to the configured value, so it cannot compound.
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::RestoreRate {
+                node: "throttled".to_string(),
+                original_rate_hz: 100.0,
+            },
+            &monitors,
+        );
+        assert_eq!(
+            monitor.watchdog_timeout("throttled"),
+            Some(Duration::from_millis(15))
+        );
+    }
+
     /// Watchdog-derived health must NOT gate ticking on an executor.
     ///
     /// The executor is what feeds the watchdog, so suppressing on watchdog

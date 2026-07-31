@@ -194,6 +194,9 @@ pub(crate) enum WatchdogSeverity {
 pub(crate) struct Watchdog {
     /// Timeout duration
     timeout: Duration,
+    /// The timeout as configured, before any rate-change scaling. `set_scale`
+    /// is always applied to this, so scaling never compounds.
+    base_timeout: Duration,
     /// Last heartbeat time as nanoseconds since Unix epoch.
     last_heartbeat_ns: AtomicU64,
     /// Is watchdog expired?
@@ -204,9 +207,20 @@ impl Watchdog {
     pub(crate) fn new(timeout: Duration) -> Self {
         Self {
             timeout,
+            base_timeout: timeout,
             last_heartbeat_ns: AtomicU64::new(now_ns()),
             expired: AtomicBool::new(false),
         }
+    }
+
+    /// Widen (or restore) the timeout to track a deliberate change in how
+    /// often the node ticks.
+    ///
+    /// Always relative to the configured value, never compounding, so
+    /// repeated calls are idempotent and `scale = 1.0` restores exactly.
+    pub(crate) fn set_scale(&mut self, scale: f64) {
+        let scaled = self.base_timeout.as_secs_f64() * scale.max(1.0);
+        self.timeout = Duration::from_secs_f64(scaled);
     }
 
     /// Feed the watchdog (reset timer)
@@ -750,6 +764,33 @@ impl SafetyMonitor {
     /// only does an atomic store — no HashMap mutation needed.
     pub(crate) fn feed_watchdog(&self, node_name: &str) {
         if let Some(watchdog) = self.watchdogs.read().get(node_name) {
+            watchdog.feed();
+        }
+    }
+
+    /// The current watchdog timeout for a node, after any rate scaling.
+    #[cfg(test)]
+    pub(crate) fn watchdog_timeout(&self, node_name: &str) -> Option<Duration> {
+        self.watchdogs.read().get(node_name).map(|w| w.timeout)
+    }
+
+    /// Scale a node's watchdog timeout to match a deliberate change in its
+    /// tick rate, and feed it so the new window starts now.
+    ///
+    /// The watchdog asks "has this node ticked recently", and the tick is what
+    /// feeds it — so halving a node's rate halves how often it feeds. Leaving
+    /// the timeout fixed turns `DegradationAction::ReduceRate`, the GENTLEST
+    /// rung of the ladder, into an escalation: a node whose watchdog margin was
+    /// under 2x its period would start tripping 1x, 2x, then Critical, and
+    /// Critical latches a fleet-wide emergency stop. Rate-reducing a struggling
+    /// node must not be a slower route to halting the robot.
+    ///
+    /// `scale` is a multiplier on the CONFIGURED timeout (1.0 restores it), and
+    /// values below 1.0 are clamped away — this may only ever widen the window,
+    /// never tighten it below what the operator asked for.
+    pub(crate) fn scale_watchdog(&self, node_name: &str, scale: f64) {
+        if let Some(watchdog) = self.watchdogs.write().get_mut(node_name) {
+            watchdog.set_scale(scale);
             watchdog.feed();
         }
     }
