@@ -1016,6 +1016,8 @@ class Scheduler:
             max_deadline_misses: Escalation threshold for deadline misses
             verbose: Enable verbose debug logging
             telemetry: Telemetry export endpoint (e.g., "http://localhost:9090")
+            net: Enable LAN replication. Ignored (with a RuntimeWarning) when
+                deterministic=True, since replication makes a run non-reproducible.
             _inner: Internal — used by preset constructors
         """
         if _inner is not None:
@@ -1044,7 +1046,22 @@ class Scheduler:
             self._scheduler = None
         self._nodes = []
         self._tick_rate = tick_rate
-        self._net_enabled = net and not deterministic  # Network breaks determinism
+        # Determinism wins over networking: replication introduces wall-clock
+        # timing and remote input, which makes a run non-reproducible. But say so
+        # rather than silently dropping it — a user who asked for `net=True` and
+        # believes their nodes are replicating to a fleet, when they are not, has
+        # a fleet that is not receiving data and no indication why.
+        self._net_enabled = net and not deterministic
+        if net and deterministic:
+            import warnings
+            warnings.warn(
+                "Scheduler(net=True, deterministic=True): networking is DISABLED. "
+                "Deterministic mode requires a reproducible run, and LAN replication "
+                "introduces wall-clock timing and remote input. Drop deterministic=True "
+                "if you need replication.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         self._net_handle = None
 
     # Presets deploy(), hard_rt(), safety_critical() removed.
