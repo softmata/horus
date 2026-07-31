@@ -620,11 +620,14 @@ impl Replicator {
             let fragments = self.fragmenter.fragment(msg);
 
             let copies = ReliabilityLayer::copies_for(msg.reliability);
-            let sub_addrs: Vec<SocketAddr> = self
+            // Carry each subscriber's own id hash alongside its address: the
+            // send throttle below is per-destination, and flow-control state
+            // is keyed by the hash that peer stamps into ITS packets.
+            let sub_addrs: Vec<(u16, SocketAddr)> = self
                 .peers
                 .subscribers_of(&msg.topic_name)
                 .iter()
-                .map(|p| p.data_addr())
+                .map(|p| (p.id_hash(), p.data_addr()))
                 .collect();
 
             for frag in &fragments {
@@ -658,12 +661,12 @@ impl Replicator {
                 }
 
                 for _ in 0..copies {
-                    for addr in &sub_addrs {
+                    for (sub_id_hash, addr) in &sub_addrs {
                         if msg.priority == Priority::Immediate
                             || msg.priority == Priority::RealTime
                             || self
                                 .flow_control
-                                .should_send(msg.topic_hash, self.peer_id_hash)
+                                .should_send(*sub_id_hash, msg.topic_hash)
                         {
                             let _ = self.transport.send_to(&send_buf[..len], *addr);
                             self.metrics.record_send(self.peer_id_hash, len);

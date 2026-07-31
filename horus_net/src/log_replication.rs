@@ -91,11 +91,12 @@ impl LogDrain {
         let current_idx = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
         if current_idx > self.last_write_idx {
             // New entries available — read and filter
-            let entries = horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.get_all();
+            // Keyed on the buffer-wide write index. `entry.tick_number` is
+            // the publishing node's own tick counter and cannot be compared
+            // against it — see `LogBuffer::get_since`.
+            let entries =
+                horus_core::core::log_buffer::GLOBAL_LOG_BUFFER.get_since(self.last_write_idx);
             for entry in &entries {
-                if entry.tick_number <= self.last_write_idx {
-                    continue; // Already seen
-                }
                 if !self.level.should_replicate(&entry.log_type) {
                     continue; // Below replication threshold
                 }

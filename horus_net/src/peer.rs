@@ -38,6 +38,16 @@ impl PeerInfo {
         addr.set_port(self.data_port);
         addr
     }
+
+    /// The 16-bit id hash this peer stamps into the headers of packets it
+    /// sends, and therefore the key its flow-control state is filed under.
+    ///
+    /// `FlowController::on_received` records `header.sender_id_hash`, so any
+    /// send-side decision about this peer must look it up under the same
+    /// value rather than under our own hash.
+    pub fn id_hash(&self) -> u16 {
+        crate::discovery::peer_id_hash(&self.peer_id)
+    }
 }
 
 /// Table of all known remote peers.

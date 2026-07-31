@@ -194,7 +194,7 @@ fn test_node_status_creation() {
     assert_eq!(node.process_id, 1234);
     assert_eq!(node.tick_count, 100);
     assert_eq!(node.error_count, 0);
-    assert_eq!(node.configured_rate_hz, 50);
+    assert_eq!(node.configured_rate_hz, 50.0);
     assert!((node.cpu_usage - 25.5).abs() < f32::EPSILON);
     assert_eq!(node.memory_usage, 1024);
     assert_eq!(node.command_line, "horus run test");
@@ -825,7 +825,7 @@ fn test_node_status_clone() {
         category: ProcessCategory::Tool,
         tick_count: 500,
         error_count: 2,
-        actual_rate_hz: 100,
+        configured_rate_hz: 100.0,
         publishers: vec![TopicInfo {
             topic: "pub".to_string(),
             type_name: "Msg".to_string(),
@@ -862,7 +862,7 @@ fn test_node_status_clone() {
     assert_eq!(cloned.category, node.category);
     assert_eq!(cloned.tick_count, node.tick_count);
     assert_eq!(cloned.error_count, node.error_count);
-    assert_eq!(cloned.actual_rate_hz, node.configured_rate_hz);
+    assert_eq!(cloned.configured_rate_hz, node.configured_rate_hz);
     assert_eq!(cloned.publishers.len(), node.publishers.len());
     assert_eq!(cloned.publishers[0].topic, "pub");
     assert_eq!(cloned.publishers[0].type_name, "Msg");
