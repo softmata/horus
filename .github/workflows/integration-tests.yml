@@ -121,7 +121,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libudev-dev pkg-config python3 \
+            cmake g++ libudev-dev pkg-config python3 \
             libeigen3-dev libfmt-dev libgtest-dev
 
       - name: Install Rust
@@ -692,7 +692,7 @@ jobs:
           $HORUS param set ci.save_b hello 2>&1
           $HORUS param set ci.save_c 3.14 2>&1
 
-          $HORUS param save -o /tmp/ci_params.yaml 2>&1
+          $HORUS param save /tmp/ci_params.yaml 2>&1
           [ -f /tmp/ci_params.yaml ] || { echo "FAIL: param save didn't create file"; exit 1; }
 
           $HORUS param reset --force 2>&1
