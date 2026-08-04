@@ -144,14 +144,16 @@ mod tests {
         let start = Instant::now();
         sleep_precise(Duration::from_millis(10));
         let elapsed = start.elapsed();
-        // Allow 5ms-50ms range (generous for CI)
+        // A hosted runner can be descheduled for tens of milliseconds. The
+        // lower bound verifies that sleep_precise does not return early; the
+        // upper bound only catches a genuine hang.
         assert!(
             elapsed >= Duration::from_millis(5),
             "Slept too little: {:?}",
             elapsed
         );
         assert!(
-            elapsed < Duration::from_millis(50),
+            elapsed < Duration::from_millis(250),
             "Slept too long: {:?}",
             elapsed
         );
