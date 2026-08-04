@@ -474,6 +474,7 @@ mod tests {
     // ── CPU pinning tests ───────────────────────────────────────────
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_pin_to_core_zero_succeeds() {
         // Core 0 should always exist
         pin_to_core(0).unwrap();
@@ -486,6 +487,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_pin_to_cores_first_valid_wins() {
         // First core (99999) doesn't exist, second (0) does
         pin_to_cores(&[99999, 0]).unwrap();
