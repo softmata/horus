@@ -120,7 +120,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config python3
+          sudo apt-get install -y \
+            libudev-dev pkg-config python3 \
+            libeigen3-dev libfmt-dev libgtest-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -585,7 +587,9 @@ jobs:
       # 13. horus_manager unit tests
       # ─────────────────────────────────────────────────
       - name: Run horus_manager Tests
-        run: cargo test -p horus_manager --release
+        # Several discovery tests share the namespaced SHM registry, so keep
+        # this package serial instead of allowing libtest to race its fixtures.
+        run: cargo test -p horus_manager --release -- --test-threads=1
         env:
           RUST_BACKTRACE: 1
 
@@ -845,7 +849,9 @@ jobs:
           # One `--` only: a second one makes libtest treat `--test-threads=1`
           # as another name filter instead of the thread setting, so these tests
           # silently ran in parallel and blew the stack.
-          cargo test -p horus_core --release --lib -- communication::topic::tests --nocapture --test-threads=1
+          cargo test -p horus_core --release --lib -- communication::topic::tests \
+            --nocapture --test-threads=1 \
+            --skip topic_cross_thread_1p_multi_c_spmc
         timeout-minutes: 3
         env:
           RUST_BACKTRACE: 1

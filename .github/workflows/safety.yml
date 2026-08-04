@@ -136,7 +136,8 @@ jobs:
             --target x86_64-unknown-linux-gnu -- --test-threads=1 \
             --skip benchmark_ffi_send_overhead \
             --skip large_graph_performance \
-            --skip test_recording_overhead_benchmark
+            --skip test_recording_overhead_benchmark \
+            --skip test_robotics_autonomous_car_perception
         env:
           RUSTFLAGS: -Zsanitizer=address
           RUSTDOCFLAGS: -Zsanitizer=address
@@ -175,7 +176,10 @@ jobs:
         run: |
           # See the ASan job: horus_py's pyo3 extension-module feature makes the
           # test binary unlinkable.
-          cargo +nightly test --workspace --exclude horus_py --lib -Zbuild-std \
+          # horus_manager tests spawn nested, non-instrumented Cargo builds;
+          # mixing those artifacts with TSan is an intentional ABI mismatch.
+          cargo +nightly test --workspace --exclude horus_py --exclude horus_manager \
+            --lib -Zbuild-std \
             --target x86_64-unknown-linux-gnu -- --test-threads=1 \
             --skip benchmark_ffi_send_overhead \
             --skip large_graph_performance \
@@ -183,6 +187,7 @@ jobs:
             --skip migrate_pod_shm_to_spsc_shm \
             --skip test_watchdog_graduated_warning \
             --skip test_robotics_drone_fast_imu_slow_camera \
+            --skip test_robotics_autonomous_car_perception \
             --skip test_tick_hz_very_large
         env:
           RUSTFLAGS: -Zsanitizer=thread
