@@ -23,6 +23,17 @@ default-features = false
 [workspace]
 members = ["."]
 
+# This fuzz crate is intentionally a nested workspace, so it does not inherit
+# the root workspace's patches for the git-based robotics/TF crates.
+[patch."https://github.com/softmata/horus-robotics.git"]
+horus_core = { path = "../../horus_core" }
+horus_types = { path = "../../horus_types" }
+horus_macros = { path = "../../horus_macros" }
+
+[patch."https://github.com/softmata/horus-tf.git"]
+horus_core = { path = "../../horus_core" }
+horus_macros = { path = "../../horus_macros" }
+
 [profile.release]
 debug = 1
 

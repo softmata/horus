@@ -983,8 +983,6 @@ jobs:
           echo "IPC Integration: ${{ needs.ipc-integration.result }}"
           echo "CLI Integration: ${{ needs.cli-integration.result }}"
           echo "Runtime Integration: ${{ needs.runtime-integration.result }}"
-          echo "Examples: ${{ needs.examples.result }}"
-
           FAILURES=""
 
           # IPC integration must pass

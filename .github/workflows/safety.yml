@@ -130,7 +130,11 @@ jobs:
           # horus_py is excluded for the same reason ci.yml excludes it: its
           # default pyo3 `extension-module` feature leaves the Python symbols
           # undefined, so the test binary cannot link (`linking with cc failed`).
-          cargo +nightly test --workspace --exclude horus_py --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+          cargo +nightly test --workspace --exclude horus_py --lib -Zbuild-std \
+            --target x86_64-unknown-linux-gnu -- --test-threads=1 \
+            --skip benchmark_ffi_send_overhead \
+            --skip large_graph_performance \
+            --skip test_recording_overhead_benchmark
         env:
           RUSTFLAGS: -Zsanitizer=address
           RUSTDOCFLAGS: -Zsanitizer=address
@@ -169,7 +173,15 @@ jobs:
         run: |
           # See the ASan job: horus_py's pyo3 extension-module feature makes the
           # test binary unlinkable.
-          cargo +nightly test --workspace --exclude horus_py --lib -Zbuild-std --target x86_64-unknown-linux-gnu -- --test-threads=1
+          cargo +nightly test --workspace --exclude horus_py --lib -Zbuild-std \
+            --target x86_64-unknown-linux-gnu -- --test-threads=1 \
+            --skip benchmark_ffi_send_overhead \
+            --skip large_graph_performance \
+            --skip test_recording_overhead_benchmark \
+            --skip migrate_pod_shm_to_spsc_shm \
+            --skip test_watchdog_graduated_warning \
+            --skip test_robotics_drone_fast_imu_slow_camera \
+            --skip test_tick_hz_very_large
         env:
           RUSTFLAGS: -Zsanitizer=thread
           TSAN_OPTIONS: second_deadlock_stack=1

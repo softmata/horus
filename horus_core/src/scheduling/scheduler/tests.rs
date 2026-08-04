@@ -25,21 +25,21 @@ fn lock_scheduler() -> MutexGuard<'static, ()> {
 
 /// Simple test node that counts its tick invocations
 struct CounterNode {
-    name: &'static str,
+    name: String,
     tick_count: Arc<AtomicUsize>,
 }
 
 impl CounterNode {
-    fn new(name: &'static str) -> Self {
+    fn new(name: impl Into<String>) -> Self {
         Self {
-            name,
+            name: name.into(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    fn with_counter(name: &'static str, counter: Arc<AtomicUsize>) -> Self {
+    fn with_counter(name: impl Into<String>, counter: Arc<AtomicUsize>) -> Self {
         Self {
-            name,
+            name: name.into(),
             tick_count: counter,
         }
     }
@@ -47,7 +47,7 @@ impl CounterNode {
 
 impl Node for CounterNode {
     fn name(&self) -> &str {
-        self.name
+        &self.name
     }
 
     fn tick(&mut self) {
@@ -1790,8 +1790,7 @@ fn test_many_nodes_50_plus() {
     let counters: Vec<Arc<AtomicUsize>> = (0..50).map(|_| Arc::new(AtomicUsize::new(0))).collect();
 
     for (i, counter) in counters.iter().enumerate() {
-        // Leak a string for the static name reference CounterNode expects
-        let name: &'static str = Box::leak(format!("node_{}", i).into_boxed_str());
+        let name = format!("node_{}", i);
         scheduler
             .add(CounterNode::with_counter(name, counter.clone()))
             .order(i as u32)
@@ -2924,8 +2923,7 @@ fn test_deterministic_100_nodes_strict_order() {
     }
     impl Node for PriorityTracker {
         fn name(&self) -> &str {
-            // Leak is fine for tests
-            Box::leak(self.name.clone().into_boxed_str())
+            &self.name
         }
         fn tick(&mut self) {
             self.order.lock().unwrap().push(self.prio);
@@ -3604,7 +3602,7 @@ fn test_e2e_graceful_shutdown_all_nodes_cleanup() {
     let shutdown_count = Arc::new(AtomicUsize::new(0));
 
     struct LifecycleNode {
-        name: &'static str,
+        name: String,
         init_count: Arc<AtomicUsize>,
         tick_count: Arc<AtomicUsize>,
         shutdown_count: Arc<AtomicUsize>,
@@ -3612,7 +3610,7 @@ fn test_e2e_graceful_shutdown_all_nodes_cleanup() {
 
     impl Node for LifecycleNode {
         fn name(&self) -> &str {
-            self.name
+            &self.name
         }
         fn init(&mut self) -> crate::error::HorusResult<()> {
             self.init_count.fetch_add(1, Ordering::Relaxed);
@@ -3631,7 +3629,7 @@ fn test_e2e_graceful_shutdown_all_nodes_cleanup() {
 
     for i in 0..5 {
         let node = LifecycleNode {
-            name: Box::leak(format!("node_{}", i).into_boxed_str()),
+            name: format!("node_{}", i),
             init_count: init_count.clone(),
             tick_count: tick_count.clone(),
             shutdown_count: shutdown_count.clone(),
@@ -3698,7 +3696,7 @@ fn test_lifecycle_hook_invoked_on_run() {
     });
     scheduler
         .add(CounterNode {
-            name: "lifecycle_test",
+            name: "lifecycle_test".to_string(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         })
         .build();
@@ -3727,7 +3725,7 @@ fn test_lifecycle_hook_handle_dropped_on_shutdown() {
     scheduler.on_start(move || Some(Box::new(DropTracker(dropped_clone))));
     scheduler
         .add(CounterNode {
-            name: "drop_test",
+            name: "drop_test".to_string(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         })
         .build();
@@ -3768,7 +3766,7 @@ fn test_lifecycle_hooks_dropped_lifo() {
 
     scheduler
         .add(CounterNode {
-            name: "lifo_test",
+            name: "lifo_test".to_string(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         })
         .build();
@@ -3803,7 +3801,7 @@ fn test_require_rt_fails_on_non_root() {
     let mut scheduler = scheduler.tick_rate(10_u64.hz());
     scheduler
         .add(CounterNode {
-            name: "rt_fail_test",
+            name: "rt_fail_test".to_string(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         })
         .build()
@@ -3831,7 +3829,7 @@ fn test_prefer_rt_succeeds_on_non_root() {
     let mut scheduler = Scheduler::new().prefer_rt().tick_rate(10_u64.hz());
     scheduler
         .add(CounterNode {
-            name: "rt_prefer_test",
+            name: "rt_prefer_test".to_string(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         })
         .build()
@@ -3851,7 +3849,7 @@ fn test_prefer_rt_stores_degradations() {
     let mut scheduler = Scheduler::new().prefer_rt().tick_rate(10_u64.hz());
     scheduler
         .add(CounterNode {
-            name: "degrad_test",
+            name: "degrad_test".to_string(),
             tick_count: Arc::new(AtomicUsize::new(0)),
         })
         .build()
@@ -3885,7 +3883,7 @@ fn test_deadline_scheduler_flag_propagates() {
     let _guard = lock_scheduler();
     // Verify .deadline_scheduler() flag reaches the RT executor
     let config = super::super::node_builder::NodeRegistration::new(Box::new(CounterNode {
-        name: "deadline_flag_test",
+        name: "deadline_flag_test".to_string(),
         tick_count: Arc::new(AtomicUsize::new(0)),
     }))
     .rate(100_u64.hz())
@@ -3902,7 +3900,7 @@ fn test_deadline_scheduler_flag_propagates() {
 fn test_no_alloc_flag_propagates() {
     let _guard = lock_scheduler();
     let config = super::super::node_builder::NodeRegistration::new(Box::new(CounterNode {
-        name: "no_alloc_flag_test",
+        name: "no_alloc_flag_test".to_string(),
         tick_count: Arc::new(AtomicUsize::new(0)),
     }))
     .rate(100_u64.hz())
