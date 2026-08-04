@@ -31,6 +31,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   HORUS_NAMESPACE: ci_${{ github.run_id }}
+  # horus_manager's generated-workspace tests need the checkout location.
+  HORUS_SOURCE: ${{ github.workspace }}
 
 permissions:
   contents: read
