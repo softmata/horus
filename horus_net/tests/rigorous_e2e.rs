@@ -248,12 +248,34 @@ fn stress_1000_messages() {
     let sock_a = UdpSocket::bind("127.0.0.1:0").unwrap();
     let sock_b = UdpSocket::bind("127.0.0.1:0").unwrap();
     sock_b
-        .set_read_timeout(Some(Duration::from_millis(10)))
+        .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
     let addr_b = sock_b.local_addr().unwrap();
 
+    // Drain concurrently. Sending the entire burst before reading overflows the
+    // kernel's intentionally small UDP receive queue and tests socket buffering,
+    // not HORUS encoding correctness.
+    let receiver = std::thread::spawn(move || {
+        let mut received = 0u32;
+        let mut recv_buf = [0u8; 256];
+        while received < 1000 {
+            let Ok((n, _)) = sock_b.recv_from(&mut recv_buf) else {
+                break;
+            };
+            if let Some((_, msgs)) = decode_packet(&recv_buf[..n]) {
+                for message in &msgs {
+                    let cmd: CmdVel = unsafe {
+                        std::ptr::read_unaligned(message.payload.as_ptr() as *const CmdVel)
+                    };
+                    assert!(cmd.linear >= 0.0 && cmd.linear < 1000.0);
+                    received += 1;
+                }
+            }
+        }
+        received
+    });
+
     let mut sent = 0u32;
-    let mut recv = 0u32;
 
     for i in 0..1000u32 {
         // Write to SHM
@@ -283,18 +305,7 @@ fn stress_1000_messages() {
         }
     }
 
-    // Drain receiver
-    let mut recv_buf = [0u8; 256];
-    while let Ok((n, _)) = sock_b.recv_from(&mut recv_buf) {
-        if let Some((_, msgs)) = decode_packet(&recv_buf[..n]) {
-            for m in &msgs {
-                let cmd: CmdVel =
-                    unsafe { std::ptr::read_unaligned(m.payload.as_ptr() as *const CmdVel) };
-                assert!(cmd.linear >= 0.0 && cmd.linear < 1000.0);
-                recv += 1;
-            }
-        }
-    }
+    let recv = receiver.join().unwrap();
 
     assert_eq!(sent, 1000);
     assert!(recv > 900, "expected >900 on loopback, got {recv}");

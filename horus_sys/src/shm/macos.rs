@@ -57,7 +57,19 @@ impl ShmRegion {
         anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
         use std::ffi::CString;
 
-        let shm_name = format!("/horus_{}_{}", super::shm_namespace(), name);
+        // Darwin limits POSIX SHM names to PSHMNAMLEN (31 bytes). Namespaces
+        // from CI plus descriptive topic names routinely exceed that limit, so
+        // use a deterministic hash while metadata retains the original name.
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in super::shm_namespace()
+            .bytes()
+            .chain([b'/'])
+            .chain(name.bytes())
+        {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let shm_name = format!("/horus_{hash:016x}");
         let c_name = CString::new(shm_name.clone())
             .map_err(|e| anyhow::anyhow!("Invalid shm name '{}': {}", shm_name, e))?;
 

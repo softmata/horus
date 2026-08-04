@@ -3121,17 +3121,24 @@ mod tests {
         let load_elapsed = load_start.elapsed();
 
         assert_eq!(loaded.snapshots.len(), 10_100);
-        // Save + load of ~10k snapshots should be < 2s
-        assert!(
-            save_elapsed.as_secs() < 2,
-            "Save took {:.1}s, expected < 2s",
-            save_elapsed.as_secs_f64()
-        );
-        assert!(
-            load_elapsed.as_secs() < 2,
-            "Load took {:.1}s, expected < 2s",
-            load_elapsed.as_secs_f64()
-        );
+        // Sanitizers intentionally instrument every memory access and can make
+        // this microbenchmark several times slower. Keep correctness coverage
+        // there, but enforce a deliberately coarse regression budget only in
+        // normal test builds. A 2s wall-clock limit proved runner-load dependent.
+        let under_sanitizer = std::env::var_os("ASAN_OPTIONS").is_some()
+            || std::env::var_os("TSAN_OPTIONS").is_some();
+        if !under_sanitizer {
+            assert!(
+                save_elapsed.as_secs() < 5,
+                "Save took {:.1}s, expected < 5s",
+                save_elapsed.as_secs_f64()
+            );
+            assert!(
+                load_elapsed.as_secs() < 5,
+                "Load took {:.1}s, expected < 5s",
+                load_elapsed.as_secs_f64()
+            );
+        }
     }
 
     #[test]

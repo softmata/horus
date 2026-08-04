@@ -39,9 +39,9 @@ pub struct ShmRingReader {
 impl ShmRingReader {
     /// Create a reader for a specific topic.
     pub fn new(topic_name: &str) -> Self {
-        // SHM file naming: shm_topics_dir()/horus_{sanitized_name}
+        // ShmRegion stores topics directly under the sanitized topic name.
         let sanitized = topic_name.replace(['.', '/'], "_");
-        let shm_path = shm_topics_dir().join(format!("horus_{sanitized}"));
+        let shm_path = shm_topics_dir().join(sanitized);
 
         Self {
             shm_path,
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn shm_path_sanitization() {
         let reader = ShmRingReader::new("robot.front_lidar.scan");
-        let expected_suffix = "horus_robot_front_lidar_scan";
+        let expected_suffix = "robot_front_lidar_scan";
         assert!(
             reader.shm_path.to_str().unwrap().ends_with(expected_suffix),
             "path {:?} should end with {expected_suffix}",

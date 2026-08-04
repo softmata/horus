@@ -60,6 +60,7 @@ pub use topic::{topic_node_registry, NodeTopicRole, TopicAssociation, TopicNodeR
 pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
     use memmap2::MmapOptions;
     use std::fs::OpenOptions;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(f) => f,
@@ -102,27 +103,31 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
 
     let is_pod = is_pod_raw == 2;
     let header_size = topic::header::TOPIC_HEADER_SIZE;
+    let seq_array_size = capacity * std::mem::size_of::<u64>();
+    let data_region_start = header_size + seq_array_size;
+    let slot_idx = (seq as usize) & cap_mask;
+    let new_seq = seq.wrapping_add(1);
 
     if is_pod {
         if type_size == 0 || data.len() != type_size {
             return false;
         }
-        let slot_idx = (seq as usize) & cap_mask;
-        let offset = header_size + slot_idx * type_size;
+        let offset = data_region_start + slot_idx * type_size;
         if offset + type_size > len {
             return false;
         }
         // SAFETY: offset and length are bounds-checked above.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), base.add(offset), type_size);
+            let ready = &*(base.add(header_size + slot_idx * 8) as *const AtomicU64);
+            ready.store(new_seq, Ordering::Release);
         }
     } else {
         if slot_size == 0 {
             return false;
         }
-        let slot_idx = (seq as usize) & cap_mask;
         // Serde slot layout: [8B pad][8B len][bincode data...]
-        let offset = header_size + slot_idx * slot_size;
+        let offset = data_region_start + slot_idx * slot_size;
         let payload_offset = offset + 16; // skip pad + len header
         if payload_offset + data.len() > len || data.len() + 16 > slot_size {
             return false;
@@ -138,14 +143,18 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
             );
             // Write data
             std::ptr::copy_nonoverlapping(data.as_ptr(), base.add(payload_offset), data.len());
+            // Serialized consumers use the first word in the slot as the ready flag.
+            let ready = &*(base.add(offset) as *const AtomicU64);
+            ready.store(new_seq, Ordering::Release);
         }
     }
 
-    // Bump sequence counter
-    let new_seq = seq.wrapping_add(1);
-    // SAFETY: offset 64 is within the header; writing u64 sequence counter.
+    // Publish the new head only after the payload and ready flag are visible.
     unsafe {
-        std::ptr::write_unaligned(base.add(64) as *mut u64, new_seq);
+        let head = &*(base.add(64) as *const AtomicU64);
+        head.store(new_seq, Ordering::Release);
+        let messages_total = &*(base.add(56) as *const AtomicU64);
+        messages_total.fetch_add(1, Ordering::Relaxed);
     }
 
     true

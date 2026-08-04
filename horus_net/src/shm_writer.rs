@@ -8,6 +8,7 @@
 //! network-received data into the local topic system.
 
 use std::fs::OpenOptions;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::MmapMut;
 
@@ -53,7 +54,7 @@ impl ShmRingWriter {
     /// Returns `None` if the file doesn't exist or the header is invalid.
     pub fn open(topic_name: &str) -> Option<Self> {
         let sanitized = topic_name.replace(['.', '/'], "_");
-        let path = shm_topics_dir().join(format!("horus_{sanitized}"));
+        let path = shm_topics_dir().join(sanitized);
         Self::open_path(topic_name, &path)
     }
 
@@ -124,9 +125,11 @@ impl ShmRingWriter {
         let head_ptr = &self.mmap[OFF_HEAD..OFF_HEAD + 8];
         let head = u64::from_ne_bytes(head_ptr.try_into().unwrap());
 
-        // Calculate slot position
+        // Calculate slot position. The per-slot ready array sits between the
+        // fixed header and packed POD data.
         let slot_idx = (head as usize) & self.cap_mask;
-        let slot_start = TOPIC_HEADER_SIZE + slot_idx * self.type_size;
+        let data_region_start = TOPIC_HEADER_SIZE + self.capacity * 8;
+        let slot_start = data_region_start + slot_idx * self.type_size;
         let slot_end = slot_start + self.type_size;
 
         if slot_end > self.mmap.len() {
@@ -136,9 +139,15 @@ impl ShmRingWriter {
         // Write payload to slot
         self.mmap[slot_start..slot_end].copy_from_slice(payload);
 
-        // Advance head atomically (store with Release ordering for visibility)
         let new_head = head.wrapping_add(1);
-        self.mmap[OFF_HEAD..OFF_HEAD + 8].copy_from_slice(&new_head.to_ne_bytes());
+        // SAFETY: the mmap is page-aligned and both offsets are 8-byte aligned.
+        unsafe {
+            let ready =
+                &*(self.mmap.as_ptr().add(TOPIC_HEADER_SIZE + slot_idx * 8) as *const AtomicU64);
+            ready.store(new_head, Ordering::Release);
+            let head = &*(self.mmap.as_ptr().add(OFF_HEAD) as *const AtomicU64);
+            head.store(new_head, Ordering::Release);
+        }
 
         // Increment messages_total
         let total_ptr = &self.mmap[OFF_MSG_TOTAL..OFF_MSG_TOTAL + 8];
@@ -165,7 +174,8 @@ impl ShmRingWriter {
 
         // Calculate slot position
         let slot_idx = (head as usize) & self.cap_mask;
-        let slot_start = TOPIC_HEADER_SIZE + slot_idx * self.slot_size;
+        let data_region_start = TOPIC_HEADER_SIZE + self.capacity * 8;
+        let slot_start = data_region_start + slot_idx * self.slot_size;
 
         if slot_start + self.slot_size > self.mmap.len() {
             return false;
@@ -179,9 +189,14 @@ impl ShmRingWriter {
         // Payload
         self.mmap[slot_start + 16..slot_start + 16 + payload.len()].copy_from_slice(payload);
 
-        // Advance head
         let new_head = head.wrapping_add(1);
-        self.mmap[OFF_HEAD..OFF_HEAD + 8].copy_from_slice(&new_head.to_ne_bytes());
+        // SAFETY: slot_start and OFF_HEAD are 8-byte aligned within a page-aligned mmap.
+        unsafe {
+            let ready = &*(self.mmap.as_ptr().add(slot_start) as *const AtomicU64);
+            ready.store(new_head, Ordering::Release);
+            let head = &*(self.mmap.as_ptr().add(OFF_HEAD) as *const AtomicU64);
+            head.store(new_head, Ordering::Release);
+        }
 
         // Increment messages_total
         let total_ptr = &self.mmap[OFF_MSG_TOTAL..OFF_MSG_TOTAL + 8];

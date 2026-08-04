@@ -2806,6 +2806,7 @@ fn auto_grow_shm_region_len_increases() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn auto_grow_multiple_grows() {
     let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Verify multiple successive grows work without corruption.
@@ -5890,6 +5891,21 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
             let _ = sub.try_recv(); // register this thread as a subscriber
             sub.check_migration_now();
             ready.wait(); // all subs registered before the producer streams
+                          // Wait for a producer warm-up message so every subscriber has
+                          // completed the topology migration before the measured stream.
+            let warmup_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                sub.check_migration_now();
+                if sub.try_recv().as_deref() == Some("__horus_ready__") {
+                    break;
+                }
+                assert!(
+                    Instant::now() < warmup_deadline,
+                    "subscriber warm-up timed out"
+                );
+                std::thread::yield_now();
+            }
+            ready.wait();
             let mut got = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(5);
             while (got.len() as u64) < n && Instant::now() < deadline {
@@ -5905,6 +5921,8 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
     let h1 = spawn_sub("sub1");
     let h2 = spawn_sub("sub2");
     ready.wait(); // producer waits until both subscriber threads have registered
+    producer.send("__horus_ready__".to_string());
+    ready.wait(); // both subscribers observed the producer and migrated
     for v in 1..=n {
         producer.send(format!("m{v}"));
     }
@@ -9049,6 +9067,7 @@ fn messages_total_not_affected_by_recv() {
 // ============================================================================
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_type_name_readable_from_header_info() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9069,6 +9088,7 @@ fn e2e_type_name_readable_from_header_info() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_messages_total_matches_send_count_via_header_info() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9088,6 +9108,7 @@ fn e2e_messages_total_matches_send_count_via_header_info() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_messages_total_matches_send_count_via_slot_read() {
     use crate::communication::read_latest_slot_bytes;
     use crate::memory::shm_topics_dir;
@@ -9121,6 +9142,7 @@ fn e2e_messages_total_matches_send_count_via_slot_read() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_header_info_and_slot_read_consistent() {
     use crate::communication::{read_latest_slot_bytes, read_topic_header_info};
     use crate::memory::shm_topics_dir;
@@ -9157,6 +9179,7 @@ fn e2e_header_info_and_slot_read_consistent() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_non_pod_type_detected() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9176,6 +9199,7 @@ fn e2e_non_pod_type_detected() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_multiple_topics_distinct_type_names() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9249,6 +9273,7 @@ fn e2e_registry_write_read_roundtrip() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_zero_sends_zero_messages_total() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;

@@ -127,6 +127,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Build Python extension for cross-language tests
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip maturin
+          .venv/bin/maturin develop --release --manifest-path horus_py/Cargo.toml
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
       # No caching for test job - build completely fresh to avoid linker errors
       # Caching caused issues with stale artifacts and filename collisions
 
@@ -147,9 +154,10 @@ jobs:
           chmod -R 700 "$SHM_DIR"
 
       # Build and test in separate steps to avoid crate-type collision
-      # Exclude horus_py from workspace build/test — it requires Python dev headers
-      # and its extension-module feature prevents test linking. horus_py is tested
-      # separately below with --no-default-features, and fully built in build-wheels.yml.
+      # Exclude horus_py from the Rust workspace build/test because its
+      # extension-module feature prevents test linking. The extension used by
+      # cross-language tests is installed into the job venv above; Rust-only
+      # horus_py tests run separately below with --no-default-features.
       - name: Build Workspace
         run: cargo build --workspace --exclude horus_py
 

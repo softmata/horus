@@ -82,6 +82,13 @@ jobs:
         # reason ci.yml and safety.yml exclude it.
         run: cargo build --workspace --exclude horus_py --release --tests
 
+      - name: Build and install Python extension
+        run: |
+          python3 -m venv /tmp/horus-ci-venv
+          /tmp/horus-ci-venv/bin/pip install maturin
+          /tmp/horus-ci-venv/bin/maturin develop --release --manifest-path horus_py/Cargo.toml
+          echo "/tmp/horus-ci-venv/bin" >> "$GITHUB_PATH"
+
       # Run integration tests with extended timeout
       - name: Run IPC Integration Tests
         run: |
@@ -90,6 +97,7 @@ jobs:
         env:
           RUST_BACKTRACE: 1
           RUST_LOG: debug
+          PYTHONPATH: ${{ github.workspace }}/horus_py
 
       # Verify shared memory cleanup
       - name: Verify SHM Cleanup
@@ -381,7 +389,7 @@ jobs:
       - name: "Assert: horus topic pub writes to shared memory"
         run: |
           # Publish a test message
-          $HORUS topic pub test_integration_topic "hello_from_ci" 2>&1 | tee /tmp/pub_output || true
+          $HORUS topic pub test_integration_topic '"hello_from_ci"' 2>&1 | tee /tmp/pub_output || true
           grep -qi "Published\|publish" /tmp/pub_output || {
             echo "FAIL: no publish confirmation"
             exit 1
