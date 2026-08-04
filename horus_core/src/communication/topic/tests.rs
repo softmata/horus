@@ -7688,7 +7688,6 @@ fn partial_write_full_ring_backpressure() {
 fn partial_write_concurrent_writers_no_partial_data() {
     let name = unique("partial_concurrent");
     let t: Topic<[u64; 4]> = Topic::new(&name).unwrap();
-    let t_ptr = &t as *const Topic<[u64; 4]> as usize;
 
     let n_writers = 3;
     let msgs_per_writer = 50;
@@ -7698,12 +7697,8 @@ fn partial_write_concurrent_writers_no_partial_data() {
     let handles: Vec<_> = (0..n_writers)
         .map(|writer_id| {
             let b = barrier.clone();
+            let t = t.clone();
             test_spawn(move || {
-                // SAFETY: `t_ptr` points to `t` which is stack-allocated in the
-                // enclosing test function. All writer handles are joined before `t`
-                // is dropped, so the reference is valid for the duration of the
-                // thread. `Topic` is Sync, so concurrent shared access is sound.
-                let t = unsafe { &*(t_ptr as *const Topic<[u64; 4]>) };
                 b.wait();
                 for i in 0..msgs_per_writer {
                     let val = (writer_id * 1000 + i) as u64;
@@ -7715,17 +7710,14 @@ fn partial_write_concurrent_writers_no_partial_data() {
 
     // Reader
     let reader_barrier = barrier.clone();
+    let reader_topic = t.clone();
     let reader = test_spawn(move || {
-        // SAFETY: `t_ptr` points to `t` which is stack-allocated in the enclosing
-        // test function. The reader handle is joined before `t` is dropped, so the
-        // reference remains valid. `Topic` is Sync, permitting concurrent reads.
-        let t = unsafe { &*(t_ptr as *const Topic<[u64; 4]>) };
         reader_barrier.wait();
         let mut corrupt_count = 0u64;
         let mut total = 0u64;
         let deadline = Instant::now() + 200_u64.ms();
         while Instant::now() < deadline {
-            if let Some(arr) = t.recv() {
+            if let Some(arr) = reader_topic.recv() {
                 total += 1;
                 // All 4 elements should match — if they don't, we got a partial write
                 if arr[0] != arr[1] || arr[1] != arr[2] || arr[2] != arr[3] {

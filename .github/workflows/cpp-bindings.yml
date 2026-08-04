@@ -463,7 +463,8 @@ jobs:
 
   # ─── UBSan (UndefinedBehaviorSanitizer) ─────────────────────────────────
   # Catches integer overflow, misalignment, null deref, enum-out-of-range, etc.
-  # Uses nightly + -Zbuild-std + -Zsanitizer=undefined for Rust; C++ via g++.
+  # Rust does not expose an `undefined` sanitizer; UBSan instruments the C++
+  # boundary while the Rust library is built normally.
   cpp-ubsan:
     name: UBSanitizer
     runs-on: ubuntu-latest
@@ -476,10 +477,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libudev-dev pkg-config g++
 
-      - name: Install Rust Nightly
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Shared Memory
         run: |
@@ -494,16 +493,12 @@ jobs:
 
       - name: Build libhorus_cpp with UBSan
         run: |
-          cargo +nightly build -Zbuild-std \
-            --target x86_64-unknown-linux-gnu \
-            --no-default-features -p horus_cpp
-        env:
-          RUSTFLAGS: -Zsanitizer=undefined
+          cargo build --no-default-features -p horus_cpp
 
       - name: Configure + build gtests with UBSan via CMake
         run: |
           cmake -S horus_cpp/tests -B target/cpp_ubsan \
-            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/x86_64-unknown-linux-gnu/debug \
+            -DHORUS_RUST_TARGET_DIR=$(pwd)/target/debug \
             -DCMAKE_CXX_FLAGS="-fsanitize=undefined -fsanitize=integer -fno-sanitize-recover=all -fno-omit-frame-pointer -g" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=undefined"
           cmake --build target/cpp_ubsan --parallel \
@@ -511,7 +506,7 @@ jobs:
 
       - name: Run UBSan full API test
         run: |
-          LD_LIBRARY_PATH=target/x86_64-unknown-linux-gnu/debug \
+          LD_LIBRARY_PATH=target/debug \
           UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1" \
             target/cpp_ubsan/cpp_full_api_test
         env:
@@ -519,7 +514,7 @@ jobs:
 
       - name: Run UBSan ergonomic E2E
         run: |
-          LD_LIBRARY_PATH=target/x86_64-unknown-linux-gnu/debug \
+          LD_LIBRARY_PATH=target/debug \
           UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1" \
             target/cpp_ubsan/cpp_ergonomic_e2e
         env:
@@ -574,6 +569,7 @@ jobs:
           LD_LIBRARY_PATH=target/debug valgrind \
             --tool=memcheck --error-exitcode=1 \
             --leak-check=full --show-leak-kinds=definite,indirect \
+            --errors-for-leak-kinds=definite,indirect \
             --track-origins=yes --undef-value-errors=yes \
             $SUPPS \
             target/cpp_valgrind/cpp_ergonomic_e2e

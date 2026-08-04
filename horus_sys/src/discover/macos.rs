@@ -30,67 +30,36 @@ pub fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
     })
 }
 
-// kinfo_proc layout: the PID lives at offset 24 (kp_proc.p_pid) on both
-// x86_64 and aarch64 macOS. We use a raw byte buffer + offset extraction
-// to avoid depending on libc::kinfo_proc which is unavailable during
-// cross-compilation from Linux.
-const KINFO_PROC_SIZE: usize = 648; // sizeof(struct kinfo_proc) on macOS
-const KP_PROC_PID_OFFSET: usize = 24; // offsetof(kinfo_proc, kp_proc.p_pid)
-
-/// List all PIDs via sysctl(KERN_PROC_ALL).
+/// List all PIDs through libproc. Unlike parsing `kinfo_proc`, this API does not
+/// depend on private struct sizes that differ between macOS releases/architectures.
 pub fn list_pids() -> Vec<u32> {
-    let mut mib: [i32; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL, 0];
-
-    let mut size: usize = 0;
-
-    // First call to get buffer size
-    // SAFETY: mib is a valid 4-element array; null output buffer queries size.
-    let ret = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            std::ptr::null_mut(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-
-    if ret != 0 || size == 0 {
+    const PROC_ALL_PIDS: u32 = 1;
+    // SAFETY: a null buffer with size 0 asks libproc for the required byte count.
+    let required = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
+    if required <= 0 {
         return Vec::new();
     }
-
-    let mut buf: Vec<u8> = vec![0u8; size];
-
-    // SAFETY: buf is properly sized; sysctl fills it with kinfo_proc structs.
-    let ret = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            buf.as_mut_ptr() as *mut _,
-            &mut size,
-            std::ptr::null_mut(),
+    // Leave headroom for processes created between the size query and read.
+    let capacity = required as usize / std::mem::size_of::<i32>() + 32;
+    let mut raw_pids = vec![0i32; capacity];
+    // SAFETY: raw_pids is writable for exactly the byte size passed to libproc.
+    let bytes = unsafe {
+        libc::proc_listpids(
+            PROC_ALL_PIDS,
             0,
+            raw_pids.as_mut_ptr().cast(),
+            (raw_pids.len() * std::mem::size_of::<i32>()) as libc::c_int,
         )
     };
-
-    if ret != 0 {
+    if bytes <= 0 {
         return Vec::new();
     }
-
-    let count = size / KINFO_PROC_SIZE;
-    let mut pids = Vec::with_capacity(count);
-    for i in 0..count {
-        let base = i * KINFO_PROC_SIZE + KP_PROC_PID_OFFSET;
-        if base + 4 <= buf.len() {
-            // SAFETY: reading an i32 from a properly aligned kinfo_proc struct
-            let pid = i32::from_ne_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
-            if pid > 0 {
-                pids.push(pid as u32);
-            }
-        }
-    }
-    pids
+    raw_pids.truncate(bytes as usize / std::mem::size_of::<i32>());
+    raw_pids
+        .into_iter()
+        .filter(|pid| *pid > 0)
+        .map(|pid| pid as u32)
+        .collect()
 }
 
 fn get_cmdline(pid: u32) -> Option<String> {
