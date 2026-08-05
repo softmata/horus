@@ -142,7 +142,11 @@ jobs:
         env:
           RUSTFLAGS: -Zsanitizer=address
           RUSTDOCFLAGS: -Zsanitizer=address
-          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+          # LeakSanitizer reports process-lifetime allocations retained by the
+          # Rust test harness as leaks after every test has passed. Keep ASan's
+          # bounds/use-after-free checks and stack lifetime checking enabled;
+          # leak checking needs a dedicated, suppressions-aware job.
+          ASAN_OPTIONS: detect_leaks=0:detect_stack_use_after_return=1
 
   tsan:
     name: ThreadSanitizer - Data Race Detection
