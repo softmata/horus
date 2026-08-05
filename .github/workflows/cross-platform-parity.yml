@@ -273,9 +273,12 @@ jobs:
     steps:
       - name: Check all jobs
         run: |
+          # cli-parity was listed in `needs` but never checked, so a broken CLI
+          # build on any OS still reported the gate as green.
           if [[ "${{ needs.parity-linux.result }}" != "success" ]] || \
              [[ "${{ needs.parity-macos.result }}" != "success" ]] || \
              [[ "${{ needs.parity-windows.result }}" != "success" ]] || \
+             [[ "${{ needs.cli-parity.result }}" != "success" ]] || \
              [[ "${{ needs.cross-compile.result }}" != "success" ]]; then
             echo "❌ Parity CI failed"
             exit 1

@@ -148,8 +148,13 @@ jobs:
 
       - name: Run C++ gtests via ctest
         run: |
+          # -LE nightly excludes cpp_soak_test, registered via
+          # horus_add_nightly_gtest with LABELS="nightly". It is a 2-hour soak
+          # (HORUS_SOAK_DURATION_SEC defaults to 7200); without this filter every
+          # run of this job sat for over two hours.
           LD_LIBRARY_PATH=target/debug ctest \
             --test-dir target/cpp_tests \
+            -LE nightly \
             --output-on-failure \
             --output-junit junit.xml
         env:
@@ -341,9 +346,15 @@ jobs:
             .venv/bin/maturin develop --no-default-features --manifest-path horus_py/Cargo.toml
 
       - name: Run cross-language tests
-        run: bash horus_cpp/tests/cross_lang_tri_test.sh
+        # The script calls bare `python3`, so the maturin-installed extension is
+        # only importable if the venv is on PATH — `bash script.sh` alone runs
+        # the system interpreter, which has no `horus._horus`.
+        run: |
+          export PATH="$GITHUB_WORKSPACE/.venv/bin:$PATH"
+          bash horus_cpp/tests/cross_lang_tri_test.sh
         env:
           HORUS_NAMESPACE: ci_xlang_${{ github.run_id }}
+          HORUS_ROOT: ${{ github.workspace }}
 
   # ─── ASAN (AddressSanitizer) ──────────────────────────────────────────────
   cpp-asan:
@@ -700,7 +711,11 @@ jobs:
 
       - name: Run C++ tests under coverage
         run: |
+          # Exclude the nightly 2-hour soak here too — under `--coverage -O0`
+          # instrumentation it is even slower, and it covers the same code paths
+          # as cpp_e2e_test.
           LD_LIBRARY_PATH=target/debug ctest --test-dir target/cpp_cov \
+            -LE nightly \
             --output-on-failure
         env:
           HORUS_NAMESPACE: ci_cov_cpp_${{ github.run_id }}
