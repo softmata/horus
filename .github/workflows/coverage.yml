@@ -105,13 +105,9 @@ jobs:
 
       - name: Generate HTML Report
         run: |
-          cargo llvm-cov --workspace \
-            --exclude horus_benchmarks \
-            --exclude horus \
-            --exclude horus_library \
-            --exclude horus_py \
-            --html --output-dir coverage-html \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us
+          # Reuse the profiles produced above instead of running every test a
+          # second time just to render a different output format.
+          cargo llvm-cov report --html --output-dir coverage-html
 
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
@@ -131,13 +127,9 @@ jobs:
 
       - name: Coverage Summary
         run: |
-          cargo llvm-cov --workspace \
-            --exclude horus_benchmarks \
-            --exclude horus \
-            --exclude horus_library \
-            --exclude horus_py \
-            --text \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us | tee coverage-summary.txt
+          # Render the summary from the same saved profiles; do not execute a
+          # third instrumented test pass.
+          cargo llvm-cov report --text | tee coverage-summary.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY
