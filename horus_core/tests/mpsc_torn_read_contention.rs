@@ -99,9 +99,13 @@ fn run_contention_round(
             let n = name.clone();
             let b = barrier.clone();
             handles.push(std::thread::spawn(move || {
-                let topic: Topic<[u64; 4]> =
-                    Topic::with_capacity(&n, cap, None).expect("writer topic");
+                // Do the fallible setup, but do NOT panic before the barrier: with 40
+                // participants and no broken-barrier state in `std::sync::Barrier`, one
+                // early unwind would strand the other 39 in `wait()` forever. Arrive
+                // first, then surface the failure.
+                let topic = Topic::with_capacity(&n, cap, None);
                 b.wait();
+                let topic: Topic<[u64; 4]> = topic.expect("writer topic");
                 for i in 0..msgs_per_writer {
                     // All four lanes equal a value unique to (writer, i). A torn read
                     // (partial overwrite) makes the lanes disagree.
@@ -120,9 +124,11 @@ fn run_contention_round(
             let torn = torn_total.clone();
             let read = read_total.clone();
             handles.push(std::thread::spawn(move || {
-                let topic: Topic<[u64; 4]> =
-                    Topic::with_capacity(&n, cap, None).expect("reader topic");
+                // Same ordering as the writers: reach the barrier unconditionally, then
+                // panic on a setup failure (see the writer comment above).
+                let topic = Topic::with_capacity(&n, cap, None);
                 b.wait();
+                let topic: Topic<[u64; 4]> = topic.expect("reader topic");
                 let total = n_writers * msgs_per_writer;
                 let mut seen = 0u64;
                 let mut torn_local = 0u64;
