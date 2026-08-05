@@ -63,9 +63,18 @@ fn test_estop_long_reason_truncated() {
 fn test_presence_receiver_handles_valid_data() {
     use horus_net::presence::PresenceReceiver;
 
-    // Manually build a minimal presence broadcast payload
+    // Manually build a minimal presence broadcast payload.
+    //
+    // The namespace MUST match the receiver's local namespace or
+    // PresenceReceiver::handle_broadcast drops the broadcast as foreign (that
+    // rejection path is what test_presence_receiver_rejects_wrong_namespace
+    // covers). PresenceReceiver derives it from HORUS_NAMESPACE, falling back to
+    // "default" — so hardcoding "default" here silently turned this into a
+    // no-op assertion locally and a hard failure under CI, which sets
+    // HORUS_NAMESPACE=ci_<run_id>.
+    let local_ns = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
     let mut payload = Vec::new();
-    let ns = b"default";
+    let ns = local_ns.as_bytes();
     payload.extend_from_slice(&(ns.len() as u16).to_le_bytes());
     payload.extend_from_slice(ns);
     let hid = b"abcd";
