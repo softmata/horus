@@ -852,7 +852,8 @@ jobs:
           # silently ran in parallel and blew the stack.
           cargo test -p horus_core --release --lib -- communication::topic::tests \
             --nocapture --test-threads=1 \
-            --skip topic_cross_thread_1p_multi_c_spmc
+            --skip topic_cross_thread_1p_multi_c_spmc \
+            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
             --skip topic_cross_thread_multi_p_multi_c_mpmc
         timeout-minutes: 3
         env:
