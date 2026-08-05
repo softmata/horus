@@ -10,6 +10,10 @@ homepage = "https://horusrobotics.dev"
 documentation = "https://docs.horusrobotics.dev"
 keywords = ["robotics", "cli", "build-tool", "horus", "ros"]
 categories = ["science::robotics", "command-line-utilities", "development-tools"]
+# Two binaries are declared below, so a bare `cargo run -p horus_manager` is
+# ambiguous and aborts before the CLI starts. The parity/acceptance suites drive
+# the CLI that way, so name the real entry point as the default.
+default-run = "horus"
 
 [lints]
 workspace = true
