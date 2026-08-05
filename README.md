@@ -1,9 +1,18 @@
 # HORUS
 
+<p align="center">
+  <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.pt-BR.md">Português (Brasil)</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.es.md">Español</a> ·
+  <a href="README.de.md">Deutsch</a>
+</p>
+
 **Real-time distributed middleware for Rust, Python, and C++. 575x faster than ROS2.**
 
 [![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions)
-[![Version](https://img.shields.io/badge/v0.2.0-blue.svg)](https://github.com/softmata/horus/releases)
+[![Version](https://img.shields.io/badge/v0.2.2-blue.svg)](https://github.com/softmata/horus/releases)
 [![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](https://isocpp.org/)
@@ -41,7 +50,7 @@ HORUS is a real-time distributed middleware that replaces DDS with shared-memory
 
 |             | **HORUS**                                     | **ROS2**                                    |
 |-------------|-----------------------------------------------|---------------------------------------------|
-| IPC latency | **11–196 ns** (shared memory)                 | 50–500 µs (DDS)                             |
+| IPC latency | **3–304 ns median** (topology-dependent)      | 50–500 µs (DDS)                             |
 | Scheduling  | Deterministic, 5 execution classes            | Best-effort callbacks                       |
 | RT support  | Built-in (budget, deadline, watchdog)         | Manual DDS QoS                              |
 | Safety      | Graduated watchdog, auto safe-state, BlackBox | Application-level                           |
@@ -252,11 +261,11 @@ baudrate = 1000000
 
 ```bash
 horus new my_robot              # scaffold project (Rust, Python, or C++)
-horus new my_bot --lang cpp     # scaffold C++ project
+horus new my_bot --cpp          # scaffold C++ project
 horus run                       # build and run
 horus topic list                # inspect live topics
 horus topic echo camera.rgb     # watch messages (works across all languages)
-horus monitor -t                # TUI system dashboard
+horus monitor                   # TUI system dashboard
 horus deploy pi@192.168.1.50    # deploy to robot
 horus doctor                    # ecosystem health check
 ```

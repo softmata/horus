@@ -37,7 +37,7 @@ horus log [node]                # View logs (-f follow, -l level)
 
 ```bash
 horus install <name>            # Install a package or plugin
-horus remove <name>             # Remove a package or plugin
+horus uninstall <name>          # Uninstall a registry package or plugin
 horus list [query]              # List installed packages and plugins
 horus search <query>            # Search available packages/plugins
 horus update [pkg]              # Update installed packages
@@ -69,9 +69,8 @@ horus new my_robot -r && cd my_robot && horus run --release
 # Create Python project
 horus new sensor_node -p && cd sensor_node && horus run
 
-# Monitor running system
-horus monitor          # Web UI
-horus monitor -t       # Terminal UI
+# Monitor running system (delegates to the installed horus-monitor plugin)
+horus monitor
 
 # Install packages
 horus install lidar-driver

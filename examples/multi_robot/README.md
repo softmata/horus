@@ -5,8 +5,8 @@ Three scout robots maintain a triangular formation while moving in a circle. Dem
 ## What you'll learn
 
 - Multi-robot scenes (multiple URDFs in one world)
-- Namespaced topics (`scout_1/cmd_vel`, `scout_2/cmd_vel`, etc.)
-- Fleet-level shared topics (`fleet/poses`, `fleet/formation_cmd`)
+- Namespaced topics (`scout_1.cmd_vel`, `scout_2.cmd_vel`, etc.)
+- Fleet-level shared topics (`fleet.poses`, `fleet.formation_cmd`)
 - Launch file configuration
 - Node discovery and web monitoring
 
@@ -15,11 +15,11 @@ Three scout robots maintain a triangular formation while moving in a circle. Dem
 ```
 FormationCoordinator (5Hz)
      |
-     | fleet/formation_cmd
+     | fleet.formation_cmd
      v
-ScoutController x3 (20Hz)  -->  scout_N/cmd_vel
+ScoutController x3 (20Hz)  -->  scout_N.cmd_vel
      |
-     | fleet/poses (shared)
+     | fleet.poses (shared)
      +------------------------->  FormationCoordinator
 ```
 
@@ -69,14 +69,14 @@ The launch file (`launch/formation.yaml`) configures 4 nodes with namespaces, ra
 ```bash
 # List all topics (namespaced + fleet-level)
 horus topic list
-# scout_1/cmd_vel, scout_2/cmd_vel, scout_3/cmd_vel
-# fleet/poses, fleet/formation_cmd
+# scout_1.cmd_vel, scout_2.cmd_vel, scout_3.cmd_vel
+# fleet.poses, fleet.formation_cmd
 
 # Watch interleaved pose messages from all scouts
-horus topic echo fleet/poses
+horus topic echo fleet.poses
 
 # Watch a single scout's commands
-horus topic echo scout_1/cmd_vel
+horus topic echo scout_1.cmd_vel
 
 # Web dashboard
 horus monitor
