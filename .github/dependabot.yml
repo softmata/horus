@@ -36,10 +36,11 @@ updates:
           - "*"
         update-types:
           - "major"
-    ignore:
-      # Ignore pre-release versions
-      - dependency-name: "*"
-        update-types: ["version-update:semver-prerelease"]
+    # NOTE: there was an `ignore` rule here using
+    # update-types: ["version-update:semver-prerelease"], which is not a valid
+    # value — Dependabot accepts only semver-major/minor/patch, and rejected the
+    # whole config file because of it. It was also unnecessary: Dependabot does
+    # not propose a pre-release unless the dependency is already pinned to one.
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
