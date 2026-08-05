@@ -764,15 +764,13 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
                             );
                             std::io::stdout().flush().ok();
                         }
-                    } else {
-                        if last_line_print.elapsed().as_secs_f64() >= 1.0 {
-                            println!(
-                                "  average rate: {:.2} Hz (window: {})",
-                                rate,
-                                rate_samples.len()
-                            );
-                            last_line_print = Instant::now();
-                        }
+                    } else if last_line_print.elapsed().as_secs_f64() >= 1.0 {
+                        println!(
+                            "  average rate: {:.2} Hz (window: {})",
+                            rate,
+                            rate_samples.len()
+                        );
+                        last_line_print = Instant::now();
                     }
                 }
             }
