@@ -5894,15 +5894,25 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                           // Wait for a producer warm-up message so every subscriber has
                           // completed the topology migration before the measured stream.
             let warmup_deadline = Instant::now() + Duration::from_secs(5);
+            let mut warmed_up = false;
             loop {
                 sub.check_migration_now();
                 if sub.try_recv().as_deref() == Some("__horus_ready__") {
+                    warmed_up = true;
                     break;
                 }
-                assert!(
-                    Instant::now() < warmup_deadline,
-                    "subscriber warm-up timed out"
-                );
+                // Do NOT panic here. This thread is one of three participants in
+                // `ready`, and std::sync::Barrier has no broken-barrier state:
+                // unwinding past the ready.wait() below leaves the producer and
+                // the sibling subscriber blocked on a 3-party barrier that can
+                // never complete. That turned a slow warm-up into a permanent
+                // hang rather than a test failure (observed: 48 min wall clock,
+                // 7 s CPU, every thread parked in futex_wait). Record the
+                // timeout, still arrive at the barrier, and let the assertions
+                // after the join report it.
+                if Instant::now() >= warmup_deadline {
+                    break;
+                }
                 std::thread::yield_now();
             }
             ready.wait();
@@ -5915,7 +5925,7 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                     None => std::thread::yield_now(),
                 }
             }
-            (tag, got, sub.backend_name().to_string())
+            (tag, got, sub.backend_name().to_string(), warmed_up)
         })
     };
     let h1 = spawn_sub("sub1");
@@ -5926,8 +5936,12 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
     for v in 1..=n {
         producer.send(format!("m{v}"));
     }
-    let (t1, got1, be1) = h1.join().unwrap();
-    let (t2, got2, be2) = h2.join().unwrap();
+    let (t1, got1, be1, warm1) = h1.join().unwrap();
+    let (t2, got2, be2, warm2) = h2.join().unwrap();
+    // Surface a warm-up timeout as a failure here rather than as a panic inside
+    // the subscriber thread — see the comment at the warm-up loop.
+    assert!(warm1, "{t1} never observed the producer warm-up message");
+    assert!(warm2, "{t2} never observed the producer warm-up message");
     eprintln!(
         "DIAG mt-nonpod: {t1} backend={be1} got={} | {t2} backend={be2} got={} | producer={}",
         got1.len(),
