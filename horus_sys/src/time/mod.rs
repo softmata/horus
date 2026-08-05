@@ -228,8 +228,13 @@ mod tests {
             sleep_precise(Duration::from_millis(1));
         }
         let elapsed = start.elapsed();
+        // Hosted macOS runners can be descheduled for tens of milliseconds
+        // while parallel jobs compile. Keep this as a guard against the old
+        // 15ms-per-call timer behavior, but leave enough headroom for one
+        // scheduler stall; tighter latency guarantees belong in the dedicated
+        // benchmark jobs on controlled hardware.
         assert!(
-            elapsed < Duration::from_millis(50),
+            elapsed < Duration::from_millis(75),
             "5x 1ms sleeps took {:?} (expected ~5ms)",
             elapsed
         );
