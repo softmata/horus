@@ -36,12 +36,15 @@ use std::sync::OnceLock;
 pub const SIMD_COPY_THRESHOLD: usize = 4096; // 4KB
 
 /// Alignment requirement for SIMD operations (AVX2 = 32 bytes)
+#[allow(unused)]
 const SIMD_ALIGNMENT: usize = 32;
 
 // Runtime feature detection — initialized exactly once, race-free
+#[allow(unused)]
 static AVX2_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 /// Check if AVX2 is available on the current CPU
+#[allow(unused)]
 #[inline]
 fn is_avx2_available() -> bool {
     *AVX2_AVAILABLE.get_or_init(|| {
