@@ -44,7 +44,12 @@ echo ""
 echo "── Story 1: Project Creation ──"
 
 PROJECT_DIR="$TMPDIR/test_project"
-if $HORUS new "$PROJECT_DIR" --lang rust 2>/dev/null; then
+# `horus new` takes a project NAME, not a path: validate_project_name() rejects
+# anything not starting with a letter or underscore, so passing "$TMPDIR/..."
+# (a leading '/') always failed. Create it by name from inside the temp dir, in
+# a subshell so the assertions below still resolve against $PROJECT_DIR.
+# The flag is -r/--rust; there is no --lang.
+if (cd "$TMPDIR" && $HORUS new test_project -r); then
     pass "horus new creates project"
 else
     fail "horus new failed"
@@ -166,7 +171,9 @@ fi
 echo ""
 echo "── Story 7: Uninstall Script ──"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This script lives in tests/docker/, so the repo root — where uninstall.sh
+# lives — is two levels up, not one.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
     pass "uninstall.sh exists"
