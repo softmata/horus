@@ -1,0 +1,110 @@
+# cargo-nextest configuration — https://nexte.st/docs/configuration/
+#
+# PURPOSE: per-test timeout guard.
+#
+# `cargo test` has NO per-test timeout. A single deadlocked test therefore runs
+# until the *job* dies, and GitHub reports only "The job running on runner ...
+# has exceeded the maximum execution time" with no test name. None of the jobs
+# in .github/workflows/ci.yml set `timeout-minutes`, so the ceiling is GitHub's
+# default of 360 minutes — six hours burned for zero diagnostic.
+#
+# This is not hypothetical here. See the comment on
+# `stress_tensorpool_repeated_lifecycle_60s`
+# (horus_core/tests/stress_tensorpool_fragmentation.rs):
+#
+#     "...the test ran forever (it is what pinned the CI `Test` and MSRV jobs
+#      at the 6-hour ceiling)."
+#
+# nextest's `slow-timeout` closes that whole class: a hung test is SIGTERM'd,
+# then SIGKILL'd, and reported by name as TIMEOUT alongside its captured output.
+
+[profile.default]
+# ── The guard ────────────────────────────────────────────────────────────────
+# period          → a test still running after this long is reported as SLOW
+#                   (informational; it does NOT fail the run).
+# terminate-after → number of periods before the test is killed and marked
+#                   TIMEOUT (a hard failure). Kill point = period × terminate-after.
+#
+# 60s × 3 = 180s hard kill. Calibrated against the slowest *healthy* tests in
+# this repo, all verified by reading the sources:
+#
+#   ~120s  horus_core/tests/safety_battle_tests.rs:713 — `test_50_rapid_kill_cycles`
+#          self-asserts `elapsed < Duration::from_secs(120)`. This is the largest
+#          self-declared wall-clock budget anywhere in the workspace, and it is
+#          the number the kill point must clear.
+#   ~60s   time-boxed soaks, plus setup/verification (~70s realistic):
+#            production_fanout_battle.rs:1898   `soak_60s_sustained_fanout`
+#            stress_tensorpool_fragmentation.rs `stress_tensorpool_repeated_lifecycle_60s`
+#            cross_process_ipc.rs:771           `cross_process_sustained_60s`
+#   ~51s   `cargo test --test loom_migration` for the whole binary (6 loom models
+#          run in parallel threads), so the slowest single model is <= ~51s.
+#   ~30s   the several `soak_30s_*` / `soak_lifecycle_churn_30s` tests.
+#
+# 180s is 1.5x the largest self-declared budget and ~2.5x the slowest real soak,
+# so no existing healthy test can be killed — while a genuine deadlock dies in
+# three minutes with a name attached instead of at the 6-hour ceiling.
+#
+# When a test's own internal deadline is tighter than this (test_50_rapid_kill_cycles
+# asserts 120s), that assertion fires first and gives the better message. Good:
+# this guard is the backstop, not the primary deadline.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# ── Serial execution is MANDATORY for this workspace, not a preference ───────
+# horus_core/tests/common/mod.rs `cleanup_stale_shm()` does
+# `remove_dir_all(shm_topics_dir())` on the *shared* SHM namespace and relies on
+# a process-global `Mutex` (`shm_test_lock()`) to serialise the tests that call
+# it. nextest runs every test in its own process, so that in-process mutex
+# protects nothing across tests: two concurrently-running tests would have one
+# wipe the other's live SHM state mid-run.
+#
+# This also preserves the semantics of the existing CI invocation, which passes
+# `-- --test-threads=1` for the same reason ("race conditions in static
+# discovery topic", ci.yml "Run Tests").
+#
+# Tightening this to >1 requires making the SHM cleanup cross-process safe
+# (e.g. a flock on the namespace dir, or a per-test HORUS_NAMESPACE).
+test-threads = 1
+
+# Retries mask flakiness; this repo's stated policy is deterministic tests
+# (see the "Test Quality Guard" job in ci.yml). Fail honestly.
+retries = 0
+
+# After a test process exits, nextest waits this long for inherited stdout/stderr
+# handles to close before flagging the test as LEAK. The cross-process suites
+# here (cross_process_ipc, chaos_cross_process, production_fanout_battle,
+# horus_net/tests/cross_process.rs) spawn real child processes and kill them at
+# teardown; the 100ms default is tight enough to flag those spuriously.
+leak-timeout = "500ms"
+
+# Surface the SLOW list in the final summary. This is the point of the config:
+# tests creeping toward the 180s kill are visible long before they hit it.
+final-status-level = "slow"
+
+[profile.ci]
+# Inherits everything from `default` (slow-timeout, test-threads, retries,
+# leak-timeout). The kill point is deliberately IDENTICAL to the default profile
+# so a CI timeout reproduces locally with `cargo nextest run` and no extra flags.
+
+# Print the failure output as it happens *and* again in the final summary, so a
+# failure is readable both in the streaming log and at the bottom of the job.
+failure-output = "immediate-final"
+
+# Keep the streaming log quiet (only failures) while the final summary still
+# lists both failures and slow tests.
+status-level = "fail"
+final-status-level = "slow"
+
+[profile.ci.junit]
+# Written to target/nextest/ci/junit.xml (the `path` is relative to the profile's
+# store directory). Lets the CI job publish a structured test report and, more
+# to the point, records which test TIMED OUT in machine-readable form.
+path = "junit.xml"
+
+[profile.soak]
+# For the long-running release-mode suites in integration-tests.yml, which run
+# the full `--test '*'` set including the multi-minute cross-process scenarios.
+# Same warning cadence, 6x period = 360s kill. Still two orders of magnitude
+# below the 6-hour job ceiling.
+slow-timeout = { period = "60s", terminate-after = 6 }
+failure-output = "immediate-final"
+final-status-level = "slow"
