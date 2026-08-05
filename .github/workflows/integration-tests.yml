@@ -861,7 +861,7 @@ jobs:
 
       - name: "Assert: Cross-process IPC roundtrip"
         run: |
-          cargo test -p horus_core --release --test cross_process_ipc --nocapture -- --test-threads=1
+          cargo test -p horus_core --release --test cross_process_ipc -- --nocapture --test-threads=1
         timeout-minutes: 5
         env:
           RUST_BACKTRACE: 1
