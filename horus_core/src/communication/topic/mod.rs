@@ -1081,12 +1081,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             } else {
                 TopicRole::Producer
             }
+        } else if local.role == TopicRole::Producer {
+            TopicRole::Both
         } else {
-            if local.role == TopicRole::Producer {
-                TopicRole::Both
-            } else {
-                TopicRole::Consumer
-            }
+            TopicRole::Consumer
         };
 
         // Late-join fix: if the ring has wrapped since no consumer was reading,

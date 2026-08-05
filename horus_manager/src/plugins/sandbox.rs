@@ -60,8 +60,9 @@
 //! In the meantime, `no_new_privs` + seccomp network deny + rlimits provide
 //! meaningful defence-in-depth against the most common plugin abuse scenarios.
 
-// This entire file is Linux-only.
-#![cfg(target_os = "linux")]
+// This entire file is Linux-only. The gate lives on the `pub mod sandbox;`
+// declaration in plugins/mod.rs — repeating it here as an inner `#![cfg]`
+// is redundant and trips clippy::duplicated_attributes.
 
 use std::io;
 

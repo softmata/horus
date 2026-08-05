@@ -2353,7 +2353,7 @@ mod tests {
 
         let bp_id = dbg.add_breakpoint(BreakpointCondition::AtTick(2));
         assert!(dbg.remove_breakpoint(bp_id));
-        assert!(dbg.breakpoints().iter().find(|b| b.id == bp_id).is_none());
+        assert!(!dbg.breakpoints().iter().any(|b| b.id == bp_id));
     }
 
     #[test]
