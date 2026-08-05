@@ -24,6 +24,24 @@ pub struct ShmRegion {
 }
 
 impl ShmRegion {
+    /// Open an existing region without creating or resizing it.
+    pub fn open_existing(name: &str, minimum_size: usize) -> Result<Self> {
+        super::validate_region_name(name)?;
+        let path = super::topic_shm_path(name);
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let size = file.metadata()?.len() as usize;
+        anyhow::ensure!(size >= minimum_size, "existing SHM region is too small");
+        let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
+        Ok(Self {
+            mmap,
+            _file: file,
+            path,
+            topic_name: name.to_string(),
+            size,
+            owner: false,
+        })
+    }
+
     /// Create or open a shared memory region.
     pub fn new(name: &str, mut size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");

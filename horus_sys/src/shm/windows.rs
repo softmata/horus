@@ -17,6 +17,35 @@ pub struct ShmRegion {
 }
 
 impl ShmRegion {
+    /// Open an existing region without creating one when the publisher is absent.
+    pub fn open_existing(name: &str, minimum_size: usize) -> Result<Self> {
+        anyhow::ensure!(minimum_size > 0, "SHM region size must be > 0");
+        super::validate_region_name(name)?;
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+        use windows_sys::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
+        let mapping_name = format!("Local\\horus_{}", name);
+        let wide_name: Vec<u16> = mapping_name.encode_utf16().chain([0]).collect();
+        let handle = unsafe { OpenFileMappingW(FILE_MAP_READ, 0, wide_name.as_ptr()) };
+        if handle.is_null() {
+            anyhow::bail!("OpenFileMappingW failed: error {}", unsafe {
+                GetLastError()
+            });
+        }
+        let view = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, minimum_size) };
+        let ptr = view.Value as *mut u8;
+        if ptr.is_null() {
+            unsafe { CloseHandle(handle) };
+            anyhow::bail!("MapViewOfFile failed: error {}", unsafe { GetLastError() });
+        }
+        Ok(Self {
+            ptr,
+            handle,
+            topic_name: name.to_string(),
+            size: minimum_size,
+            owner: false,
+        })
+    }
+
     /// Create or open a shared memory region using Windows API (pagefile-backed).
     pub fn new(name: &str, size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");

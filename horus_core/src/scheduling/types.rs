@@ -496,7 +496,7 @@ pub struct SubscriptionFreshness {
     /// `messages_total` counter. `None` once we have decided the topic is not
     /// mappable; re-attempted while it is still absent, because a topic may be
     /// created after the subscriber starts.
-    counter_map: Mutex<Option<memmap2::Mmap>>,
+    counter_map: Mutex<Option<horus_sys::shm::ShmRegion>>,
     /// Last `messages_total` we observed, to detect that new data arrived.
     last_count: AtomicU64,
 }
@@ -543,21 +543,17 @@ impl SubscriptionFreshness {
         };
         if guard.is_none() {
             // Retry while absent — the publisher may start after we do.
-            let path = horus_sys::shm::topic_shm_path(&self.topic);
-            if let Ok(file) = std::fs::File::open(&path) {
-                if file.metadata().map(|m| m.len() as usize).unwrap_or(0) >= layout::HEADER_SIZE {
-                    // SAFETY: read-only map of a file we just verified is at
-                    // least HEADER_SIZE bytes.
-                    if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
-                        let magic = u64::from_ne_bytes(
-                            map[layout::OFF_MAGIC..layout::OFF_MAGIC + 8]
-                                .try_into()
-                                .unwrap_or([0; 8]),
-                        );
-                        if magic == layout::MAGIC {
-                            *guard = Some(map);
-                        }
-                    }
+            if let Ok(map) =
+                horus_sys::shm::ShmRegion::open_existing(&self.topic, layout::HEADER_SIZE)
+            {
+                let bytes = map.as_slice();
+                let magic = u64::from_ne_bytes(
+                    bytes[layout::OFF_MAGIC..layout::OFF_MAGIC + 8]
+                        .try_into()
+                        .unwrap_or([0; 8]),
+                );
+                if magic == layout::MAGIC {
+                    *guard = Some(map);
                 }
             }
         }
