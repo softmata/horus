@@ -17,7 +17,10 @@ updates:
     labels:
       - "dependencies"
       - "rust"
-    reviewers:
+    # `reviewers` was removed from the Dependabot schema (it no longer appears in
+    # the options reference, unlike `assignees`), so it fails config validation.
+    # `assignees` is the supported equivalent; use CODEOWNERS for review requests.
+    assignees:
       - "lord-patpak"
     groups:
       # Group minor and patch updates together
