@@ -239,12 +239,16 @@ pub struct HorusManifest {
 ///
 /// Parsed from `[network]` in horus.toml. All fields optional — defaults are
 /// sensible for zero-config LAN operation.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct NetworkConfig {
     /// Enable/disable networking. Default: true. Env override: HORUS_NO_NETWORK=1.
     #[serde(default)]
     pub enabled: Option<bool>,
     /// Import control: "auto" (default), "deny", or list of topic patterns.
+    // toml::Value has no JsonSchema impl; describe it with the equivalent
+    // free-form JSON type so the `schema` feature can derive.
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import: Option<toml::Value>,
     /// Export deny patterns (e.g., ["camera.*", "debug.*"]).
@@ -262,6 +266,7 @@ pub struct NetworkConfig {
 }
 
 /// Safety heartbeat configuration within [network].
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct NetworkSafetyConfig {
     /// Heartbeat interval in ms (default: 50).
@@ -799,6 +804,12 @@ pub struct DriverTableConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
     /// All remaining keys — passed to the driver factory as `DriverParams`.
+    // As above: toml::Value has no JsonSchema impl, so describe the flattened
+    // catch-all map as free-form JSON values.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "std::collections::HashMap<String, serde_json::Value>")
+    )]
     #[serde(flatten)]
     pub params: std::collections::HashMap<String, toml::Value>,
 }

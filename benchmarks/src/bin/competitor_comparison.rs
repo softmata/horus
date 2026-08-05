@@ -178,20 +178,22 @@ fn bench_raw_udp(size: usize, duration_secs: u64) -> Vec<u64> {
 
 #[cfg(feature = "zenoh")]
 fn bench_zenoh(size: usize, duration_secs: u64) -> Vec<u64> {
-    use zenoh::prelude::r#async::*;
-
+    // zenoh 1.x API. The 0.x form this used to be written against
+    // (`zenoh::prelude::r#async::*`, `zenoh::config::default()` and the
+    // `.res()` builder terminator) was removed upstream, so this benchmark no
+    // longer compiled at all under `--all-features`.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let session = zenoh::open(zenoh::config::default()).res().await.unwrap();
+        let session = zenoh::open(zenoh::Config::default()).await.unwrap();
         let key = format!("horus_bench/{size}");
-        let publisher = session.declare_publisher(&key).res().await.unwrap();
-        let subscriber = session.declare_subscriber(&key).res().await.unwrap();
+        let publisher = session.declare_publisher(key.clone()).await.unwrap();
+        let subscriber = session.declare_subscriber(key).await.unwrap();
 
         let payload = vec![0xCDu8; size];
 
         // Warmup
         for _ in 0..1000 {
-            publisher.put(&payload).res().await.unwrap();
+            publisher.put(payload.as_slice()).await.unwrap();
             let _ = subscriber.recv_async().await;
         }
 
@@ -200,7 +202,7 @@ fn bench_zenoh(size: usize, duration_secs: u64) -> Vec<u64> {
         let mut samples = Vec::with_capacity(200_000);
         while Instant::now() < deadline {
             let s = Instant::now();
-            publisher.put(&payload).res().await.unwrap();
+            publisher.put(payload.as_slice()).await.unwrap();
             let _ = subscriber.recv_async().await;
             samples.push(s.elapsed().as_nanos() as u64);
         }
