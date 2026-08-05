@@ -42,7 +42,7 @@ jobs:
     name: MIRI - Undefined Behavior Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -102,7 +102,7 @@ jobs:
     name: AddressSanitizer - Memory Error Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -155,7 +155,7 @@ jobs:
     name: ThreadSanitizer - Data Race Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
