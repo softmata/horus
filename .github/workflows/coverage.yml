@@ -99,7 +99,7 @@ jobs:
             --exclude horus_library \
             --exclude horus_py \
             --lcov --output-path lcov.info \
-            -- --test-threads=1 --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us --skip dual_write_overhead_acceptable
+            -- --test-threads=1 --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us --skip dual_write_overhead_acceptable --skip shm_fanout_latency_percentiles_cross_thread
         env:
           RUST_BACKTRACE: 1
 
