@@ -82,9 +82,9 @@ The transport backend is auto-selected based on topology:
 
 | Scenario | Latency |
 |----------|---------|
-| Same thread | ~3 ns |
-| Same process | 18-36 ns |
-| Cross process | 50-167 ns |
+| Same-process fan-out | 3 ns median |
+| Same-process SPSC | 10 ns median |
+| Cross-process | 198-304 ns median |
 
 ## Logging
 
