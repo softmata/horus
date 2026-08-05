@@ -57,7 +57,7 @@ toml_edit = "0.22"
 # openssl-sys had no aarch64 OpenSSL to link and that leg could never produce a
 # binary. rustls is pure Rust, so it cross-compiles cleanly and also drops the
 # runtime dependency on the host's system OpenSSL.
-reqwest = { version = "0.11", default-features = false, features = [
+reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "multipart",
     "blocking",
