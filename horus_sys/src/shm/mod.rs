@@ -1627,7 +1627,11 @@ mod tests {
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
-        let err = verify_shm_dir_ownership(Path::new("/tmp"))
+        // macOS exposes /tmp as a symlink to /private/tmp. Canonicalize it so
+        // this test reaches the foreign-owner check instead of correctly
+        // stopping earlier at the separate symlink defense.
+        let foreign_dir = std::fs::canonicalize("/tmp").expect("canonical /tmp");
+        let err = verify_shm_dir_ownership(&foreign_dir)
             .unwrap_err()
             .to_string();
         assert!(

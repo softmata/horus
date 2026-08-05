@@ -576,7 +576,15 @@ impl SubscriptionFreshness {
         // count without claiming data arrived, so a subscriber that starts long
         // after the publisher does not get a free refresh.
         if previous != u64::MAX && total != previous {
-            self.last_received_ns.store(now_ns, Ordering::Relaxed);
+            // Windows' SystemTime may have coarser resolution than the nominal
+            // nanosecond representation. A real publication can therefore be
+            // observed while `now_ns` is identical to the previous stamp. Keep
+            // the freshness clock logically monotonic so new data is always
+            // distinguishable from no data, without moving it backwards when a
+            // wall clock is adjusted.
+            let last = self.last_received_ns.load(Ordering::Relaxed);
+            self.last_received_ns
+                .store(now_ns.max(last.saturating_add(1)), Ordering::Relaxed);
         }
     }
 }
