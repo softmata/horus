@@ -35,7 +35,15 @@ Write-Host ""
 Write-Host "── Story 1: Project Creation ──"
 
 $ProjectDir = Join-Path $TmpDir "test_project"
-$newResult = cargo run --no-default-features -p horus_manager -- new $ProjectDir --lang rust 2>&1
+# `horus new` takes a project NAME, not a path: validate_project_name() rejects
+# anything not starting with a letter or underscore, so passing $ProjectDir
+# always failed. Create it by name from inside the temp dir. The flag is
+# -r/--rust; there is no --lang.
+# Join-Path only builds a string — $TmpDir does not exist on disk yet.
+New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
+Push-Location $TmpDir
+$newResult = cargo run --no-default-features -p horus_manager -- new test_project -r 2>&1
+Pop-Location
 if ($LASTEXITCODE -eq 0) { Pass "horus new creates project" }
 else { Fail "horus new failed" }
 
@@ -89,7 +97,9 @@ else { Fail "TEMP directory missing" }
 Write-Host ""
 Write-Host "── Story 6: Uninstall Script ──"
 
-$ScriptRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+# This script lives in tests/docker/, so the repo root — where uninstall.ps1
+# and uninstall.sh live — is two directory levels above the script file.
+$ScriptRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $UninstallPs1 = Join-Path $ScriptRoot "uninstall.ps1"
 
 if (Test-Path $UninstallPs1) { Pass "uninstall.ps1 exists" }

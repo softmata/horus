@@ -3,7 +3,10 @@
 # Tests: C++→Python, Python→C++, bidirectional field preservation
 set -e
 
-HORUS_ROOT="/home/neos/softmata/horus"
+# Derive the repo root from this script's own location (horus_cpp/tests/), so
+# the test works on a CI runner and in any clone. Overridable via the
+# environment for out-of-tree invocations.
+HORUS_ROOT="${HORUS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 export LD_LIBRARY_PATH="$HORUS_ROOT/target/debug"
 export PYTHONPATH="$HORUS_ROOT/horus_py"
 
