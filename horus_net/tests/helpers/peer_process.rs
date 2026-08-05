@@ -15,7 +15,13 @@ use horus_sys::shm::shm_topics_dir;
 use horus_types::Pose2D;
 
 fn shm_path(name: &str) -> std::path::PathBuf {
-    shm_topics_dir().join(format!("horus_{name}"))
+    // No `horus_` prefix: the backing file is named after the topic directly.
+    // The prefix went away with the SHM-only rework, but this helper was never
+    // updated, so it wrote to topics/horus_<name> while cross_process.rs read
+    // topics/<name> (see its own shm_path). The writer reported success and the
+    // reader then found nothing — every xproc_* test failed on
+    // "should read data from SHM", permanently.
+    shm_topics_dir().join(name)
 }
 
 fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>(
@@ -30,7 +36,19 @@ fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeO
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(&msg as *const T as *const u8, std::mem::size_of::<T>())
         };
-        write_topic_slot_bytes(&path, bytes);
+        // Check the return value. Ignoring it meant this helper printed
+        // "WROTE_RAW <count>" unconditionally, so cross_process.rs's assertion
+        // that the writer succeeded passed while EVERY write silently failed —
+        // which is how the wrong shm_path above stayed hidden. Fail loudly
+        // instead, on stderr, which the caller prints when the write assert
+        // trips.
+        if !write_topic_slot_bytes(&path, bytes) {
+            eprintln!(
+                "write_topic_slot_bytes failed at i={i} for {}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
     }
     println!("WROTE_RAW {count}");
 }
