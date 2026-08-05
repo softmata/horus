@@ -77,6 +77,17 @@ jobs:
           mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
           chmod -R 700 "$SHM_DIR"
 
+      # horus_core's cross_language_ipc test binary invokes Python subprocesses.
+      # Install the native module even though horus_py itself is excluded from
+      # Rust coverage, otherwise those subprocesses import the mock fallback.
+      - name: Build and install Python extension
+        run: |
+          python3 -m venv /tmp/horus-coverage-venv
+          /tmp/horus-coverage-venv/bin/pip install maturin
+          VIRTUAL_ENV=/tmp/horus-coverage-venv \
+            /tmp/horus-coverage-venv/bin/maturin develop --manifest-path horus_py/Cargo.toml
+          echo "/tmp/horus-coverage-venv/bin" >> "$GITHUB_PATH"
+
       - name: Generate Coverage Report
         run: |
           # Exclude crates with workspace linkage issues
