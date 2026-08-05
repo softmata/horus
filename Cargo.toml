@@ -33,6 +33,7 @@ horus_cpp = { path = "horus_cpp" }
 horus_sys = { path = "horus_sys" }
 horus_types = { path = "horus_types" }
 horus_net = { path = "horus_net" }
+horus-robotics = { git = "https://github.com/softmata/horus-robotics.git" }
 # Physics and math
 rapier2d = "0.22"
 nalgebra = "0.33"

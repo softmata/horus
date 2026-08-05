@@ -32,7 +32,7 @@ use std::io;
 
 /// Real-time scheduler policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum RtScheduler {
+pub enum RtScheduler {
     /// Normal (non-RT) scheduler - SCHED_OTHER
     #[default]
     Normal,
@@ -43,7 +43,7 @@ pub(crate) enum RtScheduler {
 
 /// Result of applying RT configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RtApplyResult {
+pub enum RtApplyResult {
     /// All requested features were applied successfully
     FullSuccess,
     /// Configuration applied with some features degraded
@@ -52,7 +52,7 @@ pub(crate) enum RtApplyResult {
 
 /// Describes a degradation from the requested configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RtDegradation {
+pub enum RtDegradation {
     /// Memory locking was requested but not available
     MemoryLockUnavailable(String),
     /// Requested priority was clamped to system maximum
@@ -67,7 +67,7 @@ pub(crate) enum RtDegradation {
 
 /// Information about kernel RT support.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RtKernelInfo {
+pub struct RtKernelInfo {
     /// Whether PREEMPT_RT patch is detected
     pub preempt_rt: bool,
     /// Kernel version string
@@ -104,7 +104,7 @@ impl RtKernelInfo {
 /// real-time parameters. The builder uses sensible defaults and
 /// gracefully degrades on systems without full RT support.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RtConfigBuilder {
+pub struct RtConfigBuilder {
     memory_locked: bool,
     priority: Option<i32>,
     scheduler: RtScheduler,
@@ -181,7 +181,7 @@ impl RtConfigBuilder {
 /// This struct holds the configuration parameters and provides
 /// methods to apply them to the current thread or process.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RtConfig {
+pub struct RtConfig {
     memory_locked: bool,
     priority: Option<i32>,
     scheduler: RtScheduler,

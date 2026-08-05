@@ -1580,6 +1580,7 @@ name = "horus"
 version = "0.2.2"
 dependencies = [
  "ctor",
+ "horus-robotics",
  "horus_core",
  "horus_macros",
  "horus_net",
