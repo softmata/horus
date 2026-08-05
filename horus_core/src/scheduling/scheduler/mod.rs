@@ -160,17 +160,12 @@ pub(crate) struct TickState {
 /// monitoring. Lock contention is negligible since monitoring calls are fast
 /// and executors tick at different cadences.
 pub(crate) struct MonitorState {
-    pub safety: Option<SafetyMonitor>,
+    pub safety: Option<std::sync::Arc<SafetyMonitor>>,
     pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
     pub telemetry: Option<super::telemetry::TelemetryManager>,
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
     pub working_dir: PathBuf,
-    /// Pre-allocated buffer for `check_watchdogs()`.
-    ///
-    /// Reused every tick to avoid the heap allocation that a `-> Vec<String>`
-    /// return would require.  Passed by `&mut` into `SafetyMonitor::check_watchdogs`.
-    pub watchdog_expired_buf: Vec<String>,
     /// Pre-allocated buffer for graduated watchdog results.
     pub watchdog_graduated_buf: Vec<(String, super::safety_monitor::WatchdogSeverity)>,
 }
@@ -265,6 +260,12 @@ pub struct Scheduler {
     /// Set by finalize_config() when require_rt() was used but high-severity
     /// degradations occurred. Checked by run()/tick_once() to return Err.
     rt_require_failed: bool,
+    /// A duplicate node name seen at registration, reported by `run()`.
+    ///
+    /// Node names key the watchdog map, the SHM registry slot and the
+    /// pause/kill flags, so two nodes sharing a name share one watchdog and a
+    /// hang in either is masked by the other's feed.
+    duplicate_node_name: Option<String>,
 }
 
 impl Default for Scheduler {
@@ -340,7 +341,6 @@ impl Scheduler {
                 profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                watchdog_expired_buf: Vec::new(),
                 watchdog_graduated_buf: Vec::new(),
             },
             replay: None,
@@ -356,6 +356,7 @@ impl Scheduler {
             lifecycle_start_hooks: Vec::new(),
             lifecycle_handles: Vec::new(),
             rt_require_failed: false,
+            duplicate_node_name: None,
         };
 
         // Network discovery is enabled by default (like ROS2).
@@ -521,7 +522,33 @@ impl Scheduler {
     ///     .tick_rate(100_u64.hz());
     /// ```
     pub fn watchdog(mut self, timeout: Duration) -> Self {
-        self.pending_config.realtime.watchdog_timeout_ms = timeout.as_millis() as u64;
+        // The config stores whole milliseconds and treats 0 as DISABLED
+        // (`watchdog_active = watchdog_timeout_ms > 0`). A plain
+        // `as_millis() as u64` therefore turned any sub-millisecond timeout into
+        // 0 — so `scheduler.watchdog(500_u64.us())`, an entirely reasonable RT
+        // setting, SILENTLY TURNED THE WATCHDOG OFF. The user asked for a
+        // tighter safety timeout and got none, with no diagnostic.
+        //
+        // Round up to the 1ms floor the storage can represent rather than
+        // truncating to "disabled": a slightly-looser watchdog is a safety
+        // feature, and no watchdog is not. Say so, because silently changing a
+        // safety timeout is its own problem — the operator needs to know the
+        // value actually in force.
+        let ms = timeout.as_millis() as u64;
+        self.pending_config.realtime.watchdog_timeout_ms = if timeout.is_zero() {
+            0 // explicit disable — honour it
+        } else if ms == 0 {
+            crate::hlog!(
+                warn,
+                "watchdog({:?}) is below the 1ms resolution the scheduler config stores; \
+                 using 1ms. Sub-millisecond watchdogs are not supported — previously this \
+                 truncated to 0, which DISABLED the watchdog entirely.",
+                timeout
+            );
+            1
+        } else {
+            ms
+        };
         self
     }
 
@@ -1079,8 +1106,63 @@ impl Scheduler {
             Duration::from_millis(10) // 100Hz fallback for invalid rate
         };
 
-        // RT safety and OS-level optimizations
-        self.apply_safety_config(&config.realtime);
+        // Record the safety knobs in `pending_config` instead of applying them
+        // NOW.
+        //
+        // `apply_config` is the sole sink for the Python configuration surface
+        // (`Scheduler(watchdog_ms=..)`, `run(.., watchdog_ms=..)`,
+        // `SchedulerConfig.with_watchdog()`), and its only caller is
+        // `PyScheduler::new` — which runs BEFORE any node has been added. So the
+        // eager `apply_safety_config` here built a monitor over an empty node
+        // list and registered zero critical nodes. `finalize_config` then runs
+        // after the nodes exist, rebuilds the monitor from `pending_config` —
+        // where these values had never been written — and REPLACES the eager
+        // one. Net effect: every Python watchdog configuration ended with an
+        // empty watchdog map and nothing was ever checked. The Rust `.watchdog()`
+        // builder was unaffected because it writes `pending_config` directly.
+        //
+        // Merged field-wise, NOT as a wholesale `self.pending_config = config`:
+        // horus_py calls the deterministic/name/cores/max_deadline_misses/
+        // verbose/telemetry builders BEFORE `apply_config`, so overwriting the
+        // whole struct would silently discard them.
+        self.pending_config.realtime.watchdog_timeout_ms = config.realtime.watchdog_timeout_ms;
+        self.pending_config.realtime.max_deadline_misses = config.realtime.max_deadline_misses;
+        if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
+            self.pending_config.timing.global_rate_hz = config.timing.global_rate_hz;
+        }
+
+        // The same merge for the remaining sections, for the same reason:
+        // `finalize_config` re-reads `self.pending_config` after the nodes
+        // exist and re-applies resources, monitoring and recording from it.
+        // Anything applied only eagerly here was either overwritten by the
+        // deferred pass or — for `resources` — never applied at all, since
+        // `apply_config` merely PRINTED the requested cores. A Python caller
+        // passing cpu_cores got a log line and no pinning, and the
+        // `HORUS_RT_CORES` fallback below then saw `cpu_cores.is_none()` and
+        // treated the process as unconfigured.
+        //
+        // Each field is merged only when the incoming value is actually set,
+        // so the builders horus_py calls BEFORE apply_config are not clobbered
+        // by this struct's defaults.
+        if config.resources.cpu_cores.is_some() {
+            self.pending_config.resources.cpu_cores = config.resources.cpu_cores.clone();
+        }
+        if config.monitoring.black_box_size_mb > 0 {
+            self.pending_config.monitoring.black_box_size_mb = config.monitoring.black_box_size_mb;
+        }
+        if config.monitoring.telemetry_endpoint.is_some() {
+            self.pending_config.monitoring.telemetry_endpoint =
+                config.monitoring.telemetry_endpoint.clone();
+        }
+        if config.monitoring.verbose {
+            self.pending_config.monitoring.verbose = true;
+        }
+        if config.recording.is_some() {
+            self.pending_config.recording = config.recording.clone();
+        }
+
+        // OS-level optimizations are applied eagerly on purpose: they touch the
+        // process (mlockall, scheduling class) and do not depend on the node set.
         self.apply_rt_optimizations(&config.realtime, &config.resources);
 
         // require_rt() enforcement: fail if high-severity degradations occurred
@@ -1123,9 +1205,25 @@ impl Scheduler {
     fn apply_safety_config(&mut self, rt: &super::config::RealTimeConfig) {
         let has_rt_nodes = self.nodes.iter().any(|n| n.is_rt_node);
         let watchdog_active = rt.watchdog_timeout_ms > 0;
-        if watchdog_active || has_rt_nodes {
-            let monitor = SafetyMonitor::new(rt.max_deadline_misses);
 
+        // The monitor is created UNCONDITIONALLY. It used to exist only when
+        // `watchdog_active || has_rt_nodes`, which quietly made emergency stop a
+        // property of having configured a watchdog.
+        //
+        // `SharedMonitors.estop` is `self.monitor.safety.as_ref().map(..)`, so on
+        // a scheduler of purely non-RT nodes — a perfectly ordinary perception
+        // or teleop process — it was `None`. An emergency stop arriving over the
+        // network then had nothing to latch: it printed to stderr and the robot
+        // kept running. `SafetyState` would have gone on reporting Normal.
+        //
+        // E-stop is not an RT-only feature and must not be contingent on
+        // unrelated configuration. The monitor is a couple of maps and some
+        // atomics; creating it always costs nothing measurable, and the
+        // per-node watchdog/budget registration below stays exactly as
+        // conditional as it was.
+        let monitor = SafetyMonitor::new(rt.max_deadline_misses);
+
+        {
             let global_watchdog_timeout = rt.watchdog_timeout_ms.ms();
 
             for registered in self.nodes.iter() {
@@ -1146,9 +1244,15 @@ impl Scheduler {
                 }
             }
 
-            self.monitor.safety = Some(monitor);
+            self.monitor.safety = Some(std::sync::Arc::new(monitor));
             if self.pending_config.monitoring.verbose {
-                print_line("Safety monitor configured for RT nodes");
+                if watchdog_active || has_rt_nodes {
+                    print_line("Safety monitor configured for RT nodes");
+                } else {
+                    print_line(
+                        "Safety monitor active (emergency stop only — no RT nodes or watchdog configured)",
+                    );
+                }
             }
         }
     }
@@ -1322,7 +1426,7 @@ impl Scheduler {
         node_name: &str,
         watchdog_timeout: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
-        if let Some(ref mut monitor) = self.monitor.safety {
+        if let Some(ref monitor) = self.monitor.safety {
             monitor.add_critical_node(node_name.to_string(), watchdog_timeout);
             Ok(self)
         } else {
@@ -1358,7 +1462,7 @@ impl Scheduler {
         node_name: &str,
         budget: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
-        if let Some(ref mut monitor) = self.monitor.safety {
+        if let Some(ref monitor) = self.monitor.safety {
             monitor.set_tick_budget(node_name.to_string(), budget);
             Ok(self)
         } else {
@@ -1523,6 +1627,33 @@ impl Scheduler {
 
         let node_name = node.name().to_string();
 
+        // Refuse a duplicate node name.
+        //
+        // Node names are the identity key for several pieces of per-node state
+        // that are keyed by string, not by index: the SafetyMonitor's watchdog
+        // map, the SHM registry slot, and the NodeControlMap paused/stopped
+        // flags. Two nodes called `arm_ctrl` therefore SHARE one watchdog — so
+        // the healthy one's feed keeps refreshing the hung one's deadline and
+        // the stall is never detected — plus one registry slot (so `horus node
+        // list` shows one of them) and one control flag (so `horus node pause`
+        // hits both).
+        //
+        // Silently letting the second registration alias the first is the worst
+        // of the options: refusing is loud, and renaming behind the operator's
+        // back would make `horus node kill <name>` target something they did not
+        // ask for.
+        //
+        // Recorded and failed from `run()` rather than panicked. A duplicate
+        // name is reachable from a generated launch file and from horus.toml, so
+        // it is CONFIGURATION, not a programmer typo — and `add()` returns
+        // `&mut Self` with no error channel. This is the same deferred-failure
+        // pattern `require_rt()` already uses: record here, return `Err` from
+        // `run()`. Panicking in a robot process, in a release profile with no
+        // `panic = "abort"`, would be a worse failure than the one being fixed.
+        if self.nodes.iter().any(|n| n.name.as_ref() == node_name) {
+            self.duplicate_node_name = Some(node_name.clone());
+        }
+
         let context = NodeInfo::new(node_name.clone());
 
         // Create node recorder if recording is enabled
@@ -1574,6 +1705,7 @@ impl Scheduler {
             deadline,
             recorder,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats,
             miss_policy,
@@ -1806,6 +1938,20 @@ impl Scheduler {
     /// ```
     pub fn tick_once(&mut self) -> HorusResult<()> {
         self.finalize_and_init();
+        if let Some(ref dup) = self.duplicate_node_name {
+            return Err(crate::error::Error::InvalidInput(
+                crate::error::ValidationError::InvalidValue {
+                    field: "node name".into(),
+                    value: dup.clone(),
+                    reason: format!(
+                        "duplicate node name {dup:?}: node names key the watchdog map, the SHM \
+                         registry slot and the pause/kill control flags, so two nodes sharing one \
+                         name share one watchdog — a hang in either is masked by the other's \
+                         feed. Give each node a distinct name."
+                    ),
+                },
+            ));
+        }
         if self.rt_require_failed {
             return Err(crate::error::Error::Resource(
                 crate::error::ResourceError::Unsupported {
@@ -2029,6 +2175,9 @@ impl Scheduler {
         // loop polls, so the scheduler actually stops.
         if let Some(ref safety) = self.monitor.safety {
             safety.install_emergency_stop_hook();
+            // Companion to the e-stop hook: `safety.on_link_lost = "safe_state"`
+            // must produce per-node safing, not the full halt that `stop` means.
+            safety.install_safe_state_hook();
         }
 
         // Auto-enable mlockall if: RT nodes present, system permits it, and user didn't
@@ -2130,6 +2279,20 @@ impl Scheduler {
         duration: Option<Duration>,
     ) -> HorusResult<()> {
         self.finalize_and_init();
+        if let Some(ref dup) = self.duplicate_node_name {
+            return Err(crate::error::Error::InvalidInput(
+                crate::error::ValidationError::InvalidValue {
+                    field: "node name".into(),
+                    value: dup.clone(),
+                    reason: format!(
+                        "duplicate node name {dup:?}: node names key the watchdog map, the SHM \
+                         registry slot and the pause/kill control flags, so two nodes sharing one \
+                         name share one watchdog — a hang in either is masked by the other's \
+                         feed. Give each node a distinct name."
+                    ),
+                },
+            ));
+        }
         if self.rt_require_failed {
             return Err(crate::error::Error::Resource(
                 crate::error::ResourceError::Unsupported {
@@ -2280,11 +2443,28 @@ impl Scheduler {
 
                 // Create control topic for CLI commands (horus node kill/pause/resume)
                 let ctl_topic_name = format!("horus.ctl.{}", self.scheduler_name);
-                self.control_topic = crate::communication::Topic::new_with_kind(
+                // `.ok()` discarded a real failure with no log at any verbosity.
+                // `new_with_kind` is fallible — the topic name embeds the
+                // user-supplied scheduler name, which must pass topic-name
+                // validation, and SHM can be exhausted. When it failed, every
+                // `horus node kill/pause/resume` silently did nothing: the
+                // operator's control channel was simply absent and the only
+                // symptom was commands having no effect.
+                self.control_topic = match crate::communication::Topic::new_with_kind(
                     &ctl_topic_name,
                     crate::communication::TopicKind::System as u8,
-                )
-                .ok();
+                ) {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        print_line(&format!(
+                            "[SCHEDULER] WARNING: control topic '{}' could not be created ({}) — \
+                             operator control (horus node kill/pause/resume) is UNAVAILABLE \
+                             for this scheduler",
+                            ctl_topic_name, e
+                        ));
+                        None
+                    }
+                };
 
                 // Shared monitors for all executor threads
                 let shared_monitors = super::types::SharedMonitors {
@@ -2302,6 +2482,13 @@ impl Scheduler {
                     // watchdog map (the same Arc check_watchdogs reads), so their
                     // critical nodes are fed and don't spuriously e-stop.
                     watchdog: self.monitor.safety.as_ref().map(|m| m.watchdog_feeder()),
+                    estop: self.monitor.safety.as_ref().map(|m| m.estop_trigger()),
+                    // FIX: the class partition moves every RT node out of
+                    // `self.nodes`, so `check_timing_violations` — gated on
+                    // `is_rt_node` — never sees them and `max_deadline_misses`
+                    // plus the whole degradation ladder were dead code on any
+                    // normally-configured robot. Give the executor the monitor.
+                    safety: self.monitor.safety.clone(),
                 };
 
                 if !groups.rt_nodes.is_empty() {
@@ -2524,9 +2711,27 @@ impl Scheduler {
                 blackbox.is_some(),
             );
 
-            // 3. Write crash report to /tmp (best-effort, no allocation beyond the format above)
+            // 3. Write crash report to /tmp (best-effort, no allocation beyond the format above).
+            //
+            // create_new, not fs::write: the path is fully predictable
+            // (/tmp/horus_crash_<pid>.log) and /tmp is world-writable, so
+            // fs::write would happily follow a symlink another local user
+            // planted there and truncate whatever it points at, as this user.
+            // O_EXCL means a pre-planted path makes us skip the report instead.
+            // Mode 0600 because the report carries node names and internal state.
             let crash_path = std::env::temp_dir().join(format!("horus_crash_{}.log", pid));
-            let _ = std::fs::write(&crash_path, &report);
+            let _ = {
+                use std::io::Write;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                opts.open(&crash_path)
+                    .and_then(|mut f| f.write_all(report.as_bytes()))
+            };
 
             // 4. Also print to stderr (visible in logs)
             eprintln!("{}", report);
@@ -2775,6 +2980,31 @@ impl Scheduler {
                 use super::safety_monitor::WatchdogSeverity;
                 use super::types::NodeHealthState;
 
+                // Nodes the scheduler still owns are handled inline below.
+                // After the class partition `self.nodes` holds ONLY BestEffort
+                // nodes, so for an RT/Compute/Event/AsyncIo node this `find`
+                // misses and — before this branch existed — the entire ladder
+                // was skipped: no Warning, no Unhealthy, no Isolated, and no
+                // `enter_safe_state()`. The watchdog was fed correctly by the
+                // executors (SCHED-H2) and its expiry produced nothing. On an
+                // RT node driving an actuator that is the worst place to have
+                // a silent watchdog.
+                //
+                // The REACTION has to stay on the main thread: it is the only
+                // one a hung node cannot block. Health is recorded in the
+                // shared control map, which is registered for all five groups;
+                // safing is requested there and performed by the executor that
+                // owns the node, because `enter_safe_state()` needs `&mut dyn
+                // Node`.
+                if !self.nodes.iter().any(|n| n.name.as_ref() == node_name) {
+                    if let Some(ref controls) = self.node_controls {
+                        Self::apply_remote_health_transition(
+                            controls, node_name, severity, monitor,
+                        );
+                    }
+                    continue;
+                }
+
                 if let Some(registered) =
                     self.nodes.iter_mut().find(|n| n.name.as_ref() == node_name)
                 {
@@ -2834,11 +3064,32 @@ impl Scheduler {
                             }
                         }
                     }
+
+                    // Mirror into the shared map so `controls.health()` is a
+                    // complete view across all five execution groups rather
+                    // than only the ones the scheduler owns.
+                    let now = registered.health_state.load();
+                    if let Some(ref controls) = self.node_controls {
+                        controls.set_health(node_name, now);
+                    }
                 }
             }
 
-            // Also run the classic expired check for backward compat logging
-            monitor.check_watchdogs(&mut self.monitor.watchdog_expired_buf);
+            // The legacy `check_watchdogs` call used to run here, described as
+            // "backward compat logging". It is not only logging: it triggers a
+            // system-wide emergency stop as soon as ANY watchdog is 1x over its
+            // timeout.
+            //
+            // `check_watchdogs_graduated` runs immediately above and classifies
+            // that same node as `Warning`, which is documented as "log, keep
+            // ticking", escalating to Isolated + e-stop only at 3x. So the
+            // graduated policy was overridden in the very same tick by the call
+            // underneath it: a node a hair over 1x halted the whole scheduler.
+            // On a robot that is a spurious full stop where the configured
+            // policy asked for a log line.
+            //
+            // The graduated path already owns the 3x emergency stop, so the
+            // legacy call is removed rather than reordered.
 
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
@@ -2854,6 +3105,65 @@ impl Scheduler {
             }
         }
         false
+    }
+
+    /// Run the graduated watchdog ladder for a node the scheduler does not own.
+    ///
+    /// Companion to the inline arm in `check_safety_monitors`, for nodes that
+    /// `std::mem::take` moved onto an executor. The transitions are identical;
+    /// only where they are recorded differs, and safing becomes a request the
+    /// owning executor honours instead of a direct call.
+    fn apply_remote_health_transition(
+        controls: &super::types::NodeControlMap,
+        node_name: &str,
+        severity: &super::safety_monitor::WatchdogSeverity,
+        monitor: &super::safety_monitor::SafetyMonitor,
+    ) {
+        use super::safety_monitor::WatchdogSeverity;
+        use super::types::NodeHealthState;
+
+        let current = controls.health(node_name);
+        match severity {
+            WatchdogSeverity::Ok => {}
+            WatchdogSeverity::Warning => {
+                if current == NodeHealthState::Healthy {
+                    controls.set_health(node_name, NodeHealthState::Warning);
+                    print_line(&format!(
+                        " Watchdog warning: '{}' (1x timeout) — marking Warning",
+                        node_name
+                    ));
+                }
+            }
+            WatchdogSeverity::Expired => {
+                if current != NodeHealthState::Unhealthy && current != NodeHealthState::Isolated {
+                    controls.set_health(node_name, NodeHealthState::Unhealthy);
+                    print_line(&format!(
+                        " Watchdog expired: '{}' (2x timeout) — marking Unhealthy",
+                        node_name
+                    ));
+                }
+            }
+            WatchdogSeverity::Critical => {
+                if current != NodeHealthState::Isolated {
+                    controls.set_health(node_name, NodeHealthState::Isolated);
+                    controls.request_safe_state(node_name);
+                    print_line(&format!(
+                        " Watchdog critical: '{}' (3x timeout) — Isolated, safing requested \
+                         from its executor",
+                        node_name
+                    ));
+                    // No `trigger_emergency_stop` here: `check_watchdogs_graduated`
+                    // already latches it for any critical node at 3x, and every
+                    // node in this buffer is critical (watchdogs are only ever
+                    // registered through `add_critical_node`). That latch is also
+                    // what covers the gap this arm cannot close — a node hung
+                    // INSIDE `tick()` blocks the very executor thread that would
+                    // honour the safing request, so the request may never be
+                    // consumed. The e-stop does not depend on that thread.
+                    debug_assert!(monitor.is_emergency_stop());
+                }
+            }
+        }
     }
 
     /// Periodic registry snapshot, failure logging, blackbox tick, and telemetry export.
@@ -3507,7 +3817,35 @@ impl Scheduler {
                 health,
                 NodeHealthState::Unhealthy | NodeHealthState::Isolated
             ) {
-                return false;
+                // Probe tick: admit a suppressed node once every
+                // HEALTH_PROBE_INTERVAL cycles so it can demonstrate recovery.
+                //
+                // These were ABSORBING states. The only code that can promote a
+                // node back to healthy runs after a tick, and this gate refused
+                // the tick — so a node degraded once, however transiently (a
+                // page fault, a one-off scheduling hiccup), stayed suppressed
+                // for the life of the process with no way back.
+                //
+                // That recovery was intended is not a guess:
+                // `NodeDegradationState::recovery_counter` exists and is
+                // documented as "Consecutive successful ticks since rate was
+                // reduced (for recovery)" — a counter nothing could ever
+                // increment, because nothing could ever tick.
+                //
+                // A periodic probe is the cheapest thing that makes recovery
+                // reachable without weakening suppression: a genuinely broken
+                // node fails its probe and is re-suppressed immediately, so the
+                // cost of being wrong is one tick per interval.
+                const HEALTH_PROBE_INTERVAL: u64 = 100;
+                let probe = self.nodes[i].health_probe_counter.wrapping_add(1);
+                self.nodes[i].health_probe_counter = probe;
+                if !probe.is_multiple_of(HEALTH_PROBE_INTERVAL) {
+                    return false;
+                }
+                print_line(&format!(
+                    "[HEALTH] probe tick for suppressed node '{}' ({:?})",
+                    self.nodes[i].name, health
+                ));
             }
         }
 
@@ -3629,8 +3967,20 @@ impl Scheduler {
                 });
             if let Some(outputs) = replay_outputs {
                 for (topic, data) in &outputs {
-                    let shm_dir = crate::memory::platform::shm_topics_dir();
-                    let topic_path = shm_dir.join(format!("horus_{}", topic));
+                    // This built `horus_{topic}` — the filename convention that
+                    // commit df51c2f3 removed everywhere else on 2026-03-29. The
+                    // real file has a different name, so `exists()` was always
+                    // false and replay's SHM injection has been silently inert
+                    // ever since: replayed outputs reached no subscriber, and
+                    // nothing reported it because a missing path is indistinguishable
+                    // from "no such topic" here.
+                    //
+                    // Use the single shared helper, so this path cannot drift
+                    // from the writers again — the same divergence that killed
+                    // the horus_net <-> horus_core seam for four months.
+                    let Some(topic_path) = horus_sys::shm::topic_shm_path_checked(topic) else {
+                        continue;
+                    };
                     if topic_path.exists() {
                         crate::communication::write_topic_slot_bytes(&topic_path, data);
                     }
@@ -3673,7 +4023,26 @@ impl Scheduler {
             registered.tick_budget,
         );
 
+        // `.no_alloc()` must hold on whichever path actually runs the node.
+        // The build-time check in node_builder refuses the flag on a non-RT
+        // node because only the RT executor entered the alloc-free context —
+        // but in deterministic mode NO executors are spawned and every node,
+        // RT ones included, ticks right here on the main thread. That node
+        // passes the build check and then gets no allocation checking at all,
+        // which is exactly the false assurance the build check exists to
+        // prevent. Mirror rt_executor::tick_node, warmup exemption and all:
+        // one-time lazy init (a Topic's SHM backend on first recv/send) may
+        // allocate, so alloc-freedom is enforced from the second tick on.
+        let enforce_no_alloc = registered.no_alloc && tick_number > 0;
+        if enforce_no_alloc {
+            crate::memory::rt_allocator::enter_rt_context(&registered.name);
+        }
+
         let tr = super::primitives::NodeRunner::run_tick(&mut registered.node);
+
+        if enforce_no_alloc {
+            crate::memory::rt_allocator::leave_rt_context();
+        }
 
         clear_tick_context();
         clear_node_context();
@@ -3798,6 +4167,12 @@ impl Scheduler {
                         .as_nanos() as u64;
 
                     for sf in &self.nodes[i].subscription_freshness {
+                        // Observe the publisher's message counter first. Without
+                        // this the timestamp below is the one stamped at build()
+                        // and never touched since, so the check degenerates into
+                        // a fixed countdown from startup that fires on a HEALTHY
+                        // topic — and with SafeState/Stop, halts the node for it.
+                        sf.refresh(now_ns);
                         let last = sf
                             .last_received_ns
                             .load(std::sync::atomic::Ordering::Relaxed);
@@ -4049,6 +4424,17 @@ impl Scheduler {
                 ref node,
                 new_rate_hz,
             } => {
+                // Widen the watchdog by the same factor — see
+                // `primitives::apply_degradation_action`. The tick feeds the
+                // watchdog, so halving the rate halves the feed frequency, and
+                // a fixed timeout would make the gentlest rung escalate.
+                if let (Some(monitor), Some(old_rate)) =
+                    (self.monitor.safety.as_ref(), self.nodes[i].rate_hz)
+                {
+                    if new_rate_hz > 0.0 && old_rate > new_rate_hz {
+                        monitor.scale_watchdog(self.nodes[i].name.as_ref(), old_rate / new_rate_hz);
+                    }
+                }
                 self.nodes[i].rate_hz = Some(new_rate_hz);
                 self.nodes[i].last_tick = Some(Instant::now());
                 print_line(&format!(
@@ -4090,6 +4476,9 @@ impl Scheduler {
                 ref node,
                 original_rate_hz,
             } => {
+                if let Some(monitor) = self.monitor.safety.as_ref() {
+                    monitor.scale_watchdog(self.nodes[i].name.as_ref(), 1.0);
+                }
                 self.nodes[i].rate_hz = Some(original_rate_hz);
                 self.nodes[i].last_tick = Some(Instant::now());
                 self.nodes[i].health_state.store(NodeHealthState::Healthy);

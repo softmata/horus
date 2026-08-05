@@ -66,7 +66,7 @@ impl EstopRemotePolicy {
 }
 
 /// Import control configuration.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ImportConfig {
     /// Deny all imports.
     Deny,
@@ -75,6 +75,51 @@ pub enum ImportConfig {
     Auto,
     /// Explicit list of allowed topic patterns.
     AllowList(Vec<String>),
+}
+
+impl ImportConfig {
+    /// Parse from `HORUS_NET_IMPORT`.
+    ///
+    /// * unset / empty / `auto` → [`ImportConfig::Auto`] (the default)
+    /// * `deny` / `none` / `off` → [`ImportConfig::Deny`]
+    /// * anything else → a comma-separated allowlist of topic patterns
+    ///
+    /// Before this existed there was no env read, so `[network] import` in
+    /// horus.toml could not reach the replicator and both `Deny` and
+    /// `AllowList` were unreachable in shipped code.
+    pub fn from_env() -> Self {
+        let Ok(raw) = std::env::var("HORUS_NET_IMPORT") else {
+            return Self::Auto;
+        };
+        Self::parse(&raw)
+    }
+
+    /// Parse an import spec. Exposed for tests and for horus.toml wiring.
+    pub fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Self::Auto;
+        }
+        match trimmed.to_lowercase().as_str() {
+            "auto" => Self::Auto,
+            "deny" | "none" | "off" | "false" => Self::Deny,
+            _ => {
+                let patterns: Vec<String> = trimmed
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if patterns.is_empty() {
+                    // A spec that parses to nothing must NOT silently become
+                    // "allow everything" — deny is the safe reading of "the
+                    // operator tried to restrict imports".
+                    Self::Deny
+                } else {
+                    Self::AllowList(patterns)
+                }
+            }
+        }
+    }
 }
 
 /// Safety heartbeat configuration.
@@ -115,10 +160,20 @@ impl Default for SafetyConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(if wsl { 5 } else { 3 });
 
+        // `on_link_lost` had no env read at all — it was hard-coded to "warn",
+        // so `safety.on_link_lost = "safe_state"` in horus.toml was silently
+        // inert and the documented comms-loss safe-state never fired. That is a
+        // safety gap, not just a config one.
+        let on_link_lost = std::env::var("HORUS_NET_ON_LINK_LOST")
+            .ok()
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "warn".into());
+
         Self {
             heartbeat_ms,
             missed_threshold,
-            on_link_lost: "warn".into(),
+            on_link_lost,
         }
     }
 }
@@ -165,14 +220,32 @@ impl Default for NetConfig {
                 })
                 .unwrap_or_default(),
             secret: std::env::var("HORUS_NET_SECRET").ok(),
-            import: ImportConfig::default(),
-            deny_export: Vec::new(),
+            // These three were hard-coded to their defaults with NO env read,
+            // which is why the entire `[network]` section of horus.toml was
+            // parsed and then never applied: `import`, `deny_export` and
+            // `optimize` had no way to reach the replicator at all, and
+            // `ImportMode::Deny` / `AllowList` were unreachable in shipped code
+            // — the guard was permanently `Auto`.
+            import: ImportConfig::from_env(),
+            deny_export: csv_env("HORUS_NET_DENY_EXPORT"),
             safety: SafetyConfig::default(),
             estop_remote: EstopRemotePolicy::from_env(),
-            optimizers: Vec::new(),
+            optimizers: csv_env("HORUS_NET_OPTIMIZERS"),
             topic_overrides: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Read a comma-separated env var into a list, dropping empty entries.
+fn csv_env(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl NetConfig {
@@ -481,5 +554,120 @@ mod tests {
     #[test]
     fn resolve_invalid() {
         assert!(resolve_peer_addr("not-a-valid-address-xxxxx", 9100).is_none());
+    }
+
+    // ─── horus.toml [network] wiring ────────────────────────────────────────
+    //
+    // These fields had NO env read at all, which is why the entire [network]
+    // section of horus.toml was parsed and then silently discarded. `parse` is
+    // tested directly rather than through env vars so the cases are independent
+    // of process-global state.
+
+    #[test]
+    fn import_spec_modes() {
+        assert_eq!(ImportConfig::parse("auto"), ImportConfig::Auto);
+        assert_eq!(ImportConfig::parse("AUTO"), ImportConfig::Auto);
+        assert_eq!(ImportConfig::parse(""), ImportConfig::Auto);
+        assert_eq!(ImportConfig::parse("   "), ImportConfig::Auto);
+
+        assert_eq!(ImportConfig::parse("deny"), ImportConfig::Deny);
+        assert_eq!(ImportConfig::parse("none"), ImportConfig::Deny);
+        assert_eq!(ImportConfig::parse("off"), ImportConfig::Deny);
+    }
+
+    #[test]
+    fn import_spec_allowlist() {
+        assert_eq!(
+            ImportConfig::parse("cmd_vel, robot.imu ,tf"),
+            ImportConfig::AllowList(vec!["cmd_vel".into(), "robot.imu".into(), "tf".into()])
+        );
+    }
+
+    #[test]
+    fn import_spec_that_parses_to_nothing_denies_rather_than_allows() {
+        // An operator writing an import restriction that ends up empty must not
+        // silently get "import everything".
+        assert_eq!(ImportConfig::parse(",,,"), ImportConfig::Deny);
+        assert_eq!(ImportConfig::parse(" , "), ImportConfig::Deny);
+    }
+
+    #[test]
+    fn on_link_lost_is_no_longer_hardcoded_to_warn() {
+        // The safety-critical one: this field had no env read, so
+        // `safety.on_link_lost = "safe_state"` in horus.toml never took effect
+        // and the documented comms-loss safe-state could not fire.
+        let restore = std::env::var("HORUS_NET_ON_LINK_LOST").ok();
+        std::env::set_var("HORUS_NET_ON_LINK_LOST", "safe_state");
+        assert_eq!(SafetyConfig::default().on_link_lost, "safe_state");
+
+        std::env::set_var("HORUS_NET_ON_LINK_LOST", "  STOP  ");
+        assert_eq!(
+            SafetyConfig::default().on_link_lost,
+            "stop",
+            "value must be trimmed and lowercased for LinkLostAction::from_str"
+        );
+
+        std::env::remove_var("HORUS_NET_ON_LINK_LOST");
+        assert_eq!(
+            SafetyConfig::default().on_link_lost,
+            "warn",
+            "default is still warn when unset"
+        );
+        if let Some(v) = restore {
+            std::env::set_var("HORUS_NET_ON_LINK_LOST", v);
+        }
+    }
+
+    #[test]
+    fn on_link_lost_maps_to_a_real_action() {
+        // Guard against the value being read but then not recognised — the
+        // string has to survive all the way into LinkLostAction. Note an
+        // unknown string falls back to Warn, which is why safe_state and stop
+        // are what actually prove the plumbing works.
+        use crate::heartbeat::LinkLostAction;
+        assert_eq!(LinkLostAction::from_str("warn"), LinkLostAction::Warn);
+        assert_eq!(
+            LinkLostAction::from_str("safe_state"),
+            LinkLostAction::SafeState,
+            "the safety-critical value must reach the action, not fall back to Warn"
+        );
+        assert_eq!(LinkLostAction::from_str("stop"), LinkLostAction::Stop);
+        assert_eq!(
+            LinkLostAction::from_str("definitely-not-an-action"),
+            LinkLostAction::Warn,
+            "unknown values fall back to the least-drastic action"
+        );
+    }
+
+    #[test]
+    fn on_link_lost_survives_env_to_action_end_to_end() {
+        // The gap was between the env var and the action. Walk the whole path.
+        use crate::heartbeat::LinkLostAction;
+        let restore = std::env::var("HORUS_NET_ON_LINK_LOST").ok();
+        std::env::set_var("HORUS_NET_ON_LINK_LOST", "safe_state");
+        let cfg = SafetyConfig::default();
+        assert_eq!(
+            LinkLostAction::from_str(&cfg.on_link_lost),
+            LinkLostAction::SafeState
+        );
+        std::env::remove_var("HORUS_NET_ON_LINK_LOST");
+        if let Some(v) = restore {
+            std::env::set_var("HORUS_NET_ON_LINK_LOST", v);
+        }
+    }
+
+    #[test]
+    fn csv_env_splits_and_trims() {
+        let restore = std::env::var("HORUS_NET_DENY_EXPORT").ok();
+        std::env::set_var("HORUS_NET_DENY_EXPORT", "camera.*, debug.* ,");
+        assert_eq!(
+            csv_env("HORUS_NET_DENY_EXPORT"),
+            vec!["camera.*".to_string(), "debug.*".to_string()]
+        );
+        std::env::remove_var("HORUS_NET_DENY_EXPORT");
+        assert!(csv_env("HORUS_NET_DENY_EXPORT").is_empty());
+        if let Some(v) = restore {
+            std::env::set_var("HORUS_NET_DENY_EXPORT", v);
+        }
     }
 }

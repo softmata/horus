@@ -31,23 +31,33 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     continue-on-error: true  # Coverage has instrumentation issues with complex workspaces
+    # The instrumented suite runs single-threaded and contains many wall-clock
+    # bound tests. Without an explicit cap it can run against GitHub's 6-hour
+    # ceiling and — because of continue-on-error above — burn the whole budget
+    # and still report nothing. Fail fast instead.
+    timeout-minutes: 120
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
+      # LLVM coverage instrumentation substantially increases stack usage in
+      # topic contention tests. Propagate a larger stack to libtest workers.
+      RUST_MIN_STACK: "16777216"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
+          sudo apt-get install -y \
+            cmake g++ libudev-dev pkg-config \
+            libeigen3-dev libfmt-dev libgtest-dev
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@ae83f8e2d0da9969dc5a35e824115e142fd3c341 # cargo-llvm-cov
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -74,6 +84,17 @@ jobs:
           mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
           chmod -R 700 "$SHM_DIR"
 
+      # horus_core's cross_language_ipc test binary invokes Python subprocesses.
+      # Install the native module even though horus_py itself is excluded from
+      # Rust coverage, otherwise those subprocesses import the mock fallback.
+      - name: Build and install Python extension
+        run: |
+          python3 -m venv /tmp/horus-coverage-venv
+          /tmp/horus-coverage-venv/bin/pip install maturin
+          VIRTUAL_ENV=/tmp/horus-coverage-venv \
+            /tmp/horus-coverage-venv/bin/maturin develop --manifest-path horus_py/Cargo.toml
+          echo "/tmp/horus-coverage-venv/bin" >> "$GITHUB_PATH"
+
       - name: Generate Coverage Report
         run: |
           # Exclude crates with workspace linkage issues
@@ -85,22 +106,18 @@ jobs:
             --exclude horus_library \
             --exclude horus_py \
             --lcov --output-path lcov.info \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
+            -- --test-threads=1 --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us --skip dual_write_overhead_acceptable --skip shm_fanout_latency_percentiles_cross_thread --skip stress_rt_1khz_under_cpu_contention --skip stress_rt_1khz_baseline_no_contention --skip stress_rt_multi_rate_under_contention --skip stress_rt_isolation_from_compute_nodes --skip xproc_
         env:
           RUST_BACKTRACE: 1
 
       - name: Generate HTML Report
         run: |
-          cargo llvm-cov --workspace \
-            --exclude horus_benchmarks \
-            --exclude horus \
-            --exclude horus_library \
-            --exclude horus_py \
-            --html --output-dir coverage-html \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
+          # Reuse the profiles produced above instead of running every test a
+          # second time just to render a different output format.
+          cargo llvm-cov report --html --output-dir coverage-html
 
       - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -117,15 +134,14 @@ jobs:
 
       - name: Coverage Summary
         run: |
-          cargo llvm-cov --workspace \
-            --exclude horus_benchmarks \
-            --exclude horus \
-            --exclude horus_library \
-            --exclude horus_py \
-            --text \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config | tee coverage-summary.txt
+          # Render the summary from the same saved profiles; do not execute a
+          # third instrumented test pass.
+          # NOT `--text`: that is `llvm-cov show`, which emits per-line annotated
+          # source for every instrumented file (tens of MB) and blows past
+          # GitHub's 1 MiB step-summary cap, discarding the summary entirely.
+          # Bare `report` prints the per-file + TOTAL coverage table.
+          cargo llvm-cov report | tee coverage-summary.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-

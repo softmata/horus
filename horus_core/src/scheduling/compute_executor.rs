@@ -75,11 +75,31 @@ impl ComputeExecutor {
 
     /// Stop the compute executor and reclaim its nodes.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
-        self.handle
-            .take()
-            .expect("Compute thread handle already consumed")
-            .join()
-            .expect("Compute thread panicked")
+        // Degrade instead of panicking, matching EventExecutor::stop.
+        //
+        // Both `expect`s used to fire on the MAIN thread during teardown: a
+        // panic anywhere inside a compute node's tick killed only that
+        // executor thread (there is no `panic = "abort"` in the release
+        // profile), and the panic then re-surfaced here — turning an orderly
+        // scheduler shutdown into a panic at exactly the moment a robot is
+        // trying to stop. Any remaining shutdown work, including safing other
+        // nodes, was skipped.
+        //
+        // The nodes owned by a panicked thread cannot be reclaimed, so an empty
+        // Vec is the honest result; it is reported rather than swallowed.
+        let Some(handle) = self.handle.take() else {
+            print_line("[Compute] Warning: thread handle already consumed — nothing to join");
+            return Vec::new();
+        };
+        match handle.join() {
+            Ok(nodes) => nodes,
+            Err(_) => {
+                print_line(
+                    "[Compute] Warning: executor thread panicked; its nodes could not be reclaimed",
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Main function for the compute thread.
@@ -138,6 +158,13 @@ impl ComputeExecutor {
                     std::thread::sleep(tick_period - elapsed);
                 }
                 continue;
+            }
+
+            // Safing requested by the main thread's watchdog ladder. Applied
+            // to EVERY node this executor owns, not just the ones ticking this
+            // pass — an Isolated node is precisely one that is not ticking.
+            for node in nodes.iter_mut() {
+                super::primitives::honor_safe_state_request(node, &monitors);
             }
 
             // Update last_tick for rate-limited nodes
@@ -366,6 +393,8 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
+            safety: None,
         }
     }
 
@@ -402,6 +431,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,

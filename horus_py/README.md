@@ -20,7 +20,7 @@ import horus
 # Create a node with callbacks
 def my_tick(node):
     node.send("output", 42.0)
-    msg = node.get("input")
+    msg = node.recv("input")
     if msg:
         print(f"Got: {msg}")
 
@@ -54,7 +54,7 @@ from horus import Node, Scheduler
 sched = Scheduler(tick_rate=1000)
 sched.add(Node(tick=motor_fn, rate=1000, order=0))
 sched.add(Node(tick=planner_fn, rate=100, order=5, compute=True))
-sched.add(Node(tick=telemetry_fn, rate=1, order=10, async_io=True))
+sched.add(Node(tick=telemetry_fn, rate=1, order=10))
 sched.run()
 ```
 
@@ -67,7 +67,7 @@ def sensor_tick(node):
     node.send("sensor_data", 42.0)
 
 def control_tick(node):
-    data = node.get("sensor_data")
+    data = node.recv("sensor_data")
     if data:
         node.send("cmd_vel", data * 0.5)
 

@@ -954,15 +954,31 @@ fn test_budget_enforce_threshold_is_strict_greater_than() {
         .build()
         .unwrap();
 
-    // Node sleeping 50μs with 100μs budget → 0.5x < 2x → NOT stopped
+    // Node sleeping 500μs with a 1000μs budget → 0.5x < 2x → NOT stopped.
+    //
+    // The ratio is what this test is about, but the ABSOLUTE numbers matter
+    // too. This used to sleep 50μs against a 100μs budget, which is the same
+    // 0.5x — except a debug-build tick costs ~65μs of framework overhead, so
+    // the measured tick landed at ~116μs and missed the 100μs deadline on
+    // almost every cycle. That was invisible while the graduated degradation
+    // ladder was inert (`record_tick` reset the consecutive-miss counter on
+    // EVERY tick, so the 3-consecutive threshold was unreachable). With that
+    // counter fixed, the ladder correctly responded to ~45 genuine deadline
+    // misses by rate-reducing and then isolating the node — and the tick-count
+    // assertion below, a proxy for "the BUDGET policy did not stop it", was
+    // confounded by an unrelated mechanism reacting to a real violation.
+    //
+    // Scaling both numbers up by 10x keeps the 0.5x relationship and leaves
+    // enough headroom that the node meets its deadline, so this test measures
+    // only what its name says.
     scheduler
         .add(SlowNode {
             name: "under_2x".to_string(),
             count: under_count.clone(),
-            sleep_us: 50,
+            sleep_us: 500,
         })
         .order(1)
-        .budget(100_u64.us())
+        .budget(1000_u64.us())
         .budget_policy(BudgetPolicy::Enforce)
         .failure_policy(FailurePolicy::Ignore)
         .build()

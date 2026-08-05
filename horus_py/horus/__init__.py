@@ -24,8 +24,14 @@ Communication: ``Topic``, ``Node``, ``Scheduler``
 Common Mistakes:
 
 1. **Budget/deadline units** - budget and deadline are in SECONDS, not microseconds.
-   Wrong: ``scheduler.add(node, budget=300)``  (300 seconds!)
-   Right: ``scheduler.add(node, budget=300 * us)``  (300 microseconds)
+   Wrong: ``Node(tick=fn, budget=300)``  (300 seconds!)
+   Right: ``Node(tick=fn, budget=300 * us)``  (300 microseconds), then
+   ``scheduler.add(node)``.
+
+   Note the shape: budget and deadline are ``Node(...)`` arguments.
+   ``scheduler.add()`` does not accept them — copying the old ``Right:`` line
+   verbatim raised ``TypeError: add() got an unexpected keyword argument
+   'budget'``.
    The ``us`` and ``ms`` constants are available: ``from horus import us, ms``
 
 2. **Topic type** - ``Topic(int)`` or ``Topic(42)`` raises TypeError.
@@ -295,7 +301,7 @@ except Exception:
     __version__ = "0.2.0"
 
 # Time unit constants for readable budget/deadline values.
-# Usage: sched.add(motor, budget=300 * us, deadline=900 * us)
+# Usage: sched.add(Node(tick=motor_fn, budget=300 * us, deadline=900 * us))
 us = 1e-6   # microseconds → seconds
 ms = 1e-3   # milliseconds → seconds
 
@@ -314,7 +320,14 @@ def now() -> float:
 def dt() -> float:
     """Timestep for this tick in seconds.
 
-    Normal mode: actual elapsed. Deterministic mode: fixed 1/rate.
+    The NOMINAL timestep — ``1/rate`` for a node with ``rate=`` set, otherwise
+    the scheduler tick period — in both normal and deterministic mode. This
+    previously said "Normal mode: actual elapsed", which the runtime has never
+    done.
+
+    Deliberate: a control loop integrating with a fixed timestep is reproducible
+    on replay, and a ``dt`` that absorbed jitter would hide the timing failures
+    HORUS reports as deadline misses. For real elapsed time, read the clock.
     """
     return _time_dt()
 
@@ -452,7 +465,16 @@ class Node:
             failure_policy: Error policy — ``"fatal"``, ``"restart"``, ``"skip"``, ``"ignore"``
             compute: CPU-bound execution (thread pool). Mutually exclusive with ``on`` and async.
             on: Event-driven — tick when this topic receives data. Mutually exclusive with ``compute``.
-            priority: OS scheduling priority (lower = higher priority)
+            priority: SCHED_FIFO real-time priority, 1-99 — **HIGHER means more
+                urgent**, so 99 is the most urgent and 1 the least. This
+                docstring previously said "lower = higher priority", which is
+                inverted: a user following it and setting ``priority=1`` for
+                their most safety-critical node was giving it the LOWEST
+                real-time priority on the system. The value is passed straight
+                through to the Rust builder, whose own docs say "1-99, higher =
+                more priority" and whose example uses ``.priority(99)`` for a
+                safety monitor. Requires CAP_SYS_NICE or root; degrades
+                gracefully if unavailable.
             core: Pin to CPU core index
             watchdog: Per-node watchdog timeout in seconds
             default_capacity: Topic ring buffer capacity (default: 1024)
@@ -1016,6 +1038,8 @@ class Scheduler:
             max_deadline_misses: Escalation threshold for deadline misses
             verbose: Enable verbose debug logging
             telemetry: Telemetry export endpoint (e.g., "http://localhost:9090")
+            net: Enable LAN replication. Ignored (with a RuntimeWarning) when
+                deterministic=True, since replication makes a run non-reproducible.
             _inner: Internal — used by preset constructors
         """
         if _inner is not None:
@@ -1044,7 +1068,22 @@ class Scheduler:
             self._scheduler = None
         self._nodes = []
         self._tick_rate = tick_rate
-        self._net_enabled = net and not deterministic  # Network breaks determinism
+        # Determinism wins over networking: replication introduces wall-clock
+        # timing and remote input, which makes a run non-reproducible. But say so
+        # rather than silently dropping it — a user who asked for `net=True` and
+        # believes their nodes are replicating to a fleet, when they are not, has
+        # a fleet that is not receiving data and no indication why.
+        self._net_enabled = net and not deterministic
+        if net and deterministic:
+            import warnings
+            warnings.warn(
+                "Scheduler(net=True, deterministic=True): networking is DISABLED. "
+                "Deterministic mode requires a reproducible run, and LAN replication "
+                "introduces wall-clock timing and remote input. Drop deterministic=True "
+                "if you need replication.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         self._net_handle = None
 
     # Presets deploy(), hard_rt(), safety_critical() removed.

@@ -182,7 +182,10 @@ fn parse_plugin_toml_manifest(
 ) -> Option<PluginMetadata> {
     let command = plugin.get("command")?.as_str()?.to_string();
     let binary_rel = plugin.get("binary")?.as_str()?;
-    let binary = package_dir.join(binary_rel);
+    // Manifest-supplied, so it must stay inside the package — see
+    // `resolve_within_package`. Refusing here means the package is simply not
+    // treated as a plugin, rather than registering someone else's binary.
+    let binary = resolve_within_package(package_dir, binary_rel)?;
 
     let package_name = toml_table
         .get("package")
@@ -327,17 +330,69 @@ fn parse_plugin_toml(
     })
 }
 
+/// Join a package-manifest-supplied relative path onto `package_dir`, refusing
+/// anything that would land outside the package.
+///
+/// The `binary` path comes from the package's OWN `horus.toml` / `Cargo.toml`,
+/// and whatever it resolves to is checksummed, recorded in the trust store and
+/// symlinked into the plugin bin directory as a `horus <command>` subcommand.
+/// `Path::join` REPLACES the base when given an absolute path, so
+/// `binary = "/usr/bin/curl"` yields exactly `/usr/bin/curl`, and `../..`
+/// escapes upward — either way a package can get a binary it does not own
+/// registered as trusted under a name the operator will run.
+///
+/// Rejected: absolute paths, roots/prefixes, and any `..` component. The
+/// lexical check runs always; when both paths canonicalize (the usual case,
+/// since the package is on disk by now) the containment is re-checked against
+/// the resolved paths so a symlink inside the package cannot escape either.
+fn resolve_within_package(package_dir: &Path, rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+
+    let rel_path = Path::new(rel);
+    if rel_path.is_absolute() {
+        log::warn!("plugin manifest binary path {rel:?} is absolute — refusing");
+        return None;
+    }
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        log::warn!("plugin manifest binary path {rel:?} escapes the package — refusing");
+        return None;
+    }
+
+    let joined = package_dir.join(rel_path);
+
+    if let (Ok(real), Ok(root)) = (joined.canonicalize(), package_dir.canonicalize()) {
+        if !real.starts_with(&root) {
+            log::warn!(
+                "plugin manifest binary {rel:?} resolves to {}, outside {} — refusing",
+                real.display(),
+                root.display()
+            );
+            return None;
+        }
+    }
+
+    Some(joined)
+}
+
 fn find_binary(package_dir: &Path, binary_name: &str) -> Option<PathBuf> {
-    // Check various locations
+    // `binary_name` is manifest-supplied, so every candidate goes through the
+    // containment check — otherwise an absolute name makes all four candidates
+    // collapse onto the same out-of-package path.
     let candidates = [
-        package_dir.join("bin").join(binary_name),
-        package_dir.join("target/release").join(binary_name),
-        package_dir.join("target/debug").join(binary_name),
-        package_dir.join(binary_name),
+        resolve_within_package(package_dir, &format!("bin/{binary_name}")),
+        resolve_within_package(package_dir, &format!("target/release/{binary_name}")),
+        resolve_within_package(package_dir, &format!("target/debug/{binary_name}")),
+        resolve_within_package(package_dir, binary_name),
     ];
 
     candidates
         .into_iter()
+        .flatten()
         .find(|candidate| candidate.exists() && is_executable(candidate))
 }
 
@@ -569,6 +624,23 @@ pub fn register_plugin_after_install(
         Some(m) => m,
         None => return Ok(None), // Not a plugin package
     };
+
+    // Second gate, at the boundary that matters: nothing outside the verified
+    // package may be checksummed into the trust store, whichever detection
+    // path produced `metadata.binary`. `detect_plugin_metadata` already
+    // refuses escaping manifest paths, but this is the sink — a future
+    // detection path added without that check would otherwise walk straight
+    // past it.
+    if let (Ok(real), Ok(root)) = (metadata.binary.canonicalize(), package_dir.canonicalize()) {
+        if !real.starts_with(&root) {
+            return Err(anyhow::anyhow!(
+                "refusing to register plugin binary {} — it resolves outside the package \
+                 directory {}",
+                real.display(),
+                root.display()
+            ));
+        }
+    }
 
     // Create plugin entry
     let checksum = PluginRegistry::calculate_checksum(&metadata.binary)?;
@@ -2510,6 +2582,68 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ── manifest path containment (CLI-TRUST-06) ────────────────────────
+
+    /// A package's own manifest controls the binary path that gets
+    /// checksummed into the trust store and symlinked as a `horus <cmd>`
+    /// subcommand. `Path::join` REPLACES the base when handed an absolute
+    /// path, so `binary = "/usr/bin/curl"` used to resolve to exactly that —
+    /// a package registering a binary it does not own under a name the
+    /// operator will run. `..` escaped upward the same way.
+    #[test]
+    fn test_manifest_binary_path_cannot_escape_the_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let pkg = temp_dir.path();
+
+        // Absolute: join() would discard `pkg` entirely.
+        assert!(
+            resolve_within_package(pkg, "/usr/bin/curl").is_none(),
+            "an absolute manifest path must be refused"
+        );
+        // Parent traversal.
+        assert!(resolve_within_package(pkg, "../../../usr/bin/curl").is_none());
+        assert!(resolve_within_package(pkg, "bin/../../escape").is_none());
+
+        // Ordinary in-package paths still resolve.
+        let ok =
+            resolve_within_package(pkg, "bin/horus-sim").expect("in-package path must resolve");
+        assert_eq!(ok, pkg.join("bin/horus-sim"));
+        assert!(resolve_within_package(pkg, "horus-sim").is_some());
+    }
+
+    /// The same guard reached through the real manifest-parsing entry point.
+    #[test]
+    fn test_detect_plugin_metadata_refuses_absolute_binary() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(HORUS_TOML),
+            r#"
+[package]
+name = "evil"
+version = "1.0.0"
+
+[plugin]
+command = "sim"
+binary = "/usr/bin/env"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            detect_plugin_metadata(temp_dir.path()).is_none(),
+            "a manifest pointing outside the package must not yield plugin metadata"
+        );
+    }
+
+    #[test]
+    fn test_find_binary_refuses_absolute_name() {
+        let temp_dir = TempDir::new().unwrap();
+        assert!(
+            find_binary(temp_dir.path(), "/bin/sh").is_none(),
+            "an absolute binary name must not resolve to a system binary"
+        );
+    }
 
     // ── detect_plugin_metadata ──────────────────────────────────────────
 

@@ -115,6 +115,21 @@ impl PyPointCloud {
             this.inner.point_count() as i64,
             this.inner.fields_per_point() as i64,
         ];
+        // See PyImage::__array_interface__: point_count/fields_per_point come off
+        // the wire and the export hands numpy a raw pointer into the pool slot.
+        match this
+            .inner
+            .point_count()
+            .checked_mul(this.inner.fields_per_point() as u64)
+        {
+            Some(n) if tensor.element_count_fits(n) => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "point cloud dimensions exceed the tensor's allocation — refusing to \
+                     expose an out-of-bounds view to numpy",
+                ))
+            }
+        }
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
         dict.set_item("typestr", tensor.dtype.numpy_typestr())?;
 

@@ -69,7 +69,9 @@
 //!    non-overlapping source/dest within the data region. The SHM layout ensures
 //!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{fence, AtomicBool, Ordering};
+
+use super::shm_layout::SLOT_WRITING;
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -839,6 +841,26 @@ pub(super) fn send_shm_pod_broadcast<
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         let base = local.cached_data_ptr as *mut T;
+
+        // Seqlock write phase. Broadcast has NO backpressure — it overwrites the
+        // oldest slot unconditionally — so a producer that laps the ring can
+        // clobber the very slot a consumer is mid-copy. Stamping only AFTER the
+        // write (what this did) leaves that window open: the consumer sees a
+        // still-matching stamp, copies torn bytes, and nothing ever tells it.
+        //
+        // Marking the slot BEFORE touching the data, with the Boehm fence
+        // pairing, forces any consumer that observes the new data to also
+        // observe the marker and reject the copy. A bare re-check WITHOUT this
+        // marker is insufficient — the producer would not yet have bumped the
+        // stamp, so the consumer's two reads would agree on stale bytes.
+        //
+        // The marker is a high bit rather than the `seqlock` module's `pos << 1`
+        // encoding on purpose: `cached_seq_ptr` is shared with the MpscShm and
+        // SpscShm paths, which compare against `seq + 1`, and a PodShm topic can
+        // migrate to those backends. A high bit keeps the encoding compatible —
+        // those consumers simply read "not ready" for the duration of a write.
+        ready_ptr.store(seq.wrapping_add(1) | SLOT_WRITING, Ordering::Relaxed);
+        fence(Ordering::Release);
         simd_aware_write(base.add(index), msg);
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
     }
@@ -1357,23 +1379,42 @@ pub(super) fn recv_shm_pod_broadcast<
     let index = (tail & mask) as usize;
     // SAFETY: cached_seq_ptr points to per-slot ready-flag array in SHM.
     // index*8 is within bounds (index < capacity, array has capacity entries).
-    let ready = unsafe {
-        let ready_ptr =
-            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        let ready_val = ready_ptr.load(Ordering::Acquire);
-        ready_val >= tail.wrapping_add(1)
-    };
-    if !ready {
+    // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM;
+    // index*8 is within bounds (index < capacity).
+    let ready_ptr =
+        unsafe { &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64) };
+    let v1 = ready_ptr.load(Ordering::Acquire);
+    // A write is in progress on this slot right now.
+    if v1 & SLOT_WRITING != 0 {
         return None;
+    }
+    if v1 < tail.wrapping_add(1) {
+        return None; // nothing published here yet
     }
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
-    // The ready flag Acquire load above established happens-before with the producer's
-    // Release store, so the slot data is fully written. simd_aware_read handles alignment.
+    // The Acquire load above establishes happens-before with the producer's
+    // Release store, so the slot data is fully written. simd_aware_read handles
+    // alignment. The copy may still be torn if a lapping producer overwrites the
+    // slot DURING this read — the re-check below is what detects that.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         simd_aware_read(base.add(index))
     };
+
+    // Seqlock re-check (Boehm): this Acquire fence pairs with the producer's
+    // Release fence, so if any byte of `msg` came from an in-progress overwrite
+    // we are forced to observe the producer's newer stamp here and discard.
+    // Without it, a producer lapping the ring silently hands the consumer a
+    // half-old, half-new value — on a robot, a pose or velocity that never
+    // existed.
+    fence(Ordering::Acquire);
+    if ready_ptr.load(Ordering::Relaxed) != v1 {
+        // Overwritten mid-copy. Drop this read; the caller polls again. `msg` is
+        // a POD bitwise copy, so discarding it runs no destructor on torn bytes.
+        return None;
+    }
+
     local.local_tail = tail.wrapping_add(1);
 
     housekeep_lease!(local, topic);

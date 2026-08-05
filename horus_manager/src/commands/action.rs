@@ -495,14 +495,19 @@ pub fn send_goal(
         )))
     })?;
     let gateway_dir = horus_core::memory::shm_topics_dir().join(".service_gateway");
-    std::fs::create_dir_all(&gateway_dir).map_err(|e| {
+    // Owner-only, like every other path into the SHM tree.
+    horus_sys::shm::create_shm_dir_all(&gateway_dir).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
             "Failed to create gateway dir: {}",
             e
         )))
     })?;
     let goal_file = gateway_dir.join(format!("{}.goal.json", name));
-    std::fs::write(&goal_file, &json_bytes).map_err(|e| {
+    // A goal file may legitimately already exist from a prior send, so unlink
+    // first and then create exclusively rather than truncating in place — that
+    // way we never write through a symlink someone left at this path.
+    let _ = std::fs::remove_file(&goal_file);
+    horus_sys::shm::write_shm_file_new(&goal_file, &json_bytes).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!("Failed to write goal: {}", e)))
     })?;
     println!("{} Goal sent", cli_output::ICON_SUCCESS.green());
@@ -619,13 +624,28 @@ pub fn send_goal(
 pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
     use horus_core::communication::Topic;
 
-    let cancel_topic_name = format!("{}.cancel", name);
-    let cancel_request = serde_json::json!({
-        "goal_id": goal_id.unwrap_or(""),  // empty = cancel all
-        "cancel_all": goal_id.is_none(),
-    });
+    // Must be `Topic<CancelRequest>`, not `Topic<serde_json::Value>`: the server
+    // subscribes to this topic as `Topic<CancelRequest>`, so the JSON blob this
+    // used to publish could never be decoded. The command reported success and
+    // cancelled nothing — for an action driving hardware, a stop button wired to
+    // nothing.
+    use horus_core::actions::types::{CancelRequest, GoalId};
 
-    let cancel_topic: Topic<serde_json::Value> = Topic::new(&cancel_topic_name).map_err(|e| {
+    let cancel_topic_name = format!("{}.cancel", name);
+    let cancel_request = match goal_id {
+        Some(id) => {
+            let uuid = uuid::Uuid::parse_str(id).map_err(|_| {
+                HorusError::Config(ConfigError::Other(format!(
+                    "'{id}' is not a valid goal id (expected a UUID). \
+                     Run `horus action list` to see active goals."
+                )))
+            })?;
+            CancelRequest::new(GoalId(uuid))
+        }
+        None => CancelRequest::cancel_all(),
+    };
+
+    let cancel_topic: Topic<CancelRequest> = Topic::new(&cancel_topic_name).map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
             "Cannot open cancel topic '{}': {}",
             cancel_topic_name, e

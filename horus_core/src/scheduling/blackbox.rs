@@ -186,15 +186,24 @@ impl BlackBox {
     /// - WAL file (`blackbox.wal`) for crash recovery (written on every `record()`)
     /// - JSON snapshot (`blackbox.json`) for clean shutdown (written on `save()`)
     pub fn with_path(mut self, dir: PathBuf) -> Self {
+        // Owner-only. The flight recorder holds a robot's pre-crash event and
+        // state history, and a bare create_dir_all/open pair produced 0755/0644
+        // — readable by every local user.
         fs::create_dir_all(&dir).ok();
+        horus_sys::shm::harden_shm_dir(&dir);
         let wal_path = dir.join("blackbox.wal");
-        if let Ok(file) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&wal_path)
+        let mut opts = fs::OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(horus_sys::shm::SHM_FILE_MODE);
+        }
+        if let Ok(file) = opts.open(&wal_path) {
             self.wal_file = Some(BufWriter::new(file));
         }
+        // `mode` only applies on create; tighten a WAL left by an older run.
+        horus_sys::shm::harden_shm_file(&wal_path);
         self.persist_path = Some(dir.join("blackbox.json"));
         self
     }

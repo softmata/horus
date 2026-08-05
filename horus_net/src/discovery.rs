@@ -262,7 +262,12 @@ pub struct PeerAnnouncement {
 pub fn decode_announcement(buf: &[u8], source_addr: SocketAddr) -> Option<PeerAnnouncement> {
     let header = AnnouncementHeader::decode(buf)?;
 
-    let mut topics = Vec::with_capacity(header.topic_count as usize);
+    // Size the allocation from what the datagram can ACTUALLY hold, not from the
+    // attacker-supplied count. `topic_count` is a u16 taken straight off the
+    // wire, so reserving from it let a 30-byte packet force a ~2.6 MB
+    // allocation — cheap remote memory amplification, repeatable at line rate.
+    let available = buf.len().saturating_sub(AnnouncementHeader::SIZE) / WireTopicEntry::SIZE;
+    let mut topics = Vec::with_capacity((header.topic_count as usize).min(available));
     let mut offset = AnnouncementHeader::SIZE;
 
     for _ in 0..header.topic_count {
@@ -656,6 +661,32 @@ mod tests {
         assert!(len >= AnnouncementHeader::SIZE);
         let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
         assert!(decode_announcement(&buf[..len], addr).is_none());
+    }
+
+    #[test]
+    fn decode_announcement_does_not_preallocate_from_the_wire_count() {
+        // A 30-byte datagram claiming 65535 topics used to reserve ~2.6 MB.
+        // Capacity must be bounded by what the buffer can actually contain.
+        let mut buf = vec![0u8; AnnouncementHeader::SIZE];
+        let header = AnnouncementHeader {
+            magic: crate::wire::MAGIC,
+            version: crate::wire::VERSION,
+            flags: ANNOUNCEMENT_FLAG,
+            peer_id: [7u8; 16],
+            data_port: 9100,
+            topic_count: u16::MAX,
+            secret_hash: [0u8; 4],
+        };
+        header.encode(&mut buf);
+
+        let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        let ann = decode_announcement(&buf, addr).expect("header alone must still decode");
+        assert!(ann.topics.is_empty(), "no entries actually present");
+        assert_eq!(
+            ann.topics.capacity(),
+            0,
+            "capacity must come from the datagram length, not the claimed count"
+        );
     }
 
     #[test]

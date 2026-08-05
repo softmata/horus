@@ -9,12 +9,30 @@ mod harness;
 
 use harness::{HorusTestRuntime, TestNodeConfig};
 use horus_core::core::DurationExt;
-use horus_manager::discovery::discover_nodes;
+use horus_manager::discovery::{
+    discover_nodes as discover_nodes_cached, invalidate_cache, NodeStatus,
+};
 use std::time::Instant;
+
+/// Discovery is cached with a ~250 ms TTL (`DISCOVERY_CACHE_MS`), which is
+/// right for a CLI and wrong for this file: every test here mutates the SHM
+/// tree and then immediately reads it back, so a cached answer is guaranteed to
+/// describe the *previous* state.
+///
+/// This shadows the real `discover_nodes` so every call site — including the
+/// ones inside churn loops — goes through the invalidation. Without it only the
+/// first test in the binary passed: each later test filtered for its own node
+/// prefix against the prior test's cached list and matched zero.
+fn discover_nodes() -> horus_core::error::HorusResult<Vec<NodeStatus>> {
+    invalidate_cache();
+    discover_nodes_cached()
+}
 
 fn clean_shm() {
     let _ = std::fs::remove_dir_all(horus_sys::shm::shm_nodes_dir());
     let _ = std::fs::remove_dir_all(horus_sys::shm::shm_topics_dir());
+    // The tree we just deleted is exactly what the cache describes.
+    invalidate_cache();
 }
 
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -42,6 +60,7 @@ fn test_discover_100_nodes() {
         rt.wait_ready(3_u64.secs()),
         "100 nodes should be discoverable"
     );
+    rt.refresh_discovery();
 
     let start = Instant::now();
     let nodes = discover_nodes().expect("discovery should succeed");
@@ -85,6 +104,7 @@ fn test_presence_cleanup_on_drop() {
             rt.add_node(TestNodeConfig::bare(&format!("disc_drop_{}", i)));
         }
         assert!(rt.wait_ready(2_u64.secs()));
+        rt.refresh_discovery();
 
         let nodes = discover_nodes().unwrap();
         node_count = nodes
@@ -95,7 +115,9 @@ fn test_presence_cleanup_on_drop() {
         // rt drops here — cleanup happens
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // discover_nodes() caches results for 250 ms. Wait past that TTL so this
+    // assertion observes Drop's cleanup rather than the pre-drop snapshot.
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
     // After drop, those nodes should be gone
     let nodes_after = discover_nodes().unwrap();
@@ -134,6 +156,7 @@ fn test_rapid_churn_consistency() {
     }
 
     assert!(rt.wait_ready(2_u64.secs()));
+    rt.refresh_discovery();
 
     // Run discovery 10 times rapidly — should be consistent each time
     let mut counts = Vec::new();
@@ -174,6 +197,7 @@ fn test_stale_shm_cleaned_on_rediscovery() {
             rt.add_node(TestNodeConfig::bare(&format!("disc_stale_{}", i)));
         }
         assert!(rt.wait_ready(2_u64.secs()));
+        rt.refresh_discovery();
 
         let nodes = discover_nodes().unwrap();
         let count = nodes
@@ -184,7 +208,8 @@ fn test_stale_shm_cleaned_on_rediscovery() {
         // Drop — simulates "process died"
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Expire the discovery cache populated before the runtime was dropped.
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Phase 2: rediscovery should find 0 (presence files cleaned by Drop)
     let nodes = discover_nodes().unwrap();
@@ -239,6 +264,7 @@ fn test_discovery_node_attribution() {
     }
 
     assert!(rt.wait_ready(2_u64.secs()));
+    rt.refresh_discovery();
 
     let nodes = discover_nodes().unwrap();
 

@@ -65,7 +65,7 @@ jobs:
             cmake libeigen3-dev libfmt-dev libgtest-dev
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -119,7 +119,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -169,7 +169,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       # No cache for stress tests — clean build avoids stale artifact issues
       - name: Clean build

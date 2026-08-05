@@ -66,11 +66,31 @@ impl AsyncExecutor {
 
     /// Stop the async I/O executor and reclaim its nodes.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
-        self.handle
-            .take()
-            .expect("Async I/O thread handle already consumed")
-            .join()
-            .expect("Async I/O thread panicked")
+        // Degrade instead of panicking, matching EventExecutor::stop.
+        //
+        // Both `expect`s used to fire on the MAIN thread during teardown: a
+        // panic anywhere inside a async i/o node's tick killed only that
+        // executor thread (there is no `panic = "abort"` in the release
+        // profile), and the panic then re-surfaced here — turning an orderly
+        // scheduler shutdown into a panic at exactly the moment a robot is
+        // trying to stop. Any remaining shutdown work, including safing other
+        // nodes, was skipped.
+        //
+        // The nodes owned by a panicked thread cannot be reclaimed, so an empty
+        // Vec is the honest result; it is reported rather than swallowed.
+        let Some(handle) = self.handle.take() else {
+            print_line("[Async I/O] Warning: thread handle already consumed — nothing to join");
+            return Vec::new();
+        };
+        match handle.join() {
+            Ok(nodes) => nodes,
+            Err(_) => {
+                print_line(
+                    "[Async I/O] Warning: executor thread panicked; its nodes could not be reclaimed",
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Main function for the async I/O thread.
@@ -105,6 +125,13 @@ impl AsyncExecutor {
 
                 // Classify which nodes should tick this cycle
                 let mut ready_indices = Vec::new();
+                // Safing requested by the main thread's watchdog ladder,
+                // applied to EVERY node this executor owns — an Isolated node
+                // is precisely one that is not in `ready_indices`.
+                for node in nodes.iter_mut() {
+                    super::primitives::honor_safe_state_request(node, &monitors);
+                }
+
                 for (i, node) in nodes.iter().enumerate() {
                     if !node.initialized
                         || node.is_stopped
@@ -322,6 +349,8 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
+            safety: None,
         }
     }
 
@@ -374,6 +403,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -409,6 +439,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,

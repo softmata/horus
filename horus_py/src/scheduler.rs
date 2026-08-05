@@ -457,7 +457,12 @@ impl PyNodeBuilder {
         slf
     }
 
-    /// Set OS scheduling priority (lower value = higher priority).
+    /// Set SCHED_FIFO real-time priority (1-99, HIGHER = more urgent).
+    ///
+    /// Nodes that set nothing default to 80. The previous wording — "lower
+    /// value = higher priority" — described the opposite convention, so a user
+    /// writing `priority=1` for an emergency-stop node was giving it the LOWEST
+    /// real-time priority on the system.
     fn priority(mut slf: PyRefMut<'_, Self>, prio: i32) -> PyRefMut<'_, Self> {
         slf.priority = Some(prio);
         slf

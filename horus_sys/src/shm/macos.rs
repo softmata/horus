@@ -51,13 +51,81 @@ pub struct ShmRegion {
 }
 
 impl ShmRegion {
+    /// Open an existing region without creating it.
+    pub fn open_existing(name: &str, minimum_size: usize) -> Result<Self> {
+        anyhow::ensure!(minimum_size > 0, "SHM region size must be > 0");
+        super::validate_region_name(name)?;
+        use std::ffi::CString;
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in super::shm_namespace()
+            .bytes()
+            .chain([b'/'])
+            .chain(name.bytes())
+        {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let shm_name = format!("/horus_{hash:016x}");
+        let c_name = CString::new(shm_name.clone())?;
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
+        if fd < 0 {
+            anyhow::bail!(
+                "shm '{}' does not exist: {}",
+                shm_name,
+                std::io::Error::last_os_error()
+            );
+        }
+        let size = fstat_size(fd);
+        if size < minimum_size as libc::off_t {
+            unsafe { libc::close(fd) };
+            anyhow::bail!("existing SHM region is too small");
+        }
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size as usize,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            unsafe { libc::close(fd) };
+            anyhow::bail!("shm mmap failed: {}", std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            ptr: ptr as *mut u8,
+            fd,
+            shm_name,
+            topic_name: name.to_string(),
+            size: size as usize,
+            owner: false,
+        })
+    }
+
     /// Create or open a shared memory region using shm_open (RAM-backed).
     pub fn new(name: &str, size: usize) -> Result<Self> {
         anyhow::ensure!(size > 0, "SHM region size must be > 0");
-        anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
+        // `shm_open` takes a flat name, so traversal is not a filesystem concern
+        // here — but the same names must be rejected on every platform so a
+        // topic that is refused on Linux is not silently accepted on macOS.
+        super::validate_region_name(name)?;
         use std::ffi::CString;
 
-        let shm_name = format!("/horus_{}_{}", super::shm_namespace(), name);
+        // Darwin limits POSIX SHM names to PSHMNAMLEN (31 bytes). Namespaces
+        // from CI plus descriptive topic names routinely exceed that limit, so
+        // use a deterministic hash while metadata retains the original name.
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in super::shm_namespace()
+            .bytes()
+            .chain([b'/'])
+            .chain(name.bytes())
+        {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let shm_name = format!("/horus_{hash:016x}");
         let c_name = CString::new(shm_name.clone())
             .map_err(|e| anyhow::anyhow!("Invalid shm name '{}': {}", shm_name, e))?;
 

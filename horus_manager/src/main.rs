@@ -86,7 +86,7 @@ Publishing & Deploy:
   undeprecate       Remove deprecation from a package
   owner             Manage owners and transfer ownership
   deploy            Deploy project to a remote robot
-  auth              Authentication (login, api-key, signing-key)
+  auth              Authentication (login, api-key, signing-key, trust-publisher)
 
 Native Tools:
   env               Set up shell integration (cargo/pip/cmake proxy)
@@ -1098,6 +1098,17 @@ enum AuthCommands {
     /// Generate ed25519 signing key pair for package signing
     #[command(name = "signing-key")]
     SigningKey,
+    /// Trust a publisher's public key for package signature verification
+    #[command(name = "trust-publisher")]
+    TrustPublisher {
+        /// Publisher name — must match the package owner (or the package name)
+        name: String,
+        /// Path to the publisher's .pub file, or the 64-char hex key itself
+        key: String,
+    },
+    /// List publisher keys trusted for signature verification
+    #[command(name = "publishers")]
+    Publishers,
     /// Logout from HORUS registry
     Logout,
     /// Show current authenticated user
@@ -2023,6 +2034,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "" // Will use interactive prompt
             };
 
+            // Version compatibility reads the global ~/.horus install state, so
+            // it belongs here at the dispatch layer rather than inside
+            // create_new_project, which the unit tests exercise directly.
+            horus_manager::version::check_and_prompt_update().map_err(HorusError::from)?;
+
             commands::new::create_new_project(
                 name,
                 path,
@@ -2770,6 +2786,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 commands::github_auth::generate_key(name, environment)
             }
             AuthCommands::SigningKey => commands::pkg::run_keygen(),
+            AuthCommands::TrustPublisher { name, key } => {
+                horus_manager::registry::trust_publisher_key(&name, &key).map_err(HorusError::from)
+            }
+            AuthCommands::Publishers => {
+                horus_manager::registry::list_publisher_keys().map_err(HorusError::from)
+            }
             AuthCommands::Logout => commands::github_auth::logout(),
             AuthCommands::Whoami => commands::github_auth::whoami(),
             AuthCommands::Keys { command: keys_cmd } => match keys_cmd {
@@ -3083,10 +3105,32 @@ fn which_monitor_binary() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 2. Check project .horus/bin/
-    let local = std::path::PathBuf::from(".horus/bin/horus-monitor");
-    if local.exists() {
-        return Some(local);
+    // 2. Project-local .horus/bin/ — OPT-IN ONLY.
+    //
+    // This is a CWD-relative path, and it used to be checked unconditionally,
+    // BEFORE PATH. So `cd`ing into a cloned repository that ships
+    // `.horus/bin/horus-monitor` and running `horus monitor` executed that
+    // binary directly: no trust gate, no signature check, none of the sandbox
+    // that `plugins::executor` applies — and it SHADOWED a properly installed
+    // one. Cloning a repo should not be sufficient to run code.
+    //
+    // `.horus/` is generated build output (see CLAUDE.md — never hand-authored),
+    // so a repo carrying a binary there is already anomalous. Kept behind an
+    // explicit opt-in rather than deleted, for the workflow where a developer
+    // genuinely builds the monitor into their own project tree.
+    let local_opt_in = std::env::var("HORUS_ALLOW_LOCAL_PLUGINS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if local_opt_in {
+        let local = std::path::PathBuf::from(".horus/bin/horus-monitor");
+        if local.exists() {
+            eprintln!(
+                "{} Running horus-monitor from the project-local .horus/bin/ \
+                 (HORUS_ALLOW_LOCAL_PLUGINS is set). This binary is NOT trust-checked.",
+                "Warning:".yellow().bold()
+            );
+            return Some(local);
+        }
     }
 
     // 3. Check PATH

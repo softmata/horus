@@ -327,11 +327,10 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             match syntax_check {
                 Ok(result) if result.status.success() => {
                     // Syntax OK - now check imports
-                    let import_script = format!(
-                        r#"
+                    let import_script = r#"
 import ast, sys
 try:
-    with open('{}') as f:
+    with open(sys.argv[1]) as f:
         tree = ast.parse(f.read())
     imports = set()
     for node in ast.walk(tree):
@@ -349,13 +348,18 @@ except ModuleNotFoundError as e:
 except ImportError as e:
     print(f'ImportError: {{e}}', file=sys.stderr)
     sys.exit(1)
-"#,
-                        py_path.display()
-                    );
+"#;
 
+                    // The filename comes from the repo being checked, so it is
+                    // attacker-controlled for anyone who can get a repo cloned.
+                    // It used to be interpolated straight into this script's
+                    // source, where a quote or newline in a .py filename becomes
+                    // Python code executed by `horus check`. Pass it as argv
+                    // instead — no quoting, no escaping, nothing to get wrong.
                     let import_check = std::process::Command::new("python3")
                         .arg("-c")
-                        .arg(&import_script)
+                        .arg(import_script)
+                        .arg(py_path)
                         .output();
 
                     match import_check {

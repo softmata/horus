@@ -7,112 +7,162 @@
 
 namespace horus { namespace msg {
 
-/// 2D bounding box
+// NOTE ON FIDELITY
+// ----------------
+// Every struct below mirrors a Rust `#[repr(C)]` type field-for-field. The C ABI
+// (`horus_publisher_<t>_send` / `horus_subscriber_<t>_recv`) does a raw
+// `std::ptr::read`/`std::ptr::write` of `size_of::<RustType>()` bytes through the
+// pointer you pass, so any divergence here is memory corruption, not a type error.
+// The Rust struct is the definition; these declarations follow it exactly,
+// including the private `_pad` fields Rust uses to reach its stated size.
+// `bool` is deliberately spelled `uint8_t` — Rust `bool` is exactly 1 byte.
+// Layout is pinned by static_asserts in <horus/layout_contract.hpp>.
+
+/// 2D bounding box — mirrors Rust `horus_robotics::BoundingBox2D` (16 bytes).
+///
+/// Axis-aligned, anchored at the TOP-LEFT corner (not the center).
 struct BoundingBox2D {
-    float center_x;
-    float center_y;
-    float width;
-    float height;
-    float angle;     // radians
+    float x;        // X of top-left corner (pixels)
+    float y;        // Y of top-left corner (pixels)
+    float width;    // pixels
+    float height;   // pixels
 };
 
-/// 3D bounding box
+/// 3D bounding box — mirrors Rust `horus_robotics::BoundingBox3D` (48 bytes).
+///
+/// Rotation is Euler roll/pitch/yaw (radians), NOT a quaternion: the Rust type
+/// uses Euler angles for Pod compatibility. All fields are f32.
 struct BoundingBox3D {
-    double center[3];
-    double size[3];
-    double rotation[4];  // quaternion
-    float confidence;
+    float cx;       // center X (meters)
+    float cy;       // center Y (meters)
+    float cz;       // center Z (meters)
+    float length;   // extent along X (meters)
+    float width;    // extent along Y (meters)
+    float height;   // extent along Z (meters)
+    float roll;     // radians
+    float pitch;    // radians
+    float yaw;      // radians
+    float _pad[3];  // Rust private padding — must be present for sizeof == 48
 };
 
-/// 2D object detection
+/// 2D object detection — mirrors Rust `horus_robotics::Detection` (72 bytes).
 struct Detection {
     BoundingBox2D bbox;
-    uint32_t class_id;
-    float confidence;
-    uint64_t timestamp_ns;
+    float         confidence;      // 0.0 - 1.0
+    uint32_t      class_id;
+    uint8_t       class_name[32];  // UTF-8, null-padded, max 31 chars + NUL
+    uint32_t      instance_id;     // for instance segmentation
+    uint8_t       _pad[12];        // Rust private padding — required for sizeof == 72
 };
 
-/// 3D object detection with velocity
+/// 3D object detection with velocity — mirrors Rust `horus_robotics::Detection3D` (104 bytes).
 struct Detection3D {
     BoundingBox3D bbox;
-    uint32_t class_id;
-    float confidence;
-    double velocity[3];
-    uint64_t timestamp_ns;
+    float         confidence;      // 0.0 - 1.0
+    uint32_t      class_id;
+    uint8_t       class_name[32];  // UTF-8, null-padded, max 31 chars + NUL
+    float         velocity_x;      // m/s
+    float         velocity_y;      // m/s
+    float         velocity_z;      // m/s
+    uint32_t      instance_id;     // instance/tracking ID
 };
 
-/// 2D landmark
+/// 2D landmark/keypoint — mirrors Rust `horus_robotics::Landmark` (16 bytes).
 struct Landmark {
-    uint32_t id;
-    double x;
-    double y;
-    double covariance[4];  // 2x2
-    uint64_t timestamp_ns;
+    float    x;           // pixels or normalized 0-1
+    float    y;           // pixels or normalized 0-1
+    float    visibility;  // 0.0 - 1.0
+    uint32_t index;       // joint ID (0=nose, 1=left_eye, ...)
 };
 
-/// Tracked object
-struct TrackedObject {
-    uint64_t track_id;
-    double position[3];
-    double velocity[3];
-    float confidence;
-    uint32_t age;
-    uint64_t timestamp_ns;
-};
-
-/// Tracking header/metadata
-struct TrackingHeader {
-    uint64_t timestamp_ns;
-    uint64_t frame_count;
-    uint32_t active_tracks;
-};
-
-/// Plane detection result
-struct PlaneDetection {
-    double coefficients[4]; // ax+by+cz+d=0
-    uint32_t inliers;
-    uint64_t timestamp_ns;
-};
-
-/// Segmentation mask metadata (pixel data handled via Image/TensorPool)
-struct SegmentationMask {
-    uint32_t width;
-    uint32_t height;
-    uint32_t num_classes;
-    uint32_t mask_type;
-    uint64_t timestamp_ns;
-    uint64_t seq;
-    uint8_t frame_id[32];
-};
-
-/// 3D landmark
+/// 3D landmark/keypoint — mirrors Rust `horus_robotics::Landmark3D` (20 bytes).
+///
+/// The Rust type is `#[repr(C, packed)]`, hence the packed attribute here.
 struct Landmark3D {
-    float x;
-    float y;
-    float z;
-    float visibility;
+    float    x;
+    float    y;
+    float    z;
+    float    visibility;
     uint32_t index;
 } __attribute__((packed));
 
-/// Array of landmarks with metadata
+/// Array-of-landmarks header — mirrors Rust `horus_robotics::LandmarkArray` (40 bytes).
 struct LandmarkArray {
     uint32_t num_landmarks;
-    uint32_t dimension;
-    uint32_t instance_id;
-    float confidence;
+    uint32_t dimension;      // 2 for 2D, 3 for 3D
+    uint32_t instance_id;    // detection/person ID
+    float    confidence;     // whole-pose confidence, 0.0 - 1.0
     uint64_t timestamp_ns;
-    float bbox_x;
-    float bbox_y;
-    float bbox_width;
-    float bbox_height;
+    float    bbox_x;         // landmark bounding box (pixels)
+    float    bbox_y;
+    float    bbox_width;
+    float    bbox_height;
 };
 
-/// Point field descriptor (for point clouds)
-struct PointField {
-    uint8_t name[16];
-    uint32_t offset;
-    uint8_t datatype;   // 0=f32, 1=f64, 2=u8, 3=i32
-    uint32_t count;
+/// Tracked object state — mirrors Rust `horus_robotics::TrackedObject` (96 bytes).
+struct TrackedObject {
+    BoundingBox2D bbox;
+    BoundingBox2D predicted_bbox;    // Kalman filter output
+    uint64_t      track_id;          // persistent across frames
+    float         confidence;        // 0.0 - 1.0
+    uint32_t      class_id;
+    float         velocity_x;        // pixels/frame or m/s
+    float         velocity_y;
+    float         accel_x;
+    float         accel_y;
+    uint32_t      age;               // frames since first detection
+    uint32_t      hits;              // frames with a detection
+    uint32_t      time_since_update; // consecutive misses
+    uint32_t      state;             // 0=tentative, 1=confirmed, 2=deleted
+    uint8_t       class_name[16];    // UTF-8, max 15 chars + NUL
 };
+
+/// Tracking array header — mirrors Rust `horus_robotics::TrackingHeader` (32 bytes).
+struct TrackingHeader {
+    uint32_t num_tracks;
+    uint32_t frame_id;      // frame NUMBER (u32), not a frame-name string
+    uint64_t timestamp_ns;
+    uint64_t total_tracks;  // total ever created, for ID generation
+    uint32_t active_tracks; // active confirmed tracks
+    uint32_t _pad;          // Rust private padding — required for sizeof == 32
+};
+
+/// Segmentation mask header — mirrors Rust `horus_robotics::SegmentationMask` (64 bytes).
+///
+/// Mask pixel data follows this header separately (Image/TensorPool).
+struct SegmentationMask {
+    uint32_t width;
+    uint32_t height;
+    uint32_t num_classes;    // for semantic segmentation
+    uint32_t mask_type;      // 0=semantic, 1=instance, 2=panoptic
+    uint64_t timestamp_ns;
+    uint64_t seq;
+    uint8_t  frame_id[32];   // camera/coordinate frame NAME (UTF-8)
+};
+
+// ---------------------------------------------------------------------------
+// INTENTIONALLY NOT DECLARED: PointField, PlaneDetection
+// ---------------------------------------------------------------------------
+// The Rust types `horus_robotics::PointField` and `horus_robotics::PlaneDetection`
+// (horus-robotics/src/messages/perception.rs) carry NO `#[repr(C)]` attribute —
+// they are `repr(Rust)`, which has no guaranteed, stable memory layout. rustc is
+// free to reorder fields and does: PlaneDetection is declared
+// {coefficients, center, normal, size, inlier_count, confidence, plane_type,
+// timestamp_ns} but is laid out at offsets 0, 64, 88, 32, 120, 124, 48, 112 —
+// non-monotonic, i.e. reordered. That order is an implementation detail of one
+// compiler build; it can change with a compiler version, a codegen flag or an
+// edit to an unrelated field.
+//
+// Mirroring today's incidental offsets would hard-code an unstable layout into a
+// C++ header and reintroduce exactly the silent-reinterpretation bug this header
+// exists to prevent, so no C++ struct is provided for either type.
+//
+// Both are nevertheless exported through the raw-memcpy C ABI
+// (`impl_pod_topic_c_api!` at horus_cpp/src/c_api.rs:684-685) and declared in
+// horus_c.h / impl/topic_impl.hpp. Neither derives `bytemuck::Pod`/`Zeroable`,
+// so neither has ever been validated as POD at all. FIX ON THE RUST SIDE: add
+// `#[repr(C)]` (plus explicit padding) to both types, regenerate
+// layout_contract.hpp, then mirror them here. Until then they must not be sent
+// or received across the FFI boundary.
 
 }} // namespace horus::msg

@@ -38,7 +38,7 @@ jobs:
         fetch-depth: 0  # Need full history for baseline comparison
 
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       with:
         components: rustfmt, clippy
 
@@ -103,11 +103,15 @@ jobs:
 
     - name: Run cross-process benchmark
       run: |
+        # Actions' default shell is `bash -e {0}` WITHOUT pipefail, so a panic or
+        # SIGSEGV in the benchmark would be masked by tee's exit status.
+        set -o pipefail
         cd benchmarks
         cargo run --release --bin cross_process_benchmark | tee benchmark-results.txt
 
     - name: Run robotics messages benchmark
       run: |
+        set -o pipefail
         cd benchmarks
         cargo run --release --bin robotics_messages_benchmark | tee -a benchmark-results.txt
 
@@ -121,15 +125,34 @@ jobs:
       id: regression-check
       run: |
         cd benchmarks
-        # Parse benchmark results and check against thresholds
-        # Expected thresholds (nanoseconds):
-        #   - Cross-process: <600ns
-        #   - Robotics messages: <1000ns
+        # What is enforced here is each benchmark's OWN real-time suitability
+        # verdict (the "✓ PASS" / "✗ FAIL" lines robotics_messages_benchmark
+        # prints for the 1kHz/10kHz/500Hz/40Hz criteria). Those have large
+        # headroom — locally p99 is ~425ns against a 1ms ceiling — so they are
+        # stable on a shared CI runner.
+        #
+        # The old comment here claimed ceilings of "<600ns cross-process" and
+        # "<1000ns robotics messages"; nothing ever checked them, and
+        # cross_process_benchmark's median on a CI-class machine is several
+        # thousand ns, so re-enabling them as written would fail every run.
+        # A real baseline-relative check already exists in
+        # benchmarks/scripts/check_regression.py (driven by ci_bench.sh) and is
+        # the right thing to wire up once a baseline.json is actually published.
         echo "## Benchmark Results" > /tmp/benchmark-report.md
         echo "" >> /tmp/benchmark-report.md
         cat benchmark-results.txt >> /tmp/benchmark-report.md
         echo "" >> /tmp/benchmark-report.md
         echo "Regression threshold: ${{ env.REGRESSION_THRESHOLD }}%" >> /tmp/benchmark-report.md
+
+        # robotics_messages_benchmark prints its own real-time suitability
+        # verdicts but always exits 0. Without this the step named "Check for
+        # performance regression" checked nothing at all and could never fail.
+        if grep -q '✗ FAIL' benchmark-results.txt; then
+          echo "::error::Benchmark failed its real-time suitability criteria:"
+          grep -n '✗ FAIL' benchmark-results.txt
+          exit 1
+        fi
+        echo "All benchmark real-time suitability checks passed."
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@v4

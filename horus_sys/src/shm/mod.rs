@@ -27,7 +27,7 @@ pub use self::macos::ShmRegion;
 #[cfg(target_os = "windows")]
 pub use self::windows::ShmRegion;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ============================================================================
 // Namespace generation
@@ -114,6 +114,303 @@ pub fn shm_topics_dir() -> PathBuf {
     shm_base_dir().join("topics")
 }
 
+/// Canonical on-disk path of a topic's SHM backing file.
+///
+/// This is the **single definition** of the topic-name → path mapping. Anything
+/// that opens a topic's backing file directly — notably `horus_net`'s SHM
+/// reader and writer — must go through here rather than reconstructing the name,
+/// which is how the replication seam silently diverged for four months (the
+/// network side was still building `horus_<name>` after the prefix was dropped
+/// here in 2026-03-29).
+///
+/// Callers must have validated `name` with [`validate_region_name`] first;
+/// `ShmRegion::new` does so on every path that reaches it.
+pub fn topic_shm_path(name: &str) -> PathBuf {
+    shm_topics_dir().join(name)
+}
+
+// ============================================================================
+// Permission hardening
+// ============================================================================
+
+/// Directory mode for every HORUS SHM directory: owner-only.
+pub const SHM_DIR_MODE: u32 = 0o700;
+
+/// File mode for every HORUS SHM file: owner read/write only.
+pub const SHM_FILE_MODE: u32 = 0o600;
+
+/// Create `path` and its parents with owner-only permissions, and tighten any
+/// that already exist too loosely.
+///
+/// `ShmRegion::new` has always used mode 0o700, but several other call sites
+/// reached the same tree through a bare `std::fs::create_dir_all`, which applies
+/// `0o777 & !umask` — typically 0o755, or 0o775 under the common `umask 002`.
+/// Whichever code path ran *first* therefore decided the mode for everything
+/// underneath, and in practice the loose one usually won: on a machine running
+/// HORUS, `/dev/shm/horus_<ns>` is observed as `drwxrwxr-x`, not `drwx------`.
+///
+/// That makes the namespace listable by every local user and writable by
+/// everyone in the owner's group, which contradicts the "Process Isolation:
+/// Shared memory with proper permissions" claim in SECURITY.md.
+///
+/// The repair pass masks rather than assigns, so it only ever *removes*
+/// permission bits, and only on paths this user owns — it can never widen
+/// access or fight another user's ownership. (Assigning the target mode outright
+/// would add owner bits to a stricter-than-target path; the log-system test
+/// `mmap_readonly_dir_returns_error` catches exactly that.)
+pub fn create_shm_dir_all(path: &Path) -> std::io::Result<()> {
+    // Refuse to build inside a tree someone else pre-created. /dev/shm is mode
+    // 1777 and the namespace defaults to the fixed literal "default", so the
+    // base path is predictable and racing us to it is trivial.
+    verify_shm_dir_ownership(&shm_base_dir())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(SHM_DIR_MODE)
+            .create(path)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)?;
+    }
+
+    // Repair directories created by an older, looser code path. Walk from the
+    // SHM base down to `path` so an already-existing base gets tightened too.
+    harden_existing_dir(&shm_base_dir());
+    let mut cursor = shm_base_dir();
+    if let Ok(rest) = path.strip_prefix(&cursor) {
+        for component in rest.components() {
+            cursor = cursor.join(component);
+            harden_existing_dir(&cursor);
+        }
+    } else {
+        harden_existing_dir(path);
+    }
+    Ok(())
+}
+
+/// Verify that an existing SHM directory is safe to use.
+///
+/// `/dev/shm` and `/tmp` are mode 1777, so any local user can pre-create
+/// `/dev/shm/horus_<namespace>` before the first HORUS process starts. The
+/// namespace is the fixed literal `"default"` unless `HORUS_NAMESPACE` is set,
+/// so the path is entirely predictable. Whoever wins that race owns the whole
+/// IPC tree: they can hand every subsequent HORUS process attacker-controlled
+/// ring headers, or simply hold the tree at a mode that locks the real user out.
+///
+/// Returns an error if the path exists but is not a directory we own, or is a
+/// symlink. Only ownership is enforced here — the mode is repaired separately by
+/// `harden_existing_dir`, which can only ever tighten it. (Not an intra-doc
+/// link: that helper is private, and rustdoc rejects a public item linking to
+/// it under `-D warnings`.)
+pub fn verify_shm_dir_ownership(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // symlink_metadata, not metadata: a symlink planted here must be
+        // rejected outright, not followed to whatever it points at.
+        let meta = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        anyhow::ensure!(
+            !meta.file_type().is_symlink(),
+            "SHM path {} is a symlink; refusing to use it. Another user may have \
+             planted it — remove it and restart.",
+            path.display()
+        );
+        anyhow::ensure!(
+            meta.is_dir(),
+            "SHM path {} exists but is not a directory; refusing to use it.",
+            path.display()
+        );
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        anyhow::ensure!(
+            meta.uid() == euid,
+            "SHM directory {} is owned by uid {}, not this process's uid {}. \
+             Refusing to use it: a directory pre-created by another user lets them \
+             feed this process attacker-controlled IPC state. Remove it, or set \
+             HORUS_NAMESPACE to a private namespace.",
+            path.display(),
+            meta.uid(),
+            euid
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+/// Tighten an existing directory to [`SHM_DIR_MODE`] if we own it.
+///
+/// Public wrapper for callers that create a directory through some other route
+/// (e.g. the blackbox recorder) and need the same owner-only guarantee.
+pub fn harden_shm_dir(path: &Path) {
+    harden_existing_dir(path)
+}
+
+/// Tighten one existing directory to [`SHM_DIR_MODE`], if we own it and it is
+/// currently looser. Silent no-op otherwise.
+fn harden_existing_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        // symlink_metadata: never follow a symlink someone planted here.
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if !meta.is_dir() {
+            return;
+        }
+        // SAFETY: geteuid is always safe; it takes no arguments and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return; // not ours to change
+        }
+        // Clear the group and other bits, and ONLY those. Assigning
+        // SHM_DIR_MODE outright would *add* owner bits — a 0o444 directory
+        // would come back 0o700, i.e. writable — which is the opposite of
+        // hardening and broke `mmap_readonly_dir_returns_error`. Masking can
+        // only ever turn bits off.
+        let mode = meta.permissions().mode() & 0o777;
+        let narrowed = mode & SHM_DIR_MODE;
+        if narrowed != mode {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(narrowed));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// Restrict an already-created SHM file to [`SHM_FILE_MODE`].
+///
+/// For files created through an `OpenOptions` that cannot carry a mode — or
+/// that already exist from an older run — this drops the group and world bits.
+/// Only ever narrows, and only on files this user owns.
+pub fn harden_shm_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if !meta.is_file() {
+            return;
+        }
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return;
+        }
+        // Mask, never assign — see `harden_existing_dir`. A 0o400 file must
+        // stay 0o400, not gain owner-write.
+        let mode = meta.permissions().mode() & 0o777;
+        let narrowed = mode & SHM_FILE_MODE;
+        if narrowed != mode {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(narrowed));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// Write `bytes` to `path` with owner-only permissions.
+///
+/// `std::fs::write` creates at `0o666 & !umask` — 0o644, or 0o664 under the
+/// common `umask 002`. The service and action JSON gateways carry request and
+/// response payloads, so leaving them world-readable discloses whatever a
+/// caller passed to a service.
+///
+/// `create_new` is deliberate: it refuses to follow or overwrite a file another
+/// process planted at this path.
+pub fn write_shm_file_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(SHM_FILE_MODE);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(bytes)?;
+    f.sync_data()
+}
+
+/// Maximum length of a single path component, matching Linux `NAME_MAX`.
+const NAME_MAX: usize = 255;
+
+/// Maximum total length of a region name.
+const REGION_NAME_MAX: usize = 512;
+
+/// Reject region names that could escape the topics directory.
+///
+/// `ShmRegion::new` used to pass the caller's name straight into
+/// `shm_topics_dir().join(name)` with no checks. Two properties of
+/// `PathBuf::join` make that dangerous:
+///
+///   * joining an **absolute** path discards the base entirely, so
+///     `Topic::new("/home/user/.bashrc")` targets that file, not a topic;
+///   * `..` components are not normalised away, so
+///     `Topic::new("../../../tmp/x")` escapes the topics directory.
+///
+/// Either one turns a topic name from any untrusted source — a CLI argument, a
+/// launch file, `horus.toml`, a Python caller — into a create-and-mmap
+/// primitive over an arbitrary path, as the running user.
+///
+/// A single embedded `/` remains legal: legacy hierarchical topic names rely on
+/// it, and `ShmRegion::new` creates the intermediate directory. Only traversal
+/// and absolute/rooted forms are rejected.
+pub fn validate_region_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
+    anyhow::ensure!(
+        name.len() <= REGION_NAME_MAX,
+        "SHM region name is too long ({} bytes, max {REGION_NAME_MAX})",
+        name.len()
+    );
+    anyhow::ensure!(
+        !name.contains('\0'),
+        "SHM region name must not contain a NUL byte"
+    );
+    // Absolute (POSIX or Windows UNC) — `join` would discard the topics dir.
+    anyhow::ensure!(
+        !name.starts_with('/') && !name.starts_with('\\'),
+        "SHM region name must be relative, got absolute path {name:?}"
+    );
+    // Windows drive-relative, e.g. `C:evil` — also escapes the base.
+    let bytes = name.as_bytes();
+    anyhow::ensure!(
+        !(bytes.len() >= 2 && bytes[1] == b':'),
+        "SHM region name must not be drive-qualified, got {name:?}"
+    );
+
+    for component in name.split(['/', '\\']) {
+        anyhow::ensure!(
+            component != ".." && component != ".",
+            "SHM region name must not contain a {component:?} path component, got {name:?}"
+        );
+        anyhow::ensure!(
+            component.len() <= NAME_MAX,
+            "SHM region name component exceeds {NAME_MAX} bytes in {name:?}"
+        );
+    }
+    Ok(())
+}
+
 /// Nodes directory for node presence files.
 pub fn shm_nodes_dir() -> PathBuf {
     shm_base_dir().join("nodes")
@@ -194,8 +491,13 @@ pub struct TopicMeta {
 /// Called by ShmRegion::create on macOS/Windows when the creator owns the region.
 /// On Linux this is also called for consistency, but discovery can use the SHM file directly.
 pub fn write_topic_meta(name: &str, size: usize) -> anyhow::Result<()> {
+    // Must not be a bare create_dir_all: that skipped both the ownership gate
+    // and the 0o700 mode, so whichever code path happened to touch the tree
+    // FIRST decided its permissions. A process that published before anything
+    // else ran left `topics/` world-readable, silently undoing
+    // `create_shm_dir_all` for every later caller.
     let dir = shm_topics_dir();
-    std::fs::create_dir_all(&dir)?;
+    create_shm_dir_all(&dir)?;
     let meta = TopicMeta {
         name: name.to_string(),
         size,
@@ -246,11 +548,38 @@ pub fn list_topic_metas() -> Vec<TopicMeta> {
         }
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(meta) = serde_json::from_str::<TopicMeta>(&content) {
+                // The NAME inside a .meta file is attacker-controlled.
+                //
+                // `list_all_horus_namespaces` enumerates `/dev/shm`, which is
+                // mode 1777, so it walks OTHER USERS' `horus_*` trees and parses
+                // whatever JSON it finds there. Downstream consumers join this
+                // name into a path (`horus topic echo/hz/bw` all do
+                // `shm_topics_dir().join(&topic_name)`), so a name containing
+                // `..` or an absolute path escapes the topics directory in the
+                // reader's process.
+                //
+                // `ShmRegion::new` validates on the WRITE path, but nothing did
+                // on the READ path — and reading is exactly where the untrusted
+                // data enters. Reject here, at the single parse boundary, so no
+                // consumer can ever be handed one.
+                if validate_region_name(&meta.name).is_err() {
+                    continue;
+                }
                 metas.push(meta);
             }
         }
     }
     metas
+}
+
+/// Canonical topic path for a name that came from an UNTRUSTED source.
+///
+/// Use this instead of `topic_shm_path` whenever the name was read out of a
+/// `.meta` file, a discovery scan, or anything else another process wrote.
+/// Returns `None` for a name that would escape the topics directory.
+pub fn topic_shm_path_checked(name: &str) -> Option<PathBuf> {
+    validate_region_name(name).ok()?;
+    Some(topic_shm_path(name))
 }
 
 // ============================================================================
@@ -269,7 +598,14 @@ pub fn is_shm_file_stale(path: &std::path::Path) -> bool {
 
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return true,
+        // "Cannot open" is NOT "stale". Callers act on this by UNLINKING the
+        // file, so treating an open failure as stale turns any transient
+        // EACCES/EMFILE/ENFILE — or a file owned by another user — into a
+        // delete of a live topic. Absent means genuinely gone; everything else
+        // is conservatively not-stale, matching how the errno cases below are
+        // already handled.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
     };
 
     let fd = file.as_raw_fd();
@@ -1016,5 +1352,412 @@ mod tests {
 
         drop(file);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ─── Region-name validation (path-traversal hardening) ──────────────────
+
+    #[test]
+    fn validate_accepts_ordinary_topic_names() {
+        for name in [
+            "cmd_vel",
+            "robot.imu",
+            "robot.front_lidar.scan",
+            "_horus.estop",
+            "legacy/hierarchical/name", // single slashes remain legal
+            "a",
+        ] {
+            assert!(
+                validate_region_name(name).is_ok(),
+                "{name:?} is a legitimate topic name and must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_absolute_paths() {
+        // PathBuf::join with an absolute path DISCARDS the base, so this used to
+        // target the named file directly rather than a topic.
+        for name in ["/tmp/pwned", "/etc/passwd", "/", "//x"] {
+            assert!(
+                validate_region_name(name).is_err(),
+                "{name:?} must be rejected — join() would discard the topics dir"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_parent_traversal() {
+        for name in [
+            "../pwned",
+            "../../../tmp/horus_pathaudit_out/pwned",
+            "a/../../b",
+            "..",
+            "sub/..",
+        ] {
+            assert!(
+                validate_region_name(name).is_err(),
+                "{name:?} must be rejected — it escapes the topics directory"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_single_dot_components() {
+        for name in ["./x", "a/./b", "."] {
+            assert!(validate_region_name(name).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_backslash_traversal() {
+        // Windows separators must be treated as separators, not as ordinary
+        // filename characters, or the check is bypassable on that platform.
+        for name in ["..\\pwned", "a\\..\\..\\b", "\\absolute"] {
+            assert!(validate_region_name(name).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_drive_qualified_names() {
+        for name in ["C:evil", "c:/windows/system32/x"] {
+            assert!(validate_region_name(name).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_nul_and_overlong() {
+        assert!(validate_region_name("").is_err(), "empty");
+        assert!(validate_region_name("a\0b").is_err(), "embedded NUL");
+        assert!(
+            validate_region_name(&"x".repeat(256)).is_err(),
+            "component longer than NAME_MAX"
+        );
+        assert!(
+            validate_region_name(&"x".repeat(255)).is_ok(),
+            "exactly NAME_MAX must still be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_allows_dots_inside_a_component() {
+        // Topic names are dot-separated by convention; only a component that IS
+        // "." or ".." is a traversal.
+        validate_region_name("robot..imu").unwrap();
+        validate_region_name("...").unwrap();
+    }
+
+    #[test]
+    fn shm_region_new_refuses_to_escape_the_topics_dir() {
+        // End-to-end version of the abandoned probe left at
+        // horus_core/tests/zz_pathaudit_tmp.rs by an earlier session.
+        let marker = std::env::temp_dir().join(format!(
+            "horus_traversal_guard_{}_{}",
+            std::process::id(),
+            "pwned"
+        ));
+        let _ = std::fs::remove_file(&marker);
+
+        let rel = format!("../../..{}", marker.display());
+        assert!(
+            ShmRegion::new(&rel, 4096).is_err(),
+            "traversal name must be refused"
+        );
+        assert!(
+            ShmRegion::new(marker.to_str().unwrap(), 4096).is_err(),
+            "absolute name must be refused"
+        );
+        assert!(
+            !marker.exists(),
+            "no file may be created outside the topics directory at {}",
+            marker.display()
+        );
+    }
+
+    // ─── Permission hardening ───────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn create_shm_dir_all_makes_owner_only_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("horus_perm_new_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("a").join("b");
+        create_shm_dir_all(&nested).unwrap();
+
+        for p in [&root, &root.join("a"), &nested] {
+            let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                SHM_DIR_MODE,
+                "{} should be 0700, was {mode:o}",
+                p.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_shm_dir_all_tightens_a_preexisting_loose_dir() {
+        // The observed real-world state: an earlier bare create_dir_all left the
+        // directory at 0775 under umask 002. Re-entering must repair it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("horus_perm_fix_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o775
+        );
+
+        create_shm_dir_all(&dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            SHM_DIR_MODE,
+            "a pre-existing loose directory must be tightened, not left alone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_shm_file_new_is_owner_only_and_refuses_to_clobber() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("horus_perm_file_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        write_shm_file_new(&path, b"secret payload").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, SHM_FILE_MODE,
+            "gateway files must be 0600, was {mode:o}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"secret payload");
+
+        // create_new semantics: a second write must fail rather than follow or
+        // overwrite whatever is already sitting at the path.
+        assert!(write_shm_file_new(&path, b"other").is_err());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn harden_shm_file_narrows_an_existing_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("horus_perm_narrow_{}", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+
+        harden_shm_file(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            SHM_FILE_MODE
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_never_widens_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("horus_perm_keep_{}", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        harden_shm_file(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400,
+            "an already-stricter mode must be left alone, not relaxed to 0600"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_accepts_our_own_dir_and_absent_paths() {
+        let dir = std::env::temp_dir().join(format!("horus_own_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Absent is fine — we are about to create it.
+        verify_shm_dir_ownership(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        verify_shm_dir_ownership(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_rejects_a_symlink_instead_of_following_it() {
+        // The pre-creation attack: /dev/shm is 1777 and the namespace is a fixed
+        // predictable literal, so another user can plant a symlink here.
+        let base = std::env::temp_dir().join(format!("horus_own_link_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = verify_shm_dir_ownership(&link).unwrap_err().to_string();
+        assert!(
+            err.contains("symlink"),
+            "a symlinked SHM dir must be refused, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_rejects_a_non_directory() {
+        let path = std::env::temp_dir().join(format!("horus_own_file_{}", std::process::id()));
+        std::fs::write(&path, b"not a dir").unwrap();
+        assert!(verify_shm_dir_ownership(&path).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_ownership_rejects_a_dir_owned_by_another_uid() {
+        // /tmp itself is root-owned and mode 1777 — exactly the shape of the
+        // directory an attacker pre-creates. Skip when running as root, where
+        // the ownership test is vacuous.
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        // macOS exposes /tmp as a symlink to /private/tmp. Canonicalize it so
+        // this test reaches the foreign-owner check instead of correctly
+        // stopping earlier at the separate symlink defense.
+        let foreign_dir = std::fs::canonicalize("/tmp").expect("canonical /tmp");
+        let err = verify_shm_dir_ownership(&foreign_dir)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("owned by uid"),
+            "a foreign-owned SHM dir must be refused, got: {err}"
+        );
+    }
+
+    #[test]
+    fn topic_shm_path_is_the_raw_name_under_the_topics_dir() {
+        // The mapping horus_net must use. Any prefix or character mangling here
+        // re-breaks the replication seam.
+        let p = topic_shm_path("robot.imu");
+        assert_eq!(p.parent().unwrap(), shm_topics_dir());
+        assert_eq!(p.file_name().unwrap(), "robot.imu");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_masks_and_never_adds_owner_bits() {
+        // Regression guard. harden_* used to ASSIGN the target mode, so a 0o444
+        // directory came back 0o700 — gaining owner-write, i.e. the opposite of
+        // hardening. horus_core's `mmap_readonly_dir_returns_error` caught it:
+        // a deliberately read-only directory became writable and the test's
+        // "creation must fail" premise evaporated.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("horus_harden_ro_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        harden_shm_dir(&dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o400,
+            "must only CLEAR bits (0o444 & 0o700 = 0o400), never add owner-write"
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_a_readonly_file_does_not_make_it_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("horus_harden_rofile_{}", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        harden_shm_file(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400,
+            "0o444 & 0o600 = 0o400 — group/other cleared, owner-write NOT added"
+        );
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod untrusted_meta_tests {
+    use super::*;
+
+    /// `.meta` files are parsed out of `/dev/shm`, which is mode 1777 — so
+    /// `list_all_horus_namespaces` walks OTHER USERS' `horus_*` trees and reads
+    /// whatever JSON is there. The `name` inside is therefore attacker-chosen,
+    /// and consumers join it into a path. `ShmRegion::new` validated on the
+    /// WRITE path; nothing validated on the READ path, which is where the
+    /// untrusted data actually enters.
+    #[test]
+    fn topic_shm_path_checked_refuses_escaping_names() {
+        for hostile in [
+            "../../../../etc/passwd",
+            "/etc/passwd",
+            "a/../../../b",
+            "..",
+            "C:evil",
+        ] {
+            assert!(
+                topic_shm_path_checked(hostile).is_none(),
+                "{hostile:?} must be refused before it becomes a path"
+            );
+        }
+    }
+
+    #[test]
+    fn topic_shm_path_checked_allows_real_names() {
+        for ok in ["cmd_vel", "robot.imu", "legacy/hierarchical"] {
+            let p = topic_shm_path_checked(ok).expect("legitimate name");
+            assert!(p.starts_with(shm_topics_dir()));
+        }
+    }
+
+    #[test]
+    fn list_topic_metas_drops_entries_whose_name_escapes() {
+        use std::io::Write;
+        let dir = shm_topics_dir();
+        if create_shm_dir_all(&dir).is_err() {
+            return; // no writable SHM tree in this environment
+        }
+        let hostile = dir.join("zz_hostile_probe.meta");
+        let good = dir.join("zz_good_probe.meta");
+        let _ = std::fs::File::create(&hostile).map(|mut f| {
+            let _ = f.write_all(
+                br#"{"name":"../../../../tmp/pwned","size":4096,"creator_pid":1,"created_at":0}"#,
+            );
+        });
+        let _ = std::fs::File::create(&good).map(|mut f| {
+            let _ = f.write_all(
+                br#"{"name":"zz_good_probe","size":4096,"creator_pid":1,"created_at":0}"#,
+            );
+        });
+
+        let metas = list_topic_metas();
+        assert!(
+            !metas.iter().any(|m| m.name.contains("..")),
+            "a .meta declaring an escaping name must be dropped at the parse boundary"
+        );
+        // The well-formed neighbour must still be returned — the filter must not
+        // be a blanket rejection.
+        assert!(metas.iter().any(|m| m.name == "zz_good_probe"));
+
+        let _ = std::fs::remove_file(&hostile);
+        let _ = std::fs::remove_file(&good);
     }
 }

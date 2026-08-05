@@ -184,7 +184,13 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     }
 
     if cfg.simulation {
-        cmd.env("HORUS_SIMULATION_MODE", "1");
+        // HORUS_SIM_MODE, not HORUS_SIMULATION_MODE. The runtime reads the
+        // former (horus_core::drivers::mod.rs), and `horus run --sim` sets the
+        // former — but `horus test --sim` set a name NOTHING reads, so it was a
+        // no-op. A user running `horus test --sim` to keep hardware out of the
+        // loop got the REAL drivers, which on a bench with actuators attached is
+        // the difference between a test and a motion command.
+        cmd.env("HORUS_SIM_MODE", "1");
     }
 
     if cfg.release {
@@ -277,7 +283,13 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
     cmd.env("PYTHONPATH", &python_path);
 
     if cfg.simulation {
-        cmd.env("HORUS_SIMULATION_MODE", "1");
+        // HORUS_SIM_MODE, not HORUS_SIMULATION_MODE. The runtime reads the
+        // former (horus_core::drivers::mod.rs), and `horus run --sim` sets the
+        // former — but `horus test --sim` set a name NOTHING reads, so it was a
+        // no-op. A user running `horus test --sim` to keep hardware out of the
+        // loop got the REAL drivers, which on a bench with actuators attached is
+        // the difference between a test and a motion command.
+        cmd.env("HORUS_SIM_MODE", "1");
     }
 
     if cfg.verbose {

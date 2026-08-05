@@ -17,6 +17,7 @@ horus_core = { path = "../horus_core" }
 horus_macros = { path = "../horus_macros", optional = true }
 horus_types = { path = "../horus_types" }
 horus_net = { path = "../horus_net", optional = true }
+horus-robotics = { workspace = true }
 # Re-export commonly used dependencies
 serde = { workspace = true }
 rand = { workspace = true, features = ["small_rng"] }

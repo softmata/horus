@@ -166,7 +166,11 @@ impl PresenceReceiver {
         }
 
         let nodes_dir = horus_sys::shm::shm_nodes_dir();
-        let _ = std::fs::create_dir_all(&nodes_dir);
+        // Bare create_dir_all here left the nodes directory world-readable and
+        // skipped the ownership gate — and this runs on the RECEIVE path, so a
+        // remote peer's presence announcement was enough to create the tree
+        // with the wrong mode before any local process hardened it.
+        let _ = horus_sys::shm::create_shm_dir_all(&nodes_dir);
 
         let file_path = nodes_dir.join(format!("remote_{}.json", host_id));
 

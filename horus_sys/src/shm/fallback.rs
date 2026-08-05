@@ -21,8 +21,31 @@ pub struct ShmRegion {
 }
 
 impl ShmRegion {
+    /// Open an existing region without creating it.
+    pub fn open_existing(name: &str, minimum_size: usize) -> Result<Self> {
+        super::validate_region_name(name)?;
+        let path = PathBuf::from("/tmp/horus/topics").join(format!("horus_{}", name));
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let size = file.metadata()?.len() as usize;
+        anyhow::ensure!(size >= minimum_size, "existing SHM region is too small");
+        let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
+        Ok(Self {
+            mmap,
+            _file: file,
+            path,
+            size,
+            owner: false,
+        })
+    }
+
     /// Create or open a shared memory region.
     pub fn new(name: &str, size: usize) -> Result<Self> {
+        super::validate_region_name(name)?;
+        // NOTE: this backend is only compiled for platforms that are neither
+        // Linux, macOS nor Windows. It stores regions in a fixed, world-writable
+        // /tmp path with no namespace and opens them via exists()-then-open,
+        // which is a symlink/TOCTOU hazard. It is not hardened here because it
+        // is unreachable on every supported target; see the audit notes.
         let horus_shm_dir = PathBuf::from("/tmp/horus/topics");
         std::fs::create_dir_all(&horus_shm_dir)
             .with_context(|| format!("Failed to create SHM dir: {}", horus_shm_dir.display()))?;

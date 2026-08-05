@@ -343,6 +343,19 @@ impl PyTensorHandle {
         }
 
         let tensor = handle.tensor();
+
+        // The descriptor (ndim/shape/strides/size) travels over a topic, so it
+        // comes from another process. Handing numpy a raw pointer plus an
+        // unvalidated shape lets it read past the end of the pool slot. Refuse
+        // rather than export an out-of-bounds view.
+        if !tensor.descriptor_is_within_allocation() {
+            return Err(PyValueError::new_err(
+                "tensor descriptor is inconsistent: its shape/strides address more bytes \
+                 than the tensor's own allocation. Refusing to expose an out-of-bounds \
+                 view to numpy.",
+            ));
+        }
+
         let dict = PyDict::new(py);
 
         // Shape
@@ -400,6 +413,19 @@ impl PyTensorHandle {
         }
 
         let tensor = handle.tensor();
+
+        // The descriptor (ndim/shape/strides/size) travels over a topic, so it
+        // comes from another process. Handing numpy a raw pointer plus an
+        // unvalidated shape lets it read past the end of the pool slot. Refuse
+        // rather than export an out-of-bounds view.
+        if !tensor.descriptor_is_within_allocation() {
+            return Err(PyValueError::new_err(
+                "tensor descriptor is inconsistent: its shape/strides address more bytes \
+                 than the tensor's own allocation. Refusing to expose an out-of-bounds \
+                 view to numpy.",
+            ));
+        }
+
         let dict = PyDict::new(py);
 
         // Shape

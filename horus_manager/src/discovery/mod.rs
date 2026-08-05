@@ -58,7 +58,13 @@ pub struct NodeStatus {
     pub category: ProcessCategory,
     pub tick_count: u64,
     pub error_count: u32,
-    pub actual_rate_hz: u32,
+    /// The rate the node was CONFIGURED with, not the rate it is achieving.
+    ///
+    /// Named `actual_rate_hz` and rendered as "Rate:", it read as measured
+    /// throughput — so a node configured at 1000 Hz but managing 200 Hz still
+    /// showed 1000, and the shortfall an operator is looking for was invisible.
+    /// `f64` because the `as u32` cast rendered `.rate(0.5.hz())` as 0.
+    pub configured_rate_hz: f64,
     pub publishers: Vec<TopicInfo>,
     pub subscribers: Vec<TopicInfo>,
     /// Live tick count from SHM SchedulerRegistry (None if registry unavailable).
@@ -174,6 +180,17 @@ impl DiscoveryCache {
         self.nodes_last_updated = Instant::now();
     }
 
+    /// Mark both halves stale so the next discovery call re-scans.
+    ///
+    /// Backdating rather than zeroing the vectors keeps the last-known list
+    /// readable until the re-scan replaces it, which matches how every other
+    /// staleness check here behaves.
+    fn invalidate(&mut self) {
+        let stale = Instant::now() - (self.cache_duration + 1_u64.secs());
+        self.nodes_last_updated = stale;
+        self.shared_memory_last_updated = stale;
+    }
+
     fn update_shared_memory(&mut self, shm: Vec<SharedMemoryInfo>) {
         self.shared_memory = shm;
         self.shared_memory_last_updated = Instant::now();
@@ -189,6 +206,20 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) type ProcessInfo = horus_sys::discover::ProcessInfo;
+
+/// Force the next [`discover_nodes`] / [`discover_shared_memory`] call to
+/// re-scan instead of serving the cached result.
+///
+/// The cache has a short TTL (`DISCOVERY_CACHE_MS`), which is right for a CLI
+/// but wrong for any caller that has *just* changed the thing being discovered
+/// — an integration test that recreates the SHM tree, or a command that removes
+/// nodes and then reports what is left. Without this, such a caller reads back
+/// the pre-change list and concludes nothing is there.
+pub fn invalidate_cache() {
+    if let Ok(mut cache) = DISCOVERY_CACHE.write() {
+        cache.invalidate();
+    }
+}
 
 pub fn discover_nodes() -> HorusResult<Vec<NodeStatus>> {
     // Check cache first

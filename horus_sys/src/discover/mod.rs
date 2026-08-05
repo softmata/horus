@@ -253,6 +253,29 @@ pub struct DiscoveredTopic {
     pub created_at: u64,
 }
 
+/// Emit a one-shot warning if the SHM tree is not ours.
+///
+/// Read paths cannot fail closed the way `create_shm_dir_all` does — a
+/// diagnostic command still has to run and report — but the operator must be
+/// told that what they are looking at is another user's tree.
+fn warn_once_if_shm_tree_is_foreign() {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let base = crate::shm::shm_base_dir();
+    if !base.exists() {
+        return;
+    }
+    if let Err(e) = crate::shm::verify_shm_dir_ownership(&base) {
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "[HORUS] WARNING: the shared-memory tree at {} is not owned by this user: {e}. \
+                 Discovery results below come from that tree and cannot be trusted. \
+                 Publishing will refuse outright.",
+                base.display()
+            );
+        }
+    }
+}
+
 /// Find all active HORUS topics by scanning SHM metadata and presence files.
 ///
 /// - **Linux**: Scans `shm_topics_dir()` for actual SHM files + `.meta` files
@@ -261,6 +284,18 @@ pub struct DiscoveredTopic {
 pub fn find_topics() -> Vec<DiscoveredTopic> {
     let mut topics: std::collections::HashMap<String, DiscoveredTopic> =
         std::collections::HashMap::new();
+
+    // The ownership gate used to run only when CREATING the tree, so a
+    // read-only tool — `horus topic list`, the monitor, anything that never
+    // publishes — walked an attacker pre-created `/dev/shm/horus_<ns>` without
+    // ever noticing it belonged to someone else. Individual `.meta` names are
+    // validated below, but the operator was still being shown another user's
+    // topic inventory as though it were their own.
+    //
+    // Warn rather than refuse: this is the read path, and a diagnostic tool
+    // that silently returns nothing is worse than one that says why. Write
+    // paths still fail closed via `create_shm_dir_all`.
+    warn_once_if_shm_tree_is_foreign();
 
     let topics_dir = crate::shm::shm_topics_dir();
 
@@ -276,6 +311,12 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
             if path.extension().is_some_and(|e| e == "meta") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(meta) = serde_json::from_str::<crate::shm::TopicMeta>(&content) {
+                        // The name is attacker-controlled: this scan walks
+                        // /dev/shm (mode 1777) and parses other users' .meta
+                        // files, and consumers join the name into a path.
+                        if crate::shm::validate_region_name(&meta.name).is_err() {
+                            continue;
+                        }
                         let alive = is_process_alive(meta.creator_pid);
                         topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                             name: meta.name,
@@ -326,6 +367,10 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
                 if path.extension().is_some_and(|e| e == "meta") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if let Ok(meta) = serde_json::from_str::<crate::shm::TopicMeta>(&content) {
+                            // Same untrusted-name rejection as the scan above.
+                            if crate::shm::validate_region_name(&meta.name).is_err() {
+                                continue;
+                            }
                             let alive = is_process_alive(meta.creator_pid);
                             topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                                 name: meta.name,

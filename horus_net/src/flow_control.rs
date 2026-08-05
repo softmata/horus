@@ -69,13 +69,20 @@ impl RecvState {
 /// Flow controller — tracks loss rates, will do rate adaptation in Phase 2.
 pub struct FlowController {
     /// Per (peer_id_hash, topic_hash) receive state.
+    ///
+    /// Bounded by `netfilter::MAX_TRACKED_KEYS`: both halves of the key come
+    /// straight off the wire before any guard runs, so without a cap a peer that
+    /// varies either field grows this map until the process is OOM-killed.
     state: HashMap<(u16, u32), RecvState>,
+    /// Whether the cap-hit warning has already been emitted.
+    cap_warned: bool,
 }
 
 impl FlowController {
     pub fn new() -> Self {
         Self {
             state: HashMap::new(),
+            cap_warned: false,
         }
     }
 
@@ -106,7 +113,7 @@ impl FlowController {
             {
                 state.last_sequence = sequence;
             }
-        } else {
+        } else if crate::netfilter::enforce_key_cap(&mut self.state, &mut self.cap_warned) {
             self.state.insert(key, RecvState::new(sequence));
         }
     }
@@ -127,7 +134,14 @@ impl FlowController {
     /// - >20% loss: KeyframeOnly (every 100th)
     ///
     /// Immediate/RealTime priorities are NEVER rate-limited (checked by caller).
-    pub fn should_send(&self, topic_hash: u32, peer_hash: u16) -> bool {
+    ///
+    /// `peer_hash` is the id hash of the DESTINATION peer — the same value
+    /// `on_received` records from that peer's packet headers. Passing our own
+    /// id hash here looks up a key the receive path never populates, so the
+    /// loss rate reads 0.0 and the throttle silently never engages. The
+    /// parameter order matches `on_received` and `loss_rate` so that mistake
+    /// is a type error rather than a silent no-op.
+    pub fn should_send(&self, peer_hash: u16, topic_hash: u32) -> bool {
         let loss = self.loss_rate(peer_hash, topic_hash);
         let rate = SendRate::from_loss(loss);
 
@@ -215,7 +229,50 @@ mod tests {
         fc.on_received(0x1234, 100, 1);
         fc.on_received(0x1234, 100, 2);
         fc.on_received(0x1234, 100, 3);
-        assert!(fc.should_send(100, 0x1234));
+        assert!(fc.should_send(0x1234u16, 100u32));
+    }
+
+    /// The throttle must key on the DESTINATION peer. Sending to a lossy peer
+    /// has to de-rate even though a *different* peer on the same topic is
+    /// clean — if the key is wrong (e.g. our own id hash) every lookup misses,
+    /// `loss_rate` reads 0.0, and `SendRate::Full` sends everything forever.
+    #[test]
+    fn should_send_keys_on_the_destination_peer() {
+        let mut fc = FlowController::new();
+        const TOPIC: u32 = 100;
+        const LOSSY: u16 = 0x1111;
+        const CLEAN: u16 = 0x2222;
+        const OURS: u16 = 0x3333;
+
+        // 1 of every 3 sequence numbers arrives from LOSSY → ~66% loss.
+        for seq in (1..=90).step_by(3) {
+            fc.on_received(LOSSY, TOPIC, seq);
+        }
+        for seq in 1..=30 {
+            fc.on_received(CLEAN, TOPIC, seq);
+        }
+
+        assert!(
+            fc.loss_rate(LOSSY, TOPIC) > 0.2,
+            "expected KeyframeOnly-grade loss, got {}",
+            fc.loss_rate(LOSSY, TOPIC)
+        );
+        assert_eq!(fc.loss_rate(CLEAN, TOPIC), 0.0);
+
+        // The clean peer keeps full rate; the lossy one is throttled to
+        // roughly every 100th message, so at least one of a short run of
+        // send decisions must come back false.
+        assert!(fc.should_send(CLEAN, TOPIC));
+        assert!(
+            !fc.should_send(LOSSY, TOPIC),
+            "a peer at >20% loss must be de-rated, not sent everything"
+        );
+
+        // An id hash the receive path never recorded — such as our own —
+        // misses the map entirely and degrades to Full. This is the shape of
+        // the bug, pinned so a call site cannot quietly reintroduce it.
+        assert_eq!(fc.loss_rate(OURS, TOPIC), 0.0);
+        assert!(fc.should_send(OURS, TOPIC));
     }
 
     #[test]

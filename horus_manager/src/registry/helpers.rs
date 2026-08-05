@@ -267,11 +267,58 @@ pub(crate) fn is_system_package_installed(pkg: &str, pkg_manager: &str) -> bool 
     result.map(|o| o.status.success()).unwrap_or(false)
 }
 
+/// Whether `name` is safe to pass to a system package manager as a package name.
+///
+/// These names come from **registry-supplied package metadata**, i.e. from
+/// whoever published the package being installed, and they end up in the argv of
+/// `sudo apt install`. There is no shell involved, so this is not shell
+/// injection — but a name beginning with `-` is parsed by the package manager as
+/// an *option*, and apt in particular accepts `-o Dpkg::Pre-Invoke::=<command>`,
+/// which runs that command as root. So an unvalidated package name is a remote
+/// root RCE on `horus install`.
+///
+/// The accepted set is the intersection of what Debian, RPM, Arch, Homebrew and
+/// Alpine allow in a package name: ASCII alphanumerics plus `. + - _`, never
+/// leading with `-` or `.`, and never empty.
+pub(crate) fn is_safe_system_package_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 128 {
+        return false;
+    }
+    if name.starts_with('-') || name.starts_with('.') {
+        return false;
+    }
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-' | b'_'))
+}
+
 /// Handle system dependencies with smart detection and optional installation
 pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
     use colored::*;
     use std::io::{self, Write};
     use std::process::Command;
+
+    // Reject hostile names BEFORE anything else touches them — including the
+    // is_system_package_installed probes below, which also pass the name to a
+    // subprocess argv (`dpkg -s <pkg>`, `pacman -Q <pkg>`, ...).
+    let rejected: Vec<&String> = deps
+        .iter()
+        .filter(|d| !is_safe_system_package_name(d))
+        .collect();
+    if !rejected.is_empty() {
+        println!(
+            "  {} Refusing to install system packages with unsafe names:",
+            crate::cli_output::ICON_WARN.yellow()
+        );
+        for name in &rejected {
+            println!("    - {:?}", name);
+        }
+        println!(
+            "    A package name that begins with '-' is read as an OPTION by the system\n    \
+             package manager, which can run arbitrary commands as root. Install any\n    \
+             genuinely-needed dependency by hand."
+        );
+        return Ok(());
+    }
 
     let Some((pkg_manager, install_cmd, needs_sudo)) = detect_package_manager() else {
         // No known package manager, just notify
@@ -347,15 +394,20 @@ pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
         if input.is_empty() || input == "y" || input == "yes" {
             println!("  {} Running: {}", "->".cyan(), full_cmd);
 
+            // `--` ends option parsing, so even if the name validation above is
+            // ever loosened, a package name cannot be reinterpreted as a flag.
+            // Defence in depth: the validation is the real control.
             let status = if needs_sudo {
                 Command::new("sudo")
                     .arg(pkg_manager)
                     .args(&install_args)
+                    .arg("--")
                     .args(missing.iter().map(|s| s.as_str()))
                     .status()
             } else {
                 Command::new(pkg_manager)
                     .args(&install_args)
+                    .arg("--")
                     .args(missing.iter().map(|s| s.as_str()))
                     .status()
             };
@@ -1913,6 +1965,87 @@ impl RegistryClient {
 // ============================================================================
 
 /// Generate an Ed25519 signing keypair for package signing
+/// Install a publisher's public key into the trust store.
+///
+/// `key` is either a path to a `.pub` file or the 64-character hex encoding of
+/// the Ed25519 verifying key — the same form `horus auth signing-key` prints.
+///
+/// This store is what package-signature verification consults. It is kept
+/// separate from `keys_dir()/signing_key.pub`, which is the user's OWN
+/// publishing identity and can only ever authenticate the user themselves.
+pub fn trust_publisher_key(name: &str, key: &str) -> Result<()> {
+    if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
+        anyhow::bail!(
+            "invalid publisher name {name:?} — it becomes a file name in the trust store, \
+             so it may not contain path separators or `..`"
+        );
+    }
+
+    let raw = if std::path::Path::new(key).exists() {
+        fs::read_to_string(key)?
+    } else {
+        key.to_string()
+    };
+    let hex_key = raw.trim().to_string();
+
+    // Validate before storing: a malformed key here becomes a confusing
+    // "verification error" on every later install of that publisher.
+    let bytes =
+        hex::decode(&hex_key).map_err(|e| anyhow::anyhow!("public key is not valid hex: {e}"))?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "public key must be 32 bytes (64 hex chars), got {} bytes",
+            bytes.len()
+        );
+    }
+
+    let dir = crate::paths::publisher_keys_dir()?;
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{name}.pub"));
+    fs::write(&path, &hex_key)?;
+
+    println!(" Trusted publisher key for {name}");
+    println!("   Stored at: {}", path.display());
+    println!("   Packages owned by {name} will now have their signatures verified.");
+    Ok(())
+}
+
+/// List the publisher keys currently trusted.
+pub fn list_publisher_keys() -> Result<()> {
+    let dir = crate::paths::publisher_keys_dir()?;
+    if !dir.exists() {
+        println!("No publisher keys trusted yet.");
+        println!("   Add one with: horus auth trust-publisher <name> <key-or-file>");
+        println!("   They will be stored in {}", dir.display());
+        return Ok(());
+    }
+
+    let mut names: Vec<String> = fs::read_dir(&dir)?
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".pub"))
+                .map(str::to_string)
+        })
+        .collect();
+    names.sort();
+
+    if names.is_empty() {
+        println!(
+            "No publisher keys trusted yet ({} is empty).",
+            dir.display()
+        );
+        return Ok(());
+    }
+
+    println!("Trusted publisher keys ({}):", dir.display());
+    for n in names {
+        println!("   {n}");
+    }
+    Ok(())
+}
+
 pub fn generate_signing_keypair() -> Result<()> {
     use ed25519_dalek::SigningKey;
     use rand::RngCore;
@@ -1962,4 +2095,76 @@ pub fn generate_signing_keypair() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod system_package_name_tests {
+    use super::is_safe_system_package_name;
+
+    #[test]
+    fn accepts_real_package_names() {
+        for name in [
+            "libssl-dev",
+            "python3.11",
+            "gcc-12",
+            "g++",
+            "linux-headers-6.1.0-rt",
+            "ros-humble-rclcpp",
+            "zlib1g",
+            "lib32z1",
+        ] {
+            assert!(
+                is_safe_system_package_name(name),
+                "{name} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_names_that_apt_would_read_as_options() {
+        // The actual root-RCE vector: apt honours -o Dpkg::Pre-Invoke, which runs
+        // an arbitrary command as root. These names come from registry metadata.
+        for name in [
+            "-o",
+            "-oDpkg::Pre-Invoke::=/bin/sh",
+            "--option=x",
+            "-y",
+            "--reinstall",
+        ] {
+            assert!(
+                !is_safe_system_package_name(name),
+                "{name:?} must be rejected — a leading dash is parsed as an option"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_shell_and_path_metacharacters() {
+        for name in [
+            "pkg; rm -rf /",
+            "pkg$(id)",
+            "pkg`id`",
+            "pkg|tee",
+            "pkg&whoami",
+            "../../etc/passwd",
+            "pkg name",
+            "pkg\nsecond",
+            "pkg'quote",
+            "pkg\"quote",
+            "pkg\0nul",
+        ] {
+            assert!(
+                !is_safe_system_package_name(name),
+                "{name:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_empty_dot_leading_and_overlong() {
+        assert!(!is_safe_system_package_name(""));
+        assert!(!is_safe_system_package_name(".hidden"));
+        assert!(!is_safe_system_package_name(&"a".repeat(129)));
+        assert!(is_safe_system_package_name(&"a".repeat(128)));
+    }
 }

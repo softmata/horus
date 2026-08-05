@@ -28,10 +28,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
@@ -56,10 +56,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
@@ -83,10 +83,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
@@ -107,7 +107,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
           args: --out dist
@@ -142,7 +142,7 @@ jobs:
         run: ls -lah dist/
 
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: upload
           args: --non-interactive --skip-existing dist/*
@@ -178,4 +178,14 @@ jobs:
           python -m pip install --find-links=dist --no-index horus-robotics
 
       - name: Test import
-        run: python -c "import horus; print(f'Successfully imported horus {horus.__version__}')"
+        # `import horus` alone proves nothing: horus/__init__.py catches the
+        # ImportError from the compiled extension and downgrades to a "mock mode"
+        # where every symbol is None, so a wheel with a missing or
+        # ABI-incompatible _horus still imported cleanly. Assert the compiled
+        # extension itself, and turn the mock-mode RuntimeWarning into an error.
+        run: |
+          python -W error::RuntimeWarning -c "
+          import horus, horus._horus
+          assert horus.Topic is not None, 'horus.Topic is None — extension not loaded'
+          print(f'Successfully imported horus {horus.__version__} with compiled extension')
+          "

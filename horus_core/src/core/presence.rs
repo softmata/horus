@@ -372,7 +372,11 @@ impl NodePresence {
         let dir = shm_nodes_dir();
 
         // Create directory hierarchy with owner-only access.
-        horus_sys::fs::create_dir_secure(&dir).map_err(std::io::Error::other)?;
+        // `create_shm_dir_all` rather than `create_dir_secure`: same operation
+        // plus the base-directory ownership gate and the base-to-leaf mode walk.
+        // /dev/shm is mode 1777 and the namespace path is predictable, so the
+        // ownership check is the part that matters here.
+        horus_sys::shm::create_shm_dir_all(&dir)?;
 
         let dest = Self::presence_path(&self.name);
         let json = serde_json::to_string_pretty(self)

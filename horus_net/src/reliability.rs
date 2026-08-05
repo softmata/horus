@@ -33,7 +33,12 @@ pub struct ReliabilityLayer {
     /// Latched messages awaiting ACK. Keyed by (topic_hash, sequence).
     latched: HashMap<(u32, u32), LatchedEntry>,
     /// Dedup state per (peer_hash, topic_hash) → last seen sequence.
+    ///
+    /// Bounded by `netfilter::MAX_TRACKED_KEYS` — see `FlowController::state`
+    /// for why an uncapped wire-keyed map is a remote OOM.
     dedup: HashMap<(u16, u32), u32>,
+    /// Whether the cap-hit warning has already been emitted.
+    dedup_cap_warned: bool,
 }
 
 impl ReliabilityLayer {
@@ -41,6 +46,7 @@ impl ReliabilityLayer {
         Self {
             latched: HashMap::new(),
             dedup: HashMap::new(),
+            dedup_cap_warned: false,
         }
     }
 
@@ -119,13 +125,40 @@ impl ReliabilityLayer {
                 return false; // Duplicate or old
             }
         }
-        self.dedup.insert(key, sequence);
+        if crate::netfilter::enforce_key_cap(&mut self.dedup, &mut self.dedup_cap_warned) {
+            self.dedup.insert(key, sequence);
+        }
         true
     }
 
     /// Filter a list of incoming messages to remove duplicates in-place.
     pub fn dedup_messages(&mut self, sender_hash: u16, messages: &mut Vec<crate::wire::InMessage>) {
-        messages.retain(|msg| self.is_new_message(sender_hash, msg.topic_hash, msg.sequence));
+        messages.retain(|msg| {
+            // System topics are NEVER deduplicated.
+            //
+            // This runs on the raw receive path, upstream of both the e-stop MAC
+            // check and the per-topic rate limit, and it is keyed on
+            // `(sender_id_hash, topic_hash)` — a 16-bit sender id that travels
+            // in the clear on every packet and that nothing authenticates.
+            //
+            // So one forged datagram carrying a victim's sender hash, the
+            // `_horus.estop` topic hash and a large sequence number poisoned the
+            // cache: every subsequent GENUINE e-stop from that peer arrived with
+            // a lower sequence, was judged "duplicate or old", and was discarded
+            // before it ever reached `handle_remote_estop`. One unauthenticated
+            // packet permanently silenced remote e-stop from a chosen peer, and
+            // the HMAC could not help because it is verified downstream of here.
+            //
+            // Suppressing a safety control message must not be possible from an
+            // unauthenticated cache. The cost of exempting them is that the
+            // triple-redundant retries now reach the handler more than once:
+            // e-stop latches and is gated on a rising edge so that is harmless,
+            // and logs/presence are bounded by their own token buckets.
+            if crate::registry::is_system_topic_hash(msg.topic_hash) {
+                return true;
+            }
+            self.is_new_message(sender_hash, msg.topic_hash, msg.sequence)
+        });
     }
 
     /// Number of latched messages awaiting ACK.

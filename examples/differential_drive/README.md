@@ -54,7 +54,7 @@ horus node list
 # Expected: SquareDriver, SafetyNode
 
 # Open the TUI dashboard
-horus monitor -t
+horus monitor
 ```
 
 ## Shutdown

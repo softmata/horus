@@ -228,6 +228,24 @@ impl PyImage {
                 channels as i64,
             ]
         };
+        // width/height/channels come off the wire, and the export below hands
+        // numpy a RAW POINTER into the tensor pool. An oversized message
+        // therefore made numpy read past the end of the slot. Same class as the
+        // Tensor descriptor check, applied to the shape this type actually
+        // exports (which is built from message fields, not tensor.shape).
+        let elements = (this.inner.height() as u64)
+            .checked_mul(this.inner.width() as u64)
+            .and_then(|v| v.checked_mul(channels as u64));
+        match elements {
+            Some(n) if tensor.element_count_fits(n) => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "image dimensions exceed the tensor's allocation — refusing to expose \
+                     an out-of-bounds view to numpy",
+                ))
+            }
+        }
+
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
         dict.set_item("typestr", tensor.dtype.numpy_typestr())?;
 

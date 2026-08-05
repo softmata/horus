@@ -33,10 +33,22 @@
 //!
 //! # Compatibility note
 //!
-//! Seccomp is verified against `AUDIT_ARCH_X86_64`.  On other architectures the
-//! filter is not applied (the `apply` function returns `Ok(())` without doing
-//! anything on non-Linux platforms or non-x86_64 Linux at runtime).  The rlimit
-//! and FD-cleanup steps run on all Linux architectures.
+//! Seccomp is verified against `AUDIT_ARCH_X86_64`, and the syscall filter is
+//! therefore applied ONLY on x86_64 Linux — the syscall numbers in the deny
+//! table are architecture-specific, and the BPF architecture guard kills any
+//! process whose `seccomp_data.arch` does not match.
+//!
+//! This was previously stated here as fact while the code did not implement it:
+//! the module is gated on `target_os = "linux"` alone, so on aarch64 Linux
+//! (Raspberry Pi, Jetson — essentially every robot controller that is not a dev
+//! laptop) the guard fired on the plugin's FIRST syscall and the kernel killed
+//! it with SIGSYS. Every plugin, unconditionally. `apply_seccomp_filter` now
+//! carries the `cfg(target_arch)` gate that makes this paragraph true.
+//!
+//! The rlimit and FD-cleanup steps are architecture-independent and run on all
+//! Linux architectures, so the sandbox degrades rather than disappearing — but
+//! syscall filtering is genuinely absent off x86_64, and `PluginExecutor` warns
+//! once per process so that is visible rather than assumed.
 //!
 //! # Why path-based file isolation is not provided here
 //!
@@ -48,8 +60,9 @@
 //! In the meantime, `no_new_privs` + seccomp network deny + rlimits provide
 //! meaningful defence-in-depth against the most common plugin abuse scenarios.
 
-// This entire file is Linux-only.
-#![cfg(target_os = "linux")]
+// This entire file is Linux-only. The gate lives on the `pub mod sandbox;`
+// declaration in plugins/mod.rs — repeating it here as an inner `#![cfg]`
+// is redundant and trips clippy::duplicated_attributes.
 
 use std::io;
 
@@ -144,11 +157,50 @@ pub fn apply(plugin_dir: Option<&std::path::Path>) -> io::Result<()> {
     let _ = plugin_dir; // reserved for future Landlock integration
 
     set_resource_limits();
-    close_inherited_fds();
-    set_no_new_privs()?;
+    apply_privilege_restrictions()?;
     apply_seccomp_filter()?;
 
     Ok(())
+}
+
+/// The subset of [`apply`] that is safe for a LONG-LIVED child: FD closure and
+/// `PR_SET_NO_NEW_PRIVS`.
+///
+/// Same async-signal-safety contract as [`apply`] — call only from `pre_exec`.
+///
+/// Deliberately excludes the other two controls, because both are sized for the
+/// short, foreground plugin invocations `apply` was written for:
+///
+/// * **Resource limits.** `RLIMIT_CPU` is 300 *cumulative CPU-seconds* with the
+///   hard limit set equal to the soft one, so exceeding it is an uncatchable
+///   SIGKILL. A GPU simulator spread over four cores reaches that in about
+///   seventy-five seconds of wall clock. `RLIMIT_NOFILE` of 64 is likewise
+///   below what a wgpu/Vulkan process needs before it has drawn a frame.
+///   Applying these to a background plugin would kill it mid-session and look
+///   like a simulator crash.
+///
+/// * **The seccomp deny list.** It denies `socket` unconditionally, with no
+///   exemption for `AF_UNIX`, so it would `EPERM` the X11/Wayland connection
+///   every GUI plugin opens. Exempting `AF_UNIX` is not a safe substitute: it
+///   would hand plugins the local socket namespace — docker.sock, systemd —
+///   which is a weakening of a property the foreground path has today, and a
+///   design decision rather than a security fix.
+///
+/// So a background plugin gets no network restriction and no resource cap. That
+/// gap is real; this function closes the two controls that can be closed without
+/// breaking the plugin, rather than leaving all four off.
+pub fn apply_long_lived(plugin_dir: Option<&std::path::Path>) -> io::Result<()> {
+    let _ = plugin_dir; // reserved for future Landlock integration
+
+    apply_privilege_restrictions()
+}
+
+/// FD closure + `PR_SET_NO_NEW_PRIVS` — the controls that constrain what the
+/// child inherits and what it may become, independent of how long it runs or
+/// what it draws.
+fn apply_privilege_restrictions() -> io::Result<()> {
+    close_inherited_fds();
+    set_no_new_privs()
 }
 
 // ─── Resource limits ─────────────────────────────────────────────────────────
@@ -242,6 +294,40 @@ fn set_no_new_privs() -> io::Result<()> {
 /// Architecture: x86-64 only.  On any other architecture the filter header
 /// kills the process to prevent filter bypass via ABI mismatch.
 fn apply_seccomp_filter() -> io::Result<()> {
+    // Architecture gate — the module doc has always PROMISED this, and until now
+    // the code did not implement it.
+    //
+    // The BPF program below opens with the standard architecture guard: if
+    // `seccomp_data.arch != AUDIT_ARCH_X86_64` it returns
+    // SECCOMP_RET_KILL_PROCESS. That guard is correct and necessary (syscall
+    // NUMBERS differ per architecture, so applying an x86_64 table elsewhere
+    // would block the wrong calls) — but the filter was installed on ALL Linux,
+    // because `plugins::sandbox` is gated on `target_os = "linux"` alone.
+    //
+    // On aarch64 Linux — Raspberry Pi, Jetson, essentially every robot
+    // controller that is not a dev laptop — the guard therefore fired on the
+    // plugin's FIRST syscall and the kernel killed it outright. Every plugin,
+    // unconditionally, with SIGSYS and no diagnostic.
+    //
+    // Skip the syscall filter where its table does not apply. The rlimit and
+    // FD-cleanup steps in `apply` are architecture-independent and still run, so
+    // the sandbox degrades rather than disappearing. The caller warns once so
+    // "seccomp is not active here" is visible rather than assumed.
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        return Ok(());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        apply_seccomp_filter_x86_64()
+    }
+}
+
+/// The x86_64 syscall filter. Split out so the architecture gate above is the
+/// only place that decides whether it runs.
+#[cfg(target_arch = "x86_64")]
+fn apply_seccomp_filter_x86_64() -> io::Result<()> {
     // Syscalls we want to block.  Stored as a flat array so each entry produces
     // exactly two BPF instructions (JEQ + RET).  The `ret` field is the
     // seccomp return code when the syscall matches.
@@ -546,5 +632,116 @@ mod tests {
             }
         }
         // If /proc/self/limits is not available (unusual), just pass.
+    }
+
+    /// `apply_long_lived` must still set PR_SET_NO_NEW_PRIVS.
+    ///
+    /// This is the control that stops a plugin binary carrying a setuid bit
+    /// from escalating on exec. `spawn_background` previously applied nothing
+    /// at all, so `horus run --sim` launched its plugin without it.
+    #[test]
+    fn test_long_lived_sets_no_new_privs() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "grep NoNewPrivs /proc/self/status"])
+            .env_clear()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        // SAFETY: `apply_long_lived` calls only async-signal-safe libc
+        // functions (close, close_range, prctl).
+        unsafe {
+            cmd.pre_exec(|| apply_long_lived(None));
+        }
+
+        let output = cmd.output().expect("spawn sh");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
+            return; // kernel without NoNewPrivs in /proc/self/status
+        }
+        assert!(
+            stdout.contains("NoNewPrivs:\t1") || stdout.contains("NoNewPrivs:  1"),
+            "background plugins must run with no_new_privs, got: {stdout:?}"
+        );
+    }
+
+    /// `apply_long_lived` must close inherited descriptors above stderr.
+    ///
+    /// The parent here is the HORUS CLI, which holds the plugin trust store and
+    /// SHM topic descriptors open when it spawns. Leaking those into an
+    /// untrusted plugin is the concrete reason this control exists.
+    #[test]
+    fn test_long_lived_closes_inherited_fds() {
+        use std::os::fd::AsRawFd;
+
+        // Open a file and clear CLOEXEC so it WOULD survive exec unless the
+        // sandbox closes it. Without this the test proves nothing: Rust sets
+        // CLOEXEC on descriptors it creates.
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let raw = tmp.as_file().as_raw_fd();
+        // SAFETY: `raw` is a live descriptor owned by `tmp` for this scope;
+        // fcntl(F_SETFD) only alters its flags.
+        unsafe {
+            let flags = libc::fcntl(raw, libc::F_GETFD);
+            assert!(flags >= 0, "F_GETFD failed");
+            assert_eq!(
+                libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC),
+                0,
+                "clearing CLOEXEC failed"
+            );
+        }
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &format!("ls -1 /proc/self/fd | tr '\\n' ' '; echo; test -e /proc/self/fd/{raw} && echo LEAKED || echo CLOSED")])
+            .env_clear()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        // SAFETY: as above — only async-signal-safe libc calls.
+        unsafe {
+            cmd.pre_exec(|| apply_long_lived(None));
+        }
+
+        let output = cmd.output().expect("spawn sh");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("CLOSED"),
+            "descriptor {raw} survived into the plugin; \
+             background plugins must not inherit the CLI's open files. Got: {stdout:?}"
+        );
+    }
+
+    /// Pins the DELIBERATE gap: `apply_long_lived` does NOT install the seccomp
+    /// network deny, because it would EPERM the X11/Wayland socket every GUI
+    /// simulator opens — and `horus run --sim` is this path's only caller.
+    ///
+    /// This is here so the gap is a stated, tested property rather than
+    /// something a future reader has to infer from the absence of a call. If
+    /// someone later makes the filter AF_UNIX-aware and applies it here, this
+    /// test should be updated deliberately, not discovered by a broken sim.
+    #[test]
+    fn test_long_lived_deliberately_does_not_block_sockets() {
+        let mut cmd = Command::new("/bin/bash");
+        cmd.args(["-c", "exec 5<>/dev/tcp/127.0.0.1/9 2>/dev/null; echo $?"])
+            .env_clear()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        // SAFETY: as above — only async-signal-safe libc calls.
+        unsafe {
+            cmd.pre_exec(|| apply_long_lived(None));
+        }
+
+        let Ok(output) = cmd.output() else {
+            return; // no bash available
+        };
+        // The connect may fail (nothing listening on port 9) — that is fine and
+        // expected. What must NOT happen is the process being SIGSYS-killed,
+        // which is how the seccomp filter manifests: it would produce no exit
+        // code at all.
+        assert!(
+            output.status.code().is_some(),
+            "apply_long_lived must not install the seccomp filter — the child \
+             was killed by a signal, which is what SECCOMP_RET_KILL looks like"
+        );
     }
 }

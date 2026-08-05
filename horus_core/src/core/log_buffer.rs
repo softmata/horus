@@ -2,7 +2,7 @@ use crate::memory::platform::shm_logs_path;
 use log::error;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -215,17 +215,26 @@ impl SharedLogBuffer {
         capacity: usize,
     ) -> crate::error::HorusResult<Self> {
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            let _ = horus_sys::shm::create_shm_dir_all(parent);
         }
 
         let total_size = HEADER_SIZE + (capacity * SLOT_SIZE);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        // Owner-only. These buffers hold the robot's log and error history; with
+        // the default `0o666 & !umask` they were observed on disk as 0o664 —
+        // readable by every local user and writable by the owner's group, which
+        // makes them a tamper target as well as a disclosure one.
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(horus_sys::shm::SHM_FILE_MODE);
+        }
+        let file = opts.open(path)?;
+        // `mode` only applies when the file is created; tighten a buffer left
+        // behind by an older run too.
+        horus_sys::shm::harden_shm_file(path);
 
         let metadata = file.metadata()?;
         if metadata.len() == 0 {
@@ -359,6 +368,28 @@ impl SharedLogBuffer {
     /// normal writes that complete within microseconds and crash-orphaned
     /// slots where the writer died mid-write.
     pub fn get_all(&self) -> Vec<LogEntry> {
+        self.get_since(0)
+    }
+
+    /// Read log entries whose global write index is `>= after_idx`.
+    ///
+    /// The index is the value [`write_idx`](Self::write_idx) had when the
+    /// entry was pushed — the buffer-wide `fetch_add` counter — so a drain
+    /// loop that remembers the `write_idx` it last consumed can ask for
+    /// exactly the entries it has not seen.
+    ///
+    /// Do NOT use [`LogEntry::tick_number`] for this. That field is the
+    /// *publishing node's* own tick counter: it restarts per node, it is 0
+    /// for every entry that arrives through the `log::` facade rather than
+    /// from a node tick, and it advances at the node's rate rather than the
+    /// buffer's. Comparing it against a buffer-wide index drops all facade
+    /// entries and re-emits fast nodes' entries on every pass.
+    ///
+    /// Entries that the ring has already overwritten cannot be recovered; if
+    /// `after_idx` is older than the oldest surviving entry the gap is
+    /// silently skipped, and the caller can detect it by comparing
+    /// `write_idx()` against `capacity`.
+    pub fn get_since(&self, after_idx: u64) -> Vec<LogEntry> {
         let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
 
         // SAFETY: same alignment guarantees as push().
@@ -375,7 +406,13 @@ impl SharedLogBuffer {
             0
         };
 
-        for i in 0..num_entries {
+        // Global index of the oldest entry still resident in the ring.
+        let oldest_idx = (write_idx - num_entries) as u64;
+        // Skip the entries the caller has already consumed. Anything older
+        // than `oldest_idx` was overwritten and is unrecoverable.
+        let skip = after_idx.saturating_sub(oldest_idx).min(num_entries as u64) as usize;
+
+        for i in skip..num_entries {
             let slot_idx = (start_idx + i) % self.capacity;
 
             // SAFETY: slot_idx < MAX_LOG_ENTRIES; mmap covers the full buffer.
@@ -543,12 +580,10 @@ fn log_drain_loop(log_dir: &str, max_size: u64, max_files: usize) {
             continue;
         }
 
-        // Read all entries and write new ones
-        let entries = GLOBAL_LOG_BUFFER.get_all();
+        // Only the entries pushed since the last pass. Keyed on the
+        // buffer-wide write index, NOT on the per-node tick_number.
+        let entries = GLOBAL_LOG_BUFFER.get_since(last_idx);
         for entry in &entries {
-            if entry.tick_number <= last_idx {
-                continue; // Already written
-            }
             let level = match entry.log_type {
                 LogType::Error => "ERROR",
                 LogType::Warning => "WARN",
@@ -712,6 +747,54 @@ mod tests {
         let all = buf.get_all();
         assert_eq!(all.len(), 2);
         assert_eq!(buf.write_idx(), 2);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A drain loop that remembers the `write_idx` it last consumed must see
+    /// every entry exactly once — regardless of what each entry's
+    /// `tick_number` happens to be.
+    ///
+    /// This pins the S-08 defect: the drain used to filter on
+    /// `entry.tick_number <= last_idx`, comparing a per-node tick counter
+    /// against a buffer-wide index. Entries from the `log::` facade carry
+    /// tick 0 and were dropped forever; entries from a node whose tick had
+    /// run ahead of the buffer index were re-emitted on every pass.
+    #[test]
+    fn get_since_yields_each_entry_exactly_once() {
+        let (buf, path) = temp_buf(90);
+
+        // Deliberately adversarial tick_numbers: facade entries at 0, and a
+        // fast node whose tick counter has run far past the buffer index.
+        buf.push(make_entry("facade", 0));
+        buf.push(make_entry("fast_node", 5_000));
+        buf.push(make_entry("facade", 0));
+
+        let mut last_idx = 0u64;
+        let mut drained: Vec<String> = Vec::new();
+
+        // Pass 1 — everything so far.
+        let batch = buf.get_since(last_idx);
+        drained.extend(batch.iter().map(|e| e.node_name.clone()));
+        last_idx = buf.write_idx();
+        assert_eq!(batch.len(), 3, "first pass must drain all three entries");
+
+        // Pass 2 — nothing new was pushed, so nothing may be re-emitted.
+        let batch = buf.get_since(last_idx);
+        assert!(
+            batch.is_empty(),
+            "no new pushes, yet {} entries were drained again",
+            batch.len()
+        );
+
+        // Pass 3 — one more entry, again with a tick_number below last_idx.
+        buf.push(make_entry("facade", 0));
+        let batch = buf.get_since(last_idx);
+        drained.extend(batch.iter().map(|e| e.node_name.clone()));
+        assert_eq!(batch.len(), 1, "exactly the one new entry must be drained");
+
+        assert_eq!(drained, vec!["facade", "fast_node", "facade", "facade"]);
+        assert_eq!(buf.get_all().len(), 4, "get_all must still return all");
 
         let _ = std::fs::remove_file(path);
     }

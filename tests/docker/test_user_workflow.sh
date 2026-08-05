@@ -10,6 +10,26 @@ PASSED=0
 pass() { PASSED=$((PASSED + 1)); echo "  [PASS] $1"; }
 fail() { ERRORS=$((ERRORS + 1)); echo "  [FAIL] $1"; }
 
+# Run a cargo test target and record a pass/fail. On failure the captured
+# output is echoed: this matrix exists to catch distro-specific breakage (musl
+# link errors on Alpine, glibc symbol mismatches, ...), and the previous
+# `2>&1 | tail -3 | grep -q` form threw away exactly the diagnostics that make
+# such a failure actionable.
+run_cargo_test() {
+    local label="$1"; shift
+    local out
+    if out=$(cargo test "$@" 2>&1); then
+        if echo "$out" | grep -q "test result: ok"; then
+            pass "$label"
+            return
+        fi
+    fi
+    fail "$label"
+    echo "----- cargo test output ($label) -----"
+    echo "$out" | tail -40
+    echo "--------------------------------------"
+}
+
 echo "=========================================="
 echo "  HORUS User Workflow Test"
 echo "  OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '"' || uname -s)"
@@ -21,13 +41,18 @@ echo "=========================================="
 
 echo ""
 echo "── Step 1: Build horus CLI ──"
-if cargo build --no-default-features -p horus_manager --release 2>/dev/null; then
+# Keep stderr: a build failure here is the single most informative event in the
+# whole distro matrix, and `2>/dev/null` used to discard the rustc/linker error.
+if BUILD_OUT=$(cargo build --no-default-features -p horus_manager --release 2>&1); then
     pass "horus CLI builds"
     # Absolute, not "./target/release/horus": step 5 runs `horus new` from
     # inside a temp dir, and a relative path does not survive the cd.
     HORUS="$(pwd)/target/release/horus"
 else
     fail "horus CLI build failed"
+    echo "----- cargo build output -----"
+    echo "$BUILD_OUT" | tail -60
+    echo "------------------------------"
     echo "Cannot continue. Exiting."
     exit 1
 fi
@@ -36,11 +61,7 @@ fi
 
 echo ""
 echo "── Step 2: horus_sys platform tests ──"
-if cargo test --no-default-features -p horus_sys -- --test-threads=1 2>&1 | tail -3 | grep -q "test result: ok"; then
-    pass "horus_sys all tests pass"
-else
-    fail "horus_sys tests failed"
-fi
+run_cargo_test "horus_sys all tests pass" --no-default-features -p horus_sys -- --test-threads=1
 
 # ─── Step 3: SHM operations ─────────────────────────────────────────────
 
@@ -59,22 +80,14 @@ else
 fi
 
 # Test SHM through horus_core
-if cargo test --no-default-features -p horus_core --lib "memory::platform" -- --test-threads=1 2>&1 | tail -3 | grep -q "test result: ok"; then
-    pass "horus_core SHM platform tests pass"
-else
-    fail "horus_core SHM platform tests failed"
-fi
+run_cargo_test "horus_core SHM platform tests pass" --no-default-features -p horus_core --lib "memory::platform" -- --test-threads=1
 
 # ─── Step 4: Topic IPC ──────────────────────────────────────────────────
 
 echo ""
 echo "── Step 4: Topic IPC on this platform ──"
 
-if cargo test --no-default-features -p horus_core --test backend_detection -- --test-threads=1 2>&1 | tail -3 | grep -q "test result: ok"; then
-    pass "Topic backend auto-detection works"
-else
-    fail "Topic backend auto-detection failed"
-fi
+run_cargo_test "Topic backend auto-detection works" --no-default-features -p horus_core --test backend_detection -- --test-threads=1
 
 # ─── Step 5: Create and check project ───────────────────────────────────
 
@@ -105,51 +118,48 @@ else
     fail "project not created"
 fi
 
-$HORUS check "$TMPDIR/my_robot" 2>/dev/null || true
-pass "horus check runs"
+# A real assertion: the old form discarded the exit status with `|| true` and
+# then recorded an unconditional pass, so `horus check` could panic or not exist
+# at all and this step still reported [PASS].
+if $HORUS check "$TMPDIR/my_robot"; then
+    pass "horus check runs"
+else
+    fail "horus check failed"
+fi
 
 # ─── Step 6: Scheduler + Node lifecycle ─────────────────────────────────
 
 echo ""
 echo "── Step 6: Scheduler runtime ──"
 
-if cargo test --no-default-features -p horus_core --test scheduler_topic_lifecycle -- --test-threads=1 2>&1 | tail -3 | grep -q "test result: ok"; then
-    pass "Scheduler + Topic + Node lifecycle works"
-else
-    fail "Scheduler lifecycle test failed"
-fi
+run_cargo_test "Scheduler + Topic + Node lifecycle works" --no-default-features -p horus_core --test scheduler_topic_lifecycle -- --test-threads=1
 
 # ─── Step 7: RT scheduling on this platform ─────────────────────────────
 
 echo ""
 echo "── Step 7: RT scheduling ──"
 
-if cargo test --no-default-features -p horus_core --test rt_deadline_enforcement -- --test-threads=1 2>&1 | tail -3 | grep -q "test result: ok"; then
-    pass "RT deadline enforcement works"
-else
-    fail "RT deadline enforcement failed"
-fi
+run_cargo_test "RT deadline enforcement works" --no-default-features -p horus_core --test rt_deadline_enforcement -- --test-threads=1
 
 # ─── Step 8: Cross-process IPC ──────────────────────────────────────────
 
 echo ""
 echo "── Step 8: Cross-process IPC ──"
 
-if cargo test --no-default-features -p horus_core --test cross_process_ipc -- --test-threads=1 2>&1 | tail -3 | grep -q "test result: ok"; then
-    pass "Cross-process SHM IPC works"
-else
-    fail "Cross-process IPC failed"
-fi
+run_cargo_test "Cross-process SHM IPC works" --no-default-features -p horus_core --test cross_process_ipc -- --test-threads=1
 
 # ─── Step 9: Clean and SHM cleanup ──────────────────────────────────────
 
 echo ""
 echo "── Step 9: Cleanup ──"
 
-if $HORUS clean --shm 2>/dev/null; then
+# Both branches used to record a pass, so a regression that made this exit
+# non-zero was reported as green. `horus clean --shm` is expected to succeed
+# even when there is nothing to clean.
+if $HORUS clean --shm; then
     pass "horus clean --shm works"
 else
-    pass "horus clean --shm runs (may have no SHM to clean)"
+    fail "horus clean --shm failed"
 fi
 
 # Count leftover SHM files

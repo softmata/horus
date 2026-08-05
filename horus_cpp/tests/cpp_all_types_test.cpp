@@ -133,14 +133,21 @@ TEST(AllTypes, NavGoal) {
     horus::Subscriber<horus::msg::NavGoal> sub("alltype.nav");
     ASSERT_TRUE(pub.is_valid() && sub.is_valid());
     horus::msg::NavGoal msg{};
-    msg.target_x = 5.0; msg.target_y = 3.0; msg.target_theta = 1.0;
-    msg.tolerance = 0.1f;
+    // NavGoal carries a nested Pose2D and split position/angle tolerances.
+    // The flat target_x/target_y/target_theta/tolerance spelling predates the
+    // header reconciliation against Rust (5785796b) and no longer compiles.
+    msg.target_pose.x = 5.0; msg.target_pose.y = 3.0; msg.target_pose.theta = 1.0;
+    msg.tolerance_position = 0.1;
+    msg.tolerance_angle = 0.05;
     msg.timestamp_ns = 9;
     pub.send(msg);
     auto r = sub.recv();
     ASSERT_TRUE(r.has_value());
-    EXPECT_NEAR(r->get()->target_x, 5.0, 1e-10);
-    EXPECT_NEAR(r->get()->tolerance, 0.1f, 0.001f);
+    EXPECT_NEAR(r->get()->target_pose.x, 5.0, 1e-10);
+    EXPECT_NEAR(r->get()->target_pose.y, 3.0, 1e-10);
+    EXPECT_NEAR(r->get()->target_pose.theta, 1.0, 1e-10);
+    EXPECT_NEAR(r->get()->tolerance_position, 0.1, 1e-10);
+    EXPECT_NEAR(r->get()->tolerance_angle, 0.05, 1e-10);
 }
 
 TEST(AllTypes, Heartbeat) {
@@ -148,7 +155,9 @@ TEST(AllTypes, Heartbeat) {
     horus::Subscriber<horus::msg::Heartbeat> sub("alltype.hb");
     ASSERT_TRUE(pub.is_valid() && sub.is_valid());
     horus::msg::Heartbeat msg{};
-    msg.sequence = 42; msg.alive = true; msg.cpu_usage = 50.0f;
+    // Heartbeat has no cpu_usage — it carries `uptime` (seconds, double).
+    // Same header-reconciliation drift as NavGoal above.
+    msg.sequence = 42; msg.alive = true; msg.uptime = 50.0;
     pub.send(msg);
     auto r = sub.recv();
     ASSERT_TRUE(r.has_value());

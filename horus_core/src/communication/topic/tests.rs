@@ -1016,11 +1016,21 @@ fn concurrent_migration_no_livelock_16_threads() {
             let barrier = barrier.clone();
             let completed = completed.clone();
             test_spawn(move || {
-                let t: Topic<u64> = Topic::new(&name).expect("create");
-                t.send(1);
-                let _ = t.recv();
+                // Do the fallible setup first but defer the panic until after the
+                // barrier: std::sync::Barrier has no broken-barrier state, so a
+                // thread that unwinds before wait() parks the other 15 in
+                // futex_wait forever instead of failing the test.
+                // Turbofish, not a binding annotation: `t` is used before the
+                // `expect` below, so without it `t.send(1)`/`t.recv()` cannot
+                // resolve which `send`/`recv` is meant (E0034).
+                let created = Topic::<u64>::new(&name);
+                if let Ok(t) = &created {
+                    t.send(1);
+                    let _ = t.recv();
+                }
                 // All threads hit check_migration_now at the same instant.
                 barrier.wait();
+                let t: Topic<u64> = created.expect("create");
                 t.check_migration_now();
                 completed.fetch_add(1, Ordering::Relaxed);
             })
@@ -1300,8 +1310,11 @@ fn robotics_sensor_fusion_pipeline() {
     let imu_name = imu_topic.clone();
     let b = barrier.clone();
     let imu_thread = test_spawn(move || {
-        let pub_t: Topic<ImuData> = Topic::new(&imu_name).expect("imu pub");
+        // Create first, unwrap after the barrier: a panic before wait() would
+        // strand the other two participants (Barrier has no broken state).
+        let created = Topic::new(&imu_name);
         b.wait();
+        let pub_t: Topic<ImuData> = created.expect("imu pub");
         for i in 0..n_ticks {
             let t = i as f64 * 0.01;
             pub_t.send(ImuData {
@@ -1317,9 +1330,12 @@ fn robotics_sensor_fusion_pipeline() {
     let cmd_name = cmd_topic.clone();
     let b = barrier.clone();
     let fusion_thread = test_spawn(move || {
-        let imu_sub: Topic<ImuData> = Topic::new(&imu_name).expect("imu sub");
-        let cmd_pub: Topic<CmdVel> = Topic::new(&cmd_name).expect("cmd pub");
+        // Both creates run before the barrier, both unwrap after it.
+        let imu_created = Topic::new(&imu_name);
+        let cmd_created = Topic::new(&cmd_name);
         b.wait();
+        let imu_sub: Topic<ImuData> = imu_created.expect("imu sub");
+        let cmd_pub: Topic<CmdVel> = cmd_created.expect("cmd pub");
         let mut count = 0;
         let deadline = Instant::now() + 10_u64.secs();
         while count < n_ticks && Instant::now() < deadline {
@@ -1340,8 +1356,9 @@ fn robotics_sensor_fusion_pipeline() {
     let cmd_name = cmd_topic.clone();
     let b = barrier.clone();
     let motor_thread = test_spawn(move || {
-        let cmd_sub: Topic<CmdVel> = Topic::new(&cmd_name).expect("cmd sub");
+        let created = Topic::new(&cmd_name);
         b.wait();
+        let cmd_sub: Topic<CmdVel> = created.expect("cmd sub");
         let mut count = 0;
         let deadline = Instant::now() + 10_u64.secs();
         while count < n_ticks && Instant::now() < deadline {
@@ -1391,8 +1408,11 @@ fn robotics_multi_sensor_multi_actuator() {
             let n = name.clone();
             let b = barrier.clone();
             test_spawn(move || {
-                let t: Topic<f64> = Topic::new(&n).expect("sensor");
+                // Unwrap after the barrier — 6 participants, and a pre-wait
+                // unwind would park the other 5 forever.
+                let created = Topic::new(&n);
                 b.wait();
+                let t: Topic<f64> = created.expect("sensor");
                 for i in 0..n_msgs {
                     t.send(sid as f64 * 1000.0 + i as f64);
                 }
@@ -1405,9 +1425,13 @@ fn robotics_multi_sensor_multi_actuator() {
     let on = output_names.clone();
     let b = barrier.clone();
     let controller = test_spawn(move || {
-        let subs: Vec<Topic<f64>> = sn.iter().map(|n| Topic::new(n).expect("sub")).collect();
-        let pubs: Vec<Topic<f64>> = on.iter().map(|n| Topic::new(n).expect("pub")).collect();
+        // Collect the five fallible creates as Results, then unwrap them after
+        // the barrier so any failure surfaces without stranding the others.
+        let subs_created: Vec<_> = sn.iter().map(Topic::<f64>::new).collect();
+        let pubs_created: Vec<_> = on.iter().map(Topic::<f64>::new).collect();
         b.wait();
+        let subs: Vec<Topic<f64>> = subs_created.into_iter().map(|r| r.expect("sub")).collect();
+        let pubs: Vec<Topic<f64>> = pubs_created.into_iter().map(|r| r.expect("pub")).collect();
 
         let mut total = 0;
         let deadline = Instant::now() + 10_u64.secs();
@@ -1434,8 +1458,9 @@ fn robotics_multi_sensor_multi_actuator() {
             let b = barrier.clone();
             let done = done.clone();
             test_spawn(move || {
-                let t: Topic<f64> = Topic::new(&n).expect("actuator");
+                let created = Topic::new(&n);
                 b.wait();
+                let t: Topic<f64> = created.expect("actuator");
                 let mut count = 0;
                 let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
@@ -1707,8 +1732,12 @@ fn concurrent_migration_during_send_recv() {
     let pub_name = name.clone();
     let b = barrier.clone();
     let producer = test_spawn(move || {
-        let t: Topic<u64> = Topic::new(&pub_name).expect("pub");
+        // Main itself is a barrier participant, so a pre-wait unwind here hangs
+        // the whole test process before any join runs. Create first, unwrap
+        // after the barrier.
+        let created = Topic::new(&pub_name);
         b.wait();
+        let t: Topic<u64> = created.expect("pub");
         for i in 1..=n_messages {
             t.send(i);
         }
@@ -1717,8 +1746,9 @@ fn concurrent_migration_during_send_recv() {
     let sub_name = name.clone();
     let b = barrier.clone();
     let consumer = test_spawn(move || {
-        let t: Topic<u64> = Topic::new(&sub_name).expect("sub");
+        let created = Topic::new(&sub_name);
         b.wait();
+        let t: Topic<u64> = created.expect("sub");
         let mut received = Vec::with_capacity(n_messages as usize);
         let deadline = Instant::now() + 30_u64.secs();
         while received.len() < n_messages as usize && Instant::now() < deadline {
@@ -1737,8 +1767,9 @@ fn concurrent_migration_during_send_recv() {
             let n = name.clone();
             let b = barrier.clone();
             test_spawn(move || {
-                let t: Topic<u64> = Topic::new(&n).expect("mig");
+                let created = Topic::new(&n);
                 b.wait();
+                let t: Topic<u64> = created.expect("mig");
                 let modes = [
                     BackendMode::SpscShm,
                     BackendMode::FanoutShm,
@@ -2806,6 +2837,7 @@ fn auto_grow_shm_region_len_increases() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn auto_grow_multiple_grows() {
     let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Verify multiple successive grows work without corruption.
@@ -5882,34 +5914,95 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
     let producer: Topic<String> = Topic::new(&name).expect("producer");
 
     let ready = Arc::new(Barrier::new(3)); // 2 subs + main
+                                           // Number of subscribers that have actually observed the warm-up message.
+                                           // The producer re-sends until this reaches 2 — see the send loop below.
+    let warmed_count = Arc::new(AtomicU32::new(0));
     let spawn_sub = |tag: &'static str| {
         let name = name.clone();
         let ready = ready.clone();
+        let warmed_count = warmed_count.clone();
         std::thread::spawn(move || {
             let sub: Topic<String> = Topic::new(&name).expect("sub");
             let _ = sub.try_recv(); // register this thread as a subscriber
             sub.check_migration_now();
             ready.wait(); // all subs registered before the producer streams
+                          // Wait for a producer warm-up message so every subscriber has
+                          // completed the topology migration before the measured stream.
+            let warmup_deadline = Instant::now() + Duration::from_secs(5);
+            let mut warmed_up = false;
+            loop {
+                sub.check_migration_now();
+                if sub.try_recv().as_deref() == Some("__horus_ready__") {
+                    warmed_up = true;
+                    warmed_count.fetch_add(1, Ordering::AcqRel);
+                    break;
+                }
+                // Do NOT panic here. This thread is one of three participants in
+                // `ready`, and std::sync::Barrier has no broken-barrier state:
+                // unwinding past the ready.wait() below leaves the producer and
+                // the sibling subscriber blocked on a 3-party barrier that can
+                // never complete. That turned a slow warm-up into a permanent
+                // hang rather than a test failure (observed: 48 min wall clock,
+                // 7 s CPU, every thread parked in futex_wait). Record the
+                // timeout, still arrive at the barrier, and let the assertions
+                // after the join report it.
+                if Instant::now() >= warmup_deadline {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            ready.wait();
             let mut got = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(5);
             while (got.len() as u64) < n && Instant::now() < deadline {
                 sub.check_migration_now();
                 match sub.try_recv() {
+                    // The producer re-sends the warm-up until every subscriber has
+                    // acked, so a straggler may still find copies queued ahead of
+                    // the measured stream. They are not part of it.
+                    Some(v) if v == "__horus_ready__" => {}
                     Some(v) => got.push(v),
                     None => std::thread::yield_now(),
                 }
             }
-            (tag, got, sub.backend_name().to_string())
+            (tag, got, sub.backend_name().to_string(), warmed_up)
         })
     };
     let h1 = spawn_sub("sub1");
     let h2 = spawn_sub("sub2");
     ready.wait(); // producer waits until both subscriber threads have registered
+                  // Re-send the warm-up until BOTH subscribers have observed it, rather than
+                  // publishing it exactly once.
+                  //
+                  // A subscriber becomes a *participant* (bumping sub_count, which is what
+                  // selects the broadcast backend) in ensure_consumer, but only becomes an
+                  // addressable *FanoutShm endpoint* lazily, on the first try_recv issued once
+                  // FanoutShm is already installed. send_serde fans out only to slots active AT
+                  // SEND TIME, and register_subscriber_locked resets tail to head — so anything
+                  // published before a subscriber claims its endpoint is discarded permanently,
+                  // with no backfill. A single send therefore races the slowest subscriber's
+                  // first post-barrier try_recv, and losing that race costs the message forever.
+                  //
+                  // The race is decided in ~100us and Linux happens to win it; Windows loses it
+                  // deterministically, because shm_base_dir() is tmpfs on Linux but an on-disk
+                  // NTFS temp dir on Windows, making the subscriber's lock-file claim slower
+                  // than the producer's CreateFileMappingW attach. Confirmed by reproducing the
+                  // exact Windows failure on Linux with a 1ms stall before sub1's first recv.
+    let warm_deadline = Instant::now() + Duration::from_secs(5);
+    while warmed_count.load(Ordering::Acquire) < 2 && Instant::now() < warm_deadline {
+        producer.send("__horus_ready__".to_string());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    ready.wait(); // both subscribers observed the producer and migrated
     for v in 1..=n {
         producer.send(format!("m{v}"));
     }
-    let (t1, got1, be1) = h1.join().unwrap();
-    let (t2, got2, be2) = h2.join().unwrap();
+    let (t1, got1, be1, warm1) = h1.join().unwrap();
+    let (t2, got2, be2, warm2) = h2.join().unwrap();
+    // Surface a warm-up timeout as a failure here rather than as a panic inside
+    // the subscriber thread — see the comment at the warm-up loop.
+    assert!(warm1, "{t1} never observed the producer warm-up message");
+    assert!(warm2, "{t2} never observed the producer warm-up message");
     eprintln!(
         "DIAG mt-nonpod: {t1} backend={be1} got={} | {t2} backend={be2} got={} | producer={}",
         got1.len(),
@@ -6097,8 +6190,11 @@ fn mp_send_no_overshoot_corruption() {
         let stop = stop.clone();
         let b = barrier.clone();
         handles.push(test_spawn(move || {
-            let p: Topic<u64> = Topic::with_capacity(&n, cap, None).expect("producer");
+            // Main waits on this barrier too: unwrapping before wait() would hang
+            // the test instead of failing it.
+            let created = Topic::with_capacity(&n, cap, None);
             b.wait();
+            let p: Topic<u64> = created.expect("producer");
             for i in 0..per {
                 // Distinct value: producer id in high bits, sequence in low bits.
                 let mut m = (pid as u64) << 40 | i;
@@ -7670,7 +7766,6 @@ fn partial_write_full_ring_backpressure() {
 fn partial_write_concurrent_writers_no_partial_data() {
     let name = unique("partial_concurrent");
     let t: Topic<[u64; 4]> = Topic::new(&name).unwrap();
-    let t_ptr = &t as *const Topic<[u64; 4]> as usize;
 
     let n_writers = 3;
     let msgs_per_writer = 50;
@@ -7680,12 +7775,8 @@ fn partial_write_concurrent_writers_no_partial_data() {
     let handles: Vec<_> = (0..n_writers)
         .map(|writer_id| {
             let b = barrier.clone();
+            let t = t.clone();
             test_spawn(move || {
-                // SAFETY: `t_ptr` points to `t` which is stack-allocated in the
-                // enclosing test function. All writer handles are joined before `t`
-                // is dropped, so the reference is valid for the duration of the
-                // thread. `Topic` is Sync, so concurrent shared access is sound.
-                let t = unsafe { &*(t_ptr as *const Topic<[u64; 4]>) };
                 b.wait();
                 for i in 0..msgs_per_writer {
                     let val = (writer_id * 1000 + i) as u64;
@@ -7697,17 +7788,14 @@ fn partial_write_concurrent_writers_no_partial_data() {
 
     // Reader
     let reader_barrier = barrier.clone();
+    let reader_topic = t.clone();
     let reader = test_spawn(move || {
-        // SAFETY: `t_ptr` points to `t` which is stack-allocated in the enclosing
-        // test function. The reader handle is joined before `t` is dropped, so the
-        // reference remains valid. `Topic` is Sync, permitting concurrent reads.
-        let t = unsafe { &*(t_ptr as *const Topic<[u64; 4]>) };
         reader_barrier.wait();
         let mut corrupt_count = 0u64;
         let mut total = 0u64;
         let deadline = Instant::now() + 200_u64.ms();
         while Instant::now() < deadline {
-            if let Some(arr) = t.recv() {
+            if let Some(arr) = reader_topic.recv() {
                 total += 1;
                 // All 4 elements should match — if they don't, we got a partial write
                 if arr[0] != arr[1] || arr[1] != arr[2] || arr[2] != arr[3] {
@@ -9049,6 +9137,7 @@ fn messages_total_not_affected_by_recv() {
 // ============================================================================
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_type_name_readable_from_header_info() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9069,6 +9158,7 @@ fn e2e_type_name_readable_from_header_info() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_messages_total_matches_send_count_via_header_info() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9088,6 +9178,7 @@ fn e2e_messages_total_matches_send_count_via_header_info() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_messages_total_matches_send_count_via_slot_read() {
     use crate::communication::read_latest_slot_bytes;
     use crate::memory::shm_topics_dir;
@@ -9121,6 +9212,7 @@ fn e2e_messages_total_matches_send_count_via_slot_read() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_header_info_and_slot_read_consistent() {
     use crate::communication::{read_latest_slot_bytes, read_topic_header_info};
     use crate::memory::shm_topics_dir;
@@ -9157,6 +9249,7 @@ fn e2e_header_info_and_slot_read_consistent() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_non_pod_type_detected() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9176,6 +9269,7 @@ fn e2e_non_pod_type_detected() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_multiple_topics_distinct_type_names() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;
@@ -9249,6 +9343,7 @@ fn e2e_registry_write_read_roundtrip() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
 fn e2e_zero_sends_zero_messages_total() {
     use crate::communication::read_topic_header_info;
     use crate::memory::shm_topics_dir;

@@ -107,6 +107,10 @@ pub(crate) mod header;
 pub(crate) mod local_state;
 pub mod metrics;
 pub(crate) mod migration;
+/// Authoritative byte layout of a topic's SHM region, for out-of-crate readers
+/// and writers (`horus_net`). Offsets are `offset_of!`-asserted against
+/// `TopicHeader`, so drift is a build failure.
+pub mod shm_layout;
 pub mod types;
 
 // Per-path optimized backend modules
@@ -1077,12 +1081,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             } else {
                 TopicRole::Producer
             }
+        } else if local.role == TopicRole::Producer {
+            TopicRole::Both
         } else {
-            if local.role == TopicRole::Producer {
-                TopicRole::Both
-            } else {
-                TopicRole::Consumer
-            }
+            TopicRole::Consumer
         };
 
         // Late-join fix: if the ring has wrapped since no consumer was reading,

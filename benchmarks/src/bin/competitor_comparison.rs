@@ -176,22 +176,26 @@ fn bench_raw_udp(size: usize, duration_secs: u64) -> Vec<u64> {
 // Zenoh benchmark (feature-gated)
 // ============================================================================
 
+// Ported from the zenoh 0.x API to 1.0 (the version `benchmarks/Cargo.toml`
+// has pinned since the bump). 1.0 removed `zenoh::prelude` and the `.res()`
+// terminator — builders are awaited directly — and moved the default config to
+// `zenoh::Config::default()`. This code still used the 0.x spelling, so
+// `--features zenoh` had not compiled for some time; the CI job that would have
+// caught it is `continue-on-error: true`.
 #[cfg(feature = "zenoh")]
 fn bench_zenoh(size: usize, duration_secs: u64) -> Vec<u64> {
-    use zenoh::prelude::r#async::*;
-
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let session = zenoh::open(zenoh::config::default()).res().await.unwrap();
+        let session = zenoh::open(zenoh::Config::default()).await.unwrap();
         let key = format!("horus_bench/{size}");
-        let publisher = session.declare_publisher(&key).res().await.unwrap();
-        let subscriber = session.declare_subscriber(&key).res().await.unwrap();
+        let publisher = session.declare_publisher(key.clone()).await.unwrap();
+        let subscriber = session.declare_subscriber(key).await.unwrap();
 
         let payload = vec![0xCDu8; size];
 
         // Warmup
         for _ in 0..1000 {
-            publisher.put(&payload).res().await.unwrap();
+            publisher.put(payload.as_slice()).await.unwrap();
             let _ = subscriber.recv_async().await;
         }
 
@@ -200,7 +204,7 @@ fn bench_zenoh(size: usize, duration_secs: u64) -> Vec<u64> {
         let mut samples = Vec::with_capacity(200_000);
         while Instant::now() < deadline {
             let s = Instant::now();
-            publisher.put(&payload).res().await.unwrap();
+            publisher.put(payload.as_slice()).await.unwrap();
             let _ = subscriber.recv_async().await;
             samples.push(s.elapsed().as_nanos() as u64);
         }

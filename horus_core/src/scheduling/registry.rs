@@ -144,6 +144,14 @@ impl SchedulerRegistry {
         let meta = file.metadata()?;
         if meta.len() == 0 {
             file.set_len(REGISTRY_FILE_SIZE as u64)?;
+        } else if (meta.len() as usize) < REGISTRY_FILE_SIZE {
+            // A short file here is not benign: the mmap below is sized by the
+            // FILE, but every slot write indexes as if the region were
+            // REGISTRY_FILE_SIZE, so a planted 1-byte file makes the scheduler
+            // touch a page past the mapping and take SIGBUS on its next tick —
+            // a local user can kill any scheduler by pre-creating the path.
+            // Grow it to the size the code actually assumes.
+            file.set_len(REGISTRY_FILE_SIZE as u64)?;
         }
 
         // SAFETY: file is valid, size set to REGISTRY_FILE_SIZE.

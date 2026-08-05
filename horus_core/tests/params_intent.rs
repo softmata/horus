@@ -339,3 +339,140 @@ fn test_params_intent_metadata_describes_param() {
         }
     }
 }
+
+// ============================================================================
+// Test: a single env var must not delete the built-in safety defaults
+// ============================================================================
+
+/// INTENT: "Setting one parameter overrides that parameter, not all of them."
+///
+/// Robotics guarantee: a launch file that sets `HORUS_PARAM_CAMERA_FPS=60`
+/// is expressing an opinion about the camera, not withdrawing every safety
+/// limit the framework ships with. This previously applied the built-in
+/// defaults only when the resulting map was completely empty, so a single
+/// unrelated env var suppressed `emergency_stop_distance`,
+/// `collision_threshold`, `max_speed` and `acceleration_limit` — with no
+/// warning. A robot would then run with whatever fallback each call site
+/// happened to pass to `get_or`, or with none at all.
+///
+/// The env vars are set inside the child process so this test cannot leak
+/// into the rest of the suite (which shares a process).
+#[test]
+fn test_params_intent_env_var_does_not_suppress_defaults() {
+    let exe = std::env::current_exe().expect("test exe path");
+    let output = std::process::Command::new(exe)
+        .arg("--exact")
+        .arg("child_env_var_does_not_suppress_defaults")
+        .arg("--nocapture")
+        .arg("--ignored")
+        .env("HORUS_PARAM_CAMERA_FPS", "60")
+        .env("HORUS_CHILD", "1")
+        .output()
+        .expect("spawn child test");
+
+    assert!(
+        output.status.success(),
+        "child failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "spawned by test_params_intent_env_var_does_not_suppress_defaults with env set"]
+fn child_env_var_does_not_suppress_defaults() {
+    if std::env::var("HORUS_CHILD").is_err() {
+        return;
+    }
+    let dir = TempDir::new().expect("tempdir");
+    // Run somewhere with no .horus/config/params.yaml so only defaults + env apply.
+    std::env::set_current_dir(dir.path()).expect("chdir");
+
+    let params = RuntimeParams::new().expect("params must construct");
+
+    // The env var took effect...
+    let fps: i64 = params
+        .get("camera_fps")
+        .expect("camera_fps must come from the env var");
+    assert_eq!(fps, 60, "HORUS_PARAM_CAMERA_FPS must override the default");
+
+    // ...without deleting the safety defaults.
+    for key in [
+        "emergency_stop_distance",
+        "collision_threshold",
+        "max_speed",
+        "acceleration_limit",
+        "tick_rate",
+    ] {
+        assert!(
+            params.has(key),
+            "setting one unrelated env var must not delete the built-in default {key:?}"
+        );
+    }
+}
+
+// ============================================================================
+// Test: a malformed params.yaml must fail startup, not fall back silently
+// ============================================================================
+
+/// INTENT: "A parameter file that cannot be parsed is an error."
+///
+/// Robotics guarantee: an operator who writes `max_speed: 0.2` into
+/// params.yaml is imposing a limit. If a typo makes the file unparseable and
+/// the framework quietly boots on its built-in `max_speed: 1.0`, the robot
+/// runs five times faster than the person who configured it intended, and
+/// nothing in the logs says so. Startup must fail instead.
+#[test]
+fn test_params_intent_malformed_yaml_is_an_error() {
+    let exe = std::env::current_exe().expect("test exe path");
+    let output = std::process::Command::new(exe)
+        .arg("--exact")
+        .arg("child_malformed_yaml_is_an_error")
+        .arg("--nocapture")
+        .arg("--ignored")
+        .env("HORUS_CHILD", "1")
+        .output()
+        .expect("spawn child test");
+
+    assert!(
+        output.status.success(),
+        "child failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "spawned by test_params_intent_malformed_yaml_is_an_error"]
+fn child_malformed_yaml_is_an_error() {
+    if std::env::var("HORUS_CHILD").is_err() {
+        return;
+    }
+    let dir = TempDir::new().expect("tempdir");
+    std::env::set_current_dir(dir.path()).expect("chdir");
+    std::fs::create_dir_all(".horus/config").expect("mkdir");
+
+    // Valid YAML first: it must layer over the defaults, not replace them.
+    std::fs::write(".horus/config/params.yaml", "max_speed: 0.2\n").expect("write");
+    let params = RuntimeParams::new().expect("valid params.yaml must load");
+    let speed: f64 = params.get("max_speed").expect("max_speed");
+    assert!(
+        (speed - 0.2).abs() < 1e-10,
+        "params.yaml must override the default, got {speed}"
+    );
+    assert!(
+        params.has("emergency_stop_distance"),
+        "a params.yaml setting one key must not delete the other defaults"
+    );
+
+    // Now break it. Unbalanced bracket — not valid YAML.
+    std::fs::write(".horus/config/params.yaml", "max_speed: [0.2\nbad: : :\n").expect("write");
+    let msg = match RuntimeParams::new() {
+        Ok(_) => panic!("a malformed params.yaml must not silently fall back to defaults"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("params.yaml"),
+        "the error must name the offending file, got: {msg}"
+    );
+}

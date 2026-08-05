@@ -26,14 +26,33 @@ fn peer_binary() -> PathBuf {
     path.pop();
     path.pop();
     path.push("deps");
+    // Pick the NEWEST match, not the first `read_dir` hit.
+    //
+    // `peer_process` is a separate `[[test]]` target, so rebuilding it leaves
+    // the previous hash-suffixed binary in `deps/` alongside the new one, and
+    // `read_dir` order is arbitrary. Returning the first match therefore ran a
+    // stale peer at random — which silently reintroduces whatever bug the
+    // rebuild just fixed, and presents as a data-mismatch failure rather than a
+    // build problem. CI never sees this because its test job runs `cargo clean`
+    // first; local runs hit it constantly.
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(&path).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with("peer_process-") && !name.contains('.') {
-            return entry.path();
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(best_t, _)| mtime > *best_t) {
+                best = Some((mtime, entry.path()));
+            }
         }
     }
-    panic!("peer_process binary not found in {path:?}");
+    match best {
+        Some((_, p)) => p,
+        None => panic!("peer_process binary not found in {path:?}"),
+    }
 }
 
 fn shm_path(name: &str) -> PathBuf {

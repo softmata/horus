@@ -237,6 +237,36 @@ impl GenericMessage {
     }
 }
 
+/// Byte budget for a `log_summary` preview.
+const LOG_SUMMARY_MAX_BYTES: usize = 200;
+
+/// Truncate `s` to at most `max` BYTES, never splitting a UTF-8 character.
+///
+/// The previous code was `&formatted[..200]` guarded by `formatted.len() > 200`
+/// — a byte index paired with a byte length, under a comment that said "200
+/// chars". Slicing a `String` at a byte offset panics with "byte index 200 is
+/// not a char boundary" whenever byte 200 lands inside a multi-byte sequence,
+/// and `format!("{}", serde_json::Value)` passes non-ASCII through raw (the
+/// default formatter escapes only control characters, `"` and `\\`).
+///
+/// So publishing any message containing non-ASCII text longer than 200 bytes —
+/// a Japanese or Chinese label, an accented place name, an emoji, any UTF-8
+/// telemetry string — panicked. `log_summary()` is computed unconditionally on
+/// every send, so this killed the publishing node: via PyO3 it surfaces as a
+/// PanicException routed into the node's FailurePolicy, and on a Rust worker
+/// thread it silently kills that thread (the release profile has no
+/// `panic = "abort"`).
+fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 impl LogSummary for GenericMessage {
     fn log_summary(&self) -> String {
         let total_len = self.inline_len as usize + self.overflow_len as usize;
@@ -248,9 +278,12 @@ impl LogSummary for GenericMessage {
         if let Ok(json_str) = std::str::from_utf8(&data) {
             if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let formatted = format!("{}", json_val);
-                // Truncate long messages to 200 chars
-                if formatted.len() > 200 {
-                    return format!("{}... ({} bytes total)", &formatted[..200], total_len);
+                if formatted.len() > LOG_SUMMARY_MAX_BYTES {
+                    return format!(
+                        "{}... ({} bytes total)",
+                        truncate_on_char_boundary(&formatted, LOG_SUMMARY_MAX_BYTES),
+                        total_len
+                    );
                 }
                 return formatted;
             }
@@ -259,8 +292,12 @@ impl LogSummary for GenericMessage {
         // Try MessagePack next (Rust-to-Rust generic messages)
         if let Ok(msgpack_val) = rmp_serde::from_slice::<serde_json::Value>(&data) {
             let formatted = format!("{}", msgpack_val);
-            if formatted.len() > 200 {
-                return format!("{}... ({} bytes total)", &formatted[..200], total_len);
+            if formatted.len() > LOG_SUMMARY_MAX_BYTES {
+                return format!(
+                    "{}... ({} bytes total)",
+                    truncate_on_char_boundary(&formatted, LOG_SUMMARY_MAX_BYTES),
+                    total_len
+                );
             }
             return formatted;
         }
@@ -897,6 +934,59 @@ mod tests {
         assert!(
             result.is_err(),
             "deserializing string as Vec<i32> should fail"
+        );
+    }
+}
+
+#[cfg(test)]
+mod log_summary_utf8_tests {
+    use super::*;
+
+    #[test]
+    fn truncation_never_splits_a_utf8_character() {
+        // The bug: `&s[..200]` is a BYTE index, so it panicked whenever byte 200
+        // landed inside a multi-byte sequence.
+        let s = "日".repeat(200); // 600 bytes, 3 bytes per char
+        let t = truncate_on_char_boundary(&s, 200);
+        assert!(t.len() <= 200);
+        assert!(s.starts_with(t), "must be a prefix");
+        // 200 is not a multiple of 3, so a correct implementation stops short.
+        assert_eq!(t.len(), 198);
+    }
+
+    #[test]
+    fn truncation_is_a_noop_below_the_budget() {
+        assert_eq!(truncate_on_char_boundary("short", 200), "short");
+        let exact = "a".repeat(200);
+        assert_eq!(truncate_on_char_boundary(&exact, 200), exact);
+    }
+
+    #[test]
+    fn truncation_handles_a_boundary_at_every_offset() {
+        // Emoji are 4 bytes, so every residue class mod 4 is exercised.
+        let s = "🤖".repeat(100); // 400 bytes
+        for max in 190..210 {
+            let t = truncate_on_char_boundary(&s, max);
+            assert!(t.len() <= max);
+            assert!(s.starts_with(t));
+            assert_eq!(t.len() % 4, 0, "must land on a character boundary");
+        }
+    }
+
+    /// End-to-end: a message whose JSON rendering contains non-ASCII beyond the
+    /// budget must summarise rather than panic. `log_summary()` runs
+    /// unconditionally on every send, so this killed the publishing node.
+    #[test]
+    fn log_summary_does_not_panic_on_long_non_ascii_json() {
+        let value = serde_json::json!({
+            "label": "ロボットの位置情報を含む非常に長い日本語のテキストです".repeat(10),
+        });
+        let json = serde_json::to_vec(&value).unwrap();
+        let msg = GenericMessage::new(json).expect("payload fits a GenericMessage");
+        let summary = msg.log_summary(); // must not panic
+        assert!(
+            summary.contains("bytes total"),
+            "should have been truncated"
         );
     }
 }

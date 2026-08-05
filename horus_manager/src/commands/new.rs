@@ -1,7 +1,7 @@
+use crate::cli_output;
 use crate::manifest::{
     DependencyValue, HorusManifest, PackageInfo, TargetType, WorkspaceConfig, HORUS_TOML,
 };
-use crate::{cli_output, version};
 use anyhow::{Context, Result};
 use colored::*;
 use std::collections::BTreeMap;
@@ -20,8 +20,13 @@ pub fn create_new_project(
     // Validate project name before doing anything
     validate_project_name(&name)?;
 
-    // Check version compatibility before creating project
-    version::check_and_prompt_update()?;
+    // NOTE: the CLI/library version-compatibility check deliberately does NOT
+    // live here. It reads global machine state (~/.horus/installed_version), so
+    // calling it from this function coupled every unit test of project
+    // scaffolding to whatever the developer happens to have installed — 43
+    // tests in this module failed on any machine with an older ~/.horus.
+    // It is a CLI-UX concern and now runs at the dispatch layer in main.rs,
+    // before this function is called.
 
     if workspace {
         cli_output::info(&format!(

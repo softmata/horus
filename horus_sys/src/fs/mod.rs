@@ -320,12 +320,65 @@ pub fn create_dir_secure(path: &Path) -> anyhow::Result<()> {
             .recursive(true)
             .mode(0o700)
             .create(path)?;
+
+        // `DirBuilder::mode()` applies ONLY to directories this call creates.
+        // When the path already exists the call succeeds and the existing mode
+        // is left untouched — so a directory some looser code path created
+        // first (a bare `create_dir_all` gets 0o775 under the usual 0o002
+        // umask) stayed world-readable forever, and every subsequent
+        // "create_dir_secure" silently accepted it. For the node presence tree
+        // that means the robot's node inventory readable by any local user,
+        // from a function whose entire purpose is to prevent that.
+        //
+        // Repair by MASKING, never assigning: this only ever removes bits, so a
+        // path already stricter than 0o700 keeps its stricter mode. (Assigning
+        // outright would ADD owner bits to a 0o444 directory — a bug I made
+        // once already in this area, caught by `mmap_readonly_dir_returns_error`.)
+        harden_existing_dir(path);
     }
     #[cfg(not(unix))]
     {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+/// Tighten an existing directory's mode to at most 0o700, without ever widening it.
+///
+/// Only touches paths owned by the current user: another user's directory is
+/// not ours to modify, and failing to chmod it is not an error we can act on
+/// here (the ownership gate in `horus_sys::shm` is what refuses those).
+#[cfg(unix)]
+fn harden_existing_dir(path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    // Only our own directories. This guard must NOT be gated on Linux: the
+    // function is `cfg(unix)`, so gating the ownership check more narrowly than
+    // the function itself compiled it out on macOS and left the chmod below
+    // applying to any directory handed in — the exact opposite of what the doc
+    // comment above promises. `geteuid` and `MetadataExt::uid` are available on
+    // every unix target.
+    //
+    // Effective uid, matching `horus_sys::shm::harden_existing_dir`: it is what
+    // the kernel actually checks for the chmod.
+    // SAFETY: geteuid is always safe; it takes no arguments and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if meta.uid() != euid {
+        return;
+    }
+
+    let current = meta.permissions().mode() & 0o777;
+    let tightened = current & 0o700;
+    if tightened != current {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(tightened));
+    }
 }
 
 /// Open (or create) a file with restrictive permissions (owner rw only).
@@ -610,6 +663,56 @@ mod tests {
     }
 
     // ── create_dir_secure tests ─────────────────────────────────────
+
+    /// `create_dir_secure` must tighten a directory that ALREADY exists.
+    ///
+    /// `DirBuilder::mode()` applies only to directories it creates, so before
+    /// this fix a pre-existing 0o775 tree (what a bare `create_dir_all` leaves
+    /// under the usual umask) was silently accepted — leaving the node presence
+    /// inventory world-readable.
+    #[test]
+    #[cfg(unix)]
+    fn create_dir_secure_tightens_an_existing_loose_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("horus_sys_loose_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        create_dir_secure(&tmp).unwrap();
+
+        let mode = std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "an existing loose directory must be tightened, got {mode:03o}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Hardening must only ever REMOVE permission bits.
+    ///
+    /// Assigning 0o700 outright would ADD owner write to a read-only directory.
+    /// That exact bug was introduced once already in this area and caught by
+    /// `mmap_readonly_dir_returns_error`.
+    #[test]
+    #[cfg(unix)]
+    fn create_dir_secure_never_widens_a_stricter_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("horus_sys_strict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        create_dir_secure(&tmp).unwrap();
+
+        let mode = std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o500,
+            "a stricter directory must keep its mode, got {mode:03o}"
+        );
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn create_dir_secure_creates_directory() {

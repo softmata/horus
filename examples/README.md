@@ -73,7 +73,7 @@ While running, use the CLI to inspect the system:
 horus topic list          # see active topics
 horus topic echo <topic>  # watch live messages
 horus node list           # see running nodes
-horus monitor -t          # TUI dashboard
+horus monitor             # TUI dashboard
 ```
 
 ## File structure

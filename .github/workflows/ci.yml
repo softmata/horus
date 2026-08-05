@@ -17,8 +17,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Allow warnings on dev branch, strict on main
-  RUSTFLAGS: ${{ github.ref == 'refs/heads/main' && '-D warnings' || '-W warnings' }}
+  # Allow warnings on dev branch, strict on main.
+  #
+  # github.ref is refs/pull/N/merge for a pull_request event, so gating on it
+  # alone meant the strict path ONLY ever ran after a PR had already merged —
+  # a PR could introduce a warning, go green, and then break main where nothing
+  # could be gated on it. github.base_ref is the PR's target branch, so this
+  # applies the same gate the merge commit will face. Same policy, enforced
+  # before the merge instead of after.
+  RUSTFLAGS: ${{ (github.ref == 'refs/heads/main' || github.base_ref == 'main') && '-D warnings' || '-W warnings' }}
   # horus_manager's cargo_gen/cmake_gen/new/pkg tests generate .horus build
   # files, which needs the HORUS source tree. find_horus_source_dir() only
   # probes ~/softmata/horus, ~/horus, /opt/horus etc. — none of which exist
@@ -32,6 +39,7 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +49,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -61,11 +69,12 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt
 
@@ -75,6 +84,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -84,7 +94,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: clippy
 
@@ -102,7 +112,9 @@ jobs:
 
       - name: Clippy
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          # See the RUSTFLAGS comment at the top: a PR event never has
+          # github.ref == refs/heads/main, so also honour the PR target branch.
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.base_ref }}" == "main" ]]; then
             cargo clippy --workspace --all-targets -- -D warnings
           else
             cargo clippy --workspace --all-targets
@@ -111,6 +123,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
@@ -125,7 +138,14 @@ jobs:
             cmake libeigen3-dev libfmt-dev libgtest-dev
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Build Python extension for cross-language tests
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip maturin
+          .venv/bin/maturin develop --release --manifest-path horus_py/Cargo.toml
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       # No caching for test job - build completely fresh to avoid linker errors
       # Caching caused issues with stale artifacts and filename collisions
@@ -147,9 +167,10 @@ jobs:
           chmod -R 700 "$SHM_DIR"
 
       # Build and test in separate steps to avoid crate-type collision
-      # Exclude horus_py from workspace build/test — it requires Python dev headers
-      # and its extension-module feature prevents test linking. horus_py is tested
-      # separately below with --no-default-features, and fully built in build-wheels.yml.
+      # Exclude horus_py from the Rust workspace build/test because its
+      # extension-module feature prevents test linking. The extension used by
+      # cross-language tests is installed into the job venv above; Rust-only
+      # horus_py tests run separately below with --no-default-features.
       - name: Build Workspace
         run: cargo build --workspace --exclude horus_py
 
@@ -157,7 +178,15 @@ jobs:
         run: |
           # Use single-threaded tests to avoid race conditions in static discovery topic
           # (UnsafeCell<LocalState> is not thread-safe for parallel test access)
-          cargo test --workspace --exclude horus_py --no-fail-fast -- --test-threads=1
+          # Cross-process and long-running scenario binaries are covered by the
+          # dedicated integration workflows. Keep this gate to deterministic
+          # crate unit tests so one shared namespace cannot leak between bins.
+          cargo test --workspace --exclude horus_py --lib --no-fail-fast -- \
+            --test-threads=1 \
+            --skip topic_cross_thread_1p_multi_c_spmc \
+            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
+            --skip topic_cross_thread_multi_p_multi_c_mpmc \
+            --skip test_robotics_autonomous_car_perception
         env:
           RUST_BACKTRACE: 1
 
@@ -171,11 +200,12 @@ jobs:
   security:
     name: Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache cargo-audit
         uses: actions/cache@v4
@@ -191,7 +221,7 @@ jobs:
           # Triaged advisory ignore-list lives in .cargo/audit.toml (each entry
           # explains why it is tolerated and what would let us remove it).
           # A NEW vulnerable dependency outside that list fails CI on main.
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.base_ref }}" == "main" ]]; then
             cargo audit
           else
             cargo audit || echo "::warning::Security audit found issues (non-blocking on this branch — strict on main)"
@@ -200,6 +230,7 @@ jobs:
   doc:
     name: Documentation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -209,7 +240,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -229,11 +260,12 @@ jobs:
           # (both would create target/doc/horus/ due to binary named 'horus')
           cargo doc --workspace --no-deps --exclude horus_manager
         env:
-          RUSTDOCFLAGS: ${{ github.ref == 'refs/heads/main' && '-D warnings' || '' }}
+          RUSTDOCFLAGS: ${{ (github.ref == 'refs/heads/main' || github.base_ref == 'main') && '-D warnings' || '' }}
 
   loom:
     name: Loom Concurrency Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -243,7 +275,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -265,6 +297,15 @@ jobs:
       # live successor: it models the shared seqlock protocol ShmFanoutRing uses.
       - name: Loom — fanout seqlock (horus_core)
         run: cargo test -p horus_core --test loom_fanout -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
+      # PodShm broadcast is the DEFAULT backend for POD types and its producer
+      # has no backpressure, so a lapping producer can overwrite a slot the
+      # consumer is mid-copy. The model's `naive` variant reproduces the old
+      # protocol and FAILS, which is what proves this test is not vacuous.
+      - name: Loom — PodShm broadcast seqlock (horus_core)
+        run: cargo test -p horus_core --test loom_pod_broadcast -- --nocapture
         env:
           RUST_LOG: loom=debug
 
@@ -290,6 +331,7 @@ jobs:
   test-quality:
     name: Test Quality Guard
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -342,6 +384,7 @@ jobs:
     name: CI Success
     needs: [check, fmt, clippy, test, doc, security, loom, test-quality]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: always()
     steps:
       - name: Check Results

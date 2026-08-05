@@ -95,6 +95,17 @@ pub const SYSTEM_TOPIC_PRESENCE: &str = "_horus.presence";
 pub const SYSTEM_TOPIC_LOGS: &str = "_horus.logs";
 pub const SYSTEM_TOPIC_ESTOP: &str = "_horus.estop";
 
+/// Check if a topic HASH is one of the reserved system topics.
+///
+/// The receive path sees hashes, not names, before it resolves a topic — and
+/// system topics must be identifiable there so they can be exempted from
+/// deduplication (see `ReliabilityLayer::dedup_messages`).
+pub fn is_system_topic_hash(topic_hash: u32) -> bool {
+    topic_hash == crate::wire::topic_hash(SYSTEM_TOPIC_PRESENCE)
+        || topic_hash == crate::wire::topic_hash(SYSTEM_TOPIC_LOGS)
+        || topic_hash == crate::wire::topic_hash(SYSTEM_TOPIC_ESTOP)
+}
+
 /// Check if a topic name is a reserved system topic.
 pub fn is_system_topic(name: &str) -> bool {
     name == SYSTEM_TOPIC_PRESENCE || name == SYSTEM_TOPIC_LOGS || name == SYSTEM_TOPIC_ESTOP

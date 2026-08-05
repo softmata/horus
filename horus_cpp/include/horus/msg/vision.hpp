@@ -5,35 +5,61 @@
 #include <cstddef>
 #include <cstdint>
 
+// ============================================================================
+// !! ABI WARNING — READ BEFORE TOUCHING ANYTHING IN THIS FILE !!
+//
+// The three Rust types mirrored here — horus_robotics::CameraInfo,
+// RegionOfInterest and StereoInfo (horus-robotics/src/messages/vision.rs) —
+// are declared WITHOUT `#[repr(C)]`. Every other message module in that crate
+// (detection.rs, control.rs, navigation.rs, force.rs, audio.rs, tracking.rs,
+// landmark.rs, segmentation.rs, ...) marks its types `#[repr(C)]`; vision.rs
+// does not. They are therefore repr(Rust) and have NO GUARANTEED LAYOUT: the
+// compiler is free to reorder their fields, and for CameraInfo it demonstrably
+// DOES (see the field order below, which is not declaration order).
+//
+// These types are nonetheless handed across the C ABI by
+// `impl_pod_topic_c_api!(camera_info | region_of_interest | stereo_info, ...)`
+// in horus_cpp/src/c_api.rs, which does a raw `std::ptr::read` /
+// `std::ptr::write` of the Rust struct through the caller's pointer. So a C++
+// mirror is mandatory today, whether or not the Rust side has a stable ABI.
+//
+// The structs below mirror the layout that rustc ACTUALLY produces, as
+// measured by `offset_of!` and recorded in the generated
+// `horus/layout_contract.hpp`. That header's `static_assert`s pin every size
+// and every field offset, and `contract_file_is_current` regenerates and
+// diffs it, so if a future rustc lays these types out differently the build
+// breaks loudly instead of corrupting memory silently.
+//
+// THE REAL FIX IS UPSTREAM: add `#[repr(C)]` to CameraInfo, RegionOfInterest
+// and StereoInfo in horus-robotics. Until then, treat this file as valid only
+// for the exact toolchain that generated layout_contract.hpp.
+//
+// Rust `bool` is mirrored as `uint8_t` (1 byte, values 0/1) rather than C++
+// `bool`, whose size is implementation-defined.
+// ============================================================================
+
 namespace horus { namespace msg {
 
-/// Camera intrinsic calibration parameters
-struct CameraInfo {
-    uint32_t width;
-    uint32_t height;
-    double fx;               // focal length x (pixels)
-    double fy;               // focal length y (pixels)
-    double cx;               // principal point x (pixels)
-    double cy;               // principal point y (pixels)
-    double distortion[5];    // distortion coefficients [k1,k2,p1,p2,k3]
-    uint64_t timestamp_ns;
-};
 
-/// Region of interest
-struct RegionOfInterest {
-    uint32_t x_offset;
-    uint32_t y_offset;
-    uint32_t height;
-    uint32_t width;
-    bool do_rectify;
-};
 
-/// Stereo camera calibration
-struct StereoInfo {
-    CameraInfo left;
-    CameraInfo right;
-    double baseline;         // meters between cameras
-    uint64_t timestamp_ns;
-};
+
+
+// ─── WITHDRAWN: CameraInfo, RegionOfInterest, StereoInfo ────────────────────
+//
+// These three Rust types are declared WITHOUT #[repr(C)] in horus-robotics
+// (src/messages/vision.rs), i.e. they are repr(Rust). Rust guarantees no field
+// order for repr(Rust) and is free to change it between compiler releases.
+//
+// The C ABI implements every _send/_recv as a raw ptr::read / ptr::write of the
+// Rust type through a pointer the C++ caller supplies, so a C++ mirror of a
+// repr(Rust) type is unsound by construction: no struct can be guaranteed to
+// match, and one that happens to match today can stop matching after a
+// toolchain upgrade with no diagnostic at all, because the sizes still agree.
+//
+// Publishing a struct that looks usable would be worse than publishing none, so
+// they are removed here and their C ABI entry points are commented out in
+// horus_cpp/src/c_api.rs. To restore: add #[repr(C)] upstream, bump the pinned
+// horus-robotics rev, re-enable the c_api lines, and regenerate
+// horus/layout_contract.hpp.
 
 }} // namespace horus::msg

@@ -17,7 +17,10 @@ updates:
     labels:
       - "dependencies"
       - "rust"
-    reviewers:
+    # `reviewers` was removed from the Dependabot schema (it no longer appears in
+    # the options reference, unlike `assignees`), so it fails config validation.
+    # `assignees` is the supported equivalent; use CODEOWNERS for review requests.
+    assignees:
       - "lord-patpak"
     groups:
       # Group minor and patch updates together
@@ -33,10 +36,11 @@ updates:
           - "*"
         update-types:
           - "major"
-    ignore:
-      # Ignore pre-release versions
-      - dependency-name: "*"
-        update-types: ["version-update:semver-prerelease"]
+    # NOTE: there was an `ignore` rule here using
+    # update-types: ["version-update:semver-prerelease"], which is not a valid
+    # value — Dependabot accepts only semver-major/minor/patch, and rejected the
+    # whole config file because of it. It was also unnecessary: Dependabot does
+    # not propose a pre-release unless the dependency is already pinned to one.
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -57,9 +61,12 @@ updates:
         patterns:
           - "*"
 
-  # Python dependencies (if horus_python exists)
+  # Python dependencies. The package lives in /horus_py (workspace member
+  # "horus_py", pyproject.toml with the maturin build backend). The old
+  # "/horus_python" path does not exist, which made Dependabot report a config
+  # error for this entry and never open a Python PR.
   - package-ecosystem: "pip"
-    directory: "/horus_python"
+    directory: "/horus_py"
     schedule:
       interval: "weekly"
       day: "monday"

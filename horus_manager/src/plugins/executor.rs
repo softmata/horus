@@ -355,6 +355,7 @@ impl PluginExecutor {
         // in the child process (between fork and exec).
         #[cfg(target_os = "linux")]
         {
+            warn_if_seccomp_unavailable();
             let plugin_dir = binary.parent().map(|p| p.to_path_buf());
             // SAFETY: we only call async-signal-safe libc functions inside the
             // closure (setrlimit, close, prctl).  No Rust allocator is used.
@@ -417,6 +418,26 @@ impl PluginExecutor {
         }
 
         cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
+        // Apply the long-lived subset of the sandbox. `execute_binary` applies
+        // all four controls; this path applied NONE, so a plugin launched by
+        // `horus run --sim` inherited every fd the CLI had open — the trust
+        // store, the SHM topic descriptors — and ran without
+        // PR_SET_NO_NEW_PRIVS, so a setuid bit on the plugin binary escalated.
+        //
+        // The other two controls are deliberately not applied here and the gap
+        // is real; `sandbox::apply_long_lived` documents exactly why (the CPU
+        // cap SIGKILLs a simulator in about a minute, and the seccomp deny list
+        // would EPERM its X11 socket).
+        #[cfg(target_os = "linux")]
+        {
+            let plugin_dir = binary.parent().map(|p| p.to_path_buf());
+            // SAFETY: the closure calls only async-signal-safe libc functions
+            // (close, close_range, prctl). No Rust allocator is used.
+            unsafe {
+                cmd.pre_exec(move || super::sandbox::apply_long_lived(plugin_dir.as_deref()));
+            }
+        }
 
         let child = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -486,6 +507,33 @@ pub struct PluginInfo {
     pub scope: String,
     pub is_overridden: bool,
     pub description: String,
+}
+
+/// Warn once per process when the plugin sandbox has no syscall filter.
+///
+/// The seccomp deny table is x86_64 syscall numbers, so it is only applied on
+/// x86_64 (see `sandbox`). On other Linux architectures the rlimit and
+/// FD-cleanup parts of the sandbox still run, but syscall filtering does not —
+/// and an operator who read "plugins are sandboxed" should be told which half
+/// they are getting rather than left to assume.
+///
+/// Emitted from the parent, before fork: `pre_exec` runs in the child between
+/// fork and exec, where allocating or locking would be unsafe.
+#[cfg(target_os = "linux")]
+fn warn_if_seccomp_unavailable() {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "[horus] WARNING: plugin syscall filtering (seccomp) is NOT active on this \
+                 architecture — the deny table is x86_64 syscall numbers. Resource limits \
+                 and fd cleanup still apply. Plugins can open sockets and make syscalls \
+                 that would be blocked on x86_64. (Fires once.)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

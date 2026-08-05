@@ -170,6 +170,7 @@ else
 fi
 # GitHub release asset URL
 RELEASE_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}.${ASSET_EXT}"
+CHECKSUM_URL="https://github.com/${REPO}/releases/latest/download/SHA256SUMS"
 
 # The source tree is required regardless of how we obtain the binary: `horus
 # run`/`horus build` generate .horus/Cargo.toml with horus as *path*
@@ -201,13 +202,62 @@ rm -rf "$HORUS_SRC_DIR"
 mv "$CLONE_DIR" "$HORUS_SRC_DIR"
 ok "Source cached at ~/.horus/cache/horus@${SRC_VERSION}"
 
-info "Checking for pre-built binary..."
-
 TMPDIR=$(mktemp -d)
-HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
+
+# HORUS_BUILD_FROM_SOURCE=1 skips the pre-built binary entirely and compiles the
+# cached source. This is the documented escape hatch when the checksum
+# verification below cannot run (no sha256sum/shasum) or when a user does not
+# want to trust a release artifact — so it has to actually exist.
+if [ "${HORUS_BUILD_FROM_SOURCE:-0}" = "1" ]; then
+    info "HORUS_BUILD_FROM_SOURCE=1 — skipping the pre-built binary"
+    HTTP_CODE="000"
+else
+    info "Checking for pre-built binary..."
+    HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
+fi
 
 if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
     # --- Fast path: pre-built binary, skip the compile ---
+
+    # Verify the download against the release's published SHA256SUMS before
+    # making it executable. The release workflow has always published this file
+    # (release.yml: `sha256sum *.tar.gz *.zip > SHA256SUMS`) and SECURITY.md
+    # claims "Package Verification: ... checksum verification" — but the
+    # installer never fetched it, so a tampered or truncated asset was executed
+    # unchecked. TLS alone does not cover a compromised or substituted asset.
+    info "Verifying checksum..."
+    if curl -fsSL -o "${TMPDIR}/SHA256SUMS" "$CHECKSUM_URL" 2>/dev/null && [ -s "${TMPDIR}/SHA256SUMS" ]; then
+        EXPECTED=$(grep " ${ASSET_NAME}.${ASSET_EXT}\$" "${TMPDIR}/SHA256SUMS" 2>/dev/null | awk '{print $1}' | head -1)
+        if [ -z "$EXPECTED" ]; then
+            rm -rf "$TMPDIR"
+            fail "SHA256SUMS has no entry for ${ASSET_NAME}.${ASSET_EXT}. Refusing to install an unverified binary."
+            exit 1
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+            ACTUAL=$(sha256sum "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" | awk '{print $1}')
+        elif command -v shasum >/dev/null 2>&1; then
+            ACTUAL=$(shasum -a 256 "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" | awk '{print $1}')
+        else
+            rm -rf "$TMPDIR"
+            fail "Neither sha256sum nor shasum is available, so the download cannot be verified. Install one, or build from source with HORUS_BUILD_FROM_SOURCE=1."
+            exit 1
+        fi
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+            rm -rf "$TMPDIR"
+            fail "Checksum MISMATCH for ${ASSET_NAME}.${ASSET_EXT}"
+            fail "  expected: $EXPECTED"
+            fail "  actual:   $ACTUAL"
+            fail "Refusing to install. This asset does not match the published release."
+            exit 1
+        fi
+        ok "Checksum verified"
+    else
+        rm -rf "$TMPDIR"
+        fail "Could not fetch SHA256SUMS from $CHECKSUM_URL — refusing to install an unverified binary."
+        fail "Build from source instead: HORUS_BUILD_FROM_SOURCE=1 $0"
+        exit 1
+    fi
+
     info "Extracting binary..."
     if [ "$OS" = "windows" ]; then
         unzip -q "${TMPDIR}/${ASSET_NAME}.zip" -d "$TMPDIR"

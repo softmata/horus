@@ -42,6 +42,46 @@ pub fn trigger_external_emergency_stop(reason: String) {
     }
 }
 
+/// Global hook for the SAFE-STATE response, distinct from emergency stop.
+///
+/// `safety.on_link_lost` offers `warn`, `safe_state` and `stop`. `safe_state`
+/// and `stop` both used to call `trigger_external_emergency_stop`, so an
+/// operator who deliberately chose the milder option — per-node safing rather
+/// than halting the robot — got the full scheduler halt anyway. The only trace
+/// of their choice was the `{:?}` in the log line.
+///
+/// Two named options that do the same thing means one of them is a lie, and on
+/// a safety knob that is the defect class this audit kept finding. This hook is
+/// the milder response: ask nodes to enter their safe state and keep the
+/// scheduler running, so the robot stays observable and controllable.
+static SAFE_STATE_HOOK: RwLock<Option<Box<dyn Fn(String) + Send + Sync>>> = RwLock::new(None);
+
+/// Set the global safe-state hook. Installed by the Scheduler at startup.
+pub fn set_safe_state_hook(hook: impl Fn(String) + Send + Sync + 'static) {
+    *SAFE_STATE_HOOK.write() = Some(Box::new(hook));
+}
+
+/// Request the SAFE-STATE response from an external system (e.g. horus_net).
+///
+/// Unlike [`trigger_external_emergency_stop`] this does NOT latch: nodes are
+/// asked to enter a safe state, and the scheduler keeps ticking. If no hook is
+/// installed it falls back to the emergency stop, because failing safe is the
+/// correct direction when the milder response is unavailable — and it says so,
+/// rather than silently downgrading the operator's choice.
+pub fn trigger_external_safe_state(reason: String) {
+    let guard = SAFE_STATE_HOOK.read();
+    if let Some(hook) = guard.as_ref() {
+        hook(reason);
+    } else {
+        drop(guard);
+        eprintln!(
+            "[horus] safe-state requested but no scheduler hook is installed; \
+             escalating to emergency stop: {reason}"
+        );
+        trigger_external_emergency_stop(reason);
+    }
+}
+
 // ============================================================================
 // Pending LOCAL-origin e-stop signal — the SEND half of networked e-stop.
 // ============================================================================
@@ -86,6 +126,12 @@ fn now_ns() -> u64 {
 pub enum SafetyState {
     /// Normal operation
     Normal,
+    /// A safe-state response is in force: nodes have been asked to enter their
+    /// safe state, but the scheduler is still running and still observable.
+    ///
+    /// Distinct from `EmergencyStop` because `safety.on_link_lost` offers both
+    /// `safe_state` and `stop`; collapsing them made the milder choice a lie.
+    SafeState,
     /// Emergency stop triggered
     EmergencyStop,
 }
@@ -99,10 +145,18 @@ pub enum BudgetPolicy {
     /// The graduated degradation path will handle it over time.
     #[default]
     Warn,
-    /// Immediately stop the node after a budget violation.
-    /// The node will have shutdown() called and be permanently removed.
-    /// Safer than mid-tick interruption — waits for tick to complete,
-    /// then prevents all future ticks.
+    /// Stop the node once a tick exceeds **twice** its budget.
+    ///
+    /// Deliberate hysteresis, and the docs previously described a 1x trigger
+    /// that the code does not implement. A single 1x overrun is logged and
+    /// recorded but not acted on: under real RT jitter — a page fault, an IRQ,
+    /// a cache miss — an occasional 1.0-2.0x tick is normal, and killing a
+    /// control node for one of them is a worse outcome than the overrun. A
+    /// sustained 2x overrun is a different signal and does stop the node.
+    ///
+    /// The node has shutdown() called and is permanently removed. Safer than
+    /// mid-tick interruption — waits for the tick to complete, then prevents
+    /// all future ticks. Use `EmergencyStop` if any overrun must halt the robot.
     Enforce,
     /// Trigger emergency stop on budget violation (for critical nodes).
     EmergencyStop,
@@ -140,6 +194,9 @@ pub(crate) enum WatchdogSeverity {
 pub(crate) struct Watchdog {
     /// Timeout duration
     timeout: Duration,
+    /// The timeout as configured, before any rate-change scaling. `set_scale`
+    /// is always applied to this, so scaling never compounds.
+    base_timeout: Duration,
     /// Last heartbeat time as nanoseconds since Unix epoch.
     last_heartbeat_ns: AtomicU64,
     /// Is watchdog expired?
@@ -150,9 +207,20 @@ impl Watchdog {
     pub(crate) fn new(timeout: Duration) -> Self {
         Self {
             timeout,
+            base_timeout: timeout,
             last_heartbeat_ns: AtomicU64::new(now_ns()),
             expired: AtomicBool::new(false),
         }
+    }
+
+    /// Widen (or restore) the timeout to track a deliberate change in how
+    /// often the node ticks.
+    ///
+    /// Always relative to the configured value, never compounding, so
+    /// repeated calls are idempotent and `scale = 1.0` restores exactly.
+    pub(crate) fn set_scale(&mut self, scale: f64) {
+        let scaled = self.base_timeout.as_secs_f64() * scale.max(1.0);
+        self.timeout = Duration::from_secs_f64(scaled);
     }
 
     /// Feed the watchdog (reset timer)
@@ -162,6 +230,7 @@ impl Watchdog {
     }
 
     /// Check if watchdog has expired (simple boolean).
+    #[cfg(test)]
     pub(crate) fn check(&self) -> bool {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns().saturating_sub(last_ns);
@@ -318,8 +387,6 @@ impl NodeTimingState {
     pub(crate) fn record_tick(&mut self, actual: Duration) -> Option<BudgetViolation> {
         let actual_us = actual.as_micros() as u64;
         self.ring.record(actual_us);
-        // Successful tick resets consecutive miss counter
-        self.consecutive_misses = 0;
 
         if let Some(budget) = self.budget {
             if actual > budget {
@@ -335,6 +402,17 @@ impl NodeTimingState {
                 ));
             }
         }
+
+        // Reset the consecutive-miss run only on a tick that did NOT violate.
+        //
+        // This used to run unconditionally at the TOP of the function, before
+        // the budget check. For a node that overruns its budget and misses its
+        // deadline on the same tick — the common case, since an overrunning
+        // tick is exactly what blows the deadline — the sequence was: clear to
+        // 0 here, then `record_miss` increments to 1. Pinned at 1 forever, so
+        // `evaluate_degradation`, whose ladder starts at 3 consecutive misses,
+        // could never fire for the nodes in the worst trouble.
+        self.consecutive_misses = 0;
         None
     }
 
@@ -593,6 +671,35 @@ impl WatchdogFeeder {
     }
 }
 
+/// Handle allowing an executor thread to latch the scheduler's emergency stop.
+///
+/// Counterpart to [`WatchdogFeeder`]: executor threads own their nodes and have
+/// no `SafetyMonitor` reference, so without this they cannot report an e-stop —
+/// see [`SafetyMonitor::estop_trigger`] for what that silently cost.
+#[derive(Clone, Debug)]
+pub(crate) struct EstopTrigger {
+    emergency_stop: Arc<AtomicBool>,
+    state: Arc<Mutex<SafetyState>>,
+}
+
+impl EstopTrigger {
+    /// Latch the emergency stop. Semantics are identical to
+    /// `SafetyMonitor::trigger_emergency_stop`, including the rising-edge gate
+    /// that queues a fleet broadcast exactly once per episode.
+    pub(crate) fn trigger(&self, reason: String) {
+        // Latch FIRST — the safety action must not depend on logging.
+        let rising_edge = !self.emergency_stop.swap(true, Ordering::SeqCst);
+        *self.state.lock() = SafetyState::EmergencyStop;
+        if rising_edge {
+            *PENDING_LOCAL_ESTOP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(reason.clone());
+        }
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), " EMERGENCY STOP: {}", reason);
+    }
+}
+
 impl SafetyMonitor {
     pub(crate) fn new(max_deadline_misses: u64) -> Self {
         Self {
@@ -617,6 +724,16 @@ impl SafetyMonitor {
 
     /// Add a critical node that must be monitored.
     ///
+    /// Number of nodes registered as critical (i.e. actually watchdogged).
+    ///
+    /// Exposed so callers can assert the watchdog was really armed: an empty
+    /// set means `check_watchdogs` iterates nothing and the configured timeout
+    /// is inert, which is indistinguishable from a working watchdog at runtime.
+    #[cfg(test)]
+    pub fn critical_node_count(&self) -> usize {
+        self.critical_nodes.read().len()
+    }
+
     /// Takes `&self` (not `&mut self`) because `critical_nodes` is protected by an
     /// interior `RwLock`; this allows callers holding a shared reference to safely
     /// register new nodes at any time.
@@ -648,6 +765,54 @@ impl SafetyMonitor {
     pub(crate) fn feed_watchdog(&self, node_name: &str) {
         if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.feed();
+        }
+    }
+
+    /// The current watchdog timeout for a node, after any rate scaling.
+    #[cfg(test)]
+    pub(crate) fn watchdog_timeout(&self, node_name: &str) -> Option<Duration> {
+        self.watchdogs.read().get(node_name).map(|w| w.timeout)
+    }
+
+    /// Scale a node's watchdog timeout to match a deliberate change in its
+    /// tick rate, and feed it so the new window starts now.
+    ///
+    /// The watchdog asks "has this node ticked recently", and the tick is what
+    /// feeds it — so halving a node's rate halves how often it feeds. Leaving
+    /// the timeout fixed turns `DegradationAction::ReduceRate`, the GENTLEST
+    /// rung of the ladder, into an escalation: a node whose watchdog margin was
+    /// under 2x its period would start tripping 1x, 2x, then Critical, and
+    /// Critical latches a fleet-wide emergency stop. Rate-reducing a struggling
+    /// node must not be a slower route to halting the robot.
+    ///
+    /// `scale` is a multiplier on the CONFIGURED timeout (1.0 restores it), and
+    /// values below 1.0 are clamped away — this may only ever widen the window,
+    /// never tighten it below what the operator asked for.
+    pub(crate) fn scale_watchdog(&self, node_name: &str, scale: f64) {
+        if let Some(watchdog) = self.watchdogs.write().get_mut(node_name) {
+            watchdog.set_scale(scale);
+            watchdog.feed();
+        }
+    }
+
+    /// Produce a trigger handle that shares this monitor's e-stop latch.
+    ///
+    /// Executor threads own their nodes and never see the `SafetyMonitor`, so
+    /// before this existed the RT executor's two emergency-stop branches could
+    /// only do `running.store(false)` — a plain shutdown flag. The latch was
+    /// never set, so `get_state()` kept reporting `Normal`, no blackbox
+    /// `EmergencyStop` event was written, and — worst — `PENDING_LOCAL_ESTOP`
+    /// was never populated, so `take_pending_local_estop()` returned `None` and
+    /// horus_net never broadcast. **A real RT e-stop halted this robot silently
+    /// and never told the fleet.**
+    ///
+    /// Shares the same `Arc`s the monitor itself uses, so a trigger through the
+    /// handle is indistinguishable from one on the main thread — including the
+    /// rising-edge gate that decides whether to queue a fleet broadcast.
+    pub(crate) fn estop_trigger(&self) -> EstopTrigger {
+        EstopTrigger {
+            emergency_stop: self.emergency_stop.clone(),
+            state: self.state.clone(),
         }
     }
 
@@ -691,6 +856,13 @@ impl SafetyMonitor {
     /// `AtomicU64`/`AtomicBool` fields, so reading them requires no
     /// HashMap mutation.  Multiple threads can call `check_watchdogs`
     /// concurrently without blocking each other.
+    /// Legacy 1x-timeout expiry check.
+    ///
+    /// No longer on the scheduler path: it triggered a system-wide emergency
+    /// stop at 1x while `check_watchdogs_graduated` — which runs in the same
+    /// tick — classifies 1x as `Warning` ("log, keep ticking"). Retained for
+    /// tests that pin the 1x semantics directly.
+    #[cfg(test)]
     pub(crate) fn check_watchdogs(&self, expired: &mut Vec<String>) {
         expired.clear();
         for (name, watchdog) in self.watchdogs.read().iter() {
@@ -993,6 +1165,24 @@ impl SafetyMonitor {
     /// `trigger_emergency_stop`: latch the flag FIRST (safety-critical), log LAST and
     /// non-fatally. The captured `Arc`s point at the same flag/state the scheduler's
     /// tick loop polls, so the external trigger latches the running scheduler.
+    /// Install the SAFE-STATE hook: mark the monitor degraded and let the
+    /// scheduler's tick loop safe the affected nodes, without latching e-stop.
+    ///
+    /// Deliberately does NOT set `emergency_stop`: that flag ends the run loop,
+    /// which is exactly the outcome an operator choosing `safe_state` over
+    /// `stop` asked to avoid.
+    pub(crate) fn install_safe_state_hook(&self) {
+        let state = Arc::clone(&self.state);
+        set_safe_state_hook(move |reason| {
+            *state.lock() = SafetyState::SafeState;
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                " SAFE STATE (external): {reason} — nodes safing, scheduler continues"
+            );
+        });
+    }
+
     pub(crate) fn install_emergency_stop_hook(&self) {
         let emergency_stop = Arc::clone(&self.emergency_stop);
         let state = Arc::clone(&self.state);
@@ -3052,5 +3242,68 @@ mod loom_tests {
         let copied = policy; // Copy
         assert_eq!(policy, cloned);
         assert_eq!(policy, copied);
+    }
+}
+
+#[cfg(test)]
+mod estop_trigger_tests {
+    use super::*;
+
+    /// An executor thread must be able to latch the e-stop exactly as the main
+    /// thread does. Before `EstopTrigger` existed, the RT executor could only
+    /// set a shutdown flag, so a real RT emergency stop left the monitor
+    /// reporting Normal and queued nothing for the fleet broadcast.
+    #[test]
+    fn trigger_from_a_handle_latches_state_like_the_monitor() {
+        let monitor = SafetyMonitor::new(10);
+        let trigger = monitor.estop_trigger();
+
+        assert!(!monitor.is_emergency_stop());
+        assert_eq!(monitor.get_state(), SafetyState::Normal);
+
+        trigger.trigger("rt node blew its budget".to_string());
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "the handle must latch the SAME AtomicBool the monitor reads"
+        );
+        assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+    }
+
+    /// The fleet-broadcast queue is what horus_net drains. A local-origin e-stop
+    /// raised from an executor thread must populate it, or peer robots are never
+    /// told this one stopped.
+    #[test]
+    fn trigger_queues_the_fleet_broadcast_on_the_rising_edge() {
+        let _ = take_pending_local_estop(); // clear any prior test's edge
+        let monitor = SafetyMonitor::new(10);
+        let trigger = monitor.estop_trigger();
+
+        trigger.trigger("deadline miss escalated".to_string());
+        let pending = take_pending_local_estop();
+        assert!(
+            pending.is_some_and(|r| r.contains("deadline miss escalated")),
+            "a rising-edge e-stop from an executor must queue the broadcast"
+        );
+    }
+
+    /// Anti-storm invariant: only the transition into e-stop announces. A second
+    /// trigger while already latched must not re-queue, or a fleet already
+    /// halting gets a broadcast per tick.
+    #[test]
+    fn a_second_trigger_does_not_requeue_a_broadcast() {
+        let _ = take_pending_local_estop();
+        let monitor = SafetyMonitor::new(10);
+        let trigger = monitor.estop_trigger();
+
+        trigger.trigger("first".to_string());
+        let _ = take_pending_local_estop();
+
+        trigger.trigger("second".to_string());
+        assert!(
+            take_pending_local_estop().is_none(),
+            "already latched — not a rising edge, so no second broadcast"
+        );
+        assert!(monitor.is_emergency_stop(), "the latch still holds");
     }
 }

@@ -220,7 +220,48 @@ fn install_rt_arch() -> anyhow::Result<()> {
 /// Ensure /etc/security/limits.d/99-horus-rt.conf exists with unlimited memlock.
 fn ensure_memlock_limits() -> anyhow::Result<()> {
     let limits_path = "/etc/security/limits.d/99-horus-rt.conf";
-    let content = "# HORUS real-time memory locking\n* - memlock unlimited\n* - rtprio 99\n";
+
+    // Scope the grant to the invoking user, not `*`.
+    //
+    // This file used to read `* - memlock unlimited` / `* - rtprio 99`, which
+    // hands EVERY account on the machine the ability to lock all of RAM (a
+    // trivial local DoS) and to run SCHED_FIFO at priority 99 — high enough to
+    // starve the kernel's own threads, and on a robot high enough to preempt the
+    // very control loops these limits exist to protect. Nothing about running a
+    // HORUS node requires granting that to unrelated users.
+    //
+    // Under sudo, SUDO_USER is the human who invoked us; USER would be "root".
+    let target_user = std::env::var("SUDO_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_default();
+    let target_user = target_user.trim();
+    // A limits.conf domain is a username, group (@name), or uid range. Anything
+    // outside that charset means we cannot identify the caller safely.
+    let user_is_sane = !target_user.is_empty()
+        && target_user != "root"
+        && target_user.len() <= 32
+        && target_user
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+    if !user_is_sane {
+        println!(
+            "  {} Could not determine the invoking user (SUDO_USER/USER), so RT limits\n    \
+             were NOT configured. Re-run as a normal user via sudo, or add this by hand\n    \
+             for the account that will run HORUS nodes:\n      \
+             <user> - memlock unlimited\n      <user> - rtprio 99",
+            "!".yellow()
+        );
+        return Ok(());
+    }
+    let content = format!(
+        "# HORUS real-time limits — scoped to the user that ran `horus setup-rt`.\n\
+         # Do NOT widen this to `*`: rtprio 99 for every account lets any local user\n\
+         # preempt the control loops these limits exist to protect.\n\
+         {user} - memlock unlimited\n\
+         {user} - rtprio 99\n",
+        user = target_user
+    );
+    let content = content.as_str();
 
     if std::path::Path::new(limits_path).exists() {
         println!(

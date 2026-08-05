@@ -446,7 +446,14 @@ fn test_compute_panic_downcasting() {
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    scheduler.run_for(100_u64.ms()).unwrap();
+    // 500 ms, not 100 ms. The assertions below want ">1 tick", i.e. proof that
+    // `FailurePolicy::Ignore` re-ticks a node that panicked — but each of these
+    // nodes panics on EVERY tick, so every tick pays full catch_unwind +
+    // crash-report + recovery cost. A 100 ms window was wide enough on an idle
+    // machine and produced exactly one tick under load, which made this a
+    // load-dependent flake rather than a real signal. Widening the window keeps
+    // the assertion (still ">1", not ">=1") and removes the race.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     // All three panic types should be handled and nodes keep ticking with Ignore
     assert!(

@@ -371,6 +371,13 @@ impl NodeRegistration {
     /// Requires `RtAwareAllocator` as `#[global_allocator]` in the binary.
     /// Without it, this flag is a no-op (safe for prototyping).
     ///
+    /// Also requires the node to be **RT-classified** — allocation checking is
+    /// performed by the RT executor only. `.rate()`, `.budget()` or
+    /// `.deadline()` make a node RT; `.compute()`, `.event()` and `.async_io()`
+    /// do not. Setting `.no_alloc()` on a non-RT node is a build-time error
+    /// rather than a silently ignored flag, so you cannot be given false
+    /// assurance that a tick was checked when it was not.
+    ///
     /// # Example
     /// ```rust,ignore
     /// scheduler.add(motor_ctrl)
@@ -588,6 +595,77 @@ impl NodeRegistration {
                 }
                 .into());
             }
+        }
+
+        // `.subscribe_with_timeout()` is enforced ONLY on the main-thread tick
+        // path (scheduler/mod.rs, which resolves nodes through `self.nodes`).
+        // After the class partition `self.nodes` holds ONLY BestEffort nodes, so
+        // for an RT/Compute/Event/AsyncIo node the staleness check never runs at
+        // all — the tracker is constructed, the timeout is stored, and nothing
+        // ever evaluates it.
+        //
+        // This is a stale-INPUT safety watchdog: a user attaches it to a node
+        // consuming a sensor topic precisely so the node reacts when that sensor
+        // goes quiet. Silently not running it on the RT node driving an actuator
+        // is the worst possible place to omit it, so refuse the configuration
+        // rather than hand back false assurance — the same call made for
+        // `.no_alloc()` just below.
+        if !self.subscription_freshness.is_empty()
+            && !matches!(self.execution_class, ExecutionClass::BestEffort)
+        {
+            let class_name = match &self.execution_class {
+                ExecutionClass::Rt => ".rate()/.budget()/.deadline() (RT)",
+                ExecutionClass::Compute => ".compute()",
+                ExecutionClass::AsyncIo => ".async_io()",
+                ExecutionClass::Event(_) => ".event()",
+                _ => "this execution class",
+            };
+            return Err(ValidationError::Conflict {
+                field_a: ".subscribe_with_timeout()".into(),
+                field_b: class_name.into(),
+                reason: format!(
+                    "node '{}' declares a subscription-freshness timeout, but staleness is \
+                     only checked on the main-thread tick path — on {} it would never be \
+                     evaluated. Drop the execution-class hint so the node runs on the main \
+                     loop, or remove .subscribe_with_timeout() rather than rely on a stale-\
+                     data watchdog that will not run.",
+                    node_name, class_name
+                ),
+            }
+            .into());
+        }
+
+        // `.no_alloc()` is enforced ONLY by the RT executor (rt_executor.rs calls
+        // enter_rt_context around the tick). A node that is not RT-classified
+        // runs on the main loop or on the Compute/Event/AsyncIo executors, none
+        // of which enter that context — so the flag silently does nothing.
+        //
+        // The doc comment on `no_alloc()` warns that the flag is a no-op without
+        // `RtAwareAllocator` as the global allocator, but says nothing about
+        // execution class, and every documented example pairs it with `.rate()`
+        // (which makes the node RT). A user who writes `.compute().no_alloc()`
+        // therefore believes allocations in `tick()` will panic, and gets no
+        // check at all — false assurance about the one property they asked to
+        // have verified. Say so instead of accepting it silently.
+        if self.no_alloc && !self.is_rt && !matches!(self.execution_class, ExecutionClass::Rt) {
+            let class_name = match &self.execution_class {
+                ExecutionClass::Compute => ".compute()",
+                ExecutionClass::AsyncIo => ".async_io()",
+                ExecutionClass::Event(_) => ".event()",
+                _ => "best-effort (no .rate()/.budget()/.deadline())",
+            };
+            return Err(ValidationError::Conflict {
+                field_a: ".no_alloc()".into(),
+                field_b: class_name.into(),
+                reason: format!(
+                    "node '{}' sets .no_alloc(), but allocation checking is only performed by \
+                     the RT executor — on {} it would be silently ignored. Add .rate(), \
+                     .budget() or .deadline() to make this an RT node, or drop .no_alloc() \
+                     rather than rely on a check that will not run.",
+                    node_name, class_name
+                ),
+            }
+            .into());
         }
 
         // Validate execution class vs is_rt flag consistency
@@ -840,17 +918,15 @@ impl<'a> NodeBuilder<'a> {
     ) -> Self {
         self.config
             .subscription_freshness
-            .push(super::types::SubscriptionFreshness {
-                topic: topic.to_string(),
+            .push(super::types::SubscriptionFreshness::new(
+                topic.to_string(),
                 timeout,
                 policy,
-                last_received_ns: std::sync::atomic::AtomicU64::new(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64,
-                ),
-            });
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            ));
         self
     }
 
@@ -893,6 +969,15 @@ impl<'a> NodeBuilder<'a> {
         self.config.validate()?;
         Ok(self.scheduler.add_configured(self.config))
     }
+
+    /// Finish configuration and add the node to the scheduler.
+    ///
+    /// This is a compatibility alias for [`NodeBuilder::build`]. It performs
+    /// the same validation and returns the same result, allowing applications
+    /// written against the original fluent `.done()` API to keep compiling.
+    pub fn done(self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
+        self.build()
+    }
 }
 
 #[cfg(test)]
@@ -913,6 +998,85 @@ mod tests {
 
     fn stub(name: &str) -> Box<dyn Node> {
         Box::new(StubNode(name.to_string()))
+    }
+
+    // ── .no_alloc() must not be silently inert ──
+    //
+    // Allocation checking is performed by the RT executor only. A non-RT node
+    // runs on the main loop or a Compute/Event/AsyncIo executor, none of which
+    // enter that context, so the flag would do nothing while the user believes
+    // their tick is being checked.
+
+    // ── .subscribe_with_timeout() must not be silently unenforced ──
+
+    fn with_freshness(
+        reg: NodeRegistration,
+        policy: super::super::types::StalePolicy,
+    ) -> NodeRegistration {
+        let mut reg = reg;
+        reg.subscription_freshness
+            .push(super::super::types::SubscriptionFreshness::new(
+                "lidar.scan".to_string(),
+                Duration::from_millis(100),
+                policy,
+                0,
+            ));
+        reg
+    }
+
+    #[test]
+    fn subscription_timeout_on_a_compute_node_is_rejected() {
+        // Staleness is only checked on the main-thread path, so on an executor
+        // class the watchdog is constructed, stored, and never evaluated — a
+        // stale-INPUT safety watchdog silently not running on exactly the node
+        // classes that drive actuators.
+        use super::super::types::StalePolicy;
+        let mut reg = with_freshness(
+            NodeRegistration::new(stub("worker")).compute(),
+            StalePolicy::SafeState,
+        );
+        let err = reg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("subscribe_with_timeout") && msg.contains("compute"),
+            "the error must name the feature and the class, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscription_timeout_on_a_best_effort_node_is_accepted() {
+        // The main loop DOES evaluate it there, so this must keep working.
+        use super::super::types::StalePolicy;
+        let mut reg = with_freshness(NodeRegistration::new(stub("plain")), StalePolicy::Warn);
+        reg.validate()
+            .expect("BestEffort nodes are checked on the main tick path");
+    }
+
+    #[test]
+    fn no_alloc_on_a_compute_node_is_rejected() {
+        let mut reg = NodeRegistration::new(stub("worker")).compute().no_alloc();
+        let err = reg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no_alloc") && msg.contains("compute"),
+            "error must name both the flag and the class, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn no_alloc_on_an_rt_node_is_accepted() {
+        let mut reg = NodeRegistration::new(stub("motor"))
+            .rate(1000_u64.hz())
+            .no_alloc();
+        reg.validate()
+            .expect("the documented pairing .rate() + .no_alloc() must stay valid");
+    }
+
+    #[test]
+    fn no_alloc_alone_is_rejected_rather_than_silently_ignored() {
+        let mut reg = NodeRegistration::new(stub("plain")).no_alloc();
+        let err = reg.validate().unwrap_err();
+        assert!(format!("{err}").contains("no_alloc"));
     }
 
     // ── NodeRegistration::new defaults ──
@@ -1204,6 +1368,20 @@ mod tests {
 
         let names = scheduler.node_list();
         assert!(names.contains(&"builder_test".to_string()));
+    }
+
+    #[test]
+    fn test_builder_done_registers_node() {
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .add(StubNode("done_alias_test".to_string()))
+            .order(5)
+            .done()
+            .unwrap();
+
+        assert!(scheduler
+            .node_list()
+            .contains(&"done_alias_test".to_string()));
     }
 
     #[test]

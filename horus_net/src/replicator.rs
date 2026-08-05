@@ -77,6 +77,19 @@ pub struct Replicator {
     log_drain: crate::log_replication::LogDrain,
     estop_broadcaster: crate::estop::EstopBroadcaster,
     last_presence_cleanup: Instant,
+    // ── Inbound admission control (GHSA-3frr-c2j9-hhr7) ──
+    /// Source-address allowlist, applied to every datagram before any parsing.
+    peer_filter: crate::netfilter::PeerFilter,
+    /// Per-system-topic token buckets, so halting the fleet is not free.
+    system_limits: crate::netfilter::SystemTopicLimits,
+    /// Count of datagrams dropped by `peer_filter`, logged at most once.
+    filtered_count: u64,
+    filtered_logged: bool,
+    /// Monotonic sequence stamped on framed system-topic messages.
+    ///
+    /// Shared across the three system topics; dedup is keyed per topic, so a
+    /// shared counter still yields a strictly increasing sequence for each.
+    system_seq: u32,
 }
 
 impl Replicator {
@@ -153,6 +166,11 @@ impl Replicator {
             log_drain: crate::log_replication::LogDrain::new(id_hash),
             estop_broadcaster: crate::estop::EstopBroadcaster::new(),
             last_presence_cleanup: Instant::now(),
+            peer_filter: crate::netfilter::PeerFilter::from_env(),
+            system_limits: crate::netfilter::SystemTopicLimits::default(),
+            filtered_count: 0,
+            filtered_logged: false,
+            system_seq: 0,
         })
     }
 
@@ -216,7 +234,23 @@ impl Replicator {
 
     fn handle_incoming(&mut self) {
         let mut buf = [0u8; 65536];
-        loop {
+        // Bounded drain. This used to loop until the socket was empty, which
+        // never happens under a sustained inbound rate — and because `run()`
+        // dispatches the Timer as a SIBLING match arm, reached only after this
+        // returns, a flood starved every periodic safety action: outbound
+        // heartbeats, peer liveness, reassembly GC, and the e-stop broadcast
+        // drain. (The local halt is latched in `safety_monitor`, so the fleet
+        // notification was delayed rather than lost — which is what keeps this
+        // out of critical — but delay is not acceptable for an e-stop.)
+        //
+        // The budget is sized for legitimate throughput, not just for attack
+        // mitigation: at the 50ms timer interval this still admits ~5k
+        // datagrams/sec of real traffic before the cap binds, well above what a
+        // LAN robot fleet produces. Anything left in the socket is read on the
+        // next wakeup; the event loop is edge-triggered but the timer fires
+        // every TIMER_INTERVAL regardless, so nothing is stranded.
+        const MAX_DATAGRAMS_PER_WAKEUP: usize = 256;
+        for _ in 0..MAX_DATAGRAMS_PER_WAKEUP {
             match self.transport.recv_from(&mut buf) {
                 Ok((n, from)) => {
                     self.metrics.record_recv(self.peer_id_hash, n);
@@ -241,13 +275,51 @@ impl Replicator {
     /// Fragment and data both funnel into `process_incoming_message`, which
     /// dispatches system topics (presence / logs / estop) and normal imports.
     fn process_packet(&mut self, buf: &[u8], from: SocketAddr) {
+        // 0. Source admission control (GHSA-3frr-c2j9-hhr7).
+        //
+        //    This must be the FIRST thing every datagram meets. The socket binds
+        //    0.0.0.0, and the system-topic dispatch further down returns early —
+        //    before the import guard — so `_horus.estop`, `_horus.logs` and
+        //    `_horus.presence` were reachable by any routable host. Reordering the
+        //    guard would not have helped: `ImportExportGuard::allow_import` returns
+        //    `true` unconditionally for system topics. Filtering here covers all
+        //    five packet kinds and all three system topics with one check.
+        //
+        //    Default posture is private/loopback/link-local only; set
+        //    HORUS_NET_ALLOW_PEERS to widen or narrow it. This limits *reach*, not
+        //    identity — HORUS_ESTOP_KEY (crate::mac) is what authenticates the
+        //    safety channel.
+        if !self.peer_filter.admits(from) {
+            self.filtered_count += 1;
+            if !self.filtered_logged {
+                self.filtered_logged = true;
+                eprintln!(
+                    "[horus_net] Dropped a datagram from {from} — outside the allowed \
+                     peer range. Set HORUS_NET_ALLOW_PEERS to admit it (further drops \
+                     are counted, not logged)."
+                );
+            }
+            return;
+        }
+
         // 1. Discovery announcement — self-filters on the bit-7 discriminator, so a
         //    real heartbeat/ack/fragment/data packet no longer matches here.
         if let Some(ann) = decode_announcement(buf, from) {
             if ann.peer_id == self.peer_id {
                 return;
             }
-            if self.secret_hash != [0u8; 4] && ann.has_secret && ann.secret_hash != self.secret_hash
+            // Fails CLOSED. This used to also require `ann.has_secret`, so a
+            // peer that simply cleared the has_secret flag bit skipped the check
+            // entirely and HORUS_NET_SECRET filtered nobody. When we have a
+            // secret configured, an announcement must carry a matching one.
+            //
+            // Still only a filter, not authentication: the hash is a
+            // non-cryptographic FNV-1a value broadcast in cleartext, so anyone
+            // who can see the traffic can replay it. HORUS_ESTOP_KEY is the
+            // authenticated channel; this just stops accidental cross-fleet
+            // mixing from silently succeeding.
+            if self.secret_hash != [0u8; 4]
+                && (!ann.has_secret || ann.secret_hash != self.secret_hash)
             {
                 return;
             }
@@ -363,16 +435,56 @@ impl Replicator {
         let logs_hash = wire::topic_hash(crate::registry::SYSTEM_TOPIC_LOGS);
         let estop_hash = wire::topic_hash(crate::registry::SYSTEM_TOPIC_ESTOP);
 
+        // Each system topic is metered by its own token bucket. The source has
+        // already passed `peer_filter`, but a permitted-but-hostile LAN host could
+        // otherwise halt-and-log at line rate; on an RT node that is a jitter and
+        // disk-fill primitive as much as a safety one. E-stop's bucket is sized to
+        // pass a genuine triple-redundant burst (see `SystemTopicLimits`).
         if msg.topic_hash == presence_hash {
-            self.presence_receiver.handle_broadcast(&msg.payload);
+            if self.system_limits.presence.take() {
+                self.presence_receiver.handle_broadcast(&msg.payload);
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
             return;
         }
         if msg.topic_hash == logs_hash {
-            crate::log_replication::handle_remote_logs(&msg.payload);
+            if self.system_limits.logs.take() {
+                crate::log_replication::handle_remote_logs(&msg.payload);
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
             return;
         }
         if msg.topic_hash == estop_hash {
-            crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
+            // Authenticate BEFORE charging the rate limit.
+            //
+            // Charging first meant a forged flood — packets that fail the MAC and
+            // do nothing — drained the bucket, so the very next GENUINE halt was
+            // dropped for want of a token. The limiter existed to stop an
+            // attacker halting the fleet at line rate; ordering it ahead of
+            // authentication let the attacker use it to SUPPRESS a halt instead,
+            // which is the strictly worse direction.
+            //
+            // With a key provisioned, a forged packet is now rejected without
+            // spending anything, and only packets that could actually halt the
+            // robot consume budget. Verification is an HMAC over at most a few
+            // hundred bytes and the source has already passed `peer_filter`, so
+            // the CPU an unauthenticated flood can buy is bounded.
+            //
+            // Unkeyed deployments keep the original ordering — there is nothing
+            // to authenticate against, so the bucket is the only defence there.
+            if crate::mac::estop_key().is_some()
+                && !crate::estop::estop_packet_is_authentic(&msg.payload)
+            {
+                self.metrics.record_topic_drop(msg.topic_hash);
+                return;
+            }
+            if self.system_limits.estop.take() {
+                crate::estop::handle_remote_estop(&msg.payload, self.config.estop_remote);
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
             return;
         }
 
@@ -396,14 +508,29 @@ impl Replicator {
         // types on the same topic name.
         if let Some(ref name) = topic_name {
             if let Some(local_entry) = self.registry.get_entry(name) {
+                // Compare like with like. This used to be
+                // `local_entry.type_hash != msg.topic_hash` — a hash of the TYPE
+                // name against a hash of the TOPIC name. Those are hashes of
+                // different strings, so the condition was true for every message
+                // on any topic with a registered type, and every legitimate
+                // import was rejected. `InMessage` has no type_hash field at all
+                // (the 24-byte MessageHeader has no room for one), so the peer's
+                // discovery announcement is the only source of its type identity.
+                //
+                // A peer chooses what it announces, so this catches accidental
+                // type mismatch between machines — its stated purpose — and is
+                // not a defence against a hostile peer. Payload size is checked
+                // unconditionally in ShmRingWriter::write_pod, which is what
+                // actually stops a wrong-sized write.
+                let remote_type_hash = self.peers.announced_type_hash(from, name).unwrap_or(0);
                 if local_entry.type_hash != 0
-                    && msg.topic_hash != 0
-                    && local_entry.type_hash != msg.topic_hash
+                    && remote_type_hash != 0
+                    && local_entry.type_hash != remote_type_hash
                 {
                     self.metrics.record_type_mismatch();
                     eprintln!(
-                        "[horus_net] Type mismatch on topic '{}': local hash={:#x}, remote hash={:#x}. Rejecting import.",
-                        name, local_entry.type_hash, msg.topic_hash
+                        "[horus_net] Type mismatch on topic '{}': local type hash={:#x}, peer-announced type hash={:#x}. Rejecting import.",
+                        name, local_entry.type_hash, remote_type_hash
                     );
                     return;
                 }
@@ -493,11 +620,14 @@ impl Replicator {
             let fragments = self.fragmenter.fragment(msg);
 
             let copies = ReliabilityLayer::copies_for(msg.reliability);
-            let sub_addrs: Vec<SocketAddr> = self
+            // Carry each subscriber's own id hash alongside its address: the
+            // send throttle below is per-destination, and flow-control state
+            // is keyed by the hash that peer stamps into ITS packets.
+            let sub_addrs: Vec<(u16, SocketAddr)> = self
                 .peers
                 .subscribers_of(&msg.topic_name)
                 .iter()
-                .map(|p| p.data_addr())
+                .map(|p| (p.id_hash(), p.data_addr()))
                 .collect();
 
             for frag in &fragments {
@@ -525,14 +655,16 @@ impl Replicator {
 
                 let mut send_buf = [0u8; 65536];
                 let len = wire::encode_single(&header, &frag_msg, &mut send_buf);
+                // 0 = did not fit; skip rather than send a truncated packet.
+                if len == 0 {
+                    continue;
+                }
 
                 for _ in 0..copies {
-                    for addr in &sub_addrs {
+                    for (sub_id_hash, addr) in &sub_addrs {
                         if msg.priority == Priority::Immediate
                             || msg.priority == Priority::RealTime
-                            || self
-                                .flow_control
-                                .should_send(msg.topic_hash, self.peer_id_hash)
+                            || self.flow_control.should_send(*sub_id_hash, msg.topic_hash)
                         {
                             let _ = self.transport.send_to(&send_buf[..len], *addr);
                             self.metrics.record_send(self.peer_id_hash, len);
@@ -565,11 +697,21 @@ impl Replicator {
                 LinkLostAction::Warn => {
                     // Already logged by heartbeat.tick()
                 }
-                LinkLostAction::SafeState | LinkLostAction::Stop => {
+                LinkLostAction::SafeState => {
+                    // Distinct from Stop. An operator who configured
+                    // `safety.on_link_lost = "safe_state"` chose per-node safing
+                    // over halting the robot; routing both here to
+                    // `trigger_external_emergency_stop` gave them the full halt
+                    // and preserved their choice only in the log line.
+                    horus_core::scheduling::trigger_external_safe_state(format!(
+                        "Network peer {:02X?}... lost — entering safe state",
+                        &peer_id[..4]
+                    ));
+                }
+                LinkLostAction::Stop => {
                     horus_core::scheduling::trigger_external_emergency_stop(format!(
-                        "Network peer {:02X?}... lost — {:?} action triggered",
-                        &peer_id[..4],
-                        action
+                        "Network peer {:02X?}... lost — emergency stop",
+                        &peer_id[..4]
                     ));
                 }
             }
@@ -595,6 +737,9 @@ impl Replicator {
             };
             let mut buf = [0u8; 65536];
             let len = wire::encode_single(&header, &msg, &mut buf);
+            if len == 0 {
+                continue; // did not fit; skip rather than send an empty datagram
+            }
             // Resend to all known peers (latched = broadcast)
             for peer in self.peers.alive_peers() {
                 let _ = self.transport.send_to(&buf[..len], peer.data_addr());
@@ -675,8 +820,27 @@ impl Replicator {
         // the send seam is unit-tested at EstopBroadcaster::broadcast in estop.rs.
         if let Some(reason) = horus_core::scheduling::take_pending_local_estop() {
             let payload = crate::estop::encode_estop(self.peer_id_hash, &reason);
-            self.estop_broadcaster
-                .broadcast(&self.transport, payload, mcast, &peer_addrs);
+            // MUST be framed. EstopBroadcaster used to be handed the bare e-stop
+            // body, which every receiver then dropped at the magic check in
+            // PacketHeader::decode — so a genuine cross-machine e-stop never
+            // propagated, while a forged one (framed correctly by the attacker)
+            // did. Framing here rather than inside the broadcaster keeps the
+            // retry copies byte-identical to the first send.
+            match self.frame_system_topic(crate::registry::SYSTEM_TOPIC_ESTOP, &payload) {
+                Some(framed) => {
+                    self.estop_broadcaster
+                        .broadcast(&self.transport, framed, mcast, &peer_addrs);
+                }
+                None => {
+                    // Only reachable if the reason string somehow exceeded a
+                    // datagram; encode_estop caps it at 200 bytes. Never drop an
+                    // e-stop silently.
+                    eprintln!(
+                        "[horus_net] CRITICAL: local e-stop could not be framed for \
+                         broadcast (reason too long); peers will NOT be notified"
+                    );
+                }
+            }
         }
 
         // Presence cleanup (every 5s)
@@ -690,33 +854,65 @@ impl Replicator {
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// Send a system topic payload to all known peers + multicast.
-    fn send_system_topic(&self, topic_name: &str, payload: &[u8]) {
+    /// Wrap a system-topic payload in the wire framing every receiver expects.
+    ///
+    /// `process_packet` dispatches on `PacketHeader::decode`, which rejects
+    /// anything whose first four bytes are not the HORS magic. A payload sent
+    /// without this framing is therefore silently dropped by every peer — which
+    /// is exactly what was happening to networked e-stop (see the call site in
+    /// `handle_timer`). Returns `None` if the framed packet would exceed one
+    /// datagram.
+    fn frame_system_topic(&mut self, topic_name: &str, payload: &[u8]) -> Option<Vec<u8>> {
         let topic_hash = wire::topic_hash(topic_name);
         let priority = Priority::for_system_topic(topic_name);
         let reliability = Reliability::for_system_topic(topic_name);
 
+        // Sequence MUST advance per episode. Framed system messages take the
+        // normal data path on the receiver, which runs
+        // `reliability.dedup_messages` BEFORE the system-topic dispatch, and
+        // `is_new_message` drops anything whose sequence is <= the last seen for
+        // that (sender, topic). A fixed 0 would therefore deliver the FIRST
+        // e-stop episode and silently drop every later one, forever — which is
+        // exactly the failure mode framing was added to fix.
+        //
+        // Retries deliberately reuse the already-framed bytes, so they keep the
+        // same sequence and are still deduped. That is the point of the
+        // triple-redundant send.
+        self.system_seq = self.system_seq.wrapping_add(1);
         let header = PacketHeader::new(PacketFlags::empty(), self.peer_id_hash, self.packet_seq);
         let msg = wire::MessageHeader {
             topic_hash,
             payload_len: payload.len() as u32,
             timestamp_ns: 0,
-            sequence: 0,
+            sequence: self.system_seq,
             priority,
             reliability,
-            encoding: Encoding::Bincode, // system topics use their own encoding
+            encoding: Encoding::Bincode,
             source_host: (self.peer_id_hash & 0xFF) as u8,
         };
 
-        // Encode: packet header + message header + payload
         let total = PacketHeader::SIZE + wire::MessageHeader::SIZE + payload.len();
         if total > wire::MAX_UDP_PAYLOAD {
-            return; // Too large for single packet — skip (presence should be small)
+            return None;
         }
         let mut buf = vec![0u8; total];
         header.encode(&mut buf[..PacketHeader::SIZE]);
         msg.encode(&mut buf[PacketHeader::SIZE..PacketHeader::SIZE + wire::MessageHeader::SIZE]);
         buf[PacketHeader::SIZE + wire::MessageHeader::SIZE..].copy_from_slice(payload);
+        Some(buf)
+    }
+
+    /// Send a system topic payload to all known peers + multicast.
+    fn send_system_topic(&mut self, topic_name: &str, payload: &[u8]) {
+        // Share the framing (and therefore the monotonic sequence) with the
+        // e-stop path. This used to build its own header with a hard-coded
+        // `sequence: 0`, which the receiver's dedup — which runs ahead of the
+        // system-topic dispatch — reads as "already seen" for every message
+        // after the first. Presence and log replication were being deduped away
+        // after their first packet for exactly the same reason e-stop was.
+        let Some(buf) = self.frame_system_topic(topic_name, payload) else {
+            return; // too large for a single datagram; presence should be small
+        };
 
         // Send to multicast
         if let Some(mcast) = self.multicast_addr() {
@@ -938,6 +1134,81 @@ mod tests {
         assert!(
             fired.load(Ordering::SeqCst),
             "estop data packet must dispatch to the estop handler"
+        );
+    }
+
+    #[test]
+    fn a_second_estop_episode_is_not_deduped_away() {
+        // Guards two properties at once: a LATER episode must halt (the original
+        // sequence-0 regression), and no unauthenticated cache upstream of the
+        // MAC may drop a system-topic message.
+        // Regression guard for a trap introduced BY the framing fix. Framed
+        // system messages take the normal data path, which runs
+        // reliability.dedup_messages BEFORE the system-topic dispatch.
+        // is_new_message drops anything whose sequence is <= the last seen for
+        // that (sender, topic) — so a fixed sequence of 0 would deliver the FIRST
+        // e-stop episode and silently drop every later one, forever.
+        //
+        // Retries reuse the already-framed bytes and SHOULD still dedup; a new
+        // episode carries a new sequence and must get through.
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired2 = fired.clone();
+        horus_core::scheduling::set_emergency_stop_hook(move |_reason| {
+            fired2.store(true, Ordering::SeqCst);
+        });
+
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+
+        // Frame two independent episodes exactly as handle_timer does.
+        let ep1 = rep
+            .frame_system_topic(
+                crate::registry::SYSTEM_TOPIC_ESTOP,
+                &crate::estop::encode_estop(0xABCD, "episode one"),
+            )
+            .expect("episode 1 must frame");
+        let ep2 = rep
+            .frame_system_topic(
+                crate::registry::SYSTEM_TOPIC_ESTOP,
+                &crate::estop::encode_estop(0xABCD, "episode two"),
+            )
+            .expect("episode 2 must frame");
+
+        // The two episodes must not carry the same wire sequence.
+        let seq1 = wire::MessageHeader::decode(&ep1[PacketHeader::SIZE..])
+            .unwrap()
+            .sequence;
+        let seq2 = wire::MessageHeader::decode(&ep2[PacketHeader::SIZE..])
+            .unwrap()
+            .sequence;
+        assert_ne!(
+            seq1, seq2,
+            "each e-stop episode needs its own sequence or dedup eats it"
+        );
+
+        rep.process_packet(&ep1, from);
+        assert!(fired.load(Ordering::SeqCst), "episode 1 must halt");
+
+        // A byte-identical retry now REACHES the handler again, because system
+        // topics are deliberately exempt from deduplication: dedup runs upstream
+        // of the MAC on a cache keyed by an unauthenticated 16-bit sender id, so
+        // one forged packet could otherwise poison it and permanently silence
+        // this peer's e-stops. Re-delivering a halt is harmless — the e-stop
+        // latches and the fleet re-broadcast is gated on a rising edge — whereas
+        // suppressing one is not.
+        fired.store(false, Ordering::SeqCst);
+        rep.process_packet(&ep1, from);
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "a retry must still halt; suppressing it is the dangerous direction"
+        );
+
+        // The genuinely new episode must get through.
+        fired.store(false, Ordering::SeqCst);
+        rep.process_packet(&ep2, from);
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "a LATER e-stop episode must still halt — this is the regression"
         );
     }
 }

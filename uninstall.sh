@@ -7,10 +7,19 @@
 set -e  # Exit on error
 
 # Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When this script is piped to bash (curl ... | bash) BASH_SOURCE is empty, so
+# `dirname ""` yields "." and SCRIPT_DIR collapses to the CALLER'S CWD — after
+# which the `source "$SCRIPT_DIR/scripts/deps.sh"` below would execute a
+# scripts/deps.sh from whatever directory the user happened to be in. Only trust
+# BASH_SOURCE when it is actually set.
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    SCRIPT_DIR=""
+fi
 
 # Source shared functions from deps.sh (provides colors, status indicators, OS detection, spinner, shm paths)
-if [ -f "$SCRIPT_DIR/scripts/deps.sh" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/scripts/deps.sh" ]; then
     source "$SCRIPT_DIR/scripts/deps.sh"
     DEPS_SOURCED=true
 else
@@ -415,7 +424,12 @@ for ns_dir in $SHM_GLOB; do
     if [ -d "$ns_dir" ]; then
         ns_name=$(basename "$ns_dir")
         rm -rf "$ns_dir" 2>/dev/null || true
-        echo -e "  ${GREEN}[+]${NC} Removed $ns_name"
+        # printf %s, not `echo -e "$ns_name"`. /dev/shm is world-writable, so any
+        # local user can create a horus_* directory whose NAME contains escape
+        # sequences; `echo -e` would interpret them and let that user drive the
+        # operator's terminal (cursor moves, colour, cleared lines) from a
+        # privileged uninstall run.
+        printf '  %b[+]%b Removed %s\n' "$GREEN" "$NC" "$ns_name"
         REMOVED=$((REMOVED + 1))
     fi
 done

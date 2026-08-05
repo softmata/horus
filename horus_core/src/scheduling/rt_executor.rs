@@ -263,6 +263,12 @@ impl RtExecutor {
 
         // tick budget check via TimingEnforcer
         if let Some(tick_budget) = node.tick_budget {
+            // Budget overrun feeds the monitor too — same reasoning as the
+            // deadline path below: this node is not in `Scheduler::nodes`, so
+            // the main loop's budget accounting never sees it.
+            if let Some(ref monitor) = monitors.safety {
+                let _ = monitor.check_tick_budget(&node.name, tr.duration);
+            }
             if let Some(budget_result) =
                 TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
             {
@@ -313,6 +319,19 @@ impl RtExecutor {
                         ));
                         let _ = node.node.shutdown();
                         node.is_stopped = true;
+                        // Latch the SafetyMonitor before signalling the thread to
+                        // exit. `running.store(false)` alone is a plain shutdown
+                        // flag: it leaves get_state() reporting Normal, writes no
+                        // blackbox EmergencyStop, and never populates
+                        // PENDING_LOCAL_ESTOP — so horus_net had nothing to
+                        // broadcast and peer robots were never told this one
+                        // emergency-stopped.
+                        if let Some(ref estop) = monitors.estop {
+                            estop.trigger(format!(
+                                "RT node '{}' budget violation ({:?} > {:?}) with BudgetPolicy::EmergencyStop",
+                                node.name, tr.duration, tick_budget
+                            ));
+                        }
                         // Signal stop via running flag — RT thread will exit
                         running.store(false, Ordering::SeqCst);
                     }
@@ -333,6 +352,42 @@ impl RtExecutor {
                 }
                 if let Some(ref mut stats) = node.rt_stats {
                     stats.record_deadline_miss();
+                }
+                // Aggregate into the scheduler's SafetyMonitor.
+                //
+                // `stats.record_deadline_miss()` above is NODE-LOCAL. The
+                // monitor-side accounting — `max_deadline_misses` and the
+                // graduated degradation ladder — lives in the main loop's
+                // `check_timing_violations`, gated on `is_rt_node`. But the class
+                // partition moves every RT node OUT of `Scheduler::nodes` and
+                // into this executor, leaving only BestEffort nodes behind, for
+                // which that gate is false. So `.rate()` — the very thing that
+                // makes a node RT — guaranteed its misses were never counted:
+                // the ceiling only ever worked in deterministic/replay mode,
+                // where the partition does not happen.
+                if let Some(ref monitor) = monitors.safety {
+                    monitor.record_deadline_miss(&node.name);
+                    let consecutive = monitor.consecutive_misses(&node.name);
+                    let action =
+                        monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
+                    if !matches!(action, super::safety_monitor::DegradationAction::None) {
+                        if monitors.verbose {
+                            print_line(&format!(
+                                "[RT-thread] Degradation for '{}': {:?} after {} consecutive misses",
+                                node.name, action, consecutive
+                            ));
+                        }
+                        // Actually apply it. This used to only PRINT, with a
+                        // comment claiming the deadline-action dispatch below
+                        // handled anything stronger — it does not: that dispatch
+                        // reads `dm.action` (the per-node Miss policy) and knows
+                        // nothing about the degradation ladder. So ReduceRate,
+                        // Isolate and Kill were computed every time and thrown
+                        // away, and the documented graceful-degradation
+                        // behaviour never happened for RT nodes — the ones it
+                        // exists to protect.
+                        super::primitives::apply_degradation_action(node, action, monitors);
+                    }
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
                 if let Some(ref bb) = monitors.blackbox {
@@ -363,6 +418,14 @@ impl RtExecutor {
                             "[RT-thread] Emergency stop triggered by '{}'",
                             node.name
                         ));
+                        // See the budget branch: without this the e-stop is a
+                        // silent local shutdown that the fleet never hears about.
+                        if let Some(ref estop) = monitors.estop {
+                            estop.trigger(format!(
+                                "RT node '{}' deadline miss escalated to emergency stop",
+                                node.name
+                            ));
+                        }
                         running.store(false, Ordering::SeqCst);
                     }
                 }
@@ -388,6 +451,18 @@ impl RtExecutor {
                     if let Some(ref feeder) = monitors.watchdog {
                         feeder.feed(&node.name);
                     }
+                }
+
+                // Degradation RECOVERY. `record_successful_tick` is the only
+                // producer of RestoreRate and Deisolate, and its only other
+                // call site is the main loop's `process_tick_result`, which
+                // post-partition sees BestEffort nodes only. Without this an
+                // RT node that had been rate-reduced or isolated stayed that
+                // way for the life of the process even after the transient
+                // condition cleared — `recovery_ticks` was dead configuration.
+                if let Some(ref monitor) = monitors.safety {
+                    let action = monitor.record_successful_tick(&node.name);
+                    super::primitives::apply_degradation_action(node, action, monitors);
                 }
             }
             Err(panic_err) => {
@@ -586,6 +661,11 @@ impl RtExecutor {
                     continue;
                 }
 
+                // Safing requested by the main thread's watchdog ladder. Runs
+                // before the pause/stop gates: an Isolated node must reach its
+                // safe state even if it is also about to be stopped.
+                super::primitives::honor_safe_state_request(node, &monitors);
+
                 // Check shared control flags (set by CLI: horus node pause/kill)
                 if monitors.node_controls.is_stopped(node.name.as_ref()) {
                     node.is_stopped = true;
@@ -712,7 +792,220 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
+            safety: None,
         }
+    }
+
+    /// The executor half of the graduated watchdog ladder.
+    ///
+    /// The ladder runs on the main thread (the only one a hung node cannot
+    /// block) and cannot call `enter_safe_state()` itself — that needs
+    /// `&mut dyn Node`, which the executor owns. So Critical raises a flag in
+    /// the shared control map, and the executor must consume it. If it does
+    /// not, an executor-hosted node is marked Isolated and never actually
+    /// safed: a worse outcome than no ladder, because the state says it was.
+    #[test]
+    fn test_executor_honors_safe_state_request() {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        struct SafeableNode {
+            safed: Arc<AtomicBool>,
+        }
+        impl Node for SafeableNode {
+            fn name(&self) -> &str {
+                "safeable"
+            }
+            fn tick(&mut self) {}
+            fn enter_safe_state(&mut self) {
+                self.safed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let safed = Arc::new(AtomicBool::new(false));
+        let mut registered = make_rt_registered("safeable", Arc::new(AtomicU64::new(0)));
+        registered.node = super::super::types::NodeKind::new(Box::new(SafeableNode {
+            safed: safed.clone(),
+        }));
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("safeable");
+
+        // Nothing pending → the node is left alone.
+        super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
+        assert!(!safed.load(std::sync::atomic::Ordering::SeqCst));
+
+        monitors.node_controls.request_safe_state("safeable");
+        super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
+        assert!(
+            safed.load(std::sync::atomic::Ordering::SeqCst),
+            "the executor never called enter_safe_state despite a pending request"
+        );
+
+        // Honoured exactly once per raise, not on every subsequent pass.
+        safed.store(false, std::sync::atomic::Ordering::SeqCst);
+        super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
+        assert!(!safed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The degradation ladder must actually be APPLIED on the executor, not
+    /// just computed.
+    ///
+    /// `evaluate_degradation` was called here and its result only printed, with
+    /// a comment claiming the deadline-action dispatch handled anything
+    /// stronger — it does not: that dispatch reads the per-node `Miss` policy
+    /// and knows nothing about the ladder. So `ReduceRate`, `Isolate` and
+    /// `Kill` were produced on every deadline miss and thrown away, and the
+    /// documented graceful-degradation behaviour never happened for RT nodes.
+    #[test]
+    fn test_degradation_action_is_applied_not_just_logged() {
+        use super::super::safety_monitor::DegradationAction;
+        use super::super::types::NodeHealthState;
+        use std::sync::atomic::AtomicU64;
+
+        let monitors = test_monitors();
+        let mut node = make_rt_registered("degrader", Arc::new(AtomicU64::new(0)));
+        node.rate_hz = Some(100.0);
+        monitors.node_controls.register("degrader");
+
+        // ReduceRate must land on the node, not just in the log.
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::ReduceRate {
+                node: "degrader".to_string(),
+                new_rate_hz: 25.0,
+            },
+            &monitors,
+        );
+        assert_eq!(
+            node.rate_hz,
+            Some(25.0),
+            "ReduceRate was computed and discarded — the node still runs at full rate"
+        );
+
+        // Isolate marks health and safes the node, and the state is mirrored
+        // into the shared map so the main thread sees the same value.
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::Isolate("degrader".to_string()),
+            &monitors,
+        );
+        assert_eq!(node.health_state.load(), NodeHealthState::Isolated);
+        assert_eq!(
+            monitors.node_controls.health("degrader"),
+            NodeHealthState::Isolated,
+            "executor-side health must be visible to the main thread"
+        );
+
+        // Recovery is reachable: RestoreRate puts the rate and health back.
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::RestoreRate {
+                node: "degrader".to_string(),
+                original_rate_hz: 100.0,
+            },
+            &monitors,
+        );
+        assert_eq!(node.rate_hz, Some(100.0));
+        assert_eq!(node.health_state.load(), NodeHealthState::Healthy);
+        assert_eq!(
+            monitors.node_controls.health("degrader"),
+            NodeHealthState::Healthy
+        );
+
+        // Kill stops the node — the flag every executor honours.
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::Kill("degrader".to_string()),
+            &monitors,
+        );
+        assert!(node.is_stopped, "Kill must actually remove the node");
+    }
+
+    /// `ReduceRate` must widen the node's watchdog by the same factor.
+    ///
+    /// The tick is what feeds the watchdog, so halving a node's rate halves how
+    /// often it feeds. With a fixed timeout, the GENTLEST rung of the ladder
+    /// becomes an escalation for any node whose watchdog margin was under 2x
+    /// its period: 1x, 2x, then Critical — which latches a fleet-wide
+    /// emergency stop. Rate-reducing a struggling node must not be a slower
+    /// route to halting the robot.
+    #[test]
+    fn test_reduce_rate_widens_the_watchdog() {
+        use super::super::safety_monitor::{DegradationAction, SafetyMonitor};
+        use std::sync::atomic::AtomicU64;
+        use std::time::Duration;
+
+        let monitor = Arc::new(SafetyMonitor::new(100));
+        // Watchdog margin of 1.5x the 100Hz period — survives at full rate,
+        // would not survive a halving.
+        monitor.add_critical_node("throttled".to_string(), Duration::from_millis(15));
+
+        let mut monitors = test_monitors();
+        monitors.safety = Some(monitor.clone());
+        monitors.node_controls.register("throttled");
+
+        let mut node = make_rt_registered("throttled", Arc::new(AtomicU64::new(0)));
+        node.rate_hz = Some(100.0);
+
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::ReduceRate {
+                node: "throttled".to_string(),
+                new_rate_hz: 50.0,
+            },
+            &monitors,
+        );
+        assert_eq!(node.rate_hz, Some(50.0));
+        assert_eq!(
+            monitor.watchdog_timeout("throttled"),
+            Some(Duration::from_millis(30)),
+            "the watchdog window must widen with the halved tick rate, or the \
+             node trips its own watchdog for slowing down as instructed"
+        );
+
+        // Restoring the rate restores the configured window exactly — the
+        // scaling is relative to the configured value, so it cannot compound.
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::RestoreRate {
+                node: "throttled".to_string(),
+                original_rate_hz: 100.0,
+            },
+            &monitors,
+        );
+        assert_eq!(
+            monitor.watchdog_timeout("throttled"),
+            Some(Duration::from_millis(15))
+        );
+    }
+
+    /// Watchdog-derived health must NOT gate ticking on an executor.
+    ///
+    /// The executor is what feeds the watchdog, so suppressing on watchdog
+    /// health is self-reinforcing: Unhealthy → stops feeding → 3x → e-stop, on
+    /// one transient overrun. Suppressing *and* feeding is worse still — it
+    /// makes the 3x rung unreachable, capping the ladder one rung short of the
+    /// safing it exists to perform. This pins the decision so neither variant
+    /// gets reintroduced.
+    #[test]
+    fn test_unhealthy_rt_node_still_ticks() {
+        use super::super::types::NodeHealthState;
+        use std::sync::atomic::{AtomicU64, Ordering as AOrd};
+
+        let count = Arc::new(AtomicU64::new(0));
+        let mut node = make_rt_registered("slow", count.clone());
+        node.health_state.store(NodeHealthState::Unhealthy);
+
+        let monitors = test_monitors();
+        RtExecutor::tick_node(&mut node, &monitors, &Arc::new(AtomicBool::new(true)), true);
+
+        assert_eq!(
+            count.load(AOrd::Relaxed),
+            1,
+            "an Unhealthy RT node must keep being ticked — it is the tick that \
+             feeds its watchdog, so suppressing it escalates straight to e-stop"
+        );
     }
 
     struct CounterNode {
@@ -750,6 +1043,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -913,6 +1207,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1176,6 +1471,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1241,6 +1537,8 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
+            safety: None,
         };
 
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
@@ -1294,6 +1592,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1321,6 +1620,8 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
+            safety: None,
         };
 
         let running = Arc::new(AtomicBool::new(true));
@@ -1408,6 +1709,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1529,6 +1831,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
@@ -1801,6 +2104,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
@@ -1888,6 +2192,7 @@ mod tests {
                 deadline: None,
                 recorder: None,
                 is_stopped: false,
+                health_probe_counter: 0,
                 is_paused: false,
                 rt_stats: None,
                 miss_policy: Miss::Warn,
@@ -2007,6 +2312,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,

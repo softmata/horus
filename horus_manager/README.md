@@ -37,7 +37,7 @@ horus log [node]                # View logs (-f follow, -l level)
 
 ```bash
 horus install <name>            # Install a package or plugin
-horus remove <name>             # Remove a package or plugin
+horus uninstall <name>          # Uninstall a registry package or plugin
 horus list [query]              # List installed packages and plugins
 horus search <query>            # Search available packages/plugins
 horus update [pkg]              # Update installed packages
@@ -69,9 +69,8 @@ horus new my_robot -r && cd my_robot && horus run --release
 # Create Python project
 horus new sensor_node -p && cd sensor_node && horus run
 
-# Monitor running system
-horus monitor          # Web UI
-horus monitor -t       # Terminal UI
+# Monitor running system (delegates to the installed horus-monitor plugin)
+horus monitor
 
 # Install packages
 horus install lidar-driver
@@ -84,7 +83,16 @@ horus deploy pi@192.168.1.50 --run --arch aarch64
 ## Configuration
 
 - `HORUS_REGISTRY_URL` - Registry endpoint (default: https://api.horusrobotics.dev)
-- `HORUS_API_KEY` - CLI authentication token
+
+Authentication uses `~/.horus/auth.json`, written by `horus auth login` (or
+`horus auth generate-key`). There is deliberately **no `HORUS_API_KEY`
+environment variable**: this README previously documented one, but nothing has
+ever read it — `registry::helpers::get_api_key` reads `auth.json` and nothing
+else, so anyone who set it got "not authenticated" with no explanation.
+
+If you need non-interactive auth (CI), write `auth.json` from a secret store
+rather than exporting a token: an environment variable is visible in `/proc` to
+every process running as you, and tends to end up in CI logs.
 
 `horus run` auto-detects Rust projects (Cargo.toml), Python files (.py), and glob patterns (`horus run "nodes/*.py"`).
 

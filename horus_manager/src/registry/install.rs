@@ -56,6 +56,62 @@ impl Drop for TempDirGuard {
     }
 }
 
+/// Verify a package signature against a trusted PUBLISHER key.
+///
+/// Returns `Ok(())` when the signature verified, or when no publisher key is
+/// on file for this package — the two are distinguished in the log, not by the
+/// return type, because they mean different things and only one is a failure.
+///
+/// The previous behaviour read `keys_dir()/signing_key.pub`, which is the
+/// INSTALLING USER'S own public key, as the anchor for every package. That
+/// cannot authenticate a publisher: with no local keypair every signed package
+/// became uninstallable, with someone else's keypair an authentic package was
+/// reported as tampered with, and it succeeded only for packages the installer
+/// had signed themselves. A signature that cannot be bound to a publisher is
+/// unverifiable, not invalid, so it is reported loudly and does not abort the
+/// install; a signature that CAN be bound and fails is still fatal.
+fn verify_against_publisher_key(
+    bytes: &[u8],
+    sig_hex: &str,
+    package_name: &str,
+    owner: Option<&str>,
+    what: &str,
+) -> Result<()> {
+    let Some(pub_path) = crate::paths::publisher_key_path(package_name, owner) else {
+        let dir = crate::paths::publisher_keys_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|_| "<publisher key directory>".to_string());
+        let key_name = owner.unwrap_or(package_name);
+        eprintln!(
+            "  WARNING: {what} for {package_name} is signed, but no publisher key is on file \
+             — the signature cannot be checked.\n           To verify future installs, place \
+             the publisher's key at {dir}/{key_name}.pub"
+        );
+        log::warn!("no publisher key for {package_name}; signature not verified");
+        return Ok(());
+    };
+
+    match verify_package_signature(bytes, sig_hex, &pub_path) {
+        Ok(true) => {
+            log::info!(
+                "{what} signature verified for {package_name} against {}",
+                pub_path.display()
+            );
+            Ok(())
+        }
+        Ok(false) => Err(anyhow!(
+            "{what} signature verification FAILED for {package_name}. It does not match the \
+             publisher key at {}. The package may have been tampered with.",
+            pub_path.display()
+        )),
+        Err(e) => Err(anyhow!(
+            "Signature verification error for {package_name}: {e}. Check the publisher key \
+             file at {}",
+            pub_path.display()
+        )),
+    }
+}
+
 /// Verify an Ed25519 signature against a local public key file.
 /// Returns Ok(true) if valid, Ok(false) if invalid, Err on format/IO errors.
 pub(crate) fn verify_package_signature(
@@ -524,49 +580,16 @@ impl RegistryClient {
             bytes
         };
 
-        // Verify Ed25519 signature
-        let pub_key_path = crate::paths::keys_dir()
-            .ok()
-            .map(|d| d.join("signing_key.pub"));
-        let has_public_key = pub_key_path.as_ref().is_some_and(|p| p.exists());
-
+        // Verify the Ed25519 publisher signature against a trusted PUBLISHER
+        // key, never against the installing user's own key.
         if let Some(ref sig_hex) = pkg_signature {
-            if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
-                match verify_package_signature(&bytes, sig_hex, &pub_path) {
-                    Ok(true) => {
-                        log::info!("Package signature verified for {}", package_name);
-                    }
-                    Ok(false) => {
-                        return Err(anyhow!(
-                            "Package signature verification FAILED for {}. \
-                             The package may have been tampered with. \
-                             If you trust this package, remove your local public key.",
-                            package_name
-                        ));
-                    }
-                    Err(e) => {
-                        // Crypto/IO errors are hard failures — don't silently continue
-                        return Err(anyhow!(
-                            "Signature verification error for {}: {}. \
-                             Check your public key file at ~/.horus/signing_key.pub",
-                            package_name,
-                            e
-                        ));
-                    }
-                }
-            } else {
-                return Err(anyhow!(
-                    "Package {} is signed but no local public key found to verify the signature.\n\
-                     Install the publisher's public key to ~/.horus/signing_key.pub before installing.\n\
-                     If you trust this package without verification, use --skip-verify.",
-                    package_name
-                ));
-            }
-        } else if has_public_key {
-            // Public key configured but package is unsigned — warn the user
+            verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Package")?;
+        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
+            // A publisher key is on file for this package but it arrived
+            // unsigned — that is a downgrade, and worth saying so.
             log::warn!(
-                "Package {} is NOT signed, but you have a signing key configured. \
-                 This package's integrity cannot be verified.",
+                "Package {} is NOT signed, but a publisher key is on file for it. \
+                 Its integrity cannot be verified.",
                 package_name
             );
         }
@@ -583,9 +606,39 @@ impl RegistryClient {
         );
         match self.client.get(&checksum_url).send() {
             Ok(resp) if resp.status().is_success() => {
-                if let Ok(json) = resp.json::<serde_json::Value>() {
-                    if let Some(expected) = json.get("checksum").and_then(|v| v.as_str()) {
-                        if !expected.is_empty() && expected != checksum {
+                // Fail CLOSED on a 200 that carries no usable checksum.
+                //
+                // The `_ =>` arm below already treats a failed FETCH as fatal, so
+                // that is this code's actual policy. But a 200 whose body was
+                // unparseable, lacked the `checksum` field, or carried an empty
+                // one fell through every `if let` and reached the success path —
+                // installing the package with NO verification and no warning.
+                // The permissive branch was reachable by anything able to shape
+                // the response, which is exactly the party verification exists to
+                // defend against.
+                let expected = resp
+                    .json::<serde_json::Value>()
+                    .ok()
+                    .and_then(|json| {
+                        json.get("checksum")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .filter(|s| !s.is_empty());
+
+                let Some(expected) = expected else {
+                    return Err(anyhow!(
+                        "Checksum verification failed for {}@{}: the registry returned a \
+                         success response with no usable checksum.\n\
+                         Refusing to install an unverified package — this is the same \
+                         outcome as an unreachable registry, which is already fatal.",
+                        package_name,
+                        version_str
+                    ));
+                };
+                {
+                    {
+                        if expected != checksum {
                             return Err(anyhow!(
                                 "Checksum mismatch for {}@{}!\n\
                                  Expected: {}\n\
@@ -609,7 +662,7 @@ impl RegistryClient {
                 eprintln!(
                     "\n{} Warning: Could not verify package checksum for {}@{}.\n\
                      The registry may be unreachable or the package may have been tampered with.\n\
-                     Use --skip-verify to install anyway.",
+                     Verification failure is fatal — there is no override flag.",
                     crate::cli_output::ICON_WARN.yellow(),
                     package_name,
                     version_str
@@ -992,8 +1045,21 @@ impl RegistryClient {
         hasher.update(&bytes);
         let actual_checksum = format!("{:x}", hasher.finalize());
 
-        if let Some(ref expected) = expected_checksum {
-            if !expected.is_empty() && expected != &actual_checksum {
+        // Fail CLOSED when the binary artifact arrives with no X-Horus-Checksum
+        // header, or an empty one. Previously both fell out of the `if let` and
+        // installed unverified — and this is the FAST path, the one most
+        // installs take.
+        let expected_checksum = expected_checksum.filter(|c| !c.is_empty());
+        let Some(ref expected) = expected_checksum else {
+            return Err(anyhow!(
+                "Binary artifact for {}@{} arrived with no X-Horus-Checksum header.\n\
+                 Refusing to install an unverified binary.",
+                package_name,
+                version_str
+            ));
+        };
+        {
+            if expected != &actual_checksum {
                 return Err(anyhow!(
                     "Checksum mismatch for binary artifact {}@{} ({})!\n\
                      Expected: {}\n\
@@ -1019,55 +1085,11 @@ impl RegistryClient {
         // authentication; a signature the registry cannot forge (it lacks the private
         // key) is. Same policy as source install: a signed binary MUST verify against a
         // configured public key; an unsigned binary only warns when a key is configured.
-        let pub_key_path = crate::paths::keys_dir()
-            .ok()
-            .map(|d| d.join("signing_key.pub"));
-        let has_public_key = pub_key_path.as_ref().is_some_and(|p| p.exists());
-
         if let Some(ref sig_hex) = pkg_signature {
-            if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
-                match verify_package_signature(&bytes, sig_hex, &pub_path) {
-                    Ok(true) => {
-                        log::info!(
-                            "Binary signature verified for {}@{} ({})",
-                            package_name,
-                            version_str,
-                            target_triple
-                        );
-                    }
-                    Ok(false) => {
-                        return Err(anyhow!(
-                            "Binary signature verification FAILED for {}@{} ({}). \
-                             The pre-built binary may have been tampered with. \
-                             If you trust this package, remove your local public key.",
-                            package_name,
-                            version_str,
-                            target_triple
-                        ));
-                    }
-                    Err(e) => {
-                        // Crypto/IO errors are hard failures — don't silently continue.
-                        return Err(anyhow!(
-                            "Signature verification error for {}: {}. \
-                             Check your public key file at ~/.horus/signing_key.pub",
-                            package_name,
-                            e
-                        ));
-                    }
-                }
-            } else {
-                return Err(anyhow!(
-                    "Pre-built binary for {} is signed but no local public key was found to \
-                     verify it.\n\
-                     Install the publisher's public key to ~/.horus/signing_key.pub before \
-                     installing.",
-                    package_name
-                ));
-            }
-        } else if has_public_key {
-            // Public key configured but the binary is unsigned — warn the user.
+            verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Pre-built binary")?;
+        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
             log::warn!(
-                "Pre-built binary for {} is NOT signed, but you have a signing key configured. \
+                "Pre-built binary for {} is NOT signed, but a publisher key is on file for it. \
                  Its integrity cannot be verified.",
                 package_name
             );
@@ -1367,11 +1389,32 @@ impl RegistryClient {
                 for dep in py_deps {
                     println!("    - {}", dep);
                 }
-                // Auto-install with pip
+                // Auto-install with pip.
+                //
+                // `py_deps` comes from REGISTRY-SUPPLIED package metadata, i.e.
+                // from whoever published the package. A requirement beginning
+                // with `-` is read by pip as an OPTION, and pip accepts
+                // `--index-url` / `-i` (fetch from an attacker's index) and
+                // `--editable` with a local path, so an unvalidated spec is
+                // remote code execution as the invoking user. `--` ends option
+                // parsing as defence in depth; the validation is the control.
                 let mut failed_deps = Vec::new();
                 for dep in py_deps {
+                    if !is_safe_python_requirement(dep) {
+                        eprintln!(
+                            "  {} Refusing python dependency {:?} — a requirement that begins \
+                             with '-' is read as an option by pip, which can redirect the \
+                             install to another index or execute local code. Install it by hand \
+                             if it is genuinely needed.",
+                            crate::cli_output::ICON_WARN.yellow(),
+                            dep
+                        );
+                        failed_deps.push(dep.as_str());
+                        continue;
+                    }
                     let status = std::process::Command::new("pip3")
-                        .args(["install", "--quiet", dep])
+                        .args(["install", "--quiet", "--"])
+                        .arg(dep)
                         .status();
                     match status {
                         Ok(s) if s.success() => {
@@ -2493,5 +2536,123 @@ mod sec1_signature_tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Whether `spec` is safe to hand to `pip install` as a requirement.
+///
+/// Registry package metadata supplies these, so they are attacker-controlled for
+/// anyone who can publish. pip treats a leading `-` as an option — `-i URL`
+/// silently redirects the install to another package index, and `-e <path>`
+/// runs a local setup.py — so the leading character is the whole ballgame.
+///
+/// Accepts the PEP 508 shapes that appear in practice: a name, optional extras,
+/// optional version specifiers, optional environment marker.
+pub(crate) fn is_safe_python_requirement(spec: &str) -> bool {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.len() > 256 {
+        return false;
+    }
+    // Must start with a package-name character, never an option or a path.
+    if !spec
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    // No shell metacharacters, whitespace-separated extra arguments, URLs or
+    // path separators — none of which belong in a plain requirement.
+    if spec.contains("://") {
+        return false;
+    }
+    spec.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '.' | '-'
+                    | '_'
+                    | '['
+                    | ']'
+                    | ','
+                    | '='
+                    | '<'
+                    | '>'
+                    | '!'
+                    | '~'
+                    | '*'
+                    | '+'
+                    | ' '
+                    | ';'
+                    | '\''
+                    | '"'
+            )
+    }) && !spec.contains('/')
+        && !spec.contains('\\')
+}
+
+#[cfg(test)]
+mod python_requirement_tests {
+    use super::is_safe_python_requirement;
+
+    #[test]
+    fn accepts_real_requirements() {
+        for spec in [
+            "numpy",
+            "numpy==1.26.4",
+            "torch>=2.0,<3.0",
+            "opencv-python",
+            "requests[security]",
+            "pyyaml!=6.0",
+            "scipy~=1.11",
+            "pkg; python_version >= '3.9'",
+        ] {
+            assert!(
+                is_safe_python_requirement(spec),
+                "{spec:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_specs_pip_would_read_as_options() {
+        // The actual RCE vector: pip honours -i/--index-url (fetch from an
+        // attacker's index) and -e <path> (run a local setup.py). These come
+        // from registry-supplied package metadata.
+        for spec in [
+            "-i",
+            "--index-url=https://evil.example/simple",
+            "-e",
+            "--editable=.",
+            "-rrequirements.txt",
+        ] {
+            assert!(
+                !is_safe_python_requirement(spec),
+                "{spec:?} must be rejected — a leading dash is an option to pip"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_urls_and_paths() {
+        for spec in [
+            "https://evil.example/pkg.tar.gz",
+            "git+https://evil.example/x.git",
+            "./local/path",
+            "/abs/path",
+            "..\\windows\\path",
+        ] {
+            assert!(
+                !is_safe_python_requirement(spec),
+                "{spec:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_empty_and_overlong() {
+        assert!(!is_safe_python_requirement(""));
+        assert!(!is_safe_python_requirement("   "));
+        assert!(!is_safe_python_requirement(&"a".repeat(257)));
     }
 }

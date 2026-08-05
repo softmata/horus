@@ -267,44 +267,25 @@ fn pid_start_time_linux(pid: u32) -> u64 {
 
 #[cfg(target_os = "macos")]
 fn pid_start_time_macos(pid: u32) -> u64 {
-    // kinfo_proc layout constants for macOS (x86_64 and aarch64).
-    // p_starttime is a timeval at offset 136 within kp_proc (offset 0 in kinfo_proc).
-    // timeval = { tv_sec: i64 (8 bytes), tv_usec: i32 (4 bytes) } on macOS.
-    const KINFO_PROC_SIZE: usize = 648;
-    const P_STARTTIME_OFFSET: usize = 136; // kp_proc.p_starttime
-
-    let mut buf = vec![0u8; KINFO_PROC_SIZE];
-    let mut size = KINFO_PROC_SIZE;
-    let mut mib: [libc::c_int; 4] = [
-        libc::CTL_KERN,
-        libc::KERN_PROC,
-        libc::KERN_PROC_PID,
-        pid as libc::c_int,
-    ];
-    // SAFETY: mib is valid, buf is properly sized for one kinfo_proc.
-    let ret = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            buf.as_mut_ptr() as *mut libc::c_void,
-            &mut size,
-            std::ptr::null_mut(),
+    // libproc exposes a stable, architecture-independent proc_bsdinfo layout;
+    // hard-coded kinfo_proc offsets differ between Intel and Apple Silicon.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let expected = std::mem::size_of::<libc::proc_bsdinfo>();
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
             0,
+            &mut info as *mut _ as *mut libc::c_void,
+            expected as libc::c_int,
         )
     };
-    if ret != 0 || size == 0 || size < KINFO_PROC_SIZE {
+    if read != expected as libc::c_int {
         return 0;
     }
-    // Extract tv_sec (i64, 8 bytes) and tv_usec (i32, 4 bytes) from p_starttime offset
-    let off = P_STARTTIME_OFFSET;
-    if off + 12 > buf.len() {
-        return 0;
-    }
-    let tv_sec = i64::from_ne_bytes(buf[off..off + 8].try_into().unwrap_or([0; 8]));
-    let tv_usec = i32::from_ne_bytes(buf[off + 8..off + 12].try_into().unwrap_or([0; 4]));
-    (tv_sec as u64)
+    info.pbi_start_tvsec
         .saturating_mul(1_000_000)
-        .saturating_add(tv_usec as u64)
+        .saturating_add(info.pbi_start_tvusec)
 }
 
 #[cfg(target_os = "windows")]

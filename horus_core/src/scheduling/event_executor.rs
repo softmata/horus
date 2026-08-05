@@ -156,6 +156,11 @@ impl EventExecutor {
         let mut last_seen_generation: u64 = 0;
 
         while running.load(Ordering::Relaxed) {
+            // Safing requested by the main thread's watchdog ladder. Checked
+            // before the gates below — an Isolated node is precisely one that
+            // is not ticking, so gating this on tickability would never run it.
+            super::primitives::honor_safe_state_request(&mut node, &monitors);
+
             if !node.initialized
                 || node.is_stopped
                 || node.is_paused
@@ -291,6 +296,8 @@ mod tests {
             clock: Arc::new(crate::core::clock::WallClock::new()),
             tick_period: Duration::from_millis(1),
             watchdog: None,
+            estop: None,
+            safety: None,
         }
     }
 
@@ -326,6 +333,7 @@ mod tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,

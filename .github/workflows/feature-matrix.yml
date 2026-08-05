@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config python3-dev
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -61,6 +61,10 @@ jobs:
           key: ${{ runner.os }}-cargo-python-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-python-
 
+      # A real gate. `continue-on-error: true` made needs.python.result
+      # permanently "success", so a broken Python binding could not be reported.
+      # Verified locally: `maturin build` in horus_py exits 0 and produces
+      # horus_robotics-0.2.2-cp39-abi3-*.whl.
       - name: Check Python bindings compilation
         run: |
           if [ -d "horus_py" ]; then
@@ -68,7 +72,6 @@ jobs:
           else
             echo "horus_py not found, skipping"
           fi
-        continue-on-error: true
 
   # Test no default features
   minimal:
@@ -83,7 +86,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -98,7 +101,18 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-minimal-
 
       - name: Check minimal build
-        run: cargo check --workspace --no-default-features
+        run: |
+          # `--workspace --no-default-features` does NOT produce a minimal build:
+          # Cargo unifies features across the workspace, so sibling members that
+          # depend on horus_core/horus with default features re-enable
+          # macros+telemetry+blackbox anyway. Checking each crate on its own is
+          # the only way this job can actually catch a no-default-features
+          # regression. All five pass today.
+          cargo check -p horus_core --no-default-features
+          cargo check -p horus --no-default-features
+          cargo check -p horus_types --no-default-features
+          cargo check -p horus_net --no-default-features
+          cargo check -p horus_sys --no-default-features
 
   # Test all features combined
   all-features:
@@ -113,7 +127,7 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -127,9 +141,15 @@ jobs:
           key: ${{ runner.os }}-cargo-all-features-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-all-features-
 
+      # This is now a real gate. It previously carried `continue-on-error: true`,
+      # which meant the step reported success while actually exiting 101 —
+      # hiding two genuine breakages: horus_manager's `schema` feature did not
+      # compile (NetworkConfig/toml::Value lacked JsonSchema), and
+      # horus_benchmarks' zenoh comparison was still written against the removed
+      # zenoh 0.x API. Both are fixed; `cargo check --workspace --all-features`
+      # now exits 0.
       - name: Check all features build
         run: cargo check --workspace --all-features
-        continue-on-error: true  # Some features may conflict
 
   # Summary job
   feature-matrix-success:
@@ -144,9 +164,21 @@ jobs:
           echo "Minimal: ${{ needs.minimal.result }}"
           echo "All Features: ${{ needs.all-features.result }}"
 
-          # Minimal build must pass
-          if [[ "${{ needs.minimal.result }}" != "success" ]]; then
-            echo "Minimal build failed - this is required"
+          # Gate on every leg. Previously only `minimal` was checked, and since
+          # the python and all-features steps were both continue-on-error, the
+          # whole 4-job "Feature Matrix" reduced to a single command — net signal
+          # was effectively zero.
+          FAILED=0
+          for r in "minimal:${{ needs.minimal.result }}" \
+                   "all-features:${{ needs.all-features.result }}" \
+                   "python:${{ needs.python.result }}"; do
+            name="${r%%:*}"; result="${r#*:}"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::Feature matrix leg '$name' did not succeed (result: $result)"
+              FAILED=1
+            fi
+          done
+          if [[ "$FAILED" -ne 0 ]]; then
             exit 1
           fi
 

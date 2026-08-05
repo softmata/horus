@@ -214,9 +214,10 @@ fn test_killed_node_not_ticked_again() {
     let stall_after_kill = stall_count.load(Ordering::SeqCst);
     let healthy_after_phase1 = healthy_count.load(Ordering::SeqCst);
 
-    // Phase 2: Run 100 more tick_once() calls. If the stalling node
-    // was killed, its tick count must not increase.
-    for _ in 0..100 {
+    // Phase 2: Run more tick_once() calls. If the stalling node was killed,
+    // its tick count must not resume normal ticking (health probes aside).
+    const PHASE2_TICKS: u64 = 100;
+    for _ in 0..PHASE2_TICKS {
         let _ = scheduler.tick_once();
     }
 
@@ -227,11 +228,27 @@ fn test_killed_node_not_ticked_again() {
     // received any additional ticks in phase 2.
     if let Some(stats) = scheduler.safety_stats() {
         if stats.degrade_activations() > 0 {
-            assert_eq!(
-                stall_after_kill, stall_after_phase2,
-                "Killed node tick count should not increase after kill. \
-                 Before: {}, After: {}",
-                stall_after_kill, stall_after_phase2
+            // A suppressed node is now re-ticked once every
+            // `HEALTH_PROBE_INTERVAL` (100) scheduler passes, so it can be
+            // observed recovering — see "a degraded node could never recover"
+            // (85d3aa1b). Exact equality encoded the older contract, where
+            // suppression was permanent, and now fails by exactly the number of
+            // probes that fired.
+            //
+            // The property under test is unchanged: a killed node must not
+            // resume NORMAL ticking. Bound the increase by the probe budget
+            // instead of demanding zero.
+            let probes = stall_after_phase2 - stall_after_kill;
+            let max_probes = PHASE2_TICKS.div_ceil(100) + 1;
+            assert!(
+                probes <= max_probes,
+                "Killed node should only receive health probes after kill, \
+                 not normal ticks. Before: {}, After: {} (increase {}, \
+                 max expected probes {})",
+                stall_after_kill,
+                stall_after_phase2,
+                probes,
+                max_probes
             );
         }
     }

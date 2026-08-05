@@ -16,9 +16,31 @@ use crate::core::{Miss, Node, NodeInfo, RtStats};
 ///
 /// Transitions:
 /// - `Healthy` → `Warning` (1x timeout): node is slow, logged but still ticked
-/// - `Warning` → `Unhealthy` (2x timeout): node is skipped in tick loop
+/// - `Warning` → `Unhealthy` (2x timeout): recorded and reported
 /// - `Unhealthy` → `Isolated` (3x timeout, critical node): `enter_safe_state()` called
 /// - Any → `Healthy`: node ticks successfully (recovery)
+///
+/// # Why watchdog-derived states do NOT suppress ticking
+///
+/// These states are observability, not a gate — a node whose watchdog is
+/// overdue keeps being offered ticks. That is deliberate. The watchdog answers
+/// "did this node tick recently", and the tick loop is what feeds it, so
+/// suppressing on watchdog health is self-reinforcing: a node marked
+/// `Unhealthy` at 2x would stop feeding, reach 3x, and latch a system-wide
+/// emergency stop. A transient overrun — one page fault, one scheduling
+/// hiccup — would reliably halt the robot a few hundred milliseconds later.
+///
+/// Suppressing and *also* feeding the watchdog is not the answer either: it
+/// makes the 3x rung unreachable for any node that got as far as `Unhealthy`,
+/// silently capping the ladder one rung short of the safing it exists to
+/// perform.
+///
+/// Stopping a node is the job of the separate degradation ladder, whose
+/// `DegradationAction::Kill` sets `is_stopped` — a flag every executor and the
+/// main loop honour — and whose `Isolate` safes the node while leaving it able
+/// to demonstrate recovery. The main loop additionally suppresses
+/// `Unhealthy`/`Isolated` nodes with a periodic probe tick; that predates this
+/// note and applies only to nodes it still owns.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -27,9 +49,10 @@ pub enum NodeHealthState {
     Healthy = 0,
     /// Watchdog warning (1x timeout elapsed) — node still ticks, but logged.
     Warning = 1,
-    /// Unhealthy (2x timeout) — node is skipped in tick loop.
+    /// Unhealthy (2x timeout) — recorded and reported; see the type-level note
+    /// on why this does not by itself stop the node being ticked.
     Unhealthy = 2,
-    /// Isolated (3x timeout on critical node) — `enter_safe_state()` called, node skipped.
+    /// Isolated (3x timeout on critical node) — `enter_safe_state()` called.
     Isolated = 3,
 }
 
@@ -116,6 +139,7 @@ mod execution_class_tests {
             deadline: None,
             recorder: None,
             is_stopped: false,
+            health_probe_counter: 0,
             is_paused: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -363,6 +387,13 @@ pub(crate) struct RegisteredNode {
     pub(crate) deadline: Option<Duration>,
     pub(crate) recorder: Option<NodeRecorder>,
     pub(crate) is_stopped: bool,
+    /// Cycle counter for the suppressed-node probe tick.
+    ///
+    /// `Unhealthy` and `Isolated` were absorbing states: recovery is only
+    /// evaluated after a tick, and the tick gate refused those states. A node
+    /// degraded once could never return, even though
+    /// `NodeDegradationState::recovery_counter` documents recovery as intended.
+    pub(crate) health_probe_counter: u64,
     pub(crate) is_paused: bool,
     /// Per-node real-time statistics (populated for RT nodes)
     pub(crate) rt_stats: Option<RtStats>,
@@ -456,9 +487,102 @@ pub struct SubscriptionFreshness {
     pub timeout: Duration,
     /// What to do when the topic goes stale.
     pub policy: StalePolicy,
-    /// Last time a message was received on this topic (nanoseconds since epoch).
-    /// Updated by the scheduler when Topic::recv() returns Some.
+    /// Last time a message was observed on this topic (nanoseconds since epoch).
+    ///
+    /// Refreshed by [`SubscriptionFreshness::refresh`], which the scheduler
+    /// calls before every staleness check.
     pub last_received_ns: AtomicU64,
+    /// Lazily-mapped topic header, used to observe the publisher's
+    /// `messages_total` counter. `None` once we have decided the topic is not
+    /// mappable; re-attempted while it is still absent, because a topic may be
+    /// created after the subscriber starts.
+    counter_map: Mutex<Option<horus_sys::shm::ShmRegion>>,
+    /// Last `messages_total` we observed, to detect that new data arrived.
+    last_count: AtomicU64,
+}
+
+impl SubscriptionFreshness {
+    /// Build a freshness tracker, stamped as of `now_ns`.
+    pub fn new(topic: String, timeout: Duration, policy: StalePolicy, now_ns: u64) -> Self {
+        Self {
+            topic,
+            timeout,
+            policy,
+            last_received_ns: AtomicU64::new(now_ns),
+            counter_map: Mutex::new(None),
+            last_count: AtomicU64::new(u64::MAX), // sentinel: nothing observed yet
+        }
+    }
+
+    /// Observe the topic and refresh `last_received_ns` if new data has arrived.
+    ///
+    /// # Why this exists
+    ///
+    /// `last_received_ns` was stamped once at `build()` and **never written
+    /// again** — the field's own doc claimed the scheduler updated it on
+    /// `Topic::recv()`, and nothing did. So `.subscribe_with_timeout()`, whose
+    /// entire purpose is to detect a topic that has gone quiet, degenerated
+    /// into a fixed countdown from startup that fires on a perfectly healthy
+    /// topic. With `StalePolicy::SafeState` or `Stop` that means a node enters
+    /// its safe state, or halts, *because data is flowing normally*.
+    ///
+    /// The scheduler cannot see a user's `Topic::recv()` call — it happens
+    /// inside `tick()`. But every publisher increments `messages_total` in the
+    /// topic's SHM header on every send, so watching that counter is a true
+    /// "new data exists" signal, and reading it is one relaxed atomic load from
+    /// an already-mapped page.
+    ///
+    /// A topic that has never been created is deliberately NOT treated as
+    /// fresh: no data has arrived, which is exactly what the timeout is for.
+    pub fn refresh(&self, now_ns: u64) {
+        use crate::communication::topic::shm_layout as layout;
+
+        let mut guard = match self.counter_map.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.is_none() {
+            // Retry while absent — the publisher may start after we do.
+            if let Ok(map) =
+                horus_sys::shm::ShmRegion::open_existing(&self.topic, layout::HEADER_SIZE)
+            {
+                let bytes = map.as_slice();
+                let magic = u64::from_ne_bytes(
+                    bytes[layout::OFF_MAGIC..layout::OFF_MAGIC + 8]
+                        .try_into()
+                        .unwrap_or([0; 8]),
+                );
+                if magic == layout::MAGIC {
+                    *guard = Some(map);
+                }
+            }
+        }
+        let Some(ref map) = *guard else { return };
+
+        // SAFETY: OFF_MESSAGES_TOTAL is inside the header, which we validated is
+        // mapped, and the field is 8-byte aligned in a page-aligned mapping. The
+        // publisher writes it as an AtomicU64, so it must be read as one.
+        let total = unsafe {
+            let ptr = map.as_ptr().add(layout::OFF_MESSAGES_TOTAL) as *const AtomicU64;
+            (*ptr).load(Ordering::Relaxed)
+        };
+
+        let previous = self.last_count.swap(total, Ordering::Relaxed);
+        // u64::MAX is the "nothing observed yet" sentinel: adopt the current
+        // count without claiming data arrived, so a subscriber that starts long
+        // after the publisher does not get a free refresh.
+        if previous != u64::MAX && total != previous {
+            // Windows' SystemTime may have coarser resolution than the nominal
+            // nanosecond representation. A real publication can therefore be
+            // observed while `now_ns` is identical to the previous stamp. Keep
+            // the freshness clock logically monotonic so new data is always
+            // distinguishable from no data, without moving it backwards when a
+            // wall clock is adjusted.
+            let last = self.last_received_ns.load(Ordering::Relaxed);
+            self.last_received_ns
+                .store(now_ns.max(last.saturating_add(1)), Ordering::Relaxed);
+        }
+    }
 }
 
 /// Policy for handling stale subscriptions (no new data within timeout).
@@ -503,6 +627,32 @@ pub(crate) struct SharedMonitors {
     /// RT node was never fed and its watchdog spuriously e-stopped the fleet
     /// (FIX #2). Same Arc the main-thread `check_watchdogs` reads.
     pub watchdog: Option<super::safety_monitor::WatchdogFeeder>,
+    /// E-stop latch handle sharing the scheduler `SafetyMonitor`'s state
+    /// (`None` when no safety monitor is configured).
+    ///
+    /// Counterpart to `watchdog`. Executor threads own their nodes and have no
+    /// `SafetyMonitor` reference, so the RT executor's emergency-stop branches
+    /// previously did only `running.store(false)` — a plain shutdown flag. The
+    /// latch was never set, `get_state()` kept reporting Normal, no blackbox
+    /// EmergencyStop was written, and `PENDING_LOCAL_ESTOP` was never populated,
+    /// so horus_net never broadcast: a real RT e-stop halted this robot silently
+    /// and never told the fleet.
+    pub estop: Option<super::safety_monitor::EstopTrigger>,
+    /// The scheduler's `SafetyMonitor` itself, for timing AGGREGATION.
+    ///
+    /// `watchdog` and `estop` are narrow handles; deadline and degradation
+    /// accounting is stateful across ticks and across nodes, so the executor
+    /// needs the monitor.
+    ///
+    /// Without it, `max_deadline_misses` and the graduated degradation ladder
+    /// were dead code on any normally-configured robot. Both live in
+    /// `check_timing_violations`, gated on `self.nodes[i].is_rt_node` — but the
+    /// class partition MOVES every RT node out of `self.nodes` into this
+    /// executor, leaving only BestEffort nodes behind, for which the gate is
+    /// false. So the ceiling only ever counted in deterministic/replay mode,
+    /// while `.rate()` — the very thing that makes a node RT — guaranteed it
+    /// would not.
+    pub safety: Option<std::sync::Arc<super::safety_monitor::SafetyMonitor>>,
 }
 
 /// Shared atomic control flags for each node, keyed by name.
@@ -517,6 +667,24 @@ pub struct NodeControlMap {
 pub struct NodeControl {
     pub paused: std::sync::atomic::AtomicBool,
     pub stopped: std::sync::atomic::AtomicBool,
+    /// Graduated watchdog health, mirrored here for EVERY node.
+    ///
+    /// `RegisteredNode.health_state` only exists for nodes the scheduler still
+    /// owns, and after the class partition that is BestEffort nodes alone.
+    /// The watchdog ladder runs on the main thread — the only one a hung node
+    /// cannot block — so it needs somewhere to record the health of a node
+    /// living on an executor. This map is registered for all five groups.
+    pub health: AtomicHealthState,
+    /// Set by the main thread when the ladder reaches Critical on a node the
+    /// scheduler does not own; cleared by the executor that does, which then
+    /// calls `enter_safe_state()` on it.
+    ///
+    /// Safing needs `&mut dyn Node`, which lives in the executor thread, so it
+    /// cannot be a direct call from the ladder. The limit this leaves is real
+    /// and deliberate: a node hung INSIDE `tick()` blocks the very thread that
+    /// would honour the request, so it will not be safed by its own executor.
+    /// That case is what the e-stop escalation exists for.
+    pub safe_state_requested: std::sync::atomic::AtomicBool,
 }
 
 impl NodeControlMap {
@@ -525,7 +693,59 @@ impl NodeControlMap {
         map.entry(name.to_string()).or_insert_with(|| NodeControl {
             paused: std::sync::atomic::AtomicBool::new(false),
             stopped: std::sync::atomic::AtomicBool::new(false),
+            health: AtomicHealthState::default(),
+            safe_state_requested: std::sync::atomic::AtomicBool::new(false),
         });
+    }
+
+    /// Record a node's graduated-watchdog health. Unknown names are ignored.
+    pub fn set_health(&self, name: &str, state: NodeHealthState) {
+        if let Some(c) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            c.health.store(state);
+        }
+    }
+
+    /// Read a node's graduated-watchdog health. Unknown names read `Healthy`.
+    pub fn health(&self, name: &str) -> NodeHealthState {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|c| c.health.load())
+            .unwrap_or(NodeHealthState::Healthy)
+    }
+
+    /// Ask the executor that owns `name` to safe the node on its next pass.
+    pub fn request_safe_state(&self, name: &str) {
+        if let Some(c) = self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            c.safe_state_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Consume a pending safing request, returning whether one was set.
+    ///
+    /// Clears the flag, so a request is honoured exactly once per raise.
+    pub fn take_safe_state_request(&self, name: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|c| {
+                c.safe_state_requested
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+            })
+            .unwrap_or(false)
     }
 
     pub fn is_paused(&self, name: &str) -> bool {
@@ -611,5 +831,122 @@ impl SharedMonitors {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod subscription_freshness_tests {
+    use super::*;
+    use crate::communication::Topic;
+
+    fn now_ns() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    }
+
+    fn unique(tag: &str) -> String {
+        format!("freshness_{}_{}", tag, std::process::id())
+    }
+
+    fn last(sf: &SubscriptionFreshness) -> u64 {
+        sf.last_received_ns.load(Ordering::Relaxed)
+    }
+
+    /// `last_received_ns` was stamped once at `build()` and never written again,
+    /// while the field's own doc claimed the scheduler updated it on
+    /// `Topic::recv()`. So a stale-data safety watchdog became a fixed countdown
+    /// from startup that fired on a HEALTHY topic — and with SafeState/Stop,
+    /// halted the node for it.
+    #[test]
+    fn publishing_refreshes_the_freshness_timestamp() {
+        let name = unique("live");
+        let topic: Topic<u64> = Topic::new(&name).expect("topic");
+
+        let sf = SubscriptionFreshness::new(
+            name.clone(),
+            Duration::from_millis(50),
+            StalePolicy::Warn,
+            now_ns(),
+        );
+        sf.refresh(now_ns()); // adopt the current counter
+        let baseline = last(&sf);
+
+        std::thread::sleep(Duration::from_millis(5));
+        topic.send(42);
+        sf.refresh(now_ns());
+
+        assert!(
+            last(&sf) > baseline,
+            "a published message must refresh the timestamp (was {baseline}, now {})",
+            last(&sf)
+        );
+    }
+
+    /// The end-to-end property: publishing faster than the timeout must never be
+    /// judged stale. Before the fix this failed as soon as `timeout` elapsed
+    /// from construction, no matter how much traffic there was.
+    #[test]
+    fn a_healthy_topic_never_exceeds_its_timeout() {
+        let name = unique("healthy");
+        let topic: Topic<u64> = Topic::new(&name).expect("topic");
+        let timeout = Duration::from_millis(60);
+
+        let sf = SubscriptionFreshness::new(name.clone(), timeout, StalePolicy::Warn, now_ns());
+        sf.refresh(now_ns());
+
+        for i in 0..10u64 {
+            std::thread::sleep(Duration::from_millis(20));
+            topic.send(i);
+            let t = now_ns();
+            sf.refresh(t);
+            let elapsed = t.saturating_sub(last(&sf));
+            assert!(
+                elapsed <= timeout.as_nanos() as u64,
+                "iteration {i}: a topic published every 20ms was judged stale against a \
+                 60ms timeout (elapsed {}ms)",
+                elapsed / 1_000_000
+            );
+        }
+    }
+
+    /// The converse — a genuinely quiet topic must STILL be detected, or the fix
+    /// would have traded a false positive for a false negative.
+    #[test]
+    fn a_silent_topic_does_go_stale() {
+        let name = unique("silent");
+        let _topic: Topic<u64> = Topic::new(&name).expect("topic");
+        let timeout = Duration::from_millis(30);
+
+        let sf = SubscriptionFreshness::new(name.clone(), timeout, StalePolicy::Warn, now_ns());
+        sf.refresh(now_ns());
+
+        std::thread::sleep(Duration::from_millis(90));
+        let t = now_ns();
+        sf.refresh(t); // no traffic — must not refresh
+        assert!(
+            t.saturating_sub(last(&sf)) > timeout.as_nanos() as u64,
+            "a topic with no traffic must still be detected as stale"
+        );
+    }
+
+    /// A topic no publisher ever created has delivered no data — exactly what
+    /// the timeout is for. It must not be masked as fresh.
+    #[test]
+    fn a_topic_that_does_not_exist_yet_is_not_treated_as_fresh() {
+        let sf = SubscriptionFreshness::new(
+            unique("never_created"),
+            Duration::from_millis(20),
+            StalePolicy::Warn,
+            now_ns(),
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        let t = now_ns();
+        sf.refresh(t);
+        assert!(
+            t.saturating_sub(last(&sf)) > Duration::from_millis(20).as_nanos() as u64,
+            "an absent topic must not be reported fresh"
+        );
     }
 }
