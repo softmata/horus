@@ -2034,6 +2034,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "" // Will use interactive prompt
             };
 
+            // Version compatibility reads the global ~/.horus install state, so
+            // it belongs here at the dispatch layer rather than inside
+            // create_new_project, which the unit tests exercise directly.
+            horus_manager::version::check_and_prompt_update().map_err(HorusError::from)?;
+
             commands::new::create_new_project(
                 name,
                 path,
