@@ -51,7 +51,18 @@ anyhow = "1.0"
 thiserror = "1.0"
 toml = "0.8"
 toml_edit = "0.22"
-reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
+# rustls-tls, NOT the default native-tls. reqwest's default features pull in
+# hyper-tls -> native-tls -> openssl-sys, which needs an OpenSSL for the TARGET.
+# release.yml's horus-linux-arm64 leg installs only gcc-aarch64-linux-gnu, so
+# openssl-sys had no aarch64 OpenSSL to link and that leg could never produce a
+# binary. rustls is pure Rust, so it cross-compiles cleanly and also drops the
+# runtime dependency on the host's system OpenSSL.
+reqwest = { version = "0.11", default-features = false, features = [
+    "json",
+    "multipart",
+    "blocking",
+    "rustls-tls",
+] }
 tempfile = "3.8"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 walkdir = "2.3"
