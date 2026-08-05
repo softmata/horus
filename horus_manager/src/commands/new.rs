@@ -1,7 +1,7 @@
+use crate::cli_output;
 use crate::manifest::{
     DependencyValue, HorusManifest, PackageInfo, TargetType, WorkspaceConfig, HORUS_TOML,
 };
-use crate::cli_output;
 use anyhow::{Context, Result};
 use colored::*;
 use std::collections::BTreeMap;
