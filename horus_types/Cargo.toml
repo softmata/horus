@@ -19,7 +19,7 @@ softmata-core = "0.1.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytemuck = { workspace = true }
-serde_arrays = "0.1"
+serde_arrays = "0.2"
 rmp-serde = "1.1"
 bincode = "1.3"
 

@@ -41,14 +41,14 @@ clap_complete = "4.4"
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "time"] }
 serde.workspace = true
 serde_json.workspace = true
-colored = "2.0"
-indicatif = "0.17"
-console = "0.15"
+colored = "3.1"
+indicatif = "0.18"
+console = "0.16"
 chrono = { workspace = true }
 ctrlc = "3.4"
-dirs = "5.0"
+dirs = "6.0"
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 toml = "0.8"
 toml_edit = "0.22"
 # rustls-tls, NOT the default native-tls. reqwest's default features pull in
@@ -82,17 +82,17 @@ lazy_static = "1.4"
 rayon = "1.10"
 syn = { version = "2.0", features = ["full", "visit"] }
 proc-macro2 = "1.0"
-tree-sitter = "0.24"
+tree-sitter = "0.26"
 tree-sitter-cpp = "0.23"
-notify = "7.0"
+notify = "8.2"
 num_cpus = "1.16"
-schemars = { version = "0.8", optional = true }
+schemars = { version = "1.2", optional = true }
 
 rand = "0.9"
 memmap2 = "0.9"
 
 # Package signing
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 hex = "0.4"
 
 [features]
@@ -110,15 +110,15 @@ default = []
 schema = ["dep:schemars"]
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 assert_cmd = "2.0"
 predicates = "3.0"
 serde_json.workspace = true
 # used by security integration tests
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 horus_core = { path = "../horus_core" }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 insta = "1"

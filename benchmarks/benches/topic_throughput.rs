@@ -5,10 +5,11 @@
 //!
 //! Run with: cargo bench -- topic_throughput
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
+use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Small payload for high-frequency messaging
