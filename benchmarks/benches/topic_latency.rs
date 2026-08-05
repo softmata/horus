@@ -5,10 +5,11 @@
 //!
 //! Run with: cargo bench -- topic_latency
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
+use std::hint::black_box;
 
 /// Small message (16 bytes) - typical sensor reading
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

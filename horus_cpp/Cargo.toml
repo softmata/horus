@@ -33,7 +33,7 @@ workspace = true
 
 [dev-dependencies]
 horus_core = { path = "../horus_core", default-features = false, features = ["test-utils"] }
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1.4"
 loom = "0.7"
 

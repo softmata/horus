@@ -204,7 +204,7 @@ pub mod time;
 // checks for this and starts horus_net automatically — users never need to
 // call `horus::net::wire()` manually.
 #[cfg(feature = "net")]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn __register_network_auto_wire() {
     horus_core::scheduling::set_network_auto_wire(|scheduler: &mut horus_core::Scheduler| {
         scheduler.on_start(|| match horus_net::start_replicator_default() {
