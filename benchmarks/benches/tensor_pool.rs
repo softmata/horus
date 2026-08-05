@@ -5,10 +5,11 @@
 //!
 //! Run with: cargo bench -p horus_benchmarks -- tensor_pool
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use horus_core::core::DurationExt;
 use horus_core::memory::{shm_base_dir, TensorPool, TensorPoolConfig};
 use horus_core::types::{Device, TensorDtype};
+use std::hint::black_box;
 
 /// Clean up tensor SHM files to avoid interference between bench iterations.
 fn cleanup_tensor_shm() {
