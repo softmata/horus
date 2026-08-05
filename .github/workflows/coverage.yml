@@ -31,6 +31,11 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     continue-on-error: true  # Coverage has instrumentation issues with complex workspaces
+    # The instrumented suite runs single-threaded and contains many wall-clock
+    # bound tests. Without an explicit cap it can run against GitHub's 6-hour
+    # ceiling and — because of continue-on-error above — burn the whole budget
+    # and still report nothing. Fail fast instead.
+    timeout-minutes: 120
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
       # LLVM coverage instrumentation substantially increases stack usage in
@@ -131,7 +136,11 @@ jobs:
         run: |
           # Render the summary from the same saved profiles; do not execute a
           # third instrumented test pass.
-          cargo llvm-cov report --text | tee coverage-summary.txt
+          # NOT `--text`: that is `llvm-cov show`, which emits per-line annotated
+          # source for every instrumented file (tens of MB) and blows past
+          # GitHub's 1 MiB step-summary cap, discarding the summary entirely.
+          # Bare `report` prints the per-file + TOTAL coverage table.
+          cargo llvm-cov report | tee coverage-summary.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY

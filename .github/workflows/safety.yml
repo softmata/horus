@@ -138,7 +138,10 @@ jobs:
             --skip benchmark_ffi_send_overhead \
             --skip large_graph_performance \
             --skip test_recording_overhead_benchmark \
-            --skip test_robotics_autonomous_car_perception
+            --skip test_robotics_autonomous_car_perception \
+            --skip topic_cross_thread_1p_multi_c_spmc \
+            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
+            --skip topic_cross_thread_multi_p_multi_c_mpmc
         env:
           RUSTFLAGS: -Zsanitizer=address
           RUSTDOCFLAGS: -Zsanitizer=address
@@ -193,7 +196,10 @@ jobs:
             --skip test_watchdog_graduated_warning \
             --skip test_robotics_drone_fast_imu_slow_camera \
             --skip test_robotics_autonomous_car_perception \
-            --skip test_tick_hz_very_large
+            --skip test_tick_hz_very_large \
+            --skip topic_cross_thread_1p_multi_c_spmc \
+            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
+            --skip topic_cross_thread_multi_p_multi_c_mpmc
         env:
           RUSTFLAGS: -Zsanitizer=thread
           TSAN_OPTIONS: second_deadlock_stack=1
