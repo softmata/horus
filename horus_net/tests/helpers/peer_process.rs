@@ -51,6 +51,18 @@ fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeO
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // This is a `harness = false` helper binary, not a test. `cargo test` (and
+    // `cargo llvm-cov`, which drives it) still *runs* it and forwards the
+    // post-`--` harness arguments, e.g. `--test-threads=1 --skip xproc_`.
+    // Treat any leading `-`-prefixed argument as such a sweep and exit cleanly:
+    // failing here would fail the whole run. Marking the target `test = false`
+    // is not an option — cargo then stops building it, and cross_process.rs
+    // locates this binary by scanning `deps/`.
+    if args.get(1).is_some_and(|a| a.starts_with('-')) {
+        return;
+    }
+
     if args.len() < 3 {
         eprintln!("Usage: peer_process <write_raw|read_raw> <topic> [count|timeout] [msg_type]");
         std::process::exit(1);
