@@ -393,6 +393,9 @@ pub mod prelude {
     pub use horus_core::core::{HealthStatus, LogSummary, Node, NodeState};
 
     // === Real-time node ===
+    pub use horus_core::core::rt_config::{
+        RtApplyResult, RtConfig, RtConfigBuilder, RtDegradation, RtKernelInfo, RtScheduler,
+    };
     pub use horus_core::core::{DurationExt, Frequency, Miss, RtStats};
 
     // === Rate / Stopwatch ===
@@ -422,9 +425,11 @@ pub mod prelude {
     pub use horus_core::types::TensorDtype;
     pub use horus_core::types::{Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB};
 
-    // NOTE: TransformFrame and robotics messages are no longer in horus core.
-    // Use: `use horus_tf::prelude::*` for transforms
-    // Use: `use horus_robotics::prelude::*` for robotics messages (CmdVel, Imu, etc.)
+    // === Standard robotics messages ===
+    // Kept in the unified prelude so a normal `horus` application can use
+    // CmdVel, Imu, LaserScan, BatteryState, and related wire types without a
+    // second explicit dependency.
+    pub use horus_robotics::prelude::*;
 
     // === Actions ===
     pub use horus_core::actions::{

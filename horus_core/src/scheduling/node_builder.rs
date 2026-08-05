@@ -969,6 +969,15 @@ impl<'a> NodeBuilder<'a> {
         self.config.validate()?;
         Ok(self.scheduler.add_configured(self.config))
     }
+
+    /// Finish configuration and add the node to the scheduler.
+    ///
+    /// This is a compatibility alias for [`NodeBuilder::build`]. It performs
+    /// the same validation and returns the same result, allowing applications
+    /// written against the original fluent `.done()` API to keep compiling.
+    pub fn done(self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
+        self.build()
+    }
 }
 
 #[cfg(test)]
@@ -1359,6 +1368,20 @@ mod tests {
 
         let names = scheduler.node_list();
         assert!(names.contains(&"builder_test".to_string()));
+    }
+
+    #[test]
+    fn test_builder_done_registers_node() {
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .add(StubNode("done_alias_test".to_string()))
+            .order(5)
+            .done()
+            .unwrap();
+
+        assert!(scheduler
+            .node_list()
+            .contains(&"done_alias_test".to_string()));
     }
 
     #[test]
