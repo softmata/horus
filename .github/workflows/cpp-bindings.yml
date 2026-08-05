@@ -335,8 +335,10 @@ jobs:
 
       - name: Build Python bindings
         run: |
-          pip install maturin
-          cd horus_py && maturin develop --no-default-features
+          python3 -m venv .venv
+          .venv/bin/pip install maturin
+          VIRTUAL_ENV="$GITHUB_WORKSPACE/.venv" \
+            .venv/bin/maturin develop --no-default-features --manifest-path horus_py/Cargo.toml
 
       - name: Run cross-language tests
         run: bash horus_cpp/tests/cross_lang_tri_test.sh
@@ -709,7 +711,7 @@ jobs:
                --output-file cpp-lcov.info \
                --include '*/horus_cpp/include/*' \
                --include '*/horus_cpp/tests/*' \
-               --ignore-errors gcov,source
+               --ignore-errors gcov,source,mismatch
           lcov --list cpp-lcov.info
 
       - name: Enforce C++ coverage floor (70%)
