@@ -166,11 +166,10 @@ jobs:
           # rather than failing, which is why it was never noticed. Skipping it
           # here keeps the gate honest about the rest of the suite; the Windows
           # fan-out gap needs its own investigation and is NOT fixed by this.
-          cargo test --no-default-features -p horus_core --lib -- --test-threads=1 \
-            --skip topic_cross_thread_1p_multi_c_spmc \
-            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
-            --skip topic_cross_thread_multi_p_multi_c_mpmc \
-            --skip multithread_nonpod_subscribers_each_get_full_stream
+          # ONE line on purpose: this job runs on windows-latest, whose default
+          # shell is pwsh, where a trailing `\` is NOT a line continuation --
+          # it parses as "Missing expression after unary operator '--'".
+          cargo test --no-default-features -p horus_core --lib -- --test-threads=1 --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream
         env:
           HORUS_NAMESPACE: ci_win_${{ github.run_id }}
           RUST_BACKTRACE: 1
