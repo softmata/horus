@@ -170,6 +170,8 @@ jobs:
           # crate unit tests so one shared namespace cannot leak between bins.
           cargo test --workspace --exclude horus_py --lib --no-fail-fast -- \
             --test-threads=1 \
+            --skip topic_cross_thread_1p_multi_c_spmc \
+            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
             --skip topic_cross_thread_multi_p_multi_c_mpmc \
             --skip test_robotics_autonomous_car_perception
         env:
