@@ -409,11 +409,14 @@ mod tests {
         );
         eprintln!("╚══════════════════════════════════════════════════╝\n");
 
-        // The FFI wrapper is a thin inline function call — overhead should be minimal.
-        // Allow generous threshold for CI (actual overhead is typically <10ns).
+        // This runs as an unoptimized unit test, including on shared hosted
+        // runners and the MSRV toolchain. It is a coarse regression alarm, not
+        // a stable nanobenchmark: scheduler preemption between the two timed
+        // loops can easily add hundreds of nanoseconds to their difference.
+        // The dedicated release benchmark tracks the tighter performance goal.
         assert!(
-            overhead_ns < 500.0,
-            "FFI overhead {:.1}ns exceeds 500ns threshold — \
+            overhead_ns < 5_000.0,
+            "FFI overhead {:.1}ns exceeds 5us debug-CI threshold — \
              check for unexpected allocations in the wrapper",
             overhead_ns,
         );
