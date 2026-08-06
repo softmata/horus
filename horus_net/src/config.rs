@@ -23,8 +23,8 @@ pub struct NetConfig {
     pub deny_export: Vec<String>,
     /// Safety heartbeat settings.
     pub safety: SafetyConfig,
-    /// Posture for acting on UNAUTHENTICATED remote e-stop packets.
-    /// Env: HORUS_ESTOP_REMOTE = warn (default) | off.
+    /// Posture for acting on authenticated remote e-stop packets.
+    /// `HORUS_ESTOP_KEY` is mandatory. Env: HORUS_ESTOP_REMOTE = warn | off.
     pub estop_remote: EstopRemotePolicy,
     /// Enabled optimizers (e.g., ["fusion", "delta"]).
     pub optimizers: Vec<String>,
@@ -34,16 +34,13 @@ pub struct NetConfig {
 
 /// Policy for acting on e-stop packets received from the network.
 ///
-/// Networked e-stop is currently UNAUTHENTICATED (see `estop::handle_remote_estop`):
-/// the wire `secret_hash` is a non-cryptographic FNV-1a value broadcast in cleartext
-/// for peer *filtering*, NOT security. Any host on the LAN can therefore forge an
-/// e-stop and halt the fleet. This policy lets an operator choose the posture.
+/// Networked e-stop requires HMAC authentication with `HORUS_ESTOP_KEY`.
+/// This policy controls whether a valid, authenticated packet is acted upon.
 /// Env: `HORUS_ESTOP_REMOTE` = `warn` (default) | `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EstopRemotePolicy {
-    /// Act on remote e-stop (halt), but emit a LOUD one-time warning that the
-    /// networked e-stop channel is unauthenticated. This is the default: honoring a
-    /// possibly-forged HALT is safer than ignoring a genuine one.
+    /// Act on a valid authenticated remote e-stop. Without a key, all remote
+    /// e-stop packets are rejected regardless of this setting.
     #[default]
     Warn,
     /// Ignore remote e-stop entirely. Local (watchdog/deadline) e-stop is unaffected.

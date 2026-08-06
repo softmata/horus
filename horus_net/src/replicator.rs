@@ -466,17 +466,13 @@ impl Replicator {
             // authentication let the attacker use it to SUPPRESS a halt instead,
             // which is the strictly worse direction.
             //
-            // With a key provisioned, a forged packet is now rejected without
-            // spending anything, and only packets that could actually halt the
-            // robot consume budget. Verification is an HMAC over at most a few
+            // A forged packet (or any packet when no key is provisioned) is
+            // rejected without spending anything, and only packets that could
+            // actually halt the robot consume budget. Verification is an HMAC over at most a few
             // hundred bytes and the source has already passed `peer_filter`, so
             // the CPU an unauthenticated flood can buy is bounded.
             //
-            // Unkeyed deployments keep the original ordering — there is nothing
-            // to authenticate against, so the bucket is the only defence there.
-            if crate::mac::estop_key().is_some()
-                && !crate::estop::estop_packet_is_authentic(&msg.payload)
-            {
+            if !crate::estop::estop_packet_is_authentic(&msg.payload) {
                 self.metrics.record_topic_drop(msg.topic_hash);
                 return;
             }
@@ -1103,10 +1099,9 @@ mod tests {
     }
 
     #[test]
-    fn process_packet_dispatches_estop_data_packet() {
-        // A genuine DATA packet on _horus.estop must flow through decode_packet →
-        // process_incoming_message → the estop handler (proves data packets are
-        // dispatched, not swallowed). Observed via the external e-stop hook.
+    fn process_packet_rejects_unkeyed_estop_data_packet() {
+        // Regression for GHSA-3frr-c2j9-hhr7: a fresh, well-formed network packet
+        // must not reach the hook when no authentication key is provisioned.
         let fired = Arc::new(AtomicBool::new(false));
         let fired2 = fired.clone();
         horus_core::scheduling::set_emergency_stop_hook(move |_reason| {
@@ -1132,13 +1127,13 @@ mod tests {
         rep.process_packet(&buf[..len], from);
 
         assert!(
-            fired.load(Ordering::SeqCst),
-            "estop data packet must dispatch to the estop handler"
+            !fired.load(Ordering::SeqCst),
+            "unkeyed estop data packet must not dispatch to the estop hook"
         );
     }
 
     #[test]
-    fn a_second_estop_episode_is_not_deduped_away() {
+    fn unkeyed_estop_episodes_never_reach_the_hook() {
         // Guards two properties at once: a LATER episode must halt (the original
         // sequence-0 regression), and no unauthenticated cache upstream of the
         // MAC may drop a system-topic message.
@@ -1187,28 +1182,25 @@ mod tests {
         );
 
         rep.process_packet(&ep1, from);
-        assert!(fired.load(Ordering::SeqCst), "episode 1 must halt");
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "unkeyed episode must not halt"
+        );
 
-        // A byte-identical retry now REACHES the handler again, because system
-        // topics are deliberately exempt from deduplication: dedup runs upstream
-        // of the MAC on a cache keyed by an unauthenticated 16-bit sender id, so
-        // one forged packet could otherwise poison it and permanently silence
-        // this peer's e-stops. Re-delivering a halt is harmless — the e-stop
-        // latches and the fleet re-broadcast is gated on a rising edge — whereas
-        // suppressing one is not.
+        // A byte-identical retry must remain inert without key provisioning.
         fired.store(false, Ordering::SeqCst);
         rep.process_packet(&ep1, from);
         assert!(
-            fired.load(Ordering::SeqCst),
-            "a retry must still halt; suppressing it is the dangerous direction"
+            !fired.load(Ordering::SeqCst),
+            "an unkeyed retry must remain inert"
         );
 
-        // The genuinely new episode must get through.
+        // A genuinely new but unauthenticated episode must also remain inert.
         fired.store(false, Ordering::SeqCst);
         rep.process_packet(&ep2, from);
         assert!(
-            fired.load(Ordering::SeqCst),
-            "a LATER e-stop episode must still halt — this is the regression"
+            !fired.load(Ordering::SeqCst),
+            "a later unkeyed e-stop episode must not halt"
         );
     }
 }
