@@ -44,7 +44,7 @@ jobs:
     name: Rust FFI Tests (139 tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -55,7 +55,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -115,7 +115,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload JUnit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cpp-tests-junit
           path: target/cpp_tests/junit.xml
@@ -173,7 +173,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: cpp-compile-test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -184,7 +184,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -292,7 +292,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: cpp-compile-test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -303,7 +303,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -362,7 +362,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -418,7 +418,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -483,7 +483,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -543,7 +543,7 @@ jobs:
     needs: rust-ffi-tests
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -597,7 +597,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -647,7 +647,7 @@ jobs:
 
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes
           path: horus_cpp/fuzz/artifacts/
@@ -661,7 +661,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -745,7 +745,7 @@ jobs:
                --ignore-errors inconsistent,format
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: merged-lcov.info
           flags: horus_cpp
@@ -755,7 +755,7 @@ jobs:
 
       - name: Upload lcov artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: horus-cpp-coverage
           path: |
@@ -769,7 +769,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust-ffi-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |

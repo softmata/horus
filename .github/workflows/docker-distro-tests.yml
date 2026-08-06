@@ -38,7 +38,7 @@ jobs:
         distro: [ubuntu, debian, fedora, alpine, arch]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build Docker image
         run: |

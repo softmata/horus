@@ -48,7 +48,7 @@ jobs:
             asset_name: horus-windows-amd64
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Linux build deps mirror install.sh's install_build_deps() for ubuntu/debian.
       # Missing any of these has historically caused horus_manager build failures
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload archive (Unix)
         if: runner.os != 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: ./${{ matrix.asset_name }}.tar.gz
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload archive (Windows)
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: ./${{ matrix.asset_name }}.zip
@@ -161,7 +161,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -190,7 +190,7 @@ jobs:
           fi
 
       - name: Create / update Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
