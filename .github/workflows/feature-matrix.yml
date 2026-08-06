@@ -143,11 +143,9 @@ jobs:
 
       # This is now a real gate. It previously carried `continue-on-error: true`,
       # which meant the step reported success while actually exiting 101 —
-      # hiding two genuine breakages: horus_manager's `schema` feature did not
-      # compile (NetworkConfig/toml::Value lacked JsonSchema), and
-      # horus_benchmarks' zenoh comparison was still written against the removed
-      # zenoh 0.x API. Both are fixed; `cargo check --workspace --all-features`
-      # now exits 0.
+      # hiding a genuine breakage: horus_manager's `schema` feature did not
+      # compile (NetworkConfig/toml::Value lacked JsonSchema). It is fixed, and
+      # `cargo check --workspace --all-features` now exits 0.
       - name: Check all features build
         run: cargo check --workspace --all-features
 

@@ -91,7 +91,7 @@ HORUS auto-detects the optimal IPC backend:
 | `research_throughput`         | Per-second throughput timeseries                   |
 | `research_jitter`             | RT tick jitter + IPC under CPU contention          |
 | `research_scalability`        | Node scaling (1-100) + topic scaling (1-1000)      |
-| `competitor_comparison`       | HORUS vs raw UDP (+ Zenoh with `--features zenoh`) |
+| `competitor_comparison`       | HORUS vs raw UDP |
 | **Python**                    |                                                    |
 | `research_bench_python.py`    | Python IPC latency, FFI overhead, image zero-copy  |
 

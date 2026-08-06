@@ -16,14 +16,6 @@ ignore = [
     # entry if `rsa` is dropped from the lockfile or an upstream fix ships.
     "RUSTSEC-2023-0071",
 
-    # lz4_flex 0.10.0 is recorded through zenoh-transport's optional
-    # compression dependency, but compression is explicitly disabled and
-    # `cargo tree --locked --target all -e all -i lz4_flex` is empty. Zenoh
-    # 1.9 still constrains that unused edge to ^0.10, so it cannot select the
-    # fixed 0.11.6 release. Remove this exception once zenoh updates its
-    # optional dependency; never enable `transport_compression` before then.
-    "RUSTSEC-2026-0041",
-
     # NOTE (2026-07-06): the two pyo3 0.27 advisories (RUSTSEC-2026-0176 OOB read,
     # RUSTSEC-2026-0177 missing Sync bound) were REMOVED from this list — horus_py
     # is now migrated to pyo3 0.29 (+ pythonize 0.29), which fixes both. Dependabot

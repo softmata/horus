@@ -4,7 +4,6 @@
 //! Uses the same timing method for all competitors for fair comparison.
 //!
 //! Run:   cargo run --release -p horus_benchmarks --bin competitor_comparison
-//! Zenoh: cargo run --release -p horus_benchmarks --bin competitor_comparison --features zenoh
 //! CSV:   cargo run --release -p horus_benchmarks --bin competitor_comparison -- --csv comparison.csv
 
 use horus_benchmarks::detect_platform;
@@ -173,51 +172,6 @@ fn bench_raw_udp(size: usize, duration_secs: u64) -> Vec<u64> {
 }
 
 // ============================================================================
-// Zenoh benchmark (feature-gated)
-// ============================================================================
-
-// Ported from the zenoh 0.x API to 1.0 (the version `benchmarks/Cargo.toml`
-// has pinned since the bump). 1.0 removed `zenoh::prelude` and the `.res()`
-// terminator — builders are awaited directly — and moved the default config to
-// `zenoh::Config::default()`. This code still used the 0.x spelling, so
-// `--features zenoh` had not compiled for some time; the CI job that would have
-// caught it is `continue-on-error: true`.
-#[cfg(feature = "zenoh")]
-fn bench_zenoh(size: usize, duration_secs: u64) -> Vec<u64> {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let session = zenoh::open(zenoh::Config::default()).await.unwrap();
-        let key = format!("horus_bench/{size}");
-        let publisher = session.declare_publisher(key.clone()).await.unwrap();
-        let subscriber = session.declare_subscriber(key).await.unwrap();
-
-        let payload = vec![0xCDu8; size];
-
-        // Warmup
-        for _ in 0..1000 {
-            publisher.put(payload.as_slice()).await.unwrap();
-            let _ = subscriber.recv_async().await;
-        }
-
-        // Measure
-        let deadline = Instant::now() + std::time::Duration::from_secs(duration_secs);
-        let mut samples = Vec::with_capacity(200_000);
-        while Instant::now() < deadline {
-            let s = Instant::now();
-            publisher.put(payload.as_slice()).await.unwrap();
-            let _ = subscriber.recv_async().await;
-            samples.push(s.elapsed().as_nanos() as u64);
-        }
-        samples
-    })
-}
-
-#[cfg(not(feature = "zenoh"))]
-fn bench_zenoh(_size: usize, _duration_secs: u64) -> Vec<u64> {
-    Vec::new() // Zenoh not available
-}
-
-// ============================================================================
 // Main
 // ============================================================================
 
@@ -234,8 +188,6 @@ fn main() {
         .map(|i| args[i + 1].clone());
 
     let platform = detect_platform();
-    let has_zenoh = cfg!(feature = "zenoh");
-
     println!("╔════════════════════════════════════════════════════════════╗");
     println!("║          Competitor Comparison                              ║");
     println!("╚════════════════════════════════════════════════════════════╝");
@@ -245,14 +197,6 @@ fn main() {
         platform.cpu.model, platform.cpu.logical_cores
     );
     println!("Duration: {}s per test", duration);
-    println!(
-        "Zenoh: {}",
-        if has_zenoh {
-            "enabled"
-        } else {
-            "not available (compile with --features zenoh)"
-        }
-    );
     println!();
 
     let sizes = [8usize, 32];
@@ -299,31 +243,13 @@ fn main() {
         );
         csv_rows.push(("Raw_UDP".into(), size, udp_stats));
 
-        // Zenoh
-        let mut zenoh_samples = bench_zenoh(size, duration);
-        if !zenoh_samples.is_empty() {
-            let zenoh_stats = compute_stats(&mut zenoh_samples);
-            println!(
-                "{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-                "Zenoh",
-                label,
-                zenoh_stats.count / 1000,
-                zenoh_stats.p50,
-                zenoh_stats.p95,
-                zenoh_stats.p99,
-                zenoh_stats.p999,
-                zenoh_stats.max
-            );
-            csv_rows.push(("Zenoh".into(), size, zenoh_stats));
-        }
-
         println!("{}", "─".repeat(80));
     }
 
     // Speedup summary
     println!();
     println!("Speedup (HORUS vs Raw UDP):");
-    for i in (0..csv_rows.len()).step_by(if has_zenoh { 3 } else { 2 }) {
+    for i in (0..csv_rows.len()).step_by(2) {
         let horus = &csv_rows[i];
         let udp = &csv_rows[i + 1];
         if udp.2.p50 > 0 {
