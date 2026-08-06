@@ -30,10 +30,8 @@
 //! originally did, is not adequate when every packet on the wire is an offline
 //! verifier for a guess.
 //!
-//! When a key is configured, an e-stop without a valid tag is **rejected**. When
-//! no key is configured, behaviour is unchanged (the loud one-time warning in
-//! `estop` still fires) so existing deployments do not silently lose their
-//! e-stop path on upgrade.
+//! An e-stop without a valid tag is **rejected**. When no key is configured,
+//! remote e-stop fails closed; local safety mechanisms remain available.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;

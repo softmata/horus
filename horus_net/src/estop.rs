@@ -26,9 +26,6 @@ use crate::transport::Transport;
 const ESTOP_MAX_AGE_NS: u64 = 5_000_000_000; // 5s in the past
 const ESTOP_MAX_FUTURE_SKEW_NS: u64 = 5_000_000_000; // 5s in the future
 
-/// Emitted at most once: acting on the UNAUTHENTICATED networked e-stop channel.
-static ESTOP_UNAUTH_WARNED: AtomicBool = AtomicBool::new(false);
-
 /// Emitted at most once: rejected an e-stop whose authentication tag failed.
 static ESTOP_FORGERY_WARNED: AtomicBool = AtomicBool::new(false);
 
@@ -155,11 +152,11 @@ pub fn decode_estop(data: &[u8]) -> Option<(u16, String, u64)> {
 /// dropped — turning a limiter meant to stop a forced halt into a way to
 /// suppress a real one.
 ///
-/// Returns `true` when no key is configured: there is nothing to verify, and the
-/// caller keeps the original ordering in that case.
+/// Fails closed when no key is configured. An unprovisioned receiver must never
+/// route an attacker-controlled packet to the emergency-stop hook.
 pub fn estop_packet_is_authentic(data: &[u8]) -> bool {
     let Some(key) = crate::mac::estop_key() else {
-        return true;
+        return false;
     };
     let Some(body_len) = estop_body_len(data) else {
         return false;
@@ -172,30 +169,12 @@ pub fn estop_packet_is_authentic(data: &[u8]) -> bool {
 /// Returns `true` if this call acted on the e-stop (triggered the external stop),
 /// `false` if it was rejected (stale/malformed) or suppressed by policy.
 ///
-/// # Security posture — UNAUTHENTICATED (read before "hardening" this)
+/// # Security posture
 ///
-/// This channel is **not authenticated**. The only wire-level "identity" is the
-/// discovery `secret_hash`, which is a non-cryptographic FNV-1a value broadcast in
-/// CLEARTEXT for peer *filtering* (`config` says "NOT security"). Building e-stop
-/// auth on it would be fake security — an attacker reads the hash off the wire and
-/// replays it. This pass therefore deliberately does **not** fake authentication.
-///
-/// What it DOES provide (defense in depth, honestly scoped):
-///   * **Freshness/replay reject** — a timestamp outside `[now-5s, now+5s]` is
-///     dropped, so a captured e-stop cannot be replayed indefinitely.
-///   * **Explicit policy gate** (`EstopRemotePolicy`, env `HORUS_ESTOP_REMOTE`):
-///     `Warn` (default) acts on the e-stop but emits a LOUD one-time warning that
-///     any LAN peer can halt the fleet; `Off` ignores remote e-stop entirely.
-///     The LOCAL safety path (watchdog/deadline e-stop in horus_core) is
-///     independent and unaffected by either setting.
-///
-/// Genuine authenticated networked e-stop needs a provisioned, off-wire key.
-/// That key now exists: set `HORUS_ESTOP_KEY` (see `crate::mac`). When it is
-/// set, every e-stop packet carries an HMAC-SHA256 tag and an untagged or
-/// wrongly-tagged packet is **rejected outright**, regardless of policy —
-/// this is the actual fix for GHSA-3frr-c2j9-hhr7. When it is unset, behaviour
-/// is unchanged (`Warn` is loud-by-design, `Off` available) so an upgrade never
-/// silently severs a fleet's existing e-stop path.
+/// Remote e-stop fails closed unless `HORUS_ESTOP_KEY` provisions an off-wire
+/// shared key. Every accepted packet must carry a valid HMAC-SHA256 tag and pass
+/// the freshness check. Discovery's cleartext `secret_hash` is never treated as
+/// authentication. Local watchdog/deadline e-stop remains independent.
 pub fn handle_remote_estop(data: &[u8], policy: EstopRemotePolicy) -> bool {
     handle_remote_estop_with_key(data, policy, crate::mac::estop_key())
 }
@@ -221,22 +200,25 @@ pub fn handle_remote_estop_at(
     key: Option<&[u8; 32]>,
     now_ns: u64,
 ) -> bool {
+    // Authentication is mandatory. Backward compatibility cannot take priority
+    // over allowing any network host to halt the fleet (GHSA-3frr-c2j9-hhr7).
+    let Some(key) = key else {
+        warn_unauthenticated_rejected();
+        return false;
+    };
+
     let (host_id, reason, timestamp) = match decode_estop(data) {
         Some(v) => v,
         None => return false,
     };
 
-    // Authentication gate. Only active when a key is provisioned; when active it
-    // precedes every other check so a forged packet cannot even reach the logs.
-    if let Some(key) = key {
-        crate::mac::estop_authenticated(); // one-time "hardened path active" notice
-        let Some(body_len) = estop_body_len(data) else {
-            return false;
-        };
-        if !verify_estop_tag(key, data, body_len) {
-            warn_unauthenticated_rejected();
-            return false;
-        }
+    crate::mac::estop_authenticated();
+    let Some(body_len) = estop_body_len(data) else {
+        return false;
+    };
+    if !verify_estop_tag(key, data, body_len) {
+        warn_unauthenticated_rejected();
+        return false;
     }
 
     // Freshness / replay guard (NOT authentication — see doc above).
@@ -271,10 +253,7 @@ pub fn handle_remote_estop_at(
             // packet with an arbitrary timestamp is exactly the replay this
             // guard exists for — but say so loudly, because otherwise the
             // operator has no way to discover that their e-stop is inert.
-            warn_estop_clock_unusable(host_id, key.is_some());
-            if key.is_none() {
-                return false;
-            }
+            warn_estop_clock_unusable(host_id, true);
         }
     }
 
@@ -285,7 +264,6 @@ pub fn handle_remote_estop_at(
             false
         }
         EstopRemotePolicy::Warn => {
-            warn_unauthenticated_once();
             let msg = format!("Remote e-stop from host {:04x}: {}", host_id, reason);
             eprintln!("[horus_net] {}", msg);
             horus_core::scheduling::trigger_external_emergency_stop(msg);
@@ -413,18 +391,6 @@ fn is_fresh_estop(timestamp_ns: u64) -> bool {
 /// The reach claim here is deliberately not "this LAN": the replicator binds
 /// `0.0.0.0` (`transport/udp.rs`), so the packet can come from any host able to
 /// route a datagram to this port, not merely a link-local neighbour.
-fn warn_unauthenticated_once() {
-    if !ESTOP_UNAUTH_WARNED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "[horus_net] WARNING: acting on a NETWORKED e-stop, which is \
-             UNAUTHENTICATED — any host that can reach this UDP port (the socket \
-             binds 0.0.0.0, so not just the local subnet) can halt the fleet. \
-             Set HORUS_ESTOP_KEY on every node to authenticate e-stop, or \
-             HORUS_ESTOP_REMOTE=off to ignore remote e-stop. (Fires once.)"
-        );
-    }
-}
-
 /// Emit the "this machine's clock cannot be compared" warning at most once.
 ///
 /// Rate-limited like the others: the condition persists until NTP lands, so an
@@ -461,9 +427,9 @@ fn warn_estop_clock_unusable(host_id: u16, authenticated: bool) {
 fn warn_unauthenticated_rejected() {
     if !ESTOP_FORGERY_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!(
-            "[horus_net] WARNING: REJECTED a remote e-stop with a missing or invalid \
-             authentication tag. Either a peer is misconfigured (HORUS_ESTOP_KEY must \
-             match on every node) or someone is forging e-stop packets. (Fires once.)"
+            "[horus_net] WARNING: REJECTED a remote e-stop because HORUS_ESTOP_KEY is \
+             not provisioned or its authentication tag is missing/invalid. The key must \
+             match on every node; otherwise someone may be forging packets. (Fires once.)"
         );
     }
 }
@@ -572,9 +538,9 @@ mod tests {
     }
 
     #[test]
-    fn fresh_estop_warn_triggers() {
+    fn unkeyed_fresh_estop_is_rejected() {
         let payload = encode_estop(0xABCD, "test"); // fresh timestamp
-        assert!(handle_remote_estop(&payload, EstopRemotePolicy::Warn));
+        assert!(!handle_remote_estop(&payload, EstopRemotePolicy::Warn));
     }
 
     #[test]
@@ -788,11 +754,9 @@ mod tests {
     }
 
     #[test]
-    fn unkeyed_receiver_still_accepts_untagged_packet() {
-        // Backward compatibility: upgrading one node must not sever a fleet's
-        // existing e-stop path. Without a key, behaviour is exactly as before.
+    fn unkeyed_receiver_rejects_untagged_packet() {
         let pkt = encode_estop_with_key(0x1234, "halt", None);
-        assert!(handle_remote_estop_with_key(
+        assert!(!handle_remote_estop_with_key(
             &pkt,
             EstopRemotePolicy::Warn,
             None
@@ -800,11 +764,9 @@ mod tests {
     }
 
     #[test]
-    fn unkeyed_receiver_accepts_tagged_packet() {
-        // A hardened sender talking to a not-yet-upgraded receiver: the trailing
-        // tag is simply ignored, so a rolling upgrade does not drop e-stops.
+    fn unkeyed_receiver_rejects_tagged_packet_without_verification_key() {
         let pkt = encode_estop_with_key(0x1234, "halt", Some(&KEY_A));
-        assert!(handle_remote_estop_with_key(
+        assert!(!handle_remote_estop_with_key(
             &pkt,
             EstopRemotePolicy::Warn,
             None
