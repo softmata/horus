@@ -49,8 +49,8 @@ ctrlc = "3.4"
 dirs = "6.0"
 anyhow = "1.0"
 thiserror = "2.0"
-toml = "0.8"
-toml_edit = "0.22"
+toml = "1.1"
+toml_edit = "0.25"
 # rustls-tls, NOT the default native-tls. reqwest's default features pull in
 # hyper-tls -> native-tls -> openssl-sys, which needs an OpenSSL for the TARGET.
 # release.yml's horus-linux-arm64 leg installs only gcc-aarch64-linux-gnu, so
@@ -66,7 +66,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 tempfile = "3.8"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 walkdir = "2.3"
-sha2 = "0.10"
+sha2 = "0.11"
 tar = "0.4"
 flate2 = "1.0"
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
@@ -80,7 +80,7 @@ semver = "1.0"
 libc = "0.2"
 lazy_static = "1.4"
 rayon = "1.10"
-syn = { version = "2.0", features = ["full", "visit"] }
+syn = { version = "3.0", features = ["full", "visit"] }
 proc-macro2 = "1.0"
 tree-sitter = "0.26"
 tree-sitter-cpp = "0.23"
@@ -120,5 +120,5 @@ axum = { version = "0.8", features = ["ws"] }
 horus_core = { path = "../horus_core" }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 insta = "1"
