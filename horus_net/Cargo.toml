@@ -22,7 +22,7 @@ libc = "0.2"
 horus_types = { path = "../horus_types" }
 horus-robotics = { git = "https://github.com/softmata/horus-robotics.git", rev = "631483a226dc8158a08ffb2c51087b3d02237041" }
 serde = { workspace = true }
-bincode = "1.3"
+bincode = "3.0"
 
 [[test]]
 name = "peer_process"
