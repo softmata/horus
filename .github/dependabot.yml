@@ -30,12 +30,21 @@ updates:
         update-types:
           - "minor"
           - "patch"
-      # Keep major updates separate for review
-      rust-major:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
+      # NOTE: majors are deliberately NOT grouped. A "rust-major" group with
+      # patterns ["*"] used to exist here, which contradicted its own comment
+      # ("keep major updates separate for review"): it bundled every breaking
+      # bump into a single PR. That is how #74 landed six majors at once, and
+      # why one uncompilable crate in the batch took all eight build workflows
+      # down with it. Ungrouped major updates get one PR each, so a bad one can
+      # be closed without blocking the rest.
+    ignore:
+      # bincode 3.0.0 is a placeholder release: its entire src/lib.rs is
+      # compile_error!("https://xkcd.com/2347/"), so it can never build. It is
+      # nonetheless the newest non-yanked version, so Dependabot keeps
+      # proposing it. The code here uses the 1.x API (bincode::serialize /
+      # bincode::deserialize), which 2.x also removed.
+      - dependency-name: "bincode"
+        versions: [">=2.0.0"]
     # NOTE: there was an `ignore` rule here using
     # update-types: ["version-update:semver-prerelease"], which is not a valid
     # value — Dependabot accepts only semver-major/minor/patch, and rejected the

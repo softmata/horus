@@ -1001,7 +1001,10 @@ fn find_binary_name() -> Option<String> {
     }
 
     let content = std::fs::read_to_string(cargo_toml).ok()?;
-    let parsed: toml::Value = content.parse().ok()?;
+    // toml 1.1 changed `FromStr for Value` to parse a single TOML *value*
+    // (ValueDeserializer), not a document — only `Table` still parses a
+    // document via FromStr. `toml::from_str` keeps the document semantics.
+    let parsed: toml::Value = toml::from_str(&content).ok()?;
 
     // Try [[bin]] name first
     if let Some(bins) = parsed.get("bin").and_then(|b| b.as_array()) {

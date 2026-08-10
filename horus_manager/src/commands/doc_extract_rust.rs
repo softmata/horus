@@ -57,7 +57,7 @@ pub fn extract_rust_file(path: &Path, include_private: bool) -> Result<RustExtra
             }
             Item::Impl(i) => {
                 let type_name = type_name_from_path(&i.self_ty);
-                let trait_name = i.trait_.as_ref().map(|(_, p, _)| path_to_string(p));
+                let trait_name = i.trait_.as_ref().map(|(p, _)| path_to_string(p));
                 let methods = extract_impl_methods(i, path, include_private);
 
                 // Detect impl Node for X → entry point
@@ -789,9 +789,12 @@ fn signature_to_string(vis: &syn::Visibility, sig: &syn::Signature) -> String {
         .map(|arg| match arg {
             syn::FnArg::Receiver(r) => {
                 let mut s = String::new();
-                if r.reference.is_some() {
+                // syn 3: `&`/`&mut` moved from `Receiver::reference` into
+                // `ReceiverKind::Reference`. `r.mutability` now means the `mut`
+                // of `mut self`, which this renderer has never printed.
+                if let syn::ReceiverKind::Reference(_, _, mutability) = &r.kind {
                     s.push('&');
-                    if r.mutability.is_some() {
+                    if mutability.is_some() {
                         s.push_str("mut ");
                     }
                 }
@@ -829,9 +832,12 @@ fn sig_to_string_no_vis(sig: &syn::Signature) -> String {
         .map(|arg| match arg {
             syn::FnArg::Receiver(r) => {
                 let mut s = String::new();
-                if r.reference.is_some() {
+                // syn 3: `&`/`&mut` moved from `Receiver::reference` into
+                // `ReceiverKind::Reference`. `r.mutability` now means the `mut`
+                // of `mut self`, which this renderer has never printed.
+                if let syn::ReceiverKind::Reference(_, _, mutability) = &r.kind {
                     s.push('&');
-                    if r.mutability.is_some() {
+                    if mutability.is_some() {
                         s.push_str("mut ");
                     }
                 }
@@ -926,7 +932,7 @@ fn type_to_string(ty: &Type) -> String {
             format!("[{}; ...]", type_to_string(&a.elem))
         }
         Type::Ptr(p) => {
-            let m = if p.mutability.is_some() {
+            let m = if matches!(p.mutability, syn::PointerMutability::Mut(_)) {
                 "mut"
             } else {
                 "const"
@@ -979,7 +985,8 @@ fn path_to_string_with_args(path: &syn::Path) -> String {
                     format!("{}<{}>", name, args.join(", "))
                 }
                 syn::PathArguments::Parenthesized(p) => {
-                    let inputs: Vec<String> = p.inputs.iter().map(type_to_string).collect();
+                    let inputs: Vec<String> =
+                        p.inputs.iter().map(|arg| type_to_string(&arg.ty)).collect();
                     let ret = match &p.output {
                         ReturnType::Default => String::new(),
                         ReturnType::Type(_, ty) => format!(" -> {}", type_to_string(ty)),

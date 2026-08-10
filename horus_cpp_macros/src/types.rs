@@ -10,6 +10,14 @@ use proc_macro2::Ident;
 use syn::{Generics, Type, Visibility};
 
 /// Top-level binding metadata for a single annotated item.
+// `Impl` is ~208 bytes larger than `Struct`. That gap only crossed clippy's
+// threshold with syn 3, which grew `Signature`/`Receiver` (the `&`/`&mut`
+// distinction moved into the new `ReceiverKind` field). Boxing the variant is
+// the usual remedy, but this is proc-macro metadata: one value is built per
+// annotated item at compile time and immediately consumed by the generators,
+// so the size difference costs nothing at runtime and boxing would only add
+// indirection plus ~40 `Box::new` call sites.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum BindingItem {
     /// `#[horus_api]` on a struct definition.

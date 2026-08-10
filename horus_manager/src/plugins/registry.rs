@@ -366,7 +366,7 @@ impl PluginRegistry {
         let content = fs::read(&entry.binary)?;
         let mut hasher = Sha256::new();
         hasher.update(&content);
-        let computed = format!("sha256:{:x}", hasher.finalize());
+        let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
 
         Ok(computed == entry.checksum)
     }
@@ -394,7 +394,7 @@ impl PluginRegistry {
         let content = fs::read(path)?;
         let mut hasher = Sha256::new();
         hasher.update(&content);
-        Ok(format!("sha256:{:x}", hasher.finalize()))
+        Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
     }
 }
 
