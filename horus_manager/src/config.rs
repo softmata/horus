@@ -392,7 +392,8 @@ mod tests {
 
         // "Load" it back
         let loaded = std::fs::read_to_string(&path).unwrap();
-        let parsed: toml::Value = loaded.parse().unwrap();
+        // toml 1.1: `FromStr for Value` parses a value, not a document.
+        let parsed: toml::Value = toml::from_str(&loaded).unwrap();
 
         // Assert all fields match
         let urls = parsed.get("urls").unwrap();

@@ -749,7 +749,7 @@ fn test_sha256_checksum_known_value() {
     // SHA256 of empty byte slice is a well-known constant
     let mut hasher = Sha256::new();
     hasher.update(b"");
-    let checksum = format!("{:x}", hasher.finalize());
+    let checksum = hex::encode(hasher.finalize());
     assert_eq!(
         checksum,
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -762,11 +762,11 @@ fn test_sha256_checksum_deterministic() {
     let data = b"horus robotics package v1.0.0";
     let mut h1 = Sha256::new();
     h1.update(data);
-    let c1 = format!("{:x}", h1.finalize());
+    let c1 = hex::encode(h1.finalize());
 
     let mut h2 = Sha256::new();
     h2.update(data);
-    let c2 = format!("{:x}", h2.finalize());
+    let c2 = hex::encode(h2.finalize());
 
     assert_eq!(c1, c2);
     assert_eq!(c1.len(), 64); // SHA256 hex is always 64 chars
@@ -780,11 +780,11 @@ fn test_sha256_checksum_differs_on_corruption() {
 
     let mut h1 = Sha256::new();
     h1.update(original);
-    let original_checksum = format!("{:x}", h1.finalize());
+    let original_checksum = hex::encode(h1.finalize());
 
     let mut h2 = Sha256::new();
     h2.update(&corrupted);
-    let corrupted_checksum = format!("{:x}", h2.finalize());
+    let corrupted_checksum = hex::encode(h2.finalize());
 
     assert_ne!(original_checksum, corrupted_checksum);
 }
@@ -799,14 +799,14 @@ fn test_sha256_incremental_update_matches_single() {
     let mut incremental = Sha256::new();
     incremental.update(chunk1);
     incremental.update(chunk2);
-    let incremental_sum = format!("{:x}", incremental.finalize());
+    let incremental_sum = hex::encode(incremental.finalize());
 
     let mut combined = Sha256::new();
     let mut all_data = Vec::new();
     all_data.extend_from_slice(chunk1);
     all_data.extend_from_slice(chunk2);
     combined.update(&all_data);
-    let combined_sum = format!("{:x}", combined.finalize());
+    let combined_sum = hex::encode(combined.finalize());
 
     assert_eq!(incremental_sum, combined_sum);
 }
@@ -1088,13 +1088,13 @@ fn test_publish_sha256_matches_downloaded() {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(data);
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     };
     let checksum2 = {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(data);
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     };
     assert_eq!(checksum1, checksum2);
     assert_eq!(checksum1.len(), 64); // SHA256 hex = 64 chars

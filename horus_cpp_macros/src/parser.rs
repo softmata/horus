@@ -13,7 +13,7 @@ use proc_macro2::TokenStream;
 use quote::ToTokens;
 use syn::{
     parse2, Attribute, FnArg, GenericArgument, ImplItem, Item, ItemImpl, ItemStruct, Pat,
-    PathArguments, Result, ReturnType, Type, TypePath,
+    PathArguments, ReceiverKind, Result, ReturnType, Type, TypePath,
 };
 
 use crate::types::{
@@ -154,17 +154,23 @@ fn parse_method_sig(sig: &syn::Signature) -> Result<MethodSig> {
 
 fn parse_receiver(sig: &syn::Signature) -> Receiver {
     match sig.inputs.first() {
-        Some(FnArg::Receiver(recv)) => {
-            if recv.reference.is_some() {
-                if recv.mutability.is_some() {
+        Some(FnArg::Receiver(recv)) => match &recv.kind {
+            // syn 3 moved the `&`/`&mut` distinction out of `Receiver::reference`
+            // (removed) and into `ReceiverKind`. Note that `recv.mutability` must
+            // NOT be used here any more: it now means the `mut` of `mut self`,
+            // not the `mut` of `&mut self`, so reading it would report a plain
+            // `mut self` as `RefMut`.
+            ReceiverKind::Reference(_, _, mutability) => {
+                if mutability.is_some() {
                     Receiver::RefMut
                 } else {
                     Receiver::Ref
                 }
-            } else {
-                Receiver::Owned
             }
-        }
+            // `self`, `mut self` and `self: Box<Self>` all take ownership, which
+            // matches what the pre-syn-3 `reference.is_none()` branch did.
+            _ => Receiver::Owned,
+        },
         _ => Receiver::None,
     }
 }

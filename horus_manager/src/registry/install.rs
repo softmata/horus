@@ -597,7 +597,7 @@ impl RegistryClient {
         // Calculate checksum and verify against server
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        let checksum = format!("{:x}", hasher.finalize());
+        let checksum = hex::encode(hasher.finalize());
 
         // Fetch expected checksum from server and compare
         let checksum_url = format!(
@@ -1043,7 +1043,7 @@ impl RegistryClient {
         // Verify checksum from X-Horus-Checksum header
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        let actual_checksum = format!("{:x}", hasher.finalize());
+        let actual_checksum = hex::encode(hasher.finalize());
 
         // Fail CLOSED when the binary artifact arrives with no X-Horus-Checksum
         // header, or an empty one. Previously both fell out of the `if let` and
@@ -1823,7 +1823,8 @@ impl RegistryClient {
                 // Read actual version from Cargo.toml after cargo add
                 let cargo_toml_path = ws_path.join("Cargo.toml");
                 let actual_version = if let Ok(content) = fs::read_to_string(&cargo_toml_path) {
-                    if let Ok(doc) = content.parse::<toml::Value>() {
+                    // toml 1.1: `FromStr for Value` parses a value, not a document.
+                    if let Ok(doc) = toml::from_str::<toml::Value>(&content) {
                         doc.get("dependencies")
                             .and_then(|deps| deps.get(package_name))
                             .and_then(|dep| {
