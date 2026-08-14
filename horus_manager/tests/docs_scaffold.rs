@@ -51,15 +51,11 @@ const SCAFFOLDS: &[Scaffold] = &[
         flag: "-p",
         entry: "src/main.py",
         cited: "getting-started/quick-start-python.mdx:61 and :70 (flag table)",
-        quarantined: Some(
-            "`horus new <name> -p` writes main.py at the PROJECT ROOT, not src/main.py \
-             (horus_manager/src/commands/new.rs:611). Rust and C++ both scaffold into src/, \
-             so Python is the odd one out, and 35 doc sites reference src/main.py. A reader \
-             following quick-start-python is told to edit a file that does not exist. \
-             Resolving it is a behaviour choice: either move the Python entry point into \
-             src/ (dispatch.rs already detects src/main.py — see its test at :1377 — but \
-             ~6 tests in new.rs encode the root placement), or correct the 35 doc sites.",
-        ),
+        // Was quarantined: `horus new -p` used to write main.py at the project
+        // root while Rust and C++ scaffolded into src/ and 35 doc sites said
+        // src/main.py. Fixed in create_python_project — the dispatcher already
+        // detected src/main.py, so build and run were unaffected.
+        quarantined: None,
     },
 ];
 
