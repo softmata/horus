@@ -60,9 +60,7 @@ Packages:
   info              Show detailed info about a package or plugin
 
 Plugins:
-  enable            Enable a disabled plugin
-  disable           Disable a plugin (keep installed but don't execute)
-  verify            Verify integrity of installed plugins
+  plugin            Manage plugins (enable, disable, verify, trust)
 
 Development:
   fmt               Format code (Rust + Python)
@@ -699,6 +697,10 @@ enum Commands {
         /// Output as self-contained HTML report
         #[arg(long = "html")]
         html: bool,
+
+        /// Condensed one-line-per-symbol output
+        #[arg(long = "brief")]
+        brief: bool,
 
         /// Include doc comments in brief output
         #[arg(long = "full")]
@@ -2946,6 +2948,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             json,
             md,
             html,
+            brief,
             full,
             all,
             lang,
@@ -2961,7 +2964,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     json,
                     md,
                     html,
-                    brief: false,
+                    brief,
                     full,
                     all,
                     lang,
