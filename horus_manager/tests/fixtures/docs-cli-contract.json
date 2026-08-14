@@ -143,7 +143,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 139
+      "doc_line": 138
     },
     {
       "command": "add",
@@ -180,6 +180,24 @@
       ],
       "doc_file": "content/docs/package-management/configuration.mdx",
       "doc_line": 322
+    },
+    {
+      "command": "add",
+      "sub": null,
+      "flags": [
+        "--source"
+      ],
+      "doc_file": "content/docs/recipes/emergency-stop.mdx",
+      "doc_line": 569
+    },
+    {
+      "command": "add",
+      "sub": "anyhow",
+      "flags": [
+        "--source"
+      ],
+      "doc_file": "content/docs/development/error-handling.mdx",
+      "doc_line": 458
     },
     {
       "command": "add",
@@ -306,7 +324,7 @@
       "sub": "numpy",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 146
+      "doc_line": 145
     },
     {
       "command": "add",
@@ -381,7 +399,7 @@
       "sub": "opencv-python",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 147
+      "doc_line": 146
     },
     {
       "command": "add",
@@ -424,6 +442,16 @@
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
       "doc_line": 547
+    },
+    {
+      "command": "add",
+      "sub": "reqwest",
+      "flags": [
+        "--features",
+        "--source"
+      ],
+      "doc_file": "content/docs/development/ai-integration.mdx",
+      "doc_line": 295
     },
     {
       "command": "add",
@@ -472,7 +500,7 @@
       "sub": "serde",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 138
+      "doc_line": 137
     },
     {
       "command": "add",
@@ -518,7 +546,7 @@
         "--source"
       ],
       "doc_file": "content/docs/recipes/real-hardware.mdx",
-      "doc_line": 513
+      "doc_line": 509
     },
     {
       "command": "add",
@@ -527,7 +555,7 @@
         "--source"
       ],
       "doc_file": "content/docs/recipes/real-hardware.mdx",
-      "doc_line": 514
+      "doc_line": 510
     },
     {
       "command": "add",
@@ -580,7 +608,7 @@
         "--name"
       ],
       "doc_file": "content/docs/package-management/publishing.mdx",
-      "doc_line": 164
+      "doc_line": 171
     },
     {
       "command": "auth",
@@ -664,7 +692,7 @@
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/tutorials/06-write-a-driver.mdx",
-      "doc_line": 392
+      "doc_line": 393
     },
     {
       "command": "auth",
@@ -1147,7 +1175,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/workspaces.mdx",
-      "doc_line": 490
+      "doc_line": 489
     },
     {
       "command": "build",
@@ -1224,7 +1252,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/reference/platform-support.mdx",
-      "doc_line": 134
+      "doc_line": 133
     },
     {
       "command": "build",
@@ -1484,14 +1512,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/reference/platform-support.mdx",
-      "doc_line": 137
+      "doc_line": 136
     },
     {
       "command": "check",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/tutorials/06-write-a-driver.mdx",
-      "doc_line": 395
+      "doc_line": 396
     },
     {
       "command": "check",
@@ -1534,7 +1562,7 @@
         "--all"
       ],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 498
+      "doc_line": 497
     },
     {
       "command": "clean",
@@ -1552,7 +1580,7 @@
         "--all"
       ],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 304
+      "doc_line": 308
     },
     {
       "command": "clean",
@@ -1607,7 +1635,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 497
+      "doc_line": 496
     },
     {
       "command": "clean",
@@ -1617,7 +1645,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 298
+      "doc_line": 302
     },
     {
       "command": "clean",
@@ -1627,7 +1655,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 379
+      "doc_line": 383
     },
     {
       "command": "clean",
@@ -1646,7 +1674,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 496
+      "doc_line": 495
     },
     {
       "command": "clean",
@@ -1655,7 +1683,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 274
+      "doc_line": 273
     },
     {
       "command": "clean",
@@ -1664,7 +1692,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 301
+      "doc_line": 305
     },
     {
       "command": "clean",
@@ -1673,7 +1701,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 382
+      "doc_line": 386
     },
     {
       "command": "clean",
@@ -2075,6 +2103,15 @@
       "flags": [
         "--run"
       ],
+      "doc_file": "content/docs/advanced/network-backends.mdx",
+      "doc_line": 280
+    },
+    {
+      "command": "deploy",
+      "sub": null,
+      "flags": [
+        "--run"
+      ],
       "doc_file": "content/docs/operations/deploy-to-robot.mdx",
       "doc_line": 126
     },
@@ -2095,16 +2132,6 @@
       ],
       "doc_file": "content/docs/operations/index.mdx",
       "doc_line": 43
-    },
-    {
-      "command": "deploy",
-      "sub": null,
-      "flags": [
-        "--run",
-        "--target"
-      ],
-      "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 281
     },
     {
       "command": "deploy",
@@ -2686,7 +2713,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/reference/platform-support.mdx",
-      "doc_line": 138
+      "doc_line": 137
     },
     {
       "command": "doctor",
@@ -3096,28 +3123,28 @@
       "sub": "camera-driver",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 293
+      "doc_line": 292
     },
     {
       "command": "install",
       "sub": "differential-drive",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 190
+      "doc_line": 189
     },
     {
       "command": "install",
       "sub": "differential-drive",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 232
+      "doc_line": 231
     },
     {
       "command": "install",
       "sub": "differential-drive",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 510
+      "doc_line": 509
     },
     {
       "command": "install",
@@ -3142,31 +3169,21 @@
       "sub": "emergency-stop",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 233
+      "doc_line": 232
     },
     {
       "command": "install",
       "sub": "emergency-stop",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 511
+      "doc_line": 510
     },
     {
       "command": "install",
       "sub": "horus-driver-serial-motor",
       "flags": [],
       "doc_file": "content/docs/tutorials/06-write-a-driver.mdx",
-      "doc_line": 404
-    },
-    {
-      "command": "install",
-      "sub": "horus-mycommand",
-      "flags": [
-        "--local",
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/creating-plugins.mdx",
-      "doc_line": 129
+      "doc_line": 405
     },
     {
       "command": "install",
@@ -3194,6 +3211,16 @@
       ],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
       "doc_line": 218
+    },
+    {
+      "command": "install",
+      "sub": "horus-mycommand",
+      "flags": [
+        "--plugin",
+        "--target"
+      ],
+      "doc_file": "content/docs/plugins/creating-plugins.mdx",
+      "doc_line": 129
     },
     {
       "command": "install",
@@ -3234,16 +3261,6 @@
       "command": "install",
       "sub": "horus-sim3d",
       "flags": [
-        "--local",
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 42
-    },
-    {
-      "command": "install",
-      "sub": "horus-sim3d",
-      "flags": [
         "--plugin"
       ],
       "doc_file": "content/docs/plugins/index.mdx",
@@ -3266,6 +3283,16 @@
       ],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
       "doc_line": 39
+    },
+    {
+      "command": "install",
+      "sub": "horus-sim3d",
+      "flags": [
+        "--plugin",
+        "--target"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 42
     },
     {
       "command": "install",
@@ -3308,63 +3335,63 @@
       "sub": "image-processor",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 294
+      "doc_line": 293
     },
     {
       "command": "install",
       "sub": "imu-driver",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 264
+      "doc_line": 263
     },
     {
       "command": "install",
       "sub": "kalman-filter",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 265
+      "doc_line": 264
     },
     {
       "command": "install",
       "sub": "keyboard-input",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 189
+      "doc_line": 188
     },
     {
       "command": "install",
       "sub": "keyboard-input",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 231
+      "doc_line": 230
     },
     {
       "command": "install",
       "sub": "lidar-driver",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 263
+      "doc_line": 262
     },
     {
       "command": "install",
       "sub": "lidar-driver",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 507
+      "doc_line": 506
     },
     {
       "command": "install",
       "sub": "motion-planner",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 123
+      "doc_line": 122
     },
     {
       "command": "install",
       "sub": "motion-planner",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 130
+      "doc_line": 129
     },
     {
       "command": "install",
@@ -3387,21 +3414,21 @@
       "sub": "object-detector",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 295
+      "doc_line": 294
     },
     {
       "command": "install",
       "sub": "obstacle-detector",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 508
+      "doc_line": 507
     },
     {
       "command": "install",
       "sub": "path-planner",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 509
+      "doc_line": 508
     },
     {
       "command": "install",
@@ -3415,7 +3442,7 @@
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 129
+      "doc_line": 128
     },
     {
       "command": "install",
@@ -3436,14 +3463,14 @@
       "sub": "sensor-drivers",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 131
+      "doc_line": 130
     },
     {
       "command": "install",
       "sub": "sensor-fusion",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 126
+      "doc_line": 125
     },
     {
       "command": "install",
@@ -3919,28 +3946,28 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 235
+      "doc_line": 236
     },
     {
       "command": "log",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 238
+      "doc_line": 239
     },
     {
       "command": "log",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 241
+      "doc_line": 242
     },
     {
       "command": "log",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 250
+      "doc_line": 251
     },
     {
       "command": "log",
@@ -3970,7 +3997,7 @@
         "--clear"
       ],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 253
+      "doc_line": 254
     },
     {
       "command": "log",
@@ -3995,7 +4022,7 @@
       "sub": "50",
       "flags": [],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 247
+      "doc_line": 248
     },
     {
       "command": "log",
@@ -4067,7 +4094,7 @@
         "--level"
       ],
       "doc_file": "content/docs/development/logging.mdx",
-      "doc_line": 244
+      "doc_line": 245
     },
     {
       "command": "log",
@@ -4149,14 +4176,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 416
+      "doc_line": 415
     },
     {
       "command": "monitor",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/ai-integration.mdx",
-      "doc_line": 524
+      "doc_line": 517
     },
     {
       "command": "monitor",
@@ -4331,7 +4358,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/tutorials/03-full-robot.mdx",
-      "doc_line": 326
+      "doc_line": 325
     },
     {
       "command": "monitor",
@@ -4410,7 +4437,7 @@
         "--tui"
       ],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 511
+      "doc_line": 510
     },
     {
       "command": "monitor",
@@ -4419,7 +4446,7 @@
         "--tui"
       ],
       "doc_file": "content/docs/concepts/topics-beginner.mdx",
-      "doc_line": 322
+      "doc_line": 321
     },
     {
       "command": "monitor",
@@ -4587,7 +4614,7 @@
         "--cpp"
       ],
       "doc_file": "content/docs/cpp/examples/basic.mdx",
-      "doc_line": 50
+      "doc_line": 49
     },
     {
       "command": "new",
@@ -4753,7 +4780,7 @@
       "sub": "my-project",
       "flags": [],
       "doc_file": "content/docs/reference/platform-support.mdx",
-      "doc_line": 133
+      "doc_line": 132
     },
     {
       "command": "new",
@@ -4917,21 +4944,21 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 261
+      "doc_line": 260
     },
     {
       "command": "node",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 386
+      "doc_line": 385
     },
     {
       "command": "node",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 456
+      "doc_line": 460
     },
     {
       "command": "node",
@@ -5022,14 +5049,14 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/tutorials/08-multi-process-cpp.mdx",
-      "doc_line": 121
+      "doc_line": 122
     },
     {
       "command": "node",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
-      "doc_line": 147
+      "doc_line": 146
     },
     {
       "command": "node",
@@ -5215,7 +5242,7 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/python/api/python-bindings.mdx",
-      "doc_line": 1907
+      "doc_line": 1906
     },
     {
       "command": "param",
@@ -5368,14 +5395,14 @@
       "sub": "set",
       "flags": [],
       "doc_file": "content/docs/python/api/python-bindings.mdx",
-      "doc_line": 1905
+      "doc_line": 1904
     },
     {
       "command": "param",
       "sub": "set",
       "flags": [],
       "doc_file": "content/docs/python/api/python-bindings.mdx",
-      "doc_line": 1906
+      "doc_line": 1905
     },
     {
       "command": "param",
@@ -5575,7 +5602,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/tutorials/06-write-a-driver.mdx",
-      "doc_line": 398
+      "doc_line": 399
     },
     {
       "command": "publish",
@@ -6081,7 +6108,7 @@
       "command": "remove",
       "sub": "horus-sim3d",
       "flags": [
-        "--global"
+        "--purge"
       ],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
       "doc_line": 98
@@ -6142,7 +6169,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-language.mdx",
-      "doc_line": 267
+      "doc_line": 266
     },
     {
       "command": "run",
@@ -6184,35 +6211,35 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 212
+      "doc_line": 211
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 215
+      "doc_line": 214
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 368
+      "doc_line": 367
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 371
+      "doc_line": 370
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 407
+      "doc_line": 406
     },
     {
       "command": "run",
@@ -6226,7 +6253,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/cpp/examples/basic.mdx",
-      "doc_line": 52
+      "doc_line": 51
     },
     {
       "command": "run",
@@ -6394,7 +6421,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/getting-started/simulation.mdx",
-      "doc_line": 490
+      "doc_line": 489
     },
     {
       "command": "run",
@@ -6450,7 +6477,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 155
+      "doc_line": 154
     },
     {
       "command": "run",
@@ -6576,7 +6603,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/python/safety-policies.mdx",
-      "doc_line": 546
+      "doc_line": 542
     },
     {
       "command": "run",
@@ -6604,49 +6631,63 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/reference/platform-support.mdx",
-      "doc_line": 135
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/rust/api/drivers.mdx",
-      "doc_line": 176
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
       "doc_line": 134
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
-      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 345
+      "doc_file": "content/docs/rust/api/drivers.mdx",
+      "doc_line": 175
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 440
+      "doc_line": 133
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 593
+      "doc_line": 343
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 662
+      "doc_line": 438
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
+      "doc_line": 591
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
+      "doc_line": 660
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
+      "doc_line": 684
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
+      "doc_line": 685
     },
     {
       "command": "run",
@@ -6660,21 +6701,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 687
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 688
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/rust/examples/advanced-examples.mdx",
-      "doc_line": 702
+      "doc_line": 700
     },
     {
       "command": "run",
@@ -6709,49 +6736,49 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 355
+      "doc_line": 354
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 490
+      "doc_line": 488
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 660
+      "doc_line": 658
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 826
+      "doc_line": 824
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 937
+      "doc_line": 935
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 940
+      "doc_line": 938
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/rust/examples/basic-examples.mdx",
-      "doc_line": 1043
+      "doc_line": 1041
     },
     {
       "command": "run",
@@ -6786,7 +6813,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/tutorials/02-motor-controller.mdx",
-      "doc_line": 266
+      "doc_line": 265
     },
     {
       "command": "run",
@@ -6800,56 +6827,56 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/tutorials/03-full-robot.mdx",
-      "doc_line": 306
+      "doc_line": 305
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
-      "doc_line": 120
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
-      "doc_line": 247
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
-      "doc_line": 440
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
-      "doc_line": 618
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
-      "doc_line": 113
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
-      "doc_line": 116
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
       "doc_line": 119
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
+      "doc_line": 245
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
+      "doc_line": 437
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/04-custom-messages-python.mdx",
+      "doc_line": 614
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
+      "doc_line": 112
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
+      "doc_line": 115
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
+      "doc_line": 118
     },
     {
       "command": "run",
@@ -7003,7 +7030,7 @@
         "--record"
       ],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 931
+      "doc_line": 928
     },
     {
       "command": "run",
@@ -7175,7 +7202,7 @@
         "--sim"
       ],
       "doc_file": "content/docs/getting-started/simulation.mdx",
-      "doc_line": 487
+      "doc_line": 486
     },
     {
       "command": "run",
@@ -7193,7 +7220,7 @@
         "--sim"
       ],
       "doc_file": "content/docs/rust/api/drivers.mdx",
-      "doc_line": 177
+      "doc_line": 176
     },
     {
       "command": "run",
@@ -7234,7 +7261,7 @@
       "sub": "my-robot",
       "flags": [],
       "doc_file": "content/docs/development/workspaces.mdx",
-      "doc_line": 491
+      "doc_line": 490
     },
     {
       "command": "run",
@@ -7338,19 +7365,10 @@
     },
     {
       "command": "search",
-      "sub": null,
-      "flags": [
-        "--local"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 85
-    },
-    {
-      "command": "search",
       "sub": "camera",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 459
+      "doc_line": 458
     },
     {
       "command": "search",
@@ -7358,6 +7376,15 @@
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
       "doc_line": 79
+    },
+    {
+      "command": "search",
+      "sub": "camera",
+      "flags": [
+        "--category"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 85
     },
     {
       "command": "search",
@@ -7380,14 +7407,14 @@
       "sub": "imu",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 460
+      "doc_line": 459
     },
     {
       "command": "search",
       "sub": "keyboard",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 185
+      "doc_line": 184
     },
     {
       "command": "search",
@@ -7401,7 +7428,7 @@
       "sub": "lidar",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 458
+      "doc_line": 457
     },
     {
       "command": "search",
@@ -7424,7 +7451,7 @@
       "sub": "motor",
       "flags": [],
       "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 186
+      "doc_line": 185
     },
     {
       "command": "search",
@@ -7734,7 +7761,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 774
+      "doc_line": 771
     },
     {
       "command": "test",
@@ -7748,7 +7775,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/workspaces.mdx",
-      "doc_line": 492
+      "doc_line": 491
     },
     {
       "command": "test",
@@ -7769,7 +7796,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/reference/platform-support.mdx",
-      "doc_line": 136
+      "doc_line": 135
     },
     {
       "command": "test",
@@ -7778,7 +7805,7 @@
         "--integration"
       ],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 777
+      "doc_line": 774
     },
     {
       "command": "test",
@@ -7816,15 +7843,6 @@
       ],
       "doc_file": "content/docs/development/testing.mdx",
       "doc_line": 768
-    },
-    {
-      "command": "test",
-      "sub": null,
-      "flags": [
-        "--no-cleanup"
-      ],
-      "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 771
     },
     {
       "command": "test",
@@ -7906,7 +7924,7 @@
         "--sim"
       ],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 780
+      "doc_line": 777
     },
     {
       "command": "test",
@@ -8185,21 +8203,21 @@
       "sub": "bw",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 264
+      "doc_line": 263
     },
     {
       "command": "topic",
       "sub": "bw",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 400
+      "doc_line": 399
     },
     {
       "command": "topic",
       "sub": "bw",
       "flags": [],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 453
+      "doc_line": 457
     },
     {
       "command": "topic",
@@ -8234,7 +8252,7 @@
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 509
+      "doc_line": 508
     },
     {
       "command": "topic",
@@ -8255,21 +8273,21 @@
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 258
+      "doc_line": 257
     },
     {
       "command": "topic",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 394
+      "doc_line": 393
     },
     {
       "command": "topic",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 447
+      "doc_line": 451
     },
     {
       "command": "topic",
@@ -8458,14 +8476,14 @@
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/tutorials/03-full-robot.mdx",
-      "doc_line": 320
+      "doc_line": 319
     },
     {
       "command": "topic",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
-      "doc_line": 146
+      "doc_line": 145
     },
     {
       "command": "topic",
@@ -8495,7 +8513,14 @@
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 211
+      "doc_line": 184
+    },
+    {
+      "command": "topic",
+      "sub": "hz",
+      "flags": [],
+      "doc_file": "content/docs/advanced/network-backends.mdx",
+      "doc_line": 210
     },
     {
       "command": "topic",
@@ -8509,21 +8534,21 @@
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 510
+      "doc_line": 509
     },
     {
       "command": "topic",
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 397
+      "doc_line": 396
     },
     {
       "command": "topic",
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 450
+      "doc_line": 454
     },
     {
       "command": "topic",
@@ -8695,26 +8720,17 @@
     },
     {
       "command": "topic",
-      "sub": "hz",
-      "flags": [
-        "--latency"
-      ],
+      "sub": "info",
+      "flags": [],
       "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 185
+      "doc_line": 89
     },
     {
       "command": "topic",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 90
-    },
-    {
-      "command": "topic",
-      "sub": "info",
-      "flags": [],
-      "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 177
+      "doc_line": 176
     },
     {
       "command": "topic",
@@ -8735,7 +8751,7 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/core-concepts-topic.mdx",
-      "doc_line": 508
+      "doc_line": 507
     },
     {
       "command": "topic",
@@ -8756,7 +8772,7 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 255
+      "doc_line": 254
     },
     {
       "command": "topic",
@@ -8910,14 +8926,14 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/tutorials/08-multi-process-cpp.mdx",
-      "doc_line": 120
+      "doc_line": 121
     },
     {
       "command": "topic",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/tutorials/cross-language-interop.mdx",
-      "doc_line": 145
+      "doc_line": 144
     },
     {
       "command": "topic",
@@ -8935,7 +8951,7 @@
         "--verbose"
       ],
       "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 74
+      "doc_line": 73
     },
     {
       "command": "topic",
@@ -8944,7 +8960,7 @@
         "--verbose"
       ],
       "doc_file": "content/docs/advanced/network-backends.mdx",
-      "doc_line": 166
+      "doc_line": 165
     },
     {
       "command": "topic",
@@ -8953,7 +8969,7 @@
         "--verbose"
       ],
       "doc_file": "content/docs/concepts/multi-process.mdx",
-      "doc_line": 383
+      "doc_line": 382
     },
     {
       "command": "topic",
@@ -8962,7 +8978,7 @@
         "--verbose"
       ],
       "doc_file": "content/docs/concepts/shared-memory.mdx",
-      "doc_line": 444
+      "doc_line": 448
     },
     {
       "command": "topic",

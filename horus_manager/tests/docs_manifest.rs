@@ -296,6 +296,26 @@ fn documented_env_vars_are_read() {
     let docs = docs_dir().expect("set HORUS_DOCS_DIR=/path/to/horus-docs");
     let mut cited: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
+    // Names a CI example defines for itself. `HORUS_REGISTRY_KEY:
+    // ${{ secrets.HORUS_REGISTRY_KEY }}` in a GitHub Actions block is a secret
+    // the *reader* names, passed to a shell that writes ~/.horus/auth.json — it
+    // is not a variable horus reads, so requiring the source to mention it is
+    // backwards. Collected first so every citation of such a name is ignored.
+    let mut ci_secrets: BTreeSet<String> = BTreeSet::new();
+    for f in doc_files(&docs) {
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        for line in text.lines() {
+            if !line.contains("secrets.") {
+                continue;
+            }
+            for name in horus_env_names(line) {
+                ci_secrets.insert(name);
+            }
+        }
+    }
+
     for f in doc_files(&docs) {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
@@ -303,6 +323,9 @@ fn documented_env_vars_are_read() {
         let r = rel(&docs, &f);
         for (i, line) in text.lines().enumerate() {
             for name in horus_env_names(line) {
+                if ci_secrets.contains(&name) {
+                    continue;
+                }
                 cited
                     .entry(name)
                     .or_default()
@@ -557,6 +580,17 @@ mod unit {
             horus_env_names("HORUS_NO_PROXY=1 cargo build"),
             vec!["HORUS_NO_PROXY"]
         );
+    }
+
+    #[test]
+    fn ci_secret_names_are_recognized() {
+        // package-management/publishing.mdx documents a GitHub Actions job that
+        // writes ~/.horus/auth.json from a secret the reader names. That name is
+        // not a variable horus reads, and demanding the source mention it made
+        // the suite reject a correct doc fix.
+        let line = "          HORUS_REGISTRY_KEY: ${{ secrets.HORUS_REGISTRY_KEY }}";
+        assert!(line.contains("secrets."));
+        assert_eq!(horus_env_names(line), vec!["HORUS_REGISTRY_KEY"]);
     }
 
     #[test]
