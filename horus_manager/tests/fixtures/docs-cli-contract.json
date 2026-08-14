@@ -1,5 +1,5 @@
 {
-  "source_commit": "73b3acb28a31e21f3b2e3bca69d37fe1723141c4",
+  "source_commit": "eb88ed91726302696d998e5f1de340c399a5a8d7",
   "invocations": [
     {
       "command": "action",
@@ -152,7 +152,7 @@
         "--features"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2116
+      "doc_line": 2119
     },
     {
       "command": "add",
@@ -215,7 +215,7 @@
         "--driver"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2122
+      "doc_line": 2125
     },
     {
       "command": "add",
@@ -224,7 +224,7 @@
         "--dev"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2119
+      "doc_line": 2122
     },
     {
       "command": "add",
@@ -252,7 +252,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2113
+      "doc_line": 2116
     },
     {
       "command": "add",
@@ -261,7 +261,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2112
+      "doc_line": 2115
     },
     {
       "command": "add",
@@ -289,7 +289,7 @@
       "sub": "numpy",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2107
+      "doc_line": 2110
     },
     {
       "command": "add",
@@ -333,7 +333,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2111
+      "doc_line": 2114
     },
     {
       "command": "add",
@@ -472,7 +472,7 @@
       "sub": "serde",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2106
+      "doc_line": 2109
     },
     {
       "command": "add",
@@ -519,7 +519,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2125
+      "doc_line": 2128
     },
     {
       "command": "add",
@@ -528,7 +528,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2110
+      "doc_line": 2113
     },
     {
       "command": "add",
@@ -664,7 +664,7 @@
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3296
+      "doc_line": 3299
     },
     {
       "command": "auth",
@@ -842,7 +842,7 @@
         "--follow"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2437
+      "doc_line": 2440
     },
     {
       "command": "bb",
@@ -851,7 +851,7 @@
         "--clear"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2447
+      "doc_line": 2450
     },
     {
       "command": "bb",
@@ -860,7 +860,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2442
+      "doc_line": 2445
     },
     {
       "command": "bb",
@@ -870,7 +870,7 @@
         "--last"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2427
+      "doc_line": 2430
     },
     {
       "command": "bb",
@@ -880,63 +880,63 @@
         "--tick"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2432
+      "doc_line": 2435
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2661
+      "doc_line": 2664
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2670
+      "doc_line": 2673
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2690
+      "doc_line": 2693
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2695
+      "doc_line": 2698
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2700
+      "doc_line": 2703
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3242
+      "doc_line": 3245
     },
     {
       "command": "bench",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3288
+      "doc_line": 3291
     },
     {
       "command": "bench",
       "sub": "latency",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2664
+      "doc_line": 2667
     },
     {
       "command": "blackbox",
@@ -964,14 +964,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2396
+      "doc_line": 2399
     },
     {
       "command": "blackbox",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2408
+      "doc_line": 2411
     },
     {
       "command": "blackbox",
@@ -1023,7 +1023,7 @@
         "--anomalies"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2399
+      "doc_line": 2402
     },
     {
       "command": "blackbox",
@@ -1059,7 +1059,7 @@
         "--follow"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2402
+      "doc_line": 2405
     },
     {
       "command": "blackbox",
@@ -1068,7 +1068,7 @@
         "--follow"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3192
+      "doc_line": 3195
     },
     {
       "command": "blackbox",
@@ -1391,42 +1391,42 @@
       "sub": "clean",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2280
+      "doc_line": 2283
     },
     {
       "command": "cache",
       "sub": "clean",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2307
+      "doc_line": 2310
     },
     {
       "command": "cache",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2278
+      "doc_line": 2281
     },
     {
       "command": "cache",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2297
+      "doc_line": 2300
     },
     {
       "command": "cache",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2279
+      "doc_line": 2282
     },
     {
       "command": "cache",
       "sub": "purge",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2281
+      "doc_line": 2284
     },
     {
       "command": "cargo",
@@ -1470,14 +1470,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3236
+      "doc_line": 3239
     },
     {
       "command": "check",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3286
+      "doc_line": 3289
     },
     {
       "command": "check",
@@ -1728,7 +1728,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3343
+      "doc_line": 3346
     },
     {
       "command": "clean",
@@ -1843,84 +1843,84 @@
       "sub": "bash",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3121
+      "doc_line": 3124
     },
     {
       "command": "completion",
       "sub": "fish",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3127
+      "doc_line": 3130
     },
     {
       "command": "completion",
       "sub": "zsh",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3124
+      "doc_line": 3127
     },
     {
       "command": "config",
       "sub": "get",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2903
+      "doc_line": 2906
     },
     {
       "command": "config",
       "sub": "get",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2912
+      "doc_line": 2915
     },
     {
       "command": "config",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2905
+      "doc_line": 2908
     },
     {
       "command": "config",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2923
+      "doc_line": 2926
     },
     {
       "command": "config",
       "sub": "set",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2904
+      "doc_line": 2907
     },
     {
       "command": "config",
       "sub": "set",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2918
+      "doc_line": 2921
     },
     {
       "command": "deploy",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1986
+      "doc_line": 1989
     },
     {
       "command": "deploy",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2007
+      "doc_line": 2010
     },
     {
       "command": "deploy",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3252
+      "doc_line": 3255
     },
     {
       "command": "deploy",
@@ -1936,7 +1936,7 @@
         "--all"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1998
+      "doc_line": 2001
     },
     {
       "command": "deploy",
@@ -1945,7 +1945,7 @@
         "--all"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2034
+      "doc_line": 2037
     },
     {
       "command": "deploy",
@@ -1954,7 +1954,7 @@
         "--all"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2067
+      "doc_line": 2070
     },
     {
       "command": "deploy",
@@ -1963,7 +1963,7 @@
         "--all"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2086
+      "doc_line": 2089
     },
     {
       "command": "deploy",
@@ -1982,7 +1982,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2037
+      "doc_line": 2040
     },
     {
       "command": "deploy",
@@ -1992,7 +1992,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2085
+      "doc_line": 2088
     },
     {
       "command": "deploy",
@@ -2021,7 +2021,7 @@
         "--arch"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2075
+      "doc_line": 2078
     },
     {
       "command": "deploy",
@@ -2049,7 +2049,7 @@
         "--run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2080
+      "doc_line": 2083
     },
     {
       "command": "deploy",
@@ -2077,7 +2077,7 @@
         "--list"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2001
+      "doc_line": 2004
     },
     {
       "command": "deploy",
@@ -2086,7 +2086,7 @@
         "--list"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2068
+      "doc_line": 2071
     },
     {
       "command": "deploy",
@@ -2140,42 +2140,42 @@
         "--run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2091
+      "doc_line": 2094
     },
     {
       "command": "deploy",
       "sub": "jetson-01",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1989
+      "doc_line": 1992
     },
     {
       "command": "deploy",
       "sub": "jetson-01",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1995
+      "doc_line": 1998
     },
     {
       "command": "deploy",
       "sub": "jetson-01",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2031
+      "doc_line": 2034
     },
     {
       "command": "deploy",
       "sub": "jetson-01",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2065
+      "doc_line": 2068
     },
     {
       "command": "deploy",
       "sub": "jetson-01",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2066
+      "doc_line": 2069
     },
     {
       "command": "deploy",
@@ -2198,7 +2198,7 @@
         "--run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1992
+      "doc_line": 1995
     },
     {
       "command": "deploy",
@@ -2230,77 +2230,77 @@
       "sub": "audit",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2720
+    },
+    {
+      "command": "deps",
+      "sub": "audit",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2745
+    },
+    {
+      "command": "deps",
+      "sub": "audit",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3249
+    },
+    {
+      "command": "deps",
+      "sub": "outdated",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2719
+    },
+    {
+      "command": "deps",
+      "sub": "outdated",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2740
+    },
+    {
+      "command": "deps",
+      "sub": "outdated",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3248
+    },
+    {
+      "command": "deps",
+      "sub": "tree",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 2717
     },
     {
       "command": "deps",
-      "sub": "audit",
+      "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2742
-    },
-    {
-      "command": "deps",
-      "sub": "audit",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3246
-    },
-    {
-      "command": "deps",
-      "sub": "outdated",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2716
-    },
-    {
-      "command": "deps",
-      "sub": "outdated",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2737
-    },
-    {
-      "command": "deps",
-      "sub": "outdated",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3245
+      "doc_line": 2727
     },
     {
       "command": "deps",
       "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2714
-    },
-    {
-      "command": "deps",
-      "sub": "tree",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2724
-    },
-    {
-      "command": "deps",
-      "sub": "tree",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2748
+      "doc_line": 2751
     },
     {
       "command": "deps",
       "sub": "why",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2715
+      "doc_line": 2718
     },
     {
       "command": "deps",
       "sub": "why",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2729
+      "doc_line": 2732
     },
     {
       "command": "disable",
@@ -2323,7 +2323,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2584
+      "doc_line": 2587
     },
     {
       "command": "doc",
@@ -2332,7 +2332,7 @@
         "--coverage"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2575
+      "doc_line": 2578
     },
     {
       "command": "doc",
@@ -2351,7 +2351,7 @@
         "--diff"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2641
+      "doc_line": 2644
     },
     {
       "command": "doc",
@@ -2461,7 +2461,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2578
+      "doc_line": 2581
     },
     {
       "command": "doc",
@@ -2471,7 +2471,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2640
+      "doc_line": 2643
     },
     {
       "command": "doc",
@@ -2502,7 +2502,7 @@
         "--md"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2635
+      "doc_line": 2638
     },
     {
       "command": "doc",
@@ -2521,7 +2521,7 @@
         "--open"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2572
+      "doc_line": 2575
     },
     {
       "command": "doc",
@@ -2530,7 +2530,7 @@
         "--open"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2625
+      "doc_line": 2628
     },
     {
       "command": "doc",
@@ -2540,7 +2540,7 @@
         "--watch"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2646
+      "doc_line": 2649
     },
     {
       "command": "doc",
@@ -2561,7 +2561,7 @@
         "--fail-under"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2630
+      "doc_line": 2633
     },
     {
       "command": "doc",
@@ -2571,7 +2571,7 @@
         "--fail-under"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3289
+      "doc_line": 3292
     },
     {
       "command": "doc",
@@ -2608,28 +2608,28 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2763
+      "doc_line": 2766
     },
     {
       "command": "doctor",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2778
+      "doc_line": 2781
     },
     {
       "command": "doctor",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2810
+      "doc_line": 2813
     },
     {
       "command": "doctor",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3235
+      "doc_line": 3238
     },
     {
       "command": "doctor",
@@ -2722,7 +2722,7 @@
         "--fix"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2766
+      "doc_line": 2769
     },
     {
       "command": "doctor",
@@ -2731,7 +2731,7 @@
         "--fix"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2826
+      "doc_line": 2829
     },
     {
       "command": "doctor",
@@ -2740,7 +2740,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2772
+      "doc_line": 2775
     },
     {
       "command": "doctor",
@@ -2776,7 +2776,7 @@
         "--verbose"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2769
+      "doc_line": 2772
     },
     {
       "command": "doctor",
@@ -2785,7 +2785,7 @@
         "--verbose"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2833
+      "doc_line": 2836
     },
     {
       "command": "doctor",
@@ -2808,39 +2808,39 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3055
-    },
-    {
-      "command": "env",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3067
-    },
-    {
-      "command": "env",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3097
-    },
-    {
-      "command": "env",
-      "sub": null,
-      "flags": [
-        "--init"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 3058
     },
     {
       "command": "env",
       "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3070
+    },
+    {
+      "command": "env",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3100
+    },
+    {
+      "command": "env",
+      "sub": null,
       "flags": [
         "--init"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3090
+      "doc_line": 3061
+    },
+    {
+      "command": "env",
+      "sub": null,
+      "flags": [
+        "--init"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3093
     },
     {
       "command": "env",
@@ -2858,7 +2858,7 @@
         "--uninstall"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3061
+      "doc_line": 3064
     },
     {
       "command": "env",
@@ -2867,7 +2867,7 @@
         "--uninstall"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3103
+      "doc_line": 3106
     },
     {
       "command": "env",
@@ -2883,35 +2883,35 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2462
+      "doc_line": 2465
     },
     {
       "command": "fmt",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2471
+      "doc_line": 2474
     },
     {
       "command": "fmt",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2489
+      "doc_line": 2492
     },
     {
       "command": "fmt",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2500
+      "doc_line": 2503
     },
     {
       "command": "fmt",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3165
+      "doc_line": 3168
     },
     {
       "command": "fmt",
@@ -2934,7 +2934,7 @@
         "--check"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2465
+      "doc_line": 2468
     },
     {
       "command": "fmt",
@@ -2943,7 +2943,7 @@
         "--check"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3237
+      "doc_line": 3240
     },
     {
       "command": "fmt",
@@ -2952,7 +2952,7 @@
         "--check"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3284
+      "doc_line": 3287
     },
     {
       "command": "fmt",
@@ -3067,21 +3067,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2158
+      "doc_line": 2161
     },
     {
       "command": "install",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3269
-    },
-    {
-      "command": "install",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3270
+      "doc_line": 3272
     },
     {
       "command": "install",
@@ -3095,7 +3088,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3274
+      "doc_line": 3276
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3277
     },
     {
       "command": "install",
@@ -3153,7 +3153,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2161
+      "doc_line": 2164
     },
     {
       "command": "install",
@@ -3162,7 +3162,7 @@
         "--target"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2160
+      "doc_line": 2163
     },
     {
       "command": "install",
@@ -3227,7 +3227,7 @@
       "sub": "horus-sim3d",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2157
+      "doc_line": 2160
     },
     {
       "command": "install",
@@ -3301,7 +3301,7 @@
         "--plugin"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2159
+      "doc_line": 2162
     },
     {
       "command": "install",
@@ -3310,7 +3310,7 @@
         "--plugin"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2251
+      "doc_line": 2254
     },
     {
       "command": "install",
@@ -3456,7 +3456,7 @@
       "sub": "rplidar",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3209
+      "doc_line": 3212
     },
     {
       "command": "install",
@@ -3477,7 +3477,7 @@
       "sub": "your-package-name",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3302
+      "doc_line": 3305
     },
     {
       "command": "launch",
@@ -3519,7 +3519,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1929
+      "doc_line": 1932
     },
     {
       "command": "launch",
@@ -3574,7 +3574,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1966
+      "doc_line": 1969
     },
     {
       "command": "launch",
@@ -3601,7 +3601,7 @@
         "--list"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1971
+      "doc_line": 1974
     },
     {
       "command": "launch",
@@ -3628,7 +3628,7 @@
         "--namespace"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1934
+      "doc_line": 1937
     },
     {
       "command": "launch",
@@ -3637,7 +3637,7 @@
         "--namespace"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1935
+      "doc_line": 1938
     },
     {
       "command": "launch",
@@ -3689,35 +3689,35 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2515
+      "doc_line": 2518
     },
     {
       "command": "lint",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2527
+      "doc_line": 2530
     },
     {
       "command": "lint",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3166
+      "doc_line": 3169
     },
     {
       "command": "lint",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3238
+      "doc_line": 3241
     },
     {
       "command": "lint",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3285
+      "doc_line": 3288
     },
     {
       "command": "lint",
@@ -3747,7 +3747,7 @@
         "--fix"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2518
+      "doc_line": 2521
     },
     {
       "command": "lint",
@@ -3756,7 +3756,7 @@
         "--fix"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2547
+      "doc_line": 2550
     },
     {
       "command": "lint",
@@ -3774,7 +3774,7 @@
         "--types"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2521
+      "doc_line": 2524
     },
     {
       "command": "lint",
@@ -3783,7 +3783,7 @@
         "--types"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2552
+      "doc_line": 2555
     },
     {
       "command": "list",
@@ -4110,14 +4110,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2942
+      "doc_line": 2945
     },
     {
       "command": "migrate",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2954
+      "doc_line": 2957
     },
     {
       "command": "migrate",
@@ -4133,7 +4133,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2945
+      "doc_line": 2948
     },
     {
       "command": "migrate",
@@ -4142,7 +4142,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2972
+      "doc_line": 2975
     },
     {
       "command": "migrate",
@@ -4160,7 +4160,7 @@
         "--force"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2948
+      "doc_line": 2951
     },
     {
       "command": "migrate",
@@ -4169,7 +4169,7 @@
         "--force"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2982
+      "doc_line": 2985
     },
     {
       "command": "monitor",
@@ -4211,14 +4211,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3155
+      "doc_line": 3158
     },
     {
       "command": "monitor",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3173
+      "doc_line": 3176
     },
     {
       "command": "monitor",
@@ -4507,7 +4507,7 @@
       "sub": "3001",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3323
+      "doc_line": 3326
     },
     {
       "command": "monitor",
@@ -4563,14 +4563,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2260
+      "doc_line": 2263
     },
     {
       "command": "mytool",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2262
+      "doc_line": 2265
     },
     {
       "command": "new",
@@ -4695,7 +4695,7 @@
         "--rust"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3148
+      "doc_line": 3151
     },
     {
       "command": "new",
@@ -4704,7 +4704,7 @@
         "--rust"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3212
+      "doc_line": 3215
     },
     {
       "command": "new",
@@ -4895,7 +4895,7 @@
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3188
+      "doc_line": 3191
     },
     {
       "command": "node",
@@ -4993,7 +4993,7 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3277
+      "doc_line": 3280
     },
     {
       "command": "node",
@@ -5430,14 +5430,14 @@
       "sub": "disable",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2211
+      "doc_line": 2214
     },
     {
       "command": "plugin",
       "sub": "disable",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2252
+      "doc_line": 2255
     },
     {
       "command": "plugin",
@@ -5446,91 +5446,91 @@
         "--reason"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2235
+      "doc_line": 2238
     },
     {
       "command": "plugin",
       "sub": "enable",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2210
-    },
-    {
-      "command": "plugin",
-      "sub": "enable",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2230
-    },
-    {
-      "command": "plugin",
-      "sub": "enable",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2253
-    },
-    {
-      "command": "plugin",
-      "sub": "trust",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 2213
     },
     {
       "command": "plugin",
+      "sub": "enable",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2233
+    },
+    {
+      "command": "plugin",
+      "sub": "enable",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2256
+    },
+    {
+      "command": "plugin",
       "sub": "trust",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2261
+      "doc_line": 2216
     },
     {
       "command": "plugin",
-      "sub": "trusted",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2215
-    },
-    {
-      "command": "plugin",
-      "sub": "trusted",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2263
-    },
-    {
-      "command": "plugin",
-      "sub": "untrust",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2214
-    },
-    {
-      "command": "plugin",
-      "sub": "untrust",
+      "sub": "trust",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 2264
     },
     {
       "command": "plugin",
-      "sub": "verify",
+      "sub": "trusted",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2212
+      "doc_line": 2218
+    },
+    {
+      "command": "plugin",
+      "sub": "trusted",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2266
+    },
+    {
+      "command": "plugin",
+      "sub": "untrust",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2217
+    },
+    {
+      "command": "plugin",
+      "sub": "untrust",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2267
     },
     {
       "command": "plugin",
       "sub": "verify",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2240
+      "doc_line": 2215
     },
     {
       "command": "plugin",
       "sub": "verify",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2254
+      "doc_line": 2243
+    },
+    {
+      "command": "plugin",
+      "sub": "verify",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2257
     },
     {
       "command": "plugin",
@@ -5539,7 +5539,7 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2245
+      "doc_line": 2248
     },
     {
       "command": "publish",
@@ -5560,13 +5560,6 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3262
-    },
-    {
-      "command": "publish",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 3265
     },
     {
@@ -5574,7 +5567,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3299
+      "doc_line": 3268
+    },
+    {
+      "command": "publish",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3302
     },
     {
       "command": "publish",
@@ -5661,7 +5661,7 @@
       "sub": "delete",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2325
+      "doc_line": 2328
     },
     {
       "command": "record",
@@ -5698,14 +5698,14 @@
       "sub": "diff",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2326
+      "doc_line": 2329
     },
     {
       "command": "record",
       "sub": "diff",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2372
+      "doc_line": 2375
     },
     {
       "command": "record",
@@ -5742,7 +5742,7 @@
       "sub": "export",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2327
+      "doc_line": 2330
     },
     {
       "command": "record",
@@ -5815,7 +5815,7 @@
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2323
+      "doc_line": 2326
     },
     {
       "command": "record",
@@ -5843,7 +5843,7 @@
       "sub": "inject",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2328
+      "doc_line": 2331
     },
     {
       "command": "record",
@@ -5871,7 +5871,7 @@
         "--nodes"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2379
+      "doc_line": 2382
     },
     {
       "command": "record",
@@ -5903,14 +5903,14 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2322
+      "doc_line": 2325
     },
     {
       "command": "record",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2358
+      "doc_line": 2361
     },
     {
       "command": "record",
@@ -5965,21 +5965,21 @@
       "sub": "replay",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2324
+      "doc_line": 2327
     },
     {
       "command": "record",
       "sub": "replay",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2367
+      "doc_line": 2370
     },
     {
       "command": "record",
       "sub": "replay",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3199
+      "doc_line": 3202
     },
     {
       "command": "record",
@@ -6081,7 +6081,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2184
+      "doc_line": 2187
     },
     {
       "command": "remove",
@@ -6139,7 +6139,7 @@
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2175
+      "doc_line": 2178
     },
     {
       "command": "remove",
@@ -6148,7 +6148,7 @@
         "--purge"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2178
+      "doc_line": 2181
     },
     {
       "command": "run",
@@ -6330,28 +6330,21 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3152
+      "doc_line": 3155
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3169
+      "doc_line": 3172
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3217
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3358
+      "doc_line": 3220
     },
     {
       "command": "run",
@@ -6957,7 +6950,7 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3249
+      "doc_line": 3252
     },
     {
       "command": "run",
@@ -7021,7 +7014,7 @@
         "--record"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3195
+      "doc_line": 3198
     },
     {
       "command": "run",
@@ -7111,7 +7104,7 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3182
+      "doc_line": 3185
     },
     {
       "command": "run",
@@ -7224,6 +7217,24 @@
     },
     {
       "command": "run",
+      "sub": null,
+      "flags": [
+        "--verbose"
+      ],
+      "doc_file": "content/docs/concepts/multi-process.mdx",
+      "doc_line": 409
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [
+        "--verbose"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 3361
+    },
+    {
+      "command": "run",
       "sub": "cuda",
       "flags": [
         "--enable"
@@ -7284,21 +7295,21 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3000
+      "doc_line": 3003
     },
     {
       "command": "scripts",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3012
+      "doc_line": 3015
     },
     {
       "command": "scripts",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3031
+      "doc_line": 3034
     },
     {
       "command": "scripts",
@@ -7312,14 +7323,14 @@
       "sub": "deploy",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3003
+      "doc_line": 3006
     },
     {
       "command": "scripts",
       "sub": "deploy",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3040
+      "doc_line": 3043
     },
     {
       "command": "scripts",
@@ -7340,7 +7351,7 @@
       "sub": "test",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3006
+      "doc_line": 3009
     },
     {
       "command": "search",
@@ -7467,7 +7478,7 @@
       "sub": "rplidar",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3208
+      "doc_line": 3211
     },
     {
       "command": "search",
@@ -7502,46 +7513,46 @@
       "sub": "visualizer",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2250
+      "doc_line": 2253
     },
     {
       "command": "self",
       "sub": "update",
       "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2861
-    },
-    {
-      "command": "self",
-      "sub": "update",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2883
-    },
-    {
-      "command": "self",
-      "sub": "update",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2889
-    },
-    {
-      "command": "self",
-      "sub": "update",
-      "flags": [
-        "--check"
-      ],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 2864
     },
     {
       "command": "self",
       "sub": "update",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2886
+    },
+    {
+      "command": "self",
+      "sub": "update",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2892
+    },
+    {
+      "command": "self",
+      "sub": "update",
       "flags": [
         "--check"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2877
+      "doc_line": 2867
+    },
+    {
+      "command": "self",
+      "sub": "update",
+      "flags": [
+        "--check"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 2880
     },
     {
       "command": "service",
@@ -7698,21 +7709,21 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3170
+      "doc_line": 3173
     },
     {
       "command": "test",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3241
+      "doc_line": 3244
     },
     {
       "command": "test",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3287
+      "doc_line": 3290
     },
     {
       "command": "test",
@@ -8046,7 +8057,7 @@
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3226
+      "doc_line": 3229
     },
     {
       "command": "tf",
@@ -8179,7 +8190,7 @@
       "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3225
+      "doc_line": 3228
     },
     {
       "command": "tf",
@@ -8322,14 +8333,14 @@
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3185
+      "doc_line": 3188
     },
     {
       "command": "topic",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3221
+      "doc_line": 3224
     },
     {
       "command": "topic",
@@ -8569,7 +8580,7 @@
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3222
+      "doc_line": 3225
     },
     {
       "command": "topic",
@@ -8814,7 +8825,7 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 3220
+      "doc_line": 3223
     },
     {
       "command": "topic",
@@ -9093,7 +9104,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 2888
+      "doc_line": 2891
     },
     {
       "command": "update",

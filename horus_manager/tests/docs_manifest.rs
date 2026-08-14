@@ -310,7 +310,7 @@ fn documented_env_vars_are_read() {
             if !line.contains("secrets.") {
                 continue;
             }
-            for name in horus_env_names(line) {
+            for name in documented_env_names(line) {
                 ci_secrets.insert(name);
             }
         }
@@ -322,7 +322,7 @@ fn documented_env_vars_are_read() {
         };
         let r = rel(&docs, &f);
         for (i, line) in text.lines().enumerate() {
-            for name in horus_env_names(line) {
+            for name in documented_env_names(line) {
                 if ci_secrets.contains(&name) {
                     continue;
                 }
@@ -439,6 +439,55 @@ fn keys_in_section(code: &str, section: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Conventional Rust variables the docs tell readers to set that HORUS does
+/// **not** honour.
+///
+/// `RUST_LOG` is the one that matters: horus installs its own log bridge which
+/// "replaces env_logger" (horus_manager/src/main.rs:1944) and takes verbosity
+/// from `-v`/`-q`, so `RUST_LOG=debug horus run …` silently does nothing. Three
+/// doc sites recommended it. Scanning only `HORUS_*` missed the whole class.
+///
+/// `RUST_BACKTRACE` is deliberately absent — the standard library's panic
+/// runtime reads it, so it works regardless of what horus does.
+const FOREIGN_ENV_NAMES: &[&str] = &["RUST_LOG"];
+
+/// Every environment variable name a doc line mentions that horus is expected
+/// to honour: `HORUS_*` plus [`FOREIGN_ENV_NAMES`].
+fn documented_env_names(line: &str) -> Vec<String> {
+    // A line that names a variable in order to say it does NOT work is good
+    // documentation — a reader who tries `RUST_LOG` and searches for it should
+    // find the answer. Only lines that tell the reader to *use* a variable are
+    // promises the source has to keep.
+    if is_negated_mention(line) {
+        return Vec::new();
+    }
+    let mut out = horus_env_names(line);
+    for name in FOREIGN_ENV_NAMES {
+        if line.contains(name) && !out.iter().any(|n| n == name) {
+            out.push((*name).to_string());
+        }
+    }
+    out
+}
+
+/// Whether a line mentions a variable only to disclaim it.
+fn is_negated_mention(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    [
+        "no effect",
+        "has no",
+        "does not",
+        "doesn't",
+        "not supported",
+        "is ignored",
+        "there is no",
+        "instead of",
+        "in place of",
+    ]
+    .iter()
+    .any(|p| l.contains(p))
 }
 
 /// `HORUS_*` identifiers mentioned in a line of documentation.
@@ -579,6 +628,22 @@ mod unit {
         assert_eq!(
             horus_env_names("HORUS_NO_PROXY=1 cargo build"),
             vec!["HORUS_NO_PROXY"]
+        );
+    }
+
+    #[test]
+    fn negated_mentions_are_not_promises() {
+        // Naming a variable to say it does not work is good documentation, not
+        // a promise the source must keep.
+        assert!(documented_env_names(
+            "# horus installs its own log bridge in place of env_logger, so RUST_LOG has no effect"
+        )
+        .is_empty());
+        assert!(documented_env_names("there is no HORUS_API_KEY variable").is_empty());
+        // A genuine instruction still counts.
+        assert_eq!(
+            documented_env_names("RUST_LOG=debug horus run"),
+            vec!["RUST_LOG"]
         );
     }
 
