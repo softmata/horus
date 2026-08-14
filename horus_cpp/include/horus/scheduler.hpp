@@ -2,8 +2,13 @@
 //
 // Usage:
 //   using namespace horus::literals;
-//   auto sched = horus::Scheduler()
-//       .tick_rate(100_hz)
+//
+//   // Declare first, then configure. The configuration methods return
+//   // `Scheduler&`, so `auto sched = horus::Scheduler().tick_rate(...)`
+//   // deduces `Scheduler` and needs the copy constructor — which is deleted
+//   // (see below). Copy-initializing from the chain does not compile.
+//   horus::Scheduler sched;
+//   sched.tick_rate(100_hz)
 //       .prefer_rt()
 //       .monitoring(true);
 //
