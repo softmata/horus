@@ -769,6 +769,175 @@ jobs:
           echo "PASS: circular dependency detected"
 
   # ═══════════════════════════════════════════════════════════════
+  # Generated Project Tests — `horus run` against the real horus crate
+  # ═══════════════════════════════════════════════════════════════
+  #
+  # Every other CLI assertion here stops at "the command parsed and dispatched".
+  # The UAT that came closest (uat_build_and_run_quick_exit) calls
+  # strip_horus_dep() and swaps in a println!-only main, so it compiles a
+  # hello-world with no horus dependency at all.
+  #
+  # That blind spot shipped a real break: `.horus/Cargo.toml` declares its own
+  # [workspace], so it never inherited the root workspace's
+  # [patch."…horus-robotics.git"] tables, and every generated project died at
+  # dependency resolution with "no matching package named `horus_core` found".
+  # Nothing in CI compiled a generated project against the real horus crate, so
+  # nothing caught it.
+  #
+  # This job keeps the horus dependency and builds for real.
+  generated-project:
+    name: Generated Project Builds
+    runs-on: ubuntu-latest
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
+      # Do NOT set CARGO_TARGET_DIR here. `horus run` execs a hardcoded
+      # `.horus/target/<profile>/<name>` (run_rust.rs), so redirecting Cargo's
+      # output dir builds the binary somewhere horus will not look for it. The
+      # generated project therefore compiles cold — that is the cost of actually
+      # building against the real horus crate, which is this job's whole point.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-genproj-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-genproj-
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          chmod -R 700 "$SHM_DIR"
+
+      - name: Build horus_manager
+        run: cargo build -p horus_manager --release
+
+      - name: "Assert: horus new scaffolds a Rust project"
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/genproj && mkdir -p /tmp/genproj
+          $HORUS new gen-robot -r -o /tmp/genproj
+          test -f /tmp/genproj/gen-robot/horus.toml || {
+            echo "FAIL: horus.toml not scaffolded"
+            exit 1
+          }
+          echo "PASS: project scaffolded"
+
+      # A program that exercises the real horus API, so the horus crate — and
+      # with it the horus-robotics/horus-tf git deps — must actually resolve and
+      # compile. run_for() bounds the run so the scheduler exits on its own
+      # instead of needing a signal.
+      - name: "Write a horus-dependent entrypoint"
+        run: |
+          set -euo pipefail
+          cat > /tmp/genproj/gen-robot/src/main.rs <<'RUST'
+          use horus::prelude::*;
+          use std::time::Duration;
+
+          struct Ping {
+              ticks: u32,
+          }
+
+          impl Node for Ping {
+              fn name(&self) -> &str {
+                  "ping"
+              }
+
+              fn init(&mut self) -> Result<()> {
+                  Ok(())
+              }
+
+              fn tick(&mut self) {
+                  self.ticks += 1;
+              }
+          }
+
+          fn main() -> Result<()> {
+              let mut scheduler = Scheduler::new();
+              scheduler.add(Ping { ticks: 0 }).order(0).build()?;
+              scheduler.run_for(Duration::from_millis(200))?;
+              println!("HORUS_RUN_OK");
+              Ok(())
+          }
+          RUST
+          echo "PASS: entrypoint written"
+
+      # This is the step that would have caught the horus-robotics break: it
+      # fails at dependency resolution, before a single crate compiles.
+      - name: "Assert: horus build compiles against the real horus crate"
+        run: |
+          set -euo pipefail
+          cd /tmp/genproj/gen-robot
+          if ! timeout 1800 $GITHUB_WORKSPACE/target/release/horus build 2>&1 | tee build.log; then
+            echo "FAIL: horus build exited non-zero"
+            if grep -q "no matching package named" build.log; then
+              echo
+              echo "The generated .horus/Cargo.toml is missing its [patch] tables."
+              echo "See write_patch_sections in horus_manager/src/cargo_gen.rs —"
+              echo "a generated manifest declares its own [workspace], so the root"
+              echo "workspace's [patch] tables do not carry over and must be re-emitted."
+            fi
+            exit 1
+          fi
+          echo "PASS: generated project compiles"
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: generated manifest carries the git [patch] tables"
+        run: |
+          set -euo pipefail
+          manifest=/tmp/genproj/gen-robot/.horus/Cargo.toml
+          test -f "$manifest" || {
+            echo "FAIL: horus did not generate $manifest"
+            exit 1
+          }
+          echo "--- generated manifest ---"
+          cat "$manifest"
+          for url in \
+            "https://github.com/softmata/horus-robotics.git" \
+            "https://github.com/softmata/horus-tf.git"
+          do
+            grep -qF "[patch.\"$url\"]" "$manifest" || {
+              echo "FAIL: missing [patch.\"$url\"] in generated manifest"
+              exit 1
+            }
+          done
+          echo "PASS: patch tables present"
+
+      - name: "Assert: horus run executes the built project to completion"
+        run: |
+          set -euo pipefail
+          cd /tmp/genproj/gen-robot
+          output=$(timeout 600 $GITHUB_WORKSPACE/target/release/horus run 2>&1) || {
+            echo "$output"
+            echo "FAIL: horus run exited non-zero"
+            exit 1
+          }
+          echo "$output"
+          echo "$output" | grep -q "HORUS_RUN_OK" || {
+            echo "FAIL: program did not reach completion"
+            exit 1
+          }
+          echo "PASS: horus run built and executed a real horus project"
+        env:
+          RUST_BACKTRACE: 1
+
+  # ═══════════════════════════════════════════════════════════════
   # Runtime Integration Tests — scheduler, topics, multi-node
   # ═══════════════════════════════════════════════════════════════
   runtime-integration:
@@ -1012,7 +1181,7 @@ jobs:
   integration-success:
     name: Integration Tests Success
     permissions: {}
-    needs: [ipc-integration, cli-integration, runtime-integration]
+    needs: [ipc-integration, cli-integration, generated-project, runtime-integration]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1020,8 +1189,14 @@ jobs:
         run: |
           echo "IPC Integration: ${{ needs.ipc-integration.result }}"
           echo "CLI Integration: ${{ needs.cli-integration.result }}"
+          echo "Generated Project: ${{ needs.generated-project.result }}"
           echo "Runtime Integration: ${{ needs.runtime-integration.result }}"
           FAILURES=""
+
+          # Generated project must build against the real horus crate
+          if [[ "${{ needs.generated-project.result }}" != "success" ]]; then
+            FAILURES="$FAILURES GeneratedProject"
+          fi
 
           # IPC integration must pass
           if [[ "${{ needs.ipc-integration.result }}" != "success" ]]; then

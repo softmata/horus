@@ -133,6 +133,10 @@ pub fn generate(
         )?;
     }
 
+    // ── Patch tables ─────────────────────────────────────────────────────
+    // Last: [patch.*] is a top-level table and would swallow later entries.
+    write_patch_sections(&mut cargo, &horus_source);
+
     // ── Write file ───────────────────────────────────────────────────────
     let cargo_toml_path = horus_dir.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo)
@@ -285,6 +289,66 @@ fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &Hor
                 )
                 .unwrap();
             }
+        }
+    }
+}
+
+/// Git repos whose packages reference `horus_core` and friends by relative path,
+/// and the crates each one needs redirected at the local source tree.
+///
+/// Mirrors the `[patch]` tables in the root workspace `Cargo.toml`. Kept in sync
+/// by `patch_sections_match_root_workspace` in the tests below.
+const GIT_PATCH_TARGETS: &[(&str, &[&str])] = &[
+    (
+        "https://github.com/softmata/horus-robotics.git",
+        &["horus_core", "horus_types", "horus_macros"],
+    ),
+    (
+        "https://github.com/softmata/horus-tf.git",
+        &["horus_core", "horus_macros"],
+    ),
+];
+
+/// Write the `[patch]` tables that redirect git-sourced HORUS crates at the
+/// local source tree.
+///
+/// `horus-robotics` and `horus-tf` depend on `horus_core` (and siblings) through
+/// relative paths that only resolve inside the HORUS checkout — a bare clone of
+/// either git repo has no such package. The root workspace compensates with
+/// `[patch."<git url>"]` tables.
+///
+/// A generated `.horus/Cargo.toml` declares its own `[workspace]`, which makes it
+/// a *new* workspace root. Cargo only honors `[patch]` from the workspace root of
+/// the build actually running and never inherits it through a path dependency, so
+/// the root workspace's tables are dropped on the floor and the build dies with
+/// `no matching package named 'horus_core' found`. Re-emitting them here is what
+/// keeps a generated project buildable. `horus_cpp/fuzz/Cargo.toml` solves the
+/// identical problem by hand for the same reason.
+///
+/// Must be called last: `[patch.*]` is a top-level table, so anything written
+/// after it would be parsed as part of it rather than of `[dependencies]`.
+fn write_patch_sections(cargo: &mut String, horus_source: &Path) {
+    for (git_url, crates) in GIT_PATCH_TARGETS {
+        // Only patch crates that exist locally — Cargo hard-errors on a patch
+        // entry pointing at a nonexistent path.
+        let present: Vec<&&str> = crates
+            .iter()
+            .filter(|name| horus_source.join(name).join("Cargo.toml").exists())
+            .collect();
+        if present.is_empty() {
+            continue;
+        }
+
+        writeln!(cargo).unwrap();
+        writeln!(cargo, "[patch.\"{}\"]", git_url).unwrap();
+        for name in present {
+            writeln!(
+                cargo,
+                "{} = {{ path = \"{}\" }}",
+                name,
+                horus_source.join(name).display()
+            )
+            .unwrap();
         }
     }
 }
@@ -640,6 +704,10 @@ pub fn generate_workspace(
     let ws = root_manifest.workspace.as_ref();
     let ws_deps = ws.map(|w| &w.dependencies);
 
+    // Resolved once here: also needed by write_patch_sections below.
+    let horus_source = crate::commands::run::find_horus_source_dir()
+        .context("Cannot generate .horus/Cargo.toml workspace without the HORUS source tree")?;
+
     // Always write [workspace.dependencies] to include horus core deps
     {
         writeln!(root_cargo, "[workspace.dependencies]").unwrap();
@@ -648,9 +716,6 @@ pub fn generate_workspace(
         // single-package path above; an empty section yields unresolvable
         // imports in every workspace member.
         {
-            let horus_source = crate::commands::run::find_horus_source_dir().context(
-                "Cannot generate .horus/Cargo.toml workspace without the HORUS source tree",
-            )?;
             for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
                 let dep_path = horus_source.join(dep_name);
                 if dep_path.exists() && dep_path.join("Cargo.toml").exists() {
@@ -708,6 +773,10 @@ pub fn generate_workspace(
         fs::write(&member_cargo_path, &member_cargo)
             .with_context(|| format!("Failed to write {}", member_cargo_path.display()))?;
     }
+
+    // ── Patch tables ─────────────────────────────────────────────────────
+    // Last: [patch.*] is a top-level table and would swallow later entries.
+    write_patch_sections(&mut root_cargo, &horus_source);
 
     // ── Write root Cargo.toml ─────────────────────────────────────────────
     let root_path = horus_dir.join("Cargo.toml");
@@ -962,6 +1031,94 @@ mod tests {
             cpp: None,
             hooks: Default::default(),
             network: None,
+        }
+    }
+
+    // ─── [patch] tables ──────────────────────────────────────────────────
+
+    #[test]
+    fn generate_emits_git_patch_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".horus")).unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let (cargo_path, content) = generate(&manifest, dir.path(), &[], false).unwrap();
+
+        // Without these, a generated project cannot resolve horus_core through
+        // the horus-robotics git dep: the manifest declares its own [workspace],
+        // so the root workspace's patch tables do not carry over.
+        for (git_url, _) in GIT_PATCH_TARGETS {
+            assert!(
+                content.contains(&format!("[patch.\"{}\"]", git_url)),
+                "missing patch table for {}:\n{}",
+                git_url,
+                content
+            );
+        }
+
+        // [patch.*] is a top-level table — anything after it is parsed as part
+        // of it, so it must trail [dependencies].
+        let deps_pos = content.find("[dependencies]").expect("no [dependencies]");
+        let patch_pos = content.find("[patch.").expect("no [patch.]");
+        assert!(
+            patch_pos > deps_pos,
+            "[patch] must come after [dependencies]:\n{}",
+            content
+        );
+
+        // The whole thing must still be valid TOML.
+        let parsed: toml::Value = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("generated manifest is not valid TOML: {e}\n{content}"));
+        assert!(
+            parsed.get("patch").and_then(|p| p.as_table()).is_some(),
+            "patch table did not survive a TOML roundtrip"
+        );
+
+        assert_eq!(fs::read_to_string(&cargo_path).unwrap(), content);
+    }
+
+    /// The generated manifest re-emits the root workspace's `[patch]` tables.
+    /// If someone adds a git dep + patch there and forgets `GIT_PATCH_TARGETS`,
+    /// every generated project breaks the same way horus-robotics did — so
+    /// assert the two stay in lockstep.
+    #[test]
+    fn patch_sections_match_root_workspace() {
+        let Ok(horus_source) = crate::commands::run::find_horus_source_dir() else {
+            eprintln!("skipping: HORUS source tree not found");
+            return;
+        };
+        let root = horus_source.join("Cargo.toml");
+        let Ok(text) = fs::read_to_string(&root) else {
+            eprintln!("skipping: cannot read {}", root.display());
+            return;
+        };
+        let parsed: toml::Value = toml::from_str(&text).unwrap();
+        let Some(patch) = parsed.get("patch").and_then(|p| p.as_table()) else {
+            return; // root workspace declares no patches — nothing to mirror
+        };
+
+        for (git_url, table) in patch {
+            let expected = GIT_PATCH_TARGETS
+                .iter()
+                .find(|(url, _)| url == git_url)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "root workspace patches {git_url} but GIT_PATCH_TARGETS does not — \
+                         generated projects will fail to resolve its crates"
+                    )
+                })
+                .1;
+            let mut actual: Vec<&str> = table
+                .as_table()
+                .expect("patch entry is not a table")
+                .keys()
+                .map(|k| k.as_str())
+                .collect();
+            actual.sort_unstable();
+            let mut want: Vec<&str> = expected.to_vec();
+            want.sort_unstable();
+            assert_eq!(actual, want, "patched crates for {git_url} drifted");
         }
     }
 
