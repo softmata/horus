@@ -1,0 +1,667 @@
+//! Compile the C++ examples printed in the documentation.
+//!
+//! # Why this exists
+//!
+//! C++ is the largest unverified surface in the documentation. The docs repo's
+//! extractor declares `VERIFIABLE_LANGUAGES = ['rust', 'python']`, so **not one**
+//! of its 260 C++ blocks is compiled by anything, in either repository. Every
+//! C++ page is published on trust.
+//!
+//! Checking them needs no cmake and no linking: `g++ -fsyntax-only` against
+//! `horus_cpp/include` type-checks a translation unit outright, which is where
+//! the interesting breakage lives (missing includes, renamed fields, wrong
+//! smart-pointer hops). That makes this cheap enough to run per-PR, unlike the
+//! Rust sweep.
+//!
+//! # What it deliberately does not do
+//!
+//! It does not inject standard-library includes. A confirmed finding is that
+//! `06-services-actions-cpp.mdx` and `08-multi-process-cpp.mdx` assume
+//! `<horus/horus.hpp>` transitively drags in `<thread>`, `<atomic>` and
+//! `<cmath>`; it does not, and both pages fail to compile exactly as printed.
+//! Injecting those headers would hide the defect rather than surface it.
+//!
+//! # Running it
+//!
+//! ```bash
+//! HORUS_DOCS_DIR=../horus-docs cargo test -p horus_manager \
+//!     --test docs_examples_cpp -- --ignored --nocapture
+//! ```
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+// ─── Model ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+struct Block {
+    doc_file: String,
+    line: usize,
+    code: String,
+}
+
+/// Why a block is not compiled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Skip {
+    /// Contains `...`, so it is an outline rather than a program.
+    Ellipsis,
+    /// `<your_project>` / `YOUR_KEY` — the reader must substitute.
+    Placeholder,
+    /// Too small to carry meaning.
+    Trivial,
+    /// No `#include` and no definition: a body excerpt that only makes sense
+    /// inside the surrounding class the prose describes.
+    Fragment,
+    /// Shown to demonstrate a mistake; requiring it to compile inverts it.
+    CounterExample,
+    /// Another framework's code, printed for comparison (`learn/coming-from-ros2`
+    /// shows the ROS2 version beside the HORUS one). Requiring `rclcpp` to be
+    /// installed would be nonsense.
+    ForeignFramework,
+}
+
+/// Headers that belong to a framework the docs are comparing against, not to
+/// anything a HORUS user is expected to have.
+const FOREIGN_HEADERS: &[&str] = &[
+    "rclcpp/",
+    "rclpy/",
+    "ros/",
+    "ros2/",
+    "sensor_msgs/",
+    "geometry_msgs/",
+    "std_msgs/",
+    "nav_msgs/",
+    "tf2_ros/",
+];
+
+// ─── Locating things ────────────────────────────────────────────────────────
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("horus_manager has a parent")
+        .to_path_buf()
+}
+
+fn docs_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("HORUS_DOCS_DIR") {
+        let p = PathBuf::from(p);
+        return p.join("content/docs").is_dir().then_some(p);
+    }
+    let sibling = repo_root().parent()?.join("horus-docs");
+    sibling.join("content/docs").is_dir().then_some(sibling)
+}
+
+fn include_dir() -> PathBuf {
+    repo_root().join("horus_cpp/include")
+}
+
+/// The C++ compiler to drive, or `None` when none is installed.
+fn cxx() -> Option<String> {
+    if let Ok(c) = std::env::var("CXX") {
+        return Some(c);
+    }
+    for c in ["g++", "clang++", "c++"] {
+        if Command::new(c)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            return Some(c.to_string());
+        }
+    }
+    None
+}
+
+// ─── Extraction ─────────────────────────────────────────────────────────────
+
+fn cpp_blocks(text: &str, rel: &str) -> Vec<(Block, Option<Skip>)> {
+    let mut out = Vec::new();
+    let mut cur: Option<(usize, String)> = None;
+
+    for (idx, raw) in text.lines().enumerate() {
+        if let Some(rest) = raw.trim_start().strip_prefix("```") {
+            match cur.take() {
+                Some((start, code)) => {
+                    let skip = classify(&code);
+                    out.push((
+                        Block {
+                            doc_file: rel.to_string(),
+                            line: start,
+                            code,
+                        },
+                        skip,
+                    ));
+                }
+                None => {
+                    let lang = rest
+                        .trim()
+                        .split([':', ' ', ','])
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if matches!(lang.as_str(), "cpp" | "c++" | "cc") {
+                        cur = Some((idx + 1, String::new()));
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some((_, code)) = cur.as_mut() {
+            code.push_str(raw);
+            code.push('\n');
+        }
+    }
+    out
+}
+
+fn classify(code: &str) -> Option<Skip> {
+    let t = code.trim();
+    if t.contains("...") {
+        return Some(Skip::Ellipsis);
+    }
+    let lower = t.to_ascii_lowercase();
+    for p in ["<your_", "your_", "placeholder", "/path/to"] {
+        if lower.contains(p) {
+            return Some(Skip::Placeholder);
+        }
+    }
+    if t.len() < 24 || t.lines().count() < 2 {
+        return Some(Skip::Trivial);
+    }
+    if is_counter_example(t) {
+        return Some(Skip::CounterExample);
+    }
+    if FOREIGN_HEADERS.iter().any(|h| t.contains(h)) {
+        return Some(Skip::ForeignFramework);
+    }
+    // A translation unit needs at least one include; without one the block is an
+    // excerpt of a body, not something a reader could compile.
+    if !t.contains("#include") {
+        return Some(Skip::Fragment);
+    }
+    None
+}
+
+fn is_counter_example(code: &str) -> bool {
+    code.lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with("//"))
+        .any(|l| {
+            let c = l.trim_start_matches('/').trim().to_ascii_lowercase();
+            c.starts_with("error")
+                || c.starts_with("wrong")
+                || c.starts_with("bad")
+                || c.starts_with("don't")
+                || c.starts_with("dont")
+                || c.starts_with("fail")
+                || c.starts_with("does not compile")
+                || c.starts_with("will not compile")
+        })
+}
+
+fn collect(docs: &Path, filter: Option<&str>) -> (Vec<Block>, BTreeMap<Skip, usize>) {
+    fn walk(dir: &Path, acc: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, acc);
+            } else if p.extension().is_some_and(|x| x == "mdx" || x == "md") {
+                acc.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&docs.join("content/docs"), &mut files);
+    files.sort();
+
+    let mut keep = Vec::new();
+    let mut skipped: BTreeMap<Skip, usize> = BTreeMap::new();
+    for f in files {
+        let rel = f
+            .strip_prefix(docs)
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if filter.is_some_and(|n| !rel.contains(n)) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        for (b, skip) in cpp_blocks(&text, &rel) {
+            match skip {
+                Some(s) => *skipped.entry(s).or_default() += 1,
+                None => keep.push(b),
+            }
+        }
+    }
+    (keep, skipped)
+}
+
+// ─── Compiling ──────────────────────────────────────────────────────────────
+
+/// Split a snippet into its preamble (`#include` / `using` / `#define`) and the
+/// rest, so the remainder can be moved inside a function when needed.
+fn split_preamble(code: &str) -> (String, String) {
+    let mut pre = String::new();
+    let mut body = String::new();
+    for line in code.lines() {
+        let t = line.trim_start();
+        if t.starts_with("#include")
+            || t.starts_with("#define")
+            || t.starts_with("#pragma")
+            || t.starts_with("using ")
+            || t.starts_with("namespace ")
+        {
+            pre.push_str(line);
+            pre.push('\n');
+        } else {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    (pre, body)
+}
+
+/// Diagnostics that mean "these are statements, and they are at file scope" —
+/// the snippet is an API-usage excerpt the reader would paste into a function.
+fn is_file_scope_complaint(stderr: &str) -> bool {
+    stderr.contains("expected unqualified-id")
+        || stderr.contains("does not name a type")
+        || stderr.contains("expected constructor, destructor, or type conversion")
+}
+
+fn run_cxx(cxx: &str, src: &Path) -> Option<(bool, String)> {
+    let out = Command::new(cxx)
+        .args(["-fsyntax-only", "-std=c++17", "-w"])
+        .arg("-I")
+        .arg(include_dir())
+        .arg(src)
+        .output()
+        .ok()?;
+    Some((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    ))
+}
+
+/// Type-check one block. Returns the compiler's diagnostics on failure.
+///
+/// Compiled verbatim first, so a block that *is* a whole program is judged
+/// exactly as a reader would copy it. Only if that fails specifically because
+/// statements sit at file scope is the body retried inside a function — docs
+/// routinely show "here is how you call it" without wrapping it in `main`, and
+/// reporting that as broken would be reporting their prose style.
+fn syntax_check(cxx: &str, dir: &Path, idx: usize, b: &Block) -> Option<String> {
+    let src = dir.join(format!("block{idx}.cpp"));
+    std::fs::write(&src, &b.code).ok()?;
+    let (ok, stderr) = run_cxx(cxx, &src)?;
+    if ok {
+        return None;
+    }
+    if !is_file_scope_complaint(&stderr) {
+        return Some(stderr);
+    }
+
+    let (pre, body) = split_preamble(&b.code);
+    let wrapped = dir.join(format!("block{idx}_wrapped.cpp"));
+    std::fs::write(
+        &wrapped,
+        format!("{pre}\nvoid _horus_docs_snippet() {{\n{body}\n}}\n"),
+    )
+    .ok()?;
+    let (ok2, stderr2) = run_cxx(cxx, &wrapped)?;
+    if ok2 {
+        None
+    } else {
+        Some(stderr2)
+    }
+}
+
+/// First few `error:` lines, trimmed to the compiler's own message.
+fn first_errors(stderr: &str, n: usize) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|l| l.contains("error:"))
+        .take(n)
+        .map(|l| {
+            // strip the leading temp path so output is stable across runs
+            match l.find("error:") {
+                Some(i) => {
+                    let file = l[..i].rsplit('/').next().unwrap_or("");
+                    format!("{file}{}", &l[i..])
+                }
+                None => l.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// The `horus_cpp` static library, if it has been built.
+///
+/// The C++ API is header-only over a C ABI: `include/horus/impl/*.hpp` wrap the
+/// 129 `extern "C"` entry points in `horus_cpp/src/c_api.rs`, which land in this
+/// archive. Linking against it needs no cmake — that is only required for the
+/// *project* build path (`horus build` on a C++ project), which is a separate,
+/// separately-documented prerequisite.
+fn horus_cpp_staticlib() -> Option<PathBuf> {
+    for profile in ["debug", "release"] {
+        let p = repo_root()
+            .join("target")
+            .join(profile)
+            .join("libhorus_cpp.a");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Link a block into a real executable. Returns linker diagnostics on failure.
+fn link_check(cxx: &str, lib: &Path, dir: &Path, idx: usize, b: &Block) -> Option<String> {
+    let src = dir.join(format!("link{idx}.cpp"));
+    std::fs::write(&src, &b.code).ok()?;
+    let exe = dir.join(format!("link{idx}"));
+
+    let out = Command::new(cxx)
+        .args(["-std=c++17", "-w"])
+        .arg("-I")
+        .arg(include_dir())
+        .arg(&src)
+        .arg("-o")
+        .arg(&exe)
+        .arg(lib)
+        .args(["-lpthread", "-ldl", "-lm"])
+        .output()
+        .ok()?;
+
+    if out.status.success() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&out.stderr).to_string())
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+/// Every public header must compile on its own.
+///
+/// Hermetic — needs no docs checkout. A header that only builds when some other
+/// header happened to be included first breaks the moment a user includes it
+/// first, and no C++ example in the docs would reveal that.
+///
+/// It has already caught one: `topic.hpp` used `std::function` in a constructor
+/// signature without including `<functional>`, so `#include <horus/topic.hpp>`
+/// (or anything pulling it in, such as `node.hpp`) failed outright on GCC 15.
+#[test]
+fn public_headers_are_self_contained() {
+    let Some(cxx) = cxx() else {
+        eprintln!("skipping: no C++ compiler found");
+        return;
+    };
+    let inc = include_dir();
+    let dir = inc.join("horus");
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        panic!("cannot read {}", dir.display());
+    };
+
+    let mut headers: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "hpp" || x == "h"))
+        .collect();
+    headers.sort();
+    assert!(
+        headers.len() >= 5,
+        "found only {} public headers — the glob is wrong, making this vacuous",
+        headers.len()
+    );
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut broken = Vec::new();
+    for h in &headers {
+        let name = h.file_name().unwrap().to_string_lossy().to_string();
+        let src = tmp.path().join("probe.cpp");
+        std::fs::write(&src, format!("#include <horus/{name}>\nint main() {{}}\n")).unwrap();
+        let out = Command::new(&cxx)
+            .args(["-fsyntax-only", "-std=c++17"])
+            .arg("-I")
+            .arg(&inc)
+            .arg(&src)
+            .output()
+            .expect("compiler runs");
+        if !out.status.success() {
+            let errs = first_errors(&String::from_utf8_lossy(&out.stderr), 2);
+            broken.push(format!("  <horus/{name}>\n      {}", errs.join("\n      ")));
+        }
+    }
+
+    assert!(
+        broken.is_empty(),
+        "public headers that do not compile standalone:\n{}\n\n\
+         Each is a header a user may include first. Add the missing #include to \
+         the header itself rather than relying on include order.",
+        broken.join("\n")
+    );
+}
+
+/// Documented C++ examples must type-check.
+#[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
+fn documented_cpp_examples_compile() {
+    let Some(cxx) = cxx() else {
+        eprintln!("skipping: no C++ compiler found");
+        return;
+    };
+    let docs = docs_dir().expect("set HORUS_DOCS_DIR=/path/to/horus-docs");
+    let filter = std::env::var("HORUS_DOCS_FILTER").ok();
+    let (blocks, skipped) = collect(&docs, filter.as_deref());
+
+    eprintln!("docs: {}", docs.display());
+    eprintln!(
+        "cpp blocks: {} compiled, {} skipped ({})",
+        blocks.len(),
+        skipped.values().sum::<usize>(),
+        skipped
+            .iter()
+            .map(|(k, v)| format!("{k:?}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    assert!(
+        !blocks.is_empty(),
+        "no compilable C++ blocks found — the extractor is broken, which would \
+         make this test vacuous"
+    );
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut failures: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, b) in blocks.iter().enumerate() {
+        if let Some(stderr) = syntax_check(&cxx, tmp.path(), i, b) {
+            failures.push((i, first_errors(&stderr, 3)));
+        }
+    }
+
+    if !failures.is_empty() {
+        let mut report = String::new();
+        for (i, errs) in &failures {
+            let b = &blocks[*i];
+            report.push_str(&format!("\n  {}:{}\n", b.doc_file, b.line));
+            for e in errs {
+                report.push_str(&format!("      {e}\n"));
+            }
+        }
+        panic!(
+            "{} of {} documented C++ examples do not compile:{report}\n\
+             Nothing else in either repository compiles these — the docs' own \
+             extractor lists only rust and python as verifiable. Fix the example, \
+             add the missing #include, or mark the block as illustrative.",
+            failures.len(),
+            blocks.len()
+        );
+    }
+
+    eprintln!("all {} documented C++ examples compile", blocks.len());
+}
+
+/// Complete C++ programs in the docs must *link*, not merely type-check.
+///
+/// `-fsyntax-only` proves a translation unit is well-formed; it says nothing
+/// about whether the functions it calls exist. A header can declare an overload
+/// the library never defines, and a template can instantiate against a signature
+/// that resolves at parse time and vanishes at link time. Both produce a program
+/// a reader cannot build, and both are invisible to the type-check sweep.
+#[test]
+#[ignore = "slow: links against the horus_cpp staticlib; runs in the scheduled docs-contract job"]
+fn documented_cpp_programs_link() {
+    let Some(cxx) = cxx() else {
+        eprintln!("skipping: no C++ compiler found");
+        return;
+    };
+    let Some(lib) = horus_cpp_staticlib() else {
+        eprintln!("skipping: libhorus_cpp.a not built. Run `cargo build -p horus_cpp` first.");
+        return;
+    };
+    let docs = docs_dir().expect("set HORUS_DOCS_DIR=/path/to/horus-docs");
+    let filter = std::env::var("HORUS_DOCS_FILTER").ok();
+    let (blocks, _) = collect(&docs, filter.as_deref());
+
+    // Only whole programs can be linked; everything else has no entry point.
+    let programs: Vec<(usize, &Block)> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.code.contains("int main"))
+        .collect();
+    eprintln!(
+        "linking {} complete C++ program(s) against {}",
+        programs.len(),
+        lib.display()
+    );
+    assert!(
+        !programs.is_empty(),
+        "no complete C++ programs found — the extractor is broken, making this vacuous"
+    );
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut failures = Vec::new();
+    for (i, b) in &programs {
+        // A program that does not even type-check is the type-check sweep's
+        // finding; reporting it twice adds noise.
+        if syntax_check(&cxx, tmp.path(), *i, b).is_some() {
+            continue;
+        }
+        if let Some(stderr) = link_check(&cxx, &lib, tmp.path(), *i, b) {
+            let errs: Vec<String> = stderr
+                .lines()
+                .filter(|l| l.contains("undefined reference") || l.contains("error:"))
+                .take(3)
+                .map(|l| l.trim().to_string())
+                .collect();
+            failures.push(format!(
+                "  {}:{}\n      {}",
+                b.doc_file,
+                b.line,
+                if errs.is_empty() {
+                    stderr.lines().take(2).collect::<Vec<_>>().join(" | ")
+                } else {
+                    errs.join("\n      ")
+                }
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} documented C++ program(s) type-check but do not link:\n{}\n\n\
+         The reader gets an executable that never builds. An undefined reference \
+         here means a header declares something horus_cpp does not define.",
+        failures.len(),
+        failures.join("\n")
+    );
+    eprintln!("all {} complete C++ programs link", programs.len());
+}
+
+// ─── Extractor unit tests ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extractor {
+    use super::*;
+
+    #[test]
+    fn extracts_cpp_fence() {
+        let md = "t\n```cpp\n#include <horus/horus.hpp>\nint main() {}\n```\n";
+        let got = cpp_blocks(md, "p.mdx");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.line, 2);
+        assert_eq!(got[0].1, None);
+    }
+
+    #[test]
+    fn ignores_other_languages() {
+        let md = "```rust\nfn main() {}\nlet x = 1;\n```\n";
+        assert!(cpp_blocks(md, "p.mdx").is_empty());
+    }
+
+    #[test]
+    fn blocks_without_includes_are_fragments() {
+        let md = "```cpp\nvoid tick() {\n  publish(x);\n}\n```\n";
+        assert_eq!(cpp_blocks(md, "p.mdx")[0].1, Some(Skip::Fragment));
+    }
+
+    #[test]
+    fn ellipsis_outlines_are_skipped() {
+        let md = "```cpp\n#include <horus/horus.hpp>\nint main() { ... }\n```\n";
+        assert_eq!(cpp_blocks(md, "p.mdx")[0].1, Some(Skip::Ellipsis));
+    }
+
+    #[test]
+    fn counter_examples_are_skipped() {
+        let md = "```cpp\n#include <horus/horus.hpp>\n// WRONG: this leaks\nint main() { new int; }\n```\n";
+        assert_eq!(cpp_blocks(md, "p.mdx")[0].1, Some(Skip::CounterExample));
+    }
+
+    #[test]
+    fn foreign_framework_blocks_are_skipped() {
+        // learn/coming-from-ros2.mdx prints the ROS2 version beside the HORUS
+        // one. Requiring rclcpp to be installed would be nonsense.
+        let md = "```cpp\n#include <rclcpp/rclcpp.hpp>\nclass N : public rclcpp::Node {};\n```\n";
+        assert_eq!(cpp_blocks(md, "p.mdx")[0].1, Some(Skip::ForeignFramework));
+    }
+
+    #[test]
+    fn preamble_split_keeps_includes_outside() {
+        let (pre, body) = split_preamble("#include <a.hpp>\nusing namespace x;\nif (a) { b(); }\n");
+        assert!(pre.contains("#include <a.hpp>"), "{pre}");
+        assert!(pre.contains("using namespace x;"), "{pre}");
+        assert!(body.contains("if (a)"), "{body}");
+        assert!(!body.contains("#include"), "{body}");
+    }
+
+    #[test]
+    fn file_scope_complaints_are_recognized() {
+        assert!(is_file_scope_complaint(
+            "x.cpp:9:1: error: expected unqualified-id before 'if'"
+        ));
+        assert!(is_file_scope_complaint(
+            "x.cpp:7:1: error: 'server' does not name a type"
+        ));
+        // A genuine API error must not be mistaken for one.
+        assert!(!is_file_scope_complaint(
+            "x.cpp:45:21: error: 'struct horus::msg::ServoCommand' has no member named 'target_position'"
+        ));
+    }
+
+    #[test]
+    fn first_errors_strips_temp_paths() {
+        let e = "/tmp/xyz/block3.cpp:7:5: error: 'Scheduler' is not a member of 'horus'";
+        assert_eq!(
+            first_errors(e, 1),
+            vec!["block3.cpp:7:5: error: 'Scheduler' is not a member of 'horus'"]
+        );
+    }
+}

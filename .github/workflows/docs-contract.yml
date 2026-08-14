@@ -1,0 +1,372 @@
+# Docs Contract — guarantee this repo never breaks the published documentation.
+#
+# The docs repo (softmata/horus-docs) already verifies its own code blocks, but
+# that workflow clones horus@main: it answers "have the docs drifted from
+# released horus?", never "does this PR break the docs?". A PR here that renames
+# a flag or changes a struct field turns documented instructions into errors
+# while every check stays green.
+#
+# This workflow closes that direction. Three tiers, cheapest first:
+#
+#   1. contract-hermetic  — every PR, no network. Runs against the snapshot
+#                           committed at horus_manager/tests/fixtures/.
+#   2. contract-live      — every PR, clones horus-docs at a pinned commit and
+#                           re-extracts, so docs changes are seen too.
+#   3. examples-compile   — nightly + manual. Compiles the documented Rust
+#                           examples against the real horus crate.
+#
+# Tiers 1 and 2 take seconds. Tier 3 takes minutes, so it is not a PR gate.
+
+name: Docs Contract
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+  schedule:
+    # 04:00 UTC daily — the compile sweep.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      docs_ref:
+        description: 'horus-docs ref to verify against (default: the pinned commit)'
+        required: false
+        type: string
+      run_compile_sweep:
+        description: 'Also run the Rust example compile sweep'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Pinned so a docs edit can never turn this repo's CI red on its own. Bump it
+  # deliberately (and regenerate the snapshot — see the contract-live summary).
+  DOCS_PINNED_REF: 73b3acb28a31e21f3b2e3bca69d37fe1723141c4
+
+jobs:
+  # ── Tier 1 ────────────────────────────────────────────────────────────────
+  # No docs checkout, no network. Catches a PR that removes a command or flag
+  # the docs rely on, using the committed snapshot.
+  contract-hermetic:
+    name: CLI contract (hermetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-docs-
+
+      # The extractor unit tests come first: if extraction silently breaks, the
+      # contract tests still pass while checking nothing.
+      - name: Extractor unit tests
+        run: |
+          cargo test -p horus_manager --test docs_contract extractor
+          cargo test -p horus_manager --test docs_examples extractor
+          cargo test -p horus_manager --test docs_examples_cpp extractor
+          cargo test -p horus_manager --test docs_examples_python extractor
+
+      # Hermetic and fast: every public C++ header must compile on its own,
+      # independent of include order and of any docs checkout.
+      - name: C++ headers are self-contained
+        run: cargo test -p horus_manager --test docs_examples_cpp public_headers_are_self_contained
+
+      - name: CLI contract against the committed snapshot
+        run: cargo test -p horus_manager --test docs_contract
+
+      # `horus new` must produce the tree the quick-starts tell readers to open.
+      - name: Scaffold layout contract
+        run: cargo test -p horus_manager --test docs_scaffold
+
+      # Runtime promises (shutdown ordering, buffer sizing, descriptor layout).
+      # Pure assertions against horus_core — no docs checkout needed.
+      - name: Behavioural contract
+        run: cargo test -p horus_manager --test docs_behavior
+
+  # ── Tier 2 ────────────────────────────────────────────────────────────────
+  # Same assertions, but against a real docs checkout, so a page that starts
+  # documenting a command this repo does not have is caught too.
+  contract-live:
+    name: CLI contract (live docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout horus-docs
+        uses: actions/checkout@v7
+        with:
+          repository: softmata/horus-docs
+          ref: ${{ inputs.docs_ref || env.DOCS_PINNED_REF }}
+          path: horus-docs
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-docs-
+
+      - name: CLI contract against live docs
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: cargo test -p horus_manager --test docs_contract
+
+      # C++ type-checking needs only g++ and the headers — no cmake, no linking —
+      # so unlike the Rust sweep it is cheap enough to gate every PR. Nothing
+      # else in either repository compiles these 260 blocks.
+      - name: C++ examples type-check
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: cargo test -p horus_manager --test docs_examples_cpp -- --ignored --nocapture
+
+      # Syntax only here; the API-shape check needs a built wheel and lives in
+      # the scheduled job below.
+      - name: Python examples parse
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: |
+          cargo test -p horus_manager --test docs_examples_python -- \
+            --ignored documented_python_examples_parse --nocapture
+
+      # Documented horus.toml keys and HORUS_* variables. Cheap: no compilation.
+      - name: Manifest and environment contract
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: cargo test -p horus_manager --test docs_manifest -- --ignored --nocapture
+
+      # A snapshot that has drifted from the pinned docs means tier 1 is
+      # checking a stale contract. Not fatal, but it should be visible.
+      - name: Warn if the committed snapshot is stale
+        if: always()
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: |
+          before=$(sha256sum horus_manager/tests/fixtures/docs-cli-contract.json | cut -d' ' -f1)
+          cargo test -p horus_manager --test docs_contract -- \
+            --ignored regenerate_docs_cli_contract >/dev/null 2>&1 || true
+          after=$(sha256sum horus_manager/tests/fixtures/docs-cli-contract.json | cut -d' ' -f1)
+          if [ "$before" != "$after" ]; then
+            {
+              echo "### Docs snapshot is stale"
+              echo
+              echo "\`horus_manager/tests/fixtures/docs-cli-contract.json\` no longer matches"
+              echo "horus-docs@\`${DOCS_PINNED_REF}\`. The hermetic PR job is gating on an"
+              echo "outdated contract. Refresh it with:"
+              echo
+              echo '```bash'
+              echo 'HORUS_DOCS_DIR=../horus-docs cargo test -p horus_manager \'
+              echo '    --test docs_contract -- --ignored regenerate_docs_cli_contract'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          git checkout -- horus_manager/tests/fixtures/docs-cli-contract.json || true
+
+  # ── Tier 3 ────────────────────────────────────────────────────────────────
+  # Compiles the documented Rust examples against the real horus crate. Minutes,
+  # not seconds, so it runs nightly rather than per-PR.
+  #
+  # It gates only on examples that resolved against horus and *then* failed —
+  # a wrong field, a wrong signature, an unsatisfied bound. Examples that merely
+  # reference a name the reader supplies are reported as advisory, because an
+  # undefined name is not by itself evidence the docs are wrong.
+  examples-compile:
+    name: Rust examples compile
+    if: github.event_name == 'schedule' || inputs.run_compile_sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout horus-docs
+        uses: actions/checkout@v7
+        with:
+          repository: softmata/horus-docs
+          ref: ${{ inputs.docs_ref || env.DOCS_PINNED_REF }}
+          path: horus-docs
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-docsweep-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-docsweep-
+
+      # Warm the shared target dir the sweep reuses, so the per-batch cargo
+      # check invocations do not each rebuild the horus dependency graph.
+      - name: Pre-build horus
+        run: cargo check -p horus -p horus_core -p horus_types
+
+      # The C++ link sweep needs the staticlib that carries the C ABI the
+      # header-only C++ layer calls into.
+      - name: Build horus_cpp staticlib
+        run: cargo build -p horus_cpp
+
+      # -fsyntax-only proves a translation unit is well-formed; it cannot prove
+      # the functions it calls are defined. Linking catches declared-but-missing
+      # symbols and template instantiations that vanish at link time.
+      - name: C++ programs link
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: |
+          cargo test -p horus_manager --test docs_examples_cpp -- \
+            --ignored documented_cpp_programs_link --nocapture
+
+      - name: Compile documented Rust examples
+        id: sweep
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: |
+          set -o pipefail
+          cargo test -p horus_manager --test docs_examples -- \
+            --ignored --nocapture 2>&1 | tee sweep.log
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Documented Rust examples"
+            echo
+            echo '```'
+            grep -E 'rust blocks:|contradict the real horus API|advisory, not enforced|no documented Rust example' sweep.log || true
+            echo '```'
+            if grep -q 'contradict the real horus API' sweep.log; then
+              echo
+              echo "<details><summary>Examples contradicting the horus API</summary>"
+              echo
+              echo '```'
+              sed -n '/contradict the real horus API/,/These resolved/p' sweep.log || true
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-example-sweep
+          path: sweep.log
+          retention-days: 14
+
+  # ── Tier 3b ───────────────────────────────────────────────────────────────
+  # `horus.Scheduler(blackbox=64)` is valid Python that raises TypeError at
+  # runtime, so syntax checking cannot catch it. Verifying it needs the module's
+  # real shape, which means building the wheel — minutes, hence not a PR gate.
+  #
+  # Nothing here executes doc code: snippets open shared memory, spin schedulers
+  # and touch hardware. Attributes and signatures are read reflectively instead.
+  python-api:
+    name: Python API references exist
+    if: github.event_name == 'schedule' || inputs.run_compile_sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout horus-docs
+        uses: actions/checkout@v7
+        with:
+          repository: softmata/horus-docs
+          ref: ${{ inputs.docs_ref || env.DOCS_PINNED_REF }}
+          path: horus-docs
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build and install the horus wheel
+        run: |
+          pip install maturin
+          cd horus_py
+          maturin build --release
+          pip install --force-reinstall target/wheels/*.whl
+
+      - name: Confirm the wheel is the real module
+        run: |
+          # Run outside the repo: the `horus/` source directory shadows the
+          # installed package as a namespace package, yielding a module with no
+          # attributes and making every assertion below fail for the wrong reason.
+          cd "$RUNNER_TEMP"
+          python -c "import horus; assert hasattr(horus,'Scheduler'), 'shadowed'; print('horus', horus.__version__)"
+
+      - name: Python API references exist
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: |
+          cargo test -p horus_manager --test docs_examples_python -- \
+            --ignored documented_python_api_exists --nocapture
+
+  docs-contract-success:
+    name: Docs Contract Success
+    permissions: {}
+    needs: [contract-hermetic, contract-live]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          echo "Hermetic: ${{ needs.contract-hermetic.result }}"
+          echo "Live:     ${{ needs.contract-live.result }}"
+          FAIL=""
+          [ "${{ needs.contract-hermetic.result }}" = "success" ] || FAIL="$FAIL hermetic"
+          [ "${{ needs.contract-live.result }}" = "success" ] || FAIL="$FAIL live"
+          if [ -n "$FAIL" ]; then
+            echo "Docs contract failed:$FAIL"
+            echo "This PR changes the CLI in a way the published documentation contradicts."
+            exit 1
+          fi
+          echo "Docs contract upheld."
