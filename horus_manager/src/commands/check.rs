@@ -206,7 +206,15 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                                     || base_dir.join("src/main.rs").exists()
                                     || base_dir.join(CARGO_TOML).exists()
                             }
-                            Language::Python => base_dir.join("main.py").exists(),
+                            // Both layouts, mirroring Rust above. `horus build`
+                            // and `horus run` have always detected src/main.py
+                            // (see dispatch.rs); only `check` insisted on the
+                            // project root, so a src/-layout Python project
+                            // built and ran but failed validation.
+                            Language::Python => {
+                                base_dir.join("main.py").exists()
+                                    || base_dir.join("src/main.py").exists()
+                            }
                             _ => true,
                         };
                         if !main_exists {

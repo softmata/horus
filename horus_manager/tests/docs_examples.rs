@@ -32,7 +32,7 @@
 //!
 //! Scope it while iterating with `HORUS_DOCS_FILTER=tutorials`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -67,6 +67,10 @@ enum Skip {
     CounterExample,
     /// A method (`fn tick(&mut self)`) printed without its `impl` block.
     MethodFragment,
+    /// A bodyless signature printed as API reference, e.g.
+    /// `pub fn send_goal_and_wait(&self, …) -> Result<A::Result, ActionError>`.
+    /// It is not a program and cannot compile on its own.
+    SignatureNotation,
 }
 
 // ─── Locating things ────────────────────────────────────────────────────────
@@ -160,6 +164,9 @@ fn classify(code: &str) -> Option<Skip> {
     if is_counter_example(t) {
         return Some(Skip::CounterExample);
     }
+    if is_signature_notation(t) {
+        return Some(Skip::SignatureNotation);
+    }
     if has_bare_method(t) {
         return Some(Skip::MethodFragment);
     }
@@ -167,6 +174,37 @@ fn classify(code: &str) -> Option<Skip> {
         return Some(Skip::Fragment);
     }
     None
+}
+
+/// A block that documents a *signature* rather than showing runnable code.
+///
+/// The Rust API pages print bodyless declarations under headings like
+/// `#### send_goal_and_wait_with_feedback`:
+///
+/// ```text
+/// pub fn send_goal_and_wait_with_feedback(
+///     &self, goal: A::Goal, timeout: Duration,
+/// ) -> Result<A::Result, ActionError>
+/// ```
+///
+/// There is no body, so it can never compile; and because these use
+/// `std::result::Result` with two parameters, compiling them under an injected
+/// `horus::prelude::*` (whose `Result<T>` takes one) reported a two-generic
+/// error the page never made.
+fn is_signature_notation(code: &str) -> bool {
+    let body_lines: Vec<&str> = code
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("#["))
+        .collect();
+    if body_lines.is_empty() {
+        return false;
+    }
+    let starts_decl = body_lines[0].starts_with("pub fn ")
+        || body_lines[0].starts_with("fn ")
+        || body_lines[0].starts_with("pub async fn ");
+    // A real definition opens a body; a signature reference never does.
+    starts_decl && !code.contains('{')
 }
 
 /// A block whose own comments announce that it is broken on purpose.
@@ -370,10 +408,27 @@ fn is_item_level(code: &str) -> bool {
 /// reader hits on their first attempt.
 fn implied_prelude(code: &str) -> String {
     if code.contains("use horus::prelude") {
-        String::new()
-    } else {
-        "    use horus::prelude::*;\n".to_string()
+        return String::new();
     }
+    // A block written against std's two-generic Result must not have horus's
+    // one-generic `Result<T>` alias shadow it. `plugins/creating-plugins.mdx:173`
+    // is a clap CLI returning `Result<(), Box<dyn std::error::Error>>`; injecting
+    // the prelude turned its correct signature into a two-generic error the page
+    // never made.
+    //
+    // Keyed on the std error idiom rather than on "does the block mention
+    // horus", because horus blocks routinely use `Result<()>` and `Error::node`
+    // without spelling the crate name — dropping the prelude for those broke
+    // eight pages that had been passing.
+    // Matched on the error idiom specifically, not on any `Box<dyn`:
+    // `tutorials/06-write-a-driver.mdx:315` has the comment
+    // `// hardware::load() returns Vec<(String, Box<dyn Node>)>`, and a bare
+    // `Box<dyn` test suppressed the prelude there, turning its horus
+    // `Result<()>` into a two-generic error.
+    if code.contains("std::error::Error") || code.contains("Box<dyn Error") {
+        return String::new();
+    }
+    "    use horus::prelude::*;\n".to_string()
 }
 
 /// Crates a block imports that a generated project does not depend on.
@@ -382,6 +437,67 @@ fn implied_prelude(code: &str) -> String {
 /// themselves, but they cannot conjure a crate their manifest never declares.
 /// `use horus_robotics::prelude::*` inside a `horus new -r` project is a hard
 /// stop, so this gates rather than merely reporting.
+/// Crate names the page declares in a `[dependencies]` block.
+///
+/// Pages that reach outside the framework normally show the manifest first —
+/// `recipes/real-hardware.mdx:31` prints `[dependencies]` with
+/// `i2cdev = { version = "0.6", source = "crates.io" }` immediately above the
+/// code that imports it. That *is* the instruction to add the dependency, so
+/// the import is satisfied and flagging it reports the page's teaching order
+/// rather than a defect.
+fn declared_dependencies(page_source: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+
+    // `horus add <crate>` is the other way a page tells the reader to install
+    // something, and the more common one outside recipe pages.
+    for line in page_source.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("horus add ") else {
+            continue;
+        };
+        if let Some(name) = rest.split_whitespace().next() {
+            // strip a `name@version` pin
+            let name = name.split('@').next().unwrap_or(name);
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                out.insert(name.replace('-', "_"));
+                out.insert(name.to_string());
+            }
+        }
+    }
+
+    let mut in_deps = false;
+    for line in page_source.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_deps = t.contains("dependencies");
+            continue;
+        }
+        if !in_deps || t.is_empty() || t.starts_with('#') || t.starts_with("```") {
+            if t.starts_with("```") {
+                in_deps = false;
+            }
+            continue;
+        }
+        if let Some(eq) = t.find('=') {
+            let name = t[..eq].trim().trim_matches('"');
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                // Cargo and horus accept either spelling on the import side.
+                out.insert(name.replace('-', "_"));
+                out.insert(name.to_string());
+            }
+        }
+    }
+    out
+}
+
 fn missing_dependencies(code: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in code.lines().map(str::trim_start) {
@@ -443,6 +559,18 @@ const PROJECT_DEPS: &[&str] = &["horus", "horus_core", "horus_macros", "serde"];
 
 /// Crates always available regardless of the manifest.
 const ALWAYS_AVAILABLE: &[&str] = &["std", "core", "alloc", "crate", "self", "super"];
+
+/// Imports a block makes that neither the generated project nor its own page
+/// provides. This is the gating form; `missing_dependencies` is the raw scan.
+fn unsatisfied_dependencies(b: &Block, docs: &Path) -> Vec<String> {
+    let raw = missing_dependencies(&b.code);
+    if raw.is_empty() {
+        return raw;
+    }
+    let page = std::fs::read_to_string(docs.join(&b.doc_file)).unwrap_or_default();
+    let declared = declared_dependencies(&page);
+    raw.into_iter().filter(|d| !declared.contains(d)).collect()
+}
 
 /// Build a scratch crate containing `blocks` and run `cargo check` on it.
 /// Returns `(ok, stderr, line_spans)` where `line_spans[i]` is the 1-indexed
@@ -550,17 +678,29 @@ fn is_api_mismatch(error: &str) -> bool {
 fn undefined_names(errors: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for e in errors {
-        for marker in [
-            "cannot find type `",
-            "cannot find value `",
-            "cannot find trait `",
-            "cannot find struct `",
-            "cannot find module or crate `",
-        ] {
-            let mut rest = e.as_str();
-            while let Some(pos) = rest.find(marker) {
-                rest = &rest[pos + marker.len()..];
-                if let Some(name) = rest.split('`').next() {
+        // Take the first backtick-quoted token after any "cannot find" phrasing.
+        // Matching fixed prefixes missed rustc's compound wordings — notably
+        // "cannot find struct, variant or union type `MotorState`", whose comma
+        // defeated a "cannot find struct `" marker and left the block reported
+        // as a real finding.
+        let mut rest = e.as_str();
+        while let Some(pos) = rest.find("cannot find") {
+            rest = &rest[pos + "cannot find".len()..];
+            let Some(open) = rest.find('`') else { break };
+            let after = &rest[open + 1..];
+            if let Some(name) = after.split('`').next() {
+                if !name.is_empty() && name.len() < 64 {
+                    out.push(name.to_string());
+                }
+            }
+            rest = after;
+        }
+        // `use of unresolved module or unlinked crate `ort``
+        let mut rest = e.as_str();
+        while let Some(pos) = rest.find("unlinked crate `") {
+            rest = &rest[pos + "unlinked crate `".len()..];
+            if let Some(name) = rest.split('`').next() {
+                if !name.is_empty() {
                     out.push(name.to_string());
                 }
             }
@@ -571,6 +711,24 @@ fn undefined_names(errors: &[String]) -> Vec<String> {
     out
 }
 
+/// A "no field X on type T" / "T has no field named X" error where the page
+/// defines its own `T`, so the prelude's same-named type was picked only because
+/// the block was compiled alone.
+fn is_shadowed_field_error(error: &str, page_source: &str) -> bool {
+    if !error.contains("E0560") && !error.contains("E0609") {
+        return false;
+    }
+    // The type is the last backtick-quoted path in the message.
+    let ty = error
+        .split('`')
+        .filter(|s| !s.is_empty())
+        .filter(|s| s.contains("::") || s.chars().next().is_some_and(char::is_uppercase))
+        .filter_map(|s| s.rsplit("::").next())
+        .find(|s| s.chars().next().is_some_and(char::is_uppercase));
+    let Some(ty) = ty else { return false };
+    page_source.contains(&format!("struct {ty}")) || page_source.contains(&format!("enum {ty}"))
+}
+
 /// True when every failure is an identifier the *same page* defines elsewhere.
 ///
 /// Tutorials build up across blocks: `SensorNode` is defined in step 2 and used
@@ -579,17 +737,26 @@ fn undefined_names(errors: &[String]) -> Vec<String> {
 /// (concatenating a page would collide on the before/after versions of a type
 /// that pages routinely show), so this recovers the page context after the fact.
 fn only_missing_page_local_names(errors: &[String], page_source: &str) -> bool {
-    let names = undefined_names(errors);
-    if names.is_empty() {
-        return false; // failures of some other kind — a real defect
+    if errors.is_empty() {
+        return false;
     }
-    // Every reported error must be an unresolved-name error, or something else
-    // is also wrong and the block should still be reported.
-    let unresolved = errors
-        .iter()
-        .filter(|e| e.contains("cannot find") || e.contains("use of undeclared"))
-        .count();
-    if unresolved != errors.len() {
+    // Absolve the block only when EVERY error is explained by page context.
+    // The two explanations are checked per-error rather than as separate
+    // all-or-nothing passes: a block often mixes them (an undefined type from an
+    // earlier step *and* a field error against a type the page defines), and
+    // requiring one uniform kind let those through as false findings.
+    errors.iter().all(|e| {
+        is_shadowed_field_error(e, page_source) || is_page_local_name_error(e, page_source)
+    })
+}
+
+/// A "cannot find X" error where the page defines `X` in another block.
+fn is_page_local_name_error(error: &str, page_source: &str) -> bool {
+    if !error.contains("cannot find") && !error.contains("use of undeclared") {
+        return false;
+    }
+    let names = undefined_names(std::slice::from_ref(&error.to_string()));
+    if names.is_empty() {
         return false;
     }
     names.iter().all(|n| {
@@ -601,8 +768,7 @@ fn only_missing_page_local_names(errors: &[String], page_source: &str) -> bool {
             format!("fn {n}"),
             format!("mod {n}"),
             // A page may only ever `impl Node for MotorController`, treating the
-            // type as one the reader already has in their project. That still
-            // makes the name page-established rather than a defect in this block.
+            // type as one the reader already has in their project.
             format!("impl {n}"),
             format!("for {n} "),
             format!("for {n}\n"),
@@ -731,7 +897,7 @@ fn documented_rust_examples_compile() {
     // the generated project never depends on, is unambiguously wrong.
     let (gating, advisory): (Vec<_>, Vec<_>) = failures.iter().partition(|(idx, errs)| {
         errs.iter().any(|e| is_api_mismatch(e))
-            || !missing_dependencies(&blocks[**idx].code).is_empty()
+            || !unsatisfied_dependencies(&blocks[**idx], &docs).is_empty()
     });
 
     if !advisory.is_empty() {
@@ -751,7 +917,7 @@ fn documented_rust_examples_compile() {
         for (idx, errs) in &gating {
             let b = &blocks[**idx];
             report.push_str(&format!("\n  {}:{}\n", b.doc_file, b.line));
-            let missing = missing_dependencies(&b.code);
+            let missing = unsatisfied_dependencies(b, &docs);
             if !missing.is_empty() {
                 report.push_str(&format!(
                     "      imports {missing:?} — not a dependency of a `horus new -r` project\n"
@@ -828,6 +994,22 @@ mod extractor {
             "cargo_gen no longer adds serde implicitly; update PROJECT_DEPS"
         );
         assert!(PROJECT_DEPS.contains(&"serde"));
+    }
+
+    #[test]
+    fn shadowed_field_error_is_recognized() {
+        // tutorials/02-motor-controller.mdx defines its own MotorCommand; the
+        // prelude's same-named type is only picked because blocks compile alone.
+        let e = "src/lib.rs:883:29: error[E0609]: no field `velocity` on type \
+                 `horus::prelude::MotorCommand`: this is an associated function, \
+                 not a method, unknown field";
+        let page = "#[repr(C)]\nstruct MotorCommand {\n    velocity: f32,\n}\n";
+        assert!(
+            is_shadowed_field_error(e, page),
+            "should absolve a field error on a page-defined type"
+        );
+        // A type the page does NOT define stays a real finding.
+        assert!(!is_shadowed_field_error(e, "no definitions here"));
     }
 
     #[test]

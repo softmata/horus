@@ -169,8 +169,12 @@
 //!
 //! `Twist`, `Pose2D`, `Image`, `PointCloud`, and `DepthImage` are in
 //! `horus::prelude`. Robotics-specific messages (`CmdVel`, `Imu`, `LaserScan`,
-//! …) now live in the `horus_robotics` crate — bring them in with
-//! `use horus_robotics::prelude::*;`.
+//! …) live in the `horus_robotics` crate but are re-exported through
+//! `horus::prelude` too, so `use horus::prelude::*;` is all you need.
+//!
+//! Do not write `use horus_robotics::prelude::*;` in a project created by
+//! `horus new`: the generated manifest depends on `horus` only, so that path
+//! fails with `E0433: use of unresolved module or unlinked crate`.
 //!
 //! ## Common Mistakes
 //!

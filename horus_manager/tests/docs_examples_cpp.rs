@@ -387,6 +387,44 @@ fn link_check(cxx: &str, lib: &Path, dir: &Path, idx: usize, b: &Block) -> Optio
     }
 }
 
+/// Names the compiler could not find, taken from `'X' is not a member of 'Y'`
+/// and `'X' was not declared` diagnostics.
+fn cpp_undefined_names(stderr: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in stderr.lines().filter(|l| l.contains("error:")) {
+        for quoted in line.split('\u{2018}').skip(1) {
+            if let Some(name) = quoted.split('\u{2019}').next() {
+                let last = name.rsplit("::").next().unwrap_or(name);
+                if !last.is_empty() && last.len() < 64 {
+                    out.push(last.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// True when every name the block could not resolve is one its own page defines.
+///
+/// `tutorials/04-custom-messages-cpp.mdx` walks the reader through adding a
+/// `WeatherData` message to the framework; the later blocks use
+/// `horus::msg::WeatherData`, which exists only after those steps. Compiling a
+/// block alone cannot see it, so reporting it would be reporting the tutorial's
+/// premise. Mirrors the same absolution in docs_examples.rs.
+fn only_page_defined_names(stderr: &str, page_source: &str) -> bool {
+    let names = cpp_undefined_names(stderr);
+    if names.is_empty() {
+        return false;
+    }
+    names.iter().any(|n| {
+        page_source.contains(&format!("struct {n}"))
+            || page_source.contains(&format!("class {n}"))
+            || page_source.contains(&format!("enum {n}"))
+    })
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 /// Every public header must compile on its own.
@@ -481,10 +519,22 @@ fn documented_cpp_examples_compile() {
 
     let tmp = tempfile::tempdir().expect("temp dir");
     let mut failures: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut page_cache: BTreeMap<String, String> = BTreeMap::new();
+    let mut page_scoped = 0usize;
     for (i, b) in blocks.iter().enumerate() {
         if let Some(stderr) = syntax_check(&cxx, tmp.path(), i, b) {
+            let page = page_cache.entry(b.doc_file.clone()).or_insert_with(|| {
+                std::fs::read_to_string(docs.join(&b.doc_file)).unwrap_or_default()
+            });
+            if only_page_defined_names(&stderr, page) {
+                page_scoped += 1;
+                continue;
+            }
             failures.push((i, first_errors(&stderr, 3)));
         }
+    }
+    if page_scoped > 0 {
+        eprintln!("{page_scoped} block(s) used types their own page defines (not counted)");
     }
 
     if !failures.is_empty() {

@@ -37,5 +37,9 @@ nodes:
       num_robots: 3
       formation_type: "triangle"
 
+# Forwarded to every launched node's process environment. These are variables
+# your own node code reads — HORUS itself has no log-level environment
+# variable, and setting one has no effect: the log bridge replaces env_logger
+# and takes its verbosity from the CLI (`horus launch -v` / `-q`).
 env:
-  HORUS_LOG_LEVEL: "info"
+  FORMATION_PROFILE: "triangle"
