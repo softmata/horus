@@ -48,7 +48,7 @@ env:
   RUST_BACKTRACE: 1
   # Pinned so a docs edit can never turn this repo's CI red on its own. Bump it
   # deliberately (and regenerate the snapshot — see the contract-live summary).
-  DOCS_PINNED_REF: 6ef94a385d939bbef7ecc381b27b95537b8cc2c3
+  DOCS_PINNED_REF: b16c640c9d0169f30bcd502d835777eef52d29dd
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────

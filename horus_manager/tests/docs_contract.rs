@@ -95,6 +95,22 @@ const EXAMPLE_PLUGIN_NAMES: &[&str] = &[
     "topic-stats", // plugins/creating-plugins.mdx, the tutorial's sample plugin
 ];
 
+/// Documented top-level commands the binary rejects. Same contract as
+/// [`QUARANTINED_FLAGS`]: real defects, listed so the suite gates new ones.
+/// `quarantine_is_not_stale` fails once a name starts resolving.
+const QUARANTINED_COMMANDS: &[(&str, &str)] = &[
+    (
+        "hf",
+        "concepts/hframe.mdx:289 — the HFrame page invokes `horus hf`, which the \
+         binary does not define",
+    ),
+    (
+        "keygen",
+        "development/cli-reference.mdx:579 — signing keys are created by \
+         `horus auth signing-key`; there is no `horus keygen`",
+    ),
+];
+
 /// Known-broken `(command, flag)` pairs: documented today, rejected by the CLI.
 ///
 /// Every entry is a real user-facing defect found by this harness — a user who
@@ -106,38 +122,75 @@ const EXAMPLE_PLUGIN_NAMES: &[&str] = &[
 /// `quarantine_is_not_stale` test fails once a pair starts working, so this list
 /// cannot silently rot.
 const QUARANTINED_FLAGS: &[(&str, &str, &str)] = &[
-    // (command, flag, why)
+    // (command, flag, why) — verified against the binary, one at a time.
     (
-        "deploy",
-        "--target",
-        "advanced/network-backends.mdx:281 — `horus deploy` takes targets positionally \
-         (`horus deploy user@host`); there is no --target flag",
+        "blackbox",
+        "--tail",
+        "development/cli-reference.mdx:1556 and :1591 (`horus bb --tail`) — \
+         blackbox offers --follow for the same purpose; --tail is rejected",
+    ),
+    (
+        "env",
+        "--publish",
+        "development/cli-reference.mdx:643 and package-management/\
+         environment-management.mdx:218,343,480,494 — five sites; no such flag",
+    ),
+    (
+        "env",
+        "--output",
+        "development/cli-reference.mdx:1642 — no --output flag on `horus env`",
+    ),
+    (
+        "install",
+        "--driver",
+        "development/cli-reference.mdx:1340,1374,1375 — install has \
+         --plugin/--target/--json; drivers install by package name",
+    ),
+    (
+        "install",
+        "--global",
+        "development/cli-reference.mdx:596,1343 — install is global by default; \
+         there is no --global flag",
+    ),
+    (
+        "list",
+        "--plugins",
+        "development/cli-reference.mdx:1424,1439 — no --plugins flag on `horus list`",
+    ),
+    (
+        "bb",
+        "--tail",
+        "development/cli-reference.mdx:1591 — the `bb` alias form of the same \
+         defect as `blackbox --tail`; the extractor records the command as written",
     ),
     (
         "install",
         "--local",
-        "plugins/{creating,managing}-plugins.mdx — install has --plugin/--target/--json, no --local",
+        "plugins/creating-plugins.mdx:110, plugins/managing-plugins.mdx:23 — \
+         install has --plugin/--target/--json, no --local",
     ),
     (
         "remove",
         "--global",
-        "plugins/managing-plugins.mdx:98 — no --global flag on `horus remove`",
+        "development/cli-reference.mdx:1396, plugins/managing-plugins.mdx:79 — \
+         no --global flag on `horus remove`",
     ),
     (
         "search",
         "--local",
-        "plugins/managing-plugins.mdx:85 — no --local flag on `horus search`",
+        "plugins/managing-plugins.mdx:66 — no --local flag on `horus search`",
     ),
     (
         "test",
         "--no-cleanup",
-        "development/testing.mdx:771 — the flag was removed from horus_manager; \
-         no `no_cleanup` reference remains in src/. Closest surviving flag is --nocapture",
+        "development/testing.mdx:719 — removed from horus_manager; no `no_cleanup` \
+         reference remains in src/. Closest surviving flag is --nocapture",
     ),
     (
-        "topic",
-        "--latency",
-        "advanced/network-backends.mdx:185 — `horus topic hz` has no --latency flag",
+        "run",
+        "--build-only",
+        "package-management/package-management.mdx:1107,1512 — `horus build` is \
+         the build-without-running command; run has no --build-only",
     ),
 ];
 
@@ -426,10 +479,39 @@ fn children_in(help: &str) -> Vec<String> {
     out
 }
 
+/// Long flags clap defines but hides from `--help` (`#[arg(hide = true)]`).
+///
+/// `--help` is a *display* artefact; acceptance is the contract. `horus install
+/// --ver 1.2.0` works and is documented, but never appears in help text, so a
+/// help-derived universe reported it as a defect. Read from the CLI definition
+/// so the two cannot disagree.
+fn hidden_long_flags() -> BTreeSet<String> {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+        .expect("main.rs is readable");
+
+    let mut out = BTreeSet::new();
+    let mut rest = src.as_str();
+    while let Some(pos) = rest.find("long = \"") {
+        rest = &rest[pos + "long = \"".len()..];
+        let Some(name) = rest.split('"').next() else {
+            break;
+        };
+        // Only the ones marked hidden: everything else is already in `--help`,
+        // and harvesting all of them would make the check accept any flag on
+        // any command.
+        let window_end = rest.find(']').unwrap_or(0);
+        if rest[..window_end].contains("hide = true") && !name.is_empty() {
+            out.insert(format!("--{name}"));
+        }
+    }
+    out
+}
+
 /// Every long flag reachable under `horus <command>`, including descendants.
 fn flag_universe(command: &str) -> Option<BTreeSet<String>> {
     let top = help_for(&[command])?;
     let mut flags = flags_in(&top);
+    flags.extend(hidden_long_flags());
     for child in children_in(&top) {
         if let Some(h2) = help_for(&[command, &child]) {
             flags.extend(flags_in(&h2));
@@ -654,6 +736,7 @@ fn documented_subcommands_exist() {
         // top-level help advertises via advertised_subcommands_are_invocable.
         if is_plugin_authoring_page(&inv.doc_file)
             || EXAMPLE_PLUGIN_NAMES.contains(&inv.command.as_str())
+            || QUARANTINED_COMMANDS.iter().any(|(c, _)| *c == inv.command)
         {
             continue;
         }
@@ -741,10 +824,17 @@ fn quarantine_is_not_stale() {
             }
         }
     }
+    for (command, _why) in QUARANTINED_COMMANDS {
+        if help_for(&[command]).is_some() {
+            fixed.push(format!("  horus {command}"));
+        }
+    }
+
     assert!(
         fixed.is_empty(),
-        "these flags now exist but are still quarantined:\n{}\n\n\
-         Remove them from QUARANTINED_FLAGS in {} so future regressions are caught.",
+        "these now exist but are still quarantined:\n{}\n\n\
+         Remove them from QUARANTINED_FLAGS / QUARANTINED_COMMANDS in {} so \
+         future regressions are caught.",
         fixed.join("\n"),
         file!()
     );
