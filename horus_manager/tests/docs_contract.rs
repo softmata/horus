@@ -777,6 +777,20 @@ fn snapshot_is_present_and_substantial() {
 #[test]
 #[ignore = "maintenance task: regenerates tests/fixtures/docs-cli-contract.json"]
 fn regenerate_docs_cli_contract() {
+    // `#[ignore]` alone does not protect this: `cargo test -- --include-ignored`
+    // is the natural way to run the whole suite, and it fired this task during a
+    // verification run, silently rewriting the committed snapshot from an
+    // unrelated docs checkout. A destructive maintenance task needs an explicit
+    // opt-in, not merely an opt-out.
+    if std::env::var("HORUS_DOCS_REGENERATE").is_err() {
+        eprintln!(
+            "skipping: regenerating the snapshot overwrites committed state.\n  \
+             Re-run with HORUS_DOCS_REGENERATE=1 to do it deliberately:\n    \
+             HORUS_DOCS_REGENERATE=1 HORUS_DOCS_DIR=../horus-docs cargo test \\\n      \
+             -p horus_manager --test docs_contract -- --ignored regenerate_docs_cli_contract"
+        );
+        return;
+    }
     let docs = docs_dir().expect(
         "set HORUS_DOCS_DIR=/path/to/horus-docs (or check horus-docs out beside this repo)",
     );

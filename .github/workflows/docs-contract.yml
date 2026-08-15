@@ -174,6 +174,11 @@ jobs:
         if: always()
         env:
           HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+          # The regenerate task refuses to run without this, so a plain
+          # `--include-ignored` cannot rewrite committed state by accident.
+          # Here the rewrite is the point: the file is compared, reported, then
+          # restored below.
+          HORUS_DOCS_REGENERATE: '1'
         run: |
           before=$(sha256sum horus_manager/tests/fixtures/docs-cli-contract.json | cut -d' ' -f1)
           cargo test -p horus_manager --test docs_contract -- \
