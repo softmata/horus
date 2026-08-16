@@ -1611,6 +1611,11 @@ enum ParamCommands {
         key: String,
 
         /// Parameter value (auto-detected type: bool, int, float, string, or JSON)
+        ///
+        /// Hyphen-led values are accepted: every offset, bias and joint limit in
+        /// robotics can be negative, and `horus param set min_angle -1.57` used
+        /// to fail with `unexpected argument '-1' found`.
+        #[arg(allow_hyphen_values = true)]
         value: String,
     },
 

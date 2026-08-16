@@ -1044,17 +1044,22 @@ impl Scheduler {
                 .filter(|n| n.health_state.load() == NodeHealthState::Isolated)
                 .count();
 
-            let degraded = stopped_count + warning_count + unhealthy_count + isolated_count;
+            // Count healthy directly rather than subtracting. The four degraded
+            // categories are not mutually exclusive — a node can be both stopped
+            // and isolated — so `len() - degraded` underflowed on a single such
+            // node and printed `18446744073709551615 healthy`.
+            let healthy_count = self
+                .nodes
+                .iter()
+                .filter(|n| !n.is_stopped && n.health_state.load() == NodeHealthState::Healthy)
+                .count();
+            let degraded = self.nodes.len().saturating_sub(healthy_count);
             if degraded == 0 {
                 lines.push(format!("  [OK] All {} nodes healthy", self.nodes.len()));
             } else {
                 lines.push(format!(
                     "  {} healthy, {} warning, {} unhealthy, {} isolated, {} stopped",
-                    self.nodes.len() - degraded,
-                    warning_count,
-                    unhealthy_count,
-                    isolated_count,
-                    stopped_count,
+                    healthy_count, warning_count, unhealthy_count, isolated_count, stopped_count,
                 ));
                 for node in &self.nodes {
                     let health = node.health_state.load();

@@ -49,6 +49,47 @@ pub(super) fn get_color_for_index(index: usize) -> &'static str {
 ///
 /// Merges any auto-detected hardware feature names into the manifest's
 /// `[drivers]` section so that `cargo_gen` picks them up as Cargo features.
+
+/// Surface cargo's warnings from a build that *succeeded*.
+///
+/// Every cargo invocation here captures stderr with `Stdio::piped()` and every
+/// call site printed it only inside `if !output.status.success()`. rustc writes
+/// all warnings to stderr, so a successful build discarded them entirely.
+///
+/// That silently defeated the framework's own guard against a node that is
+/// configured and never registered. `NodeBuilder` carries
+/// `#[must_use = "call .build() to register the node — dropping this builder
+/// discards the registration"]`, and plain `cargo build` duly reports it — but
+/// through `horus build` the warning vanished, exit code 0, and the resulting
+/// binary started with zero nodes and no diagnostic. Every other rustc warning
+/// (unused `Result`, unreachable code, deprecations) was suppressed too.
+///
+/// Cargo's own progress chatter is filtered out so the signal is not buried.
+fn print_cargo_warnings(stderr: &[u8]) {
+    let stderr = String::from_utf8_lossy(stderr);
+    if !stderr.contains("warning") {
+        return;
+    }
+    const PROGRESS: &[&str] = &[
+        "Compiling ",
+        "Finished ",
+        "Updating ",
+        "Downloaded ",
+        "Downloading ",
+        "Blocking ",
+        "Locking ",
+        "Fresh ",
+    ];
+    let kept: Vec<&str> = stderr
+        .lines()
+        .filter(|l| !PROGRESS.iter().any(|p| l.trim_start().starts_with(p)))
+        .collect();
+    let kept = kept.join("\n");
+    if !kept.trim().is_empty() {
+        eprintln!("{}", crate::error_wrapper::rewrite_horus_paths(&kept));
+    }
+}
+
 pub(crate) fn load_or_default_manifest(extra_drivers: &[String]) -> Result<HorusManifest> {
     let mut manifest = if Path::new(HORUS_TOML).exists() {
         HorusManifest::load_from(Path::new(HORUS_TOML)).unwrap_or_else(|_| default_manifest())
@@ -221,6 +262,8 @@ pub fn execute_build_only(
                 }
 
                 let output = cmd.output()?;
+
+                print_cargo_warnings(&output.stderr);
                 if !output.status.success() {
                     finish_error(
                         &spinner,
@@ -308,6 +351,8 @@ pub fn execute_build_only(
                 }
 
                 let output = cmd.output()?;
+
+                print_cargo_warnings(&output.stderr);
                 if !output.status.success() {
                     finish_error(
                         &spinner,
@@ -414,6 +459,8 @@ pub(super) fn execute_from_cargo_toml(
             }
 
             let output = cmd.output()?;
+
+            print_cargo_warnings(&output.stderr);
             if !output.status.success() {
                 finish_error(
                     &spinner,

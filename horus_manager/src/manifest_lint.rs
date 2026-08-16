@@ -115,10 +115,7 @@ const KNOWN_NON_FIELDS: &[(&str, &str)] = &[
         "nodes",
         "nodes are declared in code, not in horus.toml — see `horus launch` for multi-node startup",
     ),
-    (
-        "topics",
-        "topics are declared in code, not in horus.toml",
-    ),
+    ("topics", "topics are declared in code, not in horus.toml"),
     (
         "features",
         "use the top-level `enable = [...]` key for capabilities",
@@ -441,7 +438,10 @@ foo = 1
         let langauge = found.iter().find(|u| u.path == "package.langauge").unwrap();
         assert_eq!(langauge.line, 4, "line number must point at the key");
         let bogus = found.iter().find(|u| u.path == "bogus_section").unwrap();
-        assert_eq!(bogus.line, 7, "section line number must point at the header");
+        assert_eq!(
+            bogus.line, 7,
+            "section line number must point at the header"
+        );
     }
 
     #[test]
@@ -550,8 +550,14 @@ bogus = 1
 
     #[test]
     fn suggestions_are_offered_for_real_typos() {
-        assert_eq!(suggest("versoin", KNOWN_PACKAGE).as_deref(), Some("version"));
-        assert_eq!(suggest("licence", KNOWN_PACKAGE).as_deref(), Some("license"));
+        assert_eq!(
+            suggest("versoin", KNOWN_PACKAGE).as_deref(),
+            Some("version")
+        );
+        assert_eq!(
+            suggest("licence", KNOWN_PACKAGE).as_deref(),
+            Some("license")
+        );
         assert_eq!(
             suggest("dependencis", KNOWN_TOP_LEVEL).as_deref(),
             Some("dependencies")

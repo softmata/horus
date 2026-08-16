@@ -1962,7 +1962,11 @@ mod tests {
             source: Box::new(HorusError::config("Permission denied on /dev/i2c-1")),
         };
         let msg = format!("{}", err);
-        assert!(msg.contains("Caused by"), "distinct cause must show: {}", msg);
+        assert!(
+            msg.contains("Caused by"),
+            "distinct cause must show: {}",
+            msg
+        );
         assert!(msg.contains("Failed to open the IMU"), "{}", msg);
         assert!(msg.contains("Permission denied on /dev/i2c-1"), "{}", msg);
     }

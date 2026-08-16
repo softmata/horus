@@ -91,7 +91,14 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
         .cloned()
         .unwrap_or_default();
 
-    let sim_mode = std::env::var("HORUS_SIM_MODE").is_ok();
+    // Presence alone used to enable simulation, so `HORUS_SIM_MODE=0` and
+    // `HORUS_SIM_MODE=false` both turned it *on*. A deploy script setting `=0`
+    // to force real hardware got inert `SimStubNode`s instead — actuators never
+    // commanded, sensors never read, and nothing said so. Parse the value, the
+    // way HORUS_NET_ENABLED already does.
+    let sim_mode = std::env::var("HORUS_SIM_MODE")
+        .map(|v| !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(false);
 
     let selective_targets: Option<Vec<String>> = if sim_mode {
         std::env::var("HORUS_SIM_TARGETS")
@@ -369,4 +376,58 @@ pub fn find_manifest() -> HorusResult<std::path::PathBuf> {
             .to_string(),
     )
     .into())
+}
+
+#[cfg(test)]
+mod sim_mode_tests {
+    /// Mirrors the `HORUS_SIM_MODE` predicate in `load_from`.
+    ///
+    /// Kept as a free function so the truth table can be tested without racing
+    /// on the process-global environment, which every other test in this crate
+    /// also reads.
+    fn sim_mode_enabled(value: Option<&str>) -> bool {
+        value
+            .map(|v| !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(false)
+    }
+
+    /// Presence alone used to mean "on", so the two most natural ways to say
+    /// *off* both turned simulation on. A deploy script setting
+    /// `HORUS_SIM_MODE=0` to force real hardware silently got inert stubs:
+    /// actuators never commanded, sensors never read, nothing logged.
+    #[test]
+    fn falsy_values_disable_simulation() {
+        assert!(!sim_mode_enabled(Some("0")));
+        assert!(!sim_mode_enabled(Some("false")));
+        assert!(!sim_mode_enabled(Some("False")));
+        assert!(!sim_mode_enabled(Some("FALSE")));
+        assert!(!sim_mode_enabled(Some("")));
+    }
+
+    #[test]
+    fn truthy_values_enable_simulation() {
+        assert!(sim_mode_enabled(Some("1")));
+        assert!(sim_mode_enabled(Some("true")));
+        assert!(sim_mode_enabled(Some("TRUE")));
+        assert!(sim_mode_enabled(Some("yes")));
+    }
+
+    #[test]
+    fn unset_means_disabled() {
+        assert!(!sim_mode_enabled(None));
+    }
+
+    /// Matches the `HORUS_NET_ENABLED` predicate in the scheduler, so the two
+    /// env vars cannot drift into disagreeing about what "0" means.
+    #[test]
+    fn agrees_with_horus_net_enabled_convention() {
+        for falsy in ["0", "false", "False"] {
+            let net_disabled = falsy == "0" || falsy.eq_ignore_ascii_case("false");
+            assert_eq!(
+                !sim_mode_enabled(Some(falsy)),
+                net_disabled,
+                "HORUS_SIM_MODE and HORUS_NET_ENABLED must agree on {falsy:?}"
+            );
+        }
+    }
 }

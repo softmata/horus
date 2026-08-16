@@ -371,12 +371,11 @@ impl RtExecutor {
                     let action =
                         monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
                     if !matches!(action, super::safety_monitor::DegradationAction::None) {
-                        if monitors.verbose {
-                            print_line(&format!(
-                                "[RT-thread] Degradation for '{}': {:?} after {} consecutive misses",
-                                node.name, action, consecutive
-                            ));
-                        }
+                        print_line(&format!(
+                            "[RT-thread] Degradation for '{}': {:?} after {} consecutive misses",
+                            node.name, action, consecutive
+                        ));
+
                         // Actually apply it. This used to only PRINT, with a
                         // comment claiming the deadline-action dispatch below
                         // handled anything stronger — it does not: that dispatch
@@ -405,12 +404,11 @@ impl RtExecutor {
                         node.is_paused = true;
                     }
                     DeadlineAction::SafeMode => {
-                        if monitors.verbose {
-                            print_line(&format!(
-                                "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
-                                node.name
-                            ));
-                        }
+                        print_line(&format!(
+                            "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
+                            node.name
+                        ));
+
                         node.node.enter_safe_state();
                     }
                     DeadlineAction::EmergencyStop => {
@@ -545,12 +543,10 @@ impl RtExecutor {
                         deadline_active = true;
                     }
                     Err(e) => {
-                        if monitors.verbose {
-                            print_line(&format!(
-                                "[RT-thread] SCHED_DEADLINE failed: {} — falling back to SCHED_FIFO",
-                                e
-                            ));
-                        }
+                        print_line(&format!(
+                            "[RT-thread] SCHED_DEADLINE failed: {} — falling back to SCHED_FIFO",
+                            e
+                        ));
                     }
                 }
             }
@@ -561,12 +557,10 @@ impl RtExecutor {
             match super::rt::set_realtime_priority(thread_priority) {
                 Ok(()) => {}
                 Err(e) => {
-                    if monitors.verbose {
-                        print_line(&format!(
-                            "[RT-thread] Could not set SCHED_FIFO: {} (continuing with normal priority)",
-                            e
-                        ));
-                    }
+                    print_line(&format!(
+                        "[RT-thread] Could not set SCHED_FIFO: {} (continuing with normal priority)",
+                        e
+                    ));
                 }
             }
         }
@@ -591,12 +585,10 @@ impl RtExecutor {
                     }
                 }
                 Err(e) => {
-                    if monitors.verbose {
-                        print_line(&format!(
-                            "[RT-thread] Could not pin to CPU(s) {:?}: {} (continuing unpinned)",
-                            rt_cpus, e
-                        ));
-                    }
+                    print_line(&format!(
+                        "[RT-thread] Could not pin to CPU(s) {:?}: {} (continuing unpinned)",
+                        rt_cpus, e
+                    ));
                 }
             }
         }
@@ -611,12 +603,10 @@ impl RtExecutor {
                         }
                     }
                     Err(e) => {
-                        if monitors.verbose {
-                            print_line(&format!(
-                                "[RT] Could not set CPU {} governor: {} (continuing)",
-                                cpu, e
-                            ));
-                        }
+                        print_line(&format!(
+                            "[RT] Could not set CPU {} governor: {} (continuing)",
+                            cpu, e
+                        ));
                     }
                 }
             }
