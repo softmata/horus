@@ -4560,6 +4560,24 @@ impl Scheduler {
 
         // Arc::clone — cheap atomic increment (only on node panic)
         let node_name = Arc::clone(&self.nodes[i].name);
+
+        // Record to the blackbox before touching the node, so a panic inside
+        // the on_error callback below cannot cost us the record of the panic
+        // that caused it.
+        //
+        // The flight recorder previously had no NodeError call site outside
+        // blackbox.rs's own tests, so a crash — the one thing it exists to
+        // capture — left behind only budget and deadline events.
+        if let Some(ref bb) = self.monitor.blackbox {
+            bb.lock().unwrap_or_else(|p| p.into_inner()).record(
+                super::blackbox::BlackBoxEvent::NodeError {
+                    name: node_name.to_string(),
+                    error: error_msg.clone(),
+                    severity: crate::error::Severity::Fatal,
+                },
+            );
+        }
+
         let registered = &mut self.nodes[i];
         if let Some(ref mut context) = registered.context {
             context.record_tick_failure(error_msg.clone());

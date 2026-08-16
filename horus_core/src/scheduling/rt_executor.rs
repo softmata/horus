@@ -475,8 +475,28 @@ impl RtExecutor {
                 } else {
                     format!("[RT-thread] Node '{}' panicked (unknown)", node.name)
                 };
-                if monitors.verbose {
-                    print_line(&error_msg);
+                // A node panicking is not a verbose-only detail. Gating this
+                // meant the default run of a robot whose control node was
+                // failing every tick printed nothing at all.
+                print_line(&error_msg);
+
+                // Record to the blackbox (try_lock to avoid RT priority
+                // inversion, matching the budget/deadline paths above).
+                //
+                // Without this the flight recorder could not record a crash —
+                // its single defining function. `BlackBoxEvent::NodeError` was
+                // constructed only in blackbox.rs's own unit tests, so
+                // `horus blackbox -e NodeError` after a panic returned
+                // "No blackbox events found" while `--help` advertised
+                // filtering by exactly that event.
+                if let Some(ref bb) = monitors.blackbox {
+                    if let Ok(mut bb) = bb.try_lock() {
+                        bb.record(super::blackbox::BlackBoxEvent::NodeError {
+                            name: node.name.to_string(),
+                            error: error_msg.clone(),
+                            severity: crate::error::Severity::Fatal,
+                        });
+                    }
                 }
 
                 // Call on_error handler

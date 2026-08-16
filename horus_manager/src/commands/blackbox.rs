@@ -103,13 +103,55 @@ pub fn run_blackbox(args: BlackboxArgs) -> horus_core::error::HorusResult<()> {
 }
 
 /// Resolve the blackbox directory from a custom path or the default location.
+///
+/// The runtime writes to `.horus/blackbox/` relative to the project root, and
+/// the previous resolution matched that only when the command happened to be
+/// run *from* the root. One directory deeper it fell through to the
+/// user-global path and reported:
+///
+/// ```text
+/// INFO No blackbox events found in /home/user/.local/share/horus/blackbox
+/// ```
+///
+/// — while the records sat in the project a few directories away. Every other
+/// project-scoped command discovers its root by walking up; this one did not,
+/// so the flight recorder looked empty from `src/`.
+///
+/// Falls back to the global directory so runs started outside a project, and
+/// the aggregate view, keep working.
 fn resolve_blackbox_dir(custom_path: Option<PathBuf>) -> horus_core::error::HorusResult<PathBuf> {
     if let Some(p) = custom_path {
         return Ok(p);
     }
+
+    if let Some(local) = find_project_blackbox_dir() {
+        return Ok(local);
+    }
+
     crate::paths::blackbox_dir().map_err(|e| {
         horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string()))
     })
+}
+
+/// Search upward for a `.horus/blackbox/` directory that actually holds records.
+///
+/// Walks from the current directory to the workspace root, mirroring how
+/// `horus.toml` itself is discovered, so the command works from a subdirectory
+/// of the project. An empty directory is skipped rather than returned: falling
+/// back to the global view is more useful than reporting an empty local one.
+fn find_project_blackbox_dir() -> Option<PathBuf> {
+    let mut current = std::env::current_dir().ok()?;
+
+    for _ in 0..10 {
+        let candidate = current.join(".horus").join("blackbox");
+        if candidate.join("blackbox.wal").is_file() || candidate.join("blackbox.json").is_file() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
 }
 
 /// Load BlackBoxRecords from the WAL file (preferred) or JSON snapshot (fallback).
@@ -1598,5 +1640,105 @@ mod tests {
             };
             format_record(&record); // should not panic
         }
+    }
+}
+
+#[cfg(test)]
+mod resolve_dir_tests {
+    use super::*;
+    use std::fs;
+
+    /// Serialises the tests below: they all chdir, which is process-global.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn seed_blackbox(root: &Path) -> PathBuf {
+        let dir = root.join(".horus").join("blackbox");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("blackbox.wal"), "").unwrap();
+        dir
+    }
+
+    /// An explicit --path always wins, even when a project-local dir exists.
+    #[test]
+    fn explicit_path_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let explicit = tmp.path().join("elsewhere");
+        let got = resolve_blackbox_dir(Some(explicit.clone())).unwrap();
+        assert_eq!(got, explicit);
+    }
+
+    /// The runtime writes to `.horus/blackbox/`; the CLI must read from there.
+    /// Previously it went straight to the user-global directory and reported
+    /// "No blackbox events found" while the records sat in the project.
+    #[test]
+    fn prefers_project_local_dir_when_it_has_records() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = seed_blackbox(tmp.path());
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let got = resolve_blackbox_dir(None);
+        std::env::set_current_dir(prev).unwrap();
+
+        assert_eq!(
+            got.unwrap().canonicalize().unwrap(),
+            expected.canonicalize().unwrap(),
+        );
+    }
+
+    /// `horus blackbox` must work from a subdirectory, like every other
+    /// project-scoped command.
+    #[test]
+    fn finds_project_dir_from_a_subdirectory() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = seed_blackbox(tmp.path());
+        let deep = tmp.path().join("src").join("nested");
+        fs::create_dir_all(&deep).unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&deep).unwrap();
+        let got = resolve_blackbox_dir(None);
+        std::env::set_current_dir(prev).unwrap();
+
+        assert_eq!(
+            got.unwrap().canonicalize().unwrap(),
+            expected.canonicalize().unwrap(),
+        );
+    }
+
+    /// An empty `.horus/blackbox/` is skipped — falling back to the global
+    /// view beats reporting an empty local one.
+    #[test]
+    fn empty_project_dir_falls_back_to_global() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus").join("blackbox")).unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let got = resolve_blackbox_dir(None).unwrap();
+        std::env::set_current_dir(prev).unwrap();
+
+        assert!(
+            !got.starts_with(tmp.path()),
+            "empty project dir must not be selected, got {}",
+            got.display()
+        );
+    }
+
+    /// Outside any project, the global directory is still used.
+    #[test]
+    fn no_project_dir_falls_back_to_global() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let got = resolve_blackbox_dir(None);
+        std::env::set_current_dir(prev).unwrap();
+
+        assert!(got.is_ok(), "must fall back rather than error");
     }
 }
