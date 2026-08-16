@@ -62,6 +62,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3.0"
+# Compile-fail coverage for the `message!` macro (tests/ui.rs). Already used by
+# horus_cpp_macros, so this is the established pattern in the workspace.
+trybuild = "1.0"
 loom = "0.7"
 proptest = "1.4"
 horus_types = { path = "../horus_types" }

@@ -134,6 +134,32 @@ macro_rules! message {
     // Internal: munch done
     (@munch) => {};
 
+    // Internal: nothing left matched a well-formed message body.
+    //
+    // Without this arm the entry rule at the bottom — `($($input:tt)+)` —
+    // re-matches the macro's own `@munch ...` output and re-prefixes it
+    // forever, so any syntax slip produced:
+    //
+    //     error: recursion limit reached while expanding `$crate::message!`
+    //     = help: consider increasing the recursion limit
+    //
+    // with no line inside the block, no mention of the actual mistake, and a
+    // `help:` that only makes the compiler spin longer before failing the same
+    // way. A tt-muncher needs a failure arm; this one had a loop instead.
+    //
+    // Reached by the four most natural mistakes: `pub` on a field, a missing
+    // comma, `;` as a separator, and a tuple struct.
+    (@munch $($rest:tt)*) => {
+        compile_error!(concat!(
+            "message! could not parse this definition.\n",
+            "Expected:  Name { field: Type, other: Type }\n",
+            "  - fields are separated by commas\n",
+            "  - fields must not be written `pub` (the macro already emits a pub struct)\n",
+            "  - tuple structs (`Name(f32, f32)`) are not supported\n",
+            "  - prefix the name with #[fixed] for a zero-copy POD message"
+        ));
+    };
+
     // Internal: flexible message (default — any fields)
     (@single
         $(#[$meta:meta])*

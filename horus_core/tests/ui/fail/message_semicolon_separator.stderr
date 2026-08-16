@@ -1,0 +1,14 @@
+error: message! could not parse this definition.
+       Expected:  Name { field: Type, other: Type }
+         - fields are separated by commas
+         - fields must not be written `pub` (the macro already emits a pub struct)
+         - tuple structs (`Name(f32, f32)`) are not supported
+         - prefix the name with #[fixed] for a zero-copy POD message
+ --> tests/ui/fail/message_semicolon_separator.rs:4:1
+  |
+4 | / message! {
+5 | |     Foo { a: f32; b: f32; }
+6 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `$crate::message` which comes from the expansion of the macro `message` (in Nightly builds, run with -Z macro-backtrace for more info)
