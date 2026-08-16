@@ -16,6 +16,43 @@
       "doc_line": 365
     },
     {
+      "command": "add",
+      "sub": "anyhow",
+      "flags": [
+        "--source"
+      ],
+      "doc_file": "content/docs/development/error-handling.mdx",
+      "doc_line": 318
+    },
+    {
+      "command": "add",
+      "sub": "ndarray",
+      "flags": [
+        "--source"
+      ],
+      "doc_file": "content/docs/development/ai-integration.mdx",
+      "doc_line": 219
+    },
+    {
+      "command": "add",
+      "sub": "ort",
+      "flags": [
+        "--source"
+      ],
+      "doc_file": "content/docs/development/ai-integration.mdx",
+      "doc_line": 218
+    },
+    {
+      "command": "add",
+      "sub": "reqwest",
+      "flags": [
+        "--features",
+        "--source"
+      ],
+      "doc_file": "content/docs/development/ai-integration.mdx",
+      "doc_line": 342
+    },
+    {
       "command": "auth",
       "sub": null,
       "flags": [],
@@ -24,92 +61,92 @@
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 689
+      "doc_line": 676
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 634
+      "doc_line": 636
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 663
+      "doc_line": 665
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 957
+      "doc_line": 959
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 985
+      "doc_line": 987
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [
         "--environment",
         "--name"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 726
+      "doc_line": 704
     },
     {
       "command": "auth",
-      "sub": "generate-key",
+      "sub": "api-key",
       "flags": [
         "--name"
       ],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 908
+      "doc_line": 910
     },
     {
       "command": "auth",
       "sub": "keys",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 707
+      "doc_line": 685
     },
     {
       "command": "auth",
       "sub": "keys",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 708
+      "doc_line": 686
     },
     {
       "command": "auth",
       "sub": "keys",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 689
+      "doc_line": 691
     },
     {
       "command": "auth",
       "sub": "keys",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 692
+      "doc_line": 694
     },
     {
       "command": "auth",
       "sub": "keys",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 918
+      "doc_line": 920
     },
     {
       "command": "auth",
@@ -123,21 +160,21 @@
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 686
+      "doc_line": 673
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 715
+      "doc_line": 693
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1652
+      "doc_line": 1623
     },
     {
       "command": "auth",
@@ -151,171 +188,167 @@
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 527
+      "doc_line": 529
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 553
+      "doc_line": 555
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 937
+      "doc_line": 939
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 954
+      "doc_line": 956
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1023
+      "doc_line": 1025
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1042
+      "doc_line": 1044
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1056
+      "doc_line": 1058
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1071
+      "doc_line": 1073
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1570
+      "doc_line": 1572
     },
     {
       "command": "auth",
       "sub": "login",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1687
+      "doc_line": 1689
     },
     {
       "command": "auth",
       "sub": "logout",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 695
+      "doc_line": 682
     },
     {
       "command": "auth",
       "sub": "logout",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 732
+      "doc_line": 710
     },
     {
       "command": "auth",
       "sub": "logout",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 545
+      "doc_line": 547
     },
     {
       "command": "auth",
       "sub": "logout",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 623
+      "doc_line": 625
     },
     {
       "command": "auth",
-      "sub": "org",
+      "sub": "signing-key",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 698
-    },
-    {
-      "command": "auth",
-      "sub": "plan",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 704
-    },
-    {
-      "command": "auth",
-      "sub": "usage",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 701
+      "doc_line": 579
     },
     {
       "command": "auth",
       "sub": "whoami",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 692
+      "doc_line": 679
     },
     {
       "command": "auth",
       "sub": "whoami",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 721
+      "doc_line": 699
     },
     {
       "command": "auth",
       "sub": "whoami",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 539
+      "doc_line": 541
     },
     {
       "command": "auth",
       "sub": "whoami",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 915
+      "doc_line": 917
     },
     {
       "command": "auth",
       "sub": "whoami",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 934
+      "doc_line": 936
     },
     {
       "command": "auth",
       "sub": "whoami",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1004
+      "doc_line": 1006
     },
     {
       "command": "bb",
       "sub": null,
       "flags": [
         "--anomalies",
-        "--tail"
+        "--follow"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1591
+      "doc_line": 1562
+    },
+    {
+      "command": "bb",
+      "sub": null,
+      "flags": [
+        "--anomalies",
+        "--last"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1552
     },
     {
       "command": "bb",
@@ -324,7 +357,7 @@
         "--clear"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1601
+      "doc_line": 1572
     },
     {
       "command": "bb",
@@ -333,27 +366,24 @@
         "--json"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1596
+      "doc_line": 1567
     },
     {
       "command": "bb",
-      "sub": "20",
-      "flags": [
-        "--anomalies",
-        "--last"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1581
-    },
-    {
-      "command": "bb",
-      "sub": "controller",
+      "sub": null,
       "flags": [
         "--node",
         "--tick"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1586
+      "doc_line": 1557
+    },
+    {
+      "command": "blackbox",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 186
     },
     {
       "command": "blackbox",
@@ -367,14 +397,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1550
+      "doc_line": 1521
     },
     {
       "command": "blackbox",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1562
+      "doc_line": 1533
     },
     {
       "command": "blackbox",
@@ -383,16 +413,50 @@
         "--anomalies"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1553
+      "doc_line": 1524
     },
     {
       "command": "blackbox",
       "sub": null,
       "flags": [
-        "--tail"
+        "--event"
+      ],
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 192
+    },
+    {
+      "command": "blackbox",
+      "sub": null,
+      "flags": [
+        "--follow"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1556
+      "doc_line": 1527
+    },
+    {
+      "command": "blackbox",
+      "sub": null,
+      "flags": [
+        "--json"
+      ],
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 195
+    },
+    {
+      "command": "blackbox",
+      "sub": null,
+      "flags": [
+        "--node"
+      ],
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 189
+    },
+    {
+      "command": "build",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/cpp/api/index.mdx",
+      "doc_line": 157
     },
     {
       "command": "build",
@@ -406,14 +470,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 747
+      "doc_line": 725
     },
     {
       "command": "build",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 759
+      "doc_line": 737
     },
     {
       "command": "build",
@@ -425,11 +489,18 @@
     {
       "command": "build",
       "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 136
+    },
+    {
+      "command": "build",
+      "sub": null,
       "flags": [
         "--clean"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 753
+      "doc_line": 731
     },
     {
       "command": "build",
@@ -439,7 +510,7 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 780
+      "doc_line": 758
     },
     {
       "command": "build",
@@ -466,7 +537,7 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 750
+      "doc_line": 728
     },
     {
       "command": "build",
@@ -475,7 +546,7 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 774
+      "doc_line": 752
     },
     {
       "command": "build",
@@ -484,7 +555,25 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 891
+      "doc_line": 869
+    },
+    {
+      "command": "build",
+      "sub": null,
+      "flags": [
+        "--release"
+      ],
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 1109
+    },
+    {
+      "command": "build",
+      "sub": null,
+      "flags": [
+        "--release"
+      ],
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 1514
     },
     {
       "command": "cache",
@@ -498,42 +587,42 @@
       "sub": "clean",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1466
+      "doc_line": 1437
     },
     {
       "command": "cache",
       "sub": "clean",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1484
+      "doc_line": 1455
     },
     {
       "command": "cache",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1464
+      "doc_line": 1435
     },
     {
       "command": "cache",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1474
+      "doc_line": 1445
     },
     {
       "command": "cache",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1465
+      "doc_line": 1436
     },
     {
       "command": "cache",
       "sub": "purge",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1467
+      "doc_line": 1438
     },
     {
       "command": "check",
@@ -619,7 +708,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 871
+      "doc_line": 849
     },
     {
       "command": "clean",
@@ -637,7 +726,7 @@
         "--all"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 859
+      "doc_line": 837
     },
     {
       "command": "clean",
@@ -646,7 +735,7 @@
         "--all"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 890
+      "doc_line": 868
     },
     {
       "command": "clean",
@@ -655,7 +744,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 865
+      "doc_line": 843
     },
     {
       "command": "clean",
@@ -692,7 +781,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 862
+      "doc_line": 840
     },
     {
       "command": "clean",
@@ -701,7 +790,7 @@
         "--shm"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 885
+      "doc_line": 863
     },
     {
       "command": "deploy",
@@ -715,14 +804,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1264
+      "doc_line": 1242
     },
     {
       "command": "deploy",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1276
+      "doc_line": 1254
     },
     {
       "command": "deploy",
@@ -731,7 +820,7 @@
         "--arch"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1270
+      "doc_line": 1248
     },
     {
       "command": "deploy",
@@ -740,7 +829,7 @@
         "--arch"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1297
+      "doc_line": 1275
     },
     {
       "command": "deploy",
@@ -750,7 +839,7 @@
         "--run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1302
+      "doc_line": 1280
     },
     {
       "command": "deploy",
@@ -759,7 +848,7 @@
         "--run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1267
+      "doc_line": 1245
     },
     {
       "command": "deploy",
@@ -768,14 +857,14 @@
         "--run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1319
+      "doc_line": 1297
     },
     {
       "command": "disable",
       "sub": "sim3d",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 88
+      "doc_line": 91
     },
     {
       "command": "disable",
@@ -784,428 +873,125 @@
         "--reason"
       ],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 91
+      "doc_line": 94
     },
     {
       "command": "enable",
       "sub": "sim3d",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 94
+      "doc_line": 97
     },
     {
       "command": "env",
       "sub": null,
-      "flags": [],
+      "flags": [
+        "--init"
+      ],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 51
     },
     {
       "command": "env",
-      "sub": "freeze",
-      "flags": [],
+      "sub": null,
+      "flags": [
+        "--init"
+      ],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 640
     },
     {
       "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 659
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 212
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 215
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 296
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 306
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 333
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 336
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 462
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 477
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 506
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 509
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 512
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 599
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 602
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 605
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 617
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 641
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 687
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 342
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
+      "sub": null,
       "flags": [
-        "--output"
+        "--init"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1642
+      "doc_line": 650
     },
     {
       "command": "env",
-      "sub": "freeze",
+      "sub": null,
       "flags": [
-        "--publish"
+        "--uninstall"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 643
     },
     {
       "command": "env",
-      "sub": "freeze",
+      "sub": null,
       "flags": [
-        "--publish"
+        "--uninstall"
       ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 218
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [
-        "--publish"
-      ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 343
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [
-        "--publish"
-      ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 480
-    },
-    {
-      "command": "env",
-      "sub": "freeze",
-      "flags": [
-        "--publish"
-      ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 494
-    },
-    {
-      "command": "env",
-      "sub": "list",
-      "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 649
+      "doc_line": 656
     },
     {
-      "command": "env",
-      "sub": "list",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 706
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 646
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 665
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 671
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 225
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 228
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 380
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 390
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 416
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 447
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 485
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 498
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 518
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 521
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 529
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 532
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 700
-    },
-    {
-      "command": "env",
-      "sub": "restore",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 345
-    },
-    {
-      "command": "env",
-      "sub": "show",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 652
-    },
-    {
-      "command": "env",
-      "sub": "show",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 712
-    },
-    {
-      "command": "hf",
+      "command": "frame",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 31
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "can",
       "flags": [],
       "doc_file": "content/docs/concepts/hframe.mdx",
       "doc_line": 303
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "can",
       "flags": [],
       "doc_file": "content/docs/concepts/transform-frame.mdx",
       "doc_line": 303
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "can",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1111
+      "doc_line": 1089
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "can",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1136
+      "doc_line": 1114
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/concepts/hframe.mdx",
       "doc_line": 293
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/concepts/transform-frame.mdx",
       "doc_line": 293
     },
     {
-      "command": "hf",
+      "command": "frame",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1086
+    },
+    {
+      "command": "frame",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 1108
     },
     {
-      "command": "hf",
-      "sub": "echo",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1130
-    },
-    {
-      "command": "hf",
+      "command": "frame",
       "sub": "echo",
       "flags": [
         "--rate"
@@ -1214,7 +1000,7 @@
       "doc_line": 294
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "echo",
       "flags": [
         "--rate"
@@ -1223,70 +1009,70 @@
       "doc_line": 294
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/concepts/hframe.mdx",
       "doc_line": 306
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/concepts/transform-frame.mdx",
       "doc_line": 306
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1112
+      "doc_line": 1090
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/concepts/hframe.mdx",
       "doc_line": 300
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/concepts/transform-frame.mdx",
       "doc_line": 300
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1110
+      "doc_line": 1088
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/hframe.mdx",
       "doc_line": 289
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/concepts/transform-frame.mdx",
       "doc_line": 289
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1107
+      "doc_line": 1085
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "list",
       "flags": [
         "--json"
@@ -1295,7 +1081,7 @@
       "doc_line": 290
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "list",
       "flags": [
         "--json"
@@ -1304,39 +1090,60 @@
       "doc_line": 290
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/concepts/hframe.mdx",
       "doc_line": 297
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/concepts/transform-frame.mdx",
       "doc_line": 297
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1109
+      "doc_line": 1087
     },
     {
-      "command": "hf",
+      "command": "frame",
       "sub": "tree",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1119
+      "doc_line": 1097
+    },
+    {
+      "command": "info",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1398
+    },
+    {
+      "command": "info",
+      "sub": "correct-package",
+      "flags": [],
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 1636
     },
     {
       "command": "info",
       "sub": "horus-rplidar",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 69
+      "doc_line": 68
+    },
+    {
+      "command": "info",
+      "sub": "pid-controller",
+      "flags": [],
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 1618
     },
     {
       "command": "init",
@@ -1403,14 +1210,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1349
+      "doc_line": 1327
     },
     {
       "command": "install",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1431
+      "doc_line": 1402
     },
     {
       "command": "install",
@@ -1421,19 +1228,89 @@
     },
     {
       "command": "install",
-      "sub": "camera-driver",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 273
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/creating-plugins.mdx",
+      "doc_line": 110
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/index.mdx",
+      "doc_line": 19
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 17
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 20
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 23
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 182
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 193
+    },
+    {
+      "command": "install",
+      "sub": null,
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 202
     },
     {
       "command": "install",
       "sub": "camera-driver",
-      "flags": [
-        "--driver"
-      ],
+      "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1340
+      "doc_line": 1318
+    },
+    {
+      "command": "install",
+      "sub": "camera-driver",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 273
     },
     {
       "command": "install",
@@ -1445,27 +1322,16 @@
     {
       "command": "install",
       "sub": "common-utils",
-      "flags": [
-        "--global"
-      ],
+      "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 596
-    },
-    {
-      "command": "install",
-      "sub": "common-utils",
-      "flags": [
-        "--global"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1343
     },
     {
       "command": "install",
       "sub": "dependency-name",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1674
+      "doc_line": 1676
     },
     {
       "command": "install",
@@ -1504,91 +1370,26 @@
     },
     {
       "command": "install",
-      "sub": "horus-mycommand",
-      "flags": [
-        "--local",
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/creating-plugins.mdx",
-      "doc_line": 110
-    },
-    {
-      "command": "install",
-      "sub": "horus-mycommand",
-      "flags": [
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 179
-    },
-    {
-      "command": "install",
-      "sub": "horus-mycommand",
-      "flags": [
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 190
-    },
-    {
-      "command": "install",
-      "sub": "horus-mycommand",
-      "flags": [
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 199
-    },
-    {
-      "command": "install",
       "sub": "horus-sim3d",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 158
-    },
-    {
-      "command": "install",
-      "sub": "horus-sim3d",
-      "flags": [
-        "--local",
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 23
-    },
-    {
-      "command": "install",
-      "sub": "horus-sim3d",
-      "flags": [
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/index.mdx",
-      "doc_line": 19
-    },
-    {
-      "command": "install",
-      "sub": "horus-sim3d",
-      "flags": [
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 17
-    },
-    {
-      "command": "install",
-      "sub": "horus-sim3d",
-      "flags": [
-        "--plugin"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 20
+      "doc_line": 161
     },
     {
       "command": "install",
       "sub": "horus-visualizer",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1445
+      "doc_line": 1416
+    },
+    {
+      "command": "install",
+      "sub": "horus-visualizer",
+      "flags": [
+        "--plugin"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1321
     },
     {
       "command": "install",
@@ -1609,7 +1410,7 @@
       "sub": "kalman-filter",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1368
+      "doc_line": 1344
     },
     {
       "command": "install",
@@ -1651,7 +1452,7 @@
       "sub": "modern-driver",
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 640
+      "doc_line": 329
     },
     {
       "command": "install",
@@ -1665,7 +1466,7 @@
       "sub": "motion-planner",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1579
+      "doc_line": 1581
     },
     {
       "command": "install",
@@ -1679,7 +1480,7 @@
       "sub": "my-package",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1668
+      "doc_line": 1670
     },
     {
       "command": "install",
@@ -1688,14 +1489,7 @@
         "--plugin"
       ],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 161
-    },
-    {
-      "command": "install",
-      "sub": "new-feature",
-      "flags": [],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 456
+      "doc_line": 164
     },
     {
       "command": "install",
@@ -1779,14 +1573,14 @@
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1334
+      "doc_line": 1312
     },
     {
       "command": "install",
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 665
+      "doc_line": 354
     },
     {
       "command": "install",
@@ -1814,21 +1608,21 @@
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1483
+      "doc_line": 1485
     },
     {
       "command": "install",
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1578
+      "doc_line": 1580
     },
     {
       "command": "install",
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1613
+      "doc_line": 1615
     },
     {
       "command": "install",
@@ -1860,16 +1654,14 @@
         "--ver"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1369
+      "doc_line": 1345
     },
     {
       "command": "install",
       "sub": "realsense-driver",
-      "flags": [
-        "--driver"
-      ],
+      "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1374
+      "doc_line": 1350
     },
     {
       "command": "install",
@@ -1883,16 +1675,14 @@
       "sub": "robot-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1317
+      "doc_line": 1319
     },
     {
       "command": "install",
       "sub": "rplidar-driver",
-      "flags": [
-        "--driver"
-      ],
+      "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1375
+      "doc_line": 1351
     },
     {
       "command": "install",
@@ -1906,21 +1696,21 @@
       "sub": "sensor-fusion",
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 680
+      "doc_line": 369
     },
     {
       "command": "install",
       "sub": "sensor-fusion",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1580
+      "doc_line": 1582
     },
     {
       "command": "install",
       "sub": "sensor-fusion",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1649
+      "doc_line": 1651
     },
     {
       "command": "install",
@@ -1936,7 +1726,7 @@
         "--ver"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1337
+      "doc_line": 1315
     },
     {
       "command": "install",
@@ -2055,14 +1845,7 @@
       "sub": "your-package-name",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1658
-    },
-    {
-      "command": "keygen",
-      "sub": null,
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 579
+      "doc_line": 1629
     },
     {
       "command": "launch",
@@ -2076,21 +1859,21 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1191
+      "doc_line": 1169
     },
     {
       "command": "launch",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1203
+      "doc_line": 1181
     },
     {
       "command": "launch",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1243
+      "doc_line": 1221
     },
     {
       "command": "launch",
@@ -2099,7 +1882,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1194
+      "doc_line": 1172
     },
     {
       "command": "launch",
@@ -2108,7 +1891,7 @@
         "--namespace"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1197
+      "doc_line": 1175
     },
     {
       "command": "launch",
@@ -2117,7 +1900,7 @@
         "--namespace"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1248
+      "doc_line": 1226
     },
     {
       "command": "launch",
@@ -2126,7 +1909,7 @@
         "--namespace"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1249
+      "doc_line": 1227
     },
     {
       "command": "list",
@@ -2153,29 +1936,43 @@
       "command": "list",
       "sub": null,
       "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1396
+    },
+    {
+      "command": "list",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1410
+    },
+    {
+      "command": "list",
+      "sub": null,
+      "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 613
+      "doc_line": 302
     },
     {
       "command": "list",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 391
+      "doc_line": 393
     },
     {
       "command": "list",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 400
+      "doc_line": 402
     },
     {
       "command": "list",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 413
+      "doc_line": 415
     },
     {
       "command": "list",
@@ -2189,14 +1986,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 50
+      "doc_line": 52
     },
     {
       "command": "list",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 176
+      "doc_line": 179
     },
     {
       "command": "list",
@@ -2205,123 +2002,95 @@
         "--all"
       ],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 53
+      "doc_line": 55
     },
     {
-      "command": "list",
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1613
+    },
+    {
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 222
+    },
+    {
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 291
+    },
+    {
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 306
+    },
+    {
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 330
+    },
+    {
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 376
+    },
+    {
+      "command": "lock",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 342
+    },
+    {
+      "command": "lock",
       "sub": null,
       "flags": [
-        "--plugins"
+        "--check"
       ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1424
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 225
     },
     {
-      "command": "list",
+      "command": "lock",
       "sub": null,
       "flags": [
-        "--plugins"
+        "--check"
       ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1439
+      "doc_file": "content/docs/package-management/environment-management.mdx",
+      "doc_line": 294
     },
     {
-      "command": "list",
-      "sub": "camera",
+      "command": "log",
+      "sub": null,
       "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 445
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 108
     },
     {
-      "command": "list",
-      "sub": "controller",
+      "command": "log",
+      "sub": null,
       "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 68
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 111
     },
     {
-      "command": "list",
-      "sub": "correct-package",
+      "command": "log",
+      "sub": null,
       "flags": [],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1634
-    },
-    {
-      "command": "list",
-      "sub": "imu",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 446
-    },
-    {
-      "command": "list",
-      "sub": "imu-driver",
-      "flags": [],
-      "doc_file": "content/docs/concepts/goals.mdx",
-      "doc_line": 150
-    },
-    {
-      "command": "list",
-      "sub": "keyboard",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 168
-    },
-    {
-      "command": "list",
-      "sub": "lidar",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 444
-    },
-    {
-      "command": "list",
-      "sub": "motor",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 69
-    },
-    {
-      "command": "list",
-      "sub": "motor",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 169
-    },
-    {
-      "command": "list",
-      "sub": "nonexistent",
-      "flags": [],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1631
-    },
-    {
-      "command": "list",
-      "sub": "pid-controller",
-      "flags": [],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1616
-    },
-    {
-      "command": "list",
-      "sub": "sensor",
-      "flags": [],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 419
-    },
-    {
-      "command": "list",
-      "sub": "sensor",
-      "flags": [],
-      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
-      "doc_line": 67
-    },
-    {
-      "command": "list",
-      "sub": "slam",
-      "flags": [],
-      "doc_file": "content/docs/concepts/goals.mdx",
-      "doc_line": 174
+      "doc_file": "content/docs/cpp/hardware.mdx",
+      "doc_line": 136
     },
     {
       "command": "log",
@@ -2335,68 +2104,100 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1001
+      "doc_line": 979
     },
     {
       "command": "log",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1004
+      "doc_line": 982
     },
     {
       "command": "log",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1016
+      "doc_line": 994
     },
     {
       "command": "log",
       "sub": null,
-      "flags": [
-        "--follow"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1007
+      "flags": [],
+      "doc_file": "content/docs/tutorials/02-motor-controller-cpp.mdx",
+      "doc_line": 240
     },
     {
       "command": "log",
       "sub": null,
-      "flags": [
-        "--follow"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1035
+      "flags": [],
+      "doc_file": "content/docs/tutorials/03-full-robot-cpp.mdx",
+      "doc_line": 352
     },
     {
       "command": "log",
-      "sub": "error",
-      "flags": [
-        "--level"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1010
-    },
-    {
-      "command": "log",
-      "sub": "error",
-      "flags": [
-        "--level",
-        "--since"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1040
-    },
-    {
-      "command": "log",
-      "sub": "warn",
+      "sub": null,
       "flags": [
         "--count",
         "--level"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1045
+      "doc_line": 1023
+    },
+    {
+      "command": "log",
+      "sub": null,
+      "flags": [
+        "--follow"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 985
+    },
+    {
+      "command": "log",
+      "sub": null,
+      "flags": [
+        "--follow"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1013
+    },
+    {
+      "command": "log",
+      "sub": null,
+      "flags": [
+        "--level"
+      ],
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 114
+    },
+    {
+      "command": "log",
+      "sub": null,
+      "flags": [
+        "--level"
+      ],
+      "doc_file": "content/docs/cpp/api/logging.mdx",
+      "doc_line": 117
+    },
+    {
+      "command": "log",
+      "sub": null,
+      "flags": [
+        "--level"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 988
+    },
+    {
+      "command": "log",
+      "sub": null,
+      "flags": [
+        "--level",
+        "--since"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1018
     },
     {
       "command": "monitor",
@@ -2410,7 +2211,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/ai-integration.mdx",
-      "doc_line": 465
+      "doc_line": 480
     },
     {
       "command": "monitor",
@@ -2445,7 +2246,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1619
+      "doc_line": 1590
     },
     {
       "command": "monitor",
@@ -2598,7 +2399,7 @@
       "sub": "3001",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1679
+      "doc_line": 1650
     },
     {
       "command": "monitor",
@@ -2623,38 +2424,38 @@
     },
     {
       "command": "msg",
-      "sub": "list",
+      "sub": "hash",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1151
+      "doc_line": 1131
+    },
+    {
+      "command": "msg",
+      "sub": "info",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1130
+    },
+    {
+      "command": "msg",
+      "sub": "info",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1148
     },
     {
       "command": "msg",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1160
+      "doc_line": 1129
     },
     {
       "command": "msg",
-      "sub": "md5",
+      "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1153
-    },
-    {
-      "command": "msg",
-      "sub": "show",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1152
-    },
-    {
-      "command": "msg",
-      "sub": "show",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1170
+      "doc_line": 1138
     },
     {
       "command": "new",
@@ -2702,6 +2503,33 @@
       "command": "new",
       "sub": null,
       "flags": [
+        "--cpp"
+      ],
+      "doc_file": "content/docs/cpp/examples/basic.mdx",
+      "doc_line": 49
+    },
+    {
+      "command": "new",
+      "sub": null,
+      "flags": [
+        "--cpp"
+      ],
+      "doc_file": "content/docs/tutorials/02-motor-controller-cpp.mdx",
+      "doc_line": 32
+    },
+    {
+      "command": "new",
+      "sub": null,
+      "flags": [
+        "--cpp"
+      ],
+      "doc_file": "content/docs/tutorials/03-full-robot-cpp.mdx",
+      "doc_line": 45
+    },
+    {
+      "command": "new",
+      "sub": null,
+      "flags": [
         "--macro"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
@@ -2723,7 +2551,7 @@
         "--macro"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1612
+      "doc_line": 1583
     },
     {
       "command": "new",
@@ -2759,7 +2587,16 @@
         "--python"
       ],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 810
+      "doc_line": 492
+    },
+    {
+      "command": "new",
+      "sub": "imu-demo",
+      "flags": [
+        "--cpp"
+      ],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 32
     },
     {
       "command": "new",
@@ -2782,7 +2619,7 @@
         "--rust"
       ],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1549
+      "doc_line": 1551
     },
     {
       "command": "new",
@@ -2803,77 +2640,119 @@
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 952
+      "doc_line": 930
     },
     {
       "command": "node",
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 973
+      "doc_line": 951
     },
     {
       "command": "node",
       "sub": "kill",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 953
+      "doc_line": 931
+    },
+    {
+      "command": "node",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/cpp/examples/advanced.mdx",
+      "doc_line": 207
+    },
+    {
+      "command": "node",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/cpp/hardware.mdx",
+      "doc_line": 135
     },
     {
       "command": "node",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 951
+      "doc_line": 929
     },
     {
       "command": "node",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 963
+      "doc_line": 941
+    },
+    {
+      "command": "node",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 159
+    },
+    {
+      "command": "node",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/02-motor-controller-cpp.mdx",
+      "doc_line": 239
+    },
+    {
+      "command": "node",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/03-full-robot-cpp.mdx",
+      "doc_line": 349
+    },
+    {
+      "command": "node",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/08-multi-process-cpp.mdx",
+      "doc_line": 122
     },
     {
       "command": "node",
       "sub": "pause",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 955
+      "doc_line": 933
     },
     {
       "command": "node",
       "sub": "pause",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 984
+      "doc_line": 962
     },
     {
       "command": "node",
       "sub": "restart",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 954
+      "doc_line": 932
     },
     {
       "command": "node",
       "sub": "restart",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 979
+      "doc_line": 957
     },
     {
       "command": "node",
       "sub": "resume",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 956
+      "doc_line": 934
     },
     {
       "command": "node",
       "sub": "resume",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 986
+      "doc_line": 964
     },
     {
       "command": "param",
@@ -2887,7 +2766,7 @@
       "sub": "delete",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1062
+      "doc_line": 1040
     },
     {
       "command": "param",
@@ -2901,7 +2780,7 @@
       "sub": "dump",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1066
+      "doc_line": 1044
     },
     {
       "command": "param",
@@ -2922,7 +2801,7 @@
       "sub": "get",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1060
+      "doc_line": 1038
     },
     {
       "command": "param",
@@ -2936,14 +2815,14 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1059
+      "doc_line": 1037
     },
     {
       "command": "param",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1073
+      "doc_line": 1051
     },
     {
       "command": "param",
@@ -2982,14 +2861,14 @@
       "sub": "load",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1064
+      "doc_line": 1042
     },
     {
       "command": "param",
       "sub": "load",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1093
+      "doc_line": 1071
     },
     {
       "command": "param",
@@ -3017,7 +2896,7 @@
       "sub": "reset",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1063
+      "doc_line": 1041
     },
     {
       "command": "param",
@@ -3040,14 +2919,14 @@
       "sub": "save",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1065
+      "doc_line": 1043
     },
     {
       "command": "param",
       "sub": "save",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1090
+      "doc_line": 1068
     },
     {
       "command": "param",
@@ -3082,6 +2961,13 @@
       "sub": "set",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1039
+    },
+    {
+      "command": "param",
+      "sub": "set",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 1061
     },
     {
@@ -3089,14 +2975,7 @@
       "sub": "set",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1083
-    },
-    {
-      "command": "param",
-      "sub": "set",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1084
+      "doc_line": 1062
     },
     {
       "command": "param",
@@ -3114,17 +2993,10 @@
     },
     {
       "command": "plugin",
-      "sub": "available",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1426
-    },
-    {
-      "command": "plugin",
       "sub": "disable",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1429
+      "doc_line": 1400
     },
     {
       "command": "plugin",
@@ -3133,28 +3005,21 @@
         "--reason"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1450
+      "doc_line": 1421
     },
     {
       "command": "plugin",
       "sub": "enable",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1428
-    },
-    {
-      "command": "plugin",
-      "sub": "info",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1427
+      "doc_line": 1399
     },
     {
       "command": "plugin",
       "sub": "verify",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1430
+      "doc_line": 1401
     },
     {
       "command": "publish",
@@ -3196,7 +3061,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1655
+      "doc_line": 1626
     },
     {
       "command": "publish",
@@ -3210,56 +3075,56 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 676
+      "doc_line": 678
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 860
+      "doc_line": 862
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1045
+      "doc_line": 1047
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1093
+      "doc_line": 1095
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1111
+      "doc_line": 1113
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1221
+      "doc_line": 1223
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1296
+      "doc_line": 1298
     },
     {
       "command": "publish",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1571
+      "doc_line": 1573
     },
     {
       "command": "publish",
@@ -3268,7 +3133,7 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1110
+      "doc_line": 1112
     },
     {
       "command": "record",
@@ -3276,6 +3141,15 @@
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 49
+    },
+    {
+      "command": "record",
+      "sub": "clean",
+      "flags": [
+        "--older-than"
+      ],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 30
     },
     {
       "command": "record",
@@ -3289,7 +3163,7 @@
       "sub": "delete",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1502
+      "doc_line": 1473
     },
     {
       "command": "record",
@@ -3312,14 +3186,14 @@
       "sub": "diff",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1503
+      "doc_line": 1474
     },
     {
       "command": "record",
       "sub": "diff",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1526
+      "doc_line": 1497
     },
     {
       "command": "record",
@@ -3335,7 +3209,7 @@
       "sub": "export",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1504
+      "doc_line": 1475
     },
     {
       "command": "record",
@@ -3369,14 +3243,21 @@
       "sub": "info",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1500
+      "doc_line": 1471
+    },
+    {
+      "command": "record",
+      "sub": "info",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 29
     },
     {
       "command": "record",
       "sub": "inject",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1505
+      "doc_line": 1476
     },
     {
       "command": "record",
@@ -3404,7 +3285,7 @@
         "--nodes"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1533
+      "doc_line": 1504
     },
     {
       "command": "record",
@@ -3418,14 +3299,21 @@
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1499
+      "doc_line": 1470
     },
     {
       "command": "record",
       "sub": "list",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1512
+      "doc_line": 1483
+    },
+    {
+      "command": "record",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 28
     },
     {
       "command": "record",
@@ -3448,14 +3336,21 @@
       "sub": "replay",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1501
+      "doc_line": 1472
     },
     {
       "command": "record",
       "sub": "replay",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1521
+      "doc_line": 1492
+    },
+    {
+      "command": "record",
+      "sub": "replay",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 41
     },
     {
       "command": "record",
@@ -3470,11 +3365,30 @@
       "command": "record",
       "sub": "replay",
       "flags": [
+        "--speed"
+      ],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 44
+    },
+    {
+      "command": "record",
+      "sub": "replay",
+      "flags": [
         "--start-tick",
         "--stop-tick"
       ],
       "doc_file": "content/docs/advanced/record-replay.mdx",
       "doc_line": 126
+    },
+    {
+      "command": "record",
+      "sub": "replay",
+      "flags": [
+        "--start-tick",
+        "--stop-tick"
+      ],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 47
     },
     {
       "command": "remove",
@@ -3495,14 +3409,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1402
+      "doc_line": 1375
     },
     {
       "command": "remove",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1432
+      "doc_line": 1403
     },
     {
       "command": "remove",
@@ -3520,35 +3434,10 @@
     },
     {
       "command": "remove",
-      "sub": "common-utils",
-      "flags": [
-        "--global"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1396
-    },
-    {
-      "command": "remove",
       "sub": "horus-mycommand",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 198
-    },
-    {
-      "command": "remove",
-      "sub": "horus-sim3d",
-      "flags": [],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 76
-    },
-    {
-      "command": "remove",
-      "sub": "horus-sim3d",
-      "flags": [
-        "--global"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 79
+      "doc_line": 201
     },
     {
       "command": "remove",
@@ -3562,7 +3451,7 @@
       "sub": "my-package",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1667
+      "doc_line": 1669
     },
     {
       "command": "remove",
@@ -3576,14 +3465,14 @@
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1390
+      "doc_line": 1366
     },
     {
       "command": "remove",
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 664
+      "doc_line": 353
     },
     {
       "command": "remove",
@@ -3597,7 +3486,7 @@
       "sub": "sensor-fusion",
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 686
+      "doc_line": 375
     },
     {
       "command": "remove",
@@ -3606,14 +3495,14 @@
         "--purge"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1393
+      "doc_line": 1369
     },
     {
       "command": "remove",
       "sub": "unused-package",
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 614
+      "doc_line": 303
     },
     {
       "command": "run",
@@ -3649,6 +3538,20 @@
       "flags": [],
       "doc_file": "content/docs/concepts/what-is-horus.mdx",
       "doc_line": 79
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/cpp/api/index.mdx",
+      "doc_line": 158
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [],
+      "doc_file": "content/docs/cpp/examples/basic.mdx",
+      "doc_line": 51
     },
     {
       "command": "run",
@@ -3732,14 +3635,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1629
+      "doc_line": 1600
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1714
+      "doc_line": 1685
     },
     {
       "command": "run",
@@ -3823,21 +3726,21 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 835
+      "doc_line": 517
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 841
+      "doc_line": 523
     },
     {
       "command": "run",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1567
+      "doc_line": 1569
     },
     {
       "command": "run",
@@ -4087,22 +3990,9 @@
     {
       "command": "run",
       "sub": null,
-      "flags": [
-        "--build-only",
-        "--release"
-      ],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1107
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--build-only",
-        "--release"
-      ],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1512
+      "flags": [],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 137
     },
     {
       "command": "run",
@@ -4176,7 +4066,16 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1639
+      "doc_line": 1610
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [
+        "--enable"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 202
     },
     {
       "command": "run",
@@ -4232,7 +4131,16 @@
         "--record"
       ],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 782
+      "doc_line": 779
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [
+        "--record"
+      ],
+      "doc_file": "content/docs/tutorials/09-record-replay-cpp.mdx",
+      "doc_line": 25
     },
     {
       "command": "run",
@@ -4277,25 +4185,25 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1587
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [
+        "--release"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1603
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [
+        "--release"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 1616
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--release"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1632
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--release"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1645
     },
     {
       "command": "run",
@@ -4330,35 +4238,8 @@
       "flags": [
         "--release"
       ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 450
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--release"
-      ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 459
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--release"
-      ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 474
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--release"
-      ],
-      "doc_file": "content/docs/package-management/environment-management.mdx",
-      "doc_line": 486
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 1088
     },
     {
       "command": "run",
@@ -4367,7 +4248,7 @@
         "--release"
       ],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1086
+      "doc_line": 1438
     },
     {
       "command": "run",
@@ -4376,16 +4257,7 @@
         "--release"
       ],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1436
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [
-        "--release"
-      ],
-      "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1509
+      "doc_line": 1511
     },
     {
       "command": "run",
@@ -4415,15 +4287,6 @@
       "doc_line": 700
     },
     {
-      "command": "run",
-      "sub": "cuda",
-      "flags": [
-        "--enable"
-      ],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 202
-    },
-    {
       "command": "search",
       "sub": null,
       "flags": [],
@@ -4435,30 +4298,77 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1425
+      "doc_line": 1397
     },
     {
       "command": "search",
-      "sub": null,
+      "sub": "camera",
       "flags": [],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 63
-    },
-    {
-      "command": "search",
-      "sub": null,
-      "flags": [
-        "--local"
-      ],
-      "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 66
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 445
     },
     {
       "command": "search",
       "sub": "camera",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 60
+      "doc_line": 62
+    },
+    {
+      "command": "search",
+      "sub": "controller",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 68
+    },
+    {
+      "command": "search",
+      "sub": "imu",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 446
+    },
+    {
+      "command": "search",
+      "sub": "imu-driver",
+      "flags": [],
+      "doc_file": "content/docs/concepts/goals.mdx",
+      "doc_line": 150
+    },
+    {
+      "command": "search",
+      "sub": "keyboard",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 168
+    },
+    {
+      "command": "search",
+      "sub": "lidar",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 444
+    },
+    {
+      "command": "search",
+      "sub": "motor",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 69
+    },
+    {
+      "command": "search",
+      "sub": "motor",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 169
+    },
+    {
+      "command": "search",
+      "sub": "nonexistent",
+      "flags": [],
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 1633
     },
     {
       "command": "search",
@@ -4469,10 +4379,38 @@
     },
     {
       "command": "search",
+      "sub": "sensor",
+      "flags": [],
+      "doc_file": "content/docs/package-management/package-management.mdx",
+      "doc_line": 421
+    },
+    {
+      "command": "search",
+      "sub": "sensor",
+      "flags": [],
+      "doc_file": "content/docs/package-management/using-prebuilt-nodes.mdx",
+      "doc_line": 67
+    },
+    {
+      "command": "search",
+      "sub": "sim",
+      "flags": [],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 65
+    },
+    {
+      "command": "search",
+      "sub": "slam",
+      "flags": [],
+      "doc_file": "content/docs/concepts/goals.mdx",
+      "doc_line": 174
+    },
+    {
+      "command": "search",
       "sub": "visualizer",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1444
+      "doc_line": 1415
     },
     {
       "command": "service",
@@ -4502,21 +4440,21 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 795
+      "doc_line": 773
     },
     {
       "command": "test",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 798
+      "doc_line": 776
     },
     {
       "command": "test",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 810
+      "doc_line": 788
     },
     {
       "command": "test",
@@ -4551,14 +4489,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 722
+      "doc_line": 719
     },
     {
       "command": "test",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1506
+      "doc_line": 1508
     },
     {
       "command": "test",
@@ -4567,7 +4505,7 @@
         "--integration"
       ],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 725
+      "doc_line": 722
     },
     {
       "command": "test",
@@ -4577,7 +4515,7 @@
         "--sim"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 844
+      "doc_line": 822
     },
     {
       "command": "test",
@@ -4592,19 +4530,10 @@
       "command": "test",
       "sub": null,
       "flags": [
-        "--no-cleanup"
-      ],
-      "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 719
-    },
-    {
-      "command": "test",
-      "sub": null,
-      "flags": [
         "--nocapture"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 834
+      "doc_line": 812
     },
     {
       "command": "test",
@@ -4622,7 +4551,7 @@
         "--parallel"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 801
+      "doc_line": 779
     },
     {
       "command": "test",
@@ -4641,7 +4570,7 @@
         "--release"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 839
+      "doc_line": 817
     },
     {
       "command": "test",
@@ -4659,7 +4588,7 @@
         "--sim"
       ],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 804
+      "doc_line": 782
     },
     {
       "command": "test",
@@ -4668,7 +4597,7 @@
         "--sim"
       ],
       "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 728
+      "doc_line": 725
     },
     {
       "command": "test",
@@ -4681,7 +4610,7 @@
     },
     {
       "command": "test",
-      "sub": "1",
+      "sub": null,
       "flags": [
         "--test-threads"
       ],
@@ -4690,21 +4619,21 @@
     },
     {
       "command": "test",
-      "sub": "1",
-      "flags": [
-        "--test-threads"
-      ],
-      "doc_file": "content/docs/development/testing.mdx",
-      "doc_line": 845
-    },
-    {
-      "command": "test",
-      "sub": "4",
+      "sub": null,
       "flags": [
         "--test-threads"
       ],
       "doc_file": "content/docs/development/testing.mdx",
       "doc_line": 710
+    },
+    {
+      "command": "test",
+      "sub": null,
+      "flags": [
+        "--test-threads"
+      ],
+      "doc_file": "content/docs/development/testing.mdx",
+      "doc_line": 842
     },
     {
       "command": "test",
@@ -4724,71 +4653,169 @@
       "command": "topic",
       "sub": "echo",
       "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 906
+      "doc_file": "content/docs/cpp/examples/advanced.mdx",
+      "doc_line": 105
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/cpp/hardware.mdx",
+      "doc_line": 134
     },
     {
       "command": "topic",
       "sub": "echo",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 925
+      "doc_line": 884
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 903
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 158
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/02-motor-controller-cpp.mdx",
+      "doc_line": 237
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/02-motor-controller-cpp.mdx",
+      "doc_line": 238
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/03-full-robot-cpp.mdx",
+      "doc_line": 350
+    },
+    {
+      "command": "topic",
+      "sub": "echo",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/03-full-robot-cpp.mdx",
+      "doc_line": 351
     },
     {
       "command": "topic",
       "sub": "hz",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 908
+      "doc_line": 886
     },
     {
       "command": "topic",
       "sub": "hz",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 931
-    },
-    {
-      "command": "topic",
-      "sub": "info",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 907
-    },
-    {
-      "command": "topic",
-      "sub": "list",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 905
-    },
-    {
-      "command": "topic",
-      "sub": "list",
-      "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 916
-    },
-    {
-      "command": "topic",
-      "sub": "pub",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
       "doc_line": 909
     },
     {
       "command": "topic",
+      "sub": "hz",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 157
+    },
+    {
+      "command": "topic",
+      "sub": "info",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 885
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/cpp/examples/advanced.mdx",
+      "doc_line": 104
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/cpp/examples/advanced.mdx",
+      "doc_line": 206
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/cpp/hardware.mdx",
+      "doc_line": 133
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 883
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 894
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/01-sensor-node-cpp.mdx",
+      "doc_line": 156
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/03-full-robot-cpp.mdx",
+      "doc_line": 348
+    },
+    {
+      "command": "topic",
+      "sub": "list",
+      "flags": [],
+      "doc_file": "content/docs/tutorials/08-multi-process-cpp.mdx",
+      "doc_line": 121
+    },
+    {
+      "command": "topic",
       "sub": "pub",
       "flags": [],
       "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 937
+      "doc_line": 887
+    },
+    {
+      "command": "topic",
+      "sub": "pub",
+      "flags": [],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 915
     },
     {
       "command": "topic-stats",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/plugins/creating-plugins.mdx",
-      "doc_line": 222
+      "doc_line": 224
     },
     {
       "command": "topic-stats",
@@ -4797,7 +4824,23 @@
         "--json"
       ],
       "doc_file": "content/docs/plugins/creating-plugins.mdx",
-      "doc_line": 223
+      "doc_line": 225
+    },
+    {
+      "command": "uninstall",
+      "sub": "horus-sim3d",
+      "flags": [],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 77
+    },
+    {
+      "command": "uninstall",
+      "sub": "horus-sim3d",
+      "flags": [
+        "--purge"
+      ],
+      "doc_file": "content/docs/plugins/managing-plugins.mdx",
+      "doc_line": 80
     },
     {
       "command": "unpublish",
@@ -4811,7 +4854,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 465
+      "doc_line": 467
     },
     {
       "command": "unpublish",
@@ -4825,14 +4868,14 @@
       "sub": "my-package",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 474
+      "doc_line": 476
     },
     {
       "command": "unpublish",
       "sub": "my-package",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 477
+      "doc_line": 479
     },
     {
       "command": "update",
@@ -4853,28 +4896,28 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 436
+      "doc_line": 438
     },
     {
       "command": "update",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 447
+      "doc_line": 449
     },
     {
       "command": "update",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 453
+      "doc_line": 455
     },
     {
       "command": "update",
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1607
+      "doc_line": 1609
     },
     {
       "command": "update",
@@ -4883,21 +4926,21 @@
         "--dry-run"
       ],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 456
+      "doc_line": 458
     },
     {
       "command": "update",
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 450
+      "doc_line": 452
     },
     {
       "command": "update",
       "sub": "pid-controller",
       "flags": [],
       "doc_file": "content/docs/package-management/package-management.mdx",
-      "doc_line": 1610
+      "doc_line": 1612
     },
     {
       "command": "verify",
@@ -4911,14 +4954,14 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 105
+      "doc_line": 108
     },
     {
       "command": "verify",
       "sub": "sim3d",
       "flags": [],
       "doc_file": "content/docs/plugins/managing-plugins.mdx",
-      "doc_line": 108
+      "doc_line": 111
     }
   ]
 }

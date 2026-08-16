@@ -98,18 +98,11 @@ const EXAMPLE_PLUGIN_NAMES: &[&str] = &[
 /// Documented top-level commands the binary rejects. Same contract as
 /// [`QUARANTINED_FLAGS`]: real defects, listed so the suite gates new ones.
 /// `quarantine_is_not_stale` fails once a name starts resolving.
-const QUARANTINED_COMMANDS: &[(&str, &str)] = &[
-    (
-        "hf",
-        "concepts/hframe.mdx:289 — the HFrame page invokes `horus hf`, which the \
-         binary does not define",
-    ),
-    (
-        "keygen",
-        "development/cli-reference.mdx:579 — signing keys are created by \
-         `horus auth signing-key`; there is no `horus keygen`",
-    ),
-];
+/// Documented `horus <command> <sub>` pairs the binary rejects. Same contract as
+/// [`QUARANTINED_FLAGS`].
+const QUARANTINED_SUBCOMMANDS: &[(&str, &str, &str)] = &[];
+
+const QUARANTINED_COMMANDS: &[(&str, &str)] = &[];
 
 /// Known-broken `(command, flag)` pairs: documented today, rejected by the CLI.
 ///
@@ -122,76 +115,9 @@ const QUARANTINED_COMMANDS: &[(&str, &str)] = &[
 /// `quarantine_is_not_stale` test fails once a pair starts working, so this list
 /// cannot silently rot.
 const QUARANTINED_FLAGS: &[(&str, &str, &str)] = &[
-    // (command, flag, why) — verified against the binary, one at a time.
-    (
-        "blackbox",
-        "--tail",
-        "development/cli-reference.mdx:1556 and :1591 (`horus bb --tail`) — \
-         blackbox offers --follow for the same purpose; --tail is rejected",
-    ),
-    (
-        "env",
-        "--publish",
-        "development/cli-reference.mdx:643 and package-management/\
-         environment-management.mdx:218,343,480,494 — five sites; no such flag",
-    ),
-    (
-        "env",
-        "--output",
-        "development/cli-reference.mdx:1642 — no --output flag on `horus env`",
-    ),
-    (
-        "install",
-        "--driver",
-        "development/cli-reference.mdx:1340,1374,1375 — install has \
-         --plugin/--target/--json; drivers install by package name",
-    ),
-    (
-        "install",
-        "--global",
-        "development/cli-reference.mdx:596,1343 — install is global by default; \
-         there is no --global flag",
-    ),
-    (
-        "list",
-        "--plugins",
-        "development/cli-reference.mdx:1424,1439 — no --plugins flag on `horus list`",
-    ),
-    (
-        "bb",
-        "--tail",
-        "development/cli-reference.mdx:1591 — the `bb` alias form of the same \
-         defect as `blackbox --tail`; the extractor records the command as written",
-    ),
-    (
-        "install",
-        "--local",
-        "plugins/creating-plugins.mdx:110, plugins/managing-plugins.mdx:23 — \
-         install has --plugin/--target/--json, no --local",
-    ),
-    (
-        "remove",
-        "--global",
-        "development/cli-reference.mdx:1396, plugins/managing-plugins.mdx:79 — \
-         no --global flag on `horus remove`",
-    ),
-    (
-        "search",
-        "--local",
-        "plugins/managing-plugins.mdx:66 — no --local flag on `horus search`",
-    ),
-    (
-        "test",
-        "--no-cleanup",
-        "development/testing.mdx:719 — removed from horus_manager; no `no_cleanup` \
-         reference remains in src/. Closest surviving flag is --nocapture",
-    ),
-    (
-        "run",
-        "--build-only",
-        "package-management/package-management.mdx:1107,1512 — `horus build` is \
-         the build-without-running command; run has no --build-only",
-    ),
+    // Empty: every entry was fixed on the docs side. `quarantine_is_not_stale`
+    // fails both when a quarantined pair starts working AND when nothing
+    // documents it any more, so entries cannot linger here as dead exemptions.
 ];
 
 fn is_quarantined(command: &str, flag: &str) -> bool {
@@ -307,17 +233,24 @@ fn parse_horus_line(line: &str, rel: &str, lineno: usize) -> Option<DocInvocatio
 
     let mut sub = None;
     let mut flags = BTreeSet::new();
+    // Subcommands precede flags in every real invocation
+    // (`horus topic list --json`, `horus env freeze`). Once a flag appears, any
+    // later bare word is that flag's *value*, not a subcommand: in
+    // `horus bb --anomalies --last 20` the `20` belongs to `--last`, and
+    // reading it as a subcommand reported a correct doc line as a defect.
+    let mut seen_flag = false;
     let mut first_positional = true;
     for t in toks {
         if let Some(f) = t.strip_prefix("--") {
+            seen_flag = true;
             // `--flag=value` → `--flag`
             let name = f.split('=').next().unwrap_or(f);
             if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
                 flags.insert(format!("--{name}"));
             }
         } else if t.starts_with('-') {
-            // short flag — not validated here
-        } else if first_positional {
+            seen_flag = true;
+        } else if first_positional && !seen_flag {
             first_positional = false;
             // Treat a bare lowercase word as a nested subcommand candidate.
             let looks_like_sub = t
@@ -764,6 +697,92 @@ fn documented_subcommands_exist() {
     );
 }
 
+/// Whether a help text advertises positional arguments.
+fn takes_positional(help: &str) -> bool {
+    help.lines().any(|l| l.trim_end() == "Arguments:")
+}
+
+/// A documented `horus <command> <sub>` must name a real nested subcommand.
+///
+/// `documented_subcommands_exist` only checks the top level, so
+/// `horus env freeze` passed on the strength of `env` alone while `freeze` does
+/// not exist — the binary answers `error: unexpected argument 'freeze' found`.
+/// A whole documented command family (`env freeze/restore/list/show`) sat behind
+/// that gap.
+///
+/// Only commands that actually take subcommands are checked. For the rest the
+/// first positional is an argument (`horus install rplidar`, `horus new bot`),
+/// not a subcommand, and treating it as one would flag every example.
+#[test]
+fn documented_nested_subcommands_exist() {
+    let (invocations, source) = load_contract();
+    #[allow(clippy::type_complexity)]
+    let mut takes_subcommands: BTreeMap<String, Option<(BTreeSet<String>, bool)>> = BTreeMap::new();
+    let mut violations: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+
+    for inv in &invocations {
+        let Some(sub) = inv.sub.as_deref() else {
+            continue;
+        };
+        if PASS_THROUGH.contains(&inv.command.as_str())
+            || PLUGIN_PROVIDED.contains(&inv.command.as_str())
+            || EXAMPLE_PLUGIN_NAMES.contains(&inv.command.as_str())
+            || QUARANTINED_COMMANDS.iter().any(|(c, _)| *c == inv.command)
+            || QUARANTINED_SUBCOMMANDS
+                .iter()
+                .any(|(c, sc, _)| *c == inv.command && *sc == sub)
+        {
+            continue;
+        }
+
+        let entry = takes_subcommands
+            .entry(inv.command.clone())
+            .or_insert_with(|| {
+                help_for(&[&inv.command])
+                    .map(|h| (children_in(&h).into_iter().collect(), takes_positional(&h)))
+            });
+        let Some((children, positional)) = entry else {
+            continue;
+        };
+        // No `Commands:` block but an `Arguments:` section: this command takes a
+        // value, not a subcommand — `horus install rplidar` is fine.
+        if children.is_empty() && *positional {
+            continue;
+        }
+        // Neither: it cannot take a bare word at all. `horus env` is
+        // `horus env [OPTIONS]`, so `horus env freeze` is always wrong.
+        if !children.is_empty() && children.contains(sub) {
+            continue;
+        }
+        {
+            violations
+                .entry((inv.command.clone(), sub.to_string()))
+                .or_default()
+                .push(format!("{}:{}", inv.doc_file, inv.doc_line));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "documented subcommands the binary does not have (source: {source}):\n{}\n\n\
+         The parent command exists, so a top-level check passes; the reader still \
+         gets `error: unexpected argument`.",
+        violations
+            .iter()
+            .map(|((c, sc), where_)| format!(
+                "  horus {c} {sc}  — documented at {}",
+                where_
+                    .iter()
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
 /// Every documented long flag must exist somewhere in that command's tree.
 #[test]
 fn documented_flags_exist() {
@@ -836,6 +855,36 @@ fn quarantine_is_not_stale() {
          Remove them from QUARANTINED_FLAGS / QUARANTINED_COMMANDS in {} so \
          future regressions are caught.",
         fixed.join("\n"),
+        file!()
+    );
+
+    // The other way an entry dies: the docs stop citing it. These defects are
+    // usually fixed on the docs side — the flag never starts existing, the page
+    // simply stops recommending it — so the "now exists" check above would never
+    // retire the entry and the list would accumulate dead weight, each one a
+    // standing exemption for a command/flag pair nobody mentions.
+    let (invocations, source) = load_contract();
+    let mut unused = Vec::new();
+    for (command, flag, _why) in QUARANTINED_FLAGS {
+        let cited = invocations
+            .iter()
+            .any(|i| i.command == *command && i.flags.iter().any(|f| f == flag));
+        if !cited {
+            unused.push(format!("  horus {command} {flag}"));
+        }
+    }
+    for (command, _why) in QUARANTINED_COMMANDS {
+        if !invocations.iter().any(|i| i.command == *command) {
+            unused.push(format!("  horus {command}"));
+        }
+    }
+
+    assert!(
+        unused.is_empty(),
+        "these are quarantined but no longer documented anywhere (source: {source}):\n{}\n\n\
+         The doc pages were fixed, so the exemption is dead weight — drop it from \
+         {}. Leaving it in silently exempts the pair if a page starts using it again.",
+        unused.join("\n"),
         file!()
     );
 }
@@ -934,6 +983,23 @@ mod extractor {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].command, "run");
         assert_eq!(got[0].flags, vec!["--release"]);
+    }
+
+    #[test]
+    fn flag_values_are_not_subcommands() {
+        // `20` is the value of --last, not a subcommand. Reading it as one
+        // reported development/cli-reference.mdx's correct `horus bb
+        // --anomalies --last 20` as a defect.
+        let md = "```bash\nhorus bb --anomalies --last 20\n```\n";
+        assert_eq!(extract_from_page(md, "p.mdx")[0].sub, None);
+        let md2 = "```bash\nhorus bb --node controller --tick 4500-4510\n```\n";
+        assert_eq!(extract_from_page(md2, "p.mdx")[0].sub, None);
+        // A real subcommand still lands, flags after it notwithstanding.
+        let md3 = "```bash\nhorus topic list --json\n```\n";
+        assert_eq!(
+            extract_from_page(md3, "p.mdx")[0].sub.as_deref(),
+            Some("list")
+        );
     }
 
     #[test]
