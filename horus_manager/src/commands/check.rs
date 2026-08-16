@@ -3,6 +3,7 @@
 use crate::cli_output;
 use crate::config::CARGO_TOML;
 use crate::manifest::{detect_languages, HorusManifest, Language, HORUS_TOML};
+use crate::manifest_lint;
 use colored::*;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_base_dir;
@@ -195,6 +196,25 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                         Err(e) => {
                             file_errors.push(e.to_string());
                         }
+                    }
+
+                    // Keys serde discarded. These never reach `manifest`, so
+                    // they have to be read back off the source text — without
+                    // this, a misspelled key silently does nothing and `check`
+                    // reports the file as valid.
+                    let unknown = fs::read_to_string(toml_path)
+                        .map(|c| manifest_lint::find_unknown_keys(&c))
+                        .unwrap_or_default();
+                    if !unknown.is_empty() {
+                        for key in &unknown {
+                            println!("      {} {}", "!".yellow(), key.message());
+                            total_warnings += 1;
+                        }
+                        println!(
+                            "      {} {}",
+                            "!".yellow(),
+                            manifest_lint::UnknownKey::deprecation_notice()
+                        );
                     }
 
                     // Check main file exists based on detected language

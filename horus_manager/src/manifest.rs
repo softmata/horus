@@ -153,7 +153,7 @@ pub fn detect_languages_or_error(project_dir: &Path) -> Result<Vec<Language>> {
 /// Single source of truth for a horus project: metadata, dependencies,
 /// drivers, scripts, ignore patterns, and feature flags.
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HorusManifest {
     /// `[package]` -- project metadata. Required for single-package projects.
     /// For virtual workspaces (only `[workspace]`), this defaults to empty.
@@ -876,6 +876,20 @@ impl IgnoreConfig {
     }
 }
 
+/// Convert a byte offset into a 1-based line and column.
+///
+/// Used to turn `toml`'s spans into a location a user can jump to.
+fn line_col(content: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(content.len());
+    let before = &content[..offset];
+    let line = before.matches('\n').count() + 1;
+    let col = before
+        .rfind('\n')
+        .map(|nl| offset - nl)
+        .unwrap_or(offset + 1);
+    (line, col)
+}
+
 // ─── HorusManifest: loading ─────────────────────────────────────────────────
 
 impl HorusManifest {
@@ -883,10 +897,46 @@ impl HorusManifest {
     pub fn load_from(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
+        Self::parse_str(&content, path)
+    }
 
-        let manifest: HorusManifest = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse {}", path.display()))?;
-        Ok(manifest)
+    /// Parse manifest text, attributing failures to `path`.
+    ///
+    /// Split out from [`Self::load_from`] so the diagnostics below are testable
+    /// without touching the filesystem.
+    pub fn parse_str(content: &str, path: &Path) -> Result<Self> {
+        toml::from_str(content).map_err(|e| Self::describe_parse_error(e, content, path))
+    }
+
+    /// Turn a `toml` deserialization failure into a message that says what is
+    /// actually wrong and where.
+    ///
+    /// Previously every failure — malformed syntax and a missing required field
+    /// alike — surfaced as `TOML parse error: Failed to parse ./horus.toml`,
+    /// with no line, no column and no field name. A manifest that simply
+    /// omitted `name` was reported as a parse error even though the TOML was
+    /// syntactically valid, leaving the two cases indistinguishable.
+    fn describe_parse_error(err: toml::de::Error, content: &str, path: &Path) -> anyhow::Error {
+        let file = path.display();
+        let detail = err.message().trim().to_string();
+
+        // `toml` reports the offending byte range; a line and column is what a
+        // user can act on, so convert rather than discard it.
+        let position = err
+            .span()
+            .map(|span| line_col(content, span.start))
+            .map(|(line, col)| format!("{file}:{line}:{col}"))
+            .unwrap_or_else(|| file.to_string());
+
+        if detail.starts_with("missing field") {
+            anyhow!(
+                "{position}: {detail}\n\n\
+                 The file is valid TOML — a required key is absent.\n\
+                 Add it, or run `horus new` to generate a complete manifest."
+            )
+        } else {
+            anyhow!("{position}: {detail}")
+        }
     }
 
     /// Search upward from the current directory to find and load a manifest.

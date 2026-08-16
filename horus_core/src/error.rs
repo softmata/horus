@@ -730,12 +730,74 @@ pub enum HorusError {
 
     /// Error with preserved source chain for context propagation.
     /// Use `.horus_context()` on Results to create these.
-    #[error("{message}\n  Caused by: {source}")]
+    ///
+    /// Rendered by [`fmt_contextual`], which suppresses the `Caused by:` clause
+    /// when it would only restate the message the user has already read.
+    #[error(fmt = fmt_contextual)]
     Contextual {
         message: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+/// Render a [`HorusError::Contextual`] without repeating itself.
+///
+/// `.horus_context("Cargo build failed")` applied to an error that already
+/// displays as `Cargo build failed` used to render as:
+///
+/// ```text
+/// Cargo build failed
+///   Caused by: Cargo build failed
+/// ```
+///
+/// Every multi-line remediation block — the `Solutions:` lists especially —
+/// was printed twice, doubling the length of the most carefully written text
+/// in the tool. A cause that only restates its parent carries no information,
+/// so it is dropped. Genuine causes are still shown.
+fn fmt_contextual(
+    message: &str,
+    source: &Box<dyn std::error::Error + Send + Sync>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    let message = message.trim_end();
+    let rendered = source.to_string();
+    let cause = rendered.trim_end();
+
+    // Identical: the cause restates the message verbatim.
+    if cause == message {
+        return f.write_str(message);
+    }
+
+    // Label-prefixed restatement. Variants carry a `#[error("... error: {0}")]`
+    // prefix, so wrapping one in its own text yields
+    // `Configuration error: <message>` — still a pure restatement.
+    if strip_error_label(cause) == message {
+        return f.write_str(message);
+    }
+
+    // Nested context already embeds our message as its own prefix — printing
+    // ours again would add a third copy. Defer to the fuller rendering.
+    if let Some(rest) = cause.strip_prefix(message) {
+        if rest.starts_with("\n  Caused by:") {
+            return f.write_str(cause);
+        }
+    }
+
+    write!(f, "{message}\n  Caused by: {cause}")
+}
+
+/// Strip a leading `Some label: ` from an error rendering.
+///
+/// Only a short label on the *first* line is removed, so multi-line bodies and
+/// messages that merely contain a colon are left intact.
+fn strip_error_label(s: &str) -> &str {
+    const MAX_LABEL: usize = 40;
+    let head_end = s.find('\n').unwrap_or(s.len());
+    match s[..head_end].find(": ") {
+        Some(colon) if colon <= MAX_LABEL => &s[colon + 2..],
+        _ => s,
+    }
 }
 
 /// Create an internal error with automatic file/line capture.
@@ -1821,6 +1883,131 @@ mod tests {
         let src = err.source();
         assert!(src.is_some(), "Contextual must expose source()");
         assert!(src.unwrap().to_string().contains("Permission denied"));
+    }
+
+    // ── Regression: self-repeating error messages (DX audit ERR-1) ──────────
+    //
+    // `horus run` in an empty directory printed its entire multi-line
+    // "Solutions:" block twice — once as the message, once as its own cause.
+    // Reproduced identically on `Cargo build failed` and
+    // `Python node exited with code 1`. A cause that only restates its parent
+    // carries no information and must not be printed.
+
+    /// A cause identical to its message is printed exactly once.
+    #[test]
+    fn contextual_identical_cause_printed_once() {
+        let err = HorusError::Contextual {
+            message: "Cargo build failed".to_string(),
+            source: Box::new(HorusError::config("Cargo build failed")),
+        };
+        let msg = format!("{}", err);
+        assert!(
+            !msg.contains("Caused by"),
+            "identical cause must be suppressed: {:?}",
+            msg
+        );
+        assert_eq!(
+            msg.matches("Cargo build failed").count(),
+            1,
+            "message must appear exactly once: {:?}",
+            msg
+        );
+    }
+
+    /// The real multi-line reproduction from the audit.
+    #[test]
+    fn contextual_multiline_solutions_block_not_duplicated() {
+        let text = "No main file detected.\n\nSolutions:\n  \
+                    • Create a main file: main.rs, main.py or main.cpp\n  \
+                    • Or specify a file: horus run myfile.rs";
+        let err = HorusError::Contextual {
+            message: text.to_string(),
+            source: Box::new(HorusError::config(text)),
+        };
+        let msg = format!("{}", err);
+        assert_eq!(
+            msg.matches("Solutions:").count(),
+            1,
+            "remediation block must not be duplicated: {:?}",
+            msg
+        );
+        assert_eq!(
+            msg.matches("Create a main file").count(),
+            1,
+            "each solution line must appear once: {:?}",
+            msg
+        );
+    }
+
+    /// Trailing-whitespace differences must not defeat the check.
+    #[test]
+    fn contextual_dedupe_ignores_trailing_whitespace() {
+        let err = HorusError::Contextual {
+            message: "Build failed".to_string(),
+            source: Box::new(HorusError::config("Build failed\n")),
+        };
+        let msg = format!("{}", err);
+        assert!(
+            !msg.contains("Caused by"),
+            "trailing newline must not defeat dedupe: {:?}",
+            msg
+        );
+    }
+
+    /// A genuinely different cause is still shown — the fix must not hide information.
+    #[test]
+    fn contextual_distinct_cause_still_shown() {
+        let err = HorusError::Contextual {
+            message: "Failed to open the IMU".to_string(),
+            source: Box::new(HorusError::config("Permission denied on /dev/i2c-1")),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("Caused by"), "distinct cause must show: {}", msg);
+        assert!(msg.contains("Failed to open the IMU"), "{}", msg);
+        assert!(msg.contains("Permission denied on /dev/i2c-1"), "{}", msg);
+    }
+
+    /// Nested context must not accumulate a third copy of the same message.
+    #[test]
+    fn contextual_nested_does_not_triple_print() {
+        let inner = HorusError::Contextual {
+            message: "outer".to_string(),
+            source: Box::new(HorusError::config("real root cause")),
+        };
+        let err = HorusError::Contextual {
+            message: "outer".to_string(),
+            source: Box::new(inner),
+        };
+        let msg = format!("{}", err);
+        assert_eq!(
+            msg.matches("outer").count(),
+            1,
+            "nested identical context must collapse: {:?}",
+            msg
+        );
+        assert!(
+            msg.contains("real root cause"),
+            "root cause must survive collapsing: {:?}",
+            msg
+        );
+    }
+
+    /// Dedupe is a display concern only — `source()` must be untouched, so
+    /// programmatic callers and `{:?}` debugging still see the full chain.
+    #[test]
+    fn contextual_dedupe_preserves_source_chain() {
+        let err = HorusError::Contextual {
+            message: "Cargo build failed".to_string(),
+            source: Box::new(HorusError::config("Cargo build failed")),
+        };
+        assert!(
+            err.source().is_some(),
+            "source chain must survive display dedupe"
+        );
+        assert_eq!(
+            err.source().unwrap().to_string(),
+            "Configuration error: Cargo build failed"
+        );
     }
 
     // =========================================================================

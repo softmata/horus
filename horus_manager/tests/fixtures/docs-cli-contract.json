@@ -1,5 +1,5 @@
 {
-  "source_commit": "b16c640c9d0169f30bcd502d835777eef52d29dd",
+  "source_commit": "1739e51caf735b1e81ba545673de941210e0a92a",
   "invocations": [
     {
       "command": "action",
@@ -31,7 +31,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/ai-integration.mdx",
-      "doc_line": 219
+      "doc_line": 235
     },
     {
       "command": "add",
@@ -40,7 +40,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/ai-integration.mdx",
-      "doc_line": 218
+      "doc_line": 234
     },
     {
       "command": "add",
@@ -50,7 +50,7 @@
         "--source"
       ],
       "doc_file": "content/docs/development/ai-integration.mdx",
-      "doc_line": 342
+      "doc_line": 358
     },
     {
       "command": "auth",
@@ -2211,7 +2211,7 @@
       "sub": null,
       "flags": [],
       "doc_file": "content/docs/development/ai-integration.mdx",
-      "doc_line": 480
+      "doc_line": 537
     },
     {
       "command": "monitor",
@@ -3641,13 +3641,6 @@
       "command": "run",
       "sub": null,
       "flags": [],
-      "doc_file": "content/docs/development/cli-reference.mdx",
-      "doc_line": 1685
-    },
-    {
-      "command": "run",
-      "sub": null,
-      "flags": [],
       "doc_file": "content/docs/development/monitor.mdx",
       "doc_line": 17
     },
@@ -4285,6 +4278,15 @@
       ],
       "doc_file": "content/docs/troubleshooting.mdx",
       "doc_line": 700
+    },
+    {
+      "command": "run",
+      "sub": null,
+      "flags": [
+        "--verbose"
+      ],
+      "doc_file": "content/docs/development/cli-reference.mdx",
+      "doc_line": 1685
     },
     {
       "command": "search",
