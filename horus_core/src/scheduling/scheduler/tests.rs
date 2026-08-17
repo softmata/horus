@@ -5616,3 +5616,48 @@ mod watchdog_message_honesty {
         assert!(m.contains("Isolated"), "{m}");
     }
 }
+
+#[cfg(test)]
+mod rt_reality_check {
+    /// Mirrors `warn_if_rt_cannot_be_delivered`'s decision, so the rules are
+    /// testable without capturing stdout.
+    fn should_warn(debug_build: bool, preempt_rt: bool) -> (bool, bool) {
+        if !debug_build && preempt_rt {
+            return (false, false);
+        }
+        (debug_build, !preempt_rt)
+    }
+
+    /// The reported case: a 1 kHz node, debug build, stock kernel. The user
+    /// measured timing two orders of magnitude off the front page and nothing
+    /// connected the two facts.
+    #[test]
+    fn debug_build_on_a_stock_kernel_warns_about_both() {
+        let (build, kernel) = should_warn(true, false);
+        assert!(build, "a debug build must be called out");
+        assert!(kernel, "a non-PREEMPT_RT kernel must be called out");
+    }
+
+    /// A release build on a stock kernel still has the jitter problem.
+    #[test]
+    fn release_on_a_stock_kernel_warns_about_the_kernel_only() {
+        let (build, kernel) = should_warn(false, false);
+        assert!(!build);
+        assert!(kernel);
+    }
+
+    /// A debug build on an RT kernel still has the 10-50x problem.
+    #[test]
+    fn debug_on_an_rt_kernel_warns_about_the_build_only() {
+        let (build, kernel) = should_warn(true, true);
+        assert!(build);
+        assert!(!kernel);
+    }
+
+    /// A correctly configured machine must stay quiet — a warning nobody can
+    /// act on is noise, and noise is what gets warnings ignored.
+    #[test]
+    fn release_on_an_rt_kernel_is_silent() {
+        assert_eq!(should_warn(false, true), (false, false));
+    }
+}

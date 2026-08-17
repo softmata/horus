@@ -294,6 +294,46 @@ fn watchdog_critical_message(node_name: &str) -> String {
     )
 }
 
+/// Warn once when the environment cannot deliver the real-time the user asked
+/// for.
+///
+/// `horus run` defaults to a debug build, and `--release` is opt-in. For a
+/// 1 kHz control loop a debug build is typically 10–50x slower, so a new user
+/// following the README's Quick Start writes the motor controller, runs it,
+/// and measures timing one to two orders of magnitude away from the front-page
+/// numbers — with nothing anywhere connecting the two facts. `horus doctor`
+/// reports the other half independently (`Standard kernel, jitter ±100μs`) but
+/// never at the moment it matters.
+///
+/// Silent slow-path is the classic real-time trap: everything appears to work,
+/// the deadlines quietly do not hold, and the framework looks slow rather than
+/// misconfigured.
+///
+/// Once at startup, only when RT nodes exist, so there is no cost to anyone who
+/// has not asked for real time.
+fn warn_if_rt_cannot_be_delivered(rt_node_count: usize, preempt_rt: bool) {
+    let debug_build = cfg!(debug_assertions);
+    if !debug_build && preempt_rt {
+        return;
+    }
+
+    let plural = if rt_node_count == 1 { "node" } else { "nodes" };
+
+    if debug_build {
+        print_line(&format!(
+            "  Note: {rt_node_count} real-time {plural} in a debug build. Debug is \
+             typically 10-50x slower, so deadline misses here are expected and \
+             timing is not representative. Use `horus run --release` to measure."
+        ));
+    }
+    if !preempt_rt {
+        print_line(
+            "  Note: this kernel is not PREEMPT_RT (jitter is typically ±100us \
+             rather than ±20us). `horus setup-rt` configures it.",
+        );
+    }
+}
+
 impl Scheduler {
     /// Create a minimal scheduler — **lightweight, no syscalls**.
     ///
@@ -2552,6 +2592,10 @@ impl Scheduler {
                         "Starting RT executor with {} RT nodes on dedicated thread",
                         groups.rt_nodes.len()
                     ));
+                    warn_if_rt_cannot_be_delivered(
+                        groups.rt_nodes.len(),
+                        self.rt.capabilities.as_ref().is_some_and(|c| c.preempt_rt),
+                    );
                     let rt_cpus = if let Some(ref cores) = self.pending_config.resources.cpu_cores {
                         cores.clone()
                     } else if let Some(ref caps) = self.rt.capabilities {
