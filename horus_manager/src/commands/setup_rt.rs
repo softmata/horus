@@ -42,7 +42,8 @@ pub fn run_setup_rt(check_only: bool, undo: bool) -> anyhow::Result<()> {
     // Step 2: Detect distro and install RT kernel
     let distro = detect_distro();
     match distro.as_str() {
-        "ubuntu" | "debian" => install_rt_debian()?,
+        "ubuntu" => install_rt_ubuntu()?,
+        "debian" => install_rt_debian()?,
         "fedora" => install_rt_fedora()?,
         "arch" => install_rt_arch()?,
         other => {
@@ -51,7 +52,8 @@ pub fn run_setup_rt(check_only: bool, undo: bool) -> anyhow::Result<()> {
                 "✗".red(),
                 other
             );
-            println!("    - Ubuntu/Debian: sudo apt install linux-image-rt-amd64");
+            println!("    - Ubuntu: sudo apt install linux-image-realtime");
+            println!("    - Debian: sudo apt install linux-image-rt-amd64");
             println!("    - Fedora: sudo dnf install kernel-rt kernel-rt-core");
             println!("    - Arch: sudo pacman -S linux-rt linux-rt-headers");
             println!();
@@ -139,21 +141,95 @@ fn detect_distro() -> String {
     "unknown".to_string()
 }
 
-/// Install RT kernel on Debian/Ubuntu.
+/// Ask before an operation that changes the machine.
+///
+/// Returns `true` when the user accepts. Non-interactive runs (no TTY, or
+/// `HORUS_ASSUME_YES=1`) accept without prompting so scripted provisioning
+/// still works; anything else defaults to no.
+fn confirm(question: &str) -> anyhow::Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    if std::env::var("HORUS_ASSUME_YES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        println!("  {} {question}", "?".cyan());
+        println!(
+            "  {} Not a terminal — declining. Re-run interactively or set HORUS_ASSUME_YES=1.",
+            "→".cyan()
+        );
+        return Ok(false);
+    }
+
+    print!("  {} {question} [y/N]: ", "?".cyan());
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+/// RT kernel package name for the running architecture.
+///
+/// Ubuntu and Debian do not agree. Ubuntu has never shipped
+/// `linux-image-rt-amd64` — its RT kernel is `linux-image-realtime`:
+///
+/// ```text
+/// $ apt-cache policy linux-image-rt-amd64      # on Ubuntu 26.04
+///   Candidate: (none)
+/// $ apt-cache policy linux-image-realtime
+///   Candidate: 7.0.0-29.29.1
+/// ```
+///
+/// Both distros were routed to the Debian name, so on Ubuntu the install
+/// always failed — and, because the failure was swallowed, `setup-rt` went on
+/// to print "Setup complete" and "Reboot to activate the RT kernel". A user
+/// rebooted believing they had PREEMPT_RT. For a framework whose value
+/// proposition is deterministic timing, a false positive on the RT guarantee
+/// is the worst available failure shape.
+fn rt_kernel_package(distro: &str, arch: &str) -> Option<&'static str> {
+    match (distro, arch) {
+        ("ubuntu", "x86_64") | ("ubuntu", "aarch64") => Some("linux-image-realtime"),
+        ("debian", "x86_64") => Some("linux-image-rt-amd64"),
+        ("debian", "aarch64") => Some("linux-image-rt-arm64"),
+        _ => None,
+    }
+}
+
+/// Install RT kernel on Ubuntu.
+fn install_rt_ubuntu() -> anyhow::Result<()> {
+    install_rt_apt("ubuntu")
+}
+
+/// Install RT kernel on Debian.
 fn install_rt_debian() -> anyhow::Result<()> {
+    install_rt_apt("debian")
+}
+
+/// Shared apt install path for Ubuntu and Debian.
+fn install_rt_apt(distro: &str) -> anyhow::Result<()> {
     let arch = std::env::consts::ARCH;
-    let pkg = match arch {
-        "x86_64" => "linux-image-rt-amd64",
-        "aarch64" => "linux-image-rt-arm64",
-        _ => {
-            println!(
-                "  {} No RT kernel package for architecture '{}'",
-                "✗".red(),
-                arch
-            );
-            return Ok(());
-        }
+    let Some(pkg) = rt_kernel_package(distro, arch) else {
+        anyhow::bail!(
+            "No RT kernel package known for {distro} on '{arch}'. \
+             Install one manually, then run `horus setup-rt --check`."
+        );
     };
+
+    // Installing a different kernel is about the largest blast radius a CLI
+    // has. The module header claims the command "is interactive by default",
+    // but there was no prompt anywhere in this file — `horus setup-rt` with no
+    // flags went straight to `sudo apt install -y <kernel>`.
+    if !confirm(&format!(
+        "Install the real-time kernel package '{pkg}' with sudo apt? \
+         This changes which kernel the machine boots."
+    ))? {
+        println!("  {} Skipped. To do it manually:", "→".cyan());
+        println!("    sudo apt install {pkg}");
+        anyhow::bail!("RT kernel installation declined");
+    }
 
     println!("  {} Installing {} ...", "→".cyan(), pkg.white().bold());
 
@@ -161,13 +237,17 @@ fn install_rt_debian() -> anyhow::Result<()> {
         .args(["apt", "install", "-y", pkg])
         .status()?;
 
-    if status.success() {
-        println!("  {} {} installed", "✓".green(), pkg);
-    } else {
-        println!("  {} Failed to install {}. Try manually:", "✗".red(), pkg);
-        println!("    sudo apt install {}", pkg);
+    if !status.success() {
+        // Propagate. Returning Ok here is what let the caller print
+        // "Setup complete" and tell the user to reboot into a kernel that was
+        // never installed.
+        anyhow::bail!(
+            "Failed to install {pkg}. Install it manually and re-run:\n    \
+             sudo apt install {pkg}"
+        );
     }
 
+    println!("  {} {} installed", "✓".green(), pkg);
     Ok(())
 }
 
@@ -408,5 +488,87 @@ mod tests {
         // --check mode should never modify system state
         let result = run_setup_rt(true, false);
         result.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod rt_kernel_package_tests {
+    use super::*;
+
+    /// HORUS_ASSUME_YES is process-global. Only the two tests below touch it,
+    /// so a module-local lock is sufficient — unlike the working directory,
+    /// which the whole crate shares via `crate::CWD_LOCK`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Ubuntu has never shipped `linux-image-rt-amd64`. Both distros were
+    /// routed to the Debian name, so on Ubuntu the install always failed —
+    /// and because the failure was swallowed, `setup-rt` printed
+    /// "Setup complete" and told the user to reboot into an RT kernel that was
+    /// never installed. Confirmed on Ubuntu 26.04:
+    ///
+    ///     $ apt-cache policy linux-image-rt-amd64  ->  Candidate: (none)
+    ///     $ apt-cache policy linux-image-realtime  ->  Candidate: 7.0.0-29.29.1
+    #[test]
+    fn ubuntu_uses_its_own_rt_kernel_package() {
+        assert_eq!(
+            rt_kernel_package("ubuntu", "x86_64"),
+            Some("linux-image-realtime")
+        );
+        assert_eq!(
+            rt_kernel_package("ubuntu", "aarch64"),
+            Some("linux-image-realtime")
+        );
+    }
+
+    /// Debian keeps the arch-suffixed names, which are correct there.
+    #[test]
+    fn debian_keeps_the_arch_suffixed_names() {
+        assert_eq!(
+            rt_kernel_package("debian", "x86_64"),
+            Some("linux-image-rt-amd64")
+        );
+        assert_eq!(
+            rt_kernel_package("debian", "aarch64"),
+            Some("linux-image-rt-arm64")
+        );
+    }
+
+    /// Ubuntu and Debian must never resolve to the same package: that
+    /// conflation is the whole bug.
+    #[test]
+    fn ubuntu_and_debian_do_not_share_a_package() {
+        assert_ne!(
+            rt_kernel_package("ubuntu", "x86_64"),
+            rt_kernel_package("debian", "x86_64"),
+            "routing Ubuntu to the Debian package is what made setup-rt lie"
+        );
+    }
+
+    /// An unknown architecture must be reported, not silently skipped.
+    #[test]
+    fn unknown_targets_have_no_package() {
+        assert_eq!(rt_kernel_package("ubuntu", "riscv64"), None);
+        assert_eq!(rt_kernel_package("debian", "mips"), None);
+        assert_eq!(rt_kernel_package("arch", "x86_64"), None);
+    }
+
+    /// Without a TTY the prompt must decline rather than proceeding, so a
+    /// scripted run cannot silently install a kernel.
+    #[test]
+    fn confirm_declines_when_not_a_terminal() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // The test harness runs without a controlling terminal on stdin.
+        std::env::remove_var("HORUS_ASSUME_YES");
+        assert!(!confirm("install something drastic").unwrap());
+    }
+
+    /// Provisioning scripts opt in explicitly.
+    #[test]
+    fn confirm_accepts_with_assume_yes() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("HORUS_ASSUME_YES", "1");
+        let got = confirm("install something drastic").unwrap();
+        std::env::remove_var("HORUS_ASSUME_YES");
+        assert!(got);
     }
 }
