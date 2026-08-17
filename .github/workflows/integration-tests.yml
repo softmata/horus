@@ -17,6 +17,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for the default GITHUB_TOKEN: these jobs check out code, build
+# it, and run it. None write back to the repository. Jobs that need even less
+# than this narrow it further themselves (see the `permissions: {}` below).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   HORUS: ./target/release/horus

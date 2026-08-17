@@ -43,6 +43,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for the default GITHUB_TOKEN. Nothing here writes to the
+# repository: every job reads code, builds it, and runs tests. The one job that
+# produces an artifact (examples-compile) uses actions/upload-artifact, which
+# needs no repository scope.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -129,8 +136,15 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - name: Cache Cargo
-        uses: actions/cache@v6
+      # Restore only — never save. This job checks out horus-docs at a caller
+      # supplied ref, so anything it builds is downstream of untrusted content.
+      # Saving would let a `workflow_dispatch` against an arbitrary docs ref
+      # write the same `-cargo-docs-` key that the hermetic job (which checks
+      # out nothing untrusted) restores and executes on the default branch —
+      # cache poisoning with a straight path into trusted context.
+      # contract-hermetic is the sole writer of this key.
+      - name: Restore Cargo cache (read-only)
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -231,16 +245,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - name: Cache Cargo
-        uses: actions/cache@v6
+      # Restore only, for the same reason as contract-live: this job checks out
+      # a caller-supplied docs ref. It reads the hermetic job's key rather than
+      # a private one, since a key nothing writes would never hit — and the
+      # registry and git-db entries, which dominate restore time, are identical
+      # either way.
+      - name: Restore Cargo cache (read-only)
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-docsweep-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-docsweep-
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-docs-
 
       # Warm the shared target dir the sweep reuses, so the per-batch cargo
       # check invocations do not each rebuild the horus dependency graph.

@@ -14,6 +14,9 @@ verified end to end against a release build.
 | `ed12cc9` | Failed ticks never counted; a node failing every tick reported Healthy | 1 (extended) |
 | `78ad724` | `horus deploy` excluded its own binary; built the wrong manifest; could not expand `~` | 11 |
 | `ee0dfca` | `--net` was a no-op; `horus run` escalated to sudo with no prompt | 6 |
+| `fd29bbe` | `.rate()` switched on RT enforcement silently, then isolated the node | 4 |
+| `15de61f` | Watchdog claimed a hung node was safed when `enter_safe_state()` never ran | 3 |
+| `4aa2cb8` | `setup-rt` installed a nonexistent package on Ubuntu and reported success | 6 |
 
 ### What each one was
 
@@ -66,32 +69,28 @@ so a panic there cannot cost us the record.
 Ranked by consequence per unit of work. Items 1–4 are one theme: the safety
 story is the least-tested part of the framework.
 
-1. **`.rate()` silently implies hard real-time.** Every plain Python node is
-   classified `Rt`, given an auto-derived budget of 80% of its period, and
-   isolated — permanently stopped — for exceeding it. The docs state the
-   inverse rule twice. `BestEffort` is unreachable from Python (`rate=None`
-   raises a raw `TypeError`, `rate=0` is rejected).
+1. **Should the ladder escalate on a deadline the user never asked for?**
+   `.rate()` now *announces* that it derived a budget and deadline and that
+   sustained misses will reduce the rate and then isolate the node — but it
+   still does. Making terminal escalation require an explicit `.deadline()` or
+   `.budget()` needs a flag on `RegisteredNode` (32 literals) and is a
+   behaviour change worth making deliberately.
 
-   Note the safer shape: rather than reclassifying (breaking for anyone
-   relying on `.rate()` giving RT), consider keeping the RT thread but making
-   the *auto-derived budget* opt-in. The isolation is the harm, not the
-   scheduling.
-2. **Safe-state is dispatched onto the stalled thread.** For the canonical
-   watchdog case — a hung node — it can never run, while the log says "safing
-   requested" and then goes quiet. A roboticist reads that as "the motors were
-   stopped". Say what is true, and add a scheduler-level fallback that runs off
-   the stalled thread.
+   Do not "fix" this by removing the auto-derivation: that was tried and
+   reverted. Eleven tests assert it, including boundary cases at 1 MHz and
+   0.001 Hz, and removing it also silently reordered a validation message.
+2. **Deliver safe-state off the stalled thread.** The message is now honest —
+   it says safing may never run and names the emergency stop as the real
+   protection — but a hung node still never safes itself. A scheduler-level
+   fallback has to touch a node the stalled thread still owns, so it needs
+   more machinery than a message fix.
 3. **Python nodes cannot implement `enter_safe_state()`** at all — the binding
    forwards only `init`/`tick`/`shutdown`, so the hook the degradation ladder
-   terminates in is a no-op for every Python node.
-4. **`horus setup-rt` installs a Debian package name on Ubuntu**
-   (`linux-image-rt-amd64`; Ubuntu's is `linux-image-realtime`), swallows the
-   failure, prints "Setup complete", and tells you to reboot into an RT kernel
-   you do not have. It also has no confirmation and no dry-run before
-   `sudo apt install` of a kernel.
-5. **Recording captures no payload for RT or C++ nodes** — 2,271 snapshots,
+   terminates in is a no-op for every Python node. Also no `BestEffort`:
+   `rate=None` raises a raw `TypeError`, `rate=0` is rejected.
+4. **Recording captures no payload for RT or C++ nodes** — 2,271 snapshots,
    zero bytes — and loses everything on an abnormal exit.
-6. **Wire `npm run verify:code` into docs CI.** The harness already exists in
+5. **Wire `npm run verify:code` into docs CI.** The harness already exists in
    the docs repo and would mechanically catch the large set of documented APIs
    that do not exist.
 
