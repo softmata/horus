@@ -308,6 +308,14 @@ pub struct NodeInfo {
 
     // Event notification counter — bumped by publishers to trigger event-driven nodes
     event_notifier: Option<Arc<std::sync::atomic::AtomicU64>>,
+
+    // Consecutive failed ticks, reset by any success.
+    //
+    // Node health was driven only by the watchdog/deadline ladder, so a node
+    // that panicked on every tick but never missed a *timing* target reported
+    // `Health: Healthy` indefinitely. This is the counter that lets a failing
+    // node be distinguished from a slow one.
+    consecutive_failures: u32,
 }
 
 impl NodeInfo {
@@ -331,6 +339,7 @@ impl NodeInfo {
             custom_data: std::collections::HashMap::new(),
             metrics_lock: Arc::new(Mutex::new(())),
             event_notifier: None,
+            consecutive_failures: 0,
         }
     }
 
@@ -395,7 +404,13 @@ impl NodeInfo {
     }
 
     #[doc(hidden)]
+    /// Consecutive failed ticks; any successful tick resets this to zero.
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
     pub fn record_tick(&mut self) {
+        self.consecutive_failures = 0;
         let _guard = self
             .metrics_lock
             .lock()
@@ -449,6 +464,7 @@ impl NodeInfo {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.metrics.total_ticks += 1;
             self.metrics.failed_ticks += 1;
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
 
             if let Some(start_time) = self.tick_start_time {
                 let duration = start_time.elapsed();

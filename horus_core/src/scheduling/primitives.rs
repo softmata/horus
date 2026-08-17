@@ -484,3 +484,11 @@ mod tests {
         }
     }
 }
+
+/// Consecutive failed ticks before a node is marked `Unhealthy`.
+///
+/// A single panic can be transient — a bad message, a one-off division. A
+/// sustained run of them is a different condition, and one that every health
+/// surface (`horus node info`, `node list`, the registry) previously missed
+/// entirely because health was driven only by the timing ladder.
+pub(crate) const FAILURES_BEFORE_UNHEALTHY: u32 = 3;

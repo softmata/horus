@@ -243,7 +243,51 @@ impl EventExecutor {
                             } else {
                                 format!("[Event] Node '{}' panicked (unknown)", node.name)
                             };
-                            print_line(&error_msg);
+                            // Count the failure. Only the Ok arm recorded metrics, so a node
+                            // panicking on every tick reported `Health: Healthy, Errors: 0,
+                            // Total Ticks: 0` while its P99 timing was recorded correctly —
+                            // making the zero read as "idle" rather than "dead".
+                            if let Some(ref mut ctx) = node.context {
+                                ctx.record_tick_failure(error_msg.clone());
+                            }
+
+                            // Reflect sustained failure in the node's health state. The
+                            // watchdog/deadline ladder is the only other writer, so a node that
+                            // panicked every tick but never missed a *timing* target reported
+                            // `Health: Healthy` forever — 232 errors out of 237 ticks, green.
+                            //
+                            // One panic can be transient; 3 consecutive is a state change.
+                            if let Some(ref ctx) = node.context {
+                                if ctx.consecutive_failures()
+                                    >= super::primitives::FAILURES_BEFORE_UNHEALTHY
+                                {
+                                    node.health_state
+                                        .store(super::types::NodeHealthState::Unhealthy);
+                                    monitors.node_controls.set_health(
+                                        node.name.as_ref(),
+                                        super::types::NodeHealthState::Unhealthy,
+                                    );
+                                }
+                            }
+
+                            // Record to the blackbox so the flight recorder can see a crash.
+                            // try_lock mirrors the RT path: never block an executor on it.
+                            if let Some(ref bb) = monitors.blackbox {
+                                if let Ok(mut bb) = bb.try_lock() {
+                                    bb.record(super::blackbox::BlackBoxEvent::NodeError {
+                                        name: node.name.to_string(),
+                                        error: error_msg.clone(),
+                                        severity: crate::error::Severity::Fatal,
+                                    });
+                                }
+                            }
+
+                            // record_tick_failure above logs at error level, reaching both
+                            // the console and the buffer `horus log` reads. Printing here too
+                            // would show the same text three times.
+                            if monitors.verbose {
+                                print_line(&error_msg);
+                            }
                             node.node.on_error(&error_msg);
 
                             // Enforce the failure policy (Fatal → safe + stop via

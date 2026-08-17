@@ -475,10 +475,49 @@ impl RtExecutor {
                 } else {
                     format!("[RT-thread] Node '{}' panicked (unknown)", node.name)
                 };
-                // A node panicking is not a verbose-only detail. Gating this
-                // meant the default run of a robot whose control node was
-                // failing every tick printed nothing at all.
-                print_line(&error_msg);
+                // Count the failure. Only the Ok arm above touched the metrics,
+                // so a node panicking on every tick reported
+                // `Health: Healthy, Errors: 0, Total Ticks: 0` to both
+                // `get_node_stats()` and `horus node info` — while the P99
+                // timing next to it was recorded correctly, which made the zero
+                // read as "this node is idle" rather than "this node is dead".
+                //
+                // `record_tick_failure` increments total_ticks and failed_ticks
+                // and is what the main-thread path has always used; the RT path
+                // simply never called it.
+                if let Some(ref mut ctx) = node.context {
+                    ctx.record_tick_failure(error_msg.clone());
+                }
+
+                // Reflect sustained failure in the node's health state. The
+                // watchdog/deadline ladder is the only other writer, so a node that
+                // panicked every tick but never missed a *timing* target reported
+                // `Health: Healthy` forever — 232 errors out of 237 ticks, green.
+                //
+                // One panic can be transient; 3 consecutive is a state change.
+                if let Some(ref ctx) = node.context {
+                    if ctx.consecutive_failures() >= super::primitives::FAILURES_BEFORE_UNHEALTHY {
+                        node.health_state
+                            .store(super::types::NodeHealthState::Unhealthy);
+                        monitors.node_controls.set_health(
+                            node.name.as_ref(),
+                            super::types::NodeHealthState::Unhealthy,
+                        );
+                    }
+                }
+
+                // `record_tick_failure` logs the message at error level, which
+                // reaches both the console and the shared log buffer that
+                // `horus log` reads — so the panic is now visible by default
+                // without this line, and printing it here too would put the
+                // same text on screen three times (raw, on_error, hlog).
+                //
+                // Kept behind --verbose as the RT-thread-specific detail line.
+                // Console output for a panic is now identical to the
+                // main-thread path, which is the point.
+                if monitors.verbose {
+                    print_line(&error_msg);
+                }
 
                 // Record to the blackbox (try_lock to avoid RT priority
                 // inversion, matching the budget/deadline paths above).
@@ -1528,6 +1567,83 @@ mod tests {
             normal_count.load(std::sync::atomic::Ordering::Relaxed) > 10,
             "Survivor node should keep ticking despite sibling's repeated panics"
         );
+
+        // ── Regression: a panicking node must not report itself healthy ─────
+        //
+        // Only the Ok arm recorded metrics, so a node panicking on *every* tick
+        // reported `Health: Healthy, Errors: 0, Total Ticks: 0` to both
+        // `get_node_stats()` and `horus node info` — while its P99 timing was
+        // recorded correctly, which made the zero read as "idle" rather than
+        // "dead". Monitoring, CI and launch supervisors all saw green.
+        let panicked = returned
+            .iter()
+            .find(|n| &*n.name == "always_panic")
+            .expect("panicking node returned from executor");
+        let ctx = panicked
+            .context
+            .as_ref()
+            .expect("panicking node keeps its context");
+
+        assert!(
+            ctx.metrics().failed_ticks() > 0,
+            "failed_ticks must count panics; got {} after {} attempted ticks",
+            ctx.metrics().failed_ticks(),
+            panic_ticks
+        );
+        assert!(
+            ctx.metrics().errors_count() > 0,
+            "errors_count must count panics; got {}",
+            ctx.metrics().errors_count()
+        );
+        assert!(
+            ctx.metrics().total_ticks() > 0,
+            "total_ticks must include failed ticks; got {}",
+            ctx.metrics().total_ticks()
+        );
+        assert_eq!(
+            ctx.metrics().successful_ticks(),
+            0,
+            "a node that panics every tick has no successful ticks"
+        );
+
+        // Health must reflect it. Previously the watchdog/deadline ladder was
+        // the only writer of health_state, so a node panicking every tick but
+        // never missing a *timing* target reported Healthy indefinitely — the
+        // observed case was 232 errors out of 237 ticks, still green.
+        assert_eq!(
+            panicked.health_state.load(),
+            super::super::types::NodeHealthState::Unhealthy,
+            "a node failing every tick must not report Healthy"
+        );
+        assert!(
+            ctx.consecutive_failures() >= super::super::primitives::FAILURES_BEFORE_UNHEALTHY,
+            "consecutive_failures should have passed the threshold; got {}",
+            ctx.consecutive_failures()
+        );
+
+        // The survivor's counters must stay clean — the fix must not attribute
+        // one node's failures to another.
+        let survivor = returned
+            .iter()
+            .find(|n| &*n.name == "survivor_node")
+            .expect("survivor node returned from executor");
+        assert_eq!(
+            survivor.health_state.load(),
+            super::super::types::NodeHealthState::Healthy,
+            "the sibling's panics must not degrade a healthy node"
+        );
+        if let Some(ctx) = survivor.context.as_ref() {
+            assert_eq!(
+                ctx.metrics().failed_ticks(),
+                0,
+                "survivor must not inherit the sibling's failures"
+            );
+            assert_eq!(
+                ctx.consecutive_failures(),
+                0,
+                "a healthy node's failure streak stays at zero"
+            );
+        }
     }
 
     /// Stress test: verbose=false suppresses RT thread output.
