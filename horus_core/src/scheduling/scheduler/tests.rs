@@ -5570,3 +5570,49 @@ fn shared_monitors_carry_a_safety_handle_for_executors() {
         "the executor's handle must share state with the scheduler's monitor"
     );
 }
+
+#[cfg(test)]
+mod watchdog_message_honesty {
+    use super::super::watchdog_critical_message;
+
+    /// The message must not claim the node was safed.
+    ///
+    /// Safing is queued on the node's own executor thread, and the canonical
+    /// reason a watchdog reaches 3x is that the node is hung *inside* `tick()`
+    /// — blocking exactly that thread. Verified end to end by instrumenting
+    /// `enter_safe_state()`: zero calls across a run whose watchdog fired.
+    ///
+    /// The old wording, "Isolated, safing requested from its executor", reads
+    /// to a roboticist as "the motors were stopped".
+    #[test]
+    fn does_not_claim_the_node_was_safed() {
+        let m = watchdog_critical_message("hanger");
+        assert!(
+            !m.contains("safing requested"),
+            "must not imply safing happened: {m}"
+        );
+        assert!(
+            m.contains("may never"),
+            "must state that safing may not run: {m}"
+        );
+    }
+
+    /// The emergency stop is what actually protects, so it must be stated.
+    #[test]
+    fn names_the_emergency_stop_as_the_real_protection() {
+        let m = watchdog_critical_message("hanger");
+        assert!(m.contains("Emergency stop latched"), "{m}");
+        assert!(
+            m.contains("does not depend on it"),
+            "must say the e-stop is independent of the stalled thread: {m}"
+        );
+    }
+
+    #[test]
+    fn identifies_the_node_and_the_threshold() {
+        let m = watchdog_critical_message("hanger");
+        assert!(m.contains("'hanger'"), "{m}");
+        assert!(m.contains("3x timeout"), "{m}");
+        assert!(m.contains("Isolated"), "{m}");
+    }
+}

@@ -274,6 +274,26 @@ impl Default for Scheduler {
     }
 }
 
+/// The operator-facing message for a watchdog reaching 3x timeout.
+///
+/// Extracted so its honesty can be asserted in a test. The previous wording —
+/// "Isolated, safing requested from its executor" — reads to a roboticist as
+/// "the motors were stopped". They were not: safing is queued on the node's own
+/// executor thread, and the canonical reason a watchdog reaches 3x is that the
+/// node is hung *inside* `tick()`, blocking exactly that thread. Instrumenting
+/// `enter_safe_state()` across such a run counted zero calls.
+///
+/// The emergency stop, latched independently of that thread, is what actually
+/// protects here, so it leads.
+fn watchdog_critical_message(node_name: &str) -> String {
+    format!(
+        " Watchdog critical: '{node_name}' (3x timeout) — Isolated. Emergency stop latched.\n\
+         \x20  enter_safe_state() was queued on the node's own executor thread; if the node is \
+         hung inside tick() that thread cannot run it, so the node's own safing may never \
+         execute. The emergency stop does not depend on it."
+    )
+}
+
 impl Scheduler {
     /// Create a minimal scheduler — **lightweight, no syscalls**.
     ///
@@ -3183,11 +3203,21 @@ impl Scheduler {
                 if current != NodeHealthState::Isolated {
                     controls.set_health(node_name, NodeHealthState::Isolated);
                     controls.request_safe_state(node_name);
-                    print_line(&format!(
-                        " Watchdog critical: '{}' (3x timeout) — Isolated, safing requested \
-                         from its executor",
-                        node_name
-                    ));
+                    // Do not claim the node was safed.
+                    //
+                    // Safing is queued on the node's own executor thread, and
+                    // the canonical reason a watchdog reaches 3x is that the
+                    // node is hung *inside* tick() — blocking exactly that
+                    // thread. `enter_safe_state()` then never runs, which was
+                    // confirmed by instrumenting it: zero calls across a run
+                    // that printed the old "safing requested" line.
+                    //
+                    // A roboticist reads "safing requested" as "the motors were
+                    // stopped". They were not. The emergency stop, latched
+                    // below and independent of that thread, is what actually
+                    // protects here — so say that instead.
+                    print_line(&watchdog_critical_message(node_name));
+
                     // No `trigger_emergency_stop` here: `check_watchdogs_graduated`
                     // already latches it for any critical node at 3x, and every
                     // node in this buffer is critical (watchdogs are only ever
