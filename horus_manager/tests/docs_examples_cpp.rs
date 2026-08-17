@@ -59,6 +59,12 @@ enum Skip {
     /// shows the ROS2 version beside the HORUS one). Requiring `rclcpp` to be
     /// installed would be nonsense.
     ForeignFramework,
+    /// Quotes a header the reader supplies, not one this repo ships — e.g.
+    /// `#include "vendor_sdk/lidar.hpp"` in the passage about linking an
+    /// existing vendor SDK straight into `tick()`. The header's absence IS the
+    /// point of the example; inventing one to satisfy the compiler would
+    /// document a vendor SDK that does not exist.
+    ReaderSuppliedHeader,
 }
 
 /// Headers that belong to a framework the docs are comparing against, not to
@@ -176,12 +182,41 @@ fn classify(code: &str) -> Option<Skip> {
     if FOREIGN_HEADERS.iter().any(|h| t.contains(h)) {
         return Some(Skip::ForeignFramework);
     }
+    if quotes_unshipped_header(t) {
+        return Some(Skip::ReaderSuppliedHeader);
+    }
     // A translation unit needs at least one include; without one the block is an
     // excerpt of a body, not something a reader could compile.
     if !t.contains("#include") {
         return Some(Skip::Fragment);
     }
     None
+}
+
+/// Whether the block quotes a header this repository does not ship.
+///
+/// `#include <horus/...>` is ours and must resolve. A *quoted* include that is
+/// neither a horus header nor a real file under `horus_cpp/include/` is the
+/// reader's own code — the vendor-SDK passages exist precisely to show that
+/// such a header drops straight in. Resolving it is impossible by design, so
+/// the block is illustrative rather than broken.
+fn quotes_unshipped_header(code: &str) -> bool {
+    let include_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|r| r.join("horus_cpp/include"));
+    code.lines()
+        .map(str::trim_start)
+        .filter_map(|l| l.strip_prefix("#include"))
+        .filter_map(|rest| {
+            let rest = rest.trim_start();
+            rest.strip_prefix('"')
+                .and_then(|r| r.split('"').next())
+                .map(str::to_string)
+        })
+        .any(|path| match &include_root {
+            Some(root) => !root.join(&path).is_file(),
+            None => !path.starts_with("horus/"),
+        })
 }
 
 fn is_counter_example(code: &str) -> bool {
