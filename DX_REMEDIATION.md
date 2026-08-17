@@ -17,6 +17,8 @@ verified end to end against a release build.
 | `fd29bbe` | `.rate()` switched on RT enforcement silently, then isolated the node | 4 |
 | `15de61f` | Watchdog claimed a hung node was safed when `enter_safe_state()` never ran | 3 |
 | `4aa2cb8` | `setup-rt` installed a nonexistent package on Ubuntu and reported success | 6 |
+| `b0b5830` | `--help` claimed a wrong alias and omitted 3 working commands; completions never installed | 4 |
+| `678d52a` | `horus new` blocked without a TTY; templates collided on node name and failed their own linter; `horus test` failed on an empty project | 6 |
 
 ### What each one was
 
@@ -63,6 +65,19 @@ registered. Exit 0, no diagnostic, binary starts with zero nodes.
 site outside blackbox.rs's own tests, so the flight recorder could not record a
 crash. Now written from both panic paths, before the `on_error` callback runs
 so a panic there cannot cost us the record.
+
+## Coverage against the original audit
+
+Of the 61 findings in the first audit: **13 fixed, 2 partial, ~46 open.** The
+work so far has been weighted toward the second round of ~150 findings, which
+contained the more severe defects (deploy shipping no binary, the flight
+recorder unable to record a crash, `setup-rt` reporting success after
+installing nothing).
+
+Fixed from the original 61: ERR-1, CFG-1, CFG-2, CFG-3, HELP-2, HELP-3,
+TOOL-1, PATH-4, PATH-5, PATH-6, LIVE-2, LIVE-8, plus PATH-1 upstream.
+Partial: DOC-3 (subdirectory resolution fixed, global-state scoping not),
+LIVE-7 (counters and health fixed, achieved-rate display not).
 
 ## Next, in order
 
