@@ -75,6 +75,7 @@ Maintenance:
   self update       Update the horus CLI to latest version
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
+  schema            Print the horus.toml JSON Schema (for editor validation)
   setup-rt          Configure the real-time kernel and system settings
 
 Publishing & Deploy:
@@ -809,6 +810,24 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
+    },
+
+    /// Print the JSON Schema for horus.toml (for editor validation)
+    ///
+    /// Point your editor at the output for autocomplete, hover docs and inline
+    /// errors on horus.toml:
+    ///
+    ///   horus schema > horus-schema.json
+    ///
+    /// then in VS Code (Even Better TOML) or any taplo-based setup:
+    ///
+    ///   [[schema]]
+    ///   path = "horus-schema.json"
+    ///   include = ["**/horus.toml"]
+    Schema {
+        /// Write to a file instead of stdout
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
     },
 
     /// Migrate project to unified horus.toml format
@@ -3075,6 +3094,23 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     .map_err(HorusError::from)
             }
         },
+
+        Commands::Schema { output } => {
+            let schema = horus_manager::manifest::generate_manifest_schema();
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &schema).map_err(|e| {
+                        HorusError::Config(ConfigError::Other(format!(
+                            "Failed to write {}: {e}",
+                            path.display()
+                        )))
+                    })?;
+                    println!("Wrote horus.toml JSON Schema to {}", path.display());
+                }
+                None => println!("{schema}"),
+            }
+            Ok(())
+        }
 
         Commands::Migrate { dry_run, force } => {
             commands::migrate::run_migrate(dry_run, force).map_err(HorusError::from)

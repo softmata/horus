@@ -99,8 +99,11 @@ hex = "0.4"
 # ============================================================================
 # DEFAULT FEATURES
 # ============================================================================
-# CLI ships minimal by default
-default = []
+# CLI ships minimal by default, except for `schema`: a tool whose central
+# config file is `horus.toml` should be able to describe it. Without this the
+# generator below is compiled out of the shipped binary, which is why
+# `generate_manifest_schema` had no caller but its own unit test.
+default = ["schema"]
 
 # ============================================================================
 # OPTIONAL FEATURES

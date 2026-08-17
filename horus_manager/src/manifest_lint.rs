@@ -582,6 +582,44 @@ bogus = 1
 
     // ── Contract: the key lists must not drift from the structs ─────────────
 
+    /// The published JSON Schema and this module's key lists must agree.
+    ///
+    /// Both are derived from `HorusManifest`, and both are consumed by users —
+    /// the schema by their editor, these lists by `horus check`. If they
+    /// disagree, one of them is telling the user something false: either the
+    /// editor accepts a key `check` rejects, or `check` accepts a key the
+    /// editor flags. This is the cross-check that keeps two second copies
+    /// honest.
+    #[test]
+    #[cfg(feature = "schema")]
+    fn json_schema_and_lint_agree_on_top_level_keys() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&crate::manifest::generate_manifest_schema())
+                .expect("generate_manifest_schema must emit valid JSON");
+
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("schema must describe top-level properties");
+
+        for key in props.keys() {
+            assert!(
+                KNOWN_TOP_LEVEL.contains(&key.as_str()),
+                "the JSON Schema exposes `{key}` but manifest_lint would warn \
+                 that it is unknown — an editor would accept what `horus check` \
+                 rejects. Add it to KNOWN_TOP_LEVEL."
+            );
+        }
+
+        for known in KNOWN_TOP_LEVEL {
+            assert!(
+                props.contains_key(*known),
+                "manifest_lint accepts `{known}` but the JSON Schema does not \
+                 describe it — an editor would flag a key `horus check` allows."
+            );
+        }
+    }
+
     /// Serializing a fully-populated manifest must not produce a key this
     /// module would flag as unknown.
     ///

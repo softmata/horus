@@ -66,10 +66,13 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
 
         let valid = result.is_ok();
         let error_msg = result.as_ref().err().map(|e| e.to_string());
+        let diagnostics = take_diagnostics();
         let output = serde_json::json!({
             "path": target_path.display().to_string(),
             "valid": valid,
             "error": error_msg,
+            // The findings themselves, not just how many there were.
+            "diagnostics": diagnostics,
         });
         println!(
             "{}",
@@ -83,6 +86,61 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
     } else {
         check_single_file(&target_path, quiet)
     }
+}
+
+/// A single finding from `horus check`, in machine-readable form.
+///
+/// `--json` used to emit only a count:
+///
+/// ```json
+/// { "error": "Configuration error: 1 error(s) found", "valid": false }
+/// ```
+///
+/// while the human output named the actual problem — so the machine-readable
+/// mode was strictly *less* informative than the terminal one, which defeats
+/// the reason it exists. CI and editor integrations got a boolean.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckDiagnostic {
+    /// "error" or "warning".
+    pub severity: &'static str,
+    /// File the finding is in, relative to the scanned root.
+    pub file: String,
+    /// 1-based line, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+thread_local! {
+    /// Findings recorded during the current `horus check` run.
+    ///
+    /// A thread-local rather than a threaded-through parameter: `check` is one
+    /// pass over the workspace on one thread, and the alternative is changing
+    /// the signature of every helper that prints.
+    static DIAGNOSTICS: std::cell::RefCell<Vec<CheckDiagnostic>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a finding so `--json` can report it.
+pub(crate) fn record_diagnostic(
+    severity: &'static str,
+    file: impl Into<String>,
+    line: Option<usize>,
+    message: impl Into<String>,
+) {
+    DIAGNOSTICS.with(|d| {
+        d.borrow_mut().push(CheckDiagnostic {
+            severity,
+            file: file.into(),
+            line,
+            message: message.into(),
+        })
+    });
+}
+
+/// Take everything recorded so far, clearing the buffer.
+fn take_diagnostics() -> Vec<CheckDiagnostic> {
+    DIAGNOSTICS.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
 /// Scan an entire workspace directory
@@ -191,6 +249,12 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                         Ok(warnings) => {
                             for w in &warnings {
                                 println!("      {} {}", "!".yellow(), w);
+                                record_diagnostic(
+                                    "warning",
+                                    rel_path.display().to_string(),
+                                    None,
+                                    w,
+                                );
                             }
                         }
                         Err(e) => {
@@ -208,6 +272,12 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     if !unknown.is_empty() {
                         for key in &unknown {
                             println!("      {} {}", "!".yellow(), key.message());
+                            record_diagnostic(
+                                "warning",
+                                rel_path.display().to_string(),
+                                (key.line > 0).then_some(key.line),
+                                key.message(),
+                            );
                             total_warnings += 1;
                         }
                         println!(
@@ -249,6 +319,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     } else {
                         for err in &file_errors {
                             println!("      {} {}", cli_output::ICON_ERROR.red(), err);
+                            record_diagnostic("error", rel_path.display().to_string(), None, err);
                         }
                         total_errors += file_errors.len();
                     }
