@@ -1648,9 +1648,6 @@ mod resolve_dir_tests {
     use super::*;
     use std::fs;
 
-    /// Serialises the tests below: they all chdir, which is process-global.
-    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn seed_blackbox(root: &Path) -> PathBuf {
         let dir = root.join(".horus").join("blackbox");
         fs::create_dir_all(&dir).unwrap();
@@ -1672,7 +1669,7 @@ mod resolve_dir_tests {
     /// "No blackbox events found" while the records sat in the project.
     #[test]
     fn prefers_project_local_dir_when_it_has_records() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let expected = seed_blackbox(tmp.path());
 
@@ -1691,7 +1688,7 @@ mod resolve_dir_tests {
     /// project-scoped command.
     #[test]
     fn finds_project_dir_from_a_subdirectory() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let expected = seed_blackbox(tmp.path());
         let deep = tmp.path().join("src").join("nested");
@@ -1712,7 +1709,7 @@ mod resolve_dir_tests {
     /// view beats reporting an empty local one.
     #[test]
     fn empty_project_dir_falls_back_to_global() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join(".horus").join("blackbox")).unwrap();
 
@@ -1731,7 +1728,7 @@ mod resolve_dir_tests {
     /// Outside any project, the global directory is still used.
     #[test]
     fn no_project_dir_falls_back_to_global() {
-        let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
 
         let prev = std::env::current_dir().unwrap();

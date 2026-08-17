@@ -390,6 +390,73 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
 }
 
 /// Run the deploy command for a single target.
+/// Default rsync excludes.
+///
+/// `target` is excluded as a bare pattern, and rsync matches such a pattern
+/// against *any* path component — so it also matched `.horus/target/`, which
+/// is exactly where `horus build` puts the Rust binary. The deploy shipped
+/// 37 KB of source, excluded the 2.8 MB executable it had just built, exec'd
+/// a path that had never been transferred, and printed "Deployment complete!".
+///
+/// The exclude stays — the intermediates tree is ~370 MB and must not ship —
+/// and the single artifact is transferred by a second, explicit rsync in
+/// [`sync_binary_to_target`]. Re-admitting it with `--include` rules was tried
+/// and rejected: rsync descends into any directory a rule includes, so the
+/// wildcard needed for cross-compiled target triples pulled the whole tree
+/// back in (measured: 1,229 files, 367,917,030 bytes).
+///
+/// The secret patterns are not hygiene: every deploy previously shipped
+/// `.horus/deploy.yaml`, which lists every robot's host, port and SSH
+/// identity path — so compromising one robot handed over the whole fleet's
+/// inventory.
+/// Quote a remote path for `sh -c`, leaving a leading `~` unquoted.
+///
+/// `cd '~/horus_deploy'` does not work: POSIX tilde expansion happens before
+/// quote removal only for an *unquoted* tilde, so the shell looks for a
+/// literal directory named `~`. rsync's destination form (`host:~/dir/`) is
+/// expanded by the remote shell, so files land in `$HOME/dir` — and the run
+/// step could never reach them.
+fn shell_quote_preserving_tilde(path: &str) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+
+    if path == "~" {
+        return "~".to_string();
+    }
+    match path.strip_prefix("~/") {
+        // `~/rest` -> `~/'rest'`: tilde expands, the rest stays literal.
+        Some(rest) if !rest.is_empty() => format!("~/{}", quote(rest)),
+        Some(_) => "~/".to_string(),
+        None => quote(path),
+    }
+}
+
+fn default_excludes() -> Vec<String> {
+    [
+        // Build trees, including .horus/target. The one artifact we need is
+        // transferred separately by sync_binary_to_target.
+        "target",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "*.pyc",
+        // Never ship the fleet inventory to a member of the fleet.
+        ".horus/deploy.yaml",
+        // Nor credentials that happen to sit in the project directory.
+        ".env",
+        ".env.*",
+        "id_rsa",
+        "id_ed25519",
+        "*.pem",
+        "*.key",
+        // Host-specific CMake state; absolute paths from the developer's machine.
+        ".horus/cpp-build/CMakeCache.txt",
+        ".horus/cpp-build/CMakeFiles",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
     let DeployArgs {
         target,
@@ -432,13 +499,7 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
         release,
         port: effective_port,
         identity: effective_identity,
-        excludes: vec![
-            "target".to_string(),
-            ".git".to_string(),
-            "node_modules".to_string(),
-            "__pycache__".to_string(),
-            "*.pyc".to_string(),
-        ],
+        excludes: default_excludes(),
         skip_confirm: false,
     };
 
@@ -626,9 +687,30 @@ fn build_for_target_rust(config: &DeployConfig) -> HorusResult<()> {
         }
     }
 
-    // Build the project
+    // Build the project.
+    //
+    // A stock `horus new -r` project has no root Cargo.toml — horus generates
+    // one into `.horus/` at build time. Invoking bare `cargo build` here
+    // therefore failed on the standard project layout, sixty seconds after the
+    // user watched `horus build` generate that exact file:
+    //
+    //     error: could not find `Cargo.toml` in .../rustbot or any parent
+    //
+    // Point cargo at the generated manifest when it exists, and fall back to
+    // the root one for projects that keep a hand-written Cargo.toml.
     let mut cmd = Command::new("cargo");
     cmd.arg("build");
+
+    let generated_manifest = std::path::Path::new(".horus").join("Cargo.toml");
+    if generated_manifest.is_file() {
+        cmd.args(["--manifest-path", &generated_manifest.to_string_lossy()]);
+    } else if !std::path::Path::new("Cargo.toml").is_file() {
+        return Err(HorusError::Config(ConfigError::Other(
+            "No Cargo.toml found. Run `horus build` first so the manifest in \
+             .horus/ is generated, or add a Cargo.toml to the project root."
+                .to_string(),
+        )));
+    }
 
     if config.release {
         cmd.arg("--release");
@@ -800,7 +882,130 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
     }
 
     println!("  {} Files synced", cli_output::ICON_SUCCESS.green());
+
+    sync_binary_to_target(config)?;
+
     Ok(())
+}
+
+/// Transfer the built Rust binary, which the main sync deliberately excludes.
+///
+/// The `target` exclude keeps ~370 MB of build intermediates off the wire, but
+/// rsync matches that pattern against any path component, so it also caught
+/// `.horus/target/` — the one directory holding the artifact. The deploy
+/// shipped 37 KB of source, skipped the 2.8 MB executable, then exec'd a path
+/// that had never been transferred and reported success.
+///
+/// A second explicit transfer is used rather than `--include` rules because
+/// rsync descends into any directory a rule includes: the wildcard needed to
+/// cover cross-compiled target triples re-admitted the entire tree (measured at
+/// 1,229 files / 367,917,030 bytes).
+///
+/// Absent a binary — a Python project, or a build that has not run — this is a
+/// no-op, so C++ and Python deploys are unaffected.
+fn sync_binary_to_target(config: &DeployConfig) -> HorusResult<()> {
+    let Some(local) = locate_built_binary(config) else {
+        return Ok(());
+    };
+
+    println!(
+        "  {} Transferring binary ({})",
+        cli_output::ICON_INFO.cyan(),
+        local.display()
+    );
+
+    // `--relative` sends the path as given and recreates that structure under
+    // the destination, so `.horus/target/release/<bin>` lands at exactly the
+    // path the run step later execs. It also creates the intermediate
+    // directories, which a plain transfer will not — and unlike
+    // `--rsync-path "mkdir -p ..."` it works for a local destination too.
+    let mut cmd = Command::new("rsync");
+    cmd.args(["-avz", "--relative"]);
+    // One -e carries both the port and the identity; passing the flag twice
+    // would leave only the last, silently dropping the other.
+    let mut ssh = String::from("ssh");
+    if config.port != 22 {
+        ssh.push_str(&format!(" -p {}", config.port));
+    }
+    if let Some(ref identity) = config.identity {
+        ssh.push_str(&format!(" -i {}", identity.display()));
+    }
+    if ssh != "ssh" {
+        cmd.args(["-e", &ssh]);
+    }
+
+    cmd.arg(local.to_string_lossy().to_string());
+    cmd.arg(format!("{}:{}/", config.target, config.remote_dir));
+
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    let status = cmd.status().map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to run rsync for the binary: {e}"
+        )))
+    })?;
+
+    if !status.success() {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "Failed to transfer the built binary ({}). The robot would have \
+             received source without an executable.",
+            local.display()
+        ))));
+    }
+
+    println!("  {} Binary transferred", cli_output::ICON_SUCCESS.green());
+    Ok(())
+}
+
+/// Find the built Rust binary for the configured profile.
+///
+/// Checks the cross-compiled location first, then the host one, mirroring
+/// where `build_for_target` puts them.
+fn locate_built_binary(config: &DeployConfig) -> Option<std::path::PathBuf> {
+    let name = find_binary_name()?;
+    locate_built_binary_in(std::path::Path::new("."), &name, config)
+}
+
+/// [`locate_built_binary`] rooted at an explicit directory.
+///
+/// Split out so tests can point at a fixture without `set_current_dir`, which
+/// is process-global: the first version of these tests raced two unrelated
+/// `config` tests that also resolve paths relative to the working directory,
+/// and failed them.
+fn locate_built_binary_in(
+    root: &std::path::Path,
+    name: &str,
+    config: &DeployConfig,
+) -> Option<std::path::PathBuf> {
+    let profile = if config.release { "release" } else { "debug" };
+    let triple = config.arch.rust_target();
+
+    let mut relatives = Vec::new();
+    if !triple.is_empty() {
+        relatives.push(
+            std::path::PathBuf::from(".horus/target")
+                .join(triple)
+                .join(profile)
+                .join(name),
+        );
+    }
+    relatives.push(
+        std::path::PathBuf::from(".horus/target")
+            .join(profile)
+            .join(name),
+    );
+    if !triple.is_empty() {
+        relatives.push(
+            std::path::PathBuf::from("target")
+                .join(triple)
+                .join(profile)
+                .join(name),
+        );
+    }
+    relatives.push(std::path::PathBuf::from("target").join(profile).join(name));
+
+    relatives.into_iter().find(|rel| root.join(rel).is_file())
 }
 
 /// Run the project on the target
@@ -809,14 +1014,28 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
 
     let (run_command, display_name) = match language {
         Language::Rust => {
-            let binary_name = find_binary_name().unwrap_or_else(|| "horus_project".to_string());
-            let target = config.arch.rust_target();
-            let mode = if config.release { "release" } else { "debug" };
-
-            let binary_path = if target.is_empty() {
-                format!("./target/{}/{}", mode, binary_name)
-            } else {
-                format!("./target/{}/{}/{}", target, mode, binary_name)
+            // Derive the remote path from the artifact that was actually
+            // transferred. `sync_binary_to_target` sends it with `--relative`,
+            // so the remote layout mirrors the local one exactly.
+            //
+            // These two used to be computed independently: the run step assumed
+            // `./target/<mode>/<bin>` while `horus build` puts the binary under
+            // `.horus/target/`. Even once the transfer was fixed, exec'ing a
+            // hand-built path would have missed it — so the location is now
+            // resolved in one place and reused.
+            let binary_path = match locate_built_binary(config) {
+                Some(p) => format!("./{}", p.display()),
+                None => {
+                    let binary_name =
+                        find_binary_name().unwrap_or_else(|| "horus_project".to_string());
+                    let target = config.arch.rust_target();
+                    let mode = if config.release { "release" } else { "debug" };
+                    if target.is_empty() {
+                        format!("./.horus/target/{}/{}", mode, binary_name)
+                    } else {
+                        format!("./.horus/target/{}/{}/{}", target, mode, binary_name)
+                    }
+                }
             };
             (
                 format!("'{}'", binary_path.replace('\'', "'\\''")),
@@ -839,8 +1058,15 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
         }
     };
 
-    let escaped_dir = config.remote_dir.replace('\'', "'\\''");
-    let remote_cmd = format!("cd '{}' && {}", escaped_dir, run_command);
+    // A leading `~` must stay outside the quotes or the remote shell will not
+    // expand it: `cd '~/horus_deploy'` fails with "can't cd to ~/horus_deploy"
+    // even though rsync's own destination (`host:~/horus_deploy/`) *was*
+    // expanded, so the files are there and the run step cannot reach them.
+    let remote_cmd = format!(
+        "cd {} && {}",
+        shell_quote_preserving_tilde(&config.remote_dir),
+        run_command
+    );
 
     // Build SSH command with ConnectTimeout
     let mut cmd = Command::new("ssh");
@@ -1950,6 +2176,194 @@ targets:
         assert!(
             empty.is_none(),
             "Empty string must return None for architecture"
+        );
+    }
+}
+
+#[cfg(test)]
+mod deploy_transfer_tests {
+    use super::*;
+
+    // ── The binary must survive the exclude list ────────────────────────────
+
+    /// rsync matches a bare `target` against *any* path component, so the old
+    /// exclude also matched `.horus/target/` — where `horus build` puts the
+    /// Rust binary. The deploy shipped 37 KB of source, excluded the 2.8 MB
+    /// executable it had just built, exec'd a path that was never transferred,
+    /// and printed "Deployment complete!".
+    /// The transfer path and the exec path must agree. They were computed
+    /// independently — the run step assumed `./target/<mode>/<bin>` while
+    /// `horus build` puts the artifact under `.horus/target/` — so even a
+    /// fixed transfer would have been exec'd at the wrong path.
+    #[test]
+    fn the_run_path_matches_where_the_binary_is_shipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".horus/target/release");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rbot"), b"\x7fELF").unwrap();
+
+        let cfg = DeployConfig {
+            release: true,
+            ..Default::default()
+        };
+        let shipped =
+            locate_built_binary_in(tmp.path(), "rbot", &cfg).map(|p| format!("./{}", p.display()));
+
+        assert_eq!(
+            shipped.as_deref(),
+            Some("./.horus/target/release/rbot"),
+            "the exec path must be the transferred path"
+        );
+    }
+
+    /// The artifact the main sync excludes must be found so it can be
+    /// transferred separately — otherwise the robot gets source and no
+    /// executable.
+    #[test]
+    fn locate_built_binary_finds_the_generated_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".horus/target/release");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rbot"), b"\x7fELF").unwrap();
+
+        let cfg = DeployConfig {
+            release: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            locate_built_binary_in(tmp.path(), "rbot", &cfg),
+            Some(std::path::PathBuf::from(".horus/target/release/rbot"))
+        );
+    }
+
+    /// A cross-compiled build lands under an extra target-triple directory and
+    /// must be preferred over a stale host build.
+    #[test]
+    fn cross_compiled_layout_is_preferred() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = DeployConfig {
+            release: true,
+            arch: TargetArch::Aarch64,
+            ..Default::default()
+        };
+        let triple = cfg.arch.rust_target();
+
+        let host = tmp.path().join(".horus/target/release");
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::write(host.join("rbot"), b"stale").unwrap();
+
+        let cross = tmp
+            .path()
+            .join(".horus/target")
+            .join(triple)
+            .join("release");
+        std::fs::create_dir_all(&cross).unwrap();
+        std::fs::write(cross.join("rbot"), b"\x7fELF").unwrap();
+
+        let found = locate_built_binary_in(tmp.path(), "rbot", &cfg).unwrap();
+        assert!(
+            found.to_string_lossy().contains(triple),
+            "cross build must win over a stale host build, got {}",
+            found.display()
+        );
+    }
+
+    /// A Python or C++ project has no Rust artifact; the extra transfer must
+    /// be a no-op rather than an error.
+    #[test]
+    fn locate_built_binary_is_none_without_a_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = DeployConfig::default();
+        assert!(locate_built_binary_in(tmp.path(), "pybot", &cfg).is_none());
+    }
+
+    #[test]
+    fn build_intermediates_stay_excluded() {
+        let ex = default_excludes();
+        assert!(
+            ex.contains(&"target".to_string()),
+            "the ~370 MB intermediates tree must not ship: {ex:?}"
+        );
+    }
+
+    /// The artifact the main sync excludes must be found and transferred
+    /// separately — otherwise the robot gets source and no executable.
+    #[test]
+    fn secrets_and_fleet_inventory_are_excluded() {
+        let ex = default_excludes();
+        for pattern in [
+            ".horus/deploy.yaml",
+            ".env",
+            "id_rsa",
+            "id_ed25519",
+            "*.pem",
+            "*.key",
+        ] {
+            assert!(
+                ex.contains(&pattern.to_string()),
+                "`{pattern}` must be excluded by default: {ex:?}"
+            );
+        }
+    }
+
+    /// Excluding a top-level `target/` is still wanted — a developer who ran
+    /// plain `cargo build` should not rsync their whole debug tree.
+    #[test]
+    fn ordinary_build_trees_are_still_excluded() {
+        let ex = default_excludes();
+        for pattern in [".git", "node_modules", "__pycache__", "*.pyc"] {
+            assert!(
+                ex.contains(&pattern.to_string()),
+                "{pattern} missing: {ex:?}"
+            );
+        }
+    }
+
+    // ── The remote `cd` must be able to expand `~` ──────────────────────────
+
+    /// `cd '~/horus_deploy'` fails: tilde expansion only happens for an
+    /// unquoted tilde, so the shell looks for a literal directory named `~`.
+    /// rsync's destination *is* expanded, so the files are there — and every
+    /// `horus deploy --run` with default settings could not reach them.
+    #[test]
+    fn tilde_stays_unquoted_so_the_remote_shell_expands_it() {
+        let q = shell_quote_preserving_tilde("~/horus_deploy");
+        assert!(
+            q.starts_with('~'),
+            "a leading ~ must not be quoted, got {q}"
+        );
+        assert!(!q.starts_with("'~"), "got {q}");
+        assert!(q.contains("horus_deploy"), "got {q}");
+    }
+
+    #[test]
+    fn bare_tilde_is_passed_through() {
+        assert_eq!(shell_quote_preserving_tilde("~"), "~");
+    }
+
+    /// Absolute and relative paths carry no tilde and must be fully quoted, so
+    /// a directory containing spaces still works.
+    #[test]
+    fn non_tilde_paths_are_quoted() {
+        assert_eq!(shell_quote_preserving_tilde("/opt/robot"), "'/opt/robot'");
+        assert_eq!(
+            shell_quote_preserving_tilde("/opt/my robot"),
+            "'/opt/my robot'"
+        );
+    }
+
+    /// Quoting must still defeat injection through a crafted remote_dir.
+    #[test]
+    fn single_quotes_in_the_path_cannot_break_out() {
+        let q = shell_quote_preserving_tilde("/opt/rm -rf /");
+        assert!(q.starts_with('\'') && q.ends_with('\''), "got {q}");
+
+        let evil = shell_quote_preserving_tilde("~/a'; rm -rf /; echo '");
+        // The tilde is bare, but everything after it stays inside quotes.
+        assert!(evil.starts_with("~/'"), "got {evil}");
+        assert!(
+            evil.matches("'\\''").count() > 0,
+            "embedded quotes must be escaped, got {evil}"
         );
     }
 }
