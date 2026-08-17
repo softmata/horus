@@ -1728,6 +1728,37 @@ impl Scheduler {
             no_alloc: config.no_alloc,
         });
 
+        // Say when real-time enforcement was inferred rather than requested.
+        //
+        // `.rate(f)` alone promotes the node to RT and derives a budget and a
+        // deadline. Deadline misses drive the degradation ladder, whose terminal
+        // actions are ReduceRate, Isolate and Kill — so a plain
+        // `Node(name=..., tick=..., rate=30)` doing 50 ms of work was
+        // permanently stopped for exceeding a budget nobody chose:
+        //
+        //     Degradation: ReduceRate{new_rate_hz: 15.0} after 5 consecutive misses
+        //     Degradation: Isolate("plain_node") after 10 consecutive misses
+        //     Degradation: 'plain_node' — isolated, entered safe state
+        //
+        // The derivation is deliberate and useful; doing it silently is not.
+        // Unconditional because a user who is about to have a node stopped
+        // should not have to have passed --verbose to find out why. Once per
+        // node at registration, so there is no hot-path cost.
+        if config.deadline_auto {
+            if let (Some(budget), Some(deadline)) = (tick_budget, deadline) {
+                print_line(&format!(
+                    "  Note: '{}' is real-time (from .rate()). Budget {:.1}ms, \
+                     deadline {:.1}ms were derived, and sustained misses will \
+                     reduce its rate and then isolate it. Set .budget()/.deadline() \
+                     to choose them, or an execution class (.compute(), .async_io()) \
+                     to opt out.",
+                    node_name,
+                    budget.as_secs_f64() * 1000.0,
+                    deadline.as_secs_f64() * 1000.0,
+                ));
+            }
+        }
+
         if let Some(rate) = node_rate {
             if self.pending_config.monitoring.verbose {
                 print_line(&format!(

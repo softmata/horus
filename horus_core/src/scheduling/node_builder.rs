@@ -103,6 +103,18 @@ use std::time::Duration;
 pub struct NodeRegistration {
     /// The node to add (either regular or RT)
     pub(crate) node: NodeKind,
+    /// Whether the deadline was derived from `.rate()` rather than requested.
+    ///
+    /// `.rate(f)` alone promotes a node to RT and derives both a budget and a
+    /// deadline. Deadline misses drive the degradation ladder, whose terminal
+    /// actions are ReduceRate, Isolate and Kill — so a plain
+    /// `Node(name=..., tick=..., rate=30)` doing 50 ms of work was permanently
+    /// stopped for exceeding a budget nobody chose, with no indication that
+    /// real-time enforcement had been switched on at all.
+    ///
+    /// The derivation itself is deliberate and well covered by tests; the
+    /// problem was that it happened silently. This flag lets `add()` say so.
+    pub(crate) deadline_auto: bool,
     /// Execution order tiebreaker for independent nodes (lower = earlier, default: 0).
     /// With the dependency graph, ordering is automatic from topic metadata.
     /// This value only matters for nodes with no topic relationship.
@@ -151,6 +163,7 @@ impl NodeRegistration {
     pub fn new(node: Box<dyn Node>) -> Self {
         Self {
             node: NodeKind::new(node),
+            deadline_auto: false,
             order: 0, // Default: no preference (graph handles ordering from topics)
             rate_hz: None,
             is_rt: false,
@@ -501,6 +514,10 @@ impl NodeRegistration {
                 }
                 if self.deadline.is_none() {
                     self.deadline = Some(freq.deadline_default());
+                    // Record that enforcement was inferred, not requested, so
+                    // `Scheduler::add` can say so rather than switching on the
+                    // degradation ladder in silence.
+                    self.deadline_auto = true;
                 }
             }
             // Auto-enable RT if no explicit execution class was set
@@ -1179,6 +1196,54 @@ mod tests {
     // ── .rate() auto-derives budget & deadline ──
 
     #[test]
+    /// `.rate()` alone switches on real-time *enforcement*: the derived
+    /// deadline drives the degradation ladder, whose terminal actions are
+    /// ReduceRate, Isolate and Kill. A plain 30 Hz node doing 50 ms of work was
+    /// permanently stopped for exceeding a budget nobody chose, with nothing
+    /// said about it. The derivation stays — it is deliberate and useful — but
+    /// it must be announced, so `Scheduler::add` needs to know it happened.
+    #[test]
+    fn rate_alone_marks_the_deadline_as_inferred() {
+        let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz());
+        reg.finalize();
+        assert!(
+            reg.deadline_auto,
+            "a deadline derived from .rate() must be flagged as inferred"
+        );
+    }
+
+    /// An explicitly requested deadline is not inferred, so no notice is shown.
+    #[test]
+    fn explicit_deadline_is_not_marked_inferred() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(100_u64.hz())
+            .deadline(Duration::from_micros(900));
+        reg.finalize();
+        assert!(!reg.deadline_auto, "the user asked for this deadline");
+        assert_eq!(reg.deadline, Some(Duration::from_micros(900)));
+    }
+
+    /// An explicit budget implies the deadline, which is still a deliberate
+    /// request rather than an inference from the rate.
+    #[test]
+    fn explicit_budget_derived_deadline_is_not_marked_inferred() {
+        let mut reg = NodeRegistration::new(stub("n")).budget(Duration::from_micros(500));
+        reg.finalize();
+        assert!(!reg.deadline_auto, "budget was explicit");
+        assert_eq!(reg.deadline, Some(Duration::from_micros(500)));
+    }
+
+    /// A node with an explicit execution class never enters the RT path, so
+    /// there is nothing to announce.
+    #[test]
+    fn compute_class_has_no_inferred_deadline() {
+        let mut reg = NodeRegistration::new(stub("n"))
+            .rate(100_u64.hz())
+            .compute();
+        reg.finalize();
+        assert!(!reg.deadline_auto);
+    }
+
     fn test_rate_auto_derives_budget_and_deadline() {
         let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz());
         reg.finalize();
