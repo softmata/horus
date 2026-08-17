@@ -11,6 +11,9 @@ verified end to end against a release build.
 | `bf75961` | `message!` recursion trap on four natural syntax mistakes | 5 (trybuild) |
 | `cc78d2c` | RT degradation invisible; cargo warnings discarded; `HORUS_SIM_MODE=0` enabled sim; health count underflow; negative param values rejected | 4 |
 | `55e016e` | Panics never reached the blackbox; blackbox unreachable from a subdirectory | 5 |
+| `ed12cc9` | Failed ticks never counted; a node failing every tick reported Healthy | 1 (extended) |
+| `78ad724` | `horus deploy` excluded its own binary; built the wrong manifest; could not expand `~` | 11 |
+| `ee0dfca` | `--net` was a no-op; `horus run` escalated to sudo with no prompt | 6 |
 
 ### What each one was
 
@@ -63,29 +66,32 @@ so a panic there cannot cost us the record.
 Ranked by consequence per unit of work. Items 1–4 are one theme: the safety
 story is the least-tested part of the framework.
 
-1. **Increment `failed_ticks`/`errors_count` in the executors' panic branches.**
-   A node panicking every tick reports `Health: Healthy, Errors: 0, Total
-   Ticks: 0`. `record_tick_failure` exists and is correct; only the main-thread
-   path calls it. Same code sites as the blackbox fix above.
-2. **`horus deploy` excludes the binary it built.** `--exclude target` also
-   matches `.horus/target/`. 37 KB of source ships and it prints "Deployment
-   complete!". Two more fatal defects on the same path: deploy shells out to
-   raw `cargo build` in a directory with no `Cargo.toml`, and `--run` builds
-   `cd '~/horus_deploy'` with the tilde inside single quotes.
-3. **`.rate()` silently implies hard real-time.** Every plain Python node is
-   classified `Rt`, given an auto budget, and isolated for exceeding it. The
-   docs state the inverse rule twice. `BestEffort` is unreachable from Python.
-4. **Safe-state is dispatched onto the stalled thread.** For the canonical
+1. **`.rate()` silently implies hard real-time.** Every plain Python node is
+   classified `Rt`, given an auto-derived budget of 80% of its period, and
+   isolated — permanently stopped — for exceeding it. The docs state the
+   inverse rule twice. `BestEffort` is unreachable from Python (`rate=None`
+   raises a raw `TypeError`, `rate=0` is rejected).
+
+   Note the safer shape: rather than reclassifying (breaking for anyone
+   relying on `.rate()` giving RT), consider keeping the RT thread but making
+   the *auto-derived budget* opt-in. The isolation is the harm, not the
+   scheduling.
+2. **Safe-state is dispatched onto the stalled thread.** For the canonical
    watchdog case — a hung node — it can never run, while the log says "safing
-   requested". Say what is true, and add a scheduler-level fallback.
-5. **`horus setup-rt` installs a Debian package name on Ubuntu**, swallows the
+   requested" and then goes quiet. A roboticist reads that as "the motors were
+   stopped". Say what is true, and add a scheduler-level fallback that runs off
+   the stalled thread.
+3. **Python nodes cannot implement `enter_safe_state()`** at all — the binding
+   forwards only `init`/`tick`/`shutdown`, so the hook the degradation ladder
+   terminates in is a no-op for every Python node.
+4. **`horus setup-rt` installs a Debian package name on Ubuntu**
+   (`linux-image-rt-amd64`; Ubuntu's is `linux-image-realtime`), swallows the
    failure, prints "Setup complete", and tells you to reboot into an RT kernel
-   you do not have.
-6. **`horus run --net` is a no-op** — the `net` feature is never enabled, so
-   `horus_net` is unreachable from the documented path.
-7. **`horus run` executes `sudo apt install -y` with no prompt.** The prompt to
-   reuse already exists in `registry/helpers.rs`.
-8. **Wire `npm run verify:code` into docs CI.** The harness already exists in
+   you do not have. It also has no confirmation and no dry-run before
+   `sudo apt install` of a kernel.
+5. **Recording captures no payload for RT or C++ nodes** — 2,271 snapshots,
+   zero bytes — and loses everything on an abnormal exit.
+6. **Wire `npm run verify:code` into docs CI.** The harness already exists in
    the docs repo and would mechanically catch the large set of documented APIs
    that do not exist.
 
@@ -101,3 +107,12 @@ story is the least-tested part of the framework.
 - `manifest_lint`'s key lists are a hand-maintained second copy, so
   `manifest_lint_covers_all_manifest_fields` round-trips a populated
   `HorusManifest` and fails the build if a field is added without listing it.
+- Tests that `set_current_dir` must take `crate::CWD_LOCK`. A private lock only
+  serialises a module against itself, which is how two unrelated `config` tests
+  started failing; the deploy tests were rewritten to take an explicit root
+  instead so they do not chdir at all.
+- Two fixes in this branch were wrong on the first attempt and are recorded in
+  their commit messages rather than quietly amended: re-admitting the deploy
+  binary with rsync `--include` rules (pulled the whole 367 MB tree back in),
+  and routing `--net` through `--features` (cargo rejects it — that flag
+  applies to the user's crate, not the dependency).
