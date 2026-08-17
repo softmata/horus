@@ -250,19 +250,51 @@ fn write_implicit_deps(cargo: &mut String, manifest: &HorusManifest) {
     }
 }
 
-fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &HorusManifest) {
-    // Detect hardware features from manifest
-    let hw_features: Vec<&str> = manifest
+/// Features to enable on the `horus` dependency.
+///
+/// `horus run --net` used to set `HORUS_NET=1` and stop there. That variable is
+/// read in exactly one place — `horus doctor` — and the `net` Cargo feature is
+/// not in `default`, so nothing ever enabled it: the built binary contained no
+/// horus_net symbols at all. A developer wiring two robots saw a normal run
+/// with zero networking output and concluded multicast was blocked, while
+/// 10.8k lines of horus_net sat unreachable behind the flag that advertises it.
+///
+/// It belongs here rather than in `--features`, which applies to the *user's*
+/// crate: cargo rejects `--features net` with "the package does not contain
+/// this feature".
+fn horus_dep_features(manifest: &HorusManifest) -> Vec<String> {
+    let mut features: Vec<String> = manifest
         .drivers
         .keys()
         .filter_map(|k| match k.as_str() {
-            "camera" => Some("camera"),
-            "lidar" => Some("lidar"),
-            "imu" => Some("imu"),
-            "gps" => Some("gps"),
+            "camera" => Some("camera".to_string()),
+            "lidar" => Some("lidar".to_string()),
+            "imu" => Some("imu".to_string()),
+            "gps" => Some("gps".to_string()),
             _ => None,
         })
         .collect();
+
+    let requested_net = std::env::var("HORUS_ENABLE")
+        .map(|v| {
+            v.split(',')
+                .any(|c| matches!(c.trim().to_lowercase().as_str(), "net" | "network"))
+        })
+        .unwrap_or(false)
+        || manifest
+            .enable
+            .iter()
+            .any(|c| matches!(c.to_lowercase().as_str(), "net" | "network"));
+
+    if requested_net && !features.iter().any(|f| f == "net") {
+        features.push("net".to_string());
+    }
+    features
+}
+
+fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &HorusManifest) {
+    // Detect hardware features from manifest
+    let hw_features: Vec<String> = horus_dep_features(manifest);
 
     for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
         let dep_path = horus_source.join(dep_name);
@@ -994,6 +1026,86 @@ fn rewrite_member_path_dep(
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod horus_dep_feature_tests {
+    use super::*;
+    use crate::manifest::HorusManifest;
+
+    /// Serialises the env-var mutation below; HORUS_ENABLE is process-global.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_enable<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("HORUS_ENABLE").ok();
+        match value {
+            Some(v) => std::env::set_var("HORUS_ENABLE", v),
+            None => std::env::remove_var("HORUS_ENABLE"),
+        }
+        let out = f();
+        match prev {
+            Some(v) => std::env::set_var("HORUS_ENABLE", v),
+            None => std::env::remove_var("HORUS_ENABLE"),
+        }
+        out
+    }
+
+    /// `horus run --net` set HORUS_NET=1 and stopped. That variable is read
+    /// only by `horus doctor`, and the `net` feature is not in `default`, so
+    /// the built binary contained no horus_net at all — the flag advertising
+    /// "transparent cross-machine topics" enabled nothing.
+    ///
+    /// Verified against cargo: adding `features = ["net"]` to the horus dep
+    /// takes horus_net from 0 to 1 occurrences in `cargo tree`.
+    #[test]
+    fn net_capability_enables_the_feature_on_the_horus_dep() {
+        let m = HorusManifest::default();
+        let features = with_enable(Some("net"), || horus_dep_features(&m));
+        assert!(
+            features.contains(&"net".to_string()),
+            "--net must reach the horus dependency: {features:?}"
+        );
+    }
+
+    #[test]
+    fn network_is_accepted_as_an_alias() {
+        let m = HorusManifest::default();
+        assert!(
+            with_enable(Some("network"), || horus_dep_features(&m)).contains(&"net".to_string())
+        );
+        assert!(with_enable(Some("NET"), || horus_dep_features(&m)).contains(&"net".to_string()));
+    }
+
+    /// It must be opt-in: an ordinary build must not link the network stack.
+    #[test]
+    fn net_is_absent_by_default() {
+        let m = HorusManifest::default();
+        let features = with_enable(None, || horus_dep_features(&m));
+        assert!(!features.contains(&"net".to_string()), "{features:?}");
+    }
+
+    /// `enable = ["net"]` in horus.toml is equivalent to the flag.
+    #[test]
+    fn manifest_enable_list_also_works() {
+        let mut m = HorusManifest::default();
+        m.enable = vec!["net".to_string()];
+        let features = with_enable(None, || horus_dep_features(&m));
+        assert!(features.contains(&"net".to_string()), "{features:?}");
+    }
+
+    /// Requesting it twice must not emit a duplicate feature.
+    #[test]
+    fn net_is_not_duplicated() {
+        let mut m = HorusManifest::default();
+        m.enable = vec!["net".to_string()];
+        let features = with_enable(Some("net,network"), || horus_dep_features(&m));
+        assert_eq!(
+            features.iter().filter(|f| *f == "net").count(),
+            1,
+            "{features:?}"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

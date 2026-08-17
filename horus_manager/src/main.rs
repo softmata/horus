@@ -2077,9 +2077,21 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 horus_manager::error_wrapper::set_json_diagnostics(true);
             }
 
-            // Set HORUS_NET env var if --net flag is used
+            // `--net` used to set this variable and stop there. HORUS_NET is
+            // read in exactly one place — `horus doctor` — so the flag never
+            // reached the build: the `net` Cargo feature is not in `default`,
+            // the generated manifest carried no `features = ["net"]`, and the
+            // resulting binary contained no horus_net symbols at all.
+            //
+            // Push it through the capability list as well, which is what
+            // actually turns into `cargo --features`.
+            let mut enable = enable;
             if net {
                 std::env::set_var("HORUS_NET", "1");
+                let list = enable.get_or_insert_with(Vec::new);
+                if !list.iter().any(|c| c.eq_ignore_ascii_case("net")) {
+                    list.push("net".to_string());
+                }
             }
 
             setup_horus_env(&drivers, &enable, &record);

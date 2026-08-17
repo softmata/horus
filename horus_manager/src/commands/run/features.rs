@@ -261,6 +261,12 @@ pub fn enable_to_features(capability: &str) -> Vec<String> {
         // Backend features
         "opencv" | "opencv-backend" => vec!["opencv-backend".to_string()],
 
+        // LAN replication is enabled on the `horus` dependency in the generated
+        // manifest (see cargo_gen::write_horus_path_deps), not as a feature of
+        // the user's own crate — passing it here yields
+        // "the package does not contain this feature: net".
+        "net" | "network" => vec![],
+
         // Performance features
         "io-uring" | "io-uring-net" => vec!["io-uring-net".to_string()],
         "ultra-low-latency" => vec!["ultra-low-latency".to_string()],
@@ -656,6 +662,22 @@ mod tests {
     // ── enable_to_features ──────────────────────────────────────────────────
 
     #[test]
+    /// `horus run --net` set HORUS_NET=1 and nothing else. That variable is
+    /// read only by `horus doctor`, the `net` Cargo feature is not in
+    /// `default`, and nothing else added it — so the flag never reached the
+    /// build. The generated manifest had no `features = ["net"]`, the binary
+    /// contained no horus_net symbols, and the user saw a normal run with zero
+    /// networking output.
+    /// `net` must NOT become a `--features` flag on the user's crate: cargo
+    /// rejects it with "the package 'x' does not contain this feature: net".
+    /// It is applied to the `horus` dependency in the generated manifest
+    /// instead — see `cargo_gen::horus_dep_features`.
+    #[test]
+    fn net_is_not_a_user_crate_feature() {
+        assert!(enable_to_features("net").is_empty());
+        assert!(enable_to_features("network").is_empty());
+    }
+
     fn enable_to_features_cuda() {
         assert_eq!(enable_to_features("cuda"), vec!["cuda"]);
     }

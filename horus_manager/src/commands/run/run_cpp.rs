@@ -417,8 +417,47 @@ fn ensure_system_deps(project_dir: &Path) -> Result<()> {
     }
 
     let apt_names: Vec<&str> = missing.iter().map(|(_, apt)| apt.as_str()).collect();
+
+    // Ask before escalating. `horus run` is the first command every user types,
+    // and this path used to go straight to `sudo apt install -y` with no
+    // prompt, no --yes opt-in, no dry-run and no way to decline — triggered by
+    // nothing more than a `pcl = "1.13"` line in [dependencies]. On a machine
+    // with NOPASSWD sudo that installed system-wide packages the user never
+    // approved; in CI and containers it simply failed.
+    //
+    // `registry/helpers.rs` already prompts before its own sudo call; this is
+    // the same contract. HORUS_AUTO_INSTALL=1 keeps unattended builds working.
+    let auto_yes = std::env::var("HORUS_AUTO_INSTALL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false);
+
     eprintln!(
-        "{} Installing missing C++ dependencies: {}",
+        "{} Missing C++ dependencies: {}",
+        cli_output::ICON_INFO.cyan(),
+        apt_names.join(", ").yellow()
+    );
+
+    if !auto_yes {
+        use std::io::Write;
+        eprint!("  {} Install them with sudo apt? [y/N]: ", "?".cyan());
+        std::io::stderr().flush().ok();
+
+        let mut input = String::new();
+        let accepted = std::io::stdin().read_line(&mut input).is_ok()
+            && matches!(input.trim().to_lowercase().as_str(), "y" | "yes");
+
+        if !accepted {
+            eprintln!(
+                "{} Skipped. Install manually, or set HORUS_AUTO_INSTALL=1:\n  {}",
+                cli_output::ICON_WARN.yellow(),
+                format!("sudo apt install {}", apt_names.join(" ")).cyan()
+            );
+            return Ok(());
+        }
+    }
+
+    eprintln!(
+        "{} Installing: {}",
         cli_output::ICON_INFO.cyan(),
         apt_names.join(", ").yellow()
     );
