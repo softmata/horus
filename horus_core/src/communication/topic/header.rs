@@ -727,8 +727,30 @@ pub fn read_latest_slot_bytes(
     let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, is_pod))) };
     // SAFETY: base is a valid mmap pointer; offset 64 is within the validated header region;
     // read_unaligned handles any alignment for the u64 seq/head field.
+    // Freshness and slot position both come from `messages_total`, not
+    // `sequence_or_head`.
+    //
+    // `sequence_or_head` is a slot cursor for some backends: it stops
+    // advancing once the ring wraps. Measured on a live 20 Hz topic with a
+    // 128-slot ring:
+    //
+    //     sample   messages_total(56)   sequence_or_head(64)
+    //       0             116                   116
+    //       1             135                   128     <- frozen at capacity
+    //       4             194                   128
+    //
+    // The caller's freshness test is `write_idx == last_write_idx`, so once
+    // the cursor froze this function returned None forever. `horus topic echo`
+    // — the most-used introspection command in robotics — printed one message
+    // and then nothing, on a topic publishing at 20 Hz, while
+    // `horus topic list` reported that same topic active with a rising count
+    // (it reads offset 56).
+    //
+    // `messages_total` is atomically incremented on every send() regardless of
+    // backend, and equals `sequence_or_head` before any wrap, so it is a strict
+    // improvement as both the freshness signal and the slot index.
     let write_idx = unsafe {
-        std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, sequence_or_head)) as *const u64)
+        std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, messages_total)) as *const u64)
     };
     // SAFETY: base is a valid mmap pointer; offset 72 is within the validated header region;
     // read_unaligned handles any alignment for the u32 capacity field.
@@ -2025,7 +2047,12 @@ mod untrusted_header_tests {
         buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
         buf[12..16].copy_from_slice(&type_size.to_ne_bytes());
         buf[20] = POD_YES;
-        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // write_idx = 1
+        // Both counters, as a real file has them before the ring wraps.
+        // `read_latest_slot_bytes` keys on messages_total (offset 56);
+        // sequence_or_head (offset 64) is kept in sync here so the fixture
+        // stays faithful.
+        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
+        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
         buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
         buf[76..80].copy_from_slice(&cap_mask.to_ne_bytes());
         buf[80..84].copy_from_slice(&type_size.to_ne_bytes());
@@ -2070,5 +2097,75 @@ mod untrusted_header_tests {
             "a well-formed ring must still be readable"
         );
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod echo_freshness_tests {
+    use crate::communication::Topic;
+    use crate::core::DurationExt;
+
+    /// Reading fresh data must keep working after the ring wraps.
+    ///
+    /// `read_latest_slot_bytes` used to take its freshness signal from
+    /// `sequence_or_head`, which is a slot cursor for some backends: it stops
+    /// advancing once the ring is full. Measured on a live 20 Hz topic with a
+    /// 128-slot ring, `messages_total` climbed 116 -> 194 while
+    /// `sequence_or_head` froze at 128.
+    ///
+    /// Because the caller's test is `write_idx == last_write_idx`, the reader
+    /// returned None forever after that point. `horus topic echo` printed
+    /// messages until the ring wrapped and then nothing — on a topic
+    /// `horus topic list` simultaneously reported as active with a rising
+    /// count, because that command reads `messages_total`.
+    #[test]
+    fn slot_reader_still_sees_new_messages_after_the_ring_wraps() {
+        let name = format!("echo_wrap_test_{}", std::process::id());
+        let topic: Topic<f64> = match Topic::new(&name) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // Fill well past any plausible ring capacity so the cursor has wrapped
+        // several times over.
+        for i in 0..1024 {
+            topic.send(i as f64);
+        }
+
+        let mut last = super::read_latest_slot_bytes(&path, 0)
+            .expect("a freshly written topic must yield a slot")
+            .write_idx;
+
+        // Every further send must be observable.
+        let mut observed = 0;
+        for i in 0..64 {
+            topic.send(10_000.0 + i as f64);
+            if let Some(slot) = super::read_latest_slot_bytes(&path, last) {
+                assert!(
+                    slot.write_idx > last,
+                    "the freshness counter must advance monotonically past the \
+                     ring capacity; got {} after {last}",
+                    slot.write_idx
+                );
+                last = slot.write_idx;
+                observed += 1;
+            }
+        }
+
+        assert!(
+            observed > 32,
+            "after wrapping, only {observed}/64 sends were visible — the reader \
+             is keying on a counter that stops at the ring capacity"
+        );
+
+        let _ = 1_u64.ms();
     }
 }

@@ -269,6 +269,69 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
 }
 
 /// Discover all message types from source files
+/// Message directories belonging to `horus-robotics`.
+///
+/// The standard robotics messages (CmdVel, Imu, LaserScan, Odometry,
+/// JointState, ...) live in a separate git dependency, so they are not under
+/// the HORUS source tree. Cargo checks them out under
+/// `~/.cargo/git/checkouts/horus-robotics-<hash>/<rev>/`, and a local
+/// development checkout may sit beside the horus tree.
+///
+/// Returns every match; a missing directory is simply skipped, so this never
+/// turns an available message set into an error.
+fn robotics_message_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
+    // An explicit HORUS_SOURCE_DIR is an override: honour it exactly rather
+    // than blending in whatever else happens to be on the machine.
+    if std::env::var_os("HORUS_SOURCE_DIR").is_some() {
+        return dirs;
+    }
+
+    // Cargo's git checkout cache.
+    if let Some(home) = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs_next_home().map(|h| h.join(".cargo")))
+    {
+        let checkouts = home.join("git").join("checkouts");
+        if let Ok(entries) = fs::read_dir(&checkouts) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("horus-robotics-") {
+                    continue;
+                }
+                // Each checkout holds one directory per revision.
+                if let Ok(revs) = fs::read_dir(entry.path()) {
+                    for rev in revs.flatten() {
+                        let candidate = rev.path().join("src").join("messages");
+                        if candidate.is_dir() {
+                            dirs.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A sibling checkout, for anyone developing the two repos together.
+    if let Ok(source_root) = crate::commands::run::find_horus_source_dir() {
+        if let Some(parent) = source_root.parent() {
+            let candidate = parent.join("horus-robotics").join("src").join("messages");
+            if candidate.is_dir() {
+                dirs.push(candidate);
+            }
+        }
+    }
+
+    dirs
+}
+
+/// Home directory, without pulling in a dependency for one lookup.
+fn dirs_next_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
 fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     let mut messages = Vec::new();
 
@@ -307,48 +370,64 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
         }
     }
 
-    let mut messages_dir = None;
-    for path in &search_paths {
-        if path.exists() && path.is_dir() {
-            messages_dir = Some(path.clone());
-            break;
-        }
+    // The universal types are only half the picture. Every standard robotics
+    // message — CmdVel, Imu, LaserScan, Odometry — lives in `horus-robotics`,
+    // a separate git dependency, and this scan never looked there. So while a
+    // live topic reported its type correctly:
+    //
+    //     $ horus topic info cmd_vel      ->  Message Type: CmdVel
+    //     $ horus msg info CmdVel         ->  Message type 'CmdVel' not found
+    //
+    // the introspection command could not describe the very types users
+    // publish. Collect every message source rather than stopping at the first.
+    // `search_paths` are alternative locations for the *same* directory
+    // (horus_types/src), so they stay first-match-wins — an explicit
+    // HORUS_SOURCE_DIR must not be blended with whatever else is on the
+    // machine. The robotics directories are a genuinely different source and
+    // are additive.
+    let mut message_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(found) = search_paths.iter().find(|p| p.is_dir()) {
+        message_dirs.push(found.clone());
     }
+    message_dirs.extend(robotics_message_dirs());
+    message_dirs.dedup();
 
-    let messages_dir = messages_dir.ok_or_else(|| {
-        HorusError::Config(ConfigError::Other(
+    if message_dirs.is_empty() {
+        return Err(HorusError::Config(ConfigError::Other(
             "Could not find the HORUS message definitions (horus_types/src).\n  \
              Re-run the installer, or point HORUS_SOURCE at your HORUS source tree,\n  \
              e.g.: export HORUS_SOURCE=/path/to/horus"
                 .to_string(),
-        ))
-    })?;
+        )));
+    }
 
-    // Parse each .rs file in the messages directory
-    for entry in fs::read_dir(&messages_dir).map_err(HorusError::Io)? {
-        let entry = entry.map_err(HorusError::Io)?;
-        let path = entry.path();
+    for messages_dir in &message_dirs {
+        // Parse each .rs file in the messages directory
+        for entry in fs::read_dir(messages_dir).map_err(HorusError::Io)? {
+            let entry = entry.map_err(HorusError::Io)?;
+            let path = entry.path();
 
-        if path.extension().map(|e| e == "rs").unwrap_or(false) {
-            let filename = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+            if path.extension().map(|e| e == "rs").unwrap_or(false) {
+                let filename = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
 
-            // Skip mod.rs
-            if filename == "mod" {
-                continue;
-            }
+                // Skip mod.rs
+                if filename == "mod" {
+                    continue;
+                }
 
-            // Parse the file for struct definitions
-            if let Ok(content) = fs::read_to_string(&path) {
-                let file_messages = parse_messages_from_source(
-                    &content,
-                    &filename,
-                    path.to_string_lossy().to_string(),
-                );
-                messages.extend(file_messages);
+                // Parse the file for struct definitions
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let file_messages = parse_messages_from_source(
+                        &content,
+                        &filename,
+                        path.to_string_lossy().to_string(),
+                    );
+                    messages.extend(file_messages);
+                }
             }
         }
     }
@@ -358,6 +437,9 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
         std::cmp::Ordering::Equal => a.name.cmp(&b.name),
         other => other,
     });
+    // A type can appear in more than one source tree (a local checkout and the
+    // cargo git cache, say); report it once.
+    messages.dedup_by(|a, b| a.module == b.module && a.name == b.name);
 
     Ok(messages)
 }
@@ -2130,5 +2212,78 @@ pub struct JsonTest {
 
         result.unwrap();
         drop(tmp);
+    }
+}
+
+#[cfg(test)]
+mod robotics_message_discovery_tests {
+    use super::*;
+
+    /// `horus msg` scanned only `horus_types/src`, so it could describe the 25
+    /// universal types and none of the standard robotics messages — which are
+    /// the ones users actually publish. A live topic reported its type
+    /// correctly while the introspection command denied the type existed:
+    ///
+    ///     $ horus topic info cmd_vel   ->  Message Type: CmdVel
+    ///     $ horus msg info CmdVel      ->  Message type 'CmdVel' not found
+    #[test]
+    fn standard_robotics_messages_are_discoverable() {
+        let dirs = robotics_message_dirs();
+        if dirs.is_empty() {
+            eprintln!("skipping: no horus-robotics checkout on this machine");
+            return;
+        }
+
+        let messages = discover_messages().expect("discovery must succeed");
+        let names: Vec<&str> = messages.iter().map(|m| m.name.as_str()).collect();
+
+        for expected in ["CmdVel", "Imu", "LaserScan"] {
+            assert!(
+                names.contains(&expected),
+                "`{expected}` is a standard robotics message and must be \
+                 describable by `horus msg info`; found {} types",
+                names.len()
+            );
+        }
+    }
+
+    /// The universal types must not be lost by adding the second source.
+    #[test]
+    fn universal_types_are_still_present() {
+        let messages = discover_messages().expect("discovery must succeed");
+        let names: Vec<&str> = messages.iter().map(|m| m.name.as_str()).collect();
+        for expected in ["Twist", "Pose2D"] {
+            assert!(names.contains(&expected), "lost `{expected}`: {names:?}");
+        }
+    }
+
+    /// A type present in two source trees (a local checkout and the cargo git
+    /// cache) must be listed once.
+    #[test]
+    fn types_are_not_duplicated_across_source_trees() {
+        let messages = discover_messages().expect("discovery must succeed");
+        let mut seen = std::collections::HashSet::new();
+        for m in &messages {
+            assert!(
+                seen.insert((m.module.clone(), m.name.clone())),
+                "`{}::{}` reported more than once",
+                m.module,
+                m.name
+            );
+        }
+    }
+
+    /// Discovery must never fail because an optional source is absent.
+    #[test]
+    fn missing_robotics_checkout_is_not_an_error() {
+        // robotics_message_dirs only returns directories that exist, so an
+        // absent checkout contributes nothing rather than erroring.
+        for dir in robotics_message_dirs() {
+            assert!(
+                dir.is_dir(),
+                "{} was returned but does not exist",
+                dir.display()
+            );
+        }
     }
 }
