@@ -21,6 +21,8 @@ verified end to end against a release build.
 | `678d52a` | `horus new` blocked without a TTY; templates collided on node name and failed their own linter; `horus test` failed on an empty project | 6 |
 | `be629c4` | JSON Schema generator was compiled out and uncalled; `check --json` reported a count, not the findings | 7 |
 | `240cdac` | `doctor` graded 3-of-8 tools as success, and graded non-monotonically | 5 |
+| `5760bb5` | No warning when a debug build or stock kernel cannot deliver the requested real-time | 4 |
+| `e64039b` | `topic echo` went deaf after the ring wrapped; `msg` could not see the robotics types | 5 |
 
 ### What each one was
 
@@ -70,15 +72,15 @@ so a panic there cannot cost us the record.
 
 ## Coverage against the original audit
 
-Of the 61 findings in the first audit: **17 fixed, 2 partial, ~42 open.** The
+Of the 61 findings in the first audit: **20 fixed, 2 partial, ~39 open.** The
 work so far has been weighted toward the second round of ~150 findings, which
 contained the more severe defects (deploy shipping no binary, the flight
 recorder unable to record a crash, `setup-rt` reporting success after
 installing nothing).
 
 Fixed from the original 61: ERR-1, CFG-1, CFG-2, CFG-3, CFG-4, CFG-5, DOC-1,
-HELP-2, HELP-3, HELP-5, TOOL-1, PATH-4, PATH-5, PATH-6, LIVE-2, LIVE-8, plus
-PATH-1 upstream.
+HELP-2, HELP-3, HELP-5, TOOL-1, PATH-4, PATH-5, PATH-6, RT-1, LIVE-2, LIVE-4,
+LIVE-5, LIVE-8, plus PATH-1 upstream.
 Partial: DOC-3 (subdirectory resolution fixed, global-state scoping not),
 LIVE-7 (counters and health fixed, achieved-rate display not).
 
@@ -108,6 +110,10 @@ story is the least-tested part of the framework.
    `rate=None` raises a raw `TypeError`, `rate=0` is rejected.
 4. **Recording captures no payload for RT or C++ nodes** — 2,271 snapshots,
    zero bytes — and loses everything on an abnormal exit.
+
+   Worth re-checking after `e64039b`: recording may have been reading the same
+   `sequence_or_head` cursor that made `topic echo` go deaf, in which case part
+   of this is already fixed.
 5. **Wire `npm run verify:code` into docs CI.** The harness already exists in
    the docs repo and would mechanically catch the large set of documented APIs
    that do not exist.
