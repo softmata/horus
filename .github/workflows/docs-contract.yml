@@ -29,10 +29,6 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
     inputs:
-      docs_ref:
-        description: 'horus-docs ref to verify against (default: the pinned commit)'
-        required: false
-        type: string
       run_compile_sweep:
         description: 'Also run the Rust example compile sweep'
         required: false
@@ -55,6 +51,15 @@ env:
   RUST_BACKTRACE: 1
   # Pinned so a docs edit can never turn this repo's CI red on its own. Bump it
   # deliberately (and regenerate the snapshot — see the contract-live summary).
+  #
+  # This is also a trust boundary, which is why there is no `docs_ref` input to
+  # override it. `schedule` and `workflow_dispatch` run in default-branch
+  # context with write access to the Actions cache, so building an arbitrary
+  # ref of another repository here would let anyone who can push to
+  # softmata/horus-docs get code executed in this repo's privileged context —
+  # an escalation across repos that this repo's own review never sees.
+  # Verifying a different docs commit means bumping this SHA in a PR, so the
+  # change is reviewed here before it runs here.
   DOCS_PINNED_REF: b16c640c9d0169f30bcd502d835777eef52d29dd
 
 jobs:
@@ -125,7 +130,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: softmata/horus-docs
-          ref: ${{ inputs.docs_ref || env.DOCS_PINNED_REF }}
+          ref: ${{ env.DOCS_PINNED_REF }}
           path: horus-docs
 
       - name: Install system dependencies
@@ -136,13 +141,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      # Restore only — never save. This job checks out horus-docs at a caller
-      # supplied ref, so anything it builds is downstream of untrusted content.
-      # Saving would let a `workflow_dispatch` against an arbitrary docs ref
-      # write the same `-cargo-docs-` key that the hermetic job (which checks
-      # out nothing untrusted) restores and executes on the default branch —
-      # cache poisoning with a straight path into trusted context.
-      # contract-hermetic is the sole writer of this key.
+      # Restore only — never save. This job builds a second repository's
+      # content, so its output is downstream of code this repo does not review
+      # on the way in. Saving would write the same `-cargo-docs-` key that
+      # contract-hermetic — which checks out nothing but this repo — restores
+      # and executes on the default branch. contract-hermetic is the sole
+      # writer of that key, so there is no path from docs content into a cache
+      # that trusted jobs consume.
       - name: Restore Cargo cache (read-only)
         uses: actions/cache/restore@v6
         with:
@@ -234,7 +239,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: softmata/horus-docs
-          ref: ${{ inputs.docs_ref || env.DOCS_PINNED_REF }}
+          ref: ${{ env.DOCS_PINNED_REF }}
           path: horus-docs
 
       - name: Install system dependencies
@@ -245,11 +250,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      # Restore only, for the same reason as contract-live: this job checks out
-      # a caller-supplied docs ref. It reads the hermetic job's key rather than
-      # a private one, since a key nothing writes would never hit — and the
-      # registry and git-db entries, which dominate restore time, are identical
-      # either way.
+      # Restore only, for the same reason as contract-live: this job builds a
+      # second repository's content. It reads the hermetic job's key rather
+      # than a private one, since a key nothing writes would never hit — and
+      # the registry and git-db entries, which dominate restore time, are
+      # identical either way.
       - name: Restore Cargo cache (read-only)
         uses: actions/cache/restore@v6
         with:
@@ -337,7 +342,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: softmata/horus-docs
-          ref: ${{ inputs.docs_ref || env.DOCS_PINNED_REF }}
+          ref: ${{ env.DOCS_PINNED_REF }}
           path: horus-docs
 
       - name: Install system dependencies
