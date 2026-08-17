@@ -96,3 +96,8 @@ rustc-ice-*
 
 # SLAM skill state
 .slam-map.json
+
+# Scratch target dirs from out-of-tree verification builds. `target/` above
+# does not match these, and a stray one committed 3006 build files (including
+# 150MB rlibs) that GitHub rejects outright.
+target-*/
