@@ -139,7 +139,10 @@ fn a_valid_project_reports_no_diagnostics() {
     let v = check_json(tmp.path());
     assert_eq!(v["valid"], serde_json::Value::Bool(true), "{v:#}");
     assert!(
-        v["diagnostics"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        v["diagnostics"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
         "a clean project should report nothing: {v:#}"
     );
 }

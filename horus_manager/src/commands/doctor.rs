@@ -246,48 +246,127 @@ fn print_json(results: &[CheckResult]) {
 
 // ─── Individual checks ───────────────────────────────────────────────────────
 
+/// A language toolchain and the tools it needs.
+struct Toolchain {
+    language: &'static str,
+    /// Without these, the language cannot build at all.
+    required: &'static [(&'static str, &'static str)],
+    /// Without these, specific commands (`horus lint`, `horus test`) fail.
+    optional: &'static [(&'static str, &'static str)],
+}
+
+const TOOLCHAINS: &[Toolchain] = &[
+    Toolchain {
+        language: "Rust",
+        required: &[("cargo", "build tool"), ("rustc", "compiler")],
+        optional: &[],
+    },
+    Toolchain {
+        language: "Python",
+        required: &[("python3", "interpreter")],
+        optional: &[("ruff", "linter/formatter"), ("pytest", "test runner")],
+    },
+    Toolchain {
+        language: "C++",
+        required: &[("cmake", "build system")],
+        optional: &[("clang-format", "formatter"), ("clang-tidy", "linter")],
+    },
+];
+
+/// Report toolchain readiness per language.
+///
+/// The previous check reported a bare fraction and graded it on whether cargo
+/// and rustc happened to be present. That made "3/8 tools found" a *success*
+/// — rendered with the tick and counted among "7 ok" — for a machine that
+/// then failed `horus new --cpp && horus build` on missing cmake. It was also
+/// non-monotonic: with cargo and rustc absent but six other tools present,
+/// the same check reported "6/8" as a failure. Better coverage graded worse.
+///
+/// Grading per language makes the verdict mean something and names what is
+/// missing, which is the part a user can act on.
 fn check_toolchains() -> CheckResult {
     let mut details = Vec::new();
-    let mut missing = Vec::new();
+    let mut found = std::collections::HashSet::new();
 
-    let tools = [
-        ("cargo", "Rust build tool"),
-        ("rustc", "Rust compiler"),
-        ("python3", "Python interpreter"),
-        ("ruff", "Python linter/formatter"),
-        ("pytest", "Python test runner"),
-        ("cmake", "C++ build system"),
-        ("clang-format", "C++ formatter"),
-        ("clang-tidy", "C++ linter"),
-    ];
-
-    for (tool, desc) in &tools {
-        match dispatch::tool_version(tool) {
-            Some(version) => {
-                details.push(format!("{}: {} ({})", tool, version, desc));
-            }
-            None => {
-                details.push(format!("{}: not found ({})", tool, desc));
-                if *tool == "cargo" || *tool == "rustc" {
-                    missing.push(*tool);
+    for tc in TOOLCHAINS {
+        for (tool, desc) in tc.required.iter().chain(tc.optional.iter()) {
+            match dispatch::tool_version(tool) {
+                Some(version) => {
+                    details.push(format!("{tool}: {version} ({desc})"));
+                    found.insert(*tool);
                 }
+                None => details.push(format!("{tool}: not found ({desc})")),
             }
         }
     }
 
-    let health = if !missing.is_empty() {
-        Health::Fail
-    } else {
-        Health::Ok
-    };
-
-    let found = tools.len() - details.iter().filter(|d| d.contains("not found")).count();
+    let (health, summary) = grade_toolchains(&|tool| found.contains(tool));
     CheckResult {
         category: "Toolchains".to_string(),
         health,
-        summary: format!("{}/{} tools found", found, tools.len()),
+        summary,
         details,
     }
+}
+
+/// Decide the toolchain verdict from which tools are present.
+///
+/// Split from the probing so the grading rules are testable without touching
+/// the machine — the previous version could only be checked by manipulating
+/// PATH, which is why its non-monotonicity went unnoticed.
+fn grade_toolchains(present: &dyn Fn(&str) -> bool) -> (Health, String) {
+    let mut ready = Vec::new();
+    let mut blocked = Vec::new();
+    let mut degraded = Vec::new();
+
+    for tc in TOOLCHAINS {
+        let missing_required: Vec<&str> = tc
+            .required
+            .iter()
+            .filter(|(t, _)| !present(t))
+            .map(|(t, _)| *t)
+            .collect();
+        let missing_optional: Vec<&str> = tc
+            .optional
+            .iter()
+            .filter(|(t, _)| !present(t))
+            .map(|(t, _)| *t)
+            .collect();
+
+        if !missing_required.is_empty() {
+            blocked.push(format!(
+                "{} needs {}",
+                tc.language,
+                missing_required.join(", ")
+            ));
+        } else if !missing_optional.is_empty() {
+            degraded.push(format!(
+                "{} missing {}",
+                tc.language,
+                missing_optional.join(", ")
+            ));
+        } else {
+            ready.push(tc.language);
+        }
+    }
+
+    // Fail only when nothing can be built; warn while any language is
+    // incomplete. A machine that builds Rust but not C++ is not "ok".
+    let health = if ready.is_empty() && degraded.is_empty() {
+        Health::Fail
+    } else if blocked.is_empty() && degraded.is_empty() {
+        Health::Ok
+    } else {
+        Health::Warn
+    };
+
+    let mut parts = Vec::new();
+    if !ready.is_empty() {
+        parts.push(format!("{} ready", ready.join(", ")));
+    }
+    parts.extend(degraded);
+    parts.extend(blocked);
+    (health, parts.join(" · "))
 }
 
 fn check_manifest(ctx: &dispatch::ProjectContext) -> CheckResult {
@@ -1131,9 +1210,21 @@ mod tests {
     fn check_toolchains_returns_result() {
         let result = check_toolchains();
         assert_eq!(result.category, "Toolchains");
+
+        // The summary used to be a bare fraction ("3/8 tools found"), which is
+        // what let a machine missing five tools render as a success. It now
+        // names languages and what each is missing, so assert on that shape
+        // instead — see `toolchain_grading_tests` for the rules themselves.
         assert!(
-            result.summary.contains("tools found"),
-            "summary should mention tools found: {}",
+            ["Rust", "Python", "C++"]
+                .iter()
+                .any(|l| result.summary.contains(l)),
+            "summary should name languages, got: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("tools found"),
+            "the bare fraction is what made 3/8 look like success: {}",
             result.summary
         );
         assert!(!result.details.is_empty());
@@ -1832,5 +1923,103 @@ mod tests {
             "fix mode should create/update {}",
             HORUS_LOCK
         );
+    }
+}
+
+#[cfg(test)]
+mod toolchain_grading_tests {
+    use super::*;
+
+    fn only<'a>(tools: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
+        move |t: &str| tools.contains(&t)
+    }
+
+    /// The exact case that used to be reported as success: cargo, rustc and
+    /// python3 present, everything else missing. It rendered as
+    /// `* Toolchains — 3/8 tools found` and was counted among "7 ok", on a
+    /// machine that then failed `horus new --cpp && horus build`.
+    #[test]
+    fn three_of_eight_is_not_success() {
+        let (health, summary) = grade_toolchains(&only(&["cargo", "rustc", "python3"]));
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(summary.contains("Rust ready"), "{summary}");
+        assert!(summary.contains("C++ needs cmake"), "{summary}");
+        assert!(summary.contains("Python missing"), "{summary}");
+    }
+
+    /// Grading must be monotonic. The old rule keyed on cargo/rustc alone, so
+    /// six tools present without them graded *worse* than three tools with
+    /// them — better coverage, worse verdict.
+    #[test]
+    fn more_tools_never_grades_worse() {
+        let sets: [&[&str]; 4] = [
+            &[],
+            &["cargo", "rustc"],
+            &["cargo", "rustc", "python3", "ruff", "pytest"],
+            &[
+                "cargo",
+                "rustc",
+                "python3",
+                "ruff",
+                "pytest",
+                "cmake",
+                "clang-format",
+                "clang-tidy",
+            ],
+        ];
+        let rank = |h: &Health| match h {
+            Health::Fail => 0,
+            Health::Warn => 1,
+            Health::Ok => 2,
+        };
+
+        let mut previous = 0;
+        for set in sets {
+            let (health, summary) = grade_toolchains(&only(set));
+            let r = rank(&health);
+            assert!(
+                r >= previous,
+                "adding tools made the verdict worse ({previous} -> {r}) for {set:?}: {summary}"
+            );
+            previous = r;
+        }
+    }
+
+    #[test]
+    fn a_complete_toolchain_is_ok() {
+        let (health, summary) = grade_toolchains(&only(&[
+            "cargo",
+            "rustc",
+            "python3",
+            "ruff",
+            "pytest",
+            "cmake",
+            "clang-format",
+            "clang-tidy",
+        ]));
+        assert_eq!(health, Health::Ok);
+        assert_eq!(summary, "Rust, Python, C++ ready");
+    }
+
+    /// Nothing installed must fail, and must name what is missing rather than
+    /// printing a fraction.
+    #[test]
+    fn an_empty_machine_fails_and_says_why() {
+        let (health, summary) = grade_toolchains(&only(&[]));
+        assert_eq!(health, Health::Fail);
+        for needle in ["cargo", "python3", "cmake"] {
+            assert!(summary.contains(needle), "{summary} should name {needle}");
+        }
+    }
+
+    /// A missing optional tool degrades that language without blocking it —
+    /// `horus build` works, `horus lint` does not.
+    #[test]
+    fn optional_tools_degrade_rather_than_block() {
+        let (health, summary) = grade_toolchains(&only(&["cargo", "rustc", "python3", "cmake"]));
+        assert_eq!(health, Health::Warn);
+        assert!(summary.contains("Rust ready"), "{summary}");
+        assert!(summary.contains("Python missing ruff, pytest"), "{summary}");
+        assert!(summary.contains("C++ missing"), "{summary}");
     }
 }
