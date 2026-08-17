@@ -25,6 +25,7 @@ Project:
   run               Run a HORUS project or file(s)
   build             Build the HORUS project without running
   lock              Generate or verify horus.lock (pin dependency versions)
+  scripts           Run a script defined in horus.toml [scripts]
   test              Run tests for the HORUS project
   check             Validate horus.toml, source files, or workspace
   clean             Clean build artifacts and shared memory
@@ -36,7 +37,7 @@ Introspection:
   service, srv      Service interaction (list, call, info, find)
   action, a         Action interaction (list, info, send-goal, cancel-goal)
   param, p          Parameter management (get, set, list, delete)
-  frame, frames     Coordinate frame operations (list, echo, tree)
+  frame, tf         Coordinate frame operations (list, echo, tree)
   msg, m            Message type introspection
 
 
@@ -74,6 +75,7 @@ Maintenance:
   self update       Update the horus CLI to latest version
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
+  setup-rt          Configure the real-time kernel and system settings
 
 Publishing & Deploy:
   publish           Publish package to registry
@@ -88,6 +90,7 @@ Publishing & Deploy:
 
 Native Tools:
   env               Set up shell integration (cargo/pip/cmake proxy)
+  completion        Generate a shell completion script (bash/zsh/fish)
 
 {options}
 {after-help}")]
@@ -945,7 +948,6 @@ enum Commands {
     },
 
     /// Generate shell completion scripts
-    #[command(hide = true)]
     Completion {
         /// Shell to generate completions for
         #[arg(value_enum)]

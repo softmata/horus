@@ -359,6 +359,56 @@ fi
 # Shell integration
 horus env --init 2>/dev/null || true
 
+# --- Shell completions ---
+#
+# `horus completion <shell>` has worked since the CLI shipped, and the code
+# comment on it claims "Hidden command used by install.sh for automatic
+# completion setup" — but install.sh never mentioned it, so nobody has ever
+# received a completion script. For a CLI with ~40 commands, dozens of
+# subcommands and single-letter aliases (t n p a m s i l srv bb mon rec tf),
+# that is the difference between discoverable and not.
+install_completions() {
+    case "${SHELL:-/bin/bash}" in
+        */zsh)
+            COMP_DIR="${HOME}/.zfunc"
+            COMP_FILE="${COMP_DIR}/_horus"
+            COMP_SHELL="zsh"
+            # zsh needs the directory on fpath before compinit.
+            COMP_HINT="fpath=(${COMP_DIR} \$fpath)"
+            ;;
+        */fish)
+            COMP_DIR="${HOME}/.config/fish/completions"
+            COMP_FILE="${COMP_DIR}/horus.fish"
+            COMP_SHELL="fish"
+            COMP_HINT=""
+            ;;
+        */bash)
+            COMP_DIR="${HOME}/.local/share/bash-completion/completions"
+            COMP_FILE="${COMP_DIR}/horus"
+            COMP_SHELL="bash"
+            COMP_HINT=""
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    mkdir -p "$COMP_DIR" 2>/dev/null || return 0
+    if horus completion "$COMP_SHELL" > "${COMP_FILE}.tmp" 2>/dev/null &&
+       [ -s "${COMP_FILE}.tmp" ]; then
+        mv "${COMP_FILE}.tmp" "$COMP_FILE"
+        ok "Shell completions installed (${COMP_SHELL})"
+        if [ -n "$COMP_HINT" ] && [ -n "$SHELL_RC" ] &&
+           ! grep -qF "$COMP_HINT" "$SHELL_RC" 2>/dev/null; then
+            echo "$COMP_HINT" >> "$SHELL_RC"
+        fi
+    else
+        # Never fail the install over completions.
+        rm -f "${COMP_FILE}.tmp" 2>/dev/null
+    fi
+}
+install_completions
+
 # --- Done ---
 elapsed_total=$(($(date +%s) - INSTALL_START))
 echo ""
