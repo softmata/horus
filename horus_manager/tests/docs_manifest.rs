@@ -306,11 +306,13 @@ fn documented_env_vars_are_read() {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        for line in text.lines() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
             if !line.contains("secrets.") {
                 continue;
             }
-            for name in documented_env_names(line) {
+            let prev = if i > 0 { lines[i - 1] } else { "" };
+            for name in documented_env_names(prev, line) {
                 ci_secrets.insert(name);
             }
         }
@@ -321,8 +323,10 @@ fn documented_env_vars_are_read() {
             continue;
         };
         let r = rel(&docs, &f);
-        for (i, line) in text.lines().enumerate() {
-            for name in documented_env_names(line) {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let prev = if i > 0 { lines[i - 1] } else { "" };
+            for name in documented_env_names(prev, line) {
                 if ci_secrets.contains(&name) {
                     continue;
                 }
@@ -455,12 +459,20 @@ const FOREIGN_ENV_NAMES: &[&str] = &["RUST_LOG"];
 
 /// Every environment variable name a doc line mentions that horus is expected
 /// to honour: `HORUS_*` plus [`FOREIGN_ENV_NAMES`].
-fn documented_env_names(line: &str) -> Vec<String> {
+fn documented_env_names(prev: &str, line: &str) -> Vec<String> {
     // A line that names a variable in order to say it does NOT work is good
     // documentation — a reader who tries `RUST_LOG` and searches for it should
     // find the answer. Only lines that tell the reader to *use* a variable are
     // promises the source has to keep.
-    if is_negated_mention(line) {
+    //
+    // The disclaimer routinely wraps across a line break:
+    //
+    //     HORUS reads the key from `auth.json` and nowhere else — there is no
+    //     `HORUS_API_KEY` environment variable.
+    //
+    // so the negation must be looked for over the previous line too, not just
+    // the one the name appears on.
+    if is_negated_mention(line) || is_negated_mention(&format!("{prev} {line}")) {
         return Vec::new();
     }
     let mut out = horus_env_names(line);
@@ -474,7 +486,24 @@ fn documented_env_names(line: &str) -> Vec<String> {
 
 /// Whether a line mentions a variable only to disclaim it.
 fn is_negated_mention(line: &str) -> bool {
-    let l = line.to_ascii_lowercase();
+    let mut l = line.to_ascii_lowercase();
+    // Writers naturally slip an adverb into the disclaimer — "there is
+    // *deliberately* no HORUS_API_KEY" — which defeats a plain substring match
+    // and makes the suite report a correctly-documented non-variable as a
+    // defect. Drop the adverbs before matching so the phrase list stays short.
+    for adverb in [
+        " deliberately",
+        " intentionally",
+        " explicitly",
+        " currently",
+        " actually",
+        " simply",
+        " ever",
+    ] {
+        if l.contains(adverb) {
+            l = l.replace(adverb, "");
+        }
+    }
     [
         "no effect",
         "has no",
@@ -483,6 +512,10 @@ fn is_negated_mention(line: &str) -> bool {
         "not supported",
         "is ignored",
         "there is no",
+        "there's no",
+        "no such",
+        "nothing reads",
+        "nothing in horus reads",
         "instead of",
         "in place of",
     ]
@@ -636,13 +669,33 @@ mod unit {
         // Naming a variable to say it does not work is good documentation, not
         // a promise the source must keep.
         assert!(documented_env_names(
+            "",
             "# horus installs its own log bridge in place of env_logger, so RUST_LOG has no effect"
         )
         .is_empty());
-        assert!(documented_env_names("there is no HORUS_API_KEY variable").is_empty());
-        // A genuine instruction still counts.
+        assert!(documented_env_names("", "there is no HORUS_API_KEY variable").is_empty());
+        // An adverb between "is" and "no" must not defeat the match — writers
+        // reach for one naturally, and every occurrence in the corpus has one.
+        assert!(documented_env_names(
+            "",
+            "There is deliberately **no `HORUS_API_KEY` environment variable** — nothing reads one."
+        )
+        .is_empty());
+        // The disclaimer routinely wraps, leaving the name on a line that reads
+        // as a plain instruction on its own.
+        assert!(documented_env_names(
+            "HORUS reads the key from `auth.json` and nowhere else — there is no",
+            "`HORUS_API_KEY` environment variable. For non-interactive environments, write"
+        )
+        .is_empty());
+        // A genuine instruction still counts — including when the previous line
+        // is unrelated prose that happens to contain no negation.
         assert_eq!(
-            documented_env_names("RUST_LOG=debug horus run"),
+            documented_env_names("Run the node like this:", "RUST_LOG=debug horus run"),
+            vec!["RUST_LOG"]
+        );
+        assert_eq!(
+            documented_env_names("", "RUST_LOG=debug horus run"),
             vec!["RUST_LOG"]
         );
     }

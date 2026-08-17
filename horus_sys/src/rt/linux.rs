@@ -314,7 +314,11 @@ pub(super) fn get_memlock_limit() -> u64 {
             if rlim.rlim_cur == libc::RLIM_INFINITY {
                 u64::MAX
             } else {
-                rlim.rlim_cur
+                // `rlim_t` is 32-bit on armv7-unknown-linux-gnueabihf and
+                // 64-bit on x86_64/aarch64. `u64::from` covers both widths;
+                // returning the field directly fails to compile for 32-bit ARM,
+                // which `horus deploy --arch armv7` targets.
+                u64::from(rlim.rlim_cur)
             }
         } else {
             0

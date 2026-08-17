@@ -222,6 +222,74 @@ jobs:
         env:
           PKG_CONFIG_ALLOW_CROSS: 1
 
+  # Linux ARMv7 (32-bit) Cross-Compilation
+  #
+  # `horus deploy --arch armv7` advertises this target and the installation
+  # guide names Raspberry Pi 3, so it has to compile. It is not redundant with
+  # the ARM64 job: armv7 is the only supported target where `usize` and several
+  # libc types are 32-bit. That width difference is a real source of breakage —
+  # `horus_sys::rt::get_memlock_limit` returned `libc::rlimit::rlim_cur`
+  # directly, which is `u64` on x86_64/aarch64 but `u32` here, so the crate
+  # failed to build for 32-bit ARM while every other target passed.
+  linux-armv7:
+    name: Linux ARMv7 (Cross, 32-bit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # g++ as well as gcc: the cxx/link-cplusplus build scripts probe for
+          # the C++ driver and hard-fail when only gcc is present.
+          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-armv7-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-armv7-cross-
+
+      - name: Configure Cross-Compilation
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.armv7-unknown-linux-gnueabihf]
+          linker = "arm-linux-gnueabihf-gcc"
+          EOF
+
+      - name: Check ARMv7 Build
+        run: |
+          # Same exclusions as the ARM64 job: horus_manager needs cross-built
+          # OpenSSL headers, horus_benchmarks is host-only.
+          cargo check --workspace --target armv7-unknown-linux-gnueabihf --lib \
+            --exclude horus_manager --exclude horus_benchmarks
+        env:
+          PKG_CONFIG_ALLOW_CROSS: 1
+
+      - name: Check C++/Rust layout contract on 32-bit ARM
+        run: |
+          # The zero-copy C ABI reads Rust structs through C++ pointers, so a
+          # size or offset divergence corrupts memory rather than failing
+          # loudly. layout_contract.hpp pins both with static_asserts; 32-bit
+          # ARM is where alignment assumptions are most likely to differ.
+          echo '#include "horus/layout_contract.hpp"' > /tmp/lc.cpp
+          echo 'int main() { return 0; }' >> /tmp/lc.cpp
+          arm-linux-gnueabihf-g++ -std=c++17 -fsyntax-only \
+            -I horus_cpp/include /tmp/lc.cpp
+
   # MSRV (Minimum Supported Rust Version) Testing
   msrv:
     name: MSRV (${{ matrix.rust }})
@@ -284,7 +352,7 @@ jobs:
   # Summary job
   multi-platform-success:
     name: Multi-Platform Success
-    needs: [macos, macos-arm64, windows, linux-arm64, msrv]
+    needs: [macos, macos-arm64, windows, linux-arm64, linux-armv7, msrv]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -294,6 +362,7 @@ jobs:
           echo "macOS ARM64: ${{ needs.macos-arm64.result }}"
           echo "Windows: ${{ needs.windows.result }}"
           echo "Linux ARM64: ${{ needs.linux-arm64.result }}"
+          echo "Linux ARMv7: ${{ needs.linux-armv7.result }}"
           echo "MSRV: ${{ needs.msrv.result }}"
 
           # All Unix platforms and MSRV must pass
@@ -309,6 +378,10 @@ jobs:
 
           if [[ "${{ needs.linux-arm64.result }}" != "success" ]]; then
             FAILURES="$FAILURES Linux-ARM64"
+          fi
+
+          if [[ "${{ needs.linux-armv7.result }}" != "success" ]]; then
+            FAILURES="$FAILURES Linux-ARMv7"
           fi
 
           if [[ "${{ needs.msrv.result }}" != "success" ]]; then
