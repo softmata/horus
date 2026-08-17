@@ -318,8 +318,27 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
 
     let status = cmd.status().context("Failed to execute pytest")?;
 
+    // pytest exit code 5 is "no tests collected", which is not a failure.
+    // Reporting it as one meant a freshly generated project failed its own test
+    // command in every configuration — with pytest missing *and* with pytest
+    // installed:
+    //
+    //     collected 0 items
+    //     ============ no tests ran in 0.05s ============
+    //     Error: Python tests failed with exit code 5
+    //
+    // A user's first `horus test` on a brand-new project should not be red.
+    const PYTEST_NO_TESTS_COLLECTED: i32 = 5;
+
     if status.success() {
         println!("{}", "Python tests passed!".green().bold());
+    } else if status.code() == Some(PYTEST_NO_TESTS_COLLECTED) {
+        println!(
+            "{} No Python tests found. Add one under {} — see \
+             https://docs.horusrobotics.dev/python/testing",
+            "i".cyan(),
+            "tests/".cyan()
+        );
     } else {
         anyhow::bail!(
             "Python tests failed with exit code {}",

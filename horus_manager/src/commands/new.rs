@@ -162,7 +162,37 @@ pub fn create_new_project(
     Ok(())
 }
 
+/// Whether prompting a human is possible and wanted.
+///
+/// The README's headline command is `horus new my_robot && cd my_robot &&
+/// horus run`, and `horus new` with no language flag opened two prompts that
+/// appear nowhere in the README or the quick start. There is no `--yes`, so
+/// the documented one-liner could not go in a script, a Dockerfile or CI —
+/// it just blocked, or silently took whatever a closed stdin produced.
+///
+/// Non-interactive runs now take the documented defaults instead of asking.
+fn can_prompt() -> bool {
+    use std::io::IsTerminal;
+    if std::env::var("HORUS_ASSUME_YES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    io::stdin().is_terminal()
+}
+
 fn prompt_language() -> Result<String> {
+    if !can_prompt() {
+        // Rust is the prompt's own default, so scripted and interactive runs
+        // agree.
+        println!(
+            "{} No language flag and not a terminal — defaulting to Rust. \
+             Pass --rust/--python/--cpp to choose.",
+            "i".cyan()
+        );
+        return Ok("rust".to_string());
+    }
     println!("\n{} Select language:", "?".yellow().bold());
     println!("  {} Python", "1.".cyan());
     println!("  {} Rust", "2.".cyan());
@@ -191,8 +221,12 @@ fn prompt_language() -> Result<String> {
 }
 
 fn prompt_use_macro() -> Result<bool> {
+    if !can_prompt() {
+        return Ok(false);
+    }
     print!(
-        "\n{} Use HORUS macros for simpler syntax? [y/N]: ",
+        "\n{} Use the node! macro? Shorter code, but IDE go-to-definition \
+         inside node bodies is limited. [y/N]: ",
         "?".yellow().bold()
     );
     io::stdout().flush()?;
@@ -578,30 +612,48 @@ fn validate_project_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Write the Python entry point.
+///
+/// The node is named after the project. Every template used to hard-code
+/// "controller", so two HORUS projects on one machine collided:
+///
+///     [horus] WARNING: node 'controller' already registered by PID 497819
+///     (this is PID 498342). Overwriting presence file — duplicate node names
+///     cause unreliable discovery.
+///
+/// `horus new` guaranteed the condition its own runtime warns about.
 pub(crate) fn create_main_py(project_path: &Path) -> Result<()> {
+    let node_name = project_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| format!("{}_controller", n.replace('-', "_")))
+        .unwrap_or_else(|| "controller".to_string());
+
     let content = r#"# Mobile robot controller
 
 import horus
 
+
 def controller(node):
     """Main control logic - called repeatedly at the specified rate."""
-    # Your control logic here
-    # Check for incoming messages
+    # Drive forward by default.
+    linear = 1.0
+
+    # Slow down if a sensor reading is waiting for us.
     if node.has_msg("sensors.data"):
         sensor_data = node.recv("sensors.data")
-        # Process sensor data...
+        linear = min(linear, sensor_data.get("safe_speed", linear))
 
-    # Send control commands
-    cmd_vel = {"linear": 1.0, "angular": 0.0}
-    node.send("motors.cmd_vel", cmd_vel)
+    node.send("motors.cmd_vel", {"linear": linear, "angular": 0.0})
+
 
 # Create the node
 node = horus.Node(
-    name="controller",
-    pubs="motors.cmd_vel",    # Topics to publish to
-    subs="sensors.data",      # Topics to subscribe from
-    tick=controller,          # Function to call repeatedly
-    rate=30                   # Hz (30 times per second)
+    name="__NODE_NAME__",
+    pubs="motors.cmd_vel",  # Topics to publish to
+    subs="sensors.data",  # Topics to subscribe from
+    tick=controller,  # Function to call repeatedly
+    rate=30,  # Hz (30 times per second)
 )
 
 if __name__ == "__main__":
@@ -613,6 +665,7 @@ if __name__ == "__main__":
     // The dispatcher already detects it (see dispatch.rs), so `horus build` and
     // `horus run` work unchanged.
     fs::create_dir_all(project_path.join("src"))?;
+    let content = content.replace("__NODE_NAME__", &node_name);
     fs::write(project_path.join("src/main.py"), content)?;
     Ok(())
 }

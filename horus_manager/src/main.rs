@@ -156,6 +156,13 @@ enum Commands {
         /// Create as a library crate (instead of binary)
         #[arg(short = 'l', long = "lib")]
         lib: bool,
+
+        /// Accept defaults without prompting (for scripts, Dockerfiles and CI)
+        ///
+        /// The README's `horus new my_robot` opened two prompts that the README
+        /// never mentions, so the documented one-liner could not be scripted.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Run a HORUS project or file(s)
@@ -2032,7 +2039,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
             use_macro,
             workspace,
             lib,
+            yes,
         } => {
+            // `--yes` reuses the same signal the non-TTY path uses, so a
+            // scripted run and an interactive `--yes` take identical defaults.
+            if yes {
+                std::env::set_var("HORUS_ASSUME_YES", "1");
+            }
             let language = if python {
                 "python"
             } else if cpp {
