@@ -617,9 +617,11 @@ fn validate_project_name(name: &str) -> Result<()> {
 /// The node is named after the project. Every template used to hard-code
 /// "controller", so two HORUS projects on one machine collided:
 ///
-///     [horus] WARNING: node 'controller' already registered by PID 497819
-///     (this is PID 498342). Overwriting presence file — duplicate node names
-///     cause unreliable discovery.
+/// ```text
+/// [horus] WARNING: node 'controller' already registered by PID 497819
+/// (this is PID 498342). Overwriting presence file — duplicate node names
+/// cause unreliable discovery.
+/// ```
 ///
 /// `horus new` guaranteed the condition its own runtime warns about.
 pub(crate) fn create_main_py(project_path: &Path) -> Result<()> {
@@ -660,13 +662,20 @@ if __name__ == "__main__":
     # Run the node
     horus.run(node)
 "#;
-    // src/main.py, matching the Rust (`src/main.rs`) and C++ (`src/main.cpp`)
-    // scaffolds and the 35 doc sites that tell readers to open `src/main.py`.
-    // The dispatcher already detects it (see dispatch.rs), so `horus build` and
-    // `horus run` work unchanged.
-    fs::create_dir_all(project_path.join("src"))?;
+    // `main.py` at the project root, not `src/main.py`.
+    //
+    // Matching the Rust (`src/main.rs`) and C++ (`src/main.cpp`) scaffolds is
+    // tempting, but Rust only puts it there because Cargo requires it, and
+    // Python's own convention for a single-entry-point application is the
+    // repository root — `src/` in Python normally means `src/<package>/` with
+    // an `__init__.py`, which this is not. Generating a Rust-shaped tree for a
+    // Python user is the framework's implementation language leaking into
+    // their project.
+    //
+    // The dispatcher detects both locations (see dispatch.rs), so this is a
+    // choice about what a Python developer opens to, not about what works.
     let content = content.replace("__NODE_NAME__", &node_name);
-    fs::write(project_path.join("src/main.py"), content)?;
+    fs::write(project_path.join("main.py"), content)?;
     Ok(())
 }
 
@@ -902,7 +911,7 @@ mod tests {
     fn main_py_created() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
         assert!(content.contains("import horus"));
         assert!(content.contains("horus.run(node)"));
     }
@@ -944,7 +953,7 @@ mod tests {
 
         let project = dir.path().join("py_bot");
         assert!(project.join(HORUS_TOML).exists());
-        assert!(project.join("src/main.py").exists());
+        assert!(project.join("main.py").exists());
         assert!(project.join(".horus").is_dir());
     }
 
@@ -1077,7 +1086,7 @@ mod tests {
         assert_eq!(manifest.package.name, "py_bot");
 
         // main.py has horus.run()
-        let content = fs::read_to_string(project.join("src/main.py")).unwrap();
+        let content = fs::read_to_string(project.join("main.py")).unwrap();
         assert!(content.contains("import horus"));
         assert!(content.contains("horus.run(node)"));
         assert!(content.contains("horus.Node("));
@@ -1563,7 +1572,7 @@ mod tests {
         let project = dir.path().join("rs_only");
         assert!(project.join("src/main.rs").exists(), "must have main.rs");
         assert!(
-            !project.join("src/main.py").exists(),
+            !project.join("main.py").exists(),
             "rust project should not have main.py"
         );
         assert!(
@@ -1591,7 +1600,7 @@ mod tests {
         .unwrap();
 
         let project = dir.path().join("py_only");
-        assert!(project.join("src/main.py").exists(), "must have main.py");
+        assert!(project.join("main.py").exists(), "must have main.py");
         assert!(
             !project.join("src/main.rs").exists(),
             "python project should not have main.rs"
@@ -1878,11 +1887,11 @@ mod tests {
         .unwrap();
 
         let project = dir.path().join("py_macro_test");
-        assert!(project.join("src/main.py").exists());
+        assert!(project.join("main.py").exists());
         assert!(!project.join("src/main.rs").exists());
 
         // main.py should be the standard Python template (no macros)
-        let content = fs::read_to_string(project.join("src/main.py")).unwrap();
+        let content = fs::read_to_string(project.join("main.py")).unwrap();
         assert!(content.contains("import horus"));
         assert!(content.contains("horus.run(node)"));
     }
@@ -1958,7 +1967,7 @@ mod tests {
     fn main_py_has_node_constructor_params() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
 
         // Verify Node constructor includes all documented parameters
         assert!(content.contains("name="), "main.py missing name= param");
@@ -1972,7 +1981,7 @@ mod tests {
     fn main_py_has_name_guard() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
         assert!(
             content.contains("if __name__ == \"__main__\":"),
             "main.py should have __name__ guard"
@@ -1983,7 +1992,7 @@ mod tests {
     fn main_py_has_controller_function() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
         assert!(
             content.contains("def controller(node)"),
             "main.py should have controller function"
@@ -2068,7 +2077,7 @@ mod tests {
     fn main_py_uses_recv_not_get() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
 
         assert!(
             content.contains("node.recv("),
@@ -2182,7 +2191,7 @@ mod tests {
         // Language-specific files are separate
         assert!(alpha.join("src/main.rs").exists());
         assert!(!alpha.join("src/main.py").exists());
-        assert!(beta.join("src/main.py").exists());
+        assert!(beta.join("main.py").exists());
         assert!(!beta.join("main.rs").exists());
     }
 
@@ -2264,7 +2273,7 @@ mod tests {
 
         // Python file should exist; Rust file is stale but still present
         // (create_new_project does not clean up old language files)
-        assert!(project.join("src/main.py").exists());
+        assert!(project.join("main.py").exists());
 
         // Gitignore should now have python patterns
         let gitignore = fs::read_to_string(project.join(".gitignore")).unwrap();
@@ -2749,7 +2758,7 @@ mod tests {
 
         assert!(p.is_dir(), "project directory");
         assert!(p.join(HORUS_TOML).is_file(), "horus.toml");
-        assert!(p.join("src/main.py").is_file(), "src/main.py");
+        assert!(p.join("main.py").is_file(), "main.py");
         assert!(p.join(".horus").is_dir(), ".horus/");
         assert!(p.join(".gitignore").is_file(), ".gitignore");
 
@@ -2761,7 +2770,7 @@ mod tests {
 
         for entry in &top_entries {
             assert!(
-                ["horus.toml", "src", ".horus", ".gitignore"].contains(&entry.as_str()),
+                ["horus.toml", "main.py", ".horus", ".gitignore"].contains(&entry.as_str()),
                 "unexpected file in python project root: '{}'",
                 entry
             );

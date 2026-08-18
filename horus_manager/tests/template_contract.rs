@@ -113,7 +113,7 @@ fn generated_python_is_already_formatted() {
 fn generated_node_is_named_after_the_project() {
     let tmp = tempfile::tempdir().unwrap();
     let proj = generate(tmp.path(), "alpha-bot", "--python");
-    let src = std::fs::read_to_string(proj.join("src/main.py")).expect("main.py must exist");
+    let src = std::fs::read_to_string(proj.join("main.py")).expect("main.py must exist");
 
     assert!(
         src.contains("alpha_bot_controller"),
@@ -132,8 +132,8 @@ fn two_projects_get_distinct_node_names() {
     let a = generate(tmp.path(), "robot_one", "--python");
     let b = generate(tmp.path(), "robot_two", "--python");
 
-    let sa = std::fs::read_to_string(a.join("src/main.py")).unwrap();
-    let sb = std::fs::read_to_string(b.join("src/main.py")).unwrap();
+    let sa = std::fs::read_to_string(a.join("main.py")).unwrap();
+    let sb = std::fs::read_to_string(b.join("main.py")).unwrap();
 
     let name_of = |s: &str| {
         s.lines()

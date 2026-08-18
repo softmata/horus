@@ -51,6 +51,18 @@ test = [
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "horus._horus"
+# PEP 561 marker and the type stub.
+#
+# `_horus.pyi` has always shipped, but without `py.typed` a type checker
+# treats the whole package as untyped and skips it outright:
+#
+#     error: Skipping analyzing "horus": module is installed, but missing
+#     library stubs or py.typed marker  [import-untyped]
+#
+# So the stub did nothing for anyone — no mypy, no pyright, no editor
+# autocomplete — on a stringly-typed API where a typo'd topic name is
+# otherwise a silent runtime `None`.
+include = ["horus/py.typed", "horus/_horus.pyi"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

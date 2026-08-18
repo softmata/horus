@@ -81,7 +81,14 @@ pub const KNOWN_PACKAGE: &[&str] = &[
 pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain"];
 
 /// Keys accepted inside `[hooks]`.
-pub const KNOWN_HOOKS: &[&str] = &["pre_run", "pre_build", "pre_test", "post_test"];
+pub const KNOWN_HOOKS: &[&str] = &[
+    "pre_run",
+    "post_run",
+    "pre_build",
+    "post_build",
+    "pre_test",
+    "post_test",
+];
 
 /// Keys developers reasonably expect to exist but which HORUS deliberately
 /// does not have, mapped to the reason.

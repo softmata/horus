@@ -45,11 +45,6 @@ pub(super) fn get_color_for_index(index: usize) -> &'static str {
     colors[index % colors.len()]
 }
 
-/// Load `horus.toml` or create a default manifest for standalone files.
-///
-/// Merges any auto-detected hardware feature names into the manifest's
-/// `[drivers]` section so that `cargo_gen` picks them up as Cargo features.
-
 /// Surface cargo's warnings from a build that *succeeded*.
 ///
 /// Every cargo invocation here captures stderr with `Stdio::piped()` and every
@@ -90,6 +85,10 @@ fn print_cargo_warnings(stderr: &[u8]) {
     }
 }
 
+/// Load `horus.toml` or create a default manifest for standalone files.
+///
+/// Merges any auto-detected hardware feature names into the manifest's
+/// `[drivers]` section so that `cargo_gen` picks them up as Cargo features.
 pub(crate) fn load_or_default_manifest(extra_drivers: &[String]) -> Result<HorusManifest> {
     let mut manifest = if Path::new(HORUS_TOML).exists() {
         HorusManifest::load_from(Path::new(HORUS_TOML)).unwrap_or_else(|_| default_manifest())

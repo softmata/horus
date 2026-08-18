@@ -676,6 +676,7 @@ mod tests {
         assert!(enable_to_features("network").is_empty());
     }
 
+    #[test]
     fn enable_to_features_cuda() {
         assert_eq!(enable_to_features("cuda"), vec!["cuda"]);
     }

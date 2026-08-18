@@ -840,11 +840,25 @@ pub struct HooksConfig {
     /// Hooks to run after `horus test`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub post_test: Vec<String>,
+
+    /// Hooks to run after `horus run` exits.
+    ///
+    /// Only `test` had a post hook, so the one point a robotics user most
+    /// wants — teardown after a run, to release hardware, park an arm or
+    /// power down a bus — did not exist, and nothing explained the asymmetry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_run: Vec<String>,
+
+    /// Hooks to run after `horus build`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_build: Vec<String>,
 }
 
 impl HooksConfig {
     pub fn is_empty(&self) -> bool {
         self.pre_run.is_empty()
+            && self.post_run.is_empty()
+            && self.post_build.is_empty()
             && self.pre_build.is_empty()
             && self.pre_test.is_empty()
             && self.post_test.is_empty()

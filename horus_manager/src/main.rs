@@ -2226,7 +2226,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 let _ = child.wait();
             }
 
-            result.map_err(HorusError::from)
+            let result: Result<(), HorusError> = result.map_err(HorusError::from);
+            if no_hooks {
+                return result;
+            }
+            match horus_manager::manifest::HorusManifest::load_from(std::path::Path::new(
+                "horus.toml",
+            )) {
+                Ok(manifest) => commands::hooks::run_teardown_hooks("post_run", &manifest, result),
+                Err(_) => result,
+            }
         }
 
         Commands::Build {
@@ -2284,9 +2293,19 @@ fn run_command(command: Commands) -> HorusResult<()> {
                         );
                     }
                 }
-                result.map_err(HorusError::from)
-            } else {
-                result.map_err(HorusError::from)
+            }
+
+            let result: Result<(), HorusError> = result.map_err(HorusError::from);
+            if no_hooks {
+                return result;
+            }
+            match horus_manager::manifest::HorusManifest::load_from(std::path::Path::new(
+                "horus.toml",
+            )) {
+                Ok(manifest) => {
+                    commands::hooks::run_teardown_hooks("post_build", &manifest, result)
+                }
+                Err(_) => result,
             }
         }
 
