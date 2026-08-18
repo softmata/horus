@@ -341,9 +341,19 @@ impl RtExecutor {
 
         // Deadline check via TimingEnforcer
         if let Some(deadline) = node.deadline {
-            if let Some(dm) =
-                TimingEnforcer::check_deadline(tr.tick_start, deadline, node.miss_policy)
-            {
+            let miss = TimingEnforcer::check_deadline(tr.tick_start, deadline, node.miss_policy);
+            if miss.is_none() && node.in_safe_mode {
+                // Met the deadline again: clear the latch so a node that
+                // recovers can be safed once more if it degrades later.
+                // A permanent latch would silently disable the policy after
+                // the first miss.
+                node.in_safe_mode = false;
+                print_line(&format!(
+                    "[RT-thread] SafeMode: '{}' met its deadline again, leaving safe state",
+                    node.name
+                ));
+            }
+            if let Some(dm) = miss {
                 if monitors.verbose {
                     print_line(&format!(
                         "[RT-thread] Deadline miss in '{}': {:?} > {:?}",
@@ -404,12 +414,19 @@ impl RtExecutor {
                         node.is_paused = true;
                     }
                     DeadlineAction::SafeMode => {
-                        print_line(&format!(
-                            "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
-                            node.name
-                        ));
-
-                        node.node.enter_safe_state();
+                        // Fire the transition once, on the way in. Calling it
+                        // on every miss meant a node sleeping 5 ms against a
+                        // 1 ms deadline entered its safe state 18 times across
+                        // 17 ticks — alternating between commanding and safing
+                        // for as long as the overload lasted.
+                        if !node.in_safe_mode {
+                            node.in_safe_mode = true;
+                            print_line(&format!(
+                                "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
+                                node.name
+                            ));
+                            node.node.enter_safe_state();
+                        }
                     }
                     DeadlineAction::EmergencyStop => {
                         print_line(&format!(
@@ -1094,6 +1111,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -1258,6 +1276,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -1522,6 +1541,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -1720,6 +1740,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -1837,6 +1858,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -1959,6 +1981,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -2232,6 +2255,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,
@@ -2320,6 +2344,7 @@ mod tests {
                 is_stopped: false,
                 health_probe_counter: 0,
                 is_paused: false,
+                in_safe_mode: false,
                 rt_stats: None,
                 miss_policy: Miss::Warn,
                 execution_class: super::super::types::ExecutionClass::Rt,
@@ -2440,6 +2465,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
             execution_class: super::super::types::ExecutionClass::Rt,

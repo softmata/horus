@@ -80,6 +80,7 @@ impl Scheduler {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: crate::core::Miss::Warn,
             execution_class: super::super::types::ExecutionClass::BestEffort,

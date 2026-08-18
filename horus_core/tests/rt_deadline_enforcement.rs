@@ -346,3 +346,162 @@ fn test_deadline_exceeded_with_high_frequency_node() {
         final_ticks
     );
 }
+
+// ---------------------------------------------------------------------------
+// Measurement: how often does SafeMode fire under sustained overload?
+// ---------------------------------------------------------------------------
+
+/// Counts `enter_safe_state()` calls instead of just recording that one
+/// happened, which is all `SlowNode`'s `AtomicBool` can tell us.
+struct CountingNode {
+    name: String,
+    sleep_duration: Duration,
+    ticks: Arc<AtomicU64>,
+    safe_entries: Arc<AtomicU64>,
+}
+
+impl Node for CountingNode {
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+
+    fn tick(&mut self) {
+        self.ticks.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(self.sleep_duration);
+    }
+
+    fn enter_safe_state(&mut self) {
+        self.safe_entries.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// `Miss::SafeMode` must fire on the *transition* into safe state, not on
+/// every deadline miss.
+///
+/// `enter_safe_state()` is a state-transition hook. The SafeMode branch called
+/// it unconditionally on each miss, with nothing recording that the node had
+/// already been safed. Measured here before the fix — a node sleeping 5 ms
+/// against a 1 ms deadline:
+///
+/// ```text
+/// ticks=17  safe_state_entries=18
+/// ```
+///
+/// One safe-state entry per tick. For the policy's own documented use case
+/// ("Motor controller: enter safe mode on deadline miss") that is the motor
+/// being commanded by `tick()` and re-safed, alternating, for the whole
+/// overload. A node cannot hold a safe state it is pushed back into every
+/// cycle.
+///
+/// After the fix, same run: `ticks=17 safe_state_entries=2` — one entry per
+/// degradation episode, with a recovery in between.
+#[test]
+fn safe_mode_fires_on_entry_not_on_every_miss() {
+    let _shm_guard = cleanup_stale_shm();
+    let ticks = Arc::new(AtomicU64::new(0));
+    let safe_entries = Arc::new(AtomicU64::new(0));
+
+    let node = CountingNode {
+        name: format!("rt_safemode_count_{}", std::process::id()),
+        sleep_duration: Duration::from_millis(5),
+        ticks: ticks.clone(),
+        safe_entries: safe_entries.clone(),
+    };
+
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+    sched
+        .add(node)
+        .rate(100_u64.hz())
+        .budget(1_u64.ms())
+        .deadline(1_u64.ms())
+        .on_miss(Miss::SafeMode)
+        .build()
+        .unwrap();
+    sched.run_for(Duration::from_millis(300)).unwrap();
+
+    let ticks = ticks.load(Ordering::SeqCst);
+    let entries = safe_entries.load(Ordering::SeqCst);
+
+    assert!(ticks > 0, "the node never ran, so nothing was measured");
+    assert!(
+        entries > 0,
+        "Miss::SafeMode never called enter_safe_state() across {ticks} ticks \
+         that all missed a 1 ms deadline by 5 ms"
+    );
+
+    // The real assertion. Every tick misses, so an unlatched implementation
+    // produces entries >= ticks. A latched one produces a small number of
+    // degradation episodes.
+    assert!(
+        entries < ticks,
+        "enter_safe_state() fired {entries} times across {ticks} ticks — it is \
+         being called per miss rather than on entry into safe mode, so the node \
+         is re-safed every cycle instead of staying safed"
+    );
+}
+
+/// A node that recovers must be able to be safed again.
+///
+/// The latch above only holds if it also clears. A latch that never clears
+/// turns `Miss::SafeMode` into a one-shot for the lifetime of the process: the
+/// node degrades, is safed, recovers, degrades again — and the second
+/// degradation is silent.
+#[test]
+fn the_safe_mode_latch_clears_when_the_node_recovers() {
+    let _shm_guard = cleanup_stale_shm();
+    let ticks = Arc::new(AtomicU64::new(0));
+    let safe_entries = Arc::new(AtomicU64::new(0));
+
+    // Alternates fast and slow so it crosses the deadline repeatedly.
+    struct FlappingNode {
+        name: String,
+        ticks: Arc<AtomicU64>,
+        safe_entries: Arc<AtomicU64>,
+    }
+
+    impl Node for FlappingNode {
+        fn name(&self) -> &'static str {
+            Box::leak(self.name.clone().into_boxed_str())
+        }
+
+        fn tick(&mut self) {
+            let n = self.ticks.fetch_add(1, Ordering::SeqCst);
+            // Three fast ticks, then one slow one: the node keeps re-entering
+            // and leaving the overload condition.
+            if n % 4 == 3 {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn enter_safe_state(&mut self) {
+            self.safe_entries.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let node = FlappingNode {
+        name: format!("rt_safemode_flap_{}", std::process::id()),
+        ticks: ticks.clone(),
+        safe_entries: safe_entries.clone(),
+    };
+
+    let mut sched = Scheduler::new().tick_rate(200_u64.hz());
+    sched
+        .add(node)
+        .rate(200_u64.hz())
+        .budget(1_u64.ms())
+        .deadline(1_u64.ms())
+        .on_miss(Miss::SafeMode)
+        .build()
+        .unwrap();
+    sched.run_for(Duration::from_millis(400)).unwrap();
+
+    let entries = safe_entries.load(Ordering::SeqCst);
+    let ticks = ticks.load(Ordering::SeqCst);
+
+    assert!(
+        entries >= 2,
+        "the node crossed into overload repeatedly across {ticks} ticks but \
+         enter_safe_state() fired only {entries} time(s) — the latch is not \
+         clearing, so every degradation after the first is invisible"
+    );
+}

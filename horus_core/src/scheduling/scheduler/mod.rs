@@ -1772,6 +1772,7 @@ impl Scheduler {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats,
             miss_policy,
             execution_class,
@@ -4430,9 +4431,18 @@ impl Scheduler {
         // Check deadline for RT nodes via TimingEnforcer
         if self.nodes[i].is_rt_node {
             if let Some(deadline) = self.nodes[i].deadline {
-                if let Some(dm) =
-                    TimingEnforcer::check_deadline(tick_start, deadline, self.nodes[i].miss_policy)
-                {
+                let miss =
+                    TimingEnforcer::check_deadline(tick_start, deadline, self.nodes[i].miss_policy);
+                if miss.is_none() && self.nodes[i].in_safe_mode {
+                    // See the RT executor: a latch that never clears turns
+                    // Miss::SafeMode into a one-shot for the process lifetime.
+                    self.nodes[i].in_safe_mode = false;
+                    print_line(&format!(
+                        " Deadline policy: '{}' met its deadline again, leaving safe state",
+                        node_name
+                    ));
+                }
+                if let Some(dm) = miss {
                     if let Some(ref monitor) = self.monitor.safety {
                         monitor.record_deadline_miss(&node_name);
                     }
@@ -4481,16 +4491,22 @@ impl Scheduler {
                             ));
                         }
                         DeadlineAction::SafeMode => {
-                            print_line(&format!(
-                                " Deadline policy: '{}' entering safe state",
-                                node_name
-                            ));
-                            if Self::guard_fault_callback(|| self.nodes[i].node.enter_safe_state())
-                            {
-                                self.note_safing_failure(i, "enter_safe_state");
-                            }
-                            if let Some(ref monitor) = self.monitor.safety {
-                                monitor.record_degrade_activation();
+                            // Once on entry, not once per miss — see the note on
+                            // `ScheduledNode::in_safe_mode`.
+                            if !self.nodes[i].in_safe_mode {
+                                self.nodes[i].in_safe_mode = true;
+                                print_line(&format!(
+                                    " Deadline policy: '{}' entering safe state",
+                                    node_name
+                                ));
+                                if Self::guard_fault_callback(|| {
+                                    self.nodes[i].node.enter_safe_state()
+                                }) {
+                                    self.note_safing_failure(i, "enter_safe_state");
+                                }
+                                if let Some(ref monitor) = self.monitor.safety {
+                                    monitor.record_degrade_activation();
+                                }
                             }
                         }
                         DeadlineAction::EmergencyStop => {

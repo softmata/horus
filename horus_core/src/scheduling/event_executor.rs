@@ -379,6 +379,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: ExecutionClass::Event(topic.to_string()),
