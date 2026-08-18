@@ -74,7 +74,7 @@ fn execute_pick_place(handle: ServerGoalHandle<PickPlace>) -> GoalOutcome<PickPl
         // Check for cancellation before each phase
         if handle.is_cancel_requested() {
             hlog!(info, "PickPlace server: cancelled during phase '{}'", phase_names[phase as usize]);
-            return handle.cancel(PickPlaceResult {
+            return handle.canceled(PickPlaceResult {
                 success: 0,
                 final_x: 0.0,
                 final_y: 0.0,
@@ -109,10 +109,15 @@ fn execute_pick_place(handle: ServerGoalHandle<PickPlace>) -> GoalOutcome<PickPl
     hlog!(info, "PickPlace server: object {} placed at ({:.1}, {:.1})",
         goal.object_id, goal.place_x, goal.place_y);
 
+    // Read the values out before `succeed` consumes the handle: `goal` borrows
+    // from `handle`, so using it in the argument keeps that borrow alive across
+    // the move.
+    let (final_x, final_y) = (goal.place_x, goal.place_y);
+
     handle.succeed(PickPlaceResult {
         success: 1,
-        final_x: goal.place_x,
-        final_y: goal.place_y,
+        final_x,
+        final_y,
     })
 }
 
@@ -124,7 +129,7 @@ fn run_task_commander() {
     // Wait for server to start
     std::thread::sleep(Duration::from_millis(200));
 
-    let client = SyncActionClient::<PickPlace>::new()
+    let client = ActionClient::<PickPlace>::new()
         .expect("Failed to create PickPlace client");
 
     // === Task 1: Pick object 1 and place at (2.0, 1.0) ===

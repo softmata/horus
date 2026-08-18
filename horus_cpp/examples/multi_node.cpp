@@ -10,8 +10,11 @@
 using namespace horus::literals;
 
 int main() {
-    auto sched = horus::Scheduler()
-        .tick_rate(100_hz)
+    // The configuration methods return `Scheduler&`, and the copy
+    // constructor is deleted, so the chain cannot initialize a new
+    // object — declare first, then configure (see scheduler.hpp).
+    horus::Scheduler sched;
+    sched.tick_rate(100_hz)
         .name("robot_pipeline")
         .prefer_rt();
 
@@ -49,7 +52,10 @@ int main() {
             if (!scan) return;
 
             // Compute velocity from scan
-            float front_range = scan->ranges[0];
+            // `recv()` returns `optional<BorrowedSample<T>>`, so reaching the
+            // message takes two steps: `->` unwraps the optional, and the
+            // second `->` goes through BorrowedSample to the message.
+            float front_range = (*scan)->ranges[0];
             auto cmd = cmd_pub.loan();
             cmd->linear  = front_range > 1.0f ? 0.3f : 0.0f;
             cmd->angular = front_range > 1.0f ? 0.0f : 0.5f;

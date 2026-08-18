@@ -2,10 +2,11 @@
 name = "sensor_navigation"
 version = "0.1.0"
 description = "Mobile robot with LiDAR + IMU — obstacle avoidance and multi-node scheduling"
-author = "softmata"
+authors = ["softmata"]
 license = "Apache-2.0"
-language = "rust"
 
 [dependencies]
 horus = "*"
-horus_library = "*"
+# TransformFrame lives in horus-tf, a separate package. The example used it
+# without declaring it, so it did not compile.
+horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c" }

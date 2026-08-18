@@ -21,7 +21,12 @@ use horus::prelude::*;
 use horus::DurationExt;
 
 message! {
+    #[fixed]
     /// Simulated camera frame metadata
+    ///
+    /// `#[fixed]` makes this `Copy` and `repr(C)`, which is what `read_latest()`
+    /// requires and what puts the message on the zero-copy path. Without it the
+    /// example did not compile.
     CameraFrame {
         width: u32,
         height: u32,

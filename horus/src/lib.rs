@@ -367,6 +367,13 @@ pub use horus_core::core;
 /// ```
 pub use horus_core::drivers as hardware;
 // `horus::drivers` removed — use `horus::hardware` instead.
+/// Duration and frequency helpers — `100_u64.hz()`, `5_u64.ms()`, and friends.
+///
+/// These were reachable only through the prelude, so `use horus::DurationExt;`
+/// failed with "unresolved import". Three of the ten shipped examples wrote
+/// exactly that and did not compile.
+pub use horus_core::core::{DurationExt, Frequency};
+
 /// Error types — `HorusError`, `HorusResult`, and the per-domain sub-errors.
 ///
 /// The prelude exports the short aliases (`Result`, `Error`), which covers most

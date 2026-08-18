@@ -1,6 +1,6 @@
 # Horus Examples
 
-Ten complete robotics applications covering every workflow a ROS2 developer needs. Ordered from simple to advanced, with both Rust and Python examples.
+Ten complete robotics applications covering every workflow a ROS2 developer needs. Ordered from simple to advanced. Rust and Python examples live here; the C++ examples are under [`horus_cpp/examples/`](../horus_cpp/examples/) — see [C++](#c) below.
 
 ## Learning Path
 
@@ -29,6 +29,32 @@ Ten complete robotics applications covering every workflow a ROS2 developer need
 |-------------------------------------------|----------|--------------------------------------------------------------------|
 | [driver_integration](driver_integration/) | Rust     | Hardware drivers via `[drivers]` config, Terra HAL, custom drivers |
 | [record_replay](record_replay/)           | Rust     | Session recording, blackbox forensics, deterministic replay        |
+
+## C++
+
+The C++ examples are in [`horus_cpp/examples/`](../horus_cpp/examples/) rather
+than this directory, because they build with CMake against the C++ bindings
+instead of through `horus build`.
+
+| Example | What you'll learn |
+|---------|-------------------|
+| [pub_sub_demo](../horus_cpp/examples/pub_sub_demo.cpp) | Topics, the loan/publish pattern, send-by-copy |
+| [multi_node](../horus_cpp/examples/multi_node.cpp) | Several nodes in one scheduler, rates, budgets, `on_miss` |
+| [obstacle_avoidance](../horus_cpp/examples/obstacle_avoidance.cpp) | Reactive control from a LaserScan |
+| [camera_publisher](../horus_cpp/examples/camera_publisher.cpp) | Publishing sensor data at a fixed rate |
+| [transform_frames](../horus_cpp/examples/transform_frames.cpp) | Coordinate frames from C++ |
+| [params_demo](../horus_cpp/examples/params_demo.cpp) | Runtime parameters |
+
+Build them with:
+
+```bash
+cargo build -p horus_cpp                      # produces libhorus_cpp.a
+cmake -S horus_cpp/examples -B build/cpp-examples
+cmake --build build/cpp-examples
+```
+
+CMake finds the library in `target/` automatically from a checkout; pass
+`-DHORUS_CPP_LIB=...` to point it somewhere else.
 
 ## ROS2 Migration Guide
 

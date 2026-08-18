@@ -226,6 +226,23 @@ macro_rules! hlog {
     (debug, $($arg:tt)*) => {
         $crate::core::hlog::log_with_context($crate::core::LogType::Debug, format!($($arg)*))
     };
+    // Failure arm. Without it, forgetting the level produced:
+    //
+    //     error: no rules expected `"pos=({:.2}, {:.2})"`
+    //     note: while trying to match `info`
+    //
+    // which points at the format string and blames a token the author never
+    // wrote. Nine of the ten shipped examples called `hlog!` this way, so the
+    // first thing a reader compiled failed with an error that did not name the
+    // mistake.
+    ($($rest:tt)*) => {
+        compile_error!(concat!(
+            "hlog! needs a level as its first argument.\n",
+            "Expected:  hlog!(info, \"message {}\", value)\n",
+            "  - levels are: info, warn, error, debug\n",
+            "  - the level is a bare word, not a string, and is followed by a comma"
+        ));
+    };
 }
 
 /// Log an [`Error`](crate::error::Error) with its remediation hint (if any).
@@ -285,6 +302,18 @@ macro_rules! hlog_every {
             $crate::hlog!($level, $($arg)*);
         }
     }};
+    // Same failure arm as `hlog!`, for the same reason: without it, omitting
+    // the level pointed at the format string and blamed a token the author
+    // never wrote. Two of the shipped examples called it this way.
+    ($($rest:tt)*) => {
+        compile_error!(concat!(
+            "hlog_every! needs an interval and a level.\n",
+            "Expected:  hlog_every!(500, info, \"message {}\", value)\n",
+            "  - the first argument is the interval in milliseconds\n",
+            "  - the second is the level: info, warn, error, debug\n",
+            "  - the level is a bare word, not a string"
+        ));
+    };
 }
 
 /// Log a message exactly once per program run (at the callsite).

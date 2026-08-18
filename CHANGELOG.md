@@ -74,6 +74,28 @@ From `Unreleased` onward, entries are written by hand.
   and reported every message as modified. It also hashed a different canonical
   form from the runtime, so it printed a number unrelated to the one in a
   layout-mismatch error. Both now use FNV-1a over `Name|field:Type|…`.
+- **examples** — nine of the ten shipped examples did not compile, including the
+  one the README names as the starting point. Causes: `hlog!`/`hlog_every!`
+  called without a level (neither macro had a failure arm, so the error blamed
+  the format string), `use horus::DurationExt` when the trait was only in the
+  prelude, `[drivers] imu = …` generating a `horus` feature that has never
+  existed, and API drift (`handle.cancel` → `canceled`, `SyncActionClient` →
+  `ActionClient`, `TransformFrame` used without declaring `horus-tf`, a message
+  read with `read_latest()` without `#[fixed]`). All ten build now.
+- **examples** — every manifest carried `author` (the field is `authors`, so
+  attribution was dropped) and `language` (inferred; no effect), plus a
+  `horus_library` dependency that only one example referenced and that no
+  registry serves.
+- **horus_cpp** — none of the six C++ examples built. Three copy-initialized a
+  `Scheduler` from its builder chain, which `scheduler.hpp` documents as not
+  compiling; `pub_sub_demo` was missing from the CMake list entirely, so nothing
+  ever compiled it; `camera_publisher` used a `CameraInfo` shape that no longer
+  exists. The CMakeLists used `find_package(horus QUIET)` and linked only
+  `if(horus_FOUND)` — HORUS ships no CMake package config, so nothing linked and
+  every example failed with 82 undefined references instead of a message. All
+  six build, link and run now.
+- **docs** — `examples/README.md` said "both Rust and Python" and never
+  mentioned the six C++ examples, so a C++ reader concluded there were none.
 - **benchmarks** — `dds_comparison_benchmark` fabricated ROS2/CycloneDDS/FastDDS
   /iceoryx results when built without the `dds` feature (the default): a full
   percentile distribution, confidence bounds included, computed from two

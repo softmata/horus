@@ -133,7 +133,7 @@ impl Node for SimMotorDriver {
 // ============================================================================
 
 struct SimImuDriver {
-    imu_pub: Topic<horus_library::messages::Imu>,
+    imu_pub: Topic<Imu>,
     tick_count: u64,
 }
 
@@ -160,7 +160,7 @@ impl Node for SimImuDriver {
         let t = self.tick_count as f64 * 0.005; // 200Hz
 
         // Simulate IMU readings with slight noise
-        let mut imu = horus_library::messages::Imu::default();
+        let mut imu = Imu::default();
         imu.linear_acceleration[0] = 0.01 * (t * 0.3).sin(); // slight sway
         imu.linear_acceleration[1] = 0.005 * (t * 0.7).cos();
         imu.linear_acceleration[2] = 9.81; // gravity

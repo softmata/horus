@@ -5,6 +5,7 @@
 
 use horus::prelude::*;
 use horus::DurationExt;
+use horus_tf::{timestamp_now, Transform, TransformFrame};
 
 message! {
     /// Joint positions for all 6 joints (radians)
@@ -191,7 +192,7 @@ impl Node for FramePublisher {
             // Log ee→base transform periodically
             if ts % 1_000_000_000 < 20_000_000 {
                 if let Ok(tf) = self.tf.tf("ee", "base_link") {
-                    hlog!(
+                    hlog!(info, 
                         "ee→base: [{:.3}, {:.3}, {:.3}]",
                         tf.translation[0],
                         tf.translation[1],

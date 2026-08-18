@@ -12,8 +12,11 @@ using namespace horus::literals;
 #include <cstdio>
 
 int main() {
-    auto sched = horus::Scheduler()
-        .tick_rate(100_hz)
+    // The configuration methods return `Scheduler&`, and the copy
+    // constructor is deleted, so the chain cannot initialize a new
+    // object — declare first, then configure (see scheduler.hpp).
+    horus::Scheduler sched;
+    sched.tick_rate(100_hz)
         .name("tf_demo");
 
     auto tf_pub = sched.advertise<horus::msg::TransformStamped>("tf");

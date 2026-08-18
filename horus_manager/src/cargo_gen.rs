@@ -263,17 +263,27 @@ fn write_implicit_deps(cargo: &mut String, manifest: &HorusManifest) {
 /// crate: cargo rejects `--features net` with "the package does not contain
 /// this feature".
 fn horus_dep_features(manifest: &HorusManifest) -> Vec<String> {
-    let mut features: Vec<String> = manifest
-        .drivers
-        .keys()
-        .filter_map(|k| match k.as_str() {
-            "camera" => Some("camera".to_string()),
-            "lidar" => Some("lidar".to_string()),
-            "imu" => Some("imu".to_string()),
-            "gps" => Some("gps".to_string()),
-            _ => None,
-        })
-        .collect();
+    // Driver names used to be mapped to Cargo features here:
+    //
+    //     "camera" => Some("camera"), "lidar" => Some("lidar"),
+    //     "imu"    => Some("imu"),    "gps"   => Some("gps"),
+    //
+    // `horus` has five features — blackbox, default, macros, net, telemetry —
+    // and has never had any of those four. So declaring a driver under one of
+    // those four names generated a manifest cargo refuses:
+    //
+    //     error: failed to select a version for `horus`.
+    //     package `driver_integration` depends on `horus` with feature `imu`
+    //     but `horus` does not have that feature.
+    //
+    // `[drivers]` is the documented way to declare hardware, and `imu`, `lidar`,
+    // `camera` and `gps` are the four names most likely to be used, so the
+    // documented workflow failed for exactly the common cases. The shipped
+    // `driver_integration` example is one of them and did not build.
+    //
+    // Driver *dependencies* are handled by `write_driver_deps`; nothing about a
+    // driver needs a feature on `horus`.
+    let mut features: Vec<String> = Vec::new();
 
     let requested_net = std::env::var("HORUS_ENABLE")
         .map(|v| {
