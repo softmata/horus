@@ -31,6 +31,17 @@ From `Unreleased` onward, entries are written by hand.
 - **manager** — `horus schema` prints the JSON Schema for `horus.toml`.
 - **manager** — unknown keys in `horus.toml` are reported with a suggestion
   rather than silently ignored.
+- **core** — `Topic::new_checked(name, hash)`, plus `LAYOUT_HASH` and a
+  `Type::topic(name)` helper on every `message!` type. The topic open path
+  checked only the message's short type name and its size, so two builds of
+  `Pose { x, y }` and `Pose { y, x }` shared a topic and swapped the coordinates
+  with no error. The checked constructor rejects it; `Topic::new` is unchanged
+  and unchecked peers are never rejected.
+- **horus** — `horus::types` now re-exports both `horus_types` and
+  `horus_core::types`, and `horus::error` / `horus::HorusResult` /
+  `horus::topics` are reachable directly. `use horus::types::Tensor;` failed
+  with "no `Tensor` in the root", and twelve doc sites told readers to write
+  `horus::horus_core::…` — naming an internal crate the facade exists to hide.
 - **python** — PEP 561 `py.typed` marker, so the shipped `_horus.pyi` stubs are
   actually used. Type checkers previously skipped the package entirely.
 
@@ -55,6 +66,14 @@ From `Unreleased` onward, entries are written by hand.
   manifest.
 - **manager** — `setup-rt` tried to install a package that does not exist on
   Ubuntu, and ran `sudo apt` without asking.
+- **core** — type mismatch and type-size mismatch on a topic were reported as
+  "Communication serialization failed", behind two stacked prefixes. They now
+  name the topic and say what actually differs.
+- **manager** — `horus msg hash` used `DefaultHasher`, whose output std does not
+  guarantee between Rust releases, so the hash changed on a toolchain upgrade
+  and reported every message as modified. It also hashed a different canonical
+  form from the runtime, so it printed a number unrelated to the one in a
+  layout-mismatch error. Both now use FNV-1a over `Name|field:Type|…`.
 - **docs** — the install command in all six READMEs pointed at a branch that
   does not exist and returned HTTP 404.
 - **docs** — the Configuration Reference documented 4 of the 15 tables
@@ -63,6 +82,11 @@ From `Unreleased` onward, entries are written by hand.
 
 ### Known issues
 
+- **tests** — `cross_language_ipc` is reliable on its own (22/22) but fails
+  occasionally in a full workspace run. Its loops race a wall clock while ~20
+  test binaries and their Python children compete for the machine. Documented in
+  the file, with why the obvious fixes do not work; the real fix is to have each
+  side signal the other instead of racing a clock.
 - **core** — `recv()` is documented FIFO but can return an older message after a
   newer one once the ring laps a slow subscriber. Observed backward jumps are
   exactly `capacity - 1`. Reproduce with

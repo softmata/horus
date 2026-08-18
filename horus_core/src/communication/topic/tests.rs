@@ -6079,7 +6079,13 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                   // NTFS temp dir on Windows, making the subscriber's lock-file claim slower
                   // than the producer's CreateFileMappingW attach. Confirmed by reproducing the
                   // exact Windows failure on Linux with a 1ms stall before sub1's first recv.
-    let warm_deadline = Instant::now() + Duration::from_secs(5);
+                  // Generous, because this is a hang guard rather than a timing assertion: the
+                  // test's claim is that both subscribers receive every message, and the
+                  // warm-up only exists to get them addressable first. At 5 s this failed
+                  // about 1 run in 10 even in isolation — the subscriber threads simply had
+                  // not been scheduled through their first successful try_recv yet — which
+                  // reported a scheduling delay as a broadcast defect.
+    let warm_deadline = Instant::now() + Duration::from_secs(60);
     while warmed_count.load(Ordering::Acquire) < 2 && Instant::now() < warm_deadline {
         producer.send("__horus_ready__".to_string());
         std::thread::sleep(Duration::from_millis(2));

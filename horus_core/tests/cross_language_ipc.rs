@@ -9,6 +9,33 @@
 //! to the horus_py/ directory so `from horus._horus import Topic, CmdVel` works.
 //!
 //! **Run sequentially**: `cargo test --test cross_language_ipc -- --test-threads=1`
+//!
+//! # Known flakiness under a full `cargo test`
+//!
+//! These tests pass reliably on their own (22/22 across repeated runs) and fail
+//! occasionally in a full workspace run — usually
+//! `bidirectional_roundtrip_cross_language` or
+//! `python_publishes_imu_rust_subscribes`. The cause is contention, not a
+//! defect in the code under test: cargo runs each integration file as its own
+//! process, roughly twenty at once, and every test here additionally spawns a
+//! real Python interpreter. The publish and receive loops below are bounded by
+//! wall-clock (`deadline = time.time() + 4.0`, `start.elapsed() < 3s`), so on a
+//! loaded machine a publisher can finish its window before the receiver is ever
+//! scheduled.
+//!
+//! `cleanup_stale_shm()` serializes these tests against each other *within this
+//! binary*, which is why `--test-threads=1` helps; it has no say over the other
+//! test binaries.
+//!
+//! Widening the windows is not a fix on its own: the loops run to their
+//! deadline rather than stopping once they have what they need, so a longer
+//! window makes every test take the full window even on an idle machine. Two of
+//! them (`rate_mismatch_python_30hz_rust_1khz`, `sustained_10s_python_to_rust`)
+//! also assert on volume and duration, so they cannot simply exit early either.
+//!
+//! A real fix means restructuring the harness so each side signals the other
+//! when it has finished, rather than both racing a clock. That is worth doing
+//! and is not done here.
 
 mod common;
 

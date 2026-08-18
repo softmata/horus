@@ -24,6 +24,20 @@ use std::time::Duration;
 mod common;
 use common::cleanup_stale_shm;
 
+/// Timeout for a goal that is expected to succeed.
+///
+/// These are hang guards, not performance assertions: the test's claim is that
+/// feedback arrives and the goal completes, not that the machine can do it in
+/// five seconds. Under the full suite — 2,300 tests, several spawning Python
+/// subprocesses — the server thread here (which ticks every 10 ms) gets starved
+/// past a 5 s budget, and `test_action_feedback_received` and
+/// `test_action_canceled_outcome` failed in the full run while passing 8/8 on
+/// their own.
+///
+/// A generous bound costs nothing on the passing path and still fails rather
+/// than hangs if the action machinery genuinely stops working.
+const GOAL_TIMEOUT: Duration = Duration::from_secs(60);
+
 // All tests in this file share SHM topic names (RtNav, RtSlow) so they MUST
 // run serially.  The global mutex prevents parallel execution within this binary.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -89,7 +103,7 @@ fn test_action_full_goal_lifecycle() {
 
     // Create client and send goal
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(RtNavGoal { target: 42.0 }, Duration::from_secs(5));
+    let result = client.send_goal_and_wait(RtNavGoal { target: 42.0 }, GOAL_TIMEOUT);
 
     // Stop server
     running.store(false, Ordering::Relaxed);
@@ -130,7 +144,7 @@ fn test_action_server_rejects_goal() {
     std::thread::sleep(Duration::from_millis(500));
 
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(RtNavGoal { target: -999.0 }, Duration::from_secs(3));
+    let result = client.send_goal_and_wait(RtNavGoal { target: -999.0 }, GOAL_TIMEOUT);
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -173,7 +187,7 @@ fn test_action_server_aborts_goal() {
     std::thread::sleep(Duration::from_millis(500));
 
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(RtNavGoal { target: 10.0 }, Duration::from_secs(3));
+    let result = client.send_goal_and_wait(RtNavGoal { target: 10.0 }, GOAL_TIMEOUT);
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -286,7 +300,7 @@ fn test_action_feedback_received() {
     let client = SyncActionClient::<RtNav>::new().unwrap();
     let result = client.send_goal_and_wait_with_feedback(
         RtNavGoal { target: 100.0 },
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
         move |_fb| {
             fb_count.fetch_add(1, Ordering::SeqCst);
         },
@@ -344,8 +358,7 @@ fn test_action_multiple_sequential_goals() {
 
     // Send 3 goals sequentially
     for i in 0..3 {
-        let result =
-            client.send_goal_and_wait(RtNavGoal { target: i as f64 }, Duration::from_secs(3));
+        let result = client.send_goal_and_wait(RtNavGoal { target: i as f64 }, GOAL_TIMEOUT);
         assert!(result.is_ok(), "Goal {} should succeed: {:?}", i, result);
     }
 
@@ -391,7 +404,7 @@ fn test_action_canceled_outcome() {
     std::thread::sleep(Duration::from_millis(500));
 
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(RtNavGoal { target: 50.0 }, Duration::from_secs(3));
+    let result = client.send_goal_and_wait(RtNavGoal { target: 50.0 }, GOAL_TIMEOUT);
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -433,7 +446,7 @@ fn test_action_preempted_outcome() {
     std::thread::sleep(Duration::from_millis(500));
 
     let client = SyncActionClient::<RtNav>::new().unwrap();
-    let result = client.send_goal_and_wait(RtNavGoal { target: 75.0 }, Duration::from_secs(3));
+    let result = client.send_goal_and_wait(RtNavGoal { target: 75.0 }, GOAL_TIMEOUT);
 
     running.store(false, Ordering::Relaxed);
     server_thread.join().unwrap();
@@ -474,13 +487,13 @@ fn test_action_cancel_after_completion_is_harmless() {
     let client = SyncActionClient::<RtNav>::new().unwrap();
 
     // Send goal and get result (succeeds quickly)
-    let result = client.send_goal_and_wait(RtNavGoal { target: 1.0 }, Duration::from_secs(3));
+    let result = client.send_goal_and_wait(RtNavGoal { target: 1.0 }, GOAL_TIMEOUT);
     assert!(result.is_ok(), "Goal should succeed: {:?}", result);
 
     // Now send a stale cancel — should not crash the server
     // (cancel_goal uses GoalId internally, but we can't access it from send_goal_and_wait)
     // Instead, verify the server processes a second goal cleanly after the first
-    let result2 = client.send_goal_and_wait(RtNavGoal { target: 2.0 }, Duration::from_secs(3));
+    let result2 = client.send_goal_and_wait(RtNavGoal { target: 2.0 }, GOAL_TIMEOUT);
     assert!(
         result2.is_ok(),
         "Second goal should also succeed: {:?}",
@@ -541,30 +554,30 @@ fn test_action_mixed_outcomes_sequential() {
     let client = SyncActionClient::<RtMixed>::new().unwrap();
 
     // Goal 1: Succeed
-    let r1 = client.send_goal_and_wait(RtMixedGoal { mode: 1 }, Duration::from_secs(3));
+    let r1 = client.send_goal_and_wait(RtMixedGoal { mode: 1 }, GOAL_TIMEOUT);
     assert!(r1.is_ok(), "Mode 1 should succeed: {:?}", r1);
     assert_eq!(r1.unwrap().outcome_code, 1);
 
     // Goal 2: Abort
-    let r2 = client.send_goal_and_wait(RtMixedGoal { mode: 2 }, Duration::from_secs(3));
+    let r2 = client.send_goal_and_wait(RtMixedGoal { mode: 2 }, GOAL_TIMEOUT);
     assert!(r2.is_err(), "Mode 2 should abort: {:?}", r2);
 
     // Goal 3: Canceled
-    let r3 = client.send_goal_and_wait(RtMixedGoal { mode: 3 }, Duration::from_secs(3));
+    let r3 = client.send_goal_and_wait(RtMixedGoal { mode: 3 }, GOAL_TIMEOUT);
     match r3 {
         Err(ActionError::GoalCanceled) => {}
         other => panic!("Mode 3 should be GoalCanceled, got: {:?}", other),
     }
 
     // Goal 4: Preempted
-    let r4 = client.send_goal_and_wait(RtMixedGoal { mode: 4 }, Duration::from_secs(3));
+    let r4 = client.send_goal_and_wait(RtMixedGoal { mode: 4 }, GOAL_TIMEOUT);
     match r4 {
         Err(ActionError::GoalPreempted) => {}
         other => panic!("Mode 4 should be GoalPreempted, got: {:?}", other),
     }
 
     // Goal 5: Rejected
-    let r5 = client.send_goal_and_wait(RtMixedGoal { mode: 99 }, Duration::from_secs(3));
+    let r5 = client.send_goal_and_wait(RtMixedGoal { mode: 99 }, GOAL_TIMEOUT);
     assert!(r5.is_err(), "Mode 99 should be rejected: {:?}", r5);
 
     running.store(false, Ordering::Relaxed);
@@ -668,7 +681,7 @@ fn test_action_server_panic_during_execute() {
         RtCrashGoal {
             should_crash: false,
         },
-        Duration::from_secs(3),
+        GOAL_TIMEOUT,
     );
 
     // The server may or may not recover depending on how the panic left

@@ -367,6 +367,13 @@ pub use horus_core::core;
 /// ```
 pub use horus_core::drivers as hardware;
 // `horus::drivers` removed — use `horus::hardware` instead.
+/// Error types — `HorusError`, `HorusResult`, and the per-domain sub-errors.
+///
+/// The prelude exports the short aliases (`Result`, `Error`), which covers most
+/// code. This module is here so the long names are reachable without naming an
+/// internal crate: the documentation previously said
+/// `use horus::horus_core::error::HorusResult;`.
+pub use horus_core::error;
 #[doc(hidden)]
 pub use horus_core::hlog;
 #[doc(hidden)]
@@ -381,8 +388,42 @@ pub use horus_core::register_driver;
 pub use horus_core::scheduling;
 #[doc(hidden)]
 pub use horus_core::serde_json;
+
+/// Long-form `Result` alias, for code that prefers it over the prelude's
+/// `Result`. Was only reachable as `horus::horus_core::HorusResult`.
+pub use horus_core::error::HorusResult;
+
+/// Compile-time topic descriptors declared with the `topics!` macro.
+///
+/// Was only reachable as `horus::horus_core::topics`.
+pub use horus_core::topics;
+
 #[doc(hidden)]
-pub use horus_types as types;
+pub use horus_core::horus_internal;
+
+#[doc(hidden)]
+pub use horus_core::serde_yaml;
+
+/// Message and geometry types.
+///
+/// This used to be a plain re-export of the `horus_types` crate, which left
+/// half the types unreachable from the obvious path. `Tensor`, the point-cloud
+/// extension traits and their neighbours live in `horus_core::types`, so
+///
+/// ```rust,ignore
+/// use horus::types::Tensor;              // error: no `Tensor` in the root
+/// use horus::horus_core::types::Tensor;  // what the docs had to say instead
+/// ```
+///
+/// Reaching through `horus::horus_core::` defeats the point of a facade: it
+/// names an internal crate the user was never meant to know about, and it is
+/// not guessable — you find it by reading the source or by copying a doc
+/// snippet. Both sets are re-exported here, so the obvious path is the one that
+/// works. The names do not overlap.
+pub mod types {
+    pub use horus_core::types::*;
+    pub use horus_types::*;
+}
 
 /// The HORUS prelude — everything you need for building robotics applications.
 ///

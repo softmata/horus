@@ -239,8 +239,32 @@ pub(crate) struct TopicHeader {
     /// Set once at topic creation via `std::any::type_name::<T>()`.
     /// External tools read this directly from the mmap'd header.
     pub(crate) type_name: [u8; 32],
+    /// Layout hash of the message type, or 0 when unknown.
+    ///
+    /// The open path validates the type *name* (short name only) and, for POD
+    /// types, `type_size`. Neither says anything about field layout, so two
+    /// revisions of the same message that keep the name and size but reorder
+    /// fields both pass:
+    ///
+    /// ```text
+    /// v1::Pose { x: f32, y: f32 }   sent (x=1, y=2)
+    /// v2::Pose { y: f32, x: f32 }   received Pose { y: 1.0, x: 2.0 }
+    /// ```
+    ///
+    /// Same short name "Pose", same 8 bytes — opened without complaint, and the
+    /// coordinates arrived swapped with no error anywhere. That is the ordinary
+    /// consequence of two nodes built against different revisions of a message
+    /// crate, which is exactly what a fleet looks like mid-rollout.
+    ///
+    /// Carved out of what was reserved padding, so the header stays 640 bytes
+    /// and every existing offset is unchanged. Zero means "not supplied":
+    /// headers written before this field existed read as 0, and so do topics
+    /// opened through `Topic::new`, which cannot know `T`'s layout. Validation
+    /// only fires when both sides supply a hash, so an old peer is never
+    /// rejected — it is simply not protected.
+    pub(crate) layout_hash: AtomicU32,
     /// Reserved for future use
-    pub(crate) _pad_counters: [u8; 8],
+    pub(crate) _pad_counters: [u8; 4],
 
     // === Cache lines 5-10 (bytes 256-639): Participant tracking (384 bytes = 16 * 24) ===
     /// Participant entries for lease management
@@ -284,7 +308,8 @@ impl TopicHeader {
             lease_timeout_ms: 0,
             last_topology_change_ms: AtomicU64::new(0),
             type_name: [0; 32],
-            _pad_counters: [0; 8],
+            layout_hash: AtomicU32::new(0),
+            _pad_counters: [0; 4],
             participants: std::array::from_fn(|_| ParticipantEntry {
                 pid: AtomicU32::new(0),
                 thread_id_hash: AtomicU32::new(0),

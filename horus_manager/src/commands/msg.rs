@@ -612,26 +612,62 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     Some((name, field_type))
 }
 
+/// Canonical string a message's layout hash is computed over.
+///
+/// Must stay byte-identical to what the `message!` macro concatenates for
+/// `LAYOUT_HASH`, or the two hashes describe the same type and disagree.
+///
+/// Shape: `Name|field:Type|field:Type`
+fn canonical_message_form(name: &str, fields: &[(String, String)]) -> String {
+    let mut canonical = String::from(name);
+    for (field_name, field_type) in fields {
+        canonical.push('|');
+        canonical.push_str(field_name);
+        canonical.push(':');
+        canonical.push_str(field_type);
+    }
+    canonical
+}
+
+/// FNV-1a, matching `horus_core::communication::topic::const_fnv1a`.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 2166136261;
+    for &byte in bytes {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    hash
+}
+
 /// Compute a definition hash for a message type.
 ///
-/// Uses SipHash (via `DefaultHasher`) on the canonical representation
-/// of the message (module::name + field names/types). This detects
-/// when a message definition changes across versions.
+/// Two things were wrong with the previous implementation.
+///
+/// It used `DefaultHasher`, whose output std explicitly does not guarantee
+/// between Rust releases: "the internal algorithm is not specified, and so it
+/// and its hashes should not be relied upon over releases." A definition hash
+/// that changes when you upgrade your toolchain reports every message as
+/// modified, which is the one thing it exists to detect.
+///
+/// And it hashed a different canonical form from the one the runtime uses, so
+/// `horus msg hash Pose` and the layout-mismatch error raised by
+/// `Topic::new_checked` printed different numbers for the same type — actively
+/// misleading for the one task the command is for.
+///
+/// Now: FNV-1a over `Name|field:Type|…`, byte-identical to the `LAYOUT_HASH`
+/// the `message!` macro emits, so the number the CLI prints is the number the
+/// runtime compares.
 fn compute_message_definition_hash(msg: &MessageInfo) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    let fields: Vec<(String, String)> = msg
+        .fields
+        .iter()
+        .map(|f| (f.name.clone(), f.field_type.clone()))
+        .collect();
 
-    // Create a canonical string representation
-    let mut canonical = format!("{}::{}\n", msg.module, msg.name);
-    for field in &msg.fields {
-        canonical.push_str(&format!("  {}: {}\n", field.name, field.field_type));
-    }
-
-    let mut hasher = DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{:016x}", hash)
+    format!(
+        "{:#010x}",
+        fnv1a(canonical_message_form(&msg.name, &fields).as_bytes())
+    )
 }
 
 #[cfg(test)]
