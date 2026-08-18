@@ -74,6 +74,21 @@ From `Unreleased` onward, entries are written by hand.
   and reported every message as modified. It also hashed a different canonical
   form from the runtime, so it printed a number unrelated to the one in a
   layout-mismatch error. Both now use FNV-1a over `Name|field:Type|…`.
+- **benchmarks** — `dds_comparison_benchmark` fabricated ROS2/CycloneDDS/FastDDS
+  /iceoryx results when built without the `dds` feature (the default): a full
+  percentile distribution, confidence bounds included, computed from two
+  hardcoded constants and written into the JSON report beside real
+  measurements with nothing to distinguish them. `BenchmarkResult` now carries
+  a `provenance` field — `measured` or `literature` with a citable source.
+- **docs** — the README led with "575x faster than ROS2" and a comparison table
+  using ~50/100/70 µs for ROS 2. Those figures appear nowhere in the
+  repository; its only ROS 2 reference is REP 2014's ~5 µs, ten times lower.
+  Two of the three HORUS rows were producer-side `send()` latencies compared
+  against a competitor's end-to-end number. The table now states what each row
+  measures and names the benchmark that reproduces it, and the ROS 2
+  comparison is stated as ~30x against the repository's own cited source. The
+  concepts doc called it "550-875x … in measured pub/sub benchmarks", which
+  asserted a measurement that does not exist.
 - **docs** — the install command in all six READMEs pointed at a branch that
   does not exist and returned HTTP 404.
 - **docs** — the Configuration Reference documented 4 of the 15 tables

@@ -298,6 +298,7 @@ mod tests {
 
     fn make_test_result(name: &str, median: f64) -> BenchmarkResult {
         BenchmarkResult {
+            provenance: Provenance::Measured,
             name: name.to_string(),
             subject: "test".to_string(),
             message_size: 64,

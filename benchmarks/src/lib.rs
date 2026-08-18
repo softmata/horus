@@ -62,9 +62,39 @@ impl Default for BenchmarkConfig {
     }
 }
 
+/// Where a result's numbers came from.
+///
+/// `dds_comparison_benchmark` emits entries for ROS2, CycloneDDS, FastDDS and
+/// iceoryx when the `dds` feature is off — which is the default, and which
+/// means nothing was installed to measure. Those entries carried a full
+/// percentile distribution (p1 through p99.99, plus confidence bounds), all of
+/// it computed arithmetically from two hardcoded constants, and were written
+/// into the JSON report alongside real measurements with nothing in the schema
+/// to tell them apart. `count: 0` and an `_reference` name suffix were the only
+/// hints, and neither survives a chart generator.
+///
+/// A number a reader might quote in a comparison has to say where it came from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Provenance {
+    /// Produced by running the benchmark on this machine.
+    #[default]
+    Measured,
+    /// Copied from published work. Not measured here, and not measured on this
+    /// hardware, so it is not comparable to a `Measured` result without saying
+    /// so.
+    Literature {
+        /// Where the figure came from, specifically enough to look up.
+        source: String,
+    },
+}
+
 /// Full benchmark result with all metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkResult {
+    /// Whether these numbers were measured here or quoted from published work.
+    #[serde(default)]
+    pub provenance: Provenance,
     /// Benchmark name
     pub name: String,
     /// What was tested (e.g., "HORUS Topic", "crossbeam channel")

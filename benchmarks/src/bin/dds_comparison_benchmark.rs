@@ -33,7 +33,7 @@ use horus::prelude::Topic;
 use horus_benchmarks::{
     coefficient_of_variation, detect_platform, set_cpu_affinity, timing::PrecisionTimer,
     write_json_report, BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics,
-    Statistics, ThroughputMetrics,
+    Provenance, Statistics, ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,16 @@ use std::sync::Arc;
 use std::thread;
 
 const DEFAULT_ITERATIONS: usize = 100_000;
+
+/// Where the quoted DDS/ROS2 latencies come from.
+///
+/// These are figures from published work, not measurements taken here. They are
+/// tagged `Provenance::Literature` in the report so a reader — or a chart
+/// generator — cannot mistake them for something this machine produced. Run
+/// with `-F dds` and CycloneDDS installed to measure instead of quote.
+const REP2014_SOURCE: &str =
+    "ROS 2 REP 2014 (Benchmarking Performance), published reference latencies";
+const ICEORYX_SOURCE: &str = "eclipse-iceoryx published benchmarks (eclipse.org)";
 const DEFAULT_WARMUP: usize = 10_000;
 
 /// Standard benchmark message (24 bytes)
@@ -163,10 +173,24 @@ fn main() {
         println!("║                                                                  ║");
 
         // Add synthetic reference results for comparison
-        let ref_iceoryx = create_reference_result("iceoryx_reference", 80.0, 200, &platform);
-        let ref_cyclone = create_reference_result("CycloneDDS_reference", 1500.0, 5000, &platform);
-        let ref_fastdds = create_reference_result("FastDDS_reference", 2000.0, 8000, &platform);
-        let ref_ros2 = create_reference_result("ROS2_default_reference", 5000.0, 20000, &platform);
+        let ref_iceoryx =
+            create_reference_result("iceoryx_reference", 80.0, 200, ICEORYX_SOURCE, &platform);
+        let ref_cyclone = create_reference_result(
+            "CycloneDDS_reference",
+            1500.0,
+            5000,
+            REP2014_SOURCE,
+            &platform,
+        );
+        let ref_fastdds =
+            create_reference_result("FastDDS_reference", 2000.0, 8000, REP2014_SOURCE, &platform);
+        let ref_ros2 = create_reference_result(
+            "ROS2_default_reference",
+            5000.0,
+            20000,
+            REP2014_SOURCE,
+            &platform,
+        );
 
         report.add_result(ref_iceoryx);
         report.add_result(ref_cyclone);
@@ -396,6 +420,7 @@ fn build_result(
     };
 
     BenchmarkResult {
+        provenance: Provenance::Measured,
         name: name.to_string(),
         subject: if name.starts_with("HORUS") {
             "HORUS Topic".to_string()
@@ -418,6 +443,7 @@ fn create_reference_result(
     name: &str,
     median_ns: f64,
     p99_ns: u64,
+    source: &str,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
     let config = BenchmarkConfig {
@@ -469,6 +495,9 @@ fn create_reference_result(
     };
 
     BenchmarkResult {
+        provenance: Provenance::Literature {
+            source: source.to_string(),
+        },
         name: name.to_string(),
         subject: format!("{} (reference)", name.split('_').next().unwrap_or(name)),
         message_size: std::mem::size_of::<BenchmarkPayload>(),

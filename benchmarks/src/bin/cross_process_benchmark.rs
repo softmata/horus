@@ -24,7 +24,7 @@
 use horus::prelude::Topic;
 use horus_benchmarks::{
     coefficient_of_variation, detect_platform, set_cpu_affinity, write_json_report,
-    BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics, Statistics,
+    BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics, Provenance, Statistics,
     ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
@@ -282,6 +282,7 @@ fn run_cross_process_test(
     };
 
     BenchmarkResult {
+        provenance: Provenance::Measured,
         name: format!("{}_cross_process", name),
         subject: "HORUS Topic (cross-process)".to_string(),
         message_size: 64,

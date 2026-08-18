@@ -25,7 +25,7 @@ use horus::prelude::Topic;
 use horus_benchmarks::{
     coefficient_of_variation, detect_platform, set_cpu_affinity, set_performance_governor,
     timing::PrecisionTimer, write_json_report, BenchmarkConfig, BenchmarkReport, BenchmarkResult,
-    DeterminismMetrics, Statistics, ThroughputMetrics,
+    DeterminismMetrics, Provenance, Statistics, ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
@@ -401,6 +401,7 @@ fn run_determinism_benchmark(
     };
 
     BenchmarkResult {
+        provenance: Provenance::Measured,
         name: name.to_string(),
         subject: "HORUS Topic".to_string(),
         message_size: std::mem::size_of::<ControlCmd>(),

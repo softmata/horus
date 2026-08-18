@@ -9,7 +9,7 @@
   <a href="README.de.md">Deutsch</a>
 </p>
 
-**Real-time distributed middleware for Rust, Python, and C++. 575x faster than ROS2.**
+**Real-time distributed middleware for Rust, Python, and C++. Sub-200ns IPC.**
 
 [![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions)
 [![Version](https://img.shields.io/badge/v0.2.2-blue.svg)](https://github.com/softmata/horus/releases)
@@ -278,17 +278,35 @@ horus doctor                    # ecosystem health check
 
 Measured with RDTSC cycle counting, Tukey IQR outlier filtering, bootstrap 95% CIs on Intel i9-14900K. [Full methodology →](benchmarks/)
 
-| Topology             | HORUS      | ROS2 (DDS)         |
+| Topology             | HORUS      | Measurement        |
 |----------------------|------------|--------------------|
-| Same-process pub/sub | **91 ns**  | ~50 µs (**550x**)  |
-| Cross-process        | **171 ns** | ~100 µs (**585x**) |
-| 1 pub → 3 subs       | **80 ns**  | ~70 µs (**875x**)  |
+| Same-process pub/sub | **91 ns**  | producer-side `send()` |
+| Cross-process        | **171 ns** | end-to-end, one-way    |
+| 1 pub → 3 subs       | **80 ns**  | producer-side `send()` |
+
+Reproduce with `cargo run --release --bin all_paths_latency`, which prints the
+full percentile distribution, the backend selected for each topology, and the
+measured hardware floor it subtracts.
+
+**Against ROS 2.** The nearest published figure is ROS 2's REP 2014 reference for
+default DDS, ~5 µs median for a 64-byte same-process message. Compared to HORUS's
+end-to-end cross-process 171 ns — the harder case for HORUS, and therefore the
+conservative comparison — that is roughly **30x**. HORUS does not measure ROS 2
+itself: `dds_comparison_benchmark` quotes published values unless built with
+`-F dds` and a DDS implementation installed, and results carry a `provenance`
+field marking them `literature` rather than `measured` so the two are never
+confused. Any number here that matters to your decision is worth measuring on
+your own hardware and message sizes.
 
 | vs iceoryx2   | HORUS      | iceoryx2   | Speedup  |
 |---------------|------------|------------|----------|
 | Same-thread   | 11 ns      | 69 ns      | **6.3x** |
 | Cross-process | 170 ns     | 361 ns     | **2.1x** |
 | Throughput    | 95 M msg/s | 22 M msg/s | **4.3x** |
+
+Unlike the ROS 2 row above, this one is measured on both sides: reproduce with
+`cargo run --release --bin iceoryx2_comparison --features iceoryx2`, which links
+iceoryx2 and times it in the same harness.
 
 Scales near-linearly to 100 nodes (14% degradation) and O(1) to 1,000 topics.
 
