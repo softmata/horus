@@ -398,6 +398,7 @@ fn create_horus_toml(
         ignore: Default::default(),
         enable: Vec::new(),
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: None,
@@ -442,6 +443,7 @@ fn create_horus_toml_with_target(
         ignore: Default::default(),
         enable: Vec::new(),
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: None,
@@ -486,6 +488,7 @@ fn create_workspace_horus_toml(project_path: &Path, name: &str) -> Result<()> {
         ignore: Default::default(),
         enable: Vec::new(),
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: Some(WorkspaceConfig {

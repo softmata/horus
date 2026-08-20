@@ -251,6 +251,10 @@ pub struct HorusManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpp: Option<CppConfig>,
 
+    /// `[rust]` -- Cargo settings spliced into the generated `.horus/Cargo.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<RustConfig>,
+
     /// `[hooks]` -- pre/post action hooks for run/build/test.
     #[serde(default, skip_serializing_if = "HooksConfig::is_empty")]
     pub hooks: HooksConfig,
@@ -549,6 +553,70 @@ pub struct CppConfig {
     /// Cross-compilation toolchain target (e.g., `"aarch64"`, `"armv7"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<String>,
+}
+
+/// `[rust]` — Rust/Cargo build configuration in horus.toml.
+///
+/// `.horus/Cargo.toml` is generated from `horus.toml` and rewritten whenever
+/// `horus.toml` is newer, so anything added to it by hand is destroyed on the
+/// next build. `[cpp]` has forwarded settings to CMake all along; Rust had no
+/// equivalent, which left a cargo feature, a profile setting or an extra patch
+/// with no supported way to be expressed. The documentation's own answer was to
+/// edit the generated file.
+///
+/// Contents are merged verbatim into the generated manifest. Kept to the
+/// sections HORUS does not itself write, so there is nothing to conflict with:
+/// `[dependencies]` is deliberately absent, because `horus.toml` already has a
+/// `[dependencies]` table that `horus cargo add` round-trips through, and a
+/// second channel would let the same crate be written twice.
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct RustConfig {
+    /// Rust edition for the generated package. Overrides `[package].rust_edition`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edition: Option<String>,
+
+    /// `[features]` — name to list of enabled features.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
+    pub features: Option<toml::value::Table>,
+
+    /// `[profile.*]` — `opt-level`, `lto`, `debug`, `panic`, and friends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
+    pub profile: Option<toml::value::Table>,
+
+    /// `[patch.*]` — merged with the patches HORUS emits for its own git
+    /// sources. HORUS's entries win a key collision, with a warning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
+    pub patch: Option<toml::value::Table>,
+
+    /// `[build-dependencies]`.
+    #[serde(
+        default,
+        rename = "build-dependencies",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
+    pub build_dependencies: Option<toml::value::Table>,
+
+    /// `[lints]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
+    pub lints: Option<toml::value::Table>,
+
+    /// `[target.*]` — per-target dependencies and settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
+    pub target: Option<toml::value::Table>,
+}
+
+impl RustConfig {
+    /// Nothing to emit.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 // ─── Dependency types ────────────────────────────────────────────────────────
@@ -1704,6 +1772,7 @@ version = "not-semver"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -1755,6 +1824,7 @@ version = "not-semver"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2205,6 +2275,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2873,6 +2944,7 @@ sys-dep = { source = "system" }
             },
             enable: vec!["cuda".to_string(), "profiling".to_string()],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2966,6 +3038,7 @@ sys-dep = { source = "system" }
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -3990,6 +4063,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".to_string()],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4062,6 +4136,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4092,6 +4167,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4122,6 +4198,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };

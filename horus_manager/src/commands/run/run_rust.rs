@@ -133,6 +133,7 @@ fn default_manifest() -> HorusManifest {
         ignore: IgnoreConfig::default(),
         enable: vec![],
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: None,
@@ -237,6 +238,7 @@ pub fn execute_build_only(
             // with CARGO_TARGET_DIR=.horus/target. Dependencies live in Cargo.toml.
             if Path::new(CARGO_TOML).exists() {
                 cli_output::info("Building from root Cargo.toml...");
+                warn_if_rust_section_is_ignored();
 
                 let build_start = std::time::Instant::now();
                 let spinner = progress::build_spinner("Building with cargo...");
@@ -1743,5 +1745,31 @@ version = "0.1.0"
 
         // Single python file should be fine
         result.unwrap();
+    }
+}
+
+/// Say so when `[rust]` cannot take effect.
+///
+/// With a root `Cargo.toml` present, HORUS builds from it directly and never
+/// generates `.horus/Cargo.toml` — so a `[rust]` section is parsed, accepted by
+/// `horus check`, and then silently ignored. That is the exact failure this
+/// feature exists to remove, so it must not be reintroduced by it.
+fn warn_if_rust_section_is_ignored() {
+    let Ok(text) = std::fs::read_to_string(crate::manifest::HORUS_TOML) else {
+        return;
+    };
+    let Ok(manifest) =
+        crate::manifest::HorusManifest::parse_str(&text, Path::new(crate::manifest::HORUS_TOML))
+    else {
+        return;
+    };
+    if manifest.rust.as_ref().is_some_and(|r| !r.is_empty()) {
+        eprintln!(
+            "{} horus.toml has a [rust] section, but this project has its own \
+             Cargo.toml, so HORUS builds from that and the section has no \
+             effect. Move those settings into Cargo.toml, or delete Cargo.toml \
+             to let HORUS generate one.",
+            "warning:".yellow().bold()
+        );
     }
 }

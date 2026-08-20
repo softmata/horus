@@ -114,6 +114,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: HooksConfig::default(),
             network: None,
         }

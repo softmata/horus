@@ -4980,6 +4980,7 @@ name = "minimal"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -5080,6 +5081,7 @@ name = "minimal"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -5204,6 +5206,7 @@ lidar = "rplidar-a2"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };

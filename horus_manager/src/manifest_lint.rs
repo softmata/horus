@@ -55,6 +55,7 @@ pub const KNOWN_TOP_LEVEL: &[&str] = &[
     "ignore",
     "enable",
     "cpp",
+    "rust",
     "hooks",
     "network",
 ];
@@ -79,6 +80,22 @@ pub const KNOWN_PACKAGE: &[&str] = &[
 
 /// Keys accepted inside `[cpp]`.
 pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain"];
+
+/// Keys accepted inside `[rust]`.
+///
+/// These are spliced verbatim into the generated `.horus/Cargo.toml`, so the
+/// list is exactly the set of Cargo sections HORUS does not write itself.
+/// `dependencies` is absent on purpose: `horus.toml` already has one, and a
+/// second channel would let the same crate be declared twice.
+pub const KNOWN_RUST: &[&str] = &[
+    "edition",
+    "features",
+    "profile",
+    "patch",
+    "build-dependencies",
+    "lints",
+    "target",
+];
 
 /// Keys accepted inside `[hooks]`.
 pub const KNOWN_HOOKS: &[&str] = &[
@@ -220,6 +237,7 @@ pub fn find_unknown_keys(content: &str) -> Vec<UnknownKey> {
     for (section, known) in [
         ("package", KNOWN_PACKAGE),
         ("cpp", KNOWN_CPP),
+        ("rust", KNOWN_RUST),
         ("hooks", KNOWN_HOOKS),
     ] {
         let Some(sub) = table.get(section).and_then(|v| v.as_table()) else {
@@ -344,6 +362,7 @@ pub fn all_known_keys() -> BTreeSet<String> {
         .iter()
         .chain(KNOWN_PACKAGE)
         .chain(KNOWN_CPP)
+        .chain(KNOWN_RUST)
         .chain(KNOWN_HOOKS)
         .map(|s| s.to_string())
         .collect()

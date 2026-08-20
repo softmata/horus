@@ -383,14 +383,20 @@ fn syntax_check(cxx: &str, dir: &Path, idx: usize, b: &Block) -> Option<String> 
     // `override` and a trailing `const` are both illegal outside a class, so
     // give it a class to sit in rather than reporting the page for showing a
     // method the way reference documentation always shows methods.
-    let looks_like_method = body.contains(" override")
+    // A block that defines its own class is not a bare method, however many
+    // `override`s it contains — wrapping it in another class nests the
+    // definition and breaks code that is perfectly correct as written.
+    let defines_a_type = body.contains("class ") || body.contains("struct ");
+    let looks_like_method = !defines_a_type
+        && (body.contains(" override")
         || body.contains(") const {")
-        || body.contains(") const\n");
+            || body.contains(") const;")
+            || body.contains(") const\n"));
     if looks_like_method {
         let wrapped_m = dir.join(format!("block{idx}_member.cpp"));
         std::fs::write(
             &wrapped_m,
-            format!("{pre}\nstruct _DocSelf {{\n{body}\n}};\n"),
+            format!("{pre}\nstruct _DocSelf : horus::Node {{\n    _DocSelf() : Node(\"doc\") {{}}\n{body}\n}};\n"),
         )
         .ok()?;
         if let Some((ok, err)) = run_cxx(cxx, &wrapped_m) {

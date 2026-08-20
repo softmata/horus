@@ -541,6 +541,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -655,6 +656,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -783,6 +785,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -874,6 +877,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -937,6 +941,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -990,6 +995,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         };
