@@ -448,7 +448,16 @@ fn horus_cpp_staticlib() -> Option<PathBuf> {
 /// Link a block into a real executable. Returns linker diagnostics on failure.
 fn link_check(cxx: &str, lib: &Path, dir: &Path, idx: usize, b: &Block) -> Option<String> {
     let src = dir.join(format!("link{idx}.cpp"));
-    std::fs::write(&src, &b.code).ok()?;
+    // Same preamble `syntax_check` supplies. A body excerpt that happens to
+    // contain `int main` is still an excerpt: handing it to the linker without
+    // the umbrella header reports a missing include as a link failure, which is
+    // both wrong and unactionable.
+    let code = if b.supplied_preamble {
+        format!("#include <horus/horus.hpp>\nusing namespace horus::literals;\n{}", b.code)
+    } else {
+        b.code.clone()
+    };
+    std::fs::write(&src, &code).ok()?;
     let exe = dir.join(format!("link{idx}"));
 
     let out = Command::new(cxx)
@@ -462,6 +471,14 @@ fn link_check(cxx: &str, lib: &Path, dir: &Path, idx: usize, b: &Block) -> Optio
         .args(["-lpthread", "-ldl", "-lm"])
         .output()
         .ok()?;
+
+    // A linked HORUS binary is ~100 MB. Keeping all of them alive needs ~3 GB of
+    // temp space, and on a tmpfs that runs out partway through — reporting
+    // programs that link perfectly well as link failures, with a bare
+    // "ld returned 1 exit status" and nothing to act on. Drop each one as soon
+    // as its exit status has been read.
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&src);
 
     if out.status.success() {
         None

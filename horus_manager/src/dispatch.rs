@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use crate::manifest::{HorusManifest, Language, HORUS_TOML};
+use crate::manifest::{HorusManifest, Language, ManifestError, HORUS_TOML};
 
 // ─── Operation ───────────────────────────────────────────────────────────────
 
@@ -56,6 +56,15 @@ pub struct ProjectContext {
 
     /// Loaded manifest (if horus.toml exists).
     pub manifest: Option<HorusManifest>,
+
+    /// Why the manifest failed to load, when one was found and rejected.
+    ///
+    /// `manifest: None` on its own cannot tell "there is no project here" from
+    /// "the project's manifest is broken", and every caller that only looked at
+    /// `manifest` reported the first when it meant the second. Keeping the
+    /// error means the diagnostic that `parse_str` already produces — field,
+    /// table, line, column — survives as far as the user.
+    pub manifest_error: Option<ManifestError>,
 }
 
 impl ProjectContext {
@@ -86,11 +95,30 @@ impl ProjectContext {
 /// languages from the project root. If no horus.toml found, uses
 /// `start_dir` as root and detects from there.
 pub fn detect_context(start_dir: &Path) -> ProjectContext {
-    // Try to find horus.toml by searching upward
-    let (root, manifest) = match HorusManifest::find_and_load_from(start_dir.to_path_buf()) {
-        Ok((m, dir)) => (dir, Some(m)),
-        Err(_) => (start_dir.to_path_buf(), None),
-    };
+    // Try to find horus.toml by searching upward.
+    //
+    // A failed load still tells us where the project is: the error names the
+    // file it could not read. Falling back to `start_dir` instead made
+    // `has_horus_toml` test the wrong directory, so running any command from a
+    // subdirectory of a project whose manifest was malformed reported "No
+    // horus.toml found" — a false negative, and the opposite of the truth.
+    let (root, manifest, manifest_error) =
+        match HorusManifest::find_and_load_from(start_dir.to_path_buf()) {
+            Ok((m, dir)) => (dir, Some(m), None),
+            Err(e) => match e.downcast_ref::<ManifestError>() {
+                Some(err) => {
+                    let root = err
+                        .file
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| start_dir.to_path_buf());
+                    (root, None, Some(err.clone()))
+                }
+                // No manifest anywhere up the tree.
+                None => (start_dir.to_path_buf(), None, None),
+            },
+        };
 
     let has_horus_toml = root.join(HORUS_TOML).exists();
 
@@ -102,6 +130,7 @@ pub fn detect_context(start_dir: &Path) -> ProjectContext {
         languages,
         has_horus_toml,
         manifest,
+        manifest_error,
     }
 }
 

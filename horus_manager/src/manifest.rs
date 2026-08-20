@@ -890,6 +890,92 @@ impl IgnoreConfig {
     }
 }
 
+/// What is wrong with a manifest, as opposed to where.
+///
+/// The three cases need different words. A file that omits `name` parsed
+/// perfectly well, so calling it a "parse error" sends the reader looking for a
+/// syntax mistake that is not there; a file with an unclosed string genuinely
+/// did not parse. Reporting both as the same thing left them indistinguishable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestErrorKind {
+    /// Valid TOML, but a key the schema requires is absent.
+    ///
+    /// `table` is the `[section]` the key belongs to, when it can be recovered.
+    /// It is the only way to tell `[package].name` from `[robot].name`: `toml`
+    /// reports both as ``missing field `name` `` and suppresses its own
+    /// `in `...`` hint whenever a span is available.
+    MissingField {
+        field: String,
+        table: Option<String>,
+    },
+    /// Valid TOML that does not match the schema — wrong type, unknown key,
+    /// duplicate key.
+    Schema,
+    /// Not TOML at all.
+    Syntax,
+}
+
+/// A manifest that could not be loaded, with the position of the problem.
+///
+/// Carried through `anyhow` rather than stringified at the throw site, so a
+/// caller that wants to react to the *kind* of failure — `horus doctor` wants
+/// to say something different for each — can recover it with
+/// [`anyhow::Error::downcast_ref`], and one that only wants to print it can use
+/// `Display` and get the same text as before.
+#[derive(Debug, Clone)]
+pub struct ManifestError {
+    pub kind: ManifestErrorKind,
+    /// The file the problem is in. Its parent is the project root, which is how
+    /// a caller recovers the root when loading failed.
+    pub file: PathBuf,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+    /// `toml`'s own message, e.g. ``missing field `name` ``.
+    pub detail: String,
+}
+
+impl ManifestError {
+    /// `path:line:col`, or just `path` when the error carries no span.
+    pub fn location(&self) -> String {
+        match (self.line, self.col) {
+            (Some(line), Some(col)) => format!("{}:{line}:{col}", self.file.display()),
+            _ => self.file.display().to_string(),
+        }
+    }
+
+    /// A one-line summary naming the *class* of problem, for callers that show
+    /// a heading and the detail separately.
+    pub fn headline(&self) -> &'static str {
+        match self.kind {
+            ManifestErrorKind::MissingField { .. } => "horus.toml is missing a required field",
+            ManifestErrorKind::Schema => "horus.toml does not match the schema",
+            ManifestErrorKind::Syntax => "horus.toml is not valid TOML",
+        }
+    }
+}
+
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.location(), self.detail)?;
+        if let ManifestErrorKind::MissingField {
+            table: Some(table), ..
+        } = &self.kind
+        {
+            write!(f, " in table {table}")?;
+        }
+        if matches!(self.kind, ManifestErrorKind::MissingField { .. }) {
+            write!(
+                f,
+                "\n\nThe file is valid TOML — a required key is absent.\n\
+                 Add it, or run `horus new` to generate a complete manifest."
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ManifestError {}
+
 /// Convert a byte offset into a 1-based line and column.
 ///
 /// Used to turn `toml`'s spans into a location a user can jump to.
@@ -902,6 +988,33 @@ fn line_col(content: &str, offset: usize) -> (usize, usize) {
         .map(|nl| offset - nl)
         .unwrap_or(offset + 1);
     (line, col)
+}
+
+/// The `[section]` header a span points into, if it points at one.
+///
+/// For a missing required key, `toml` spans the containing table, so the span
+/// text begins with the header itself. That is the whole recovery: take the
+/// first line and stop at its closing bracket.
+///
+/// It deliberately declines to guess in the two cases where the span is not a
+/// header — an inline table (`package = { version = "0.1.0" }` spans
+/// `{ version = "0.1.0" }`) and a dotted key (`package.version = "0.1.0"` spans
+/// `package`). Naming a table there would be a fabrication, and `None` reads
+/// correctly as "cannot tell".
+fn table_header(content: &str, span: &std::ops::Range<usize>) -> Option<String> {
+    let text = content.get(span.clone())?.trim_start();
+    if !text.starts_with('[') {
+        return None;
+    }
+    let first = text.lines().next()?.trim_end();
+    // `[package]` and `[[bin]]` alike: stop after the last consecutive `]`.
+    let close = first.find(']')?;
+    let end = first[close..]
+        .chars()
+        .take_while(|c| *c == ']')
+        .count()
+        + close;
+    Some(first[..end].to_string())
 }
 
 // ─── HorusManifest: loading ─────────────────────────────────────────────────
@@ -931,26 +1044,46 @@ impl HorusManifest {
     /// omitted `name` was reported as a parse error even though the TOML was
     /// syntactically valid, leaving the two cases indistinguishable.
     fn describe_parse_error(err: toml::de::Error, content: &str, path: &Path) -> anyhow::Error {
-        let file = path.display();
         let detail = err.message().trim().to_string();
+        let span = err.span();
 
         // `toml` reports the offending byte range; a line and column is what a
         // user can act on, so convert rather than discard it.
-        let position = err
-            .span()
-            .map(|span| line_col(content, span.start))
-            .map(|(line, col)| format!("{file}:{line}:{col}"))
-            .unwrap_or_else(|| file.to_string());
+        let (line, col) = match &span {
+            Some(s) => {
+                let (l, c) = line_col(content, s.start);
+                (Some(l), Some(c))
+            }
+            None => (None, None),
+        };
 
-        if detail.starts_with("missing field") {
-            anyhow!(
-                "{position}: {detail}\n\n\
-                 The file is valid TOML — a required key is absent.\n\
-                 Add it, or run `horus new` to generate a complete manifest."
-            )
+        let kind = if let Some(field) = detail
+            .strip_prefix("missing field")
+            .map(|rest| rest.trim().trim_matches('`').to_string())
+        {
+            ManifestErrorKind::MissingField {
+                field,
+                table: span.as_ref().and_then(|s| table_header(content, s)),
+            }
+        } else if detail.starts_with("invalid type")
+            || detail.starts_with("unknown field")
+            || detail.starts_with("duplicate key")
+            || detail.starts_with("invalid length")
+            || detail.starts_with("invalid value")
+        {
+            // The TOML parsed; it just does not describe a HORUS manifest.
+            ManifestErrorKind::Schema
         } else {
-            anyhow!("{position}: {detail}")
-        }
+            ManifestErrorKind::Syntax
+        };
+
+        anyhow::Error::new(ManifestError {
+            kind,
+            file: path.to_path_buf(),
+            line,
+            col,
+            detail,
+        })
     }
 
     /// Search upward from the current directory to find and load a manifest.
@@ -1221,9 +1354,19 @@ pub fn resolve_workspace_dep(
 fn load_manifest_document(path: &Path) -> Result<toml_edit::DocumentMut> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
-    content
-        .parse::<toml_edit::DocumentMut>()
-        .with_context(|| format!("Failed to parse {}", path.display()))
+    // Same reasoning as `describe_parse_error`: `toml_edit::TomlError` knows the
+    // byte offset of the problem, and `.context("Failed to parse …")` replaced
+    // it with a sentence that names neither the line nor the mistake.
+    content.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        let position = match e.span() {
+            Some(span) => {
+                let (line, col) = line_col(&content, span.start);
+                format!("{}:{line}:{col}", path.display())
+            }
+            None => path.display().to_string(),
+        };
+        anyhow!("{position}: {}", e.message())
+    })
 }
 
 /// Write an editable TOML document back atomically (temp file + rename), so an

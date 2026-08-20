@@ -60,7 +60,7 @@ pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
         check_disk(),
         check_languages(&ctx),
         check_dep_sources(&ctx),
-        check_drivers(),
+        check_drivers(&ctx),
     ];
 
     // ── 9. System dependencies (Python, C++, system libs) ────────────────
@@ -407,11 +407,25 @@ fn check_manifest(ctx: &dispatch::ProjectContext) -> CheckResult {
                 details: vec![e.to_string()],
             },
         },
-        None => CheckResult {
-            category: "Manifest".to_string(),
-            health: Health::Fail,
-            summary: "Failed to parse horus.toml".to_string(),
-            details: vec![],
+        // A manifest was found and rejected. `ctx.manifest_error` carries the
+        // field, table, line and column that `parse_str` worked out; printing
+        // "Failed to parse horus.toml" instead threw all of it away, and said
+        // "parse" for a file that had parsed fine.
+        None => match &ctx.manifest_error {
+            Some(err) => CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Fail,
+                summary: err.headline().to_string(),
+                details: err.to_string().lines().map(str::to_string).collect(),
+            },
+            // Unreachable in practice: `has_horus_toml` is true, so a manifest
+            // was found. Say what is known rather than inventing a cause.
+            None => CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Fail,
+                summary: "horus.toml could not be read".to_string(),
+                details: vec![],
+            },
         },
     }
 }
@@ -579,10 +593,18 @@ fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
     let manifest = match &ctx.manifest {
         Some(m) => m,
         None => {
+            // "No manifest" is only true when there is no manifest. When one
+            // exists and is broken, saying it was skipped for absence sends the
+            // reader looking for a missing file instead of at the error the
+            // Manifest check just printed.
+            let (summary, health) = match &ctx.manifest_error {
+                Some(_) => ("Manifest unreadable — skipped", Health::Warn),
+                None => ("No manifest — skipped", Health::Ok),
+            };
             return CheckResult {
                 category: "Dependencies".to_string(),
-                health: Health::Ok,
-                summary: "No manifest — skipped".to_string(),
+                health,
+                summary: summary.to_string(),
                 details: vec![],
             };
         }
@@ -739,16 +761,24 @@ use crate::fs_utils::{dir_size, format_bytes};
 
 // ── Driver device reachability ─────────────────────────────────────────────
 
-fn check_drivers() -> CheckResult {
-    // Read manifest directly for device checks (port, bus, address)
-    let manifest_path = std::path::Path::new("horus.toml");
-    let manifest = match crate::manifest::HorusManifest::load_from(manifest_path) {
-        Ok(m) => m,
-        Err(_) => {
+fn check_drivers(ctx: &dispatch::ProjectContext) -> CheckResult {
+    // Uses the manifest the context already found. Loading `./horus.toml`
+    // directly meant this check looked in the working directory rather than the
+    // project root, so it reported "No horus.toml found" from any subdirectory
+    // of a project — and said the same thing when the file was present and
+    // simply failed to parse.
+    let manifest = match &ctx.manifest {
+        Some(m) => m,
+        None => {
+            let summary = match (&ctx.manifest_error, ctx.has_horus_toml) {
+                (Some(_), _) => "Manifest unreadable — skipped",
+                (None, true) => "horus.toml unreadable — skipped",
+                (None, false) => "No horus.toml found",
+            };
             return CheckResult {
                 category: "Hardware".into(),
                 health: Health::Ok,
-                summary: "No horus.toml found".into(),
+                summary: summary.into(),
                 details: vec![],
             };
         }
@@ -1248,6 +1278,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         assert_eq!(result.category, "Manifest");
@@ -1255,17 +1286,62 @@ mod tests {
         assert!(result.summary.contains("No horus.toml"));
     }
 
+    /// A manifest that exists but did not load must report *why*, and the
+    /// reason must survive into `details`. Previously every cause produced the
+    /// same "Failed to parse horus.toml" with `details: vec![]` — including a
+    /// file that had parsed fine and merely omitted a key.
     #[test]
-    fn check_manifest_has_toml_but_no_manifest() {
+    fn check_manifest_reports_the_reason_a_manifest_failed_to_load() {
+        let err = crate::manifest::ManifestError {
+            kind: crate::manifest::ManifestErrorKind::MissingField {
+                field: "name".into(),
+                table: Some("[package]".into()),
+            },
+            file: PathBuf::from("/tmp/fake/horus.toml"),
+            line: Some(1),
+            col: Some(1),
+            detail: "missing field `name`".into(),
+        };
         let ctx = dispatch::ProjectContext {
             root: PathBuf::from("/tmp/fake"),
             languages: vec![],
             has_horus_toml: true,
             manifest: None,
+            manifest_error: Some(err),
         };
         let result = check_manifest(&ctx);
         assert_eq!(result.health, Health::Fail);
-        assert!(result.summary.contains("Failed to parse"));
+        assert!(
+            !result.summary.contains("Failed to parse"),
+            "the file parsed; only a key is absent: {}",
+            result.summary
+        );
+        assert!(result.summary.contains("missing a required field"));
+        assert!(
+            result.details.iter().any(|d| d.contains("`name`")),
+            "the field name must reach the user: {:?}",
+            result.details
+        );
+        assert!(
+            result.details.iter().any(|d| d.contains("1:1")),
+            "the position must reach the user: {:?}",
+            result.details
+        );
+    }
+
+    /// The same check with no recorded cause — it must not invent one.
+    #[test]
+    fn check_manifest_without_a_recorded_error_does_not_guess() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: None,
+            manifest_error: None,
+        };
+        let result = check_manifest(&ctx);
+        assert_eq!(result.health, Health::Fail);
+        assert!(!result.summary.contains("parse"), "{}", result.summary);
     }
 
     #[test]
@@ -1276,6 +1352,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         assert_eq!(result.category, "Manifest");
@@ -1290,6 +1367,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         let details = result.details.join("\n");
@@ -1368,6 +1446,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.category, "Languages");
@@ -1382,6 +1461,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Rust],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1394,6 +1474,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Python],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1409,6 +1490,7 @@ mod tests {
             ],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1590,6 +1672,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         let details = result.details.join("\n");
@@ -1635,6 +1718,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Cpp],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1649,6 +1733,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         // Validation should catch the short name
@@ -1673,6 +1758,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Rust],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         // Should parse fine
@@ -1709,6 +1795,7 @@ mod tests {
                 languages: vec![*lang],
                 has_horus_toml: false,
                 manifest: None,
+                manifest_error: None,
             };
             let result = check_languages(&ctx);
             assert_eq!(result.health, Health::Ok);
@@ -1908,6 +1995,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest.clone()),
+            manifest_error: None,
         };
         // run_fix should not error on a project with zero system deps
         let result = run_fix(&manifest, &ctx);

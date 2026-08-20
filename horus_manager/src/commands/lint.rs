@@ -190,6 +190,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
 
         let result = detect_type_checker(&ctx);
@@ -458,6 +459,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Python],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
 
         let result = detect_type_checker(&ctx);
@@ -482,6 +484,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Python],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
 
         if let Some(cmd) = detect_type_checker(&ctx) {

@@ -325,11 +325,30 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "      {} TOML parse error: {}",
-                        cli_output::ICON_ERROR.red(),
-                        e
-                    );
+                    // No hardcoded "TOML parse error" prefix: the error says
+                    // for itself whether the file failed to parse or parsed
+                    // and lacked a required key, and the two used to be
+                    // announced identically — including the one whose own
+                    // body then said "The file is valid TOML".
+                    let text = e.to_string();
+                    let mut lines = text.lines();
+                    if let Some(first) = lines.next() {
+                        println!("      {} {}", cli_output::ICON_ERROR.red(), first);
+                    }
+                    for rest in lines {
+                        if rest.is_empty() {
+                            println!();
+                        } else {
+                            println!("        {rest}");
+                        }
+                    }
+                    // `--json` reported "diagnostics": [] for every manifest
+                    // failure, so the machine-readable surface carried none of
+                    // the position the human one had just computed.
+                    let line = e
+                        .downcast_ref::<crate::manifest::ManifestError>()
+                        .and_then(|m| m.line);
+                    record_diagnostic("error", rel_path.display().to_string(), line, text);
                     total_errors += 1;
                 }
             }
