@@ -77,37 +77,60 @@ message! {
     MotorCommand  { voltage: f64 }
 }
 
-node! {
-    Sensor {
-        pub { reading: SensorReading -> "sensor.data" }
-        data { pos: f64 = 0.0 }
-        tick {
-            self.pos += 0.01;
-            self.reading.send(SensorReading { position: self.pos, velocity: 0.5 });
-        }
+struct Sensor {
+    reading: Topic<SensorReading>,
+    pos: f64,
+}
+
+impl Sensor {
+    fn new() -> Result<Self> {
+        Ok(Self { reading: Topic::new("sensor.data")?, pos: 0.0 })
     }
 }
 
-node! {
-    Controller {
-        sub { sensor: SensorReading -> "sensor.data" }
-        pub { cmd: MotorCommand -> "motor.cmd" }
-        data { target: f64 = 1.0 }
-        tick {
-            if let Some(s) = self.sensor.recv() {
-                self.cmd.send(MotorCommand { voltage: (self.target - s.position) * 0.5 });
-            }
+impl Node for Sensor {
+    fn name(&self) -> &str { "sensor" }
+    fn tick(&mut self) {
+        self.pos += 0.01;
+        self.reading.send(SensorReading { position: self.pos, velocity: 0.5 });
+    }
+}
+
+struct Controller {
+    sensor: Topic<SensorReading>,
+    cmd: Topic<MotorCommand>,
+    target: f64,
+}
+
+impl Controller {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            sensor: Topic::new("sensor.data")?,
+            cmd: Topic::new("motor.cmd")?,
+            target: 1.0,
+        })
+    }
+}
+
+impl Node for Controller {
+    fn name(&self) -> &str { "controller" }
+    fn tick(&mut self) {
+        if let Some(s) = self.sensor.recv() {
+            self.cmd.send(MotorCommand { voltage: (self.target - s.position) * 0.5 });
         }
     }
 }
 
 fn main() -> Result<()> {
-    let mut sched = Scheduler::new().tick_rate(1000.hz());
+    let mut sched = Scheduler::new().tick_rate(1000_u64.hz());
     sched.add(Sensor::new()?).order(0).build()?;
-    sched.add(Controller::new()?).order(1).rate(1000.hz()).on_miss(Miss::SafeMode).build()?;
+    sched.add(Controller::new()?).order(1).rate(1000_u64.hz()).on_miss(Miss::SafeMode).build()?;
     sched.run()
 }
 ```
+
+Prefer less boilerplate? `horus new --macro` scaffolds the same node with
+the `node!` macro, which generates the `struct` and `impl Node` above.
 
 **Python** — same robot, 8 lines:
 

@@ -537,28 +537,46 @@ node! {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new();
+    // tick_rate sets the scheduler's clock; .rate() overrides it per node.
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
-    // Add the controller node with priority 0 (highest)
-    scheduler.add(Controller::new()).order(0).build();
+    // `node!` generates `Controller::new() -> Self`, so there is no `?` here —
+    // unlike the trait version, whose constructor is fallible.
+    scheduler
+        .add(Controller::new())
+        .order(0)
+        .rate(100_u64.hz())
+        .on_miss(Miss::Warn)
+        .build()?;
 
     // Run the scheduler (Ctrl+C to stop)
     scheduler.run()
 }
 "#
     } else {
-        // Non-macro version
+        // The default, and the shape every documented path reaches. Kept in
+        // step with the README's Quick Start: a reader who copies that snippet
+        // and a reader who runs `horus new` must meet the same language.
+        //
+        // The previous version wrapped the topic in `Option` and built it in
+        // `init()`, a triad that appears nowhere in the docs or in examples/,
+        // and forced `if let Some(ref topic)` around every send. A fallible
+        // constructor says the same thing without the ceremony — and a `Topic`
+        // built in the constructor is the case that used to lose its owner, so
+        // this is also the shape introspection is now tested against.
         r#"// Mobile robot controller
 
 use horus::prelude::*;
 
 struct Controller {
-    cmd_vel: Option<Topic<Twist>>,
+    cmd_vel: Topic<Twist>,
 }
 
 impl Controller {
-    fn new() -> Self {
-        Self { cmd_vel: None }
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_vel: Topic::new("motors.cmd_vel")?,
+        })
     }
 }
 
@@ -567,27 +585,25 @@ impl Node for Controller {
         "controller"
     }
 
-    fn init(&mut self) -> Result<()> {
-        self.cmd_vel = Some(Topic::new("motors.cmd_vel")?);
-        hlog!(info, "Controller initialized");
-        Ok(())
-    }
-
     fn tick(&mut self) {
         // Your control logic here
         // Twist::new_2d(forward_m_s, yaw_rad_s) — drive straight at 1 m/s
-        let msg = Twist::new_2d(1.0, 0.0);
-        if let Some(ref topic) = self.cmd_vel {
-            topic.send(msg);
-        }
+        self.cmd_vel.send(Twist::new_2d(1.0, 0.0));
     }
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new();
+    // tick_rate sets the scheduler's clock; .rate() overrides it per node.
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
-    // Add the controller node with priority 0 (highest)
-    scheduler.add(Controller::new()).order(0).build()?;
+    // .order() is execution order within a tick; .on_miss() says what to do
+    // when a node overruns its slot.
+    scheduler
+        .add(Controller::new()?)
+        .order(0)
+        .rate(100_u64.hz())
+        .on_miss(Miss::Warn)
+        .build()?;
 
     // Run the scheduler (Ctrl+C to stop)
     scheduler.run()
