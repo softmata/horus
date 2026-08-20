@@ -597,7 +597,26 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     }
 
     let name = parts[0].trim().to_string();
-    let field_type = parts[1].trim().trim_end_matches(',').trim().to_string();
+    // Cut a trailing line comment before the comma. Without this,
+    //
+    //     pub linear: f32,  // m/s forward velocity
+    //
+    // yielded the *type* "f32,  // m/s forward velocity", which then went into
+    // the layout hash — so `horus msg hash CmdVel` printed 0xe9574bd4 while the
+    // runtime computes 0x3836b786 over `CmdVel|timestamp_ns:u64|linear:f32|angular:f32`.
+    // The command exists to be compared against a layout-mismatch error, and for
+    // every commented message type it printed a number that error never shows.
+    //
+    // A `//` cannot appear inside a real Rust field type, so splitting on it is
+    // safe here.
+    let field_type = parts[1]
+        .split("//")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .to_string();
 
     // Skip if it looks like a method signature
     if field_type.contains("->") || field_type.contains("fn(") {

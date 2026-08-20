@@ -1407,7 +1407,6 @@ dependencies = [
  "horus-robotics",
  "horus-tf",
  "horus_core",
- "horus_cpp_macros",
  "horus_types",
  "loom",
  "paste",

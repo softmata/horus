@@ -119,3 +119,55 @@ fn the_include_key_is_an_array_not_a_table() {
         "expected `include = [...]` under [tool.maturin]:\n{text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Generated message classes must actually be compiled
+// ---------------------------------------------------------------------------
+
+/// `horus.msggen` writes Rust into `horus_py/src/custom_messages/`. That
+/// directory must be declared and registered, or nothing it writes is ever
+/// built.
+///
+/// It was not. `builder.py` generated the files, `lib.rs` never said
+/// `mod custom_messages;`, and cargo therefore never compiled them — so a user
+/// who followed the documented flow got no class, no extension symbol, and no
+/// error anywhere. The wheel shipped the generator regardless.
+///
+/// Verified end to end: with the module declared and registered, a class
+/// written into that directory compiles into the extension and imports from
+/// Python.
+#[test]
+fn generated_message_modules_are_compiled_into_the_extension() {
+    let lib_rs = std::fs::read_to_string(repo_root().join("horus_py/src/lib.rs"))
+        .expect("horus_py/src/lib.rs must exist");
+
+    assert!(
+        lib_rs.contains("mod custom_messages;"),
+        "horus_py/src/lib.rs does not declare `mod custom_messages;`, so cargo \
+         never compiles what horus.msggen writes there"
+    );
+    assert!(
+        lib_rs.contains("custom_messages::register_custom_messages"),
+        "the generated classes are compiled but never registered on the module, \
+         so they are absent from `horus._horus`"
+    );
+}
+
+/// The stub must be committed, or a fresh checkout does not build.
+#[test]
+fn the_generated_message_module_has_a_committed_stub() {
+    let stub = repo_root().join("horus_py/src/custom_messages/mod.rs");
+    assert!(
+        stub.is_file(),
+        "{} is missing. `lib.rs` declares this module unconditionally, so \
+         without the stub the crate does not compile before anything has been \
+         generated.",
+        stub.display()
+    );
+
+    let text = std::fs::read_to_string(&stub).unwrap_or_default();
+    assert!(
+        text.contains("pub fn register_custom_messages"),
+        "the stub must define the function lib.rs calls"
+    );
+}
