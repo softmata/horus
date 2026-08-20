@@ -9711,69 +9711,54 @@ fn test_topic_multiple_drops_no_double_free() {
 }
 
 // ============================================================================
-// Known defect: recv() is documented FIFO but is not, under ring lapping
+// Ring lapping must not reorder or duplicate
 // ============================================================================
 
-/// `recv()` can return an older message after a newer one once the writer laps
-/// a slow subscriber.
+/// `recv()` must not return an older message after a newer one, nor the same
+/// message twice, when the producer laps a slow subscriber.
 ///
-/// # The documented contract
+/// # The defect this pins
 ///
-/// `horus-docs/content/docs/rust-guide/topics.mdx`:
-///
-/// ```text
-/// line 67:  // Get next unread message (FIFO order)
-/// line 83:  Use `recv()` when you need every message in order.
-/// ```
-///
-/// No qualification for the overflow case.
-///
-/// # What was observed
-///
-/// Two independent failures of the SPMC cross-thread test, under a loaded
-/// machine:
+/// `recv_shm_pod_broadcast` accepted any slot whose ready-flag was *at least*
+/// the expected sequence. A slot the producer had already overwritten passes
+/// that test, so the reader was handed a newer message under an older sequence,
+/// then the genuinely-older message from the next slot on the following call:
 ///
 /// ```text
-/// consumer 2 received 1467 after 1978
-/// consumer 2 received 1122 after 1633
+/// consumer 2 received 1467 after 1978   (backward by 511)
+/// consumer 2 received 1122 after 1633   (backward by 511)
+/// consumer 2 received 2264 after 1753   (backward by 511)
 /// ```
 ///
-/// Both gaps are **exactly 511**, and `Topic<u64>` has exactly 512 slots:
-/// `auto_capacity::<u64>()` is `(PAGE_SIZE / 8).clamp(16, 1024).next_power_of_two()`
-/// = `(4096 / 8) = 512`.
+/// `Topic<u64>` has exactly 512 slots, and a backward jump of `capacity - 1` is
+/// the signature: with the producer one slot past a full lap, slot `T & mask`
+/// holds `T+C` while slot `(T+1) & mask` still holds `T+1`.
 ///
-/// A backward jump of `capacity - 1` is the signature of a missed lap: the
-/// subscriber read slot *k* holding a freshly written value, advanced to slot
-/// *k+1*, and found the value from one lap earlier still there — without
-/// detecting that the writer had overtaken it. Drop-oldest is allowed to skip
-/// a subscriber *forward*; this moves it backward.
+/// The same accept also duplicates — after returning `T+C` the reader sets tail
+/// to `T+1`, so `T+C` is delivered a second time when tail reaches it. A
+/// measured run before the fix showed 252 inversions and 16,456 duplicates
+/// across 15.2M messages; after, zero of both.
 ///
-/// # Why this is not a test bug
+/// # What the ring promises
 ///
-/// Dropping messages under overflow is correct and documented. Returning them
-/// out of order is not. For a control loop, a stale command delivered after a
-/// fresh one is a different failure class from a dropped one: the node acts on
-/// old data believing it is new.
+/// `send()` is drop-oldest (`mod.rs:120` — "shared seqlock ring protocol for
+/// drop-oldest (latest-wins) fanout"), and the docs say `recv()` yields "every
+/// message in order" (`horus-docs/content/docs/rust-guide/topics.mdx:67,83`).
+/// Losing messages under overload is therefore correct and skipping forward is
+/// allowed; going backward and repeating are not.
 ///
-/// # Status
+/// # Why this is not load-dependent
 ///
-/// Not fixed here. A correction belongs in the lapping detection in
-/// `Topic::recv`/`sync_local`, and a speculative change to a lock-free ring in
-/// a real-time IPC path is worse than a characterized defect. This test
-/// reproduces it on demand:
-///
-/// ```text
-/// cargo test -p horus_core --lib recv_can_return_an_older_message -- --ignored --nocapture
-/// ```
-///
-/// It needs contention to fire, so it is not reliable in isolation — run it
-/// alongside the rest of the suite, or on a loaded machine.
+/// The producer publishes far more than the ring holds while the consumers
+/// deliberately yield, so lapping is forced rather than hoped for.
 #[test]
-#[ignore = "characterizes a known ordering defect; needs contention to reproduce"]
-fn recv_can_return_an_older_message_after_a_newer_one_when_lapped() {
+fn recv_never_reorders_or_duplicates_when_lapped() {
     let name = unique("lap_order");
-    let n = 20_000u64;
-    let n_consumers = 4;
+    // These are the parameters that actually reproduce the defect. Fewer
+    // consumers or fewer sends and it does not lap often enough: at 4
+    // consumers / 60k sends the unfixed code passed this test cleanly.
+    let n = 400_000u64;
+    let n_consumers = 32;
 
     let tx: Topic<u64> = Topic::new(&name).expect("pub");
     let streams = Arc::new(std::sync::Mutex::new(vec![Vec::new(); n_consumers]));
@@ -9787,10 +9772,14 @@ fn recv_can_return_an_older_message_after_a_newer_one_when_lapped() {
             test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
-                let deadline = Instant::now() + 10_u64.secs();
+                let deadline = Instant::now() + 25_u64.secs();
                 while Instant::now() < deadline {
                     if let Some(v) = rx.recv() {
                         local.push(v);
+                        // Read slowly enough that the producer laps us.
+                        if local.len() % 64 == 0 {
+                            std::thread::yield_now();
+                        }
                     }
                 }
                 out.lock().unwrap()[idx] = local;
@@ -9809,31 +9798,63 @@ fn recv_can_return_an_older_message_after_a_newer_one_when_lapped() {
     let streams = streams.lock().unwrap().clone();
     let capacity = 512u64; // auto_capacity::<u64>()
 
-    let mut findings = Vec::new();
+    let mut inversions = Vec::new();
+    let mut duplicates = Vec::new();
+    let mut delivered = 0usize;
+
     for (idx, stream) in streams.iter().enumerate() {
+        delivered += stream.len();
+
         for w in stream.windows(2) {
             if w[1] <= w[0] {
                 let gap = w[0] - w[1];
-                findings.push(format!(
+                inversions.push(format!(
                     "consumer {idx}: {} then {} (backward by {gap}{})",
                     w[0],
                     w[1],
                     if gap == capacity - 1 {
-                        ", == capacity-1: missed lap"
+                        ", == capacity-1: lapped slot accepted"
                     } else {
                         ""
                     }
                 ));
             }
         }
+
+        let mut seen = std::collections::HashSet::new();
+        for v in stream {
+            if !seen.insert(*v) {
+                duplicates.push(format!("consumer {idx}: {v} delivered twice"));
+            }
+        }
     }
 
     assert!(
-        findings.is_empty(),
-        "recv() returned {} out-of-order results, but the docs promise FIFO \
-         order:\n  {}",
-        findings.len(),
-        findings
+        delivered > 0,
+        "no consumer received anything from {n} sends across {n_consumers} \
+         subscribers - the ring is not delivering at all"
+    );
+
+    assert!(
+        inversions.is_empty(),
+        "recv() returned {} out-of-order results across {delivered} messages; \
+         drop-oldest may skip ahead but never backward:\n  {}",
+        inversions.len(),
+        inversions
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+
+    assert!(
+        duplicates.is_empty(),
+        "recv() delivered {} duplicate message(s) across {delivered} messages. \
+         A lapped slot accepted under an older sequence is handed back again \
+         when tail reaches its real sequence:\n  {}",
+        duplicates.len(),
+        duplicates
             .iter()
             .take(10)
             .cloned()
