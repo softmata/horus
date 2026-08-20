@@ -422,3 +422,95 @@ fn every_environment_variable_is_documented() {
             .join("\n  ")
     );
 }
+
+/// Every link the navigation offers must resolve to a page.
+///
+/// `every_docs_page_is_reachable_from_the_navigation` checks the other
+/// direction — that no page is orphaned — and passed the whole time the site
+/// footer, which renders on every documentation page, carried five links to
+/// pages that do not exist: `/api`, `/architecture`, `/basic-examples`,
+/// `/goals`, and `/complete-beginners-guide`. The last one has no correct
+/// target at all; there is no beginner's guide, and its presence in the footer
+/// is the likely source of the belief that a separate beginner track exists.
+///
+/// A route resolves as `<slug>.mdx` or `<slug>/index.mdx` — the same two
+/// lookups `lib/mdx.tsx` performs.
+#[test]
+fn every_navigation_link_resolves_to_a_page() {
+    let Some(docs) = docs_root() else {
+        eprintln!("SKIP: horus-docs not found");
+        return;
+    };
+    let components = docs.join("components");
+    let content = docs.join("content/docs");
+
+    let mut dead: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for file in ["DocsSidebar.tsx", "DocsFooter.tsx", "Breadcrumb.tsx"] {
+        let Ok(text) = std::fs::read_to_string(components.join(file)) else {
+            continue;
+        };
+        for raw in text.split("href").skip(1) {
+            // `href="/x"` and `href: "/x"` both appear.
+            let Some(rest) = raw.split_once('"') else {
+                continue;
+            };
+            let Some((href, _)) = rest.1.split_once('"') else {
+                continue;
+            };
+            // Only internal doc routes; external URLs and anchors are not ours.
+            if !href.starts_with('/') || href.starts_with("//") || href.len() < 2 {
+                continue;
+            }
+            let slug = href.trim_start_matches('/');
+            checked += 1;
+            let direct = content.join(format!("{slug}.mdx"));
+            let index = content.join(slug).join("index.mdx");
+            if !direct.is_file() && !index.is_file() {
+                dead.push(format!("{file}: {href}"));
+            }
+        }
+    }
+
+    assert!(
+        checked > 50,
+        "parsed too few navigation links ({checked}) — the extractor is broken \
+         and this test is vacuous"
+    );
+    dead.sort();
+    dead.dedup();
+    assert!(
+        dead.is_empty(),
+        "navigation links that lead nowhere:\n  {}",
+        dead.join("\n  ")
+    );
+}
+
+/// Prev/Next must not be a second, hand-maintained copy of the sidebar order.
+///
+/// It was, complete with a comment saying it "must match DocsSidebar.tsx". The
+/// two held identical page sets and diverged in position by up to 61 places, so
+/// a reader in the Rust section was sent past the Rust Guide into Examples and
+/// only reached the guide after all of Python.
+#[test]
+fn prev_next_navigation_is_derived_from_the_sidebar() {
+    let Some(docs) = docs_root() else {
+        eprintln!("SKIP: horus-docs not found");
+        return;
+    };
+    let text = std::fs::read_to_string(docs.join("components/PrevNextNav.tsx"))
+        .expect("PrevNextNav.tsx must exist");
+
+    assert!(
+        text.contains("from \"./DocsSidebar\""),
+        "PrevNextNav must import the sidebar's order rather than restate it"
+    );
+    // A hand-copied list is dozens of literal hrefs; a derived one has none.
+    let literal_hrefs = text.matches("href: \"/").count();
+    assert!(
+        literal_hrefs == 0,
+        "PrevNextNav still contains {literal_hrefs} hardcoded page links — that \
+         is the copy that drifted"
+    );
+}
