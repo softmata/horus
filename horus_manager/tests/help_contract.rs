@@ -248,3 +248,48 @@ fn every_visible_alias_appears_in_the_help_template() {
          way to discover them and no way to tell they are aliases: {missing:?}"
     );
 }
+
+/// A proxy must not answer for the tool it proxies.
+///
+/// The five native-tool proxies declare `trailing_var_arg` and
+/// `allow_hyphen_values`, but clap still claimed `--help`/`-h` and
+/// `--version`/`-V` for itself. Inside a HORUS project — where the shell
+/// functions from `horus env --init` delegate — `cargo --version` printed
+///
+///     horus-cargo 0.2.2
+///
+/// instead of `cargo 1.97.1`. Anything parsing that output acts on a wrong
+/// answer, and the user has no indication a proxy is involved.
+#[test]
+fn native_tool_proxies_do_not_intercept_version_or_help() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("main.rs must be readable");
+
+    let mut missing = Vec::new();
+    for tool in ["cargo", "pip", "cmake", "conan", "vcpkg"] {
+        let marker = format!("name = \"{tool}\"");
+        let Some(at) = main_rs.find(&marker) else {
+            missing.push(format!("{tool}: proxy declaration not found"));
+            continue;
+        };
+        // The attribute block for this variant. Taken by lines rather than by
+        // byte offset: the file contains multi-byte characters and slicing into
+        // one panics.
+        let block: String = main_rs[at..].lines().take(8).collect::<Vec<_>>().join("\n");
+        let block = block.as_str();
+        if !block.contains("disable_version_flag") {
+            missing.push(format!("{tool}: --version is intercepted by clap"));
+        }
+        if !block.contains("disable_help_flag") {
+            missing.push(format!("{tool}: --help is intercepted by clap"));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these proxies answer for the tool they proxy:\n  {}",
+        missing.join("\n  ")
+    );
+}

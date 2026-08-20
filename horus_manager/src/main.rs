@@ -990,8 +990,18 @@ enum Commands {
     Man,
 
     // ── Native Tool Proxies ─────────────────────────────────────────────
+    // A proxy must not answer for the tool it proxies. clap claimed --help/-h
+    // and --version/-V before the arguments reached the real binary, so inside
+    // a horus project (where the shell function delegates) `cargo --version`
+    // printed "horus-cargo 0.2.2" instead of "cargo 1.97.1" — a lie that any
+    // script parsing that output acts on.
     /// Transparent cargo proxy — delegates to real cargo with horus.toml sync
-    #[command(name = "cargo", hide = true)]
+    #[command(
+        name = "cargo",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Cargo {
         /// Arguments passed to cargo
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -999,7 +1009,12 @@ enum Commands {
     },
 
     /// Transparent pip proxy — delegates to real pip with horus.toml sync
-    #[command(name = "pip", hide = true)]
+    #[command(
+        name = "pip",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Pip {
         /// Arguments passed to pip
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -1007,7 +1022,12 @@ enum Commands {
     },
 
     /// Transparent cmake proxy — delegates to real cmake with horus.toml sync
-    #[command(name = "cmake", hide = true)]
+    #[command(
+        name = "cmake",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Cmake {
         /// Arguments passed to cmake
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -1015,7 +1035,12 @@ enum Commands {
     },
 
     /// Transparent conan proxy — delegates to real conan with horus.toml sync
-    #[command(name = "conan", hide = true)]
+    #[command(
+        name = "conan",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Conan {
         /// Arguments passed to conan
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -1023,7 +1048,12 @@ enum Commands {
     },
 
     /// Transparent vcpkg proxy — delegates to real vcpkg with horus.toml sync
-    #[command(name = "vcpkg", hide = true)]
+    #[command(
+        name = "vcpkg",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Vcpkg {
         /// Arguments passed to vcpkg
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

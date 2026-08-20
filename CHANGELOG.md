@@ -119,6 +119,21 @@ From `Unreleased` onward, entries are written by hand.
   comparison is stated as ~30x against the repository's own cited source. The
   concepts doc called it "550-875x … in measured pub/sub benchmarks", which
   asserted a measurement that does not exist.
+- **manager** — the five native-tool proxies (`cargo`, `pip`, `cmake`, `conan`,
+  `vcpkg`) answered `--version` and `--help` themselves. Inside a HORUS project,
+  where `horus env --init`'s shell functions delegate, `cargo --version` printed
+  `horus-cargo 0.2.2` instead of `cargo 1.97.1`.
+- **manager** — the cmake proxy appended `-B <build-dir>` to every invocation,
+  including modes that take no build directory: `cmake -E echo hi` printed
+  `hi -B /…/cpp-build`. `-E`, `-P`, `--build`, `--install` and friends now pass
+  through untouched.
+- **install** — `horus env --init` edits `.bashrc`, `.zshrc` and fish's
+  `conf.d`, and the installer ran it with output discarded, so the user was
+  never told their shell files had been changed. It now says what it did and
+  honours `HORUS_NO_SHELL_INTEGRATION=1`.
+- **docs** — the `horus env` page named three shadowed tools; there are six. It
+  now lists them, names every file the command writes, and documents the opt-out
+  and the uninstall.
 - **docs** — the install command in all six READMEs pointed at a branch that
   does not exist and returned HTTP 404.
 - **docs** — the Configuration Reference documented 4 of the 15 tables

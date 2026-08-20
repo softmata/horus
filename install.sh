@@ -356,8 +356,29 @@ else
     ok "Added to PATH"
 fi
 
-# Shell integration
-horus env --init 2>/dev/null || true
+# --- Shell integration ---
+#
+# `horus env --init` writes ~/.horus/env.sh and appends a source line to
+# .bashrc, .zshrc and fish's conf.d. That file defines shell functions shadowing
+# cargo, pip, pip3, cmake, conan and vcpkg — inside a horus project they
+# delegate to `horus <tool>`, outside they pass straight through.
+#
+# That is a reasonable default and `horus env --uninstall` reverses it cleanly,
+# but editing someone's shell rc files is not something to do silently. The
+# output used to go to /dev/null, so the user was never told. Now they are told,
+# and they can decline:
+#
+#   HORUS_NO_SHELL_INTEGRATION=1 curl ... | bash
+if [ -n "${HORUS_NO_SHELL_INTEGRATION:-}" ]; then
+    info "Skipping shell integration (HORUS_NO_SHELL_INTEGRATION is set)"
+    echo "  Run 'horus env --init' later to enable the cargo/pip/cmake proxies."
+else
+    if horus env --init; then
+        echo "  Shadows cargo, pip, pip3, cmake, conan and vcpkg inside horus"
+        echo "  projects only. Undo with: horus env --uninstall"
+        echo "  Skip next time with: HORUS_NO_SHELL_INTEGRATION=1"
+    fi
+fi
 
 # --- Shell completions ---
 #

@@ -141,3 +141,95 @@ fn the_primary_readme_advertises_the_install_command() {
          so this contract can check it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Translated READMEs
+// ---------------------------------------------------------------------------
+
+/// The five translated READMEs are abridged overviews, not full translations —
+/// 118 lines against the English README's 383. That is a deliberate choice and
+/// each one says so, but it only stays honest while the disclaimer is there.
+///
+/// The audit predicted they would contradict the English README after its
+/// performance claims were corrected. They do not: all six carry the same
+/// `3-304 ns` figure and the same install one-liner. What is worth guarding is
+/// exactly that — the two things a reader acts on, and the notice that tells
+/// them where the authoritative version is.
+const TRANSLATIONS: &[&str] = &[
+    "README.de.md",
+    "README.es.md",
+    "README.ja.md",
+    "README.pt-BR.md",
+    "README.zh-CN.md",
+];
+
+#[test]
+fn every_translation_points_at_the_english_readme() {
+    let mut missing = Vec::new();
+    for name in TRANSLATIONS {
+        let Some(text) = read(name) else {
+            missing.push(format!("{name} does not exist"));
+            continue;
+        };
+        // Each disclaimer is in its own language; the invariant is the link.
+        if !text.contains("README.md") {
+            missing.push(format!(
+                "{name} has no link back to the English README, so a reader has \
+                 no way to know it is an abridged overview"
+            ));
+        }
+    }
+    assert!(missing.is_empty(), "{}", missing.join("\n  "));
+}
+
+/// The install command is the one instruction a reader copies verbatim. It must
+/// be identical everywhere, or some fraction of users runs a different one.
+#[test]
+fn every_translation_installs_the_same_way() {
+    let english = read("README.md").expect("README.md must exist");
+    let expected = advertised_branches(&english);
+    assert!(
+        !expected.is_empty(),
+        "could not find the install URL in README.md"
+    );
+
+    let mut wrong = Vec::new();
+    for name in TRANSLATIONS {
+        let Some(text) = read(name) else { continue };
+        let branches = advertised_branches(&text);
+        if branches.is_empty() {
+            wrong.push(format!("{name} advertises no install command"));
+        } else if branches != expected {
+            wrong.push(format!(
+                "{name} installs from {branches:?} while README.md uses {expected:?}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n  "));
+}
+
+/// A performance figure quoted in a translation must match the English one.
+/// Numbers survive translation unchanged, so a mismatch is drift, not localisation.
+#[test]
+fn quoted_latency_figures_agree_across_translations() {
+    let english = read("README.md").expect("README.md must exist");
+    let has_figure = english.contains("304 ns");
+    assert!(
+        has_figure,
+        "README.md no longer quotes the 3-304 ns range this test tracks; update \
+         it here too so the translations stay checked"
+    );
+
+    let mut wrong = Vec::new();
+    for name in TRANSLATIONS {
+        let Some(text) = read(name) else { continue };
+        // A translation may omit the figure entirely — that is abridgement, and
+        // it is fine. What it must not do is quote a *different* number.
+        if text.contains(" ns") && !text.contains("304 ns") {
+            wrong.push(format!(
+                "{name} quotes a latency figure that is not the English one"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n  "));
+}
