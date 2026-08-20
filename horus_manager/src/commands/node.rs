@@ -11,6 +11,19 @@ use horus_core::ControlCommand;
 use horus_sys::process::{ProcessHandle, Signal};
 
 /// List all running nodes
+/// "40 Hz (achieving 39.8 Hz)", or a plain target when nothing has been
+/// measured yet.
+///
+/// The shortfall between the two is the thing an operator is looking for, and
+/// showing only the target hid it — a node configured at 1000 Hz and managing
+/// 200 reported 1000.
+fn format_rate(configured: f64, achieved: Option<f64>) -> String {
+    match achieved {
+        Some(hz) => format!("{configured} Hz (achieving {hz:.1} Hz)"),
+        None => format!("{configured} Hz"),
+    }
+}
+
 pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusResult<()> {
     let nodes = discover_nodes()?;
 
@@ -106,9 +119,9 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
             );
             println!("    {} {}", "Ticks:".dimmed(), node.tick_count);
             println!(
-                "    {} {} Hz",
-                "Target Rate:".dimmed(),
-                node.configured_rate_hz
+                "    {} {}",
+                "Rate:".dimmed(),
+                format_rate(node.configured_rate_hz, node.achieved_rate_hz)
             );
             if node.error_count > 0 {
                 println!(
@@ -167,16 +180,25 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
         };
 
         let print_table_header = || {
+            // HEALTH is here because `node info` already showed a node as
+            // Critical while this view — the one an operator actually runs —
+            // had no column for it at all, so the signal existed and was hidden.
+            //
+            // Two rate columns because they answer different questions: RATE is
+            // what was configured, ACTUAL is what is happening. One number
+            // could not say "configured for 1000, managing 200".
             println!(
-                "  {:<25} {:>8} {:>10} {:>8} {:>10} {:>8}",
+                "  {:<22} {:>8} {:>9} {:>8} {:>9} {:>9} {:>8} {:>8}",
                 "NAME".dimmed(),
                 "STATUS".dimmed(),
+                "HEALTH".dimmed(),
                 "PRIORITY".dimmed(),
                 "RATE".dimmed(),
+                "ACTUAL".dimmed(),
                 "TICKS".dimmed(),
                 "SOURCE".dimmed()
             );
-            println!("  {}", "-".repeat(75).dimmed());
+            println!("  {}", "-".repeat(88).dimmed());
         };
 
         let print_node_row = |node: &crate::discovery::NodeStatus| {
@@ -197,12 +219,28 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
             } else {
                 format!("{}", node.process_id)
             };
+            let health = match node.health {
+                horus_core::core::HealthStatus::Healthy => "Healthy".green(),
+                horus_core::core::HealthStatus::Warning => "Warning".yellow(),
+                horus_core::core::HealthStatus::Error => "Error".red(),
+                horus_core::core::HealthStatus::Critical => "Critical".red().bold(),
+                horus_core::core::HealthStatus::Unknown => "—".dimmed(),
+            };
+            // "—" rather than 0: no measurement yet is not a measurement of
+            // zero, and printing 0 Hz for a node that is running would be a
+            // worse lie than the one this column exists to fix.
+            let actual = match node.achieved_rate_hz {
+                Some(hz) => format!("{hz:.1} Hz"),
+                None => "—".to_string(),
+            };
             println!(
-                "  {:<25} {:>8} {:>10} {:>6} Hz {:>10} {:>8}",
-                truncate_name(&node.name, 25),
+                "  {:<22} {:>8} {:>9} {:>9} {:>6} Hz {:>9} {:>8} {:>8}",
+                truncate_name(&node.name, 22),
                 status,
+                health,
                 node.priority,
                 node.configured_rate_hz,
+                actual,
                 node.tick_count,
                 source
             );
@@ -298,9 +336,9 @@ pub fn node_info(name: &str) -> HorusResult<()> {
         format_bytes(node.memory_usage.saturating_mul(1024))
     );
     println!(
-        "    {} {} Hz",
-        "Target Rate:".dimmed(),
-        node.configured_rate_hz
+        "    {} {}",
+        "Rate:".dimmed(),
+        format_rate(node.configured_rate_hz, node.achieved_rate_hz)
     );
     println!("    {} {}", "Total Ticks:".dimmed(), node.tick_count);
     println!(

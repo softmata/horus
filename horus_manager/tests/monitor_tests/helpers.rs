@@ -39,6 +39,7 @@ pub fn make_test_node(name: &str, health: HealthStatus, cpu: f32, memory: u64) -
         tick_count: 1000,
         error_count: 0,
         configured_rate_hz: 30.0,
+        achieved_rate_hz: None,
         publishers: vec![],
         subscribers: vec![],
         live_tick_count: None,

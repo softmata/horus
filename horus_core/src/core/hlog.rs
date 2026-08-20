@@ -83,6 +83,21 @@ pub fn current_node_name() -> String {
     })
 }
 
+/// Whether this thread is currently inside a scheduler-managed tick.
+///
+/// Cheaper than [`current_node_name`], which allocates a `String` on every
+/// call. `Topic::send` is on the real-time path and consults this on each send
+/// until an owner is resolved, so the allocation would be a per-send cost on a
+/// topic that has none.
+#[inline]
+pub fn in_node_context() -> bool {
+    CURRENT_NODE.with(|ctx| {
+        ctx.borrow()
+            .as_ref()
+            .is_some_and(|c| c.tick_start.is_some())
+    })
+}
+
 /// Get the current tick number if set, otherwise 0.
 pub fn current_tick_number() -> u64 {
     CURRENT_NODE.with(|ctx| ctx.borrow().as_ref().map(|c| c.tick_number).unwrap_or(0))

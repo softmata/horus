@@ -65,6 +65,15 @@ pub struct NodeStatus {
     /// showed 1000, and the shortfall an operator is looking for was invisible.
     /// `f64` because the `as u32` cast rendered `.rate(0.5.hz())` as 0.
     pub configured_rate_hz: f64,
+
+    /// The rate the node is ACHIEVING, measured by the scheduler between
+    /// presence refreshes. `None` until two samples exist, or when nothing is
+    /// publishing presence.
+    ///
+    /// This is the number the doc comment above promised and nothing computed:
+    /// the field was renamed and `node info` relabelled, but no measured value
+    /// was ever produced, so the shortfall stayed invisible.
+    pub achieved_rate_hz: Option<f64>,
     pub publishers: Vec<TopicInfo>,
     pub subscribers: Vec<TopicInfo>,
     /// Live tick count from SHM SchedulerRegistry (None if registry unavailable).

@@ -189,6 +189,18 @@ pub(crate) struct RecordingState {
 pub type LifecycleStartFn = Box<dyn FnOnce() -> Option<Box<dyn Any + Send>> + Send>;
 
 /// Central orchestrator: holds nodes, drives the tick loop.
+/// What the presence refresh needs about a node the main thread does not own.
+#[derive(Debug, Clone)]
+pub(super) struct PresenceEntry {
+    pub name: String,
+    pub priority: u32,
+    pub rate_hz: Option<f64>,
+    /// True when the node stayed on the main thread, so `self.nodes` has live
+    /// metrics for it; false when an executor owns it and the SHM registry slot
+    /// is the only source.
+    pub main_thread: bool,
+}
+
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
     pub(super) running: Arc<AtomicBool>,
@@ -227,12 +239,40 @@ pub struct Scheduler {
     initialized: bool,
 
     /// Live node registry in SHM — updated every tick with atomic metrics.
-    /// Read via self.registry in execution.rs and node_ops.rs.
-    #[allow(dead_code)] // false positive: read in execution.rs and node_ops.rs
-    pub(super) registry: Option<super::registry::SchedulerRegistry>,
+    ///
+    /// Shared with the executors, which each update their own nodes' slots. The
+    /// main thread needs it too: `horus node list` reads `tick_count` from the
+    /// slot and overwrites the presence value with it, so a main-thread node
+    /// whose slot nobody advanced reported 0 ticks forever.
+    ///
+    /// This field previously existed, carried an `#[allow(dead_code)]` calling
+    /// the warning a false positive, and was never assigned by anything.
+    pub(super) registry: Option<Arc<super::registry::SchedulerRegistry>>,
     /// Maps node name → slot index in the registry.
     #[allow(dead_code)] // false positive: read in node_ops.rs
     pub(super) registry_slots: HashMap<String, usize>,
+
+    /// Every node the scheduler owns, including the ones handed to an executor.
+    ///
+    /// The class partition moves RT / Compute / Event / AsyncIo nodes out of
+    /// `self.nodes`, and the per-tick presence refresh iterates `self.nodes` —
+    /// so presence was refreshed only for BestEffort nodes. Everything else
+    /// kept whatever was written at init, which happens before the first
+    /// `send()` and therefore carries no topic associations at all. That is why
+    /// `horus topic info` reported "Publishers: (none)" for a topic being
+    /// published at 40 Hz.
+    ///
+    /// `.rate()` promotes a node to `ExecutionClass::Rt`, and `.rate()` is the
+    /// documented way to declare one, so this missed most real nodes and
+    /// covered exactly the shape `horus new` emits — which is why it was never
+    /// caught interactively.
+    pub(super) presence_roster: Vec<PresenceEntry>,
+
+    /// Last (tick_count, instant) seen per node by the presence refresh.
+    ///
+    /// A rate needs two samples. The refresh runs about once a second, which is
+    /// the natural place to take them.
+    pub(super) presence_rate_samples: HashMap<String, (u64, Instant)>,
 
     /// Control topic for receiving CLI commands (pause/resume/shutdown).
     /// Drained at the start of each tick for deterministic behavior.
@@ -409,6 +449,8 @@ impl Scheduler {
             initialized: false,
             registry: None,
             registry_slots: HashMap::new(),
+            presence_roster: Vec::new(),
+            presence_rate_samples: HashMap::new(),
             control_topic: None,
             node_controls: None,
             params: None,
@@ -2555,6 +2597,23 @@ impl Scheduler {
                             None
                         }
                     };
+                // Roster of every node, including the ones about to be handed
+                // to an executor. The presence refresh needs this because
+                // `self.nodes` no longer contains them.
+                self.presence_roster = std::iter::empty()
+                    .chain(self.nodes.iter().map(|n| (n, true)))
+                    .chain(groups.rt_nodes.iter().map(|n| (n, false)))
+                    .chain(groups.compute_nodes.iter().map(|n| (n, false)))
+                    .chain(groups.event_nodes.iter().map(|n| (n, false)))
+                    .chain(groups.async_io_nodes.iter().map(|n| (n, false)))
+                    .map(|(n, main_thread)| PresenceEntry {
+                        name: n.name.to_string(),
+                        priority: n.priority,
+                        rate_hz: n.rate_hz,
+                        main_thread,
+                    })
+                    .collect();
+
                 let arc_slots = Arc::new(self.registry_slots.clone());
 
                 // Node control map for cross-thread pause/stop commands
@@ -2597,6 +2656,9 @@ impl Scheduler {
                         None
                     }
                 };
+
+                // The main thread keeps a handle too — see the field's doc.
+                self.registry = arc_registry.clone();
 
                 // Shared monitors for all executor threads
                 let shared_monitors = super::types::SharedMonitors {
@@ -3398,58 +3460,125 @@ impl Scheduler {
         let ticks_per_sec = (1.0 / self.tick.period.as_secs_f64()).ceil().max(1.0) as u64;
         if self.tick.current == 1 || self.tick.current.is_multiple_of(ticks_per_sec) {
             let registry = crate::communication::topic_node_registry();
-            for node in &self.nodes {
-                if node.initialized && !node.is_stopped {
-                    let tick_count = node
-                        .context
-                        .as_ref()
-                        .map(|c| c.metrics().total_ticks())
-                        .unwrap_or(0);
-                    let pubs = registry.publishers_for_node(&node.name);
-                    let subs = registry.subscribers_for_node(&node.name);
-                    if let Ok(mut p) = NodePresence::new(
-                        &node.name,
-                        Some(&self.scheduler_name),
-                        pubs,
-                        subs,
-                        node.priority,
-                        node.rate_hz.or(Some(1.0 / self.tick.period.as_secs_f64())),
-                    ) {
-                        p.set_tick_count(tick_count);
-                        // Derive health from context metrics
-                        let err_count = node
-                            .context
-                            .as_ref()
-                            .map(|c| c.metrics().errors_count())
-                            .unwrap_or(0);
-                        let health_str = if err_count > 10 {
-                            "Critical"
-                        } else if err_count > 3 {
-                            "Error"
-                        } else if err_count > 0 {
-                            "Warning"
-                        } else {
-                            "Healthy"
-                        };
-                        p.set_health_status(health_str);
-                        // Populate RT state
-                        let caps = self.rt.capabilities.as_ref();
-                        p.set_rt_state(
-                            node.os_priority,
-                            node.pinned_core,
-                            caps.is_some_and(|c| c.mlockall_permitted),
-                            caps.is_some_and(|c| c.preempt_rt),
-                            node.tick_budget.map(|b| b.as_micros() as u64),
-                            node.deadline.map(|d| d.as_micros() as u64),
-                            self.rt
-                                .degradations
-                                .iter()
-                                .map(|d| d.reason.clone())
-                                .collect(),
-                        );
-                        let _ = p.write();
+
+            // Executor-owned nodes are not in `self.nodes`, so their live
+            // metrics only exist in the SHM registry slots the executors write.
+            // Read once per refresh (this whole block runs about once a second)
+            // rather than per node.
+            let slots: HashMap<String, super::registry::NodeSlotSnapshot> =
+                if self.presence_roster.iter().any(|e| !e.main_thread) {
+                    super::registry::SchedulerRegistry::read_all_slots(&self.scheduler_name)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|s| (s.name.clone(), s))
+                        .collect()
+                } else {
+                    HashMap::new()
+                };
+
+            // The roster is empty in deterministic mode, where no partition
+            // happens and every node is still in `self.nodes`.
+            let roster: Vec<PresenceEntry> = if self.presence_roster.is_empty() {
+                self.nodes
+                    .iter()
+                    .map(|n| PresenceEntry {
+                        name: n.name.to_string(),
+                        priority: n.priority,
+                        rate_hz: n.rate_hz,
+                        main_thread: true,
+                    })
+                    .collect()
+            } else {
+                self.presence_roster.clone()
+            };
+
+            // Collected during the loop and applied after, because the loop
+            // borrows `self` immutably.
+            let mut new_samples: Vec<(String, u64, Instant)> = Vec::new();
+
+            for entry in &roster {
+                let live = self.nodes.iter().find(|n| n.name.as_ref() == entry.name);
+                if let Some(node) = live {
+                    if !node.initialized || node.is_stopped {
+                        continue;
                     }
                 }
+
+                let (tick_count, err_count) = match (&live, slots.get(&entry.name)) {
+                    (Some(node), _) => (
+                        node.context
+                            .as_ref()
+                            .map(|c| c.metrics().total_ticks())
+                            .unwrap_or(0),
+                        node.context
+                            .as_ref()
+                            .map(|c| c.metrics().errors_count())
+                            .unwrap_or(0),
+                    ),
+                    (None, Some(slot)) => (slot.tick_count, slot.error_count as u64),
+                    (None, None) => (0, 0),
+                };
+
+                // The whole point: these come from a process-wide registry, so
+                // the main thread can attribute topics for a node running on
+                // an executor thread.
+                let pubs = registry.publishers_for_node(&entry.name);
+                let subs = registry.subscribers_for_node(&entry.name);
+
+                if let Ok(mut p) = NodePresence::new(
+                    &entry.name,
+                    Some(&self.scheduler_name),
+                    pubs,
+                    subs,
+                    entry.priority,
+                    entry.rate_hz.or(Some(1.0 / self.tick.period.as_secs_f64())),
+                ) {
+                    p.set_tick_count(tick_count);
+
+                    // Measured, not configured. `rate_hz` says what was asked
+                    // for; this says what happened.
+                    let now = Instant::now();
+                    let achieved = match self.presence_rate_samples.get(&entry.name) {
+                        Some(&(prev_ticks, prev_at)) => {
+                            let elapsed = now.duration_since(prev_at).as_secs_f64();
+                            let delta = tick_count.saturating_sub(prev_ticks);
+                            (elapsed > 0.05).then(|| delta as f64 / elapsed)
+                        }
+                        None => None,
+                    };
+                    p.set_achieved_rate_hz(achieved);
+                    new_samples.push((entry.name.clone(), tick_count, now));
+
+                    let health_str = if err_count > 10 {
+                        "Critical"
+                    } else if err_count > 3 {
+                        "Error"
+                    } else if err_count > 0 {
+                        "Warning"
+                    } else {
+                        "Healthy"
+                    };
+                    p.set_health_status(health_str);
+                    let caps = self.rt.capabilities.as_ref();
+                    p.set_rt_state(
+                        live.and_then(|n| n.os_priority),
+                        live.and_then(|n| n.pinned_core),
+                        caps.is_some_and(|c| c.mlockall_permitted),
+                        caps.is_some_and(|c| c.preempt_rt),
+                        live.and_then(|n| n.tick_budget).map(|b| b.as_micros() as u64),
+                        live.and_then(|n| n.deadline).map(|d| d.as_micros() as u64),
+                        self.rt
+                            .degradations
+                            .iter()
+                            .map(|d| d.reason.clone())
+                            .collect(),
+                    );
+                    let _ = p.write();
+                }
+            }
+
+            for (name, ticks, at) in new_samples {
+                self.presence_rate_samples.insert(name, (ticks, at));
             }
         }
     }
@@ -4211,6 +4340,53 @@ impl Scheduler {
 
     /// Process the result of a node tick (profiling, budget, failure handling).
     /// Returns true if the scheduler should stop.
+    /// Publish a main-thread node's live metrics into its registry slot.
+    ///
+    /// The same work `SharedMonitors::update_registry` does for executor-owned
+    /// nodes, for the nodes the main thread kept.
+    fn update_registry_slot(&self, i: usize, tick_ns: u64) {
+        let Some(ref registry) = self.registry else {
+            return;
+        };
+        let node = &self.nodes[i];
+        let Some(&slot) = self.registry_slots.get(node.name.as_ref()) else {
+            return;
+        };
+
+        let (tick_count, error_count) = match node.context {
+            Some(ref ctx) => {
+                let m = ctx.metrics();
+                (m.total_ticks(), m.errors_count() as u32)
+            }
+            None => (0, 0),
+        };
+        let health = node.health_state.load() as u8;
+        let (budget_misses, deadline_misses, avg_ns, max_ns, p99_ns) = match node.rt_stats {
+            Some(ref stats) => (
+                stats.budget_violations() as u32,
+                stats.deadline_misses() as u32,
+                (stats.avg_execution_us() * 1000.0) as u64,
+                stats.worst_execution().as_nanos() as u64,
+                stats.p99_approx_ns(),
+            ),
+            None => (0, 0, 0, 0, 0),
+        };
+
+        registry.update_node(
+            slot,
+            health,
+            tick_count,
+            error_count,
+            budget_misses,
+            deadline_misses,
+            health,
+            tick_ns,
+            avg_ns,
+            max_ns,
+            p99_ns,
+        );
+    }
+
     fn process_tick_result(
         &mut self,
         i: usize,
@@ -4281,6 +4457,11 @@ impl Scheduler {
                 if let Some(ref mut context) = self.nodes[i].context {
                     context.record_tick();
                 }
+                // Mirror into the SHM slot. The four executors each do this for
+                // their own nodes; the main-thread ready-dispatch path did not,
+                // so `horus node list` — which prefers the slot over the
+                // presence file — printed 0 ticks for a node that was ticking.
+                self.update_registry_slot(i, tick_duration.as_nanos() as u64);
                 // A clean tick clears any failure-policy backoff/cooldown.
                 self.nodes[i].record_tick_success();
 

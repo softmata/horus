@@ -80,6 +80,15 @@ pub struct NodePresence {
     /// RT degradations that occurred (empty = full RT)
     #[serde(default)]
     rt_degradations: Vec<String>,
+    /// Ticks per second actually achieved, measured between presence refreshes.
+    ///
+    /// `rate_hz` above is what the node was *configured* for, and it was the
+    /// only rate anything reported — so a node configured at 1000 Hz and
+    /// managing 200 still displayed 1000, and the shortfall an operator is
+    /// looking for was invisible. `None` until two refreshes have been
+    /// observed, because one sample cannot measure a rate.
+    #[serde(default)]
+    achieved_rate_hz: Option<f64>,
 }
 
 impl NodePresence {
@@ -128,6 +137,15 @@ impl NodePresence {
     }
 
     /// Update tick count for live presence refresh.
+    /// Measured ticks per second, or `None` before two samples exist.
+    pub fn achieved_rate_hz(&self) -> Option<f64> {
+        self.achieved_rate_hz
+    }
+
+    pub fn set_achieved_rate_hz(&mut self, rate: Option<f64>) {
+        self.achieved_rate_hz = rate;
+    }
+
     pub fn set_tick_count(&mut self, count: u64) {
         self.tick_count = count;
     }
@@ -291,6 +309,7 @@ impl NodePresence {
             budget_us: None,
             deadline_us: None,
             rt_degradations: Vec::new(),
+            achieved_rate_hz: None,
         })
     }
 

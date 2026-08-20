@@ -2382,6 +2382,9 @@ pub struct Topic<T: TopicMessage> {
     registered_sub: std::cell::Cell<bool>,
     /// Node name captured at creation time (for lazy registration).
     owner_node: Option<String>,
+    /// How many times `resolve_owner` has looked for a node context and not
+    /// found one. Bounds the per-send cost for a topic that has no owner.
+    owner_attempts: std::cell::Cell<u16>,
     /// Keep-alive reference(s) to the last pool-backed message sent, released on
     /// the next send (or on Drop) so the producer's transport reference does not
     /// leak. `(pool, primary, secondary)` — the exact pool the retain was taken
@@ -2627,6 +2630,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            owner_attempts: std::cell::Cell::new(0),
             last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
@@ -2688,6 +2692,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            owner_attempts: std::cell::Cell::new(0),
             last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
@@ -2717,6 +2722,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            owner_attempts: std::cell::Cell::new(0),
             last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
@@ -2732,22 +2738,65 @@ impl<T> Topic<T>
 where
     T: TopicMessage<Wire = T> + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
+    /// Which node owns this handle, resolved as late as possible.
+    ///
+    /// The name used to be captured in `Topic::new` and never revisited. Node
+    /// constructors are where topics are created — and they run before the
+    /// scheduler starts, outside any tick — so `current_node_name()` returned
+    /// "unknown" and the handle recorded no owner at all. Nothing ever
+    /// registered it, and `horus topic info` answered "Publishers: (none)"
+    /// about a topic being published at 40 Hz.
+    ///
+    /// Resolving here instead means the first `send()` — which happens inside
+    /// `tick()`, where the context *is* set — finds the name. The constructor's
+    /// value still wins when it had one, which covers a topic created inside
+    /// `init()` and used from a helper thread.
+    #[inline]
+    fn resolve_owner(&self) -> Option<String> {
+        if let Some(ref node) = self.owner_node {
+            return Some(node.clone());
+        }
+        // A topic that belongs to no node — created by a test, a CLI tool, or a
+        // helper thread — would otherwise pay this check on every single send
+        // forever, because the "registered" flag only latches on success. Give
+        // up after a bounded number of attempts so the steady-state cost on the
+        // real-time path is exactly zero.
+        //
+        // The bound is generous on purpose: a node's topic resolves on its
+        // first send inside `tick()`, so only genuinely ownerless topics ever
+        // count past one.
+        const MAX_ATTEMPTS: u16 = 256;
+        if self.owner_attempts.get() >= MAX_ATTEMPTS {
+            return None;
+        }
+        // Checked without allocating; `current_node_name` builds a String and
+        // is only reached once the context is known to exist.
+        if crate::core::hlog::in_node_context() {
+            let name = crate::core::hlog::current_node_name();
+            if name != "unknown" {
+                return Some(name);
+            }
+        }
+        self.owner_attempts.set(self.owner_attempts.get() + 1);
+        None
+    }
+
     /// Send a message (fire-and-forget with bounded retry).
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        // Lazy registration: first send() registers as Publisher
+        // Lazy registration: first send() registers as Publisher.
         if !self.registered_pub.get() {
-            if let Some(ref node) = self.owner_node {
+            if let Some(node) = self.resolve_owner() {
                 let type_name = std::any::type_name::<T>();
                 let short = type_name.rsplit("::").next().unwrap_or(type_name);
                 topic_node_registry().register_with_type(
                     self.ring.name(),
-                    node,
+                    &node,
                     NodeTopicRole::Publisher,
                     short,
                 );
+                self.registered_pub.set(true);
             }
-            self.registered_pub.set(true);
         }
         self.ring.send(msg)
     }
@@ -2755,19 +2804,19 @@ where
     /// Receive a message.
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
-        // Lazy registration: first recv() registers as Subscriber
+        // Lazy registration: first recv() registers as Subscriber.
         if !self.registered_sub.get() {
-            if let Some(ref node) = self.owner_node {
+            if let Some(node) = self.resolve_owner() {
                 let type_name = std::any::type_name::<T>();
                 let short = type_name.rsplit("::").next().unwrap_or(type_name);
                 topic_node_registry().register_with_type(
                     self.ring.name(),
-                    node,
+                    &node,
                     NodeTopicRole::Subscriber,
                     short,
                 );
+                self.registered_sub.set(true);
             }
-            self.registered_sub.set(true);
         }
         self.ring.recv()
     }
@@ -2825,6 +2874,7 @@ where
             registered_pub: self.registered_pub.clone(),
             registered_sub: self.registered_sub.clone(),
             owner_node: self.owner_node.clone(),
+            owner_attempts: self.owner_attempts.clone(),
             // A fresh clone has sent nothing yet; each handle tracks and releases
             // only its own last-sent keep-alive, so clones never double-release.
             last_sent_keepalive: std::cell::Cell::new(None),
