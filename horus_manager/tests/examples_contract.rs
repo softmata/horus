@@ -190,11 +190,13 @@ fn no_example_requests_a_feature_horus_does_not_have() {
     );
 
     let mut offenders = Vec::new();
+    let mut inspected = 0usize;
     for dir in example_dirs() {
         let generated = dir.join(".horus/Cargo.toml");
         let Ok(text) = std::fs::read_to_string(&generated) else {
             continue; // not built yet; the build test below covers it
         };
+        inspected += 1;
         for line in text.lines() {
             if !line.starts_with("horus = ") {
                 continue;
@@ -219,6 +221,16 @@ fn no_example_requests_a_feature_horus_does_not_have() {
         "generated manifests request features `horus` does not have {features:?}:\n  {}\n\n\
          cargo refuses to resolve these, so the example cannot build at all.",
         offenders.join("\n  ")
+    );
+
+    // Without this the test passes on a fresh checkout by inspecting nothing.
+    // The defect it exists for — `[drivers] imu = ...` generating a feature
+    // `horus` has never had — is only visible in a generated manifest.
+    assert!(
+        inspected > 0,
+        "no example has a generated .horus/Cargo.toml, so this test checked \
+         nothing. Build the examples first (`HORUS_TEST_BUILD_EXAMPLES=1`), or \
+         run it after the build job."
     );
 }
 

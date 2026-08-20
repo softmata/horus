@@ -93,6 +93,7 @@ Native Tools:
   env               Set up shell integration (cargo/pip/cmake proxy)
   completion        Generate a shell completion script (bash/zsh/fish)
 
+Options:
 {options}
 {after-help}")]
 #[command(after_help = "\
