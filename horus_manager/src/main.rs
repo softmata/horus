@@ -3159,6 +3159,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         },
 
+        // The generator lives behind the `schema` feature. That feature is on by
+        // default and the shipped binary is meant to have it — but a build that
+        // turns it off must still compile, and for a while it did not: adding
+        // this arm broke `cargo build -p horus_manager --no-default-features`,
+        // which is the exact command `install.sh` runs.
+        #[cfg(feature = "schema")]
         Commands::Schema { output } => {
             let schema = horus_manager::manifest::generate_manifest_schema();
             match output {
@@ -3175,6 +3181,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
             Ok(())
         }
+
+        #[cfg(not(feature = "schema"))]
+        Commands::Schema { .. } => Err(HorusError::Config(ConfigError::Other(
+            "This binary was built without the `schema` feature, so it cannot \
+             emit the horus.toml JSON Schema. Rebuild with \
+             `cargo build -p horus_manager` (the feature is on by default)."
+                .to_string(),
+        ))),
 
         Commands::Migrate { dry_run, force } => {
             commands::migrate::run_migrate(dry_run, force).map_err(HorusError::from)

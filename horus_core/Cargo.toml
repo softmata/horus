@@ -2,6 +2,7 @@
 name = "horus_core"
 version = "0.2.2"
 edition = "2021"
+rust-version.workspace = true
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "Core runtime for the HORUS robotics framework — deterministic scheduler, zero-copy IPC topics, real-time node lifecycle, safety monitoring, and shared memory transport"

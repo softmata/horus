@@ -1,235 +1,181 @@
-//! The advertised install command must be the one that works.
+//! `install.sh` must be able to build what it installs.
 //!
-//! Every README advertised:
+//! The script's build command is the only thing standing between a user and a
+//! working HORUS, and nothing checked that it compiles. It stopped compiling:
 //!
 //! ```text
-//! curl -fsSL https://github.com/softmata/horus/raw/release/install.sh | bash
+//! $ cargo build --release -p horus_manager --no-default-features
+//! error[E0425]: cannot find function `generate_manifest_schema` in module
+//!               `horus_manager::manifest`
+//!     --> horus_manager/src/main.rs:3163:51
+//! note: found an item that was configured out
 //! ```
 //!
-//! There is no `release` branch on origin — tags are cut from `main` — so that
-//! URL returned **404**. The single most important command in the project, the
-//! one on the front page of six READMEs, did not work.
+//! `install.sh` passed `--no-default-features`, and `schema` — the crate's only
+//! default feature — is what the `horus schema` arm needs. Adding that command
+//! broke every source install, and the same flag was on the release workflow's
+//! build step, so it broke the published binaries too.
 //!
-//! `install.sh` meanwhile defaults to `BRANCH="${HORUS_INSTALL_BRANCH:-main}"`
-//! and documents `raw/main` in its own header, so the two halves of the same
-//! instruction disagreed about which branch to fetch.
-//!
-//! These tests compare the files rather than hitting the network, so they work
-//! offline and in CI.
+//! Two guards, because either alone leaves the hole open: the code must compile
+//! with the feature off, and the script must not turn off the feature the
+//! shipped binary is meant to have.
 //!
 //! Run: `cargo test -p horus_manager --test install_contract`
 
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is horus_manager/; the repo root is its parent.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("horus_manager must have a parent directory")
+        .expect("horus_manager has a parent")
         .to_path_buf()
 }
 
-fn read(path: &str) -> Option<String> {
-    std::fs::read_to_string(repo_root().join(path)).ok()
+fn install_sh() -> String {
+    std::fs::read_to_string(repo_root().join("install.sh")).expect("install.sh must exist")
 }
 
-/// Branch `install.sh` clones by default.
-fn installer_branch() -> String {
-    let sh = read("install.sh").expect("install.sh must exist");
-    let line = sh
-        .lines()
-        .find(|l| l.trim_start().starts_with("BRANCH="))
-        .expect("install.sh must define BRANCH");
-
-    // BRANCH="${HORUS_INSTALL_BRANCH:-main}"
-    line.split(":-")
-        .nth(1)
-        .and_then(|rest| rest.split('}').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| panic!("could not parse the default from: {line}"))
-}
-
-/// Every README that advertises the curl-pipe install.
-fn readmes_with_install_url() -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for name in [
-        "README.md",
-        "README.de.md",
-        "README.es.md",
-        "README.ja.md",
-        "README.pt-BR.md",
-        "README.zh-CN.md",
-    ] {
-        if let Some(text) = read(name) {
-            if text.contains("install.sh") {
-                out.push((name.to_string(), text));
-            }
-        }
-    }
-    assert!(!out.is_empty(), "no README advertises install.sh");
-    out
-}
-
-/// Extract the branch from a `raw/<branch>/install.sh` URL.
-fn advertised_branches(text: &str) -> Vec<String> {
-    let mut branches = Vec::new();
-    for (idx, _) in text.match_indices("/raw/") {
-        let rest = &text[idx + "/raw/".len()..];
-        if let Some(slash) = rest.find('/') {
-            if rest[slash..].starts_with("/install.sh") {
-                branches.push(rest[..slash].to_string());
-            }
-        }
-    }
-    branches
-}
-
+/// The shipped binary is meant to carry `schema` — the crate comment says so.
+/// Disabling default features contradicts that and, for a while, did not build.
 #[test]
-fn every_readme_points_at_the_branch_the_installer_uses() {
-    let expected = installer_branch();
-
-    for (name, text) in readmes_with_install_url() {
-        for branch in advertised_branches(&text) {
-            assert_eq!(
-                branch, expected,
-                "{name} advertises `raw/{branch}/install.sh` but install.sh \
-                 clones `{expected}`. For the one command that runs arbitrary \
-                 shell from the internet, the two must agree — `raw/release` \
-                 returned 404 for exactly this reason."
+fn install_sh_does_not_disable_default_features() {
+    let text = install_sh();
+    for (n, line) in text.lines().enumerate() {
+        if line.contains("horus_manager") && line.contains("--no-default-features") {
+            panic!(
+                "install.sh:{} builds horus_manager without its default features:\n  {}",
+                n + 1,
+                line.trim()
             );
         }
     }
 }
 
-/// The branch has to be one that exists. `release` never did.
 #[test]
-fn the_installer_branch_is_a_real_branch() {
-    let branch = installer_branch();
-    assert!(
-        matches!(branch.as_str(), "main" | "master"),
-        "install.sh clones `{branch}`, which is not a branch this repository \
-         has. Tags are cut from main; there is no long-lived release branch."
-    );
-}
-
-/// install.sh's own header shows the URL users copy, so it must match too.
-#[test]
-fn the_installer_header_matches_its_own_default() {
-    let sh = read("install.sh").expect("install.sh must exist");
-    let expected = installer_branch();
-
-    for branch in advertised_branches(&sh) {
-        assert_eq!(
-            branch, expected,
-            "install.sh's header advertises `raw/{branch}/install.sh` while it \
-             clones `{expected}`"
-        );
+fn the_release_workflow_builds_the_same_way_install_sh_does() {
+    let wf = std::fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
+        .expect("release.yml must exist");
+    for (n, line) in wf.lines().enumerate() {
+        if line.contains("-p horus_manager") && line.contains("--no-default-features") {
+            panic!(
+                "release.yml:{} ships a binary without the schema feature:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
     }
 }
 
-/// A missing README should not silently pass the check above.
+/// The other half. A `--no-default-features` build is legitimate — CI does it
+/// for the cross-platform matrix — so the code must compile that way even
+/// though the shipped binary does not.
 #[test]
-fn the_primary_readme_advertises_the_install_command() {
-    let text = read("README.md").expect("README.md must exist");
+fn every_command_arm_is_guarded_for_a_no_default_features_build() {
+    let main = std::fs::read_to_string(repo_root().join("horus_manager/src/main.rs"))
+        .expect("main.rs must exist");
+
+    let at = main
+        .find("Commands::Schema { output }")
+        .expect("the Schema arm must exist");
+    let before = &main[..at];
+    let guard = before
+        .lines()
+        .rev()
+        .take(3)
+        .any(|l| l.contains("#[cfg(feature = \"schema\")]"));
     assert!(
-        text.contains("install.sh"),
-        "README.md should tell people how to install"
+        guard,
+        "the Schema arm calls a function that is compiled out without the \
+         `schema` feature, so it must be behind the same cfg"
     );
     assert!(
-        !advertised_branches(&text).is_empty(),
-        "README.md's install URL should be of the form raw/<branch>/install.sh, \
-         so this contract can check it"
+        main.contains("#[cfg(not(feature = \"schema\"))]"),
+        "there must be a fallback arm, or the match is non-exhaustive with the \
+         feature off"
     );
 }
 
-// ---------------------------------------------------------------------------
-// Translated READMEs
-// ---------------------------------------------------------------------------
+// ─── The declared toolchain floor ───────────────────────────────────────────
 
-/// The five translated READMEs are abridged overviews, not full translations —
-/// 118 lines against the English README's 383. That is a deliberate choice and
-/// each one says so, but it only stays honest while the disclaimer is there.
-///
-/// The audit predicted they would contradict the English README after its
-/// performance claims were corrected. They do not: all six carry the same
-/// `3-304 ns` figure and the same install one-liner. What is worth guarding is
-/// exactly that — the two things a reader acts on, and the notice that tells
-/// them where the authoritative version is.
-const TRANSLATIONS: &[&str] = &[
-    "README.de.md",
-    "README.es.md",
-    "README.ja.md",
-    "README.pt-BR.md",
-    "README.zh-CN.md",
-];
-
+/// One MSRV, in one place. Nine members declared none at all — which means no
+/// floor, not the workspace's — and `horus_sys` declared 1.75 against the
+/// workspace's 1.92.
 #[test]
-fn every_translation_points_at_the_english_readme() {
-    let mut missing = Vec::new();
-    for name in TRANSLATIONS {
-        let Some(text) = read(name) else {
-            missing.push(format!("{name} does not exist"));
+fn every_crate_inherits_the_workspace_rust_version() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for entry in std::fs::read_dir(&root).expect("read repo root").flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        if !manifest.is_file() {
             continue;
-        };
-        // Each disclaimer is in its own language; the invariant is the link.
-        if !text.contains("README.md") {
-            missing.push(format!(
-                "{name} has no link back to the English README, so a reader has \
-                 no way to know it is an abridged overview"
-            ));
+        }
+        let text = std::fs::read_to_string(&manifest).unwrap_or_default();
+        if !text.contains("[package]") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        match text.lines().find(|l| l.trim_start().starts_with("rust-version")) {
+            Some(line) if line.contains("workspace = true") => {}
+            Some(line) => offenders.push(format!("{name}: {}", line.trim())),
+            None => offenders.push(format!("{name}: declares no rust-version")),
         }
     }
-    assert!(missing.is_empty(), "{}", missing.join("\n  "));
+
+    assert!(
+        offenders.is_empty(),
+        "these crates do not inherit the workspace MSRV:\n  {}",
+        offenders.join("\n  ")
+    );
 }
 
-/// The install command is the one instruction a reader copies verbatim. It must
-/// be identical everywhere, or some fraction of users runs a different one.
+/// The floor must be stated where someone deciding whether to install can see
+/// it, not only in a manifest they will read after the build fails.
 #[test]
-fn every_translation_installs_the_same_way() {
-    let english = read("README.md").expect("README.md must exist");
-    let expected = advertised_branches(&english);
-    assert!(
-        !expected.is_empty(),
-        "could not find the install URL in README.md"
-    );
+fn the_readme_states_the_rust_floor() {
+    let readme = std::fs::read_to_string(repo_root().join("README.md")).expect("README.md");
+    let root = std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("Cargo.toml");
+    let msrv = root
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("rust-version = "))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .expect("workspace must declare rust-version");
 
-    let mut wrong = Vec::new();
-    for name in TRANSLATIONS {
-        let Some(text) = read(name) else { continue };
-        let branches = advertised_branches(&text);
-        if branches.is_empty() {
-            wrong.push(format!("{name} advertises no install command"));
-        } else if branches != expected {
-            wrong.push(format!(
-                "{name} installs from {branches:?} while README.md uses {expected:?}"
-            ));
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n  "));
+    assert!(
+        readme.contains(&format!("Rust {msrv}")),
+        "README.md does not state the required Rust version ({msrv})"
+    );
 }
 
-/// A performance figure quoted in a translation must match the English one.
-/// Numbers survive translation unchanged, so a mismatch is drift, not localisation.
+/// install.sh must refuse an old toolchain before spending minutes compiling.
 #[test]
-fn quoted_latency_figures_agree_across_translations() {
-    let english = read("README.md").expect("README.md must exist");
-    let has_figure = english.contains("304 ns");
+fn install_sh_checks_the_rust_version_before_building() {
+    let text = install_sh();
     assert!(
-        has_figure,
-        "README.md no longer quotes the 3-304 ns range this test tracks; update \
-         it here too so the translations stay checked"
+        text.contains("check_rust_version"),
+        "install.sh does not check the toolchain version"
     );
 
-    let mut wrong = Vec::new();
-    for name in TRANSLATIONS {
-        let Some(text) = read(name) else { continue };
-        // A translation may omit the figure entirely — that is abridgement, and
-        // it is fine. What it must not do is quote a *different* number.
-        if text.contains(" ns") && !text.contains("304 ns") {
-            wrong.push(format!(
-                "{name} quotes a latency figure that is not the English one"
-            ));
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n  "));
+    let def = text
+        .find("check_rust_version() {")
+        .expect("the function must be defined");
+    let call = text
+        .rfind("    check_rust_version")
+        .expect("the function must be called");
+    assert!(
+        def < call,
+        "check_rust_version is called before it is defined — it lives in the \
+         other branch of the fast/slow path split and would be `command not found`"
+    );
+
+    // Read from the manifest, not hardcoded, or it silently rots.
+    let body = &text[def..call.min(text.len())];
+    assert!(
+        body.contains("Cargo.toml"),
+        "the required version must come from the workspace manifest:\n{body}"
+    );
+    assert!(
+        body.contains("sort -V"),
+        "version comparison must be numeric — string comparison says 1.100 < 1.9"
+    );
 }

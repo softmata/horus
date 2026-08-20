@@ -40,6 +40,9 @@ Or install manually:
 git clone https://github.com/softmata/horus.git && cd horus && ./install.sh
 ```
 
+**Requires Rust 1.90 or newer** (`rustup update stable`). Python 3.9+ for the
+Python API; CMake 3.16+ and a C++17 compiler for the C++ API.
+
 Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#include <horus/horus.hpp>`
 
 ---

@@ -2,6 +2,7 @@
 name = "horus_cpp_macros"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "Procedural macros for HORUS C++ bindings — #[horus_api] annotation generates CXX bridges and idiomatic C++ headers automatically"

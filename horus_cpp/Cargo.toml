@@ -2,6 +2,7 @@
 name = "horus_cpp"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "C++ bindings for the HORUS robotics framework — zero-copy shared memory IPC, deterministic scheduling, real-time safety via CXX FFI"

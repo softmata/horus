@@ -216,6 +216,30 @@ else
     HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
 fi
 
+# Refuse early on a toolchain that cannot build HORUS.
+#
+# The floor was previously discovered by the user only after install.sh had run
+# and cargo had started compiling — several minutes in, as a cargo error about
+# a package they had never heard of. It is read from the workspace manifest
+# rather than hardcoded here, so there is one number and it lives in one place.
+check_rust_version() {
+    local required found
+    required=$(grep -m1 '^rust-version' "$HORUS_SRC_DIR/Cargo.toml" 2>/dev/null \
+        | sed 's/.*"\(.*\)".*/\1/')
+    [ -n "$required" ] || return 0
+
+    found=$(rustc --version 2>/dev/null | awk '{print $2}' | cut -d- -f1)
+    [ -n "$found" ] || return 0
+
+    # Compare as version numbers, not as strings: 1.100 is newer than 1.9.
+    if [ "$(printf '%s\n%s\n' "$required" "$found" | sort -V | head -n1)" != "$required" ]; then
+        fail "Rust $required or newer is required; found $found."
+        echo "  Run: rustup update stable"
+        exit 1
+    fi
+    ok "Rust $found (>= $required required)"
+}
+
 if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
     # --- Fast path: pre-built binary, skip the compile ---
 
@@ -283,6 +307,7 @@ else
             exit 1
         fi
     fi
+    check_rust_version
     if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then
         install_build_deps
     fi
@@ -297,12 +322,12 @@ else
     # Force stable toolchain — nightly may have compiler bugs
     # First try with LTO (smaller binary). If LLVM crashes (SIGILL — known
     # bug on some CPUs), retry without LTO.
-    if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
+    if ! cargo +stable build --release -p horus_manager 2>&1; then
         echo ""
         warn "Release build failed (possible LLVM/LTO bug), retrying without LTO..."
         echo ""
         export CARGO_PROFILE_RELEASE_LTO=off
-        if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
+        if ! cargo +stable build --release -p horus_manager 2>&1; then
             echo ""
             fail "Build failed"
             echo "    Report issues: https://github.com/${REPO}/issues"

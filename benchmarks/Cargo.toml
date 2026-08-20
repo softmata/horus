@@ -2,6 +2,7 @@
 name = "horus_benchmarks"
 version = "0.2.2"
 edition = "2021"
+rust-version.workspace = true
 authors = ["HORUS Team"]
 description = "Performance benchmarks for HORUS robotics framework"
 license = "Apache-2.0"

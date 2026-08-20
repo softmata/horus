@@ -2,6 +2,7 @@
 name = "horus_py"
 version = "0.2.2"
 edition = "2021"
+rust-version.workspace = true
 license = "Apache-2.0"
 authors = ["HORUS Team"]
 description = "Python bindings for the HORUS robotics framework — nodes, topics, scheduler, and message types accessible from Python with sub-microsecond IPC performance"

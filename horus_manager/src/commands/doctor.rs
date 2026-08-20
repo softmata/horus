@@ -300,13 +300,63 @@ fn check_toolchains() -> CheckResult {
         }
     }
 
-    let (health, summary) = grade_toolchains(&|tool| found.contains(tool));
+    let (mut health, mut summary) = grade_toolchains(&|tool| found.contains(tool));
+
+    // Present is not the same as adequate. `horus doctor` reported "Rust,
+    // Python, C++ ready" on a toolchain too old to build HORUS; the user found
+    // out minutes into a build, from a cargo error about a package they had
+    // never heard of.
+    if let Some(found_version) = dispatch::tool_version("rustc").as_deref().and_then(parse_semver) {
+        if let Some(required) = MINIMUM_RUSTC.and_then(parse_semver) {
+            if found_version < required {
+                health = Health::Warn;
+                summary = format!(
+                    "Rust {}.{}.{} is older than the required {}",
+                    found_version.0,
+                    found_version.1,
+                    found_version.2,
+                    MINIMUM_RUSTC.unwrap_or("?")
+                );
+                details.push(format!(
+                    "rustc: {}.{}.{} is below the minimum {} — run `rustup update stable`",
+                    found_version.0,
+                    found_version.1,
+                    found_version.2,
+                    MINIMUM_RUSTC.unwrap_or("?")
+                ));
+            }
+        }
+    }
+
     CheckResult {
         category: "Toolchains".to_string(),
         health,
         summary,
         details,
     }
+}
+
+/// The workspace's declared minimum Rust version.
+///
+/// Taken from cargo rather than written here, so it cannot drift from
+/// `[workspace.package] rust-version`.
+const MINIMUM_RUSTC: Option<&str> = option_env!("CARGO_PKG_RUST_VERSION");
+
+/// `(major, minor, patch)` from the first version-looking token in `text`.
+///
+/// Compares numerically, not as a string: 1.100 is newer than 1.9, and a string
+/// comparison says the opposite.
+fn parse_semver(text: &str) -> Option<(u32, u32, u32)> {
+    let token = text
+        .split_whitespace()
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.'))?;
+    let token = token.split('-').next()?;
+    let mut parts = token.split('.').map(|p| p.parse::<u32>().ok());
+    Some((
+        parts.next().flatten()?,
+        parts.next().flatten().unwrap_or(0),
+        parts.next().flatten().unwrap_or(0),
+    ))
 }
 
 /// Decide the toolchain verdict from which tools are present.
@@ -1236,6 +1286,51 @@ mod tests {
     }
 
     // ── check_toolchains ────────────────────────────────────────────────
+
+    #[test]
+    fn semver_is_compared_numerically_not_lexically() {
+        // "1.100" < "1.9" as strings. The whole point of parsing.
+        assert!(super::parse_semver("rustc 1.100.0").unwrap() > super::parse_semver("rustc 1.9.0").unwrap());
+        assert!(super::parse_semver("rustc 1.90.0").unwrap() < super::parse_semver("rustc 1.92.0").unwrap());
+        assert_eq!(super::parse_semver("rustc 1.97.1 (8bab26f4f 2026-07-14)"), Some((1, 97, 1)));
+        assert_eq!(super::parse_semver("cmake version 4.2.3"), Some((4, 2, 3)));
+        assert_eq!(super::parse_semver("Python 3.14"), Some((3, 14, 0)));
+    }
+
+    /// A pre-release suffix must not defeat the parse.
+    #[test]
+    fn semver_ignores_a_prerelease_suffix() {
+        assert_eq!(super::parse_semver("rustc 1.98.0-nightly"), Some((1, 98, 0)));
+    }
+
+    #[test]
+    fn semver_returns_none_when_there_is_no_version() {
+        assert_eq!(super::parse_semver("not found"), None);
+        assert_eq!(super::parse_semver(""), None);
+    }
+
+    /// The floor doctor grades against must come from cargo, so it cannot
+    /// drift from `[workspace.package] rust-version`.
+    #[test]
+    fn the_minimum_rustc_is_the_declared_workspace_msrv() {
+        let declared = super::MINIMUM_RUSTC.expect("horus_manager must declare rust-version");
+        let root = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("Cargo.toml"),
+        )
+        .expect("read workspace manifest");
+        let want = root
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("rust-version = "))
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .expect("workspace must declare rust-version");
+        assert_eq!(
+            declared, want,
+            "horus_manager's rust-version must be inherited from the workspace"
+        );
+    }
 
     #[test]
     fn check_toolchains_returns_result() {
