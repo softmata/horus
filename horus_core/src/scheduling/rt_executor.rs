@@ -790,10 +790,10 @@ impl RtExecutor {
                     Err(_) => {
                         if monitors.verbose {
                             // Avoid format!() heap allocation in RT path — write directly to stderr
-                            eprintln!(
+                            crate::terminal::print_line(&format!(
                                 "[RT-thread] Infrastructure panic for '{}' — node stopped",
                                 node.name
-                            );
+                            ));
                         }
                         node.is_stopped = true;
                     }

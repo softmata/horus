@@ -206,7 +206,7 @@ impl RtConfig {
         if self.scheduler != RtScheduler::Normal && !kernel_info.preempt_rt {
             degradations.push(RtDegradation::NoPreemptRt);
             if self.warn_on_degradation {
-                eprintln!("Warning: PREEMPT_RT kernel not detected, RT guarantees may not be met");
+                crate::terminal::print_line(&format!("Warning: PREEMPT_RT kernel not detected, RT guarantees may not be met"));
             }
         }
 
@@ -217,11 +217,11 @@ impl RtConfig {
         if has_rt_features {
             if let Some(gov) = horus_sys::rt::cpu_governor() {
                 if gov != "performance" && self.warn_on_degradation {
-                    eprintln!(
+                    crate::terminal::print_line(&format!(
                         "Warning: CPU governor is '{}' (want 'performance'). \
                          Run: sudo ./scripts/setup-realtime.sh",
                         gov
-                    );
+                    ));
                 }
             }
         }
@@ -232,7 +232,7 @@ impl RtConfig {
                 let msg = format!("memory lock failed: {}", e);
                 degradations.push(RtDegradation::MemoryLockUnavailable(msg.clone()));
                 if self.warn_on_degradation {
-                    eprintln!("Warning: {}", msg);
+                    crate::terminal::print_line(&format!("Warning: {}", msg));
                 }
             }
         }
@@ -255,7 +255,7 @@ impl RtConfig {
                         let msg = format!("Scheduler setup failed: {}", e);
                         degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
                         if self.warn_on_degradation {
-                            eprintln!("Warning: {}", msg);
+                            crate::terminal::print_line(&format!("Warning: {}", msg));
                         }
                     }
                 }
@@ -268,7 +268,7 @@ impl RtConfig {
                 let msg = format!("CPU affinity failed: {}", e);
                 degradations.push(RtDegradation::AffinityUnavailable(msg.clone()));
                 if self.warn_on_degradation {
-                    eprintln!("Warning: {}", msg);
+                    crate::terminal::print_line(&format!("Warning: {}", msg));
                 }
             }
         }
