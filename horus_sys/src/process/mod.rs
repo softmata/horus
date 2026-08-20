@@ -60,7 +60,19 @@ impl ProcessHandle {
             }
             // SAFETY: kill with signal 0 is a standard POSIX liveness check.
             // It doesn't send any signal — just checks if the process exists.
-            unsafe { libc::kill(self.pid as i32, 0) == 0 }
+            let exists = unsafe { libc::kill(self.pid as i32, 0) == 0 };
+            if !exists {
+                return false;
+            }
+            // kill(pid, 0) succeeds for a zombie: the process has exited but its
+            // entry survives until the parent reaps it. A node killed with
+            // SIGKILL under a parent that never waits was therefore reported
+            // Running indefinitely, with its tick counts frozen — observed
+            // holding at "Running, 49 ticks" for the full length of a test while
+            // `ps` showed `Z (defunct)` and the presence file was never cleaned
+            // up. Under `horus run` the parent reaps within milliseconds, which
+            // is why this looked like a brief blip rather than a stuck state.
+            !is_zombie(self.pid)
         }
         #[cfg(windows)]
         {
@@ -242,6 +254,54 @@ pub fn pid_start_time(pid: u32) -> u64 {
     {
         let _ = pid;
         0
+    }
+}
+
+/// Whether the process has exited but not yet been reaped.
+///
+/// Fails open: if the state cannot be read, the caller keeps whatever
+/// `kill(pid, 0)` said, matching the existing convention in presence.rs.
+#[cfg(unix)]
+fn is_zombie(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) else {
+            return false;
+        };
+        // The comm field is parenthesised and may contain spaces, so skip to
+        // after the last ')'. The state character is the first token after it.
+        // Same idiom as pid_start_time_linux below.
+        let Some(after_comm) = content.rfind(')').map(|i| &content[i + 1..]) else {
+            return false;
+        };
+        matches!(
+            after_comm.split_whitespace().next(),
+            // Z = zombie, X/x = dead.
+            Some("Z") | Some("X") | Some("x")
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: proc_pidinfo with PROC_PIDTBSDINFO fills a proc_bsdinfo for a
+        // pid we already know exists; the same call is used by
+        // pid_start_time_macos below.
+        unsafe {
+            let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let n = libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                size,
+            );
+            n == size && info.pbi_status == libc::SZOMB
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        false
     }
 }
 

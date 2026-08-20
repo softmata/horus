@@ -9754,13 +9754,33 @@ fn test_topic_multiple_drops_no_double_free() {
 #[test]
 fn recv_never_reorders_or_duplicates_when_lapped() {
     let name = unique("lap_order");
-    // These are the parameters that actually reproduce the defect. Fewer
-    // consumers or fewer sends and it does not lap often enough: at 4
-    // consumers / 60k sends the unfixed code passed this test cleanly.
-    let n = 400_000u64;
-    let n_consumers = 32;
+    // Tuned by measurement, not guessed. With the rejection removed this detects
+    // the defect 5 runs out of 5; at 12 consumers / 6 s it dropped to 4/5 and
+    // produced only 3 inversions, too thin a margin to trust. At 4 consumers /
+    // 60k sends the unfixed code passed cleanly, which is how the first version
+    // of this test came to be worthless.
+    //
+    // It is deliberately no larger. An earlier version ran 32 consumers for
+    // 25 s and saturated the machine long enough to make unrelated
+    // timing-sensitive tests in this suite flake — a test that breaks its
+    // neighbours is its own defect.
+    let n = 250_000u64;
+    let n_consumers = 20;
 
     let tx: Topic<u64> = Topic::new(&name).expect("pub");
+
+    // Pin the backend. Left alone the topic migrates to FanoutShm as the
+    // subscribers register, and FanoutShm's `seqlock_consume` is sound — so an
+    // unpinned run stops exercising the path this test exists for and passes
+    // even with the fix removed. Verified both ways.
+    //
+    // Pinning also removes the migration window, where a consumer reading
+    // across the switch can see the old backend's tail after the new backend's
+    // head. That is a real observation — once at ~3,900 messages into a 1.5M
+    // run, backward by 63 on a 64-slot fanout channel rather than the 511 of a
+    // 512-slot PodShm ring — but it is a different defect, and absorbing it here
+    // would only hide it.
+    tx.force_migrate(BackendMode::PodShm);
     let streams = Arc::new(std::sync::Mutex::new(vec![Vec::new(); n_consumers]));
     let barrier = Arc::new(Barrier::new(n_consumers + 1));
 
@@ -9772,7 +9792,7 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
             test_spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
-                let deadline = Instant::now() + 25_u64.secs();
+                let deadline = Instant::now() + 10_u64.secs();
                 while Instant::now() < deadline {
                     if let Some(v) = rx.recv() {
                         local.push(v);
