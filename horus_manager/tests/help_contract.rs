@@ -197,3 +197,54 @@ fn completion_generates_a_usable_script() {
         );
     }
 }
+
+/// Every alias declared in the source must appear in the hand-written help
+/// template.
+///
+/// `--help` is a hardcoded `help_template` string, not generated from clap's
+/// command tree, so the two drift silently. `plugins` and `script` were both
+/// live `visible_alias`es that the template never mentioned, which is how
+/// `horus plugins --help` came to look like a bug: the user typed a name the
+/// template does not list, and clap correctly echoed the canonical `plugin` in
+/// the usage line.
+#[test]
+fn every_visible_alias_appears_in_the_help_template() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("main.rs must be readable");
+
+    // The template is the long string literal at the top of the file; the
+    // aliases are declared further down in the Commands enum.
+    let aliases: Vec<String> = main_rs
+        .lines()
+        .filter_map(|l| l.split_once("visible_alias = \""))
+        .filter_map(|(_, rest)| rest.split('"').next())
+        .map(|s| s.to_string())
+        .collect();
+
+    assert!(
+        aliases.len() >= 8,
+        "expected to find the visible_alias declarations, got {aliases:?}"
+    );
+
+    let help = String::from_utf8(
+        std::process::Command::new(env!("CARGO_BIN_EXE_horus"))
+            .arg("--help")
+            .output()
+            .expect("horus --help must run")
+            .stdout,
+    )
+    .expect("help output must be utf-8");
+
+    let missing: Vec<&String> = aliases
+        .iter()
+        .filter(|a| !help.contains(a.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these aliases work but are absent from `horus --help`, so a user has no \
+         way to discover them and no way to tell they are aliases: {missing:?}"
+    );
+}

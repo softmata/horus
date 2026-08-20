@@ -670,10 +670,19 @@ fn test_msg_hash_known_type() {
     assert!(output.status.success());
 
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    assert_eq!(hash.len(), 16, "hash should be 16 hex chars, got '{hash}'");
+    // "0x" + 8 hex digits — a 32-bit FNV-1a over `Name|field:Type|...`, the same
+    // value the `message!` macro emits as LAYOUT_HASH and the same encoding the
+    // runtime prints in a layout-mismatch error, so the two can be compared
+    // directly. It was a 64-bit DefaultHasher digest, which std does not
+    // guarantee between Rust releases.
+    assert_eq!(
+        hash.len(),
+        10,
+        "hash should be 0x + 8 hex chars, got '{hash}'"
+    );
     assert!(
-        hash.chars().all(|c| c.is_ascii_hexdigit()),
-        "hash should be valid hex, got '{hash}'"
+        hash.starts_with("0x") && hash[2..].chars().all(|c| c.is_ascii_hexdigit()),
+        "hash should be 0x followed by hex, got '{hash}'"
     );
 }
 

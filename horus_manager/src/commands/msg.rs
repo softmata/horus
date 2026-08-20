@@ -822,7 +822,7 @@ pub struct B {
         let h1 = compute_message_definition_hash(&msg);
         let h2 = compute_message_definition_hash(&msg);
         assert_eq!(h1, h2, "hash must be deterministic");
-        assert_eq!(h1.len(), 16, "hash should be 16 hex chars");
+        assert_eq!(h1.len(), 10, "hash should be 0x + 8 hex chars");
     }
 
     #[test]
@@ -1288,9 +1288,12 @@ pub struct WithGap {
             source_file: String::new(),
         };
         let hash = compute_message_definition_hash(&msg);
-        assert_eq!(hash.len(), 16);
-        // Should be valid hex
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // "0x" + 8 hex digits: a 32-bit FNV-1a, the same width and encoding the
+        // runtime prints in a layout-mismatch error, so the two can be compared
+        // by eye.
+        assert_eq!(hash.len(), 10, "expected 0x + 8 hex digits, got {hash}");
+        assert!(hash.starts_with("0x"));
+        assert!(hash[2..].chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1306,10 +1309,17 @@ pub struct WithGap {
             doc: String::new(),
             source_file: String::new(),
         };
-        assert_ne!(
+        // The module deliberately does NOT participate. This is a *layout*
+        // hash: it must equal the `LAYOUT_HASH` the `message!` macro emits,
+        // which is built from `stringify!($name)` and the fields, and it is
+        // compared against the value in the SHM header. Two identically shaped
+        // messages are layout-compatible wherever they are declared, and a
+        // same-short-name collision between different types is caught
+        // separately by the type-name check in the topic open path.
+        assert_eq!(
             compute_message_definition_hash(&make("alpha")),
             compute_message_definition_hash(&make("beta")),
-            "different modules should produce different hashes"
+            "the module is not part of the layout"
         );
     }
 
@@ -1440,10 +1450,10 @@ pub struct WithGap {
             source_file: String::new(),
         };
         let hash = compute_message_definition_hash(&msg);
-        assert_eq!(hash.len(), 16, "hash should be exactly 16 hex chars");
+        assert_eq!(hash.len(), 10, "hash should be exactly 0x + 8 hex chars");
         assert!(
-            hash.chars().all(|c| c.is_ascii_hexdigit()),
-            "hash should be valid lowercase hex: {}",
+            hash.starts_with("0x") && hash[2..].chars().all(|c| c.is_ascii_hexdigit()),
+            "hash should be 0x followed by lowercase hex: {}",
             hash
         );
     }
@@ -2045,7 +2055,7 @@ pub struct Cmd {
         let hash1 = compute_message_definition_hash(&msgs[0]);
         let hash2 = compute_message_definition_hash(&msgs[0]);
         assert_eq!(hash1, hash2, "hash should be deterministic across calls");
-        assert_eq!(hash1.len(), 16);
+        assert_eq!(hash1.len(), 10);
     }
 
     #[test]

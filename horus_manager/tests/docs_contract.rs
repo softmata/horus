@@ -155,3 +155,53 @@ fn the_configuration_reference_is_where_we_think_it_is() {
         path.display()
     );
 }
+
+/// A command HORUS tells the user to run must be documented.
+///
+/// `horus doctor` ended its real-time check with "run `horus setup-rt` for
+/// ±20μs". `setup-rt` appeared **zero** times in the entire docs repository, so
+/// the one place a user is told about it is a warning line, with nothing to
+/// read about what it will do to their machine — and it installs a kernel
+/// package and edits `/etc/security/limits.conf`.
+#[test]
+fn commands_the_cli_suggests_are_documented() {
+    let Some(root) = docs_root() else {
+        eprintln!("SKIP: horus-docs is not checked out beside horus");
+        return;
+    };
+
+    // Commands the CLI emits to the user as advice. Add to this list when a new
+    // suggestion is introduced; the test then requires it to be documented.
+    let suggested = ["setup-rt", "doctor", "check", "lint", "fmt", "doc"];
+
+    let mut corpus = String::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "mdx" || e == "md") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    corpus.push_str(&text);
+                }
+            }
+        }
+    }
+
+    let missing: Vec<&str> = suggested
+        .iter()
+        .copied()
+        .filter(|c| !corpus.contains(&format!("horus {c}")))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "the CLI tells users to run these, but the documentation never mentions \
+         them: {missing:?}\n\nA command that modifies the user's system needs a \
+         page they can read first."
+    );
+}

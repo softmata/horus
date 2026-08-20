@@ -25,7 +25,7 @@ Project:
   run               Run a HORUS project or file(s)
   build             Build the HORUS project without running
   lock              Generate or verify horus.lock (pin dependency versions)
-  scripts           Run a script defined in horus.toml [scripts]
+  scripts, script   Run a script defined in horus.toml [scripts]
   test              Run tests for the HORUS project
   check             Validate horus.toml, source files, or workspace
   clean             Clean build artifacts and shared memory
@@ -61,7 +61,7 @@ Packages:
   info              Show detailed info about a package or plugin
 
 Plugins:
-  plugin            Manage plugins (enable, disable, verify, trust)
+  plugin, plugins   Manage plugins (enable, disable, verify, trust)
 
 Development:
   fmt               Format code (Rust + Python)
@@ -2193,10 +2193,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
                                 _sim_child = Some(child);
                             }
                             Err(e) => {
-                                log::warn!(
-                                    "Failed to auto-launch '{}': {}. Install with: horus install horus-{}",
-                                    simulator_name, e, simulator_name
-                                );
+                                // The inner error already names the plugin and the
+                                // install command — every variant out of
+                                // spawn_background does. Wrapping it produced:
+                                //
+                                //   Failed to auto-launch 'sim3d': Plugin 'sim3d' not
+                                //   found. Install it with: horus install horus-sim3d.
+                                //   Install with: horus install horus-sim3d
+                                //
+                                // the remediation twice and the plugin name four times.
+                                log::warn!("Simulator unavailable: {}", e);
                             }
                         }
                     }

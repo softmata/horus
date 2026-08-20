@@ -900,11 +900,13 @@ pub(super) fn execute_with_scheduler(
             }
         }
         "python" => {
+            cli_output::info("Executing...\n");
             super::run_python::execute_python_node(file, args, release)?;
         }
         "cpp" => {
             let project_dir = std::env::current_dir()?;
             let binary = super::run_cpp::build_cpp(&project_dir, release, None)?;
+            cli_output::info("Executing...\n");
             let str_args: Vec<String> = args;
             super::run_cpp::execute_cpp_binary(&binary, &str_args)?;
         }

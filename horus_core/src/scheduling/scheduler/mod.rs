@@ -1930,7 +1930,24 @@ impl Scheduler {
     /// Called after init() and optionally after the first tick cycle if new
     /// topic registrations were detected. The graph drives the ready-dispatch
     /// executor (default mode) or sequential step execution (deterministic mode).
+    /// Build the dependency graph.
+    ///
+    /// `announce` exists because this runs twice on the way up: once before the
+    /// ExecutionClass partition and once after. When every node is RT, the
+    /// partition empties `self.nodes`, so the second build legitimately reports
+    /// 0 steps — and the user saw
+    ///
+    ///   Dependency graph (ready-dispatch mode): 2 steps from .order() tiers
+    ///   Dependency graph (ready-dispatch mode): 0 steps from .order() tiers
+    ///
+    /// two lines apart, which reads as the scheduler contradicting itself. The
+    /// rebuild is required (see the comment at the post-partition call site);
+    /// only the second announcement is wrong.
     fn build_dependency_graph(&mut self) {
+        self.build_dependency_graph_inner(true);
+    }
+
+    fn build_dependency_graph_inner(&mut self, announce: bool) {
         match super::dependency_graph::DependencyGraph::build(&self.nodes) {
             Ok(graph) => {
                 let mode = if self.pending_config.timing.deterministic_order {
@@ -1938,19 +1955,29 @@ impl Scheduler {
                 } else {
                     "ready-dispatch"
                 };
-                if graph.has_topic_metadata() {
-                    print_line(&format!(
-                        "Dependency graph ({} mode): {} nodes, {} steps from topic metadata",
-                        mode,
-                        graph.node_count(),
-                        graph.step_count()
-                    ));
-                } else {
-                    print_line(&format!(
-                        "Dependency graph ({} mode): {} steps from .order() tiers (no topic metadata yet)",
-                        mode,
-                        graph.step_count()
-                    ));
+                if announce {
+                    // After the ExecutionClass partition this graph describes
+                    // only what is left on the main thread. Saying "0 steps"
+                    // while two RT nodes are running reads as a failure, so say
+                    // where they went instead.
+                    if graph.step_count() == 0 {
+                        print_line(
+                            "Dependency graph: no main-thread nodes (all nodes run on executors)",
+                        );
+                    } else if graph.has_topic_metadata() {
+                        print_line(&format!(
+                            "Dependency graph ({} mode): {} nodes, {} steps from topic metadata",
+                            mode,
+                            graph.node_count(),
+                            graph.step_count()
+                        ));
+                    } else {
+                        print_line(&format!(
+                            "Dependency graph ({} mode): {} steps from .order() tiers (no topic metadata yet)",
+                            mode,
+                            graph.step_count()
+                        ));
+                    }
                 }
                 self.dependency_graph = Some(graph);
             }
@@ -1983,7 +2010,10 @@ impl Scheduler {
         // Build dependency graph from topic metadata (always, not just deterministic mode).
         // The graph drives the ready-dispatch executor for automatic parallelism.
         // In deterministic mode, same graph but executed sequentially within steps.
-        self.build_dependency_graph();
+        // Silent: the ExecutionClass partition below may move every node out of
+        // `self.nodes`, and the post-partition rebuild is the one that describes
+        // what actually runs on the main thread.
+        self.build_dependency_graph_inner(false);
 
         // Record the registry version at graph-build time so we can detect
         // new topic registrations after the first tick cycle.
@@ -2412,8 +2442,13 @@ impl Scheduler {
         rt.block_on(async {
             let start_time = Instant::now();
 
-            self.finalize_config();
-            self.initialized = true;
+            // `finalize_and_init()` above (run_with_filter) already ran both of
+            // these. Running them again printed "Safety monitor configured for
+            // RT nodes" twice, constructed a second SafetyMonitor that
+            // immediately replaced the first, and re-pushed into
+            // `rt.degradations`, which has no clear. The doc comment on
+            // `finalize_config` says "Called once from run_with_filter()" —
+            // which this call contradicted.
             self.install_panic_hook();
             self.setup_signal_handlers();
 
