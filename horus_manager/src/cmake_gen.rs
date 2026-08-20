@@ -335,6 +335,38 @@ pub fn generate(
     )?;
     writeln!(cmake, "  endif()")?;
 
+    // Drop the sections nothing references, and strip in Release.
+    //
+    // A hello-world C++ node — one publisher, one tick() — linked to a 101 MB
+    // debug executable, because the whole Rust runtime comes in as a static
+    // archive and the linker keeps every section of it by default. That is
+    // survivable on a workstation and not survivable on a target with limited
+    // flash, which is exactly what `horus deploy --arch aarch64` is for.
+    //
+    // Measured on the generated template (release): 17,557,904 bytes plain,
+    // 6,707,696 with --gc-sections, 2,074,176 with --gc-sections and -s. Both
+    // are needed for the 88% figure; --gc-sections alone gives 62%.
+    //
+    // -s is Release-only on purpose. Stripping unconditionally would take gdb
+    // away from the whole debug workflow to save space in the build nobody
+    // ships.
+    writeln!(
+        cmake,
+        "  target_link_options({} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wl,--gc-sections>)",
+        target_name
+    )?;
+    writeln!(
+        cmake,
+        "  target_link_options({} PRIVATE $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-s>)",
+        target_name
+    )?;
+    // --gc-sections can only drop a section that is separate to begin with.
+    writeln!(
+        cmake,
+        "  target_compile_options({} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-ffunction-sections;-fdata-sections>)",
+        target_name
+    )?;
+
     // Link libraries
     if !cpp_deps.is_empty() {
         let targets: Vec<&str> = cpp_deps.iter().map(|d| d.cmake_target.as_str()).collect();

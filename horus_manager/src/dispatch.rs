@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use crate::manifest::{HorusManifest, Language, ManifestError, HORUS_TOML};
+use crate::manifest::{HorusManifest, Language, ManifestError, CPP_SOURCE_EXTENSIONS, HORUS_TOML};
 
 // ─── Operation ───────────────────────────────────────────────────────────────
 
@@ -139,7 +139,8 @@ pub fn detect_context(start_dir: &Path) -> ProjectContext {
 /// Checks for:
 /// - Rust: any `.rs` files in root or `src/`, or `Cargo.toml`, or horus.toml deps with source = "crates.io"
 /// - Python: any `.py` files in root or `src/`, or `pyproject.toml`, or horus.toml deps with source = "pypi"
-/// - C++: `CMakeLists.txt`
+/// - C++: any `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx` file in root or `src/`,
+///   or `CMakeLists.txt`, or the generated `.horus/CMakeLists.txt`
 /// - ROS2: `package.xml`
 fn detect_project_languages(project_dir: &Path) -> Vec<Language> {
     let mut languages = Vec::new();
@@ -161,8 +162,26 @@ fn detect_project_languages(project_dir: &Path) -> Vec<Language> {
         languages.push(Language::Python);
     }
 
-    // C++ detection
-    if project_dir.join("CMakeLists.txt").exists() {
+    // C++ detection.
+    //
+    // Rust and Python each get three ways to be found — legacy root manifest,
+    // generated `.horus/` manifest, or a source file. C++ got one: a root
+    // `CMakeLists.txt`, which no HORUS C++ project has. `horus new --cpp`
+    // scaffolds `horus.toml` + `src/main.cpp`, and `cmake_gen` writes its
+    // CMakeLists into `.horus/`. So this returned "no languages" for every C++
+    // project ever generated, and everything downstream drew the obvious
+    // conclusion: `horus fmt` and `horus lint` said "No source files detected",
+    // and `horus deploy` fell through to the Rust builder and demanded a
+    // Cargo.toml.
+    //
+    // `horus build` worked the whole time because it uses a third detector
+    // (`run::deps::detect_language`) that does check extensions.
+    let has_cpp = project_dir.join("CMakeLists.txt").exists()
+        || project_dir.join(".horus/CMakeLists.txt").exists()
+        || CPP_SOURCE_EXTENSIONS
+            .iter()
+            .any(|ext| has_files_with_extension(project_dir, ext));
+    if has_cpp {
         languages.push(Language::Cpp);
     }
 
@@ -172,6 +191,55 @@ fn detect_project_languages(project_dir: &Path) -> Vec<Language> {
     }
 
     languages
+}
+
+/// Every C++ source and header in the project, as arguments for a tool.
+///
+/// `clang-format` and `clang-tidy` are registered with no file arguments and
+/// `ResolvedTool::default_args` is fixed at detection time, so nothing
+/// downstream could supply one. Both tools fall back to stdin when given none,
+/// and the two failure modes are different and both bad: `clang-tidy` errors
+/// with "no input files specified", while `clang-format --dry-run --Werror`
+/// reads stdin, sees EOF, prints nothing and **exits 0** — a green
+/// `horus fmt --check` over unformatted code.
+///
+/// Sorted, so the command line — and therefore any diff of tool output — is
+/// stable between runs.
+pub fn cpp_source_files(root: &Path) -> Vec<PathBuf> {
+    /// Directories that hold build output or dependencies, not project source.
+    const SKIP: &[&str] = &[
+        ".horus", ".git", "target", "build", "cpp-build", "node_modules", "_build",
+    ];
+
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > 8 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if !name.starts_with('.') && !SKIP.contains(&name.as_ref()) {
+                    walk(&path, depth + 1, out);
+                }
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| CPP_SOURCE_EXTENSIONS.contains(&e))
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(root, 0, &mut out);
+    out.sort();
+    out
 }
 
 /// Check if a directory contains files with the given extension (non-recursive, root + src/).
@@ -437,7 +505,11 @@ fn detect_cpp_tools(tools: &mut BTreeMap<(String, String), ResolvedTool>) {
             (lang.to_string(), Operation::Lint.to_string()),
             ResolvedTool {
                 bin: "clang-tidy".to_string(),
-                default_args: vec![],
+                // Parity with the Rust path, which is `clippy -- -D warnings`.
+                // clang-tidy exits 0 on findings by default, so without this a
+                // C++ lint failure was invisible to CI while the identical Rust
+                // failure broke the build.
+                default_args: vec!["--warnings-as-errors=*".to_string()],
                 language: lang,
                 label: label.clone(),
             },

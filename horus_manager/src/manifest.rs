@@ -79,6 +79,13 @@ impl fmt::Display for Language {
 /// Detect project languages from native build files in the given directory.
 ///
 /// Returns all detected languages. An empty Vec means no recognized build files exist.
+/// Extensions that make a directory a C++ project.
+///
+/// Headers count: a project can legitimately be header-only, and a tree with
+/// `include/*.hpp` and no `.cpp` is still C++ for the purposes of formatting
+/// and linting.
+pub const CPP_SOURCE_EXTENSIONS: &[&str] = &["cpp", "cc", "cxx", "hpp", "hh", "hxx"];
+
 pub fn detect_languages(project_dir: &Path) -> Vec<Language> {
     let mut languages = Vec::new();
 
@@ -101,7 +108,26 @@ pub fn detect_languages(project_dir: &Path) -> Vec<Language> {
         languages.push(Language::Python);
     }
 
-    if project_dir.join("CMakeLists.txt").exists() {
+    // C++ detection.
+    //
+    // Rust and Python each get three ways to be found — legacy root manifest,
+    // generated `.horus/` manifest, or a source file. C++ got one: a root
+    // `CMakeLists.txt`, which no HORUS C++ project has. `horus new --cpp`
+    // scaffolds `horus.toml` + `src/main.cpp`, and `cmake_gen` writes its
+    // CMakeLists into `.horus/`. So this returned "no languages" for every C++
+    // project ever generated, and everything downstream drew the obvious
+    // conclusion: `horus fmt` and `horus lint` said "No source files detected",
+    // and `horus deploy` fell through to the Rust builder and demanded a
+    // Cargo.toml.
+    //
+    // `horus build` worked the whole time because it uses a third detector
+    // (`run::deps::detect_language`) that does check extensions.
+    let has_cpp = project_dir.join("CMakeLists.txt").exists()
+        || project_dir.join(".horus/CMakeLists.txt").exists()
+        || CPP_SOURCE_EXTENSIONS
+            .iter()
+            .any(|ext| has_files_with_ext(project_dir, ext));
+    if has_cpp {
         languages.push(Language::Cpp);
     }
     if project_dir.join("package.xml").exists() {

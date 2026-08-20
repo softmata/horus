@@ -121,48 +121,61 @@ pub fn log_with_context(level: LogType, message: String) {
         ipc_ns: 0,
     });
 
-    // Also emit to stderr/stdout for console visibility
-    let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
+    // Also emit to stderr for console visibility.
+    emit_console(&level, &node_name, &message);
+}
 
+/// Write one log line to the terminal.
+///
+/// Public, and takes the node name explicitly, because there are three callers
+/// and only one of them can use the thread-local: the C FFI (`horus_log`) is
+/// given a name by the C++ caller, and is routinely called outside a tick —
+/// from a constructor, from `main`, from a helper thread — where the
+/// thread-local is empty and the name would come out as "unknown".
+///
+/// It exists at all because that FFI wrote to the shared-memory buffer and
+/// nowhere else, so a C++ node's own log statements were invisible in the
+/// terminal they were running in. They were not being swallowed; nothing was
+/// ever sending them. `horus log` showed them all along.
+///
+/// `Publish` and `Subscribe` entries are deliberately not printed — they exist
+/// for the monitor and would drown a console at tick rate.
+pub fn emit_console(level: &LogType, node_name: &str, message: &str) {
     use std::io::{self, Write};
 
-    match level {
-        LogType::Info => {
-            let msg = format!(
-                "\x1b[34m[INFO]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                node_name, message, line_ending
-            );
-            let _ = io::stderr().write_all(msg.as_bytes());
-            let _ = io::stderr().flush();
-        }
-        LogType::Warning => {
-            let msg = format!(
-                "\x1b[33m[WARN]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                node_name, message, line_ending
-            );
-            let _ = io::stderr().write_all(msg.as_bytes());
-            let _ = io::stderr().flush();
-        }
-        LogType::Error => {
-            let msg = format!(
-                "\x1b[31m[ERROR]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                node_name, message, line_ending
-            );
-            let _ = io::stderr().write_all(msg.as_bytes());
-            let _ = io::stderr().flush();
-        }
-        LogType::Debug => {
-            let msg = format!(
-                "\x1b[90m[DEBUG]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                node_name, message, line_ending
-            );
-            let _ = io::stderr().write_all(msg.as_bytes());
-            let _ = io::stderr().flush();
-        }
-        _ => {
-            // Other log types (Publish, Subscribe, etc.) - just to shared memory
-        }
-    }
+    // A TUI in raw mode has no implicit carriage return.
+    let Some(line) = format_console_line(level, node_name, message, is_raw_mode()) else {
+        return;
+    };
+    let mut err = io::stderr();
+    let _ = err.write_all(line.as_bytes());
+    let _ = err.flush();
+}
+
+/// The exact bytes [`emit_console`] writes, or `None` for a level that is not
+/// printed.
+///
+/// Split out from the write so the format is testable without capturing a
+/// process's stderr.
+pub fn format_console_line(
+    level: &LogType,
+    node_name: &str,
+    message: &str,
+    raw_mode: bool,
+) -> Option<String> {
+    let tag = match level {
+        LogType::Info => "\x1b[34m[INFO]\x1b[0m",
+        LogType::Warning => "\x1b[33m[WARN]\x1b[0m",
+        LogType::Error => "\x1b[31m[ERROR]\x1b[0m",
+        LogType::Debug => "\x1b[90m[DEBUG]\x1b[0m",
+        // Publish/Subscribe exist for the monitor and would drown a console at
+        // tick rate.
+        _ => return None,
+    };
+    let line_ending = if raw_mode { "\r\n" } else { "\n" };
+    Some(format!(
+        "{tag} \x1b[33m[{node_name}]\x1b[0m {message}{line_ending}"
+    ))
 }
 
 /// Log a message from within a HORUS node.
@@ -339,6 +352,71 @@ macro_rules! hlog_once {
 
 #[cfg(test)]
 mod tests {
+    // ── Console emission ────────────────────────────────────────────────
+    //
+    // A C++ node's `horus::log::info(...)` went to the shared-memory buffer and
+    // nowhere else, so the first log statement a C++ user writes produced no
+    // output in the terminal they were watching. `horus log` had it all along;
+    // nothing pointed there. Rust and Python nodes have always printed.
+
+    #[test]
+    fn console_line_carries_the_level_and_the_node() {
+        let line = super::format_console_line(
+            &crate::core::log_buffer::LogType::Info,
+            "controller",
+            "Published cmd_vel",
+            false,
+        )
+        .expect("Info must be printed");
+        assert!(line.contains("[INFO]"), "{line:?}");
+        assert!(line.contains("controller"), "{line:?}");
+        assert!(line.contains("Published cmd_vel"), "{line:?}");
+        assert!(line.ends_with('\n'), "{line:?}");
+    }
+
+    /// A TUI in raw mode has no implicit carriage return, so a bare `\n`
+    /// staircases the output.
+    #[test]
+    fn raw_mode_uses_crlf() {
+        let line = super::format_console_line(
+            &crate::core::log_buffer::LogType::Warning,
+            "n",
+            "m",
+            true,
+        )
+        .expect("Warning must be printed");
+        assert!(line.ends_with("\r\n"), "{line:?}");
+    }
+
+    /// Publish/Subscribe entries exist for the monitor. Printing them would
+    /// drown a console at tick rate.
+    #[test]
+    fn transport_entries_are_not_printed() {
+        assert!(super::format_console_line(
+            &crate::core::log_buffer::LogType::Publish,
+            "n",
+            "m",
+            false
+        )
+        .is_none());
+    }
+
+    /// Every level a user can produce must reach the terminal.
+    #[test]
+    fn every_user_level_is_printed() {
+        use crate::core::log_buffer::LogType;
+        for (level, tag) in [
+            (LogType::Info, "[INFO]"),
+            (LogType::Warning, "[WARN]"),
+            (LogType::Error, "[ERROR]"),
+            (LogType::Debug, "[DEBUG]"),
+        ] {
+            let line = super::format_console_line(&level, "n", "m", false)
+                .unwrap_or_else(|| panic!("{level:?} must be printed"));
+            assert!(line.contains(tag), "{level:?} -> {line:?}");
+        }
+    }
+
     use super::*;
 
     #[test]

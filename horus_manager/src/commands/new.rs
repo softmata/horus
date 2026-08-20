@@ -329,6 +329,39 @@ compile_commands.json
 
     fs::write(project_path.join(".gitignore"), gitignore_content)?;
 
+    if language == "cpp" {
+        create_clang_format(project_path)?;
+    }
+
+    Ok(())
+}
+
+/// The formatting rules `horus fmt` enforces for C++.
+///
+/// `clang-format --style=file` falls back to LLVM style when no config exists,
+/// and LLVM style does not match the template this same command generates: it
+/// collapses the constructor onto one line and re-spaces the trailing comments.
+/// So the first thing `horus fmt` did to a brand-new project was reformat code
+/// the user had not written yet, and `horus fmt --check` failed on a pristine
+/// scaffold.
+///
+/// These values are derived from the template rather than chosen: with this
+/// file in place, `clang-format --style=file --dry-run --Werror src/main.cpp`
+/// reports zero violations on a freshly generated project. A test pins that,
+/// so changing either the template or this config without the other fails.
+fn create_clang_format(project_path: &Path) -> Result<()> {
+    let config = "\
+# Matches the style of the generated template. `horus fmt` uses this.
+BasedOnStyle: LLVM
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 2
+AllowShortFunctionsOnASingleLine: Empty
+PointerAlignment: Left
+";
+    fs::write(project_path.join(".clang-format"), config)?;
     Ok(())
 }
 

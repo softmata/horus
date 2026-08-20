@@ -326,6 +326,14 @@ fn is_file_scope_complaint(stderr: &str) -> bool {
     stderr.contains("expected unqualified-id")
         || stderr.contains("does not name a type")
         || stderr.contains("expected constructor, destructor, or type conversion")
+        // A member printed without its class. `override` and a trailing `const`
+        // are both legal only inside a class definition, so these two
+        // diagnostics say "this is a method, not a free function" as plainly as
+        // the ones above say "this is a statement, not a declaration" — and the
+        // retry below is exactly what they call for.
+        || stderr.contains("virt-specifiers")
+        || stderr.contains("cannot have cv-qualifier")
+        || stderr.contains("non-member function")
 }
 
 fn run_cxx(cxx: &str, src: &Path) -> Option<(bool, String)> {

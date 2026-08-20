@@ -77,6 +77,26 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
                     _ => {}
                 }
             }
+            // Same as `horus fmt`: clang-tidy is registered with no file
+            // arguments, and errored with "no input files specified" every
+            // time. It also needs the compilation database to know the include
+            // paths and standard; `horus build` writes one into the project
+            // root, so use it when it is there.
+            if tool.bin == "clang-tidy" {
+                let sources = dispatch::cpp_source_files(&ctx.root);
+                if ctx.root.join("compile_commands.json").exists() {
+                    args.push("-p".to_string());
+                    args.push(ctx.root.to_string_lossy().to_string());
+                } else if !sources.is_empty() {
+                    eprintln!(
+                        "{} no compile_commands.json — run {} first for accurate C++ \
+                         diagnostics; checking with defaults for now.",
+                        "warn:".yellow(),
+                        "horus build".cyan()
+                    );
+                }
+                args.extend(sources.iter().map(|p| p.to_string_lossy().to_string()));
+            }
             args.extend(extra_args.clone());
 
             PrefixedCommand {
