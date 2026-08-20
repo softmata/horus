@@ -1368,9 +1368,43 @@ pub(super) fn recv_shm_pod_broadcast<
 
     let behind = local.local_head.wrapping_sub(tail);
     if behind > local.cached_capacity {
-        tail = local.local_head;
+        // Land on a slot the producer has actually written. Setting `tail =
+        // local_head` looks like "skip to the newest", but `head` names the slot
+        // the producer will write *next*: its ready-flag still belongs to the
+        // message from a lap ago, so the `v1 < tail + 1` test below rejects it
+        // and returns None. `local_tail` is then head again on the next call,
+        // and again after that — a consumer that falls one lap behind receives
+        // nothing, for as long as it stays behind, with no error anywhere.
+        //
+        // Measured on a 264-byte POD topic (16-slot ring) published at 1 kHz to
+        // two subscribers, 3000 messages, varying the consumer's poll interval:
+        //
+        //     poll   1 ms -> 6000 of 6000 received
+        //     poll  20 ms ->   35 of 6000
+        //     poll 100 ms ->    0 of 6000   (last_seq = 0, never delivered once)
+        //
+        // and `dropped_count()` on the publisher read 0 throughout, because the
+        // producer never failed a send — it is the consumer that is stuck.
+        //
+        // A 10 Hz node reading a 1 kHz sensor is ordinary multi-rate robotics,
+        // and seqlock.rs:10-15 states the intended contract for exactly that
+        // case: "a 30 Hz node reading a 500 Hz sensor should get the MOST RECENT
+        // data". Land half a lap back from the head, the same landing point the
+        // `v1 > tail + 1` branch below already uses and for the same reason —
+        // `head - capacity` is the slot the producer overwrites next, so it
+        // re-laps immediately.
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        let cap = local.cached_capacity;
+        // Reaching here implies head >= tail + cap + 1 > cap, so this cannot
+        // wrap; guarded anyway because `head` is re-loaded and could in
+        // principle be observed smaller than the cached value.
+        tail = if head > cap {
+            head.wrapping_sub(cap).wrapping_add(cap / 2)
+        } else {
+            tail
+        };
         local.local_tail = tail;
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+        local.local_head = head;
         if local.local_head.wrapping_sub(tail) == 0 {
             return None;
         }
