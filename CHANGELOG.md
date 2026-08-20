@@ -42,6 +42,14 @@ From `Unreleased` onward, entries are written by hand.
   `horus::topics` are reachable directly. `use horus::types::Tensor;` failed
   with "no `Tensor` in the root", and twelve doc sites told readers to write
   `horus::horus_core::…` — naming an internal crate the facade exists to hide.
+- **manager** — `horus man` renders a man page from the same clap tree the CLI
+  is built from; `install.sh` now places it. HORUS shipped none at all, on a
+  tool whose installer already placed a completion script.
+- **packaging** — a root `Dockerfile` (two-stage, pinned to the workspace MSRV,
+  shipping the man page and completions) and a `.devcontainer` that builds its
+  builder stage rather than duplicating the dependency list. Both set
+  `--shm-size`, since the default 64 MB `/dev/shm` is too small for image or
+  point-cloud topics.
 - **python** — PEP 561 `py.typed` marker, so the shipped `_horus.pyi` stubs are
   actually used. Type checkers previously skipped the package entirely.
 

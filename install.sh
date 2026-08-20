@@ -409,6 +409,33 @@ install_completions() {
 }
 install_completions
 
+# --- Man page ---
+#
+# HORUS shipped no man page at all: `man horus` found nothing, on a tool that
+# already installed a completion script. `horus man` renders it from the same
+# clap tree the binary is built from, so it cannot describe a command that does
+# not exist.
+install_man_page() {
+    # Prefer the user-local location so this needs no root; fall back to the
+    # system one only if we are already root.
+    if [ "$(id -u)" = "0" ]; then
+        MAN_DIR="/usr/local/share/man/man1"
+    else
+        MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man/man1"
+    fi
+
+    mkdir -p "$MAN_DIR" 2>/dev/null || return 0
+    if horus man > "${MAN_DIR}/horus.1.tmp" 2>/dev/null &&
+       [ -s "${MAN_DIR}/horus.1.tmp" ]; then
+        mv "${MAN_DIR}/horus.1.tmp" "${MAN_DIR}/horus.1"
+        ok "Man page installed (man horus)"
+    else
+        # Never fail the install over a man page.
+        rm -f "${MAN_DIR}/horus.1.tmp" 2>/dev/null
+    fi
+}
+install_man_page
+
 # --- Done ---
 elapsed_total=$(($(date +%s) - INSTALL_START))
 echo ""

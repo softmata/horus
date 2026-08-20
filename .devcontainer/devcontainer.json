@@ -1,0 +1,41 @@
+{
+  "name": "HORUS",
+
+  // Reuses the repository Dockerfile so the dependency list lives in one place.
+  // The builder stage has the Rust toolchain and every -dev package a full
+  // build needs.
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "target": "builder"
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  // The C++ bindings and their examples need cmake and the three system
+  // libraries CI installs; without them five cmake_gen tests skip and the C++
+  // examples cannot link.
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake libeigen3-dev libfmt-dev libgtest-dev && rustup component add rustfmt clippy",
+
+  // HORUS nodes talk over shared memory. The default 64 MB /dev/shm is too
+  // small for image or point-cloud topics, and --ipc=host lets nodes in the
+  // container reach nodes on the host.
+  "runArgs": ["--shm-size=1g", "--ipc=host"],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml",
+        "ms-python.python"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  },
+
+  "remoteUser": "root"
+}

@@ -139,3 +139,122 @@ fn the_provenance_of_generated_entries_is_stated() {
          much curation to expect"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Packaging: man page, Dockerfile, devcontainer
+// ---------------------------------------------------------------------------
+
+/// The man page must be generated from the clap tree, not hand-written.
+///
+/// HORUS shipped no man page at all — `man horus` found nothing, on a tool
+/// whose install script already places a shell completion script. `horus man`
+/// renders it from `Cli::command()`, the same tree the binary is built from, so
+/// it cannot document a command that does not exist.
+#[test]
+fn the_man_page_generator_exists() {
+    let out = Command::new(env!("CARGO_BIN_EXE_horus"))
+        .arg("man")
+        .output()
+        .expect("horus man must run");
+
+    assert!(out.status.success(), "`horus man` should succeed");
+
+    let page = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        page.contains(".TH horus 1"),
+        "expected a roff man page header, got: {}",
+        &page[..page.len().min(200)]
+    );
+    assert!(page.contains(".SH NAME"), "man page needs a NAME section");
+    assert!(
+        page.contains(".SH SYNOPSIS"),
+        "man page needs a SYNOPSIS section"
+    );
+}
+
+/// install.sh must actually place it, the way it places completions.
+#[test]
+fn the_installer_installs_the_man_page() {
+    let sh =
+        std::fs::read_to_string(repo_root().join("install.sh")).expect("install.sh must exist");
+    assert!(
+        sh.contains("horus man"),
+        "install.sh generates completions but never the man page"
+    );
+    assert!(
+        sh.contains("man1"),
+        "the man page needs to land in a man1 directory to be found by `man`"
+    );
+}
+
+/// The Dockerfile copies each workspace member's manifest to cache dependency
+/// compilation. A member added later and not copied breaks the build in a way
+/// that only shows up in a Docker build, which no test here can run.
+#[test]
+fn the_dockerfile_covers_every_workspace_member() {
+    let dockerfile =
+        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile must exist");
+    let cargo =
+        std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("Cargo.toml must exist");
+
+    // Take the bracketed members list.
+    let start = cargo
+        .find("members = [")
+        .expect("workspace must declare members");
+    let mut depth = 0usize;
+    let mut end = start;
+    for (i, c) in cargo[start..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let block = &cargo[start..end];
+    let members: Vec<&str> = block
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|m| !m.is_empty() && !m.contains('='))
+        .collect();
+
+    assert!(
+        members.len() >= 8,
+        "failed to parse the workspace members, got {members:?}"
+    );
+
+    let missing: Vec<&&str> = members
+        .iter()
+        .filter(|m| !dockerfile.contains(&format!("COPY {m}/Cargo.toml")))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "the Dockerfile does not copy these workspace members' manifests, so \
+         `cargo build --locked` inside the image will fail: {missing:?}"
+    );
+}
+
+/// A devcontainer that installs a different dependency list from the image is
+/// two lists to keep in step. This one builds the image's builder stage.
+#[test]
+fn the_devcontainer_reuses_the_dockerfile() {
+    let json = std::fs::read_to_string(repo_root().join(".devcontainer/devcontainer.json"))
+        .expect(".devcontainer/devcontainer.json must exist");
+    assert!(
+        json.contains("Dockerfile"),
+        "the devcontainer should build from the repository Dockerfile rather \
+         than duplicating its dependency list"
+    );
+    assert!(
+        json.contains("shm-size"),
+        "HORUS nodes talk over shared memory; the default 64 MB /dev/shm is too \
+         small for image or point-cloud topics"
+    );
+}

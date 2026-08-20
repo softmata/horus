@@ -38,6 +38,9 @@ horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58
 horus_sys = { path = "../horus_sys" }
 clap = { version = "4.4", features = ["derive"] }
 clap_complete = "4.4"
+# Renders the man page from the same clap tree the CLI is built from, so the
+# page cannot describe a command the binary does not have.
+clap_mangen = "0.2"
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "time"] }
 serde.workspace = true
 serde_json.workspace = true

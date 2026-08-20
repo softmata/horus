@@ -981,6 +981,14 @@ enum Commands {
         shell: clap_complete::Shell,
     },
 
+    /// Write the man page to stdout (`horus man > horus.1`)
+    ///
+    /// Rendered from the same clap tree the CLI is built from, so it cannot
+    /// describe a command the binary does not have. HORUS shipped no man page
+    /// at all — `man horus` found nothing, on a tool whose install script
+    /// already places a completion script.
+    Man,
+
     // ── Native Tool Proxies ─────────────────────────────────────────────
     /// Transparent cargo proxy — delegates to real cargo with horus.toml sync
     #[command(name = "cargo", hide = true)]
@@ -3143,6 +3151,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Scripts { name, args } => commands::scripts::run_scripts(name, args),
+
+        Commands::Man => {
+            let cmd = Cli::command();
+            clap_mangen::Man::new(cmd)
+                .render(&mut io::stdout())
+                .map_err(|e| HorusError::from(anyhow::anyhow!("rendering man page: {e}")))?;
+            Ok(())
+        }
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup
