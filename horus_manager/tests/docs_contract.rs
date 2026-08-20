@@ -205,3 +205,220 @@ fn commands_the_cli_suggests_are_documented() {
          page they can read first."
     );
 }
+
+/// Every documentation page must be reachable from the navigation.
+///
+/// 53 of 120 pages were not, including the entire C++ surface: all 25 `cpp/`
+/// API pages and all 12 tutorials — every one of which is a C++ tutorial. There
+/// was no "C++" section in the sidebar at all, next to the "Rust" and "Python"
+/// ones. For a framework that lists C++ as a first-class language, its whole
+/// documentation tree existed but could not be navigated to.
+///
+/// Also asserts the two lists stay identical. `PrevNextNav.tsx` says in a
+/// comment that it "must match DocsSidebar.tsx", and nothing checked it.
+#[test]
+fn every_docs_page_is_reachable_from_the_navigation() {
+    let Some(root) = docs_root() else {
+        eprintln!("SKIP: horus-docs is not checked out beside horus");
+        return;
+    };
+    let components = root
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("components"));
+    let Some(components) = components.filter(|p| p.is_dir()) else {
+        eprintln!("SKIP: horus-docs/components not found");
+        return;
+    };
+
+    let sidebar = std::fs::read_to_string(components.join("DocsSidebar.tsx"))
+        .expect("DocsSidebar.tsx must exist");
+    let nav = std::fs::read_to_string(components.join("PrevNextNav.tsx"))
+        .expect("PrevNextNav.tsx must exist");
+
+    let mut unreachable = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.extension().is_some_and(|e| e == "mdx") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace(".mdx", "");
+
+            // A redirect stub is deliberately not in the navigation.
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if text.contains("Redirect stub") {
+                    continue;
+                }
+            }
+
+            let href = format!("/{rel}");
+            // `foo/index` is reached as `/foo`.
+            let parent = rel.strip_suffix("/index").map(|p| format!("/{p}"));
+
+            let linked = sidebar.contains(&format!("\"{href}\""))
+                || parent
+                    .as_deref()
+                    .is_some_and(|p| sidebar.contains(&format!("\"{p}\"")));
+
+            if !linked {
+                unreachable.push(rel);
+            }
+        }
+    }
+
+    assert!(
+        unreachable.is_empty(),
+        "{} documentation page(s) exist but nothing links to them:\n  {}\n\n\
+         Add them to `sections` in DocsSidebar.tsx (and `allPages` in \
+         PrevNextNav.tsx).",
+        unreachable.len(),
+        unreachable.join("\n  ")
+    );
+
+    // The two lists must agree — PrevNextNav.tsx's own comment requires it.
+    let hrefs = |src: &str| -> std::collections::BTreeSet<String> {
+        src.split("href: \"")
+            .skip(1)
+            .filter_map(|s| s.split('"').next())
+            .filter(|s| s.starts_with('/'))
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let in_sidebar = hrefs(&sidebar);
+    let in_nav = hrefs(&nav);
+
+    let only_sidebar: Vec<&String> = in_sidebar.difference(&in_nav).collect();
+    let only_nav: Vec<&String> = in_nav.difference(&in_sidebar).collect();
+
+    assert!(
+        only_sidebar.is_empty() && only_nav.is_empty(),
+        "DocsSidebar.tsx and PrevNextNav.tsx have drifted — the prev/next links \
+         will skip or dead-end.\n  only in sidebar: {only_sidebar:?}\n  only in \
+         nav: {only_nav:?}"
+    );
+}
+
+/// A variable the shipped code reads must be documented.
+///
+/// 26 of the 47 `HORUS_*` variables read by shipped code appeared nowhere in
+/// the documentation — including `HORUS_ESTOP_REMOTE`, which controls what a
+/// remote emergency stop does locally, and `HORUS_ALLOW_LOCAL_PLUGINS`, which
+/// gates executing code from outside the repository. A knob nobody can find is
+/// a knob nobody can audit.
+#[test]
+fn every_environment_variable_is_documented() {
+    let Some(root) = docs_root() else {
+        eprintln!("SKIP: horus-docs is not checked out beside horus");
+        return;
+    };
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("horus_manager must have a parent")
+        .to_path_buf();
+
+    // Collect HORUS_* names read by shipped code (crate `src/` trees only —
+    // a name that appears solely in tests is not a user-facing knob).
+    let mut names = std::collections::BTreeSet::new();
+    let mut stack: Vec<std::path::PathBuf> = std::fs::read_dir(&repo)
+        .expect("repo must be readable")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("horus"))
+        })
+        .map(|p| p.join("src"))
+        .filter(|p| p.is_dir())
+        .collect();
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.extension().is_some_and(|e| e == "rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Skip test modules: those knobs are not user-facing.
+            for (_, after) in text.match_indices("env::var").map(|(i, _)| (i, &text[i..])) {
+                let Some(open) = after.find('"') else {
+                    continue;
+                };
+                let rest = &after[open + 1..];
+                let Some(close) = rest.find('"') else {
+                    continue;
+                };
+                let name = &rest[..close];
+                if name.starts_with("HORUS_") && name.len() < 60 {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+
+    assert!(
+        names.len() > 20,
+        "failed to collect the environment variables, found {names:?}"
+    );
+
+    // Everything in the docs corpus.
+    let mut corpus = String::new();
+    let mut dstack = vec![root];
+    while let Some(dir) = dstack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dstack.push(path);
+            } else if path.extension().is_some_and(|e| e == "mdx" || e == "md") {
+                if let Ok(t) = std::fs::read_to_string(&path) {
+                    corpus.push_str(&t);
+                }
+            }
+        }
+    }
+
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|n| !corpus.contains(n.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "{} environment variable(s) are read by shipped code but documented \
+         nowhere:\n  {}\n\nAdd them to \
+         content/docs/development/environment-variables.mdx — including the \
+         internal ones, under the section that says so.",
+        missing.len(),
+        missing
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
