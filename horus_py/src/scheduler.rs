@@ -91,6 +91,31 @@ struct PyNodeAdapter {
     scheduler_running: Arc<AtomicBool>,
 }
 
+/// Render a Python exception the way Python renders it: type, message, and the
+/// traceback that says where it came from.
+///
+/// `PyErr::to_string` gives only `ValueError: exploded on tick 3`. For a node
+/// failing inside a control loop that is the whole diagnostic — no file, no
+/// line, no call chain, however many frames deep the raise was. Measured on a
+/// three-frame failure (`tick` -> `inner` -> `deeper`), the runtime printed:
+///
+/// ```text
+/// Node 'boom' panicked: Python node 'boom' tick failed: ValueError: exploded on tick 3
+/// ```
+///
+/// and nothing else. The traceback is already attached to the error object; it
+/// was simply being dropped.
+///
+/// Falls back to the plain rendering when there is no traceback (an error
+/// constructed rather than raised) or when formatting it fails — a diagnostic
+/// path must not itself become a failure.
+fn describe_py_error(py: Python<'_>, err: &PyErr) -> String {
+    match err.traceback(py).map(|tb| tb.format()) {
+        Some(Ok(trace)) => format!("{err}\n{}", trace.trim_end()),
+        _ => err.to_string(),
+    }
+}
+
 impl CoreNode for PyNodeAdapter {
     fn name(&self) -> &str {
         &self.node_name
@@ -131,7 +156,7 @@ impl CoreNode for PyNodeAdapter {
                     } else {
                         Err(HorusError::node(
                             &self.node_name,
-                            format!("init failed: {}", e),
+                            format!("init failed: {}", describe_py_error(py, &e)),
                         ))
                     }
                 }
@@ -207,7 +232,8 @@ impl CoreNode for PyNodeAdapter {
                         // same catch_unwind path without being a panic!() call.
                         std::panic::resume_unwind(Box::new(format!(
                             "Python node '{}' tick failed: {}",
-                            self.node_name, e
+                            self.node_name,
+                            describe_py_error(py, &e)
                         )));
                     }
                 }
@@ -250,7 +276,7 @@ impl CoreNode for PyNodeAdapter {
                     } else {
                         Err(HorusError::node(
                             &self.node_name,
-                            format!("shutdown failed: {}", e),
+                            format!("shutdown failed: {}", describe_py_error(py, &e)),
                         ))
                     }
                 }
