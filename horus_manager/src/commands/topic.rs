@@ -633,6 +633,23 @@ fn sanitize_for_terminal(s: &str) -> String {
     out
 }
 
+/// A bincode-encoded `String`, if that is what these bytes are.
+///
+/// bincode writes a `String` as a `u64` little-endian length followed by the
+/// UTF-8. Requiring the length to account for the payload exactly makes a false
+/// positive essentially impossible: arbitrary binary would have to open with a
+/// length that lands precisely on its own end and then be valid UTF-8.
+fn bincode_string(data: &[u8]) -> Option<String> {
+    if data.len() < 8 {
+        return None;
+    }
+    let len = u64::from_le_bytes(data[..8].try_into().ok()?) as usize;
+    if len.checked_add(8)? != data.len() {
+        return None;
+    }
+    std::str::from_utf8(&data[8..]).ok().map(str::to_string)
+}
+
 fn classify_message(data: &[u8], is_pod: bool, type_name: &str) -> MessageFormat {
     if is_pod {
         // Try field decoding for known types
@@ -651,6 +668,18 @@ fn classify_message(data: &[u8], is_pod: bool, type_name: &str) -> MessageFormat
         return MessageFormat::PodHex;
     }
 
+    // A bincode-encoded `String`: an 8-byte little-endian length followed by
+    // exactly that many bytes. `horus topic pub` publishes its JSON this way,
+    // so without unwrapping the prefix the framework's own two testing commands
+    // still showed each other a hex dump.
+    if let Some(text) = bincode_string(data) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+                return MessageFormat::Json(pretty);
+            }
+        }
+        return MessageFormat::PodText(text);
+    }
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) {
         return MessageFormat::Json(serde_json::to_string_pretty(&json).unwrap_or_default());
     }
@@ -1109,8 +1138,24 @@ pub fn publish_topic(
         )))
     })?;
 
+    // Publish the JSON as text, not as a `serde_json::Value`.
+    //
+    // horus_core serialises serde topics with bincode, and bincode cannot
+    // deserialize a `Value` at all — it is not self-describing, so `Value`'s
+    // `deserialize_any` is unsupported:
+    //
+    //     round-trip FAILS: Bincode does not support the
+    //                       serde::Deserializer::deserialize_any method
+    //
+    // So `Topic<serde_json::Value>` could be written and never read, by
+    // anything: `horus topic echo` fell through to a hex dump, and a node
+    // subscribing with the same type would have received nothing. A `String`
+    // round-trips, `echo` renders it through its existing JSON branch, and the
+    // bytes carry their own structure.
+    let json_text = value.to_string();
+
     // Create topic using the proper ring buffer protocol
-    let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
+    let topic: Topic<String> = Topic::new(name).map_err(|e| {
         HorusError::Communication(horus_core::error::CommunicationError::TopicCreationFailed {
             topic: name.to_string(),
             reason: e.to_string(),
@@ -1153,7 +1198,7 @@ pub fn publish_topic(
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
-        topic.send(value.clone());
+        topic.send(json_text.clone());
         published += 1;
         println!(
             "  [{}] Published: {}",
@@ -1526,5 +1571,75 @@ mod terminal_sanitize_tests {
     fn ordinary_text_is_untouched() {
         let s = "linear_x: 0.5, angular_z: -1.25 — 温度 42°C";
         assert_eq!(sanitize_for_terminal(s), s);
+    }
+}
+
+#[cfg(test)]
+mod pub_echo_roundtrip_tests {
+    use super::*;
+
+    fn bincode_encoded(text: &str) -> Vec<u8> {
+        let mut v = (text.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(text.as_bytes());
+        v
+    }
+
+    #[test]
+    fn a_published_json_message_reads_back_as_json() {
+        // The round-trip through the framework's own two testing commands.
+        // `topic pub` used to publish a `serde_json::Value`, which horus_core
+        // serialises with bincode — and bincode cannot deserialize a `Value` at
+        // all ("does not support deserialize_any"), so the payload could be
+        // written and never read, by anything. `echo` fell through to a hex
+        // dump and a node subscribing with the same type would have got
+        // nothing.
+        let data = bincode_encoded(r#"{"linear":7.5,"label":"hi"}"#);
+        match classify_message(&data, false, "String") {
+            MessageFormat::Json(text) => {
+                assert!(text.contains("\"linear\""), "got {text}");
+                assert!(text.contains("7.5"), "got {text}");
+            }
+            other => panic!("expected JSON, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_published_plain_string_reads_back_as_text() {
+        let data = bincode_encoded("hello robot");
+        match classify_message(&data, false, "String") {
+            MessageFormat::PodText(text) => assert_eq!(text, "hello robot"),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_length_prefix_must_account_for_the_payload_exactly() {
+        // The guard against reading arbitrary binary as a string: the leading
+        // u64 has to land precisely on the end of the buffer.
+        let mut short = bincode_encoded("hello");
+        short.push(b'!'); // one byte too many for the declared length
+        assert!(bincode_string(&short).is_none());
+
+        let truncated = &bincode_encoded("hello")[..10];
+        assert!(bincode_string(truncated).is_none());
+
+        assert!(
+            bincode_string(&[0u8; 4]).is_none(),
+            "too short for a prefix"
+        );
+    }
+
+    #[test]
+    fn a_declared_length_that_would_overflow_is_rejected() {
+        let mut data = u64::MAX.to_le_bytes().to_vec();
+        data.extend_from_slice(b"x");
+        assert!(bincode_string(&data).is_none());
+    }
+
+    #[test]
+    fn invalid_utf8_is_not_a_string() {
+        let mut data = 2u64.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0xff, 0xfe]);
+        assert!(bincode_string(&data).is_none());
     }
 }
