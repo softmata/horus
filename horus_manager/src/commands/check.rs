@@ -220,7 +220,9 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             let ext = path.extension().and_then(|e| e.to_str());
 
             if filename == HORUS_TOML {
-                horus_manifests.push(path.to_path_buf());
+                if !is_cargo_test_dir_manifest(path) {
+                    horus_manifests.push(path.to_path_buf());
+                }
             } else if ext == Some("rs") && filename != "build.rs" {
                 rust_files.push(path.to_path_buf());
             } else if ext == Some("py") {
@@ -583,6 +585,27 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
         ))));
     }
     Ok(())
+}
+
+/// Whether this `horus.toml` sits in a crate's `tests/` directory.
+///
+/// Cargo integration tests live in `<crate>/tests/`, so such a directory is full
+/// of `.rs` files with no `main.rs` and no `Cargo.toml` of its own. Language
+/// detection called that a Rust project and required a main file, so
+/// `horus check` on this repository reported
+/// `horus_core/tests/horus.toml: main file not found for 'Rust'` and exited 1.
+/// A manifest kept beside integration tests is fixture data, not an
+/// application.
+fn is_cargo_test_dir_manifest(manifest: &std::path::Path) -> bool {
+    let Some(dir) = manifest.parent() else {
+        return false;
+    };
+    if dir.file_name().and_then(|n| n.to_str()) != Some("tests") {
+        return false;
+    }
+    dir.parent()
+        .map(|crate_root| crate_root.join(CARGO_TOML).is_file())
+        .unwrap_or(false)
 }
 
 /// Check a single file (horus.toml, .rs, or .py)
@@ -2002,5 +2025,58 @@ mod import_check_tests {
             PY_IMPORT_CHECK.contains("sys.argv[1]"),
             "the script must read its path from argv"
         );
+    }
+}
+
+#[cfg(test)]
+mod test_dir_manifest_tests {
+    use super::is_cargo_test_dir_manifest;
+    use std::path::Path;
+
+    fn scratch() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("horus_check_fixture_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn a_manifest_beside_integration_tests_is_fixture_data() {
+        // Cargo integration tests live in `<crate>/tests/`, so that directory is
+        // full of `.rs` files with no `main.rs` and no `Cargo.toml`. Language
+        // detection called it a Rust project and demanded a main file, so
+        // `horus check` on this repository reported
+        // `horus_core/tests/horus.toml: main file not found for 'Rust'` and
+        // exited 1.
+        let root = scratch().join("crate_a");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&tests).expect("mkdir");
+        std::fs::write(root.join("Cargo.toml"), "[package]\n").expect("write");
+        let manifest = tests.join("horus.toml");
+        std::fs::write(&manifest, "[package]\n").expect("write");
+
+        assert!(is_cargo_test_dir_manifest(&manifest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_project_that_merely_lives_in_a_tests_directory_is_still_checked() {
+        // Without a Cargo.toml one level up it is not a cargo test directory —
+        // it is somebody's project that happens to be called `tests`.
+        let root = scratch().join("standalone");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&tests).expect("mkdir");
+        let manifest = tests.join("horus.toml");
+        std::fs::write(&manifest, "[package]\n").expect("write");
+
+        assert!(!is_cargo_test_dir_manifest(&manifest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_ordinary_project_manifest_is_checked() {
+        assert!(!is_cargo_test_dir_manifest(Path::new(
+            "/w/robot/horus.toml"
+        )));
+        assert!(!is_cargo_test_dir_manifest(Path::new("/w/horus.toml")));
     }
 }
