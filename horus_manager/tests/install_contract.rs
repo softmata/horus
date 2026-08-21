@@ -328,6 +328,75 @@ fn the_dockerfile_can_use_the_committed_lockfile() {
     );
 }
 
+/// Both stages must exist and the slim one must stay the default.
+///
+/// Docker's default target is the *last* stage in the file, so appending a
+/// stage silently changes what `docker build .` produces. The header says the
+/// default is the CLI image; this keeps that true.
+#[test]
+fn the_slim_image_is_still_the_default_target() {
+    let dockerfile =
+        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let stages: Vec<&str> = dockerfile
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("FROM "))
+        .filter_map(|r| r.split(" AS ").nth(1))
+        .collect();
+
+    assert!(
+        stages.contains(&"dev"),
+        "no dev stage: the header documents `horus run`, which needs toolchains \
+         the slim image does not have"
+    );
+    assert_eq!(
+        stages.last(),
+        Some(&"runtime"),
+        "the last stage is what `docker build .` builds, and the header says \
+         that is the slim CLI image; stages are {stages:?}"
+    );
+}
+
+/// The header must not advertise against the slim image a command that image
+/// cannot run.
+///
+/// It did: it showed `horus run` under `horus:cli`, and that image has no
+/// cargo, so the command fails with "Rust toolchain not installed". Verified by
+/// building both images and running the examples.
+#[test]
+fn the_slim_image_is_not_advertised_for_building_or_running() {
+    let dockerfile =
+        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+
+    let cli_section = dockerfile
+        .split("── horus:dev")
+        .next()
+        .unwrap_or_default();
+
+    for command in [" horus:cli run", " horus:cli build", " horus:cli test"] {
+        assert!(
+            !cli_section.contains(command),
+            "the slim image has no toolchains, so `{}` cannot work — it fails \
+             with H060 \"Rust toolchain not installed\"",
+            command.trim()
+        );
+    }
+}
+
+/// A container cannot set SCHED_FIFO without the capability, and HORUS is a
+/// real-time framework. Measuring it in a container that lacks the capability
+/// measures the container.
+#[test]
+fn the_dockerfile_documents_the_realtime_capability() {
+    let dockerfile =
+        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    assert!(
+        dockerfile.contains("SYS_NICE"),
+        "nothing tells the reader that real-time scheduling in a container needs \
+         --cap-add=SYS_NICE; without it every RT node silently runs at normal \
+         priority"
+    );
+}
+
 /// The runtime stage runs `horus man` and `horus completion` to place the files
 /// the installer would. Both have to exist, or the image fails to build at a
 /// step that has nothing to do with what changed.
@@ -341,7 +410,13 @@ fn commands_the_dockerfile_runs_exist() {
     // Dockerfile named something that does not exist.
     let mut checked = 0usize;
     let mut missing = Vec::new();
-    for line in dockerfile.lines() {
+    // Only RUN lines. The header quotes HORUS's own output — including
+    // `horus hint [preflight] H060`, which is a diagnostic, not a subcommand —
+    // and scanning comments turned that into a false failure.
+    for line in dockerfile.lines().filter(|l| l.trim_start().starts_with("RUN ")
+        || l.trim_start().starts_with("&& ")
+        || l.contains("&& horus "))
+    {
         let mut rest = line;
         while let Some(at) = rest.find("horus ") {
             rest = &rest[at + "horus ".len()..];

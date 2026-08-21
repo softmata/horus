@@ -1,20 +1,62 @@
-# HORUS CLI — build and run image.
+# HORUS in a container. Two images, because they answer different questions.
 #
 # HORUS shipped no Dockerfile. `tests/docker/Dockerfile.ubuntu` exists but is a
 # test harness: it rebuilds the whole workspace and defaults its CMD to
-# `cargo test`. This is the one for actually running the tool.
+# `cargo test`. These are the ones for using the tool.
 #
-#   docker build -t horus .
-#   docker run --rm -it -v "$PWD:/work" -w /work horus doctor
+# ── horus:cli — the default target ─────────────────────────────────────────
+# The CLI and nothing else: 284 MB, no language toolchains. Inspect a system,
+# validate a manifest, read logs, generate message types.
+#
+#   docker build -t horus:cli .
+#   docker run --rm -v "$PWD:/work" -w /work horus:cli doctor
+#   docker run --rm -v "$PWD:/work" -w /work horus:cli check
+#
+# It cannot build or run a project. `horus run` compiles the project, which
+# needs cargo — the first version of this file advertised exactly that command
+# against this image, and it fails:
+#
+#   horus hint [preflight] H060
+#   Rust toolchain not installed.
+#
+# The error is correct and actionable, which is not the same as the example
+# being correct. Use the dev image for that.
+#
+# ── horus:dev — build and run ──────────────────────────────────────────────
+# Carries Rust, Python and CMake, so `horus new`, `horus build` and `horus run`
+# all work. 3.98 GB against 284 MB, and that is the trade.
+#
+#   docker build --target dev -t horus:dev .
+#   docker run --rm -it --shm-size=1g -v "$PWD:/work" -w /work horus:dev run
 #
 # Shared memory is how HORUS nodes talk, so a container that runs nodes needs a
-# real /dev/shm — the default 64 MB is small for image or point-cloud topics:
+# real /dev/shm — the default 64 MB is small for image or point-cloud topics,
+# hence --shm-size above. For IPC across containers, share the namespace too:
 #
-#   docker run --rm -it --shm-size=1g -v "$PWD:/work" -w /work horus run
+#   docker run --rm --ipc=host --shm-size=1g ... horus:dev run
 #
-# For multi-process IPC across containers, share the namespace as well:
+# ── Real-time scheduling needs a capability ────────────────────────────────
+# Without it a container cannot set SCHED_FIFO, and HORUS degrades — correctly,
+# and loudly, but it degrades:
 #
-#   docker run --rm --ipc=host --shm-size=1g ... horus run
+#   [RT-thread] Could not set SCHED_FIFO: Permission denied: SCHED_FIFO
+#   requires CAP_SYS_NICE or root (continuing with normal priority)
+#
+# So any container actually running real-time nodes wants:
+#
+#   docker run --rm --cap-add=SYS_NICE --shm-size=1g ... horus:dev run
+#     -> [RT] Set RT priority 80
+#
+# Measuring real-time behaviour in a container without it measures the
+# container, not HORUS.
+#
+# ── File ownership ─────────────────────────────────────────────────────────
+# These run as root, so anything `horus new` or `horus build` writes into a
+# bind-mounted directory is root-owned on the host. To keep ownership, pass your
+# own uid and a writable CARGO_HOME (the image's belongs to root):
+#
+#   docker run --rm --user "$(id -u):$(id -g)" -e CARGO_HOME=/work/.cargo \
+#     -v "$PWD:/work" -w /work horus:dev build
 
 # ── Builder ────────────────────────────────────────────────────────────────
 # Pinned to the workspace MSRV, so this image also checks that the floor is real
@@ -49,6 +91,38 @@ COPY benchmarks/Cargo.toml           benchmarks/Cargo.toml
 COPY . .
 
 RUN cargo build --release -p horus_manager --locked
+
+# ── Dev ────────────────────────────────────────────────────────────────────
+# Everything `horus run` needs to compile a project in all three languages.
+#
+# Built from the builder stage so the Rust toolchain and the warm cargo registry
+# are already there — a fresh `rustup` install here would download it twice.
+FROM builder AS dev
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-venv \
+        cmake \
+        g++ \
+        clang-format \
+        clang-tidy \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/release/horus /usr/local/bin/horus
+
+# The HORUS source tree stays at /src: `horus build` resolves horus_core and the
+# C++ bindings from it, and without it a generated project cannot compile.
+ENV HORUS_SOURCE=/src
+
+RUN mkdir -p /usr/local/share/man/man1 \
+    && horus man > /usr/local/share/man/man1/horus.1 \
+    && mkdir -p /usr/share/bash-completion/completions \
+    && horus completion bash > /usr/share/bash-completion/completions/horus
+
+WORKDIR /work
+ENTRYPOINT ["horus"]
+CMD ["--help"]
 
 # ── Runtime ────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime

@@ -529,7 +529,6 @@ dependencies = [
  "horus-robotics",
  "horus-tf",
  "horus_core",
- "horus_cpp_macros",
  "horus_types",
  "paste",
  "serde",
@@ -545,15 +544,6 @@ dependencies = [
  "libfuzzer-sys",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "horus_cpp_macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
 ]
 
 [[package]]
