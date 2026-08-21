@@ -376,9 +376,8 @@ impl TopicHeader {
 
         // Cache line 4 (cont): type_name — null-terminated, truncated if needed
         self.type_name = [0u8; 32];
-        let name_bytes = type_name_str.as_bytes();
-        let copy_len = name_bytes.len().min(31); // leave room for null terminator
-        self.type_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+        let stored = type_name_as_stored(type_name_str);
+        self.type_name[..stored.len()].copy_from_slice(stored.as_bytes());
 
         // Clear all participant entries
         for p in &self.participants {
@@ -983,6 +982,31 @@ pub struct TopicHeaderInfo {
 /// This is cheaper than `read_latest_slot_bytes()` — it only reads the 640-byte
 /// header, not the data region. Used by discovery to extract type_name,
 /// messages_total, and topic_kind.
+/// The prefix of `name` that this header can actually hold.
+///
+/// The field is 32 bytes with a NUL terminator, so 31 usable. Truncating on a
+/// character boundary matters: a cut through a multi-byte character leaves
+/// invalid UTF-8, and `type_name_str` renders that as the empty string — which
+/// then reads as "this topic has no type" everywhere it is displayed and
+/// compared.
+///
+/// Callers comparing a type name against a header must compare *this*, not the
+/// full name. Doing otherwise reported a type as mismatching itself:
+///
+///   Existing type 'ActionFeedback<CancelTopicFeedb',
+///   attempted 'ActionFeedback<CancelTopicFeedback>'
+pub(crate) fn type_name_as_stored(name: &str) -> &str {
+    const USABLE: usize = 31;
+    if name.len() <= USABLE {
+        return name;
+    }
+    let mut end = USABLE;
+    while end > 0 && !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
 pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo> {
     use memmap2::MmapOptions;
     use std::fs::File;
@@ -2192,5 +2216,43 @@ mod echo_freshness_tests {
         );
 
         let _ = 1_u64.ms();
+    }
+}
+
+#[cfg(test)]
+mod stored_type_name_tests {
+    use super::type_name_as_stored;
+
+    #[test]
+    fn a_short_name_is_kept_whole() {
+        assert_eq!(type_name_as_stored("CmdVel"), "CmdVel");
+        assert_eq!(type_name_as_stored(""), "");
+    }
+
+    #[test]
+    fn a_name_at_the_limit_is_kept_whole() {
+        let exactly = "a".repeat(31);
+        assert_eq!(type_name_as_stored(&exactly), exactly);
+    }
+
+    #[test]
+    fn a_longer_name_is_cut_to_what_fits() {
+        // The regression: a type whose name reaches the field width compared its
+        // full name against the truncated one stored in the header, and was
+        // reported as mismatching itself. Generic types reach it easily.
+        let full = "ActionFeedback<CancelTopicFeedback>";
+        assert_eq!(type_name_as_stored(full), "ActionFeedback<CancelTopicFeedb");
+        assert_eq!(type_name_as_stored(full).len(), 31);
+    }
+
+    #[test]
+    fn a_cut_never_lands_inside_a_character() {
+        // A cut through a multi-byte character leaves invalid UTF-8, and
+        // `type_name_str` renders that as the empty string — which reads as
+        // "this topic has no type" everywhere it is displayed and compared.
+        let name = format!("{}é", "a".repeat(30)); // 'é' straddles byte 30..32
+        let stored = type_name_as_stored(&name);
+        assert_eq!(stored, "a".repeat(30));
+        assert!(std::str::from_utf8(stored.as_bytes()).is_ok());
     }
 }

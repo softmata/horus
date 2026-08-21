@@ -737,6 +737,34 @@ unsafe impl<T: Send> Send for RingTopic<T> {}
 unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
 
 #[allow(private_interfaces)]
+/// Drop module qualifiers from a type name, keeping its structure.
+///
+/// This was `rsplit("::").next()`, which is right for a plain type and wrong
+/// for a generic one: `horus_core::services::ServiceResponse<pkg::AddTwoIntsResponse>`
+/// has `AddTwoIntsResponse>` as its last `::`-separated segment, so that is
+/// what went into the header and what `horus topic info` printed — a name with
+/// a stray closing bracket and no mention of the wrapper it is actually inside.
+/// Every service topic showed one.
+///
+/// Qualifiers are stripped per segment instead, so the same input yields
+/// `ServiceResponse<AddTwoIntsResponse>`.
+fn strip_module_paths(full: &str) -> String {
+    let mut out = String::with_capacity(full.len());
+    let mut segment = String::new();
+    for c in full.chars() {
+        // Anything that ends an identifier: generics, tuples, arrays, refs.
+        if matches!(c, '<' | '>' | ',' | ' ' | '(' | ')' | '[' | ']' | '&' | ';') {
+            out.push_str(segment.rsplit("::").next().unwrap_or(&segment));
+            segment.clear();
+            out.push(c);
+        } else {
+            segment.push(c);
+        }
+    }
+    out.push_str(segment.rsplit("::").next().unwrap_or(&segment));
+    out
+}
+
 impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<T> {
     /// Header size in shared memory
     const HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
@@ -895,9 +923,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
-        // Extract a short type name for the header (e.g. "CmdVel" from "horus_robotics::messages::CmdVel")
+        // Extract a short type name for the header (e.g. "CmdVel" from
+        // "horus_robotics::messages::CmdVel").
         let full_type_name = std::any::type_name::<T>();
-        let short_type_name = full_type_name.rsplit("::").next().unwrap_or(full_type_name);
+        let short_type_name = &strip_module_paths(full_type_name);
         let final_slot_size = Self::negotiate_shm_header(
             name,
             &storage,
@@ -1034,10 +1063,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let existing_type = header.type_name_str();
         let is_generic = type_name_str.eq_ignore_ascii_case("GenericMessage")
             || existing_type.eq_ignore_ascii_case("GenericMessage");
+        // Compare what was actually stored, not what we would have liked to
+        // store. `type_name` is a fixed 32-byte field, so a longer name is
+        // written truncated — and then a second opener of the *same* type
+        // compared its full name against the truncated one and declared a type
+        // mismatch against itself:
+        //
+        //   Existing type 'ActionFeedback<CancelTopicFeedb',
+        //   attempted 'ActionFeedback<CancelTopicFeedback>'
+        //
+        // Any type whose name reaches the field width hit this; generic types
+        // (`ActionFeedback<…>`, `ServiceResponse<…>`) reach it easily.
+        let attempted_as_stored = super::topic::header::type_name_as_stored(type_name_str);
         if !is_generic
             && !existing_type.is_empty()
             && !type_name_str.is_empty()
-            && !existing_type.eq_ignore_ascii_case(type_name_str)
+            && !existing_type.eq_ignore_ascii_case(attempted_as_stored)
         {
             // Was wrapped in a bare String, which renders through the
             // `From<String>` impl as "Communication serialization failed:" —
@@ -3316,5 +3357,58 @@ impl Topic<Tensor> {
             return None;
         }
         crate::memory::TensorHandle::from_owned(tensor, pool).ok()
+    }
+}
+
+#[cfg(test)]
+mod type_name_tests {
+    use super::strip_module_paths;
+
+    #[test]
+    fn a_plain_type_keeps_only_its_name() {
+        assert_eq!(
+            strip_module_paths("horus_robotics::messages::CmdVel"),
+            "CmdVel"
+        );
+        assert_eq!(strip_module_paths("f64"), "f64");
+    }
+
+    #[test]
+    fn a_generic_type_keeps_its_structure() {
+        // The regression. `rsplit("::").next()` returned `AddTwoIntsResponse>`
+        // for this — a stray closing bracket, and no sign of the wrapper the
+        // payload is actually inside. Every service topic reported one, and it
+        // is what `horus topic info` printed as the message type.
+        assert_eq!(
+            strip_module_paths(
+                "horus_core::services::ServiceResponse<pkg::svc::AddTwoIntsResponse>"
+            ),
+            "ServiceResponse<AddTwoIntsResponse>"
+        );
+    }
+
+    #[test]
+    fn nested_and_multi_argument_generics_survive() {
+        assert_eq!(
+            strip_module_paths("a::Outer<b::Inner<c::Leaf>, d::Other>"),
+            "Outer<Inner<Leaf>, Other>"
+        );
+        assert_eq!(
+            strip_module_paths("core::option::Option<alloc::vec::Vec<u8>>"),
+            "Option<Vec<u8>>"
+        );
+    }
+
+    #[test]
+    fn arrays_tuples_and_references_survive() {
+        assert_eq!(strip_module_paths("[pkg::Item; 8]"), "[Item; 8]");
+        assert_eq!(strip_module_paths("(pkg::A, pkg::B)"), "(A, B)");
+        assert_eq!(strip_module_paths("&pkg::Thing"), "&Thing");
+    }
+
+    #[test]
+    fn an_empty_or_unqualified_name_is_unchanged() {
+        assert_eq!(strip_module_paths(""), "");
+        assert_eq!(strip_module_paths("Bare"), "Bare");
     }
 }
