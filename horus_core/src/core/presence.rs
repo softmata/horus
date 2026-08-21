@@ -226,6 +226,40 @@ impl NodePresence {
 /// - Must not be empty
 ///
 /// Returns `Ok(())` if valid, `Err(reason)` if invalid.
+/// Replace control characters so an interpolated string cannot inject lines or
+/// terminal escapes into the runtime's own output.
+///
+/// C0 (including newline, carriage return and ESC), DEL, and the C1 range are
+/// rendered as `\xNN`. Everything else — including all printable Unicode — is
+/// left alone, so ordinary names are unchanged and the mapping is stable across
+/// runs.
+///
+/// This is applied to node names at registration. Names reach the runtime from
+/// application code and from launch files, and are interpolated into dozens of
+/// messages; a newline in one of them puts an attacker-chosen line on the
+/// runtime's stdout, where an operator dashboard or `grep EMERGENCY` will read
+/// it as the runtime's own.
+pub fn escape_control_chars(s: &str) -> String {
+    // Fast path: the overwhelmingly common case is a clean name, and this runs
+    // once per node at registration.
+    if !s
+        .chars()
+        .any(|c| c.is_control() || ('\u{80}'..='\u{9f}').contains(&c))
+    {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) {
+            use std::fmt::Write as _;
+            let _ = write!(out, "\\x{:02x}", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn validate_node_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("node name must not be empty".into());
@@ -811,5 +845,56 @@ mod tests {
         );
 
         let _ = NodePresence::remove(&name);
+    }
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::escape_control_chars;
+
+    #[test]
+    fn ordinary_names_are_untouched() {
+        for name in ["motor_ctrl", "lidar-front", "imu.left", "Node1"] {
+            assert_eq!(escape_control_chars(name), name);
+        }
+    }
+
+    #[test]
+    fn newlines_cannot_forge_a_log_line() {
+        // The demonstrated attack: a name that closes the current line and
+        // opens one that reads as the runtime's own emergency stop.
+        let evil = "arm\n EMERGENCY STOP: forged";
+        let safe = escape_control_chars(evil);
+        assert!(!safe.contains('\n'), "escaped name still contains a newline: {safe:?}");
+        assert!(safe.contains("\\x0a"), "newline should be visible as an escape: {safe:?}");
+    }
+
+    #[test]
+    fn terminal_escapes_are_neutralised() {
+        let safe = escape_control_chars("red\u{1b}[31mFAKE\u{1b}[0m");
+        assert!(!safe.contains('\u{1b}'), "ESC survived: {safe:?}");
+    }
+
+    #[test]
+    fn c1_range_is_escaped_too() {
+        // C1 controls can also drive a terminal, and arrive via UTF-8.
+        let safe = escape_control_chars("a\u{85}b\u{9b}c");
+        assert!(!safe.contains('\u{85}') && !safe.contains('\u{9b}'), "{safe:?}");
+    }
+
+    #[test]
+    fn escaping_is_stable() {
+        // A name is an identity: the same input must map to the same output on
+        // every run and in every process, or the registry disagrees with itself.
+        let a = escape_control_chars("arm\tjoint");
+        let b = escape_control_chars("arm\tjoint");
+        assert_eq!(a, b);
+        assert!(!a.contains('\t'));
+    }
+
+    #[test]
+    fn printable_unicode_survives() {
+        // Escaping is about control characters, not about being ASCII-only.
+        assert_eq!(escape_control_chars("arm_左"), "arm_左");
     }
 }

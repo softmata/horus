@@ -1732,7 +1732,25 @@ impl Scheduler {
         let miss_policy = config.miss_policy;
         let execution_class = config.execution_class;
 
-        let node_name = node.name().to_string();
+        // Neutralise control characters before the name is stored, so no later
+        // format! can be tricked into emitting them.
+        //
+        // A node name is application- or config-supplied text — under `horus
+        // launch` it comes straight out of a YAML file — and it is interpolated
+        // into dozens of runtime messages. A name containing a newline injects
+        // whole lines into the runtime's own stdout. Demonstrated with a node
+        // named "arm\n EMERGENCY STOP: forged\n\x1b[31mFAKE\x1b[0m": the
+        // scheduler emitted four forged " EMERGENCY STOP:" lines and live ANSI
+        // escapes, and printed the raw name four more times *inside* its own
+        // "Invalid node name" warning. Any operator dashboard, `grep EMERGENCY`
+        // or log parser reading stdout is fooled.
+        //
+        // Escaping rather than rejecting: a name is an identity that shows up in
+        // the registry, the blackbox and `horus node list`, and refusing to
+        // start a robot over a stray character is a worse failure than showing
+        // that character safely. The mapping is deterministic, so a name stays
+        // stable across runs and processes.
+        let node_name = crate::core::escape_control_chars(node.name());
 
         // Refuse a duplicate node name.
         //
