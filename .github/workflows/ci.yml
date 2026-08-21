@@ -190,6 +190,18 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # The resolver's crates.io/PyPI tests carry #[ignore] so a contributor
+      # without network access gets a green suite and a failure means the
+      # resolver is wrong rather than the network. CI does have access, so it
+      # runs them — but never lets an outage or a rate-limit (crates.io returns
+      # HTTP 403 when it throttles) fail the build for everyone.
+      - name: Run network-dependent resolver tests (advisory)
+        continue-on-error: true
+        run: |
+          cargo test -p horus_manager --lib source_resolver -- --ignored
+        env:
+          RUST_BACKTRACE: 1
+
       - name: Run horus_py unit tests
         run: |
           # Test horus_py with extension-module disabled (avoids Python linker dependency)

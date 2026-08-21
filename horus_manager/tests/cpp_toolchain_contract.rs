@@ -393,3 +393,112 @@ fn deploy_does_not_route_a_cpp_project_to_the_rust_builder() {
         ctx.languages
     );
 }
+
+// ─── Cross-compilation ──────────────────────────────────────────────────────
+
+/// `libhorus_cpp.a` is Rust compiled to a static archive, so a C++ program
+/// cross-compiled for aarch64 cannot link a host one:
+///
+/// ```text
+/// /usr/bin/aarch64-linux-gnu-ld.bfd: libhorus_cpp.a(...): Relocations in
+///     generic ELF (EM: 62)
+/// ```
+///
+/// The CMake toolchain file was honoured and the Rust archive was always built
+/// for the host, so `horus deploy --arch aarch64` on a C++ project could not
+/// link. It was invisible because deploy failed earlier and more confusingly,
+/// complaining about a missing Cargo.toml — a message about a language the
+/// project is not written in.
+#[test]
+fn the_bindings_are_built_for_the_target_architecture() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/run/run_cpp.rs"),
+    )
+    .expect("run_cpp.rs");
+
+    let at = src
+        .find("fn ensure_horus_cpp(")
+        .expect("the bindings resolver must exist");
+    let body: String = src[at..].lines().take(70).collect::<Vec<_>>().join("\n");
+
+    assert!(
+        body.contains("target_arch"),
+        "the bindings are resolved without reference to the target architecture, \
+         so a cross build links a host archive"
+    );
+    assert!(
+        body.contains("--target"),
+        "cargo must be told the target triple, or it builds for the host"
+    );
+    assert!(
+        src.contains("CARGO_TARGET_") && src.contains("_LINKER"),
+        "cargo links this crate's cdylib with the host `cc` unless told \
+         otherwise, which fails before the staticlib is reached"
+    );
+}
+
+/// The artifact directory differs between a native and a cross build
+/// (`target/<profile>` versus `target/<triple>/<profile>`). Looking in the
+/// wrong one silently reuses the host archive.
+#[test]
+fn a_cross_build_looks_in_the_target_specific_directory() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/run/run_cpp.rs"),
+    )
+    .expect("run_cpp.rs");
+    let at = src.find("fn ensure_horus_cpp(").expect("resolver");
+    let body: String = src[at..].lines().take(70).collect::<Vec<_>>().join("\n");
+    assert!(
+        body.contains(".join(t)"),
+        "the library path must include the target triple for a cross build"
+    );
+}
+
+/// End to end. Slow — it compiles horus_cpp and its dependency tree for the
+/// target — so it is opt-in.
+#[test]
+#[ignore = "slow: cross-compiles horus_cpp; run with --ignored"]
+fn a_cpp_project_cross_compiles_to_an_aarch64_binary() {
+    let have_target = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("aarch64-unknown-linux-gnu"))
+        .unwrap_or(false);
+    if !have_target || !tool_available("aarch64-linux-gnu-gcc") {
+        eprintln!("SKIP: needs the aarch64 Rust target and aarch64-linux-gnu-gcc");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    assert!(Command::new(horus())
+        .args(["new", "xdemo", "--cpp"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("horus new")
+        .status
+        .success());
+    let project = tmp.path().join("xdemo");
+
+    let out = Command::new(horus())
+        .args(["deploy", "user@nonexistent-host", "--arch", "aarch64"])
+        .current_dir(&project)
+        .output()
+        .expect("horus deploy must run");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned()
+        + &String::from_utf8_lossy(&out.stderr);
+
+    let binary = project.join(".horus/cpp-build/xdemo");
+    assert!(binary.is_file(), "no binary was produced:\n{text}");
+
+    // The bytes decide, not the message. A build that silently produced a host
+    // binary would print exactly the same thing.
+    let kind = Command::new("file")
+        .arg(&binary)
+        .output()
+        .expect("file(1) must run");
+    let kind = String::from_utf8_lossy(&kind.stdout);
+    assert!(
+        kind.contains("aarch64"),
+        "deploy --arch aarch64 produced: {kind}"
+    );
+}

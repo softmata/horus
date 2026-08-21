@@ -179,3 +179,71 @@ fn install_sh_checks_the_rust_version_before_building() {
         "version comparison must be numeric — string comparison says 1.100 < 1.9"
     );
 }
+
+// ─── Tests must not depend on an external service ───────────────────────────
+
+/// A test that reaches crates.io or PyPI must carry `#[ignore]`.
+///
+/// The resolver's network tests sat under a comment reading "network tests —
+/// ignored by default" while none of them were ignored. crates.io returns HTTP
+/// 403 when it throttles, so `cargo test` failed on a machine where nothing was
+/// wrong with the code — and a suite that fails for reasons outside the
+/// repository teaches contributors to ignore failures.
+#[test]
+fn network_dependent_tests_are_ignored_by_default() {
+    let src = std::fs::read_to_string(repo_root().join("horus_manager/src/source_resolver.rs"))
+        .expect("source_resolver.rs must exist");
+
+    let lines: Vec<&str> = src.lines().collect();
+    let mut unguarded = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let Some(name) = line.trim().strip_prefix("fn ").and_then(|r| r.split('(').next()) else {
+            continue;
+        };
+        // The body, up to the next test or the end of the block.
+        let body: String = lines[i..]
+            .iter()
+            .take_while(|l| !l.trim_start().starts_with("#[test]"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Reaching the network means asking the resolver to confirm a real
+        // package, or fetching a real version.
+        let hits_network = body.contains("resolve_with_network(")
+            || body.contains("&DepSource::CratesIo)")
+            || body.contains("&DepSource::PyPI)");
+        if !hits_network {
+            continue;
+        }
+        // "skips_network" tests are named for asserting the opposite.
+        if name.contains("skips_network") {
+            continue;
+        }
+
+        let preceding: String = lines[i.saturating_sub(3)..i].join("\n");
+        if !preceding.contains("#[ignore") {
+            unguarded.push(name.to_string());
+        }
+    }
+
+    assert!(
+        unguarded.is_empty(),
+        "these tests reach crates.io or PyPI without `#[ignore]`, so a network \
+         outage or a rate-limit fails the suite:\n  {}",
+        unguarded.join("\n  ")
+    );
+}
+
+/// Ignoring them is only acceptable if something still runs them.
+#[test]
+fn ci_runs_the_network_tests_it_ignores() {
+    let ci = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("ci.yml must exist");
+    assert!(
+        ci.contains("source_resolver -- --ignored"),
+        "the network tests are ignored by default and nothing in CI runs them, \
+         which means they are not run at all"
+    );
+}

@@ -72,10 +72,22 @@ pub(crate) fn build_cpp(
         .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
         .arg(format!("-DCMAKE_BUILD_TYPE={}", build_type));
 
+    // ── Cross-compilation target ────────────────────────────────────────
+    // Resolved before the bindings, which must be built for the same
+    // architecture the C++ compiler targets.
+    // Priority: explicit target_arch > horus.toml [cpp].toolchain
+    let effective_target = target_arch.map(String::from).or_else(|| {
+        let mp = project_dir.join(HORUS_TOML);
+        HorusManifest::load_from(&mp)
+            .ok()
+            .and_then(|m| m.cpp)
+            .and_then(|c| c.toolchain)
+    });
+
     // ── HORUS C++ bindings ──────────────────────────────────────────────
     // The generated CMakeLists consumes HORUS_CPP_INCLUDE / HORUS_CPP_LIB.
     // Resolving them here keeps host paths out of the generated file.
-    match ensure_horus_cpp(release) {
+    match ensure_horus_cpp(release, effective_target.as_deref()) {
         Ok((include_dir, lib_path)) => {
             configure_cmd.arg(format!("-DHORUS_CPP_INCLUDE={}", include_dir.display()));
             configure_cmd.arg(format!("-DHORUS_CPP_LIB={}", lib_path.display()));
@@ -91,16 +103,6 @@ pub(crate) fn build_cpp(
             );
         }
     }
-
-    // ── Cross-compilation toolchain ─────────────────────────────────────
-    // Priority: explicit target_arch > horus.toml [cpp].toolchain
-    let effective_target = target_arch.map(String::from).or_else(|| {
-        let mp = project_dir.join(HORUS_TOML);
-        HorusManifest::load_from(&mp)
-            .ok()
-            .and_then(|m| m.cpp)
-            .and_then(|c| c.toolchain)
-    });
 
     if let Some(ref tc_spec) = effective_target {
         match crate::toolchain::write_toolchain_file(tc_spec, project_dir) {
@@ -228,7 +230,66 @@ pub(super) fn execute_cpp_binary(binary: &Path, args: &[String]) -> Result<()> {
 /// `horus_cpp/include`; the library is produced by building the `horus_cpp`
 /// crate (crate-type includes `staticlib`). Built on demand and cached by
 /// cargo, so the cost is paid once per source tree and profile.
-fn ensure_horus_cpp(release: bool) -> Result<(PathBuf, PathBuf)> {
+
+/// The cross linker for a Rust target triple, if it is installed.
+///
+/// Same compiler the generated CMake toolchain file selects, so the Rust
+/// archive and the C++ objects are produced by one toolchain.
+fn cross_linker(triple: &str) -> Option<&'static str> {
+    let candidate = match triple {
+        "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu-gcc",
+        "armv7-unknown-linux-gnueabihf" => "arm-linux-gnueabihf-gcc",
+        _ => return None,
+    };
+    which_exists(candidate).then_some(candidate)
+}
+
+/// Whether a program is on PATH.
+fn which_exists(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let p = dir.join(bin);
+                p.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The host triple this binary was compiled for.
+///
+/// Used to tell "cross-compiling" from "asked for the architecture we are
+/// already on", which needs no `--target` and no separate artifact directory.
+fn current_host_triple() -> &'static str {
+    // Kept in step with TargetArch::rust_target's spellings.
+    if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        "aarch64-unknown-linux-gnu"
+    } else if cfg!(all(target_arch = "arm", target_os = "linux")) {
+        "armv7-unknown-linux-gnueabihf"
+    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        ""
+    }
+}
+
+/// Resolve the horus_cpp headers and static library, building it if needed.
+///
+/// `target_arch` must be the same architecture the C++ compiler is targeting.
+/// The library is Rust code compiled into a static archive, so a C++ program
+/// cross-compiled for aarch64 cannot link an x86-64 one:
+///
+/// ```text
+/// /usr/bin/aarch64-linux-gnu-ld.bfd: libhorus_cpp.a(...): Relocations in
+///     generic ELF (EM: 62)
+/// ```
+///
+/// That was the state until now — the C++ toolchain file was honoured and the
+/// Rust archive was always built for the host, so `horus deploy --arch aarch64`
+/// on a C++ project could not link. It failed earlier and more confusingly
+/// before that, complaining about a missing Cargo.toml, which is why this was
+/// never visible.
+fn ensure_horus_cpp(release: bool, target_arch: Option<&str>) -> Result<(PathBuf, PathBuf)> {
     let source = super::run_rust::find_horus_source_dir()
         .context("could not locate the HORUS source tree (needed for horus_cpp headers)")?;
 
@@ -237,16 +298,35 @@ fn ensure_horus_cpp(release: bool) -> Result<(PathBuf, PathBuf)> {
         bail!("horus_cpp headers not found at {}", include_dir.display());
     }
 
+    // A cross target puts artifacts under `target/<triple>/<profile>/`; a native
+    // build leaves them at `target/<profile>/`.
+    let triple = target_arch
+        .and_then(crate::toolchain::TargetArch::from_str)
+        .filter(|t| !t.rust_target().is_empty())
+        .filter(|t| t.rust_target() != current_host_triple())
+        .map(|t| t.rust_target());
+
     let profile_dir = if release { "release" } else { "debug" };
-    let lib_path = source
-        .join("target")
-        .join(profile_dir)
-        .join("libhorus_cpp.a");
+    let lib_path = match triple {
+        Some(t) => source
+            .join("target")
+            .join(t)
+            .join(profile_dir)
+            .join("libhorus_cpp.a"),
+        None => source
+            .join("target")
+            .join(profile_dir)
+            .join("libhorus_cpp.a"),
+    };
 
     if !lib_path.exists() {
         eprintln!(
-            "{} Building HORUS C++ bindings (first C++ build in this tree)...",
-            cli_output::ICON_INFO.cyan()
+            "{} Building HORUS C++ bindings{}...",
+            cli_output::ICON_INFO.cyan(),
+            match triple {
+                Some(t) => format!(" for {}", t.yellow()),
+                None => " (first C++ build in this tree)".to_string(),
+            }
         );
         let mut cmd = Command::new("cargo");
         cmd.current_dir(&source)
@@ -254,6 +334,21 @@ fn ensure_horus_cpp(release: bool) -> Result<(PathBuf, PathBuf)> {
             .arg("-p")
             .arg("horus_cpp")
             .arg("--no-default-features");
+        if let Some(t) = triple {
+            cmd.arg("--target").arg(t);
+            // Cargo links this crate's cdylib with the host `cc` unless told
+            // otherwise, which fails with "symbols.o is incompatible with
+            // elf64-x86-64" long before the staticlib we actually want is
+            // reached. The same GCC the CMake toolchain file names is the right
+            // linker here.
+            if let Some(linker) = cross_linker(t) {
+                let key = format!(
+                    "CARGO_TARGET_{}_LINKER",
+                    t.to_uppercase().replace('-', "_")
+                );
+                cmd.env(key, linker);
+            }
+        }
         if release {
             cmd.arg("--release");
         }
@@ -265,7 +360,13 @@ fn ensure_horus_cpp(release: bool) -> Result<(PathBuf, PathBuf)> {
             .status()
             .context("failed to invoke cargo to build horus_cpp")?;
         if !status.success() {
-            bail!("cargo build -p horus_cpp failed");
+            match triple {
+                Some(t) => bail!(
+                    "cargo build -p horus_cpp --target {t} failed.\n  \
+                     The Rust target may not be installed: rustup target add {t}"
+                ),
+                None => bail!("cargo build -p horus_cpp failed"),
+            }
         }
     }
 
