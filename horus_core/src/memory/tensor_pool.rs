@@ -2853,9 +2853,17 @@ mod tests {
             result.is_err(),
             "Zero timeout on exhausted pool should fail"
         );
+        // Generous on purpose. This exists to catch a zero timeout that *waits*,
+        // and waiting means blocking until a slot frees — which never happens
+        // here, because the only slot is still held. So any bound well below
+        // "forever" is decisive, while a tight one fails on a scheduling hiccup:
+        // at 1 s this failed on a machine under parallel test load with nothing
+        // wrong in the allocator.
         assert!(
-            start.elapsed() < 1_u64.secs(),
-            "Zero timeout should return quickly"
+            start.elapsed() < 10_u64.secs(),
+            "zero timeout blocked for {:?} on an exhausted pool — it should fail \
+             immediately rather than wait for a slot that is still held",
+            start.elapsed()
         );
 
         pool.release(&t1);

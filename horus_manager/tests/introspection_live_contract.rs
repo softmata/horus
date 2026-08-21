@@ -31,7 +31,25 @@
 //! Run: `cargo test -p horus_manager --test introspection_live_contract`
 
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// Serializes the live-scheduler tests.
+///
+/// Each spawns a real scheduler child and then repeatedly spawns the `horus`
+/// CLI to interrogate it. Eight of those in parallel is enough process churn to
+/// starve the very thing under test: on a machine at load average 14 all eight
+/// failed together with "Topic not found", because the child had not reached
+/// its first publish inside the poll window. That is the harness competing with
+/// itself, not a defect in what it measures.
+///
+/// The same reasoning as `SCHEDULER_TEST_LOCK` in horus_core, for the same
+/// reason.
+static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn serialize() -> MutexGuard<'static, ()> {
+    LIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn horus() -> &'static str {
     env!("CARGO_BIN_EXE_horus")
@@ -64,7 +82,7 @@ impl LiveNode {
         let mut cmd = Command::new(test_node());
         cmd.env("HORUS_NAMESPACE", namespace)
             .env("HORUS_CI_TOPIC_NAME", &topic)
-            .env("HORUS_CI_DURATION_MS", "30000")
+            .env("HORUS_CI_DURATION_MS", "60000")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         if best_effort {
@@ -98,7 +116,10 @@ impl LiveNode {
     /// beats a fixed sleep: it is faster when things work and still bounded
     /// when they do not.
     fn wait_for(&self, args: &[&str], done: impl Fn(&str) -> bool) -> Option<String> {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // Generous because this is a liveness bound, not a timing
+        // assertion: the values under test appear on a ~1 Hz presence refresh,
+        // and a loaded machine can delay a child's first publish by seconds.
+        let deadline = Instant::now() + Duration::from_secs(45);
         while Instant::now() < deadline {
             let out = self.cli(args);
             if done(&out) {
@@ -124,6 +145,7 @@ impl Drop for LiveNode {
 /// that record had no topic associations at all.
 #[test]
 fn topic_info_names_the_publisher_of_a_live_topic() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_pub_rt", false);
     let out = node
         .wait_for(&["topic", "info", &node.topic], |o| {
@@ -147,6 +169,7 @@ fn topic_info_names_the_publisher_of_a_live_topic() {
 /// is why this was never caught interactively.
 #[test]
 fn topic_info_names_a_main_thread_publisher() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_pub_be", true);
     node.wait_for(&["topic", "info", &node.topic], |o| {
         o.contains("ci_test_node")
@@ -165,6 +188,7 @@ fn topic_info_names_a_main_thread_publisher() {
 /// for as long as it ran.
 #[test]
 fn a_main_thread_node_reports_the_ticks_it_has_executed() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_ticks_be", true);
     let out = node
         .wait_for(&["node", "list"], |o| {
@@ -183,6 +207,7 @@ fn a_main_thread_node_reports_the_ticks_it_has_executed() {
 
 #[test]
 fn an_executor_owned_node_reports_the_ticks_it_has_executed() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_ticks_rt", false);
     node.wait_for(&["node", "info", "ci_test_node"], |o| {
         o.lines()
@@ -202,6 +227,7 @@ fn an_executor_owned_node_reports_the_ticks_it_has_executed() {
 /// operator needs did not exist.
 #[test]
 fn node_info_reports_a_measured_rate_beside_the_configured_one() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_rate", true);
     let out = node
         .wait_for(&["node", "info", "ci_test_node"], |o| o.contains("achieving"))
@@ -248,6 +274,7 @@ fn node_info_reports_a_measured_rate_beside_the_configured_one() {
 /// unremarkable here.
 #[test]
 fn node_list_shows_health_and_the_measured_rate() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_cols", true);
     let out = node
         .wait_for(&["node", "list"], |o| o.contains("ci_test_node"))
@@ -265,6 +292,7 @@ fn node_list_shows_health_and_the_measured_rate() {
 /// is running would be a worse lie than the one the column exists to fix.
 #[test]
 fn an_unmeasured_rate_is_not_reported_as_zero() {
+    let _serial = serialize();
     let node = LiveNode::spawn("live_unmeasured", true);
     let out = node
         .wait_for(&["node", "list"], |o| o.contains("ci_test_node"))
@@ -287,6 +315,7 @@ fn an_unmeasured_rate_is_not_reported_as_zero() {
 /// to work, which is why the shipped test node did not catch this.
 #[test]
 fn a_topic_built_in_a_constructor_still_names_its_publisher() {
+    let _serial = serialize();
     let node = LiveNode::spawn_with("live_ctor", true, true);
     node.wait_for(&["topic", "info", &node.topic], |o| {
         o.contains("ci_test_node")

@@ -3354,6 +3354,108 @@ fn shm_pod_byte_exact_integrity_u64() {
     }
 }
 
+/// A backend transition must never hand the consumer a slot nobody wrote.
+///
+/// Motivated by a single observation: in one full parallel run,
+/// `shm_pod_byte_exact_integrity_array` failed with "Joint 0 corrupted: sent
+/// 1.571, got 0". Zeros are what a freshly mapped, never-written slot contains,
+/// so the consumer was told data was available where none had been published.
+///
+/// **That failure is not reproduced here.** This exercises 2 000 real
+/// PodShm -> SpscShm transitions with every other core saturated, and finds no
+/// zeroed read. So the observation stands as one occurrence under the
+/// scheduling of a 2 000-test parallel run, and its cause is not established —
+/// most likely interference through process-global state rather than the
+/// migration itself, since a targeted reproduction cannot provoke it.
+///
+/// The test is worth keeping regardless: the transition it drives is a real one
+/// and nothing else covers it under load.
+#[test]
+#[ignore = "stress: saturates every core; run with --ignored"]
+fn migration_window_never_yields_an_unwritten_slot() {
+    let load = Arc::new(AtomicBool::new(true));
+    let mut burners = Vec::new();
+    for _ in 0..num_cpus_for_load() {
+        let stop = load.clone();
+        burners.push(std::thread::spawn(move || {
+            // Contend for CPU the way a full parallel suite does.
+            let t: Topic<u64> = Topic::new(&unique("mig_load")).expect("load topic");
+            let mut i = 0u64;
+            while stop.load(Ordering::Relaxed) {
+                t.send(i);
+                let _ = t.try_recv();
+                i = i.wrapping_add(1);
+            }
+        }));
+    }
+
+    let mut zeroed = 0usize;
+    let mut checked = 0usize;
+    let mut not_migrated = 0usize;
+    let mut send_failed = 0usize;
+    let mut recv_none = 0usize;
+    for round in 0..2000 {
+        let name = unique(&format!("mig_win_{round}"));
+        let t: Topic<[f64; 6]> = Topic::new(&name).expect("create");
+        t.send([0.0; 6]);
+        let _ = t.recv();
+
+        // Force a real transition. Left to itself the topic is already
+        // SpscShm, so `force_migrate(SpscShm)` returns NotNeeded and nothing
+        // below runs — which is also true of the test this reproduces, and is
+        // why it only ever fails when earlier tests have moved the backend.
+        let _ = t.force_migrate(BackendMode::PodShm);
+        let mig = t.force_migrate(BackendMode::SpscShm);
+        if !matches!(mig, MigrationResult::Success { .. }) {
+            not_migrated += 1;
+            if not_migrated == 1 {
+                eprintln!("DIAG first non-success migration: {mig:?}");
+            }
+            continue;
+        }
+        {
+            trigger_shm_dispatch(&name);
+            let sent = [1.571, -0.785, 0.0, 2.356, -1.047, 0.524];
+            if t.try_send(sent).is_err() {
+                send_failed += 1;
+                continue;
+            }
+            match t.try_recv() {
+                Some(got) => {
+                    checked += 1;
+                    if got.iter().all(|v| *v == 0.0) {
+                        zeroed += 1;
+                    }
+                }
+                None => recv_none += 1,
+            }
+        }
+    }
+
+    load.store(false, Ordering::Relaxed);
+    for b in burners {
+        let _ = b.join();
+    }
+
+    eprintln!(
+        "DIAG migration-window: {zeroed} zeroed of {checked} checked | \
+         not_migrated={not_migrated} send_failed={send_failed} recv_none={recv_none}"
+    );
+    assert_eq!(
+        zeroed, 0,
+        "{zeroed} of {checked} reads returned an all-zero payload — the slot was \
+         never written, so the consumer was told data was available when it was \
+         not"
+    );
+}
+
+/// Threads to use for background CPU pressure.
+fn num_cpus_for_load() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).max(1))
+        .unwrap_or(3)
+}
+
 #[test]
 fn shm_pod_byte_exact_integrity_array() {
     // Large POD (separate seq path): verify multi-field robotics struct roundtrip
@@ -10013,6 +10115,7 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
     let capacity = 512u64; // auto_capacity::<u64>()
 
     let mut inversions = Vec::new();
+    let mut inversions_positions: Vec<u64> = Vec::new();
     let mut duplicates = Vec::new();
     let mut delivered = 0usize;
 
@@ -10022,6 +10125,7 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
         for w in stream.windows(2) {
             if w[1] <= w[0] {
                 let gap = w[0] - w[1];
+                inversions_positions.push(w[0]);
                 inversions.push(format!(
                     "consumer {idx}: {} then {} (backward by {gap}{})",
                     w[0],
@@ -10049,10 +10153,41 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
          subscribers - the ring is not delivering at all"
     );
 
+    // Where the inversions sit is the first thing the next person needs to
+    // know, and it is cheap to say. One observed failure — under a saturated
+    // 2 000-test parallel run, never in isolation — had all 7 inversions on
+    // values 161..261 out of 2.6M received: the registration and
+    // backend-selection window at the very start of the stream, not the
+    // steady-state ring. Those are different defects with different fixes, and
+    // a bare list of pairs does not distinguish them.
+    let startup_window = (capacity * 2).max(1024);
+    let in_startup = inversions_positions
+        .iter()
+        .filter(|v| **v < startup_window)
+        .count();
+    let where_ = if !inversions.is_empty() && in_startup == inversions.len() {
+        format!(
+            "\n\n  All {} are on values below {startup_window} — the startup window, \
+             where consumers are still registering and the backend is still being \
+             selected. That is a different defect from a steady-state ring \
+             reordering, and the migration handoff is where to look.",
+            inversions.len()
+        )
+    } else if !inversions.is_empty() {
+        format!(
+            "\n\n  {in_startup} of {} are in the startup window (values below \
+             {startup_window}); the rest are steady-state, which points at the \
+             ring itself rather than the migration handoff.",
+            inversions.len()
+        )
+    } else {
+        String::new()
+    };
+
     assert!(
         inversions.is_empty(),
         "recv() returned {} out-of-order results across {delivered} messages; \
-         drop-oldest may skip ahead but never backward:\n  {}",
+         drop-oldest may skip ahead but never backward:\n  {}{where_}",
         inversions.len(),
         inversions
             .iter()
