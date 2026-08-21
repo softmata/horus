@@ -684,6 +684,27 @@ impl Replicator {
     fn handle_timer(&mut self) {
         let now = Instant::now();
 
+        // Export whatever publishers have written since the last tick.
+        //
+        // `handle_export` polls the SHM readers, but until now the only thing
+        // that reached it was `EventSource::ShmNotify`, and the only writer of
+        // that eventfd is `TopicRegistry::notify_change` — which fires on
+        // register and unregister and nothing else. So a topic was exported
+        // when it was *created* and then never again, however much data flowed
+        // through it. Outbound replication stopped as soon as the topology
+        // settled, which is the moment a robot starts doing useful work.
+        //
+        // Driving it from the timer makes export data-driven at the tick rate
+        // rather than topology-driven. `try_read_latest` takes the newest
+        // sample, so a topic faster than TIMER_INTERVAL is downsampled rather
+        // than backlogged — the right trade for the state-like data that
+        // crosses machines, and the same semantic the latched-message resend
+        // below already relies on.
+        //
+        // The eventfd path stays: a newly registered topic is still exported
+        // immediately rather than waiting up to TIMER_INTERVAL.
+        self.handle_export();
+
         // Safety heartbeat: send to matched peers + check for link loss
         let link_lost =
             self.heartbeat
