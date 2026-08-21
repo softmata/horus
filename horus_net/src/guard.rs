@@ -74,35 +74,29 @@ impl ImportExportGuard {
         match &self.import_mode {
             ImportMode::Deny => false,
             ImportMode::Auto => {
-                // Import a topic this process has open locally.
+                // Import a topic this process subscribes to and does not itself
+                // publish.
                 //
-                // The intent was narrower — "subscribe but don't publish" — but
-                // that distinction is not observable. The lifecycle hook that
-                // populates this registry only learns that a topic was
-                // *created* (horus_net/src/lib.rs:61-80); a `Topic<T>` handle
-                // can both send and recv, so it registers every topic as
-                // `TopicRole::Both`. `has_publishers` returns true for `Both`,
-                // which made `is_sub && !is_pub` false for every topic that has
-                // ever existed. Auto — the default — therefore denied 100% of
-                // imports, and a robot configured exactly as documented received
-                // nothing over the network with no error anywhere.
+                // This distinction was unobservable for a long time: the
+                // lifecycle hook only learns that a topic was *created*, and a
+                // `Topic<T>` handle can both send and recv, so every topic
+                // registered as `Both` — first denying 100% of imports (a robot
+                // configured exactly as documented received nothing, silently),
+                // then, when that was patched by treating `Both` as importable,
+                // allowing a remote peer to overwrite commands this robot
+                // produces itself.
                 //
-                // Basing it on local presence restores the useful behaviour: a
-                // process gets remote data for the topics it actually has open,
-                // and still nothing for topics it has never touched, which is
-                // what keeps an unrelated robot's traffic out. Distinguishing
-                // publisher from subscriber again needs horus_core to signal
-                // first-send and first-recv, which is a change to the hot path
-                // and a larger decision than this.
+                // horus_core now reports the direction on a handle's first send
+                // or first recv (`TopicLifecycleEvent::RoleObserved`), so the
+                // roles here are real and the original intent holds again.
                 match self.registry {
                     Some(ref reg) => match reg.get(topic_name).map(|e| e.role) {
-                        // Role genuinely known: honour the original intent.
                         Some(crate::registry::TopicRole::Subscriber) => true,
+                        // We publish it: a remote write would fight our own.
                         Some(crate::registry::TopicRole::Publisher) => false,
-                        // `Both` means "we could not tell" — it is what the
-                        // lifecycle hook assigns to every topic — so fall back
-                        // to local presence rather than denying.
-                        Some(crate::registry::TopicRole::Both) => true,
+                        Some(crate::registry::TopicRole::Both) => false,
+                        // Not open here at all — this is how another robot's
+                        // traffic stays out.
                         None => false,
                     },
                     None => false,
@@ -245,16 +239,9 @@ mod tests {
 
         // cmd_vel: role known to be Subscriber → allow
         assert!(guard.allow_import("cmd_vel"));
-        // imu: role is `Both`, which in practice means "we could not tell" —
-        // the lifecycle hook assigns it to every topic, because a `Topic<T>`
-        // handle can send and recv. Denying on `Both` meant denying every topic
-        // that has ever existed, so `Auto` (the default) imported nothing at
-        // all. It now falls back to local presence for this case.
-        //
-        // Note this registry is hand-built with roles production never
-        // assigns — which is why this test passed while the default import mode
-        // was denying 100% of traffic on a real robot.
-        assert!(guard.allow_import("imu"));
+        // imu: registered `Both` — we publish it as well as subscribe — so a
+        // remote write would fight the value produced here.
+        assert!(!guard.allow_import("imu"));
         // odom: we only publish → deny
         assert!(!guard.allow_import("odom"));
         // unknown: not in registry → deny
@@ -262,32 +249,56 @@ mod tests {
     }
 
     #[test]
-    fn auto_imports_a_topic_registered_the_way_the_lifecycle_hook_registers_it() {
-        // The regression this guards. `horus_net::start_replicator` installs a
-        // hook that registers every topic as `TopicRole::Both`, because a
-        // `Topic<T>` handle can both send and recv and the hook only learns
-        // that a topic was created. `has_publishers` is true for `Both`, so the
-        // old `is_sub && !is_pub` was false for every topic that has ever
-        // existed: `Auto` — the default import mode — admitted nothing, and a
-        // robot configured exactly as documented received no remote data at
-        // all, with no error anywhere.
+    fn auto_imports_what_we_subscribe_to_and_not_what_we_publish() {
+        // The regression this guards, in both of its forms.
         //
-        // The existing tests missed it because they hand-build registries with
-        // `Subscriber` and `Publisher` roles that production never assigns.
+        // `start_replicator` installs a hook that used to register every topic
+        // as `TopicRole::Both`, because a `Topic<T>` handle can both send and
+        // recv and the hook only learned that a topic was *created*. With
+        // `Both` treated as "we publish", `Auto` — the default — admitted
+        // nothing: a robot configured exactly as documented received no remote
+        // data at all, with no error anywhere. With `Both` treated as "we
+        // subscribe", imports worked but a remote peer could overwrite the very
+        // commands this robot produces.
+        //
+        // horus_core now reports direction on first send / first recv, so these
+        // roles are what production actually assigns.
         let reg = std::sync::Arc::new(crate::registry::TopicRegistry::new());
+        // Created, then first recv.
         reg.register(
             "sensor.imu",
             topic_hash("sensor.imu"),
             64,
-            TopicRole::Both, // exactly what the lifecycle hook passes
+            TopicRole::Subscriber,
             true,
         );
+        // Created, then first send: merges to `Both`.
+        reg.register(
+            "cmd_vel",
+            topic_hash("cmd_vel"),
+            16,
+            TopicRole::Subscriber,
+            true,
+        );
+        reg.register(
+            "cmd_vel",
+            topic_hash("cmd_vel"),
+            16,
+            TopicRole::Publisher,
+            true,
+        );
+
         let guard = ImportExportGuard::new_default(reg);
 
         assert!(
             guard.allow_import("sensor.imu"),
-            "the default import mode rejected a topic registered the way every \
-             real topic is registered — no remote data would ever arrive"
+            "a topic this process only receives on must accept remote data — \
+             otherwise no remote data ever arrives"
+        );
+        assert!(
+            !guard.allow_import("cmd_vel"),
+            "a topic this process publishes must not accept remote writes — \
+             they would fight the commands produced here"
         );
         // A topic this process has never opened is still not imported, which is
         // what keeps an unrelated robot's traffic out.

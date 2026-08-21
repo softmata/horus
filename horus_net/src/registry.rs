@@ -48,6 +48,13 @@ impl TopicRole {
             (TopicRole::Both, TopicRole::Both) => None,
             (TopicRole::Publisher, TopicRole::Publisher) => None,
             (TopicRole::Subscriber, TopicRole::Subscriber) => None,
+            // Removing `Both` means removing the topic, whatever roles it
+            // actually accumulated. The topic lifecycle drops a handle without
+            // knowing which directions it was used in, and an entry that
+            // outlives its last handle would keep advertising a topic that no
+            // longer exists — and, for a subscriber entry, keep admitting
+            // remote writes into SHM nothing reads.
+            (_, TopicRole::Both) => None,
             // Removing a role that doesn't exist — keep what we have
             (existing, _) => Some(existing),
         }

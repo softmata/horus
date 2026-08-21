@@ -168,6 +168,21 @@ pub enum TopicLifecycleEvent {
         type_size: u32,
         is_pod: bool,
     },
+    /// A handle was first used in one direction: `publisher` is true on its
+    /// first send, false on its first recv.
+    ///
+    /// `Created` cannot carry this. A `Topic<T>` handle can both send and
+    /// receive, so at construction the direction is genuinely unknown — which
+    /// is why the network layer used to record every topic as "both" and lose
+    /// the distinction its import guard depends on. First use is the earliest
+    /// moment the answer exists.
+    RoleObserved {
+        name: String,
+        publisher: bool,
+        type_name_hash: u32,
+        type_size: u32,
+        is_pod: bool,
+    },
     /// A topic was dropped.
     Dropped { name: String },
 }
@@ -190,7 +205,15 @@ static TOPIC_LIFECYCLE_HOOK: std::sync::OnceLock<TopicLifecycleHook> = std::sync
 /// from several nodes, and the network layer only cares that the topic exists,
 /// not how many handles hold it. Dropping one handle must not erase a topic the
 /// others are still using.
-type LiveTopics = std::collections::HashMap<String, (TopicLifecycleEvent, usize)>;
+struct LiveTopic {
+    created: TopicLifecycleEvent,
+    /// Handles currently open on this name.
+    handles: usize,
+    /// Role events already seen, replayed to a late hook after `created`.
+    roles: Vec<TopicLifecycleEvent>,
+}
+
+type LiveTopics = std::collections::HashMap<String, LiveTopic>;
 
 static LIVE_TOPICS: std::sync::Mutex<Option<LiveTopics>> = std::sync::Mutex::new(None);
 
@@ -213,7 +236,14 @@ pub fn set_topic_lifecycle_hook(hook: impl Fn(TopicLifecycleEvent) + Send + Sync
     let existing: Vec<TopicLifecycleEvent> = match LIVE_TOPICS.lock() {
         Ok(guard) => guard
             .as_ref()
-            .map(|live| live.values().map(|(event, _)| event.clone()).collect())
+            .map(|live| {
+                live.values()
+                    .flat_map(|t| {
+                        // `Created` first: a hook may key its own state on it.
+                        std::iter::once(t.created.clone()).chain(t.roles.iter().cloned())
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
@@ -232,13 +262,31 @@ fn notify_topic_lifecycle(event: TopicLifecycleEvent) {
         match &event {
             TopicLifecycleEvent::Created { name, .. } => {
                 live.entry(name.clone())
-                    .and_modify(|(_, handles)| *handles += 1)
-                    .or_insert_with(|| (event.clone(), 1));
+                    .and_modify(|t| t.handles += 1)
+                    .or_insert_with(|| LiveTopic {
+                        created: event.clone(),
+                        handles: 1,
+                        roles: Vec::new(),
+                    });
+            }
+            TopicLifecycleEvent::RoleObserved {
+                name, publisher, ..
+            } => {
+                if let Some(t) = live.get_mut(name) {
+                    // At most two entries per name — publisher and subscriber —
+                    // however many handles observe them.
+                    let already = t.roles.iter().any(|e| {
+                        matches!(e, TopicLifecycleEvent::RoleObserved { publisher: p, .. } if p == publisher)
+                    });
+                    if !already {
+                        t.roles.push(event.clone());
+                    }
+                }
             }
             TopicLifecycleEvent::Dropped { name } => {
-                if let Some((_, handles)) = live.get_mut(name) {
-                    *handles -= 1;
-                    if *handles == 0 {
+                if let Some(t) = live.get_mut(name) {
+                    t.handles -= 1;
+                    if t.handles == 0 {
                         live.remove(name);
                     }
                 }
@@ -1213,6 +1261,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         } else {
             TopicRole::Consumer
         };
+
+        // Tell the network layer which direction this handle actually uses.
+        //
+        // This runs once per handle per direction — `ensure_role` returns early
+        // once the role already covers the call — so it is off the hot path, and
+        // it is the earliest point at which the answer is knowable at all.
+        // Without it the import guard cannot tell a topic this robot publishes
+        // from one it merely subscribes to, and "deny imports for topics we
+        // publish" degrades either to denying everything or to allowing a remote
+        // peer to overwrite our own commands.
+        notify_topic_lifecycle(TopicLifecycleEvent::RoleObserved {
+            name: self.name.clone(),
+            publisher: is_producer,
+            type_name_hash: fnv1a_type_hash(std::any::type_name::<T>()),
+            type_size: std::mem::size_of::<T>() as u32,
+            is_pod: local.is_pod,
+        });
 
         // Late-join fix: if the ring has wrapped since no consumer was reading,
         // advance tail to skip overwritten slots. Without this, a new consumer

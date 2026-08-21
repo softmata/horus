@@ -9905,7 +9905,7 @@ fn the_live_topic_set_refcounts_handles_per_name() {
             .lock()
             .unwrap()
             .as_ref()
-            .and_then(|live| live.get(&name).map(|(_, n)| *n))
+            .and_then(|live| live.get(&name).map(|t| t.handles))
     };
 
     notify_topic_lifecycle(created());
