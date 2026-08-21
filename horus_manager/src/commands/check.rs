@@ -13,6 +13,40 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// Run the check command on a path (directory or file)
+/// Resolve every module a Python file imports, and name the first one missing.
+///
+/// Single braces in the f-strings: `{{` is an escaped brace in Python, so the
+/// doubled form printed the literal text `ModuleNotFoundError: {e.name}` and
+/// `horus check` reported that a module was missing without ever saying which.
+/// The doubling was right while this was built with `format!`; moving it to a
+/// raw string and passing the path through argv left the escaping behind.
+///
+/// The path arrives as `argv[1]`, never interpolated: it comes from the repo
+/// being checked, so a quote or newline in a `.py` filename would otherwise
+/// become Python code executed by `horus check`.
+const PY_IMPORT_CHECK: &str = r#"
+import ast, sys
+try:
+    with open(sys.argv[1]) as f:
+        tree = ast.parse(f.read())
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split('.')[0])
+    for imp in imports:
+        if imp not in ('__future__',):
+            __import__(imp)
+except ModuleNotFoundError as e:
+    print(f'ModuleNotFoundError: {e.name}', file=sys.stderr)
+    sys.exit(1)
+except ImportError as e:
+    print(f'ImportError: {e}', file=sys.stderr)
+    sys.exit(1)
+"#;
+
 pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<()> {
     let target_path = path.unwrap_or_else(|| PathBuf::from("."));
     log::debug!("checking path: {:?}", target_path);
@@ -445,28 +479,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             match syntax_check {
                 Ok(result) if result.status.success() => {
                     // Syntax OK - now check imports
-                    let import_script = r#"
-import ast, sys
-try:
-    with open(sys.argv[1]) as f:
-        tree = ast.parse(f.read())
-    imports = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imports.add(alias.name.split('.')[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module.split('.')[0])
-    for imp in imports:
-        if imp not in ('__future__',):
-            __import__(imp)
-except ModuleNotFoundError as e:
-    print(f'ModuleNotFoundError: {{e.name}}', file=sys.stderr)
-    sys.exit(1)
-except ImportError as e:
-    print(f'ImportError: {{e}}', file=sys.stderr)
-    sys.exit(1)
-"#;
+                    let import_script = PY_IMPORT_CHECK;
 
                     // The filename comes from the repo being checked, so it is
                     // attacker-controlled for anyone who can get a repo cloned.
@@ -1926,6 +1939,68 @@ test-hw = "echo hardware test"
             result.is_ok(),
             "Build metadata version should pass: {:?}",
             result.err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod import_check_tests {
+    use super::PY_IMPORT_CHECK;
+
+    fn run_on(source: &str) -> (bool, String) {
+        // Unique per call: these tests run in parallel and shared one filename,
+        // so they overwrote each other's probe and failed on whichever lost.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("horus_import_check_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join(format!("probe_{}.py", SEQ.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&file, source).expect("write probe");
+        let out = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(PY_IMPORT_CHECK)
+            .arg(&file)
+            .output()
+            .expect("python3 must run");
+        let _ = std::fs::remove_file(&file);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn a_missing_module_is_named() {
+        // The regression: `{{e.name}}` is an escaped brace in a Python f-string,
+        // so this printed the literal `ModuleNotFoundError: {e.name}` and
+        // `horus check` reported that a module was missing without ever saying
+        // which one. Four files in this repo reported it that way.
+        let (ok, stderr) = run_on("import definitely_not_a_real_module_xyz\n");
+        assert!(!ok, "importing a missing module must fail the check");
+        assert!(
+            stderr.contains("definitely_not_a_real_module_xyz"),
+            "the missing module was not named: {stderr:?}"
+        );
+        assert!(
+            !stderr.contains("{e.name}"),
+            "the f-string placeholder was printed literally: {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_whose_imports_all_resolve_passes() {
+        let (ok, stderr) = run_on("import sys, os\nfrom pathlib import Path\n");
+        assert!(ok, "stdlib imports must resolve: {stderr:?}");
+    }
+
+    #[test]
+    fn the_path_is_taken_from_argv_not_interpolated() {
+        // A filename is attacker-controlled for anyone who can get a repo
+        // cloned; interpolating it into the script would make a quote or a
+        // newline in a `.py` name into Python that `horus check` executes.
+        assert!(
+            PY_IMPORT_CHECK.contains("sys.argv[1]"),
+            "the script must read its path from argv"
         );
     }
 }
