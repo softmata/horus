@@ -6125,7 +6125,6 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
         got2.len(),
         producer.backend_name(),
     );
-    let expected: Vec<String> = (1..=n).map(|v| format!("m{v}")).collect();
 
     // What broadcast guarantees is that each subscriber gets its own stream in
     // order, and that anything it does not get is *counted*. It does not
