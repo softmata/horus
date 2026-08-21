@@ -398,12 +398,26 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     for line in stderr.lines().take(5) {
                         if line.contains("error") {
                             println!("      {} {}", cli_output::ICON_ERROR.red(), line.trim());
+                            // The human output names the error; --json used to
+                            // report `"diagnostics": []` beside it.
+                            record_diagnostic(
+                                "error",
+                                rel_path.display().to_string(),
+                                None,
+                                line.trim(),
+                            );
                         }
                     }
                     total_errors += 1;
                 }
                 Err(e) => {
                     println!("{} cargo error: {}", cli_output::ICON_WARN.yellow(), e);
+                    record_diagnostic(
+                        "warning",
+                        rel_path.display().to_string(),
+                        None,
+                        format!("cargo could not be run: {e}"),
+                    );
                     total_warnings += 1;
                 }
             }
@@ -508,13 +522,28 @@ except ImportError as e:
                 Ok(result) => {
                     println!("{}", cli_output::ICON_ERROR.red());
                     let error = String::from_utf8_lossy(&result.stderr);
+                    let first = error.lines().next().unwrap_or("").trim().to_string();
                     if !error.is_empty() {
-                        println!(
-                            "      {} {}",
-                            cli_output::ICON_ERROR.red(),
-                            error.lines().next().unwrap_or("").trim()
-                        );
+                        println!("      {} {}", cli_output::ICON_ERROR.red(), first);
                     }
+                    record_diagnostic(
+                        "error",
+                        py_path                            .strip_prefix(target_path)
+                            .unwrap_or(py_path)
+                            .display()
+                            .to_string(),
+                        // Python reports `File "x.py", line N`; carry the number
+                        // when it is there rather than dropping it.
+                        first
+                            .split("line ")
+                            .nth(1)
+                            .and_then(|r| r.trim_end_matches([',', ')']).trim().parse().ok()),
+                        if first.is_empty() {
+                            "syntax check failed".to_string()
+                        } else {
+                            first.clone()
+                        },
+                    );
                     total_errors += 1;
                 }
                 Err(_) => {
@@ -1157,6 +1186,17 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
             }
         }
         println!();
+    }
+
+    // Everything the human output is about to print, recorded so `--json` says
+    // it too. This path used to emit `"diagnostics": []` while the terminal
+    // listed the errors by name.
+    let file = manifest_path.display().to_string();
+    for warn in &warn_msgs {
+        record_diagnostic("warning", file.clone(), None, warn.clone());
+    }
+    for err in &errors {
+        record_diagnostic("error", file.clone(), None, err.clone());
     }
 
     if errors.is_empty() {

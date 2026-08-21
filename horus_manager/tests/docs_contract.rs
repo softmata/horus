@@ -50,9 +50,15 @@ fn the_configuration_reference_covers_every_manifest_table() {
 
     let mut undocumented = Vec::new();
     for key in KNOWN_TOP_LEVEL {
-        // `enable` is a bare key, not a table, so it is written `enable = [...]`
-        // or as a heading. Everything else appears as `[key]`.
-        let documented = doc.contains(&format!("[{key}]")) || doc.contains(&format!("`{key}`"));
+        // `[key]` for a table; `key = ` for the one bare key (`enable`).
+        //
+        // The fallback used to be `contains("`key`")` — the name in backticks
+        // anywhere on the page. That is satisfied by any passing mention, and
+        // one existed: a language-detection table lists `rust` as a *language*,
+        // which made the `[rust]` config section look documented while it was
+        // absent entirely. Deleting the whole section still passed this test.
+        let documented =
+            doc.contains(&format!("[{key}]")) || doc.contains(&format!("{key} = "));
         if !documented {
             undocumented.push(*key);
         }

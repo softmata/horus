@@ -405,3 +405,111 @@ fn an_absent_package_table_defaults_rather_than_failing() {
     assert_eq!(m.package.name, "");
     assert_eq!(m.package.version, "0.0.0");
 }
+
+// ─── `--json` must say what the human output says (CFG-4) ───────────────────
+//
+// `horus check --json` exists so a tool can consume the findings. It reported
+// `"diagnostics": []` while the terminal listed the errors by name — the
+// machine-readable surface was the one that carried nothing.
+//
+// Fixed in three places, because there are three: the workspace manifest scan,
+// the per-language phases, and the single-file path. I fixed the first and
+// reported the finding closed; these pin all three.
+
+fn check_json(dir: &Path, args: &[&str]) -> serde_json::Value {
+    let out = Command::new(horus())
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("horus check must run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("check --json must emit JSON ({e}):\n{stdout}"))
+}
+
+fn diagnostics(v: &serde_json::Value) -> Vec<String> {
+    v["diagnostics"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|d| d["message"].as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn check_json_reports_a_python_syntax_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    std::fs::write(tmp.path().join("main.py"), "def broken(:\n").expect("write py");
+
+    let json = check_json(tmp.path(), &["check", "--json"]);
+    let msgs = diagnostics(&json);
+    assert!(
+        msgs.iter().any(|m| m.contains("main.py")),
+        "the human output names the file and line; --json carried nothing:\n{msgs:?}"
+    );
+    let empty = vec![];
+    let lines: Vec<u64> = json["diagnostics"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|d| d["line"].as_u64())
+        .collect();
+    assert!(
+        lines.contains(&1),
+        "Python reports `File \"x.py\", line N`; the number should be a field:\n{json}"
+    );
+}
+
+#[test]
+fn check_json_reports_single_file_validation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write");
+
+    let json = check_json(tmp.path(), &["check", "horus.toml", "--json"]);
+    let msgs = diagnostics(&json);
+    assert!(
+        !msgs.is_empty(),
+        "`horus check <file> --json` reported no diagnostics while the human \
+         output listed the failure:\n{json}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("2-64 characters")),
+        "expected the validation failure the human output prints:\n{msgs:?}"
+    );
+}
+
+/// Warnings count too: a tool that only sees errors cannot show what `horus
+/// check` shows.
+#[test]
+fn check_json_carries_warnings_not_only_errors() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("horus.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write");
+
+    let json = check_json(tmp.path(), &["check", "horus.toml", "--json"]);
+    let empty = vec![];
+    let severities: Vec<String> = json["diagnostics"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .map(|d| d["severity"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        severities.iter().any(|s| s == "warning"),
+        "a project with no license produces a warning in the human output:\n{json}"
+    );
+}
