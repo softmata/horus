@@ -393,7 +393,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         }

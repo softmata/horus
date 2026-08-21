@@ -144,8 +144,7 @@ fn delimiters_balance(code: &str) -> bool {
             '\'' => {
                 // A lifetime, not a char literal, if what follows is an
                 // identifier that is not immediately closed by another quote.
-                let is_char_lit = i + 2 < b.len()
-                    && ((b[i + 1] == '\\' ) || b[i + 2] == '\'');
+                let is_char_lit = i + 2 < b.len() && ((b[i + 1] == '\\') || b[i + 2] == '\'');
                 if is_char_lit {
                     i += 1;
                     while i < b.len() {
@@ -1356,7 +1355,9 @@ mod extractor {
     /// suppressed every other diagnostic in it.
     #[test]
     fn unbalanced_excerpts_are_rejected() {
-        assert!(!delimiters_balance("impl Node for A {\n    fn tick(&mut self) {"));
+        assert!(!delimiters_balance(
+            "impl Node for A {\n    fn tick(&mut self) {"
+        ));
         assert!(!delimiters_balance("let x = foo(1, 2;"));
         assert!(!delimiters_balance("}"));
     }

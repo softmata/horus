@@ -87,8 +87,7 @@ impl LiveNode {
             .env("HORUS_NAMESPACE", &self.namespace)
             .output()
             .expect("horus must run");
-        String::from_utf8_lossy(&out.stdout).into_owned()
-            + &String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
     }
 
     /// Poll `horus <args>` until its output satisfies `done`, or give up.
@@ -168,9 +167,10 @@ fn a_main_thread_node_reports_the_ticks_it_has_executed() {
     let node = LiveNode::spawn("live_ticks_be", true);
     let out = node
         .wait_for(&["node", "list"], |o| {
-            o.lines()
-                .filter(|l| l.contains("ci_test_node"))
-                .any(|l| l.split_whitespace().any(|f| f.parse::<u64>().is_ok_and(|n| n > 0)))
+            o.lines().filter(|l| l.contains("ci_test_node")).any(|l| {
+                l.split_whitespace()
+                    .any(|f| f.parse::<u64>().is_ok_and(|n| n > 0))
+            })
         })
         .unwrap_or_else(|| {
             panic!(
@@ -185,9 +185,10 @@ fn a_main_thread_node_reports_the_ticks_it_has_executed() {
 fn an_executor_owned_node_reports_the_ticks_it_has_executed() {
     let node = LiveNode::spawn("live_ticks_rt", false);
     node.wait_for(&["node", "info", "ci_test_node"], |o| {
-        o.lines()
-            .filter(|l| l.contains("Ticks"))
-            .any(|l| l.split_whitespace().any(|f| f.parse::<u64>().is_ok_and(|n| n > 0)))
+        o.lines().filter(|l| l.contains("Ticks")).any(|l| {
+            l.split_whitespace()
+                .any(|f| f.parse::<u64>().is_ok_and(|n| n > 0))
+        })
     })
     .unwrap_or_else(|| {
         panic!(
@@ -204,7 +205,9 @@ fn an_executor_owned_node_reports_the_ticks_it_has_executed() {
 fn node_info_reports_a_measured_rate_beside_the_configured_one() {
     let node = LiveNode::spawn("live_rate", true);
     let out = node
-        .wait_for(&["node", "info", "ci_test_node"], |o| o.contains("achieving"))
+        .wait_for(&["node", "info", "ci_test_node"], |o| {
+            o.contains("achieving")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "no measured rate was ever reported:\n{}",

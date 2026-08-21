@@ -1103,11 +1103,7 @@ fn table_header(content: &str, span: &std::ops::Range<usize>) -> Option<String> 
     let first = text.lines().next()?.trim_end();
     // `[package]` and `[[bin]]` alike: stop after the last consecutive `]`.
     let close = first.find(']')?;
-    let end = first[close..]
-        .chars()
-        .take_while(|c| *c == ']')
-        .count()
-        + close;
+    let end = first[close..].chars().take_while(|c| *c == ']').count() + close;
     Some(first[..end].to_string())
 }
 
@@ -1772,7 +1768,7 @@ version = "not-semver"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -1824,7 +1820,7 @@ version = "not-semver"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2275,7 +2271,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2944,7 +2940,7 @@ sys-dep = { source = "system" }
             },
             enable: vec!["cuda".to_string(), "profiling".to_string()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -3038,7 +3034,7 @@ sys-dep = { source = "system" }
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4063,7 +4059,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".to_string()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4136,7 +4132,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4167,7 +4163,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4198,7 +4194,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };

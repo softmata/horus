@@ -364,7 +364,10 @@ fn syntax_check(cxx: &str, dir: &Path, idx: usize, b: &Block) -> Option<String> 
     // guide tells readers to write, so this is the reader's own preamble, not a
     // convenience the harness invented.
     let code = if b.supplied_preamble {
-        format!("#include <horus/horus.hpp>\nusing namespace horus::literals;\n{}", b.code)
+        format!(
+            "#include <horus/horus.hpp>\nusing namespace horus::literals;\n{}",
+            b.code
+        )
     } else {
         b.code.clone()
     };
@@ -389,7 +392,7 @@ fn syntax_check(cxx: &str, dir: &Path, idx: usize, b: &Block) -> Option<String> 
     let defines_a_type = body.contains("class ") || body.contains("struct ");
     let looks_like_method = !defines_a_type
         && (body.contains(" override")
-        || body.contains(") const {")
+            || body.contains(") const {")
             || body.contains(") const;")
             || body.contains(") const\n"));
     if looks_like_method {
@@ -467,7 +470,10 @@ fn link_check(cxx: &str, lib: &Path, dir: &Path, idx: usize, b: &Block) -> Optio
     // the umbrella header reports a missing include as a link failure, which is
     // both wrong and unactionable.
     let code = if b.supplied_preamble {
-        format!("#include <horus/horus.hpp>\nusing namespace horus::literals;\n{}", b.code)
+        format!(
+            "#include <horus/horus.hpp>\nusing namespace horus::literals;\n{}",
+            b.code
+        )
     } else {
         b.code.clone()
     };

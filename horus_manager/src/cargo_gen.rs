@@ -480,7 +480,10 @@ fn write_patch_sections_with(
         }
         // The user may add crates to a source HORUS also patches, but not
         // replace the ones HORUS needs.
-        if let Some(entries) = user_patch.and_then(|p| p.get(*git_url)).and_then(|v| v.as_table()) {
+        if let Some(entries) = user_patch
+            .and_then(|p| p.get(*git_url))
+            .and_then(|v| v.as_table())
+        {
             for (key, value) in entries {
                 if present.iter().any(|n| **n == key.as_str()) {
                     log::warn!(
@@ -1262,7 +1265,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         }
@@ -2290,7 +2293,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         }

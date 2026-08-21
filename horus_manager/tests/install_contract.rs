@@ -115,7 +115,10 @@ fn every_crate_inherits_the_workspace_rust_version() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        match text.lines().find(|l| l.trim_start().starts_with("rust-version")) {
+        match text
+            .lines()
+            .find(|l| l.trim_start().starts_with("rust-version"))
+        {
             Some(line) if line.contains("workspace = true") => {}
             Some(line) => offenders.push(format!("{name}: {}", line.trim())),
             None => offenders.push(format!("{name}: declares no rust-version")),

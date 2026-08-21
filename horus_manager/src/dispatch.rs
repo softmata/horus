@@ -208,7 +208,13 @@ fn detect_project_languages(project_dir: &Path) -> Vec<Language> {
 pub fn cpp_source_files(root: &Path) -> Vec<PathBuf> {
     /// Directories that hold build output or dependencies, not project source.
     const SKIP: &[&str] = &[
-        ".horus", ".git", "target", "build", "cpp-build", "node_modules", "_build",
+        ".horus",
+        ".git",
+        "target",
+        "build",
+        "cpp-build",
+        "node_modules",
+        "_build",
     ];
 
     fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {

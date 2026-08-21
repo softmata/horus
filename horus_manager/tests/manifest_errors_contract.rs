@@ -105,7 +105,9 @@ fn a_wrong_type_is_a_schema_error_not_a_parse_error() {
 /// the top of the file.
 #[test]
 fn the_error_carries_the_line_of_the_table_not_line_one() {
-    let e = parse_err("# a comment\n[dependencies]\nserde = \"1.0\"\n\n[package]\nversion = \"0.1.0\"\n");
+    let e = parse_err(
+        "# a comment\n[dependencies]\nserde = \"1.0\"\n\n[package]\nversion = \"0.1.0\"\n",
+    );
     assert_eq!(e.line, Some(5), "[package] is on line 5: {e}");
     assert_eq!(e.col, Some(1));
     assert!(e.to_string().contains("horus.toml:5:1"), "{e}");
@@ -127,12 +129,10 @@ fn a_syntax_error_carries_the_column_of_the_mistake() {
 #[test]
 fn the_error_says_which_table_the_missing_key_belongs_to() {
     let pkg = parse_err("[package]\nversion = \"0.1.0\"\n");
-    assert!(
-        pkg.to_string().contains("in table [package]"),
-        "{pkg}"
-    );
+    assert!(pkg.to_string().contains("in table [package]"), "{pkg}");
 
-    let robot = parse_err("[package]\nname=\"r\"\nversion=\"0.1.0\"\n\n[robot]\nmodel = \"diffbot\"\n");
+    let robot =
+        parse_err("[package]\nname=\"r\"\nversion=\"0.1.0\"\n\n[robot]\nmodel = \"diffbot\"\n");
     assert!(
         robot.to_string().contains("in table [robot]"),
         "a missing [robot].name must not read as a missing [package].name: {robot}"
@@ -173,8 +173,8 @@ fn doctor_does_not_print_the_bare_failed_to_parse_sentence() {
         .current_dir(tmp.path())
         .output()
         .expect("horus doctor must run");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !text.contains("Failed to parse horus.toml"),
@@ -195,7 +195,10 @@ fn doctor_does_not_print_the_bare_failed_to_parse_sentence() {
 #[test]
 fn doctor_in_a_subdirectory_does_not_claim_the_manifest_is_absent() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    project(tmp.path(), "[package]\nname = \"broken\nversion = \"0.1.0\"\n");
+    project(
+        tmp.path(),
+        "[package]\nname = \"broken\nversion = \"0.1.0\"\n",
+    );
     let sub = tmp.path().join("src").join("nested");
     std::fs::create_dir_all(&sub).expect("mkdir sub");
 
@@ -204,8 +207,8 @@ fn doctor_in_a_subdirectory_does_not_claim_the_manifest_is_absent() {
         .current_dir(&sub)
         .output()
         .expect("horus doctor must run");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !text.contains("No horus.toml found"),
@@ -253,7 +256,10 @@ fn the_hardware_check_finds_the_manifest_from_a_subdirectory() {
 #[test]
 fn config_list_reports_the_position_of_a_syntax_error() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    project(tmp.path(), "[package]\nname = \"broken\nversion = \"0.1.0\"\n");
+    project(
+        tmp.path(),
+        "[package]\nname = \"broken\nversion = \"0.1.0\"\n",
+    );
 
     let out = Command::new(horus())
         .args(["config", "list"])
@@ -329,7 +335,10 @@ fn config_set_still_repairs_a_manifest_that_fails_validation() {
 #[test]
 fn check_json_carries_the_diagnostic() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    project(tmp.path(), "[package]\nname = \"broken\nversion = \"0.1.0\"\n");
+    project(
+        tmp.path(),
+        "[package]\nname = \"broken\nversion = \"0.1.0\"\n",
+    );
 
     let out = Command::new(horus())
         .args(["check", "--json"])
