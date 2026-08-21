@@ -1452,12 +1452,16 @@ pub(super) fn recv_shm_pod_broadcast<
             // This closes one identified route to a backward tail. It is not
             // measured to reduce the residual reordering seen under a saturated
             // parallel run — 4 inversions in 1.23M messages before, 1 in 441k
-            // after, which is the same rate within noise. At least one other
-            // route exists: `Topic::sync_shm_state` (mod.rs) assigns
-            // `shared_tail` unconditionally across a data-plane change, and the
-            // "skip to head" it implements is load-bearing — it fixed two named
-            // production bugs — so it is not something to clamp without being
-            // able to show those stay fixed.
+            // after, which is the same rate within noise.
+            //
+            // Where that residual comes from is still unknown, and one earlier
+            // guess is now ruled out: `Topic::sync_shm_state` adopts
+            // `header.tail` unconditionally when the data plane changes, which
+            // would regress a consumer — but instrumenting it showed the branch
+            // is never taken during this test. 26 syncs, every one same-plane,
+            // none regressing. The producer-side `local_tail` resets in this
+            // file are backpressure bookkeeping on the *sending* handle and
+            // cannot reorder a consumer either.
             if resume > local.local_tail {
                 local.local_tail = resume;
                 local.local_head = head;

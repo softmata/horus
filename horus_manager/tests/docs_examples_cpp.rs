@@ -641,7 +641,6 @@ fn is_reader_scope_error(err: &str) -> bool {
 /// Documented C++ examples must type-check.
 #[test]
 #[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
-
 fn documented_cpp_examples_compile() {
     let Some(cxx) = cxx() else {
         eprintln!("skipping: no C++ compiler found");

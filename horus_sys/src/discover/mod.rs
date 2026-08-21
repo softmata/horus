@@ -193,7 +193,7 @@ pub fn find_nodes() -> Vec<NodeInfo> {
     let mut nodes = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "json") {
+        if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
         let content = match std::fs::read_to_string(&path) {

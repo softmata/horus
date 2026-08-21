@@ -32,7 +32,22 @@
         "ms-python.python"
       ],
       "settings": {
-        "rust-analyzer.check.command": "clippy"
+        "rust-analyzer.check.command": "clippy",
+
+        // Keep rust-analyzer's `cargo check` out of the shared target/ dir so
+        // flycheck and manual `cargo build` stop blocking each other on the
+        // cargo package-cache lock.
+        "rust-analyzer.cargo.targetDir": true,
+
+        // `net` is the only non-default feature on the `horus` facade crate.
+        // Without it the entire `pub mod net` block in horus/src/lib.rs is
+        // cfg'd out and gets no hover, goto or completion. horus_net is a path
+        // dependency, so this adds no download and no native build.
+        //
+        // Do NOT widen this to "all": --all-features pulls in iceoryx2 and
+        // zstd, which need a network fetch plus libclang and a native C build
+        // on every reload, for ~0.4% more analysed code.
+        "rust-analyzer.cargo.features": ["horus/net"]
       }
     }
   },

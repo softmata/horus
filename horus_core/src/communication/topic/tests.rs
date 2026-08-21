@@ -3379,7 +3379,7 @@ fn migration_window_never_yields_an_unwritten_slot() {
         let stop = load.clone();
         burners.push(std::thread::spawn(move || {
             // Contend for CPU the way a full parallel suite does.
-            let t: Topic<u64> = Topic::new(&unique("mig_load")).expect("load topic");
+            let t: Topic<u64> = Topic::new(unique("mig_load")).expect("load topic");
             let mut i = 0u64;
             while stop.load(Ordering::Relaxed) {
                 t.send(i);
@@ -3471,14 +3471,42 @@ fn shm_pod_byte_exact_integrity_array() {
             let joint_state = [1.571, -0.785, 0.0, 2.356, -1.047, 0.524];
             t.try_send(joint_state).unwrap();
             if let Some(got) = t.try_recv() {
+                // State captured up front, because the assertion below destroys
+                // the chance to ask.
+                //
+                // This failed once in a full parallel run with "Joint 0
+                // corrupted: sent 1.571, got 0" — zeros being what a mapped but
+                // never-written slot contains, so the consumer was handed a slot
+                // nobody had published to. It has never reproduced in isolation,
+                // and 6 000 targeted attempts under saturating load produced
+                // nothing, so the next occurrence is the only chance to learn
+                // anything. An all-zero read and a partially-wrong read are
+                // different failures with different causes; the message now says
+                // which, and from what backend.
+                let all_zero = got.iter().all(|v| *v == 0.0);
+                let context = format!(
+                    "backend={} all_zero={} got={:?}",
+                    t.backend_name(),
+                    all_zero,
+                    got
+                );
                 for (i, (&expected, &actual)) in joint_state.iter().zip(got.iter()).enumerate() {
                     assert_eq!(
                         expected.to_bits(),
                         actual.to_bits(),
-                        "Joint {} corrupted: sent {}, got {}",
+                        "Joint {} corrupted: sent {}, got {} [{}]{}",
                         i,
                         expected,
-                        actual
+                        actual,
+                        context,
+                        if all_zero {
+                            " — every field is zero, so this is an unwritten \
+                             slot rather than a torn copy: the consumer was told \
+                             data was available where none had been published"
+                        } else {
+                            " — some fields are right and some are not, so this \
+                             is a torn copy rather than an unwritten slot"
+                        }
                     );
                 }
             }

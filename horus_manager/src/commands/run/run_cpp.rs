@@ -244,13 +244,6 @@ pub(super) fn execute_cpp_binary(binary: &Path, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the HORUS C++ bindings: header include dir + compiled static library.
-///
-/// Returns `(include_dir, lib_path)`. The headers ship in the source tree at
-/// `horus_cpp/include`; the library is produced by building the `horus_cpp`
-/// crate (crate-type includes `staticlib`). Built on demand and cached by
-/// cargo, so the cost is paid once per source tree and profile.
-
 /// Build the staticlib `horus msg gen` wrote, if the project has one.
 ///
 /// Returns `Ok(None)` when the project has no generated messages, which is the
