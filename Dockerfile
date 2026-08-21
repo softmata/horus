@@ -17,8 +17,10 @@
 #   docker run --rm --ipc=host --shm-size=1g ... horus run
 
 # ── Builder ────────────────────────────────────────────────────────────────
-# Pinned to the workspace MSRV (rust-version = "1.92" in Cargo.toml).
-FROM rust:1.92-slim-bookworm AS builder
+# Pinned to the workspace MSRV, so this image also checks that the floor is real
+# rather than aspirational. A test asserts the two agree; they had already
+# drifted once, when the MSRV moved to 1.90 and this line kept saying 1.92.
+FROM rust:1.90-slim-bookworm AS builder
 
 # libudev is needed by the hardware discovery path; pkg-config finds it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
