@@ -230,14 +230,26 @@ fn error_buffer_write_idx_tracks_independently() {
         main_after_info > main_before,
         "main write_idx should increment after Info"
     );
-    // In parallel tests, other threads may push errors between our snapshots.
-    // We verify the main buffer advanced but error buffer didn't advance MORE than expected.
-    // Exact, now that nothing else can write concurrently. An Info entry must
-    // not touch the error buffer at all — that is the whole claim of dual-write
-    // routing, and "within 5" was not testing it.
-    assert_eq!(
-        error_after_info, error_before,
-        "an Info entry must not advance the error buffer's write index"
+    // The claim is that *this* Info entry did not reach the error buffer. Test
+    // exactly that, by name.
+    //
+    // Comparing the global write index instead assumes nothing else in the
+    // process writes an error between the two snapshots. `exclusive()` orders
+    // the tests in this binary against each other, but not against background
+    // threads a test left running, and the buffer is process-global: the
+    // assertion failed with `1502 != 1497` — five errors that had nothing to do
+    // with this test — and reported it as a routing bug.
+    assert!(
+        GLOBAL_ERROR_BUFFER
+            .for_node(&node)
+            .iter()
+            .all(|e| e.log_type != LogType::Info),
+        "an Info entry reached the error buffer — dual-write routing is sending \
+         non-errors to the error path"
+    );
+    assert!(
+        error_after_info >= error_before,
+        "the error buffer's write index went backwards"
     );
 
     // Push Error (both)
@@ -253,6 +265,14 @@ fn error_buffer_write_idx_tracks_independently() {
     assert!(
         error_after_error > error_after_info,
         "error write_idx should increment after Error"
+    );
+    // ...and by name, so a concurrent writer cannot satisfy this for us.
+    assert!(
+        GLOBAL_ERROR_BUFFER
+            .for_node(&node)
+            .iter()
+            .any(|e| e.message.contains("error_both")),
+        "the Error entry did not reach the error buffer"
     );
 }
 
