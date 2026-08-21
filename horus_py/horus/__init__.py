@@ -372,6 +372,32 @@ except ImportError:
 
 
 
+def _message_to_dict(data: Any) -> Optional[dict]:
+    """A horus message object as a plain dict, or None if it is not one.
+
+    Used only after a topic has refused the object, so it needs no guess about
+    which types are messages: it reports None for anything with no public,
+    non-callable attributes to extract.
+    """
+    if data is None or isinstance(data, (dict, list, tuple, set, str, bytes, bytearray)):
+        return None
+    if isinstance(data, (bool, int, float)):
+        return None
+    if hasattr(data, "__array_interface__") or hasattr(data, "__array__"):
+        return None
+    attrs = {}
+    for attr in dir(data):
+        if attr.startswith("_"):
+            continue
+        try:
+            value = getattr(data, attr)
+        except Exception:
+            continue
+        if not callable(value):
+            attrs[attr] = value
+    return attrs or None
+
+
 class Node:
     """
     HORUS node — all config in one place, one way to use it.
@@ -797,28 +823,34 @@ class Node:
                         data = msg_type(**data)
                     except TypeError:
                         pass  # Fall through — let Rust handle it
-            # Auto-convert typed message objects to dicts for string topics.
-            # String topics use GenericMessage (serde) which can't serialize
-            # PyO3 message classes directly. Convert to dict for interop.
-            elif hasattr(data, '__class__') and hasattr(data.__class__, '__module__'):
-                mod = getattr(data.__class__, '__module__', '')
-                if 'horus' in mod or '_horus' in mod:
-                    try:
-                        # Convert message to dict using its attributes
-                        attrs = {}
-                        for attr in dir(data):
-                            if not attr.startswith('_'):
-                                try:
-                                    val = getattr(data, attr)
-                                    if not callable(val):
-                                        attrs[attr] = val
-                                except Exception:
-                                    pass
-                        if attrs:
-                            data = attrs
-                    except Exception:
-                        pass  # Fall through — let Rust try
-            return t.send(data, self)
+            # Send it as it is. An untyped ("string") topic carries
+            # GenericMessage, which serde cannot build from a PyO3 message
+            # class — retry those as a dict.
+            #
+            # Deciding in advance which case this is has gone wrong twice. The
+            # original guard asked whether `data.__class__.__module__` contained
+            # "horus", but the PyO3 classes are registered without a module and
+            # report `builtins`, so it never fired: every typed message sent to
+            # an untyped topic raised
+            #
+            #     TypeError: Failed to convert Python object: unsupported type CmdVel
+            #
+            # on every tick, and the shipped `examples/python_robot/main.py`
+            # panicked continuously. Guarding on the declared type instead is
+            # also wrong — the config is keyed by the topic name derived from the
+            # type, which is not always the name passed here — and converting on
+            # a topic that *is* typed produces the opposite failure,
+            # "'dict' object is not an instance of 'CmdVel'".
+            #
+            # So do not predict: try, and convert only if the topic actually
+            # refuses the object.
+            try:
+                return t.send(data, self)
+            except TypeError:
+                converted = _message_to_dict(data)
+                if converted is None:
+                    raise
+                return t.send(converted, self)
         return True
 
     def _run_tick_with_error_handling(self, info: Optional[Any] = None) -> None:

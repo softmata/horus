@@ -130,7 +130,11 @@ if __name__ == "__main__":
         tick=square_driver,
         rate=30,
         order=0,
-        pubs=["cmd_vel", "odom"],
+        # Declare the type, so `cmd_vel` is a typed topic end to end and the
+        # subscriber receives a `CmdVel` rather than a dict. Listing it as a
+        # bare string makes it untyped: the message still crosses, converted to
+        # a dict on the way, and `cmd.linear` then fails on the other side.
+        pubs={"cmd_vel": horus.CmdVel, "odom": {}},
     )
 
     safety = horus.Node(
@@ -138,7 +142,7 @@ if __name__ == "__main__":
         tick=safety_monitor,
         rate=10,
         order=10,
-        subs=["cmd_vel"],
+        subs={"cmd_vel": horus.CmdVel},
     )
 
     print("Python Robot: Driving in a square pattern")

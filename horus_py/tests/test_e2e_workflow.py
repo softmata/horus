@@ -95,6 +95,82 @@ class TestMultiNodeCommunication:
         assert abs(received_vels[0].angular - 0.3) < 0.01
 
 
+    def test_typed_message_on_an_untyped_topic_is_delivered_as_a_dict(self):
+        """A typed message sent to a string-named topic must cross, not raise.
+
+        `Node.send` documents that it accepts typed messages, and an untyped
+        topic carries GenericMessage, which cannot serialise a PyO3 class — so
+        the value is converted to a dict on the way. The conversion was gated on
+        `data.__class__.__module__` containing "horus", but the PyO3 classes are
+        registered without a module and report `builtins`, so the guard never
+        fired and every such send raised
+
+            TypeError: Failed to convert Python object: unsupported type CmdVel
+
+        on every tick. `examples/python_robot/main.py` did exactly this and
+        panicked continuously.
+        """
+        received = []
+
+        def publisher(node):
+            node.send("untyped_cmd", horus.CmdVel(0.75, -0.25))
+
+        def subscriber(node):
+            msg = node.recv("untyped_cmd")
+            if msg is not None:
+                received.append(msg)
+
+        pub = horus.Node(
+            name="untyped_pub", tick=publisher, rate=50, pubs=["untyped_cmd"]
+        )
+        sub = horus.Node(
+            name="untyped_sub", tick=subscriber, rate=50, subs=["untyped_cmd"]
+        )
+        horus.run(pub, sub, duration=0.5)
+
+        assert received, "a typed message sent to an untyped topic never arrived"
+        first = received[0]
+        assert isinstance(first, dict), f"expected a dict, got {type(first)}"
+        assert abs(first["linear"] - 0.75) < 0.01
+        assert abs(first["angular"] - (-0.25)) < 0.01
+
+    def test_a_declared_type_keeps_the_message_typed(self):
+        """Declaring the type must not be undone by the dict conversion.
+
+        The conversion above applies only to untyped topics. Applying it to a
+        typed one produced "'dict' object is not an instance of 'CmdVel'".
+        """
+        received = []
+
+        def publisher(node):
+            node.send("typed_cmd", horus.CmdVel(1.25, 0.5))
+
+        def subscriber(node):
+            msg = node.recv("typed_cmd")
+            if msg is not None:
+                received.append(msg)
+
+        pub = horus.Node(
+            name="typed_pub",
+            tick=publisher,
+            rate=50,
+            pubs={"typed_cmd": horus.CmdVel},
+        )
+        sub = horus.Node(
+            name="typed_sub",
+            tick=subscriber,
+            rate=50,
+            subs={"typed_cmd": horus.CmdVel},
+        )
+        horus.run(pub, sub, duration=0.5)
+
+        assert received, "a typed message on a typed topic never arrived"
+        first = received[0]
+        assert not isinstance(first, dict), "a declared type came back as a dict"
+        assert abs(first.linear - 1.25) < 0.01
+        assert abs(first.angular - 0.5) < 0.01
+
+
 class TestNodeLifecycle:
     """Tests for node lifecycle callbacks."""
 
