@@ -128,6 +128,29 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
     Ok(())
 }
 
+/// How long `echo` waits for a topic to be created before giving up.
+///
+/// Long enough to start a robot in another terminal, short enough that a typo
+/// in the topic name is still reported rather than hung on.
+const WAIT_FOR_TOPIC: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Match by exact name, path suffix, or base name.
+fn find_topic<'a>(
+    topics: &'a [crate::discovery::SharedMemoryInfo],
+    name: &str,
+) -> Option<&'a crate::discovery::SharedMemoryInfo> {
+    topics.iter().find(|t| {
+        let tn = &t.topic_name;
+        tn == name
+            || tn.ends_with(&format!("/{}", name))
+            || tn
+                .rsplit('/')
+                .next()
+                .map(|base| base == name)
+                .unwrap_or(false)
+    })
+}
+
 /// Echo messages from a topic
 ///
 /// Reads the ring buffer directly from the topic's shared-memory backing file
@@ -137,25 +160,46 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
 pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusResult<()> {
     use horus_core::communication::read_latest_slot_bytes;
 
-    let topics = discover_shared_memory()?;
-
-    // Find the topic - match by exact name, path suffix, or base name
-    let topic = topics.iter().find(|t| {
-        t.topic_name == name
-            || t.topic_name.ends_with(&format!("/{}", name))
-            || t.topic_name
-                .rsplit('/')
-                .next()
-                .map(|base| base == name)
-                .unwrap_or(false)
-    });
-
-    let Some(topic) = topic else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Topic '{}' not found. Use 'horus topic list' to see available topics.",
-            name
-        ))));
+    // Wait for the topic to appear rather than refusing outright.
+    //
+    // A topic only exists once something opens it, so `echo` on a topic whose
+    // publisher has not started yet failed immediately — which broke the
+    // obvious pairing with the tool right next to it in `--help`. `horus topic
+    // pub` creates the topic, sends, and exits, releasing the region as its
+    // last holder; with the default `-n 1` that whole life is a few
+    // milliseconds. So `echo` first said "not found", and `pub` first left
+    // nothing to look at. The two testing commands could not be used together
+    // in either order.
+    //
+    // Waiting also matches what an operator means by `horus topic echo cmd_vel`
+    // before starting the robot.
+    let deadline = std::time::Instant::now() + WAIT_FOR_TOPIC;
+    let mut announced_wait = false;
+    let topics = loop {
+        let topics = discover_shared_memory()?;
+        if find_topic(&topics, name).is_some() {
+            break topics;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Topic '{}' did not appear within {}s. Use 'horus topic list' to \
+                 see available topics.",
+                name,
+                WAIT_FOR_TOPIC.as_secs()
+            ))));
+        }
+        if !announced_wait {
+            announced_wait = true;
+            println!(
+                "  {} waiting for '{}' to appear…",
+                cli_output::ICON_INFO.cyan(),
+                name
+            );
+        }
+        // Discovery is cached for 250ms; polling faster only re-reads the cache.
+        std::thread::sleep(std::time::Duration::from_millis(250));
     };
+    let topic = find_topic(&topics, name).expect("just matched");
     // Defence in depth: the name came from a discovery scan, which parses .meta
     // files out of /dev/shm — mode 1777, so it walks other users' trees. The
     // parse boundary in horus_sys now rejects escaping names, but joining an
