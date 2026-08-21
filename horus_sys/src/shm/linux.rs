@@ -294,9 +294,8 @@ impl Drop for ShmRegion {
         //
         // SAFETY: `_file` is open for the whole lifetime of `self`, so the fd is
         // valid here; LOCK_EX | LOCK_NB is a valid flock operation.
-        let sole_holder = unsafe {
-            libc::flock(self._file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0
-        };
+        let sole_holder =
+            unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 };
         if !sole_holder {
             // Another holder still has it mapped — leave the region alone.
             return;
