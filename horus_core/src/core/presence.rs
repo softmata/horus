@@ -91,6 +91,30 @@ pub struct NodePresence {
     achieved_rate_hz: Option<f64>,
 }
 
+/// How long an unparseable presence file is left alone before it is removed.
+///
+/// Long enough that a live writer using a shape this build does not know — a
+/// newer horus, a protocol bridge — is never deleted out from under itself.
+const UNPARSEABLE_GRACE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Whether this file is a remote/bridged *host* record rather than a node
+/// presence file. They share the directory and are written with these prefixes.
+fn is_host_record(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("remote_") || n.starts_with("bridged_"))
+}
+
+/// Whether `path` was last modified longer than `age` ago. Unknown age counts
+/// as young: without evidence that a file is old, leave it.
+fn older_than(path: &std::path::Path, age: std::time::Duration) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > age)
+}
+
 impl NodePresence {
     pub fn name(&self) -> &str {
         &self.name
@@ -476,6 +500,21 @@ impl NodePresence {
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
+                if is_host_record(&path) {
+                    // A remote or bridged *host* record, written by horus_net or
+                    // a protocol bridge. It shares this directory but has a
+                    // different shape — host_id, is_remote, a list of nodes —
+                    // and no local pid, so it cannot parse as a NodePresence.
+                    //
+                    // It used to fall into the "corrupt JSON" arm below and be
+                    // deleted. Every local scan — `horus node list`, the
+                    // monitor, any `read_all` — therefore destroyed the fleet's
+                    // record of its remote members, and whichever observer ran
+                    // second saw nothing. Caught by
+                    // `test_bridged_presence_file_format_readable`, which wrote
+                    // a bridged record and could not read it back.
+                    continue;
+                }
                 if path.extension().is_some_and(|ext| ext == "json") {
                     match fs::read_to_string(&path) {
                         Ok(content) => {
@@ -491,8 +530,14 @@ impl NodePresence {
                                     }
                                 }
                                 Err(_) => {
-                                    // Corrupt JSON — remove the file so it doesn't persist
-                                    let _ = fs::remove_file(&path);
+                                    // Unparseable. Remove it only once it is old
+                                    // enough that no live writer can be mid-write
+                                    // or using a shape this build predates —
+                                    // deleting another process's data because
+                                    // *we* cannot read it is the wrong default.
+                                    if older_than(&path, UNPARSEABLE_GRACE) {
+                                        let _ = fs::remove_file(&path);
+                                    }
                                 }
                             }
                         }
@@ -905,5 +950,64 @@ mod escape_tests {
     fn printable_unicode_survives() {
         // Escaping is about control characters, not about being ASCII-only.
         assert_eq!(escape_control_chars("arm_左"), "arm_左");
+    }
+}
+
+#[cfg(test)]
+mod host_record_tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_or_bridged_record_is_not_a_node_presence_file() {
+        // These share the presence directory but have a different shape —
+        // host_id, is_remote, a list of nodes — and no local pid, so they cannot
+        // parse as a NodePresence. They used to be deleted as "corrupt JSON" by
+        // any local scan, so `horus node list`, the monitor, or any `read_all`
+        // destroyed the fleet's record of its remote members and whichever
+        // observer ran second saw nothing.
+        assert!(is_host_record(std::path::Path::new(
+            "/x/remote_host_0001.json"
+        )));
+        assert!(is_host_record(std::path::Path::new(
+            "/x/bridged_zenoh_fleet.json"
+        )));
+        assert!(!is_host_record(std::path::Path::new("/x/imu_driver.json")));
+        assert!(!is_host_record(std::path::Path::new("/x/controller.json")));
+    }
+
+    #[test]
+    fn a_read_all_leaves_host_records_alone() {
+        let dir = shm_nodes_dir();
+        let _ = fs::create_dir_all(&dir);
+        let name = format!("remote_readall_probe_{}.json", std::process::id());
+        let path = dir.join(&name);
+        // Deliberately a shape NodePresence cannot parse.
+        fs::write(&path, r#"{"host_id":"peer","is_remote":true,"nodes":[]}"#)
+            .expect("write host record");
+
+        let _ = NodePresence::read_all();
+
+        assert!(
+            path.exists(),
+            "read_all deleted a remote host record it could not parse"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_freshly_written_unparseable_file_survives_one_scan() {
+        // Deleting another process's data because *we* cannot read it is the
+        // wrong default: a newer horus, or a bridge, may be writing a shape this
+        // build predates.
+        let dir = shm_nodes_dir();
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join(format!("unknown_shape_{}.json", std::process::id()));
+        fs::write(&path, r#"{"something":"else"}"#).expect("write");
+
+        let _ = NodePresence::read_all();
+
+        assert!(path.exists(), "a fresh unparseable file was deleted");
+        assert!(!older_than(&path, UNPARSEABLE_GRACE));
+        let _ = fs::remove_file(&path);
     }
 }

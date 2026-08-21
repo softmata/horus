@@ -753,7 +753,19 @@ unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
 /// us at "nothing to read yet" rather than stranding us beyond the producer
 /// forever. On a single-consumer backend the shared tail is this consumer's own
 /// position, so the max is a no-op.
-fn resynced_tail(local_tail: u64, shared_tail: u64, new_head: u64) -> u64 {
+///
+/// The guard applies only once something has been delivered. Before that there
+/// is no ordering to preserve, and refusing to move backward would strand a
+/// just-registered handle ahead of messages published while it was joining —
+/// the late-join adjustment can leave `local_tail` well past them.
+fn resynced_tail(local_tail: u64, shared_tail: u64, new_head: u64, delivered: bool) -> u64 {
+    if !delivered {
+        // Nothing has been handed to this consumer yet, so there is no ordering
+        // to preserve and no message to re-deliver. Adopting the shared position
+        // is what lets a handle that registered moments ago still see what was
+        // published while it was joining.
+        return shared_tail.min(new_head);
+    }
     local_tail.max(shared_tail).min(new_head)
 }
 
@@ -1960,7 +1972,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // puts us at "nothing to read yet" rather than stranding us beyond the
         // producer forever. On a single-consumer backend the shared tail is this
         // consumer's own position, so the max is a no-op.
-        local.local_tail = resynced_tail(local.local_tail, shared_tail, new_head);
+        local.local_tail = resynced_tail(
+            local.local_tail,
+            shared_tail,
+            new_head,
+            local.msg_counter > 0,
+        );
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);
         self.process_epoch
@@ -3461,13 +3478,17 @@ mod resync_tail_tests {
         // The regression. On a broadcast backend the shared tail trails the
         // slowest consumer, so a faster one adopting it is pulled backward and
         // re-delivers messages it has already returned.
-        assert_eq!(resynced_tail(23_929, 23_497, 30_000), 23_929);
+        assert_eq!(resynced_tail(23_929, 23_497, 30_000, true), 23_929);
     }
 
     #[test]
-    fn a_fresh_handle_adopts_the_shared_position() {
-        // local_tail starts at 0, so there is nothing of its own to keep.
-        assert_eq!(resynced_tail(0, 5_000, 6_000), 5_000);
+    fn a_handle_that_has_delivered_nothing_adopts_the_shared_position() {
+        // There is no ordering to preserve yet, and refusing to move backward
+        // would strand a just-registered handle ahead of messages published
+        // while it was joining — the late-join adjustment can leave `local_tail`
+        // well past them.
+        assert_eq!(resynced_tail(0, 5_000, 6_000, false), 5_000);
+        assert_eq!(resynced_tail(9_000, 5_000, 6_000, false), 5_000);
     }
 
     #[test]
@@ -3475,19 +3496,20 @@ mod resync_tail_tests {
         // If the head comes back smaller than our tail the ring restarted;
         // keeping the old position would strand this consumer beyond the
         // producer forever, waiting for sequences that will not arrive.
-        assert_eq!(resynced_tail(23_929, 0, 12), 12);
+        assert_eq!(resynced_tail(23_929, 0, 12, true), 12);
     }
 
     #[test]
     fn a_single_consumer_backend_is_unaffected() {
         // There the shared tail is this consumer's own position.
-        assert_eq!(resynced_tail(4_096, 4_096, 8_192), 4_096);
+        assert_eq!(resynced_tail(4_096, 4_096, 8_192, true), 4_096);
     }
 
     #[test]
     fn the_result_is_never_beyond_the_producer() {
         for (local, shared, head) in [(9u64, 3u64, 5u64), (0, 99, 7), (100, 100, 100)] {
-            assert!(resynced_tail(local, shared, head) <= head);
+            assert!(resynced_tail(local, shared, head, true) <= head);
+            assert!(resynced_tail(local, shared, head, false) <= head);
         }
     }
 }

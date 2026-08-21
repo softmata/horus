@@ -244,8 +244,16 @@ impl HorusTestRuntime {
     /// Wait until all added nodes are discoverable via `NodePresence::read_all()`.
     ///
     /// Returns `true` if all nodes appeared before `timeout`, `false` otherwise.
+    ///
+    /// The timeout is a floor, not the value used: callers pass 2s, which is a
+    /// bound on *failure* — the loop returns the moment every node is present,
+    /// so waiting longer costs nothing when things work. On a machine running
+    /// the rest of the suite on every core, 2s was not enough for a scheduler to
+    /// publish its presence, and the run failed as `assertion failed:
+    /// rt.wait_ready(2s)`, indistinguishable from a node that never started.
     pub fn wait_ready(&self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        const FLOOR: Duration = Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + timeout.max(FLOOR);
         let expected_names: Vec<&str> = self.nodes.iter().map(|n| n.name.as_str()).collect();
 
         if expected_names.is_empty() {
