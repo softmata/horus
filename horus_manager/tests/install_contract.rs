@@ -192,3 +192,36 @@ fn install_sh_checks_the_rust_version_before_building() {
         "version comparison must be numeric — string comparison says 1.100 < 1.9"
     );
 }
+
+// ─── The framework's own manifest ───────────────────────────────────────────
+
+/// HORUS's own `horus.toml` must pass HORUS's own validator.
+///
+/// It did not. The package was named `HORUS`, which the charset rule rejects
+/// ("must contain only lowercase letters, digits, hyphens, underscores, '@' and
+/// '/'"), so `horus doctor` run inside this repository reported:
+///
+/// ```text
+///   x Manifest — horus.toml invalid
+///   Summary: 9 ok, 1 warnings, 1 failures
+/// ```
+///
+/// Lowercasing it was not enough either — `horus` is on the reserved list — so
+/// the manifest was in a position no name could satisfy without noticing both
+/// rules. A diagnostic tool that fails on its own project teaches people to
+/// ignore it.
+#[test]
+fn the_repository_manifest_passes_the_validator_it_ships() {
+    let path = repo_root().join("horus.toml");
+    let text = std::fs::read_to_string(&path).expect("the repo has a horus.toml");
+    let manifest: horus_manager::manifest::HorusManifest =
+        toml::from_str(&text).expect("horus.toml must parse");
+
+    if let Err(errors) = manifest.validate() {
+        panic!(
+            "HORUS's own horus.toml fails HORUS's own validator:\n  {errors}\n\n\
+             `horus doctor` reports this as a failure to anyone running it in \
+             this repository."
+        );
+    }
+}
