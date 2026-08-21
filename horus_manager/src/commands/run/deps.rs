@@ -196,7 +196,7 @@ pub(crate) fn scan_imports(
         "python" => {
             // Scan for ALL imports (not just HORUS)
             for line in content.lines() {
-                if let Some(dep) = parse_all_python_imports(line) {
+                for dep in parse_all_python_imports(line) {
                     dependencies.insert(dep);
                 }
             }
@@ -235,38 +235,65 @@ fn parse_rust_import(line: &str) -> Option<String> {
     None
 }
 
-/// Parse ALL Python imports (not just HORUS)
-fn parse_all_python_imports(line: &str) -> Option<String> {
+/// Parse ALL Python imports (not just HORUS) from one line.
+///
+/// Returns every package the line names, because one line can name several.
+/// It used to return at most one, taken with `split_whitespace().next()`, and
+/// that was wrong twice over for `import sys, os`:
+///
+/// * the first token is `sys,` — with the comma — so `is_stdlib_package` did
+///   not recognise it, and HORUS went off to pip-install a package called
+///   `sys,`, reporting `↗ sys, -> global cache` and `* Linked sys,`;
+/// * `os` was never looked at, so `import numpy, scipy` silently dropped
+///   `scipy` and the node failed at runtime on a dependency nothing installed.
+fn parse_all_python_imports(line: &str) -> Vec<String> {
     let line = line.trim();
 
     // Skip comments
     if line.starts_with('#') {
-        return None;
+        return Vec::new();
     }
 
-    // import numpy
-    // import numpy as np
+    // `import numpy`, `import numpy as np`, `import sys, os`
     if let Some(rest) = line.strip_prefix("import ") {
-        let package = rest.split_whitespace().next()?.split('.').next()?;
-        // Skip relative imports and standard library
-        if !is_stdlib_package(package) && !package.starts_with('.') {
-            return Some(package.to_string());
-        }
+        return rest
+            .split(',')
+            .filter_map(|item| {
+                // `numpy as np` -> `numpy`; `os.path` -> `os`
+                let name = item.trim().split_whitespace().next()?.split('.').next()?;
+                keep_package(name)
+            })
+            .collect();
     }
 
-    // from numpy import something
+    // `from numpy import something` — one package per line by construction.
     if let Some(rest) = line.strip_prefix("from ") {
-        let parts: Vec<&str> = rest.split(" import ").collect();
-        if !parts.is_empty() {
-            let package = parts[0].trim().split('.').next()?;
-            // Skip relative imports and standard library
-            if !is_stdlib_package(package) && !package.starts_with('.') {
-                return Some(package.to_string());
+        if let Some(head) = rest.split(" import ").next() {
+            if let Some(name) = head.trim().split('.').next() {
+                return keep_package(name).into_iter().collect();
             }
         }
     }
 
-    None
+    Vec::new()
+}
+
+/// A package name worth installing, or nothing.
+///
+/// Filters relative imports, the standard library, and anything left that is
+/// not a plain identifier — the last of which is the guard that would have
+/// caught `sys,` regardless of how it came to be shaped that way.
+fn keep_package(name: &str) -> Option<String> {
+    if name.is_empty() || name.starts_with('.') || is_stdlib_package(name) {
+        return None;
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// Check if package is Python standard library
@@ -691,7 +718,7 @@ mod tests {
     fn parse_python_import() {
         assert_eq!(
             parse_all_python_imports("import numpy"),
-            Some("numpy".to_string())
+            vec!["numpy".to_string()]
         );
     }
 
@@ -699,7 +726,7 @@ mod tests {
     fn parse_python_import_as() {
         assert_eq!(
             parse_all_python_imports("import numpy as np"),
-            Some("numpy".to_string())
+            vec!["numpy".to_string()]
         );
     }
 
@@ -707,20 +734,69 @@ mod tests {
     fn parse_python_from_import() {
         assert_eq!(
             parse_all_python_imports("from torch import nn"),
-            Some("torch".to_string())
+            vec!["torch".to_string()]
         );
     }
 
     #[test]
     fn parse_python_stdlib_skipped() {
-        assert!(parse_all_python_imports("import os").is_none());
-        assert!(parse_all_python_imports("import sys").is_none());
-        assert!(parse_all_python_imports("from pathlib import Path").is_none());
+        assert!(parse_all_python_imports("import os").is_empty());
+        assert!(parse_all_python_imports("import sys").is_empty());
+        assert!(parse_all_python_imports("from pathlib import Path").is_empty());
     }
 
     #[test]
     fn parse_python_comment_skipped() {
-        assert!(parse_all_python_imports("# import numpy").is_none());
+        assert!(parse_all_python_imports("# import numpy").is_empty());
+    }
+
+    /// `import sys, os` used to yield the package name `sys,` — the comma
+    /// defeated the standard-library filter, and HORUS went off to install it.
+    #[test]
+    fn a_comma_separated_import_is_not_a_package_named_sys_comma() {
+        let got = parse_all_python_imports("import sys, os");
+        assert!(
+            got.is_empty(),
+            "both are standard library, so nothing should be installed; got {got:?}"
+        );
+    }
+
+    /// The other half: only the first name on the line was ever examined.
+    #[test]
+    fn every_package_on_a_line_is_reported() {
+        assert_eq!(
+            parse_all_python_imports("import numpy, scipy"),
+            vec!["numpy".to_string(), "scipy".to_string()],
+            "dropping the second name means a dependency nothing installs"
+        );
+        assert_eq!(
+            parse_all_python_imports("import numpy as np, scipy.linalg"),
+            vec!["numpy".to_string(), "scipy".to_string()]
+        );
+    }
+
+    /// A mixed line must keep the third-party half and drop the standard one.
+    #[test]
+    fn a_mixed_import_line_keeps_only_the_third_party_names() {
+        assert_eq!(
+            parse_all_python_imports("import os, numpy, sys"),
+            vec!["numpy".to_string()]
+        );
+    }
+
+    /// Whatever shape a name arrives in, it has to look like an identifier
+    /// before HORUS will try to install it.
+    #[test]
+    fn a_name_that_is_not_an_identifier_is_never_installed() {
+        for line in ["import sys,", "import foo!bar", "import ", "import ,"] {
+            let got = parse_all_python_imports(line);
+            assert!(
+                got.iter().all(|n| n
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')),
+                "{line:?} produced {got:?}"
+            );
+        }
     }
 
     // ── is_stdlib_package ──────────────────────────────────────────────────
