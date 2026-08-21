@@ -205,7 +205,7 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
 
 // ─── service_type ─────────────────────────────────────────────────────────────
 
-/// Show type info for a service (`horus service type <name>`)
+/// Show type info for a service (`horus service info <name>`)
 pub fn service_type(name: &str) -> HorusResult<()> {
     let services = discover_services()?;
 

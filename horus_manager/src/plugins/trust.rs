@@ -20,7 +20,7 @@
 //! allowed to execute **only** if the SHA-256 of its binary is recorded here.
 //! Because the key is the content hash, this record simultaneously proves:
 //!   * **provenance** — the entry was written by a deliberate
-//!     `horus plugin install --local` / `horus plugin trust` on *this* machine,
+//!     `horus install --local` / `horus plugin trust` on *this* machine,
 //!     not by cloning a repo; and
 //!   * **integrity** — swapping the binary changes its hash, so a tampered
 //!     binary is no longer in the store and is refused.

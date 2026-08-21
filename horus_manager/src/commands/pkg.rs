@@ -510,7 +510,7 @@ fn locate_plugin_binary(command: &str) -> Result<PathBuf> {
     }
     Err(anyhow!(
         "No plugin binary found for command '{}'. Install it first \
-         (e.g. 'horus plugin install --local <package>').",
+         (e.g. 'horus install --local <package>').",
         command
     ))
 }

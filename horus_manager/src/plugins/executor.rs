@@ -108,7 +108,7 @@ impl PluginExecutor {
         // Check if disabled
         if self.resolver.is_disabled(command) {
             return Err(anyhow!(
-                "Plugin '{}' is disabled. Run 'horus enable {}' to re-enable.",
+                "Plugin '{}' is disabled. Run 'horus plugin enable {}' to re-enable.",
                 command,
                 command
             ));
@@ -219,7 +219,7 @@ impl PluginExecutor {
     ///   (the repo controls it) and is ignored here. The binary may execute
     ///   only if its content hash is present in the **out-of-repo**
     ///   [`super::TrustStore`] (written by a deliberate
-    ///   `horus plugin install --local` / `horus plugin trust`). Otherwise
+    ///   `horus install --local` / `horus plugin trust`). Otherwise
     ///   execution is refused.
     fn ensure_execution_allowed(
         &self,

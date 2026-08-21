@@ -106,6 +106,16 @@ fn every_crate_inherits_the_workspace_rust_version() {
     let mut offenders = Vec::new();
 
     for entry in std::fs::read_dir(&root).expect("read repo root").flatten() {
+        // Workspace members only. `horus run`/`horus build` generate a
+        // `.horus/Cargo.toml` in whatever directory they are invoked from, and
+        // it is gitignored build output — not a crate anyone declares an MSRV
+        // for. Scanning it failed this test with ".horus: declares no
+        // rust-version" whenever a CLI test had run here first, which is a
+        // property of the working directory rather than of the repo.
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if dir_name.starts_with('.') || dir_name == "target" {
+            continue;
+        }
         let manifest = entry.path().join("Cargo.toml");
         if !manifest.is_file() {
             continue;
