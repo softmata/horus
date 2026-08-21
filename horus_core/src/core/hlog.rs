@@ -393,13 +393,9 @@ mod tests {
     /// staircases the output.
     #[test]
     fn raw_mode_uses_crlf() {
-        let line = super::format_console_line(
-            &crate::core::log_buffer::LogType::Warning,
-            "n",
-            "m",
-            true,
-        )
-        .expect("Warning must be printed");
+        let line =
+            super::format_console_line(&crate::core::log_buffer::LogType::Warning, "n", "m", true)
+                .expect("Warning must be printed");
         assert!(line.ends_with("\r\n"), "{line:?}");
     }
 

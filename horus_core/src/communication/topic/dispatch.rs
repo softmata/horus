@@ -662,26 +662,28 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
         // SAFETY: ring points into valid ShmFanoutRing. recv_pod reads T bytes
         // from SHM slots via SIMD-aware copy (invariant 6). sub_id identifies this
         // consumer's SPSC channel within the fanout matrix.
-        unsafe { ring.recv_pod(sub_id) }
+        unsafe { ring.recv_pod(sub_id, &mut local.missed) }
     } else {
         // SAFETY: same as recv_pod — reads serialized bytes from SHM. A payload
         // that is exactly a sentinel-prefixed SpillDescriptor (40 bytes) is a
         // spilled large message → reconstruct from the pool; otherwise the bytes
         // are an inline bincode message.
         unsafe {
-            ring.recv_serde(sub_id).and_then(|bytes| {
-                if bytes.len() == std::mem::size_of::<SpillDescriptor>()
-                    && u64::from_ne_bytes(bytes[..8].try_into().expect("len == 40 >= 8"))
-                        == SPILL_SENTINEL
-                {
-                    // SAFETY: `bytes` holds exactly a SpillDescriptor (repr(C), 40B);
-                    // read_unaligned copies it out with no alignment assumption.
-                    let desc = std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor);
-                    read_spilled_retained::<T>(desc, topic.name())
-                } else {
-                    bincode::deserialize(&bytes).ok()
-                }
-            })
+            ring.recv_serde(sub_id, &mut local.missed)
+                .and_then(|bytes| {
+                    if bytes.len() == std::mem::size_of::<SpillDescriptor>()
+                        && u64::from_ne_bytes(bytes[..8].try_into().expect("len == 40 >= 8"))
+                            == SPILL_SENTINEL
+                    {
+                        // SAFETY: `bytes` holds exactly a SpillDescriptor (repr(C), 40B);
+                        // read_unaligned copies it out with no alignment assumption.
+                        let desc =
+                            std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor);
+                        read_spilled_retained::<T>(desc, topic.name())
+                    } else {
+                        bincode::deserialize(&bytes).ok()
+                    }
+                })
         }
     };
 
@@ -1399,7 +1401,14 @@ pub(super) fn recv_shm_pod_broadcast<
         // wrap; guarded anyway because `head` is re-loaded and could in
         // principle be observed smaller than the cached value.
         if head > cap {
-            local.local_tail = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            // Count what we skipped past. Drop-oldest is the designed
+            // behaviour here, but until now it was silent: `dropped_count()`
+            // reports send failures and an overwriting producer never fails
+            // a send, so a lapped consumer lost data with every
+            // observability surface reading zero. See `LocalState::missed`.
+            local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
+            local.local_tail = resume;
             local.local_head = head;
         }
         // Return rather than falling through to read the slot we just landed
@@ -1469,7 +1478,14 @@ pub(super) fn recv_shm_pod_broadcast<
         let head = header.sequence_or_head.load(Ordering::Acquire);
         let cap = local.cached_capacity;
         if head > cap {
-            local.local_tail = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            // Count what we skipped past. Drop-oldest is the designed
+            // behaviour here, but until now it was silent: `dropped_count()`
+            // reports send failures and an overwriting producer never fails
+            // a send, so a lapped consumer lost data with every
+            // observability surface reading zero. See `LocalState::missed`.
+            local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
+            local.local_tail = resume;
             local.local_head = head;
         }
         return None;

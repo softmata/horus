@@ -96,6 +96,14 @@ pub(crate) struct LocalState {
     /// endpoint slot. Held for the endpoint's lifetime — its Drop (or process death)
     /// releases the lock, which is what lets a peer reclaim a crashed owner's slot.
     /// `None` for every non-FanoutShm backend.
+    /// Messages this consumer skipped past because the producer lapped it.
+    ///
+    /// Drop-oldest is the designed behaviour under overload — a 10 Hz node
+    /// reading a 1 kHz sensor is ordinary multi-rate robotics — but the loss
+    /// used to be completely invisible: `dropped_count()` reports *send*
+    /// failures, and a producer that overwrites never fails a send. This is the
+    /// consumer's own count, so it needs no atomics.
+    pub missed: u64,
     pub fanout_pub_lock: Option<horus_sys::fs::FileLock>,
 
     /// COMM-H1: exclusive `flock` proving this process holds the FanoutShm
@@ -137,6 +145,7 @@ impl Default for LocalState {
             cached_epoch: 0,
             fanout_shm_pub_id: None,
             fanout_shm_sub_id: None,
+            missed: 0,
             fanout_pub_lock: None,
             fanout_sub_lock: None,
             fanout_shm_storage: None,

@@ -1908,6 +1908,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         &self.metrics
     }
 
+    /// Messages this handle's consumer side skipped past after being lapped.
+    ///
+    /// Per handle, not per topic: it is this consumer that fell behind. See
+    /// `LocalState::missed`.
+    pub fn missed_count(&self) -> u64 {
+        self.local().missed
+    }
+
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
     pub fn metrics(&self) -> TopicMetrics {
         TopicMetrics::new(
@@ -2604,20 +2612,55 @@ impl<T: TopicMessage> Topic<T> {
         self.ring.metrics()
     }
 
-    /// Number of messages dropped because the ring buffer was full.
+    /// Number of messages dropped by the **producer** because the ring was full.
     ///
     /// This is the count of `send()` calls where the message was discarded
-    /// after the bounded spin+yield retry failed. Useful for detecting
-    /// backpressure or slow consumers.
+    /// after the bounded spin+yield retry failed.
+    ///
+    /// This is *not* the way to detect a slow consumer. The broadcast backends
+    /// overwrite rather than fail, so their producers never record a drop while
+    /// a subscriber that falls a full lap behind loses everything in between —
+    /// [`missed_count`](Self::missed_count) is that number, and it is counted on
+    /// the consumer side where the loss actually happens.
     ///
     /// # Example
     /// ```rust,ignore
     /// if topic.dropped_count() > 0 {
-    ///     eprintln!("WARNING: {} messages dropped on '{}'", topic.dropped_count(), topic.name());
+    ///     horus_core::terminal::eprint_line(&format!(
+    ///         "WARNING: publisher dropped {} messages on '{}'",
+    ///         topic.dropped_count(),
+    ///         topic.name()
+    ///     ));
     /// }
     /// ```
     pub fn dropped_count(&self) -> u64 {
         self.ring.metrics().send_failures()
+    }
+
+    /// Number of messages **this subscriber** skipped past because the producer
+    /// lapped it.
+    ///
+    /// Drop-oldest under overload is by design: a 10 Hz node reading a 1 kHz
+    /// sensor should get the most recent sample, not a backlog. What was missing
+    /// is the number — nothing counted the gap, so a subscriber losing 144 of
+    /// 400 messages looked identical to one losing none.
+    ///
+    /// The count is per handle and per direction: it belongs to the consumer
+    /// that fell behind, not to the topic, so two subscribers on the same topic
+    /// report independently.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if topic.missed_count() > 0 {
+    ///     horus_core::terminal::eprint_line(&format!(
+    ///         "WARNING: fell behind on '{}' — skipped {} messages",
+    ///         topic.name(),
+    ///         topic.missed_count()
+    ///     ));
+    /// }
+    /// ```
+    pub fn missed_count(&self) -> u64 {
+        self.ring.missed_count()
     }
 
     /// Check if a message is available without consuming it.

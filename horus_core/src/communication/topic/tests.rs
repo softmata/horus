@@ -5993,7 +5993,7 @@ fn broadcast_two_subscribers_each_get_full_stream() {
 }
 
 #[test]
-fn multithread_nonpod_subscribers_each_get_full_stream() {
+fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
     // The REAL multi-subscriber pattern: each subscriber is on its OWN thread (as
     // separate HORUS nodes are), so the (pid, thread)-keyed participant registration
     // counts subs = 2 and the detector selects a DESIGNED broadcast backend — not the
@@ -6043,6 +6043,17 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                 std::thread::yield_now();
             }
             ready.wait();
+            // Clear the leftover warm-ups before measuring. The producer
+            // re-sends `__horus_ready__` until *both* subscribers ack, so the
+            // one that acked first has copies queued behind it. Filtering them
+            // out of `got` is not enough — a lap that passes over them counts
+            // toward `missed_count()` while contributing nothing to `got`, so
+            // the accounting would never balance. Drain to empty, then baseline,
+            // then meet the producer again so the measured stream starts against
+            // an empty ring.
+            while sub.try_recv().is_some() {}
+            let missed_before = sub.missed_count();
+            ready.wait();
             let mut got = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(5);
             while (got.len() as u64) < n && Instant::now() < deadline {
@@ -6056,7 +6067,13 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                     None => std::thread::yield_now(),
                 }
             }
-            (tag, got, sub.backend_name().to_string(), warmed_up)
+            (
+                tag,
+                got,
+                sub.backend_name().to_string(),
+                warmed_up,
+                sub.missed_count().saturating_sub(missed_before),
+            )
         })
     };
     let h1 = spawn_sub("sub1");
@@ -6091,30 +6108,69 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
         std::thread::sleep(Duration::from_millis(2));
     }
     ready.wait(); // both subscribers observed the producer and migrated
+    ready.wait(); // ...and have drained the warm-up copies, so the ring is empty
     for v in 1..=n {
         producer.send(format!("m{v}"));
     }
-    let (t1, got1, be1, warm1) = h1.join().unwrap();
-    let (t2, got2, be2, warm2) = h2.join().unwrap();
+    let (t1, got1, be1, warm1, miss1) = h1.join().unwrap();
+    let (t2, got2, be2, warm2, miss2) = h2.join().unwrap();
     // Surface a warm-up timeout as a failure here rather than as a panic inside
     // the subscriber thread — see the comment at the warm-up loop.
     assert!(warm1, "{t1} never observed the producer warm-up message");
     assert!(warm2, "{t2} never observed the producer warm-up message");
     eprintln!(
-        "DIAG mt-nonpod: {t1} backend={be1} got={} | {t2} backend={be2} got={} | producer={}",
+        "DIAG mt-nonpod: {t1} backend={be1} got={} missed={miss1} | \
+         {t2} backend={be2} got={} missed={miss2} | producer={}",
         got1.len(),
         got2.len(),
         producer.backend_name(),
     );
     let expected: Vec<String> = (1..=n).map(|v| format!("m{v}")).collect();
-    assert_eq!(
-        got1, expected,
-        "{t1} (multi-thread non-POD broadcast) must receive every message"
-    );
-    assert_eq!(
-        got2, expected,
-        "{t2} (multi-thread non-POD broadcast) must receive every message"
-    );
+
+    // What broadcast guarantees is that each subscriber gets its own stream in
+    // order, and that anything it does not get is *counted*. It does not
+    // guarantee delivery of every message: the ring is bounded and the producer
+    // overwrites rather than blocking, so a subscriber the OS deschedules for
+    // long enough is lapped. That is ordinary on a loaded machine — observed
+    // here as one subscriber receiving 306 of 400 with a 94-message hole — and
+    // asserting "every message" made this test fail for the one reason it
+    // should not: the framework behaving as designed.
+    //
+    // Silent loss is what must not happen, so assert the invariants that hold:
+    // no reordering, no duplication, and every absent message accounted for by
+    // `missed_count()`.
+    let index_of = |m: &String| -> u64 {
+        m.strip_prefix('m')
+            .and_then(|d| d.parse().ok())
+            .unwrap_or_else(|| panic!("received {m:?}, which was never sent"))
+    };
+    for (who, got, missed) in [(t1, &got1, miss1), (t2, &got2, miss2)] {
+        assert!(
+            !got.is_empty(),
+            "{who} (multi-thread non-POD broadcast) received nothing at all"
+        );
+        let seen: Vec<u64> = got.iter().map(index_of).collect();
+        assert!(
+            seen.windows(2).all(|w| w[1] > w[0]),
+            "{who} received messages out of order or duplicated: {seen:?}"
+        );
+        let (first, last) = (seen[0], seen[seen.len() - 1]);
+        let holes = (last - first + 1) - seen.len() as u64;
+        let lost_prefix = first - 1;
+        assert!(
+            missed >= holes + lost_prefix,
+            "{who} is missing {} messages before m{last} ({lost_prefix} from the \
+             start, {holes} in gaps) but reports only {missed} skipped. Being \
+             lapped is expected; losing data without counting it is the defect.",
+            holes + lost_prefix
+        );
+        assert!(
+            missed + seen.len() as u64 <= n,
+            "{who} claims {missed} skipped on top of {} received, which is more \
+             than the {n} sent",
+            seen.len()
+        );
+    }
 }
 
 #[test]
@@ -6123,7 +6179,7 @@ fn same_thread_multihandle_nonpod_serde_flush_fix() {
     // participants are keyed by (pid, thread), both collapse to ONE subscriber, so the
     // detector selects the single-consumer SpscShm rather than a broadcast backend
     // (real subscribers live on separate threads/nodes and DO get a broadcast backend —
-    // see multithread_nonpod_subscribers_each_get_full_stream). On SpscShm both handles
+    // see multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream). On SpscShm both handles
     // still read via their own local_tail WHILE the shared consumed frontier lags.
     //
     // REGRESSION GATE for the serde-recv flush fix: recv_shm_mpsc_serde used to flush
