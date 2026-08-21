@@ -1432,8 +1432,36 @@ pub(super) fn recv_shm_pod_broadcast<
         let head = header.sequence_or_head.load(Ordering::Acquire);
         let cap = local.cached_capacity;
         if head > cap {
-            local.local_tail = head.wrapping_sub(cap).wrapping_add(cap / 2);
-            local.local_head = head;
+            let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            // Never move the tail backward.
+            //
+            // The argument that `resume > tail` always holds relies on
+            // `cached_capacity` being the ring's current capacity. It is a
+            // cached value, and a topology change re-sizes the ring — so a
+            // capacity larger than the live one computes a resume point behind
+            // where this consumer already is, and the next accepted slot then
+            // delivers a message older than the last one returned. That is a
+            // reordering the caller cannot distinguish from a ring defect, and
+            // it survives the rejection above precisely because the rejection
+            // is what installs this value.
+            //
+            // Skipping the update loses nothing: the slot is rejected either
+            // way, and the next call re-derives a resume point from a fresher
+            // head.
+            //
+            // This closes one identified route to a backward tail. It is not
+            // measured to reduce the residual reordering seen under a saturated
+            // parallel run — 4 inversions in 1.23M messages before, 1 in 441k
+            // after, which is the same rate within noise. At least one other
+            // route exists: `Topic::sync_shm_state` (mod.rs) assigns
+            // `shared_tail` unconditionally across a data-plane change, and the
+            // "skip to head" it implements is load-bearing — it fixed two named
+            // production bugs — so it is not something to clamp without being
+            // able to show those stay fixed.
+            if resume > local.local_tail {
+                local.local_tail = resume;
+                local.local_head = head;
+            }
         }
         return None;
     }

@@ -6287,7 +6287,12 @@ fn multithread_nonpod_lapped_stream_stays_ordered() {
             // send time, so a subscriber that has not claimed its endpoint
             // receives nothing at all and no error says so. Observed here as
             // `sub1 got=0` in one run out of three before this handshake existed.
-            let deadline = Instant::now() + Duration::from_secs(10);
+            // 30 s, matching the sibling test and for the same reason: this is
+            // a hang guard, not a timing assertion, and the producer re-sends
+            // for 30 s. At 10 s a full parallel run failed the warm-up
+            // assertion — the test then measures endpoint registration rather
+            // than lapping, which is what it says it measures.
+            let deadline = Instant::now() + Duration::from_secs(30);
             let mut warmed_up = false;
             while Instant::now() < deadline {
                 sub.check_migration_now();
@@ -6335,7 +6340,7 @@ fn multithread_nonpod_lapped_stream_stays_ordered() {
     // Re-send until both have acked, rather than publishing once: a single send
     // races the slowest subscriber's first post-registration try_recv, and
     // losing that race costs delivery entirely.
-    let warm_deadline = Instant::now() + Duration::from_secs(30);
+    let warm_deadline = Instant::now() + Duration::from_secs(60);
     while warmed_count.load(Ordering::Acquire) < 2 && Instant::now() < warm_deadline {
         producer.send("__horus_ready__".to_string());
         std::thread::sleep(Duration::from_millis(2));
