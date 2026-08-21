@@ -371,6 +371,25 @@ pub fn reset_no_peers_diagnostic() {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that touch process-global state.
+    ///
+    /// Two kinds of global here: the environment, which `SafetyConfig::default()`
+    /// and friends read at call time while other tests set `HORUS_NET_*` to
+    /// prove the read happens; and `NO_PEERS_PRINTED`, the fire-once latch that
+    /// three tests reset. Cargo runs these on 16 threads, so without the lock a
+    /// reader intermittently observes another test's value — `cargo test -p
+    /// horus_net` failed roughly one run in three, on a different test each
+    /// time, which reads as flaky infrastructure rather than the collision it
+    /// is.
+    ///
+    /// The guard is recovered from poisoning: it protects ordering, not data,
+    /// so one failing test must not cascade into every other.
+    static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn make_config() -> NetConfig {
         NetConfig {
             enabled: true,
@@ -389,6 +408,7 @@ mod tests {
 
     #[test]
     fn default_config() {
+        let _env = env_guard();
         let config = make_config();
         assert!(config.enabled);
         assert_eq!(config.port, 9100);
@@ -400,6 +420,7 @@ mod tests {
 
     #[test]
     fn discovery_mode_multicast() {
+        let _env = env_guard();
         let config = make_config();
         match config.discovery_mode() {
             DiscoveryMode::Multicast { group } => assert_eq!(group, "224.0.69.72"),
@@ -409,6 +430,7 @@ mod tests {
 
     #[test]
     fn discovery_mode_unicast() {
+        let _env = env_guard();
         let mut config = make_config();
         config.peers = vec!["192.168.1.42".into()];
         match config.discovery_mode() {
@@ -423,6 +445,7 @@ mod tests {
 
     #[test]
     fn discovery_mode_unicast_with_port() {
+        let _env = env_guard();
         let mut config = make_config();
         config.peers = vec!["192.168.1.42:9200".into()];
         match config.discovery_mode() {
@@ -435,6 +458,7 @@ mod tests {
 
     #[test]
     fn discovery_mode_multiple_unicast() {
+        let _env = env_guard();
         let mut config = make_config();
         config.peers = vec!["192.168.1.42".into(), "192.168.1.43".into()];
         match config.discovery_mode() {
@@ -445,12 +469,14 @@ mod tests {
 
     #[test]
     fn secret_hash_none() {
+        let _env = env_guard();
         let config = make_config();
         assert_eq!(config.secret_hash(), [0u8; 4]);
     }
 
     #[test]
     fn secret_hash_some() {
+        let _env = env_guard();
         let mut config = make_config();
         config.secret = Some("lab-42".into());
         assert_ne!(config.secret_hash(), [0u8; 4]);
@@ -458,6 +484,7 @@ mod tests {
 
     #[test]
     fn topic_config_exact_match() {
+        let _env = env_guard();
         let mut config = make_config();
         config.topic_overrides.insert(
             "cmd_vel".into(),
@@ -475,6 +502,7 @@ mod tests {
 
     #[test]
     fn topic_config_glob_match() {
+        let _env = env_guard();
         let mut config = make_config();
         config.topic_overrides.insert(
             "fleet.*".into(),
@@ -491,6 +519,7 @@ mod tests {
 
     #[test]
     fn safety_defaults() {
+        let _env = env_guard();
         let config = make_config();
         assert_eq!(config.safety.heartbeat_ms, 50);
         assert_eq!(config.safety.missed_threshold, 3);
@@ -499,6 +528,7 @@ mod tests {
 
     #[test]
     fn no_peers_diagnostic_fires_once() {
+        let _env = env_guard();
         reset_no_peers_diagnostic();
         let start = Instant::now() - Duration::from_secs(10); // pretend started 10s ago
 
@@ -515,6 +545,7 @@ mod tests {
 
     #[test]
     fn no_peers_diagnostic_suppressed_when_peers_exist() {
+        let _env = env_guard();
         reset_no_peers_diagnostic();
         let start = Instant::now() - Duration::from_secs(10);
 
@@ -526,6 +557,7 @@ mod tests {
 
     #[test]
     fn no_peers_diagnostic_suppressed_before_timeout() {
+        let _env = env_guard();
         reset_no_peers_diagnostic();
         let start = Instant::now(); // just started
 
@@ -590,6 +622,7 @@ mod tests {
 
     #[test]
     fn on_link_lost_is_no_longer_hardcoded_to_warn() {
+        let _env = env_guard();
         // The safety-critical one: this field had no env read, so
         // `safety.on_link_lost = "safe_state"` in horus.toml never took effect
         // and the documented comms-loss safe-state could not fire.
@@ -638,6 +671,7 @@ mod tests {
 
     #[test]
     fn on_link_lost_survives_env_to_action_end_to_end() {
+        let _env = env_guard();
         // The gap was between the env var and the action. Walk the whole path.
         use crate::heartbeat::LinkLostAction;
         let restore = std::env::var("HORUS_NET_ON_LINK_LOST").ok();
@@ -655,6 +689,7 @@ mod tests {
 
     #[test]
     fn csv_env_splits_and_trims() {
+        let _env = env_guard();
         let restore = std::env::var("HORUS_NET_DENY_EXPORT").ok();
         std::env::set_var("HORUS_NET_DENY_EXPORT", "camera.*, debug.* ,");
         assert_eq!(

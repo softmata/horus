@@ -99,6 +99,9 @@ fn heartbeat_detects_link_loss_within_200ms() {
     );
     let peer_id = [1u8; 16];
     hb.add_peer(peer_id, "192.168.1.10:9100".parse().unwrap());
+    // Establish the link first: a peer that has never answered is inside the
+    // introduction grace period, and losing a link means losing one that existed.
+    hb.on_received(&peer_id);
 
     // Wait > 3 * 10ms = 30ms
     std::thread::sleep(Duration::from_millis(60));
@@ -125,6 +128,9 @@ fn heartbeat_link_restored_on_receive() {
     );
     let peer_id = [1u8; 16];
     hb.add_peer(peer_id, "192.168.1.10:9100".parse().unwrap());
+    // Establish the link first: a peer that has never answered is inside the
+    // introduction grace period, and losing a link means losing one that existed.
+    hb.on_received(&peer_id);
 
     // Timeout
     std::thread::sleep(Duration::from_millis(60));

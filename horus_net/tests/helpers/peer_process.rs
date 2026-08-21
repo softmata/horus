@@ -32,6 +32,11 @@ fn shm_path(name: &str) -> std::path::PathBuf {
     topic_shm_path(name)
 }
 
+/// Interval between published messages, i.e. a 1 kHz publisher. Fast enough
+/// that the sequential tests stay quick (100 messages in ~100ms) and slow
+/// enough that a reader in another process actually overlaps the writer.
+const WRITE_INTERVAL: Duration = Duration::from_millis(1);
+
 fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>(
     name: &str,
     count: u32,
@@ -45,6 +50,16 @@ fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeO
             std::slice::from_raw_parts(&msg as *const T as *const u8, std::mem::size_of::<T>())
         };
         write_topic_slot_bytes(&path, bytes);
+        // Pace the writes.
+        //
+        // Unpaced, the whole run lands in a few microseconds and the concurrent
+        // tests measure nothing but scheduler luck: the reader is a separate
+        // process polling the latest slot, so how many *distinct* values it sees
+        // depends entirely on whether it held a timeslice during that burst.
+        // `xproc_jointstate_concurrent` wants 5 of 100 and got 2 whenever the
+        // machine was busy — a real robot publisher runs at a rate, and at any
+        // rate at all the reader sees nearly all of them.
+        std::thread::sleep(WRITE_INTERVAL);
     }
     println!("WROTE_RAW {count}");
 }
@@ -59,7 +74,13 @@ fn main() {
     // failing here would fail the whole run. Marking the target `test = false`
     // is not an option — cargo then stops building it, and cross_process.rs
     // locates this binary by scanning `deps/`.
-    if args.get(1).is_some_and(|a| a.starts_with('-')) {
+    //
+    // A bare invocation with no operands at all is the same thing: `cargo test
+    // -p horus_net` runs every test target, this one included, with nothing on
+    // the command line. Exiting 1 there made the whole suite fail on a clean
+    // checkout — a contributor's first `cargo test` reported a failure that was
+    // not one, in a helper they had no reason to know existed.
+    if args.len() < 2 || args.get(1).is_some_and(|a| a.starts_with('-')) {
         return;
     }
 
