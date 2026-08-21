@@ -72,12 +72,25 @@ fn test_presence_receiver_handles_valid_data() {
     // took the `namespace != self.local_namespace` early return and wrote no
     // file, and the assertion below blamed the write path for a mismatch the
     // test itself introduced.
-    let ns_owned = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    //
+    // Ask for the namespace the same way the receiver does. Reading
+    // `HORUS_NAMESPACE` directly is a second, subtly different answer: a test
+    // binary derives its own namespace so a `cargo test` cannot disturb a robot
+    // on the same machine, and that derived value is published to the
+    // environment lazily — the first time anything in the process touches shared
+    // memory. So this read raced whichever test got there first, and failed
+    // about one run in eight.
+    let ns_owned = horus_sys::shm::shm_namespace();
     let ns = ns_owned.as_bytes();
     let mut payload = Vec::new();
     payload.extend_from_slice(&(ns.len() as u16).to_le_bytes());
     payload.extend_from_slice(ns);
-    let hid = b"abcd";
+    // Unique per process: the presence directory is shared with every other
+    // horus_net test binary, and a fixed host id means a fixed filename that
+    // another test's cleanup can remove mid-assertion. Failed about one run in
+    // four with "Presence file should be created".
+    let hid = format!("abcd{}", std::process::id());
+    let hid = hid.as_bytes();
     payload.extend_from_slice(&(hid.len() as u16).to_le_bytes());
     payload.extend_from_slice(hid);
     let now_ns = std::time::SystemTime::now()
@@ -96,7 +109,7 @@ fn test_presence_receiver_handles_valid_data() {
 
     // Verify file was written
     let nodes_dir = horus_sys::shm::shm_nodes_dir();
-    let path = nodes_dir.join("remote_abcd.json");
+    let path = nodes_dir.join(format!("remote_{}.json", String::from_utf8_lossy(hid)));
     assert!(path.exists(), "Presence file should be created");
 
     // Cleanup
@@ -112,7 +125,8 @@ fn test_presence_receiver_rejects_wrong_namespace() {
     let ns = b"other_namespace"; // different from local "default"
     payload.extend_from_slice(&(ns.len() as u16).to_le_bytes());
     payload.extend_from_slice(ns);
-    let hid = b"wxyz";
+    let hid = format!("wxyz{}", std::process::id());
+    let hid = hid.as_bytes();
     payload.extend_from_slice(&(hid.len() as u16).to_le_bytes());
     payload.extend_from_slice(hid);
     payload.extend_from_slice(&0u64.to_le_bytes());
@@ -123,7 +137,7 @@ fn test_presence_receiver_rejects_wrong_namespace() {
 
     // File should NOT be created (wrong namespace)
     let nodes_dir = horus_sys::shm::shm_nodes_dir();
-    let path = nodes_dir.join("remote_wxyz.json");
+    let path = nodes_dir.join(format!("remote_{}.json", String::from_utf8_lossy(hid)));
     assert!(!path.exists(), "Should reject different namespace");
 }
 

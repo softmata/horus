@@ -52,8 +52,17 @@ impl PresenceReceiver {
     pub fn new() -> Self {
         Self {
             active_hosts: HashMap::new(),
-            local_namespace: std::env::var("HORUS_NAMESPACE")
-                .unwrap_or_else(|_| "default".to_string()),
+            // The one accessor, not a second reading of the environment.
+            //
+            // `shm_namespace()` is what every other part of the process uses to
+            // decide which `/dev/shm/horus_*` tree it belongs to, and it does
+            // more than read `HORUS_NAMESPACE`: it sanitises the value and
+            // derives one when the variable is unset. Reading the variable here
+            // instead meant this filter could disagree with the directory the
+            // very next line writes into — accepting a broadcast for a
+            // namespace this process is not in, or rejecting one for the
+            // namespace it is.
+            local_namespace: horus_sys::shm::shm_namespace(),
         }
     }
 

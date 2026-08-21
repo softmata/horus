@@ -179,3 +179,46 @@ fn every_printed_horus_command_resolves() {
         bad.join("\n  ")
     );
 }
+
+/// Naming something that does not exist is the user's mistake, not the
+/// framework's.
+///
+/// `horus record info <bad>` reported
+///
+/// ```text
+/// Error: Internal error: Session 'no_such_session' not found. Use 'horus
+/// record list' to see available sessions. (at horus_manager/src/commands/record.rs:129)
+/// ```
+///
+/// "Internal error" says the framework broke, and the file-and-line is
+/// something the reader can do nothing with — attached to a message that
+/// otherwise tells them exactly what to do next.
+#[test]
+fn a_bad_argument_is_not_reported_as_an_internal_error() {
+    for args in [
+        vec!["record", "info", "definitely_not_a_session"],
+        vec!["record", "replay", "definitely_not_a_session"],
+    ] {
+        let out = Command::new(horus())
+            .args(&args)
+            .output()
+            .expect("run horus");
+        let text = String::from_utf8_lossy(&out.stderr).into_owned()
+            + &String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("Internal error"),
+            "`horus {}` blames the framework for a name the user chose:\n{text}",
+            args.join(" ")
+        );
+        assert!(
+            !text.contains("horus_manager/src/"),
+            "`horus {}` shows the reader a source location:\n{text}",
+            args.join(" ")
+        );
+        assert!(
+            text.contains("not found"),
+            "`horus {}` should say the session was not found:\n{text}",
+            args.join(" ")
+        );
+    }
+}

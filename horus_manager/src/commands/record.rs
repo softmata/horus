@@ -3,7 +3,7 @@
 use crate::cli_output;
 use colored::*;
 use horus_core::core::DurationExt;
-use horus_core::error::HorusResult;
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::horus_internal;
 use horus_core::scheduling::{diff_recordings, Recording, RecordingManager};
 use std::path::PathBuf;
@@ -121,15 +121,18 @@ pub fn run_info(session: String, json: bool) -> HorusResult<()> {
         return if found {
             Ok(())
         } else {
-            Err(horus_internal!("Session '{}' not found", session))
+            Err(HorusError::Config(ConfigError::Other(format!(
+                "Session '{}' not found. Use 'horus record list' to see available sessions.",
+                session
+            ))))
         };
     }
 
     if recordings.is_empty() {
-        return Err(horus_internal!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Session '{}' not found. Use 'horus record list' to see available sessions.",
             session
-        ));
+        ))));
     }
 
     println!(
@@ -170,7 +173,10 @@ pub fn run_delete(session: String, force: bool) -> HorusResult<()> {
     // Check existence before prompting
     let sessions = manager.list_sessions().unwrap_or_default();
     if !sessions.iter().any(|s| s == &session) {
-        return Err(horus_internal!("Session '{}' not found", session));
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "Session '{}' not found. Use 'horus record list' to see available sessions.",
+            session
+        ))));
     }
 
     if !force {
@@ -290,10 +296,10 @@ pub fn run_replay(
     use horus_core::Scheduler;
 
     if speed <= 0.0 {
-        return Err(horus_internal!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "--speed must be greater than 0 (got {})",
             speed
-        ));
+        ))));
     }
 
     let manager = RecordingManager::new();
@@ -309,10 +315,11 @@ pub fn run_replay(
             .map_err(|e| horus_internal!("Failed to get session '{}': {}", recording, e))?;
 
         if recordings.is_empty() {
-            return Err(horus_internal!(
-                "Session '{}' not found or has no recordings",
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Session '{}' not found or has no recordings. Use 'horus record \
+                 list' to see available sessions.",
                 recording
-            ));
+            ))));
         }
 
         // Find the scheduler recording (file starting with "scheduler@")
@@ -326,7 +333,10 @@ pub fn run_replay(
             })
             .cloned()
             .ok_or_else(|| {
-                horus_internal!("No scheduler recording found in session '{}'", recording)
+                HorusError::Config(ConfigError::Other(format!(
+                    "No scheduler recording found in session '{}'",
+                    recording
+                )))
             })?
     };
 
