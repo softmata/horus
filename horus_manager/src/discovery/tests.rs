@@ -303,6 +303,8 @@ fn test_shared_memory_info_creation() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
 
     assert_eq!(shm.topic_name, "robot.pose");
@@ -359,6 +361,8 @@ fn test_shared_memory_info_inactive() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
 
     assert!(!shm.active);
@@ -783,6 +787,8 @@ fn test_discovery_cache_update_shared_memory() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     }];
 
     cache.update_shared_memory(shm);
@@ -890,6 +896,8 @@ fn test_shared_memory_info_clone() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
 
     let cloned = shm.clone();
@@ -1638,6 +1646,8 @@ fn test_system_topic_detection() {
         is_system: true,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
     assert!(system_shm.is_system);
 
@@ -1656,6 +1666,8 @@ fn test_system_topic_detection() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
     assert!(!user_shm.is_system);
 

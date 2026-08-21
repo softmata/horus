@@ -47,6 +47,16 @@ pub(super) fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryI
 
             let messages_total = header_info.as_ref().map(|h| h.messages_total).unwrap_or(0);
             let topic_kind = header_info.as_ref().map(|h| h.topic_kind).unwrap_or(0);
+            // Endpoint counts from the ring header, which is the protocol's own
+            // record. The `publishers`/`subscribers` name lists below come from
+            // the topic-node registry, which only learns about a topic opened
+            // from inside a node's tick — so a service server, a CLI tool or any
+            // background thread is absent from them.
+            let publisher_count = header_info.as_ref().map(|h| h.publisher_count).unwrap_or(0);
+            let subscriber_count = header_info
+                .as_ref()
+                .map(|h| h.subscriber_count)
+                .unwrap_or(0);
 
             SharedMemoryInfo {
                 topic_name: t.name.clone(),
@@ -63,6 +73,8 @@ pub(super) fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryI
                 is_system: t.name.starts_with("horus."),
                 messages_total,
                 topic_kind,
+                publisher_count,
+                subscriber_count,
             }
         })
         .collect();

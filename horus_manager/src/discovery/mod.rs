@@ -145,6 +145,15 @@ pub struct SharedMemoryInfo {
     pub messages_total: u64,
     /// Topic kind classification (from TopicHeader).
     pub topic_kind: u8,
+    /// Publishers registered with the ring, from TopicHeader.
+    ///
+    /// Distinct from `publishers`: that list comes from the topic-node registry
+    /// and only records topics opened from inside a node's tick, so anything
+    /// opened by a service server, a CLI tool or a background thread is missing
+    /// from it. This count is the protocol's own.
+    pub publisher_count: u32,
+    /// Subscribers registered with the ring, from TopicHeader.
+    pub subscriber_count: u32,
 }
 
 // Enhanced node status with pub/sub info
@@ -370,6 +379,8 @@ mod dispatch_tests {
             is_system: false,
             messages_total: 42,
             topic_kind: 0,
+            publisher_count: 0,
+            subscriber_count: 0,
         }];
         cache.update_shared_memory(shm);
         assert_eq!(cache.shared_memory.len(), 1);
