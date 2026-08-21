@@ -34,7 +34,12 @@ try:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.add(alias.name.split('.')[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            # `node.level` is the number of leading dots. A relative import
+            # names a sibling module, not a distribution, and resolving it
+            # needs the package context this check does not have. Without the
+            # guard, `from .generator import X` was reported as a missing
+            # third-party module called `generator`.
             imports.add(node.module.split('.')[0])
     for imp in imports:
         if imp not in ('__future__',):
@@ -2007,6 +2012,28 @@ mod import_check_tests {
         assert!(
             !stderr.contains("{e.name}"),
             "the f-string placeholder was printed literally: {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn a_relative_import_is_not_a_missing_package() {
+        // `from .generator import X` names a sibling module, not a
+        // distribution, and resolving it needs the package context this check
+        // does not have. It was reported as a missing third-party module called
+        // `generator`, so `horus check` told developers their own package had
+        // unmet dependencies.
+        let (ok, stderr) = run_on("from .sibling import thing\nfrom . import other\n");
+        assert!(ok, "a relative import must not fail the check: {stderr:?}");
+        assert!(!stderr.contains("sibling"), "{stderr:?}");
+    }
+
+    #[test]
+    fn an_absolute_import_of_the_same_name_is_still_checked() {
+        // The guard is about the leading dot, not the name.
+        let (ok, _) = run_on("import sibling_module_that_does_not_exist\n");
+        assert!(
+            !ok,
+            "an absolute import of a missing module must still fail"
         );
     }
 
