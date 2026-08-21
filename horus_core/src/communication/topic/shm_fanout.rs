@@ -542,6 +542,27 @@ impl ShmFanoutRing {
         // ever write the new magic into an already-initialized old region). A
         // `magic == 0` region is a fresh, zero-filled region whose owner is still
         // initializing → keep spinning (unchanged from prior behavior).
+        //
+        // The wait is bounded. A `magic == 0` region is normally an owner that is
+        // milliseconds from finishing, but it is also what a process that died
+        // between creating the region and stamping the magic leaves behind —
+        // a SIGKILL, an OOM kill, a panic during init. That region never becomes
+        // valid, and the loop had no exit for it: every later node opening the
+        // same topic span forever, burning a core, with no timeout, no error and
+        // no log line. Restarting the robot did not help, because the region
+        // outlives the process that made it.
+        //
+        // Giving up returns `None`, which is the same answer the incompatible
+        // -layout branch gives and which the caller already handles by rebuilding
+        // on SpscShm. A slow but live owner is nowhere near this bound: it writes
+        // the magic immediately after mapping.
+        const ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        /// Spins between clock reads. `Instant::now` is ~20ns against a ~1ns
+        /// spin hint, so checking every iteration would dominate the wait it is
+        /// meant to measure.
+        const SPINS_PER_CLOCK_CHECK: u32 = 4096;
+
+        let started = std::time::Instant::now();
         let mut spins = 0u32;
         loop {
             let m = std::ptr::read_volatile(std::ptr::addr_of!(meta.magic));
@@ -553,6 +574,10 @@ impl ShmFanoutRing {
             }
             std::hint::spin_loop();
             spins += 1;
+            if spins % SPINS_PER_CLOCK_CHECK == 0 && started.elapsed() >= ATTACH_TIMEOUT {
+                // The owner is never going to finish. Let the caller fall back.
+                return None;
+            }
             if spins > 1_000_000 {
                 // Yield after extensive spinning
                 std::thread::yield_now();
@@ -1022,6 +1047,47 @@ mod tests {
         let ptr = unsafe { alloc_zeroed(layout) };
         assert!(!ptr.is_null());
         (ptr, layout)
+    }
+
+    /// A region whose owner died before stamping the magic must not hang the
+    /// next process that opens the topic.
+    ///
+    /// `magic == 0` is normally an owner milliseconds from finishing, so `attach`
+    /// spins for it — but it is also exactly what a SIGKILL or OOM kill during
+    /// init leaves behind, and that region never becomes valid. The loop had no
+    /// exit for that case: every later node opening the same topic spun forever
+    /// on a core, with no timeout, no error and no log line, and restarting did
+    /// not help because the region outlives the process that made it.
+    #[test]
+    fn attach_gives_up_on_a_region_whose_owner_never_finished() {
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        // Zero-filled and never initialised: magic stays 0 forever.
+        let addr = ptr as usize;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ptr = addr as *mut u8;
+            let result = unsafe { ShmFanoutRing::attach(ptr, true, 8) };
+            let _ = tx.send(result.is_none());
+        });
+
+        // The bound inside `attach` is 2s; allow generous slack for a loaded
+        // machine. Waiting rather than joining means a regression fails the test
+        // instead of hanging the suite.
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(gave_up) => assert!(
+                gave_up,
+                "attach returned a ring for a region that was never initialised"
+            ),
+            Err(_) => panic!(
+                "attach never returned for a region whose owner died before \
+                 stamping the magic — every node opening this topic would spin \
+                 forever"
+            ),
+        }
+
+        // The attach thread has returned, so nothing is reading the region.
+        unsafe { std::alloc::dealloc(ptr, layout) };
     }
 
     #[test]
