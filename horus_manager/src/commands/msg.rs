@@ -332,9 +332,62 @@ fn dirs_next_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
-fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
-    let mut messages = Vec::new();
 
+/// Messages declared in this project's `msgs/*.hmsg`, if we are in a project.
+///
+/// Silent when there is no project or no `msgs/` directory — `horus msg list`
+/// is used outside projects and must keep working. Parse failures are silent
+/// here too, because this is the *listing* path; `horus msg gen` is where a
+/// broken definition gets a diagnostic, and reporting it twice from two
+/// commands with different wording helps nobody.
+fn local_hmsg_messages() -> Vec<MessageInfo> {
+    let Ok((manifest, root)) = crate::manifest::HorusManifest::find_and_load() else {
+        return Vec::new();
+    };
+    let msgs_dir = root.join("msgs");
+    if !msgs_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&msgs_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "hmsg"))
+        .collect();
+    files.sort();
+
+    let mut out = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(defs) = crate::msgspec::parse::parse_file(&text, &file) else {
+            continue;
+        };
+        for d in defs {
+            out.push(MessageInfo {
+                name: d.name.clone(),
+                module: manifest.package.name.clone(),
+                fields: d
+                    .fields
+                    .iter()
+                    .map(|f| FieldInfo {
+                        name: f.name.clone(),
+                        field_type: crate::msgspec::canonical::render_rust(&f.ty),
+                        doc: f.doc.join(" "),
+                    })
+                    .collect(),
+                doc: d.doc.join(" "),
+                source_file: d.src.display().to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     // Find the message type definitions.
     //
     // These used to live in `horus_library/messages`, but horus_library was
@@ -385,6 +438,14 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     // HORUS_SOURCE_DIR must not be blended with whatever else is on the
     // machine. The robotics directories are a genuinely different source and
     // are additive.
+    // The project's own messages, when there are any.
+    //
+    // Parsed from `msgs/*.hmsg` with the strict parser rather than scraped out
+    // of the generated Rust: the `.hmsg` file is the definition, and going
+    // through the same parser means `horus msg hash` and the generated
+    // artifacts cannot compute the value two different ways.
+    let mut messages: Vec<MessageInfo> = local_hmsg_messages();
+
     let mut message_dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(found) = search_paths.iter().find(|p| p.is_dir()) {
         message_dirs.push(found.clone());
@@ -2351,4 +2412,258 @@ mod robotics_message_discovery_tests {
             );
         }
     }
+}
+
+// ─── horus msg gen ───────────────────────────────────────────────────────────
+
+/// Generate Rust, C++ and Python artifacts from `msgs/*.hmsg`.
+///
+/// A message type usable from all three languages currently has to be written
+/// into six places, each with its own syntax. They do not stay in sync: the
+/// registries hold 91, 75, 75, 68, 62, 61 and 60 entries, and `horus_cpp`'s
+/// layout contract exists because the Rust and C++ definitions of
+/// `JointCommand` once drifted to 928 bytes against 88 — an 840-byte overrun on
+/// every receive.
+///
+/// This produces all of them from one definition, with one layout hash.
+pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
+    use crate::msgspec::{canonical, emit_cpp, emit_python, emit_rust, layout, parse, Package};
+
+    let (manifest, root) = crate::manifest::HorusManifest::find_and_load()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e}"))))?;
+
+    let msgs_dir = root.join("msgs");
+    if !msgs_dir.is_dir() {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "No msgs/ directory in {}.\n\n\
+             Message definitions live in `msgs/*.hmsg`. Create one:\n\n  \
+             mkdir msgs && cat > msgs/{}.hmsg <<'EOF'\n  \
+             #[topic = \"sensor.data\"]\n  \
+             SensorReading {{\n      \
+             timestamp_ns: u64,\n      \
+             value: f32,\n  \
+             }}\n  EOF",
+            root.display(),
+            manifest.package.name.replace('-', "_")
+        ))));
+    }
+
+    // Sorted, so the generated output does not depend on directory order.
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&msgs_dir)
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("reading msgs/: {e}"))))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "hmsg"))
+        .collect();
+    files.sort();
+
+    if files.is_empty() {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "{} contains no .hmsg files",
+            msgs_dir.display()
+        ))));
+    }
+
+    let mut messages = Vec::new();
+    let mut diags = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file)
+            .map_err(|e| HorusError::Config(ConfigError::Other(format!("{}: {e}", file.display()))))?;
+        match parse::parse_file(&text, file) {
+            Ok(mut m) => messages.append(&mut m),
+            Err(mut d) => diags.append(&mut d),
+        }
+    }
+
+    if !diags.is_empty() {
+        let body = diags
+            .iter()
+            .map(|d| format!("  {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "{} problem(s) in message definitions:\n{body}",
+            diags.len()
+        ))));
+    }
+
+    // Duplicate names across files would produce two types with one name.
+    let mut seen: std::collections::HashMap<&str, &std::path::Path> =
+        std::collections::HashMap::new();
+    for m in &messages {
+        if let Some(prev) = seen.insert(&m.name, &m.src) {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "message `{}` is declared twice: {} and {}",
+                m.name,
+                prev.display(),
+                m.src.display()
+            ))));
+        }
+    }
+
+    let pkg = Package {
+        name: manifest.package.name.clone(),
+        messages,
+    };
+
+    // References this generator cannot size exactly are rejected rather than
+    // guessed. A wrong size produces a header whose static_assert passes
+    // against the wrong number, which is the failure the layout contract exists
+    // to catch.
+    let unresolved = emit_rust::unresolved_refs(&pkg);
+    if !unresolved.is_empty() {
+        let body = unresolved
+            .iter()
+            .map(|(m, r)| format!("  {m} references `{r}`"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "message definitions can reference primitives, arrays, and other \
+             messages in msgs/ — nothing else:\n{body}\n\n\
+             Write the fields out. A built-in like Vector3 is three f64s; \
+             inlining them keeps the layout exact and checkable."
+        ))));
+    }
+
+    // Layouts, in declaration order, so a message may reference one declared
+    // above it.
+    let mut env = layout::builtin_layouts();
+    for m in &pkg.messages {
+        match layout::compute(m, &env) {
+            Ok(l) => {
+                env.insert(m.name.clone(), (l.size, l.align));
+            }
+            Err(missing) => {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "{}: `{}` is used before it is declared — declare it above `{}`",
+                    m.src.display(),
+                    missing,
+                    m.name
+                ))));
+            }
+        }
+    }
+
+    let horus_src = crate::commands::run::run_rust::find_horus_source_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e:#}"))))?;
+
+    let gen_root = root.join(".horus/generated");
+    let artifacts: Vec<(std::path::PathBuf, String)> = vec![
+        (
+            gen_root.join("msgs/Cargo.toml"),
+            emit_rust::cargo_toml(&pkg, &horus_src, &manifest.package.version),
+        ),
+        (
+            gen_root.join("msgs/src/lib.rs"),
+            emit_rust::lib_rs(&pkg, &env),
+        ),
+        (
+            gen_root
+                .join("include")
+                .join(pkg.name.replace('-', "_"))
+                .join("msgs.hpp"),
+            emit_cpp::header(&pkg, &env),
+        ),
+        (
+            gen_root.join("python").join("msgs.py"),
+            emit_python::module(&pkg, &env),
+        ),
+    ];
+
+    if check {
+        let mut stale = Vec::new();
+        for (path, want) in &artifacts {
+            let have = std::fs::read_to_string(path).unwrap_or_default();
+            if &have != want {
+                stale.push(path.clone());
+            }
+        }
+        if !stale.is_empty() {
+            let body = stale
+                .iter()
+                .map(|p| format!("  {}", p.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "generated message artifacts are out of date:\n{body}\n\n\
+                 Run `horus msg gen`."
+            ))));
+        }
+        if !json {
+            println!(
+                "{} {} message(s) up to date",
+                cli_output::ICON_SUCCESS.green(),
+                pkg.messages.len()
+            );
+        }
+        return Ok(());
+    }
+
+    for (path, contents) in &artifacts {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                HorusError::Config(ConfigError::Other(format!("{}: {e}", parent.display())))
+            })?;
+        }
+        std::fs::write(path, contents).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!("{}: {e}", path.display())))
+        })?;
+    }
+
+    if json {
+        let entries: Vec<String> = pkg
+            .messages
+            .iter()
+            .map(|m| {
+                let l = layout::compute(m, &env).ok();
+                format!(
+                    "{{\"name\":\"{}\",\"hash\":\"0x{:08x}\",\"canonical\":{:?},\"size\":{},\"fields\":{}}}",
+                    m.name,
+                    canonical::layout_hash(m),
+                    canonical::canonical_form(m),
+                    l.as_ref().map(|l| l.size).unwrap_or(0),
+                    m.fields.len()
+                )
+            })
+            .collect();
+        println!(
+            "{{\"messages\":[{}],\"artifacts\":[{}]}}",
+            entries.join(","),
+            artifacts
+                .iter()
+                .map(|(p, _)| format!("{:?}", p.display().to_string()))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} Generated {} message(s) from {} file(s)",
+        cli_output::ICON_SUCCESS.green(),
+        pkg.messages.len(),
+        files.len()
+    );
+    for m in &pkg.messages {
+        let l = layout::compute(m, &env).ok();
+        let size = l.as_ref().map(|l| l.size).unwrap_or(0);
+        let pad = l.as_ref().map(|l| l.padding).unwrap_or(0);
+        println!(
+            "    {:<24} 0x{:08x}  {} bytes{}",
+            m.name,
+            canonical::layout_hash(m),
+            size,
+            if pad > 0 {
+                format!(" ({pad} padding)")
+            } else {
+                String::new()
+            }
+        );
+    }
+    println!();
+    for (path, _) in &artifacts {
+        let rel = path.strip_prefix(&root).unwrap_or(path);
+        println!("    {}", rel.display().to_string().dimmed());
+    }
+    Ok(())
 }

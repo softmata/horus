@@ -313,6 +313,17 @@ pub fn generate(
         "  target_include_directories({} PRIVATE ${{CMAKE_SOURCE_DIR}}/../include)",
         target_name
     )?;
+    // Types written by `horus msg gen`. CMAKE_SOURCE_DIR is `.horus`, so this
+    // is `.horus/generated/include` — the same tree the Rust crate and the
+    // Python module are generated into. Always added, whether or not anything
+    // has been generated yet: an include path that does not exist is harmless,
+    // and adding it conditionally would mean the first `horus msg gen` had to
+    // be followed by a CMake reconfigure to take effect.
+    writeln!(
+        cmake,
+        "  target_include_directories({} PRIVATE ${{CMAKE_SOURCE_DIR}}/generated/include)",
+        target_name
+    )?;
 
     // HORUS C++ bindings. run_cpp::build_cpp resolves the horus source tree and
     // passes these in with -D, so the generated file stays free of host paths.

@@ -1838,6 +1838,16 @@ enum MsgCommands {
         #[arg(long = "json")]
         json: bool,
     },
+
+    /// Generate Rust, C++ and Python types from msgs/*.hmsg
+    Gen {
+        /// Verify the generated files are up to date without rewriting them
+        #[arg(long = "check")]
+        check: bool,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2700,6 +2710,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             } => commands::msg::list_messages(verbose, filter.as_deref(), json),
             MsgCommands::Info { name, json } => commands::msg::show_message(&name, json),
             MsgCommands::Hash { name, json } => commands::msg::message_hash(&name, json),
+            MsgCommands::Gen { check, json } => commands::msg::generate_messages(check, json),
         },
 
         Commands::Log {

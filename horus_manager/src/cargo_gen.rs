@@ -115,6 +115,7 @@ pub fn generate(
         .context("Cannot generate .horus/Cargo.toml without the HORUS source tree")?;
     write_horus_path_deps(&mut cargo, &horus_source, manifest);
     write_implicit_deps(&mut cargo, manifest);
+    write_generated_msgs_dep(&mut cargo, project_dir, manifest);
 
     // Add user deps from horus.toml
     write_deps_section(&mut cargo, &manifest.dependencies, project_dir, &horus_dir)?;
@@ -307,6 +308,26 @@ fn horus_dep_features(manifest: &HorusManifest) -> Vec<String> {
         features.push("net".to_string());
     }
     features
+}
+
+/// Depend on the crate `horus msg gen` produced, when there is one.
+///
+/// Without this the generated types compile in isolation and are reachable from
+/// nothing — the same shape as the Python generator that wrote Rust into a
+/// directory `lib.rs` never declared, where cargo compiled none of it and
+/// nothing reported an error anywhere.
+fn write_generated_msgs_dep(cargo: &mut String, project_dir: &Path, manifest: &HorusManifest) {
+    let generated = project_dir.join(".horus/generated/msgs");
+    if !generated.join("Cargo.toml").is_file() {
+        return;
+    }
+    writeln!(
+        cargo,
+        "{}_msgs = {{ path = \"{}\" }}",
+        sanitize_cargo_name(&manifest.package.name),
+        generated.display()
+    )
+    .unwrap();
 }
 
 fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &HorusManifest) {
