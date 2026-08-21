@@ -1398,16 +1398,19 @@ pub(super) fn recv_shm_pod_broadcast<
         // Reaching here implies head >= tail + cap + 1 > cap, so this cannot
         // wrap; guarded anyway because `head` is re-loaded and could in
         // principle be observed smaller than the cached value.
-        tail = if head > cap {
-            head.wrapping_sub(cap).wrapping_add(cap / 2)
-        } else {
-            tail
-        };
-        local.local_tail = tail;
-        local.local_head = head;
-        if local.local_head.wrapping_sub(tail) == 0 {
-            return None;
+        if head > cap {
+            local.local_tail = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            local.local_head = head;
         }
+        // Return rather than falling through to read the slot we just landed
+        // on, exactly as the `v1 > tail + 1` branch below does. Reading
+        // immediately after re-seating the cursor means validating a slot the
+        // producer may be writing *right now*, in the middle of the ring rather
+        // than behind it; `recv_never_reorders_or_duplicates_when_lapped` went
+        // from 8/8 to 5/6 when this branch read directly, and back to passing
+        // when it defers. The caller's next poll does the read against a cursor
+        // that has settled, and a drain loop reaches it on the same pass.
+        return None;
     }
 
     let index = (tail & mask) as usize;
