@@ -2951,7 +2951,7 @@ impl Scheduler {
             };
 
             // 4. Also print to stderr (visible in logs)
-            eprintln!("{}", report);
+            crate::terminal::eprint_line(&report);
 
             // 5. Chain to previous hook
             prev_hook(info);
@@ -3584,7 +3584,8 @@ impl Scheduler {
                         live.and_then(|n| n.pinned_core),
                         caps.is_some_and(|c| c.mlockall_permitted),
                         caps.is_some_and(|c| c.preempt_rt),
-                        live.and_then(|n| n.tick_budget).map(|b| b.as_micros() as u64),
+                        live.and_then(|n| n.tick_budget)
+                            .map(|b| b.as_micros() as u64),
                         live.and_then(|n| n.deadline).map(|d| d.as_micros() as u64),
                         self.rt
                             .degradations
@@ -3749,14 +3750,14 @@ impl Scheduler {
 
         let sep = "=".repeat(90);
         let thin_sep = "-".repeat(90);
-        eprintln!("\n{}", sep);
-        eprintln!("TIMING REPORT (per-node)");
-        eprintln!("{}", sep);
-        eprintln!(
+        crate::terminal::eprint_line(&format!("\n{}", sep));
+        crate::terminal::eprint_line("TIMING REPORT (per-node)");
+        crate::terminal::eprint_line(&sep);
+        crate::terminal::eprint_line(&format!(
             "{:<20} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8}",
             "Node", "Avg(us)", "P99(us)", "Max(us)", "Stddev", "Budget(us)", "Overruns", "Misses"
-        );
-        eprintln!("{}", thin_sep);
+        ));
+        crate::terminal::eprint_line(&thin_sep);
 
         // Sort nodes by name for consistent output
         let mut node_names: Vec<&String> = profiler.node_stats.keys().collect();
@@ -3799,7 +3800,7 @@ impl Scheduler {
                 ""
             };
 
-            eprintln!(
+            crate::terminal::eprint_line(&format!(
                 "{:<20} {:>8.0} {:>8} {:>8.0} {:>8.1} {:>10} {:>8} {:>7}{}",
                 truncate_name(name, 20),
                 stats.avg_us,
@@ -3810,7 +3811,7 @@ impl Scheduler {
                 overruns_str,
                 misses_str,
                 status,
-            );
+            ));
 
             // Generate suggestions
             if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
@@ -3829,21 +3830,21 @@ impl Scheduler {
             }
         }
 
-        eprintln!("{}", thin_sep);
-        eprintln!(
+        crate::terminal::eprint_line(&thin_sep);
+        crate::terminal::eprint_line(&format!(
             "Total nodes: {}  |  Ticked: {}",
             self.nodes.len(),
             node_names.len()
-        );
+        ));
 
         if !suggestions.is_empty() {
-            eprintln!("\nSuggestions:");
+            crate::terminal::eprint_line("\nSuggestions:");
             for s in &suggestions {
-                eprintln!("{}", s);
+                crate::terminal::eprint_line(&s);
             }
         }
 
-        eprintln!("{}\n", sep);
+        crate::terminal::eprint_line(&format!("{}\n", sep));
     }
 
     /// Get information about all registered nodes

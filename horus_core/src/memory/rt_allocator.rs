@@ -108,7 +108,7 @@ unsafe impl GlobalAlloc for RtAwareAllocator {
             let name = rt_node_name();
             // Write directly to stderr to avoid allocating in the panic message path.
             // The panic machinery itself may allocate, but the message reaches the user.
-            eprintln!(
+            crate::terminal::eprint_line(&format!(
                 "\n\x1b[1;31mHEAP ALLOCATION IN RT TICK!\x1b[0m\n\
                  Node '{}' allocated memory during tick().\n\
                  This causes unpredictable latency in real-time code.\n\
@@ -118,7 +118,7 @@ unsafe impl GlobalAlloc for RtAwareAllocator {
                  \n\
                  To allow allocations (prototyping), remove .no_alloc() from the node builder.\n",
                 name,
-            );
+            ));
             panic!(
                 "Heap allocation in RT tick of '{}'. Remove allocations from tick() or remove .no_alloc().",
                 name

@@ -254,22 +254,21 @@ fn run_server_loop<Req, Res>(
                         // Same containment as the typed path below: a panic
                         // here would take down the gateway thread and with it
                         // every service reachable through the CLI.
-                        let response = match std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| handler(typed_payload)),
-                        ) {
-                            Ok(Ok(payload)) => {
-                                let json_payload = serde_json::to_value(&payload)
-                                    .unwrap_or(serde_json::Value::Null);
-                                ServiceResponse::success(request_id, json_payload)
-                            }
-                            Ok(Err(err_msg)) => {
-                                ServiceResponse::failure(request_id, err_msg)
-                            }
-                            Err(_) => ServiceResponse::failure(
-                                request_id,
-                                "service handler panicked".to_string(),
-                            ),
-                        };
+                        let response =
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                handler(typed_payload)
+                            })) {
+                                Ok(Ok(payload)) => {
+                                    let json_payload = serde_json::to_value(&payload)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    ServiceResponse::success(request_id, json_payload)
+                                }
+                                Ok(Err(err_msg)) => ServiceResponse::failure(request_id, err_msg),
+                                Err(_) => ServiceResponse::failure(
+                                    request_id,
+                                    "service handler panicked".to_string(),
+                                ),
+                            };
                         let res_file =
                             gateway_dir.join(format!("{}.response.{}.json", svc_name, request_id));
                         let _ = serde_json::to_vec(&response).map(|bytes| {
@@ -321,9 +320,9 @@ fn run_server_loop<Req, Res>(
             // below already makes this argument for a malformed topic name; the
             // handler deserves the same containment, and the scheduler already
             // treats a node's `tick()` this way.
-            let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || handler(req.payload),
-            )) {
+            let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handler(req.payload)
+            })) {
                 Ok(Ok(payload)) => ServiceResponse::success(request_id, payload),
                 Ok(Err(err_msg)) => ServiceResponse::failure(request_id, err_msg),
                 Err(_) => {

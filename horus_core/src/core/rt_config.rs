@@ -206,7 +206,9 @@ impl RtConfig {
         if self.scheduler != RtScheduler::Normal && !kernel_info.preempt_rt {
             degradations.push(RtDegradation::NoPreemptRt);
             if self.warn_on_degradation {
-                crate::terminal::print_line(&format!("Warning: PREEMPT_RT kernel not detected, RT guarantees may not be met"));
+                crate::terminal::print_line(
+                    "Warning: PREEMPT_RT kernel not detected, RT guarantees may not be met",
+                );
             }
         }
 

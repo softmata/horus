@@ -60,7 +60,10 @@ fn a_lapped_broadcast_consumer_keeps_receiving_and_tracks_the_head() {
     let producer: Topic<Wide> = Topic::new(topic_name).expect("publisher");
     let total: u64 = 3000;
     for i in 1..=total {
-        producer.send(Wide { seq: i, _pad: [0; 32] });
+        producer.send(Wide {
+            seq: i,
+            _pad: [0; 32],
+        });
         std::thread::sleep(Duration::from_micros(1000)); // ~1 kHz
     }
     std::thread::sleep(Duration::from_millis(300));

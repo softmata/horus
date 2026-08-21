@@ -411,12 +411,12 @@ impl NodePresence {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(existing) = serde_json::from_str::<NodePresence>(&content) {
                     if existing.pid != self.pid && is_alive(existing.pid, existing.pid_start_time) {
-                        eprintln!(
+                        crate::terminal::eprint_line(&format!(
                             "[horus] WARNING: node '{}' already registered by PID {} \
                              (this is PID {}). Overwriting presence file — \
                              duplicate node names cause unreliable discovery.",
                             self.name, existing.pid, self.pid
-                        );
+                        ));
                     }
                 }
             }
@@ -865,8 +865,14 @@ mod escape_tests {
         // opens one that reads as the runtime's own emergency stop.
         let evil = "arm\n EMERGENCY STOP: forged";
         let safe = escape_control_chars(evil);
-        assert!(!safe.contains('\n'), "escaped name still contains a newline: {safe:?}");
-        assert!(safe.contains("\\x0a"), "newline should be visible as an escape: {safe:?}");
+        assert!(
+            !safe.contains('\n'),
+            "escaped name still contains a newline: {safe:?}"
+        );
+        assert!(
+            safe.contains("\\x0a"),
+            "newline should be visible as an escape: {safe:?}"
+        );
     }
 
     #[test]
@@ -879,7 +885,10 @@ mod escape_tests {
     fn c1_range_is_escaped_too() {
         // C1 controls can also drive a terminal, and arrive via UTF-8.
         let safe = escape_control_chars("a\u{85}b\u{9b}c");
-        assert!(!safe.contains('\u{85}') && !safe.contains('\u{9b}'), "{safe:?}");
+        assert!(
+            !safe.contains('\u{85}') && !safe.contains('\u{9b}'),
+            "{safe:?}"
+        );
     }
 
     #[test]

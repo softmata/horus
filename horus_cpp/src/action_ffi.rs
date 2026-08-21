@@ -486,11 +486,11 @@ pub fn action_server_process(server: &mut FfiActionServer) {
         // The id is ambiguous, so the goal is not answerable: reject it and say
         // so, rather than accept it and break the goal already running.
         if server.cancel_flags.contains_key(&goal_id) {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[ACTION] {}: rejecting goal {} — that goal id is already in flight. \
                  Accepting it would make the running goal uncancellable.",
                 server.name, goal_id
-            );
+            ));
             publish_status(server, goal_id, FfiGoalStatus::Rejected);
             continue;
         }

@@ -567,7 +567,9 @@ fn log_drain_loop(log_dir: &str, max_size: u64, max_files: usize) {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[horus-log-drain] Failed to open log file: {e}");
+            crate::terminal::eprint_line(&format!(
+                "[horus-log-drain] Failed to open log file: {e}"
+            ));
             return;
         }
     };

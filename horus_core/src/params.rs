@@ -624,12 +624,12 @@ impl Default for RuntimeParams {
             // with no `emergency_stop_distance` at all is worse off than one
             // with the built-in value. Callers that need to refuse startup on a
             // bad params.yaml should use `new()`, which returns the error.
-            eprintln!(
+            crate::terminal::eprint_line(&format!(
                 "[PARAMS] Failed to initialize RuntimeParams: {}. \
                  Falling back to BUILT-IN DEFAULTS — any values in \
                  .horus/config/params.yaml are NOT in effect.",
                 e
-            );
+            ));
             Self {
                 params: Arc::new(RwLock::new(Self::default_params())),
                 metadata: Arc::new(RwLock::new(BTreeMap::new())),

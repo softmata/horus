@@ -273,12 +273,12 @@ fn warn_once_if_shm_tree_is_foreign() {
     }
     if let Err(e) = crate::shm::verify_shm_dir_ownership(&base) {
         if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!(
+            crate::terminal::eprint_line(&format!(
                 "[HORUS] WARNING: the shared-memory tree at {} is not owned by this user: {e}. \
                  Discovery results below come from that tree and cannot be trusted. \
                  Publishing will refuse outright.",
                 base.display()
-            );
+            ));
         }
     }
 }

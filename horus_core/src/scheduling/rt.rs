@@ -119,7 +119,7 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
             RuntimeError::MemoryLockError(msg)
         }
     })?;
-    crate::terminal::print_line(&format!("[RT] All memory locked"));
+    crate::terminal::print_line("[RT] All memory locked");
     Ok(())
 }
 
@@ -130,7 +130,10 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
 #[doc(hidden)]
 pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
     crate::core::rt_config::prefault_stack(stack_size);
-    crate::terminal::print_line(&format!("[RT] Pre-faulted {}KB of stack", stack_size / 1024));
+    crate::terminal::print_line(&format!(
+        "[RT] Pre-faulted {}KB of stack",
+        stack_size / 1024
+    ));
     Ok(())
 }
 

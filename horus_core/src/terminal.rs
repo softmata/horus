@@ -1,71 +1,42 @@
 //! Terminal utilities for HORUS.
 //!
-//! This module provides utilities for terminal output that correctly handles
-//! raw terminal mode. When a terminal is in raw mode (e.g., for keyboard input),
-//! newlines (`\n`) don't automatically include carriage returns (`\r`), causing
-//! a "staircase effect" in output.
+//! Output that is safe to emit from a robot. When a terminal is in raw mode
+//! (e.g. for keyboard input) a bare `\n` does not carry a carriage return and
+//! output staircases; more importantly, `println!`/`eprintln!` **panic** when
+//! the write fails, and a robot's console fails routinely — the supervisor that
+//! launched it exits, an operator pipes `horus run` into `head`, a disk fills.
+//!
+//! These helpers handle both: raw-mode CRLF, and swallowing the write error
+//! instead of unwinding.
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use horus_core::terminal::print_line;
+//! use horus_core::terminal::{eprint_line, print_line};
 //!
-//! // Use print_line instead of println! for correct output in raw mode
-//! print_line("This will display correctly in raw mode");
+//! print_line("This displays correctly in raw mode and survives a closed pipe");
+//! eprint_line("Diagnostics go to stderr, same guarantees");
 //! ```
 
 /// Check if terminal raw mode is currently enabled.
 ///
 /// Delegates to [`horus_sys::terminal::is_raw_mode()`].
-pub fn is_raw_mode() -> bool {
-    horus_sys::terminal::is_raw_mode()
-}
+pub use horus_sys::terminal::is_raw_mode;
 
 /// Print a line to stdout, using `\r\n` if in raw terminal mode.
 ///
-/// This function should be used instead of `println!` when output might
-/// occur while the terminal is in raw mode.
-#[inline]
-pub fn print_line(msg: &str) {
-    use std::io::Write;
-    // Non-fatal writes: print_line is called from safety-critical paths (e.g. the
-    // scheduler/RT emergency-stop arms log via print_line BEFORE latching the stop
-    // flag). print!/println! panic on a stdout write error (EPIPE from a closed
-    // pipe, ENOSPC on a full disk), which — even when caught by the RT loop's
-    // catch_unwind — would skip the stop action and downgrade a system e-stop to a
-    // single-node stop. write!/writeln! return the error instead, which we swallow.
-    let mut out = std::io::stdout();
-    let _ = write_line(&mut out, msg, is_raw_mode());
-    let _ = out.flush();
-}
+/// Use instead of `println!`: it does not panic when the write fails. The
+/// scheduler and RT emergency-stop paths log through this **before** latching
+/// the stop flag, so a panic here would downgrade a system e-stop to a single
+/// node stopping.
+pub use horus_sys::terminal::print_line;
 
 /// Print a line to stderr, using `\r\n` if in raw terminal mode.
 ///
-/// The stderr twin of [`print_line`], and for the same reason: `eprintln!`
-/// panics when the write fails, and a robot's stderr fails routinely — the
-/// supervisor that launched it exits, or an operator pipes `horus run` into
-/// `head`. A panic on a background thread (the network replicator, a node's
-/// worker) unwinds that thread alone and leaves the process running with the
-/// subsystem silently dead, which is strictly worse than losing the message.
-#[inline]
-pub fn eprint_line(msg: &str) {
-    use std::io::Write;
-    let mut err = std::io::stderr();
-    let _ = write_line(&mut err, msg, is_raw_mode());
-    let _ = err.flush();
-}
-
-/// Write a single line to `out`, honouring raw-mode CRLF. Returns the write error
-/// (rather than panicking like `println!`) so callers on safety paths can swallow
-/// a broken stdout instead of unwinding.
-#[inline]
-fn write_line<W: std::io::Write>(out: &mut W, msg: &str, raw_mode: bool) -> std::io::Result<()> {
-    if raw_mode {
-        write!(out, "{}\r\n", msg)
-    } else {
-        writeln!(out, "{}", msg)
-    }
-}
+/// Use instead of `eprintln!`: on a background thread (the network replicator,
+/// a node's worker) a print panic unwinds that thread alone and leaves the
+/// process running with the subsystem silently dead.
+pub use horus_sys::terminal::eprint_line;
 
 #[cfg(test)]
 mod tests {
@@ -88,25 +59,5 @@ mod tests {
     fn test_eprint_line_does_not_panic() {
         eprint_line("");
         eprint_line("hello from test");
-    }
-
-    /// Regression: the write path must RETURN a broken-stdout error, never panic
-    /// like println! does. print_line is called from emergency-stop logging, so a
-    /// write failure (EPIPE/ENOSPC) must be swallowed, not turned into a panic that
-    /// skips the stop action.
-    #[test]
-    fn write_line_returns_error_instead_of_panicking() {
-        struct FailWriter;
-        impl std::io::Write for FailWriter {
-            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-            }
-        }
-        let mut w = FailWriter;
-        assert!(write_line(&mut w, "e-stop message", false).is_err());
-        assert!(write_line(&mut w, "raw-mode message", true).is_err());
     }
 }

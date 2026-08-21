@@ -688,12 +688,12 @@ impl TensorPool {
                 .warned_pressure
                 .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
-            eprintln!(
+            crate::terminal::eprint_line(&format!(
                 "[horus::tensor_pool] WARNING: {}\n  \
                  hint: Ensure tensors are dropped promptly. Consider increasing \
                  pool_size or max_slots in TensorPoolConfig.",
                 stats.summary(),
-            );
+            ));
         }
     }
 

@@ -26,9 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::types::Diag;
 use crate::error::{Error, Result};
 use crate::terminal::print_line;
-use super::types::Diag;
 
 /// Monotonic nanoseconds for throttling. `Instant` has no epoch to compare
 /// against across calls, and `SystemTime` can step backwards under NTP — which
@@ -36,7 +36,10 @@ use super::types::Diag;
 fn monotonic_nanos() -> u64 {
     use std::sync::OnceLock;
     static ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
-    ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as u64
 }
 
 /// `" (+N more in the last second)"`, or nothing when N is zero.
@@ -295,8 +298,7 @@ impl RtExecutor {
                 TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
             {
                 if monitors.verbose {
-                    if let Some(hidden) =
-                        node.diag.allow(Diag::BudgetViolation, monotonic_nanos())
+                    if let Some(hidden) = node.diag.allow(Diag::BudgetViolation, monotonic_nanos())
                     {
                         print_line(&format!(
                             "[RT-thread] budget violation in '{}': {:?} > {:?}{}",

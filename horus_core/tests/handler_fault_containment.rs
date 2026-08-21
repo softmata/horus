@@ -33,14 +33,26 @@ fn a_service_survives_a_panicking_handler() {
     std::thread::sleep(Duration::from_millis(150));
 
     // Sanity: it answers before the panic.
-    let first = client.call(FaultProbeRequest { poison: false }, Duration::from_millis(700));
-    assert!(first.is_ok(), "service did not answer before the panic: {first:?}");
+    let first = client.call(
+        FaultProbeRequest { poison: false },
+        Duration::from_millis(700),
+    );
+    assert!(
+        first.is_ok(),
+        "service did not answer before the panic: {first:?}"
+    );
 
     // Poison it. This call itself is expected to fail.
-    let _ = client.call(FaultProbeRequest { poison: true }, Duration::from_millis(700));
+    let _ = client.call(
+        FaultProbeRequest { poison: true },
+        Duration::from_millis(700),
+    );
 
     // The service must still be alive for everyone else.
-    let after = client.call(FaultProbeRequest { poison: false }, Duration::from_millis(700));
+    let after = client.call(
+        FaultProbeRequest { poison: false },
+        Duration::from_millis(700),
+    );
     assert!(
         after.is_ok(),
         "the service stopped answering after one handler panic — a single bad \

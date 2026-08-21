@@ -109,11 +109,11 @@ impl Node for CppNode {
             } else {
                 "unknown panic".to_string()
             };
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_cpp] PANIC in C++ node '{}' tick callback: {}. \
                  Node is now disabled (fail_count={}).",
                 self.name, msg, self.fail_count
-            );
+            ));
         }
     }
 

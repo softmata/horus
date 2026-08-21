@@ -761,9 +761,7 @@ where
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         callback(handle)
                     })) {
-                        Ok(outcome) => {
-                            events.lock().push(ServerEvent::Completed(goal_id, outcome))
-                        }
+                        Ok(outcome) => events.lock().push(ServerEvent::Completed(goal_id, outcome)),
                         // Finalise the goal rather than leaving it hanging. A
                         // caller can retry or escalate on an abort; it can do
                         // nothing at all with silence. The panic itself has
