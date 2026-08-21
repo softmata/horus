@@ -2104,8 +2104,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             };
         }
 
-        // Phase 3: yield (microsecond range)
+        // Phase 3: yield (microsecond range on an idle machine — unbounded on a
+        // busy one).
+        //
+        // Check the deadline BEFORE each yield. `yield_now` hands the CPU to
+        // whatever else is runnable, and on a loaded machine getting it back can
+        // take tens of milliseconds; eight of those ran unconditionally, so
+        // `send_blocking(msg, Duration::ZERO)` — which reads as "try, do not
+        // block" — was measured at 56 ms. At 1 kHz that is 56 missed ticks for a
+        // caller that asked to wait for nothing. The spin phase above stays
+        // unchecked on purpose: 256 `spin_loop` hints cost well under a
+        // microsecond, less than the clock read that would guard them.
         for _ in 0..8u32 {
+            if std::time::Instant::now() >= deadline {
+                return Err(SendBlockingError::Timeout);
+            }
             std::thread::yield_now();
             msg = match self.try_send(msg) {
                 Ok(()) => return Ok(()),

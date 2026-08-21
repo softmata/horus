@@ -1359,7 +1359,7 @@ pub(super) fn recv_shm_pod_broadcast<
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
-    let mut tail = local.local_tail;
+    let tail = local.local_tail;
     if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if local.local_head.wrapping_sub(tail) == 0 {

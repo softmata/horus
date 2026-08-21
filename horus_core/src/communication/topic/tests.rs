@@ -8240,6 +8240,21 @@ fn send_blocking_zero_duration_returns_immediately() {
     let elapsed = start.elapsed();
 
     assert_eq!(result, Err(SendBlockingError::Timeout));
+    // The bound is generous because the measuring thread can itself be
+    // descheduled, but the failure it catches is structural, not scheduling
+    // noise: phase 3 used to run eight unconditional `yield_now()` calls before
+    // ever looking at the deadline. On an idle machine that is 2.8µs; with 32
+    // competing threads it is 9.8ms mean / 102ms worst, and with 128 it is
+    // 236ms / 359ms. Measured end to end through this call:
+    //
+    //     load    before (mean/worst)     after (mean/worst)
+    //        0     20.1µs /   30.1µs      16.2µs /  22.5µs
+    //       32     59.5ms /  148.0ms      29.1µs /   3.1ms
+    //      128    231.6ms /  368.0ms     134.7µs /  30.0ms
+    //
+    // A robot running more nodes than it has cores is oversubscribed by design,
+    // and 59ms is 59 missed ticks at 1kHz for a caller that asked to wait for
+    // nothing.
     assert!(
         elapsed < 50_u64.ms(),
         "Zero timeout should return near-instantly, got {:?}",
