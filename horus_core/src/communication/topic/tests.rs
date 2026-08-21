@@ -6001,7 +6001,21 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
     // real non-POD (String) multi-sub broadcast delivers the FULL stream to every
     // subscriber regardless of drain timing (n well above the flush interval).
     let name = unique("mt_nonpod_bcast");
-    let n: u64 = 400u64;
+    // Above the flush interval (capacity/2 = 128), below the capacity (256).
+    //
+    // It was 400. Broadcast has no backpressure — `send_shm_broadcast` overwrites
+    // the oldest slot unconditionally — so with a 256-slot ring a producer that
+    // sends 400 in a tight loop laps any subscriber the scheduler does not favour,
+    // and the messages it overwrote are gone. The assertion below ("must receive
+    // every message") was therefore asking for a guarantee the transport
+    // explicitly does not make, and passed only when timing cooperated: one
+    // observed run had sub1 at exactly 256 of 400 while sub2 had all 400.
+    //
+    // Under 256 total sends the ring never wraps, so full delivery holds by
+    // construction rather than by luck. What happens *above* capacity is a real
+    // property too, and is asserted separately in
+    // `multithread_nonpod_lapped_stream_stays_ordered`.
+    let n: u64 = 200u64;
     let producer: Topic<String> = Topic::new(&name).expect("producer");
 
     let ready = Arc::new(Barrier::new(3)); // 2 subs + main
@@ -6019,7 +6033,13 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
             ready.wait(); // all subs registered before the producer streams
                           // Wait for a producer warm-up message so every subscriber has
                           // completed the topology migration before the measured stream.
-            let warmup_deadline = Instant::now() + Duration::from_secs(5);
+            // 30 s, not 5. This is a hang guard, not a timing assertion — the
+            // producer re-sends the warm-up for 60 s, so the only thing a short
+            // deadline here buys is a failure when the machine is busy. Under
+            // the full crate suite (2 200+ tests, several of them doing their own
+            // shared-memory work) 5 s was not enough, and reported a scheduling
+            // delay as "sub1 never observed the producer warm-up message".
+            let warmup_deadline = Instant::now() + Duration::from_secs(30);
             let mut warmed_up = false;
             loop {
                 sub.check_migration_now();
@@ -6115,6 +6135,180 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
         got2, expected,
         "{t2} (multi-thread non-POD broadcast) must receive every message"
     );
+}
+
+#[test]
+fn multithread_nonpod_lapped_stream_stays_ordered() {
+    // What broadcast does when the producer outruns a subscriber, as documented:
+    //
+    //   broadcast (1 pub / N subs, Fanout/PodShm): the OLDEST slot is
+    //   overwritten and slow subscribers fast-forward to the newest window
+    //
+    // Losing messages is therefore not a defect here. Losing them *incorrectly*
+    // is: what a subscriber receives must be in order, must not repeat, must not
+    // be torn, and must be the NEWEST part of the stream rather than an arbitrary
+    // window. A ring bug shows up in one of those long before it shows up in a
+    // count — the POD path had exactly such a defect, reordering and duplicating
+    // under lapping, which `recv_never_reorders_or_duplicates_when_lapped` covers.
+    // This is the serde path, which had none.
+    //
+    // TWO subscribers, on their own threads. With one, the detector selects
+    // SpscShm, whose documented behaviour is the opposite — the NEW message is
+    // dropped — so a single-subscriber version of this test measures the wrong
+    // backend and sees `m1..m256` forever. The subscriber count picks the
+    // backend, not the intent of the test.
+    let name = unique("mt_nonpod_lapped");
+    let n: u64 = 4000; // far above the 256-slot capacity
+    let producer: Topic<String> = Topic::new(&name).expect("producer");
+
+    let registered = Arc::new(Barrier::new(3)); // 2 subs + producer
+    let warmed = Arc::new(Barrier::new(3));
+    let sent = Arc::new(Barrier::new(3));
+    let warmed_count = Arc::new(AtomicU32::new(0));
+
+    let spawn_sub = |tag: &'static str| {
+        let name = name.clone();
+        let registered = registered.clone();
+        let warmed = warmed.clone();
+        let sent = sent.clone();
+        let warmed_count = warmed_count.clone();
+        std::thread::spawn(move || {
+            let sub: Topic<String> = Topic::new(&name).expect("sub");
+            let _ = sub.try_recv();
+            sub.check_migration_now();
+            registered.wait();
+
+            // A subscriber bumps sub_count — which is what selects the broadcast
+            // backend — when it registers, but only becomes an addressable
+            // FanoutShm *endpoint* on its first try_recv issued once FanoutShm is
+            // already installed. `send_serde` fans out only to slots active at
+            // send time, so a subscriber that has not claimed its endpoint
+            // receives nothing at all and no error says so. Observed here as
+            // `sub1 got=0` in one run out of three before this handshake existed.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut warmed_up = false;
+            while Instant::now() < deadline {
+                sub.check_migration_now();
+                if sub.try_recv().as_deref() == Some("__horus_ready__") {
+                    warmed_up = true;
+                    warmed_count.fetch_add(1, Ordering::AcqRel);
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            warmed.wait();
+
+            // Deliberately does not read while the producer runs: being lapped
+            // is the condition under test.
+            sent.wait();
+            sub.check_migration_now();
+            let _ = warmed_up;
+
+            let mut seen: Vec<u64> = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                match sub.try_recv() {
+                    // The producer re-sends the warm-up until both subscribers
+                    // ack, so stragglers may find copies queued ahead of the
+                    // measured stream. They are not part of it.
+                    Some(v) if v == "__horus_ready__" => {}
+                    Some(v) => {
+                        let parsed = v
+                            .strip_prefix('m')
+                            .and_then(|d| d.parse::<u64>().ok())
+                            .unwrap_or_else(|| panic!("torn or corrupt payload: {v:?}"));
+                        seen.push(parsed);
+                    }
+                    None => break,
+                }
+            }
+            (tag, seen, sub.backend_name().to_string())
+        })
+    };
+
+    let h1 = spawn_sub("sub1");
+    let h2 = spawn_sub("sub2");
+    registered.wait();
+
+    // Re-send until both have acked, rather than publishing once: a single send
+    // races the slowest subscriber's first post-registration try_recv, and
+    // losing that race costs delivery entirely.
+    let warm_deadline = Instant::now() + Duration::from_secs(30);
+    while warmed_count.load(Ordering::Acquire) < 2 && Instant::now() < warm_deadline {
+        producer.send("__horus_ready__".to_string());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    warmed.wait();
+    assert_eq!(
+        warmed_count.load(Ordering::Acquire),
+        2,
+        "both subscribers must become addressable endpoints before the stream, \
+         or the test measures endpoint registration rather than lapping"
+    );
+
+    for v in 1..=n {
+        producer.send(format!("m{v}"));
+    }
+    sent.wait();
+    let (t1, seen1, _be1) = h1.join().expect("sub1");
+    let (t2, seen2, _be2) = h2.join().expect("sub2");
+
+    for (who, seen) in [(t1, &seen1), (t2, &seen2)] {
+        assert!(
+            !seen.is_empty(),
+            "{who}: a lapped subscriber must still receive the newest messages, not nothing"
+        );
+        assert!(
+            (seen.len() as u64) < n,
+            "{who}: the producer sent {n} into a 256-slot ring with no backpressure, \
+             so a subscriber that never read during the stream cannot have all of \
+             them — got {}. If this now holds, broadcast has gained backpressure \
+             and this test asserts the wrong thing.",
+            seen.len()
+        );
+
+        let mut inversions = 0usize;
+        let mut duplicates = 0usize;
+        for w in seen.windows(2) {
+            if w[1] < w[0] {
+                inversions += 1;
+            } else if w[1] == w[0] {
+                duplicates += 1;
+            }
+        }
+        assert_eq!(
+            inversions, 0,
+            "{who}: broadcast may drop messages, but never deliver them out of \
+             order — {inversions} inversion(s) in {} received",
+            seen.len()
+        );
+        assert_eq!(
+            duplicates, 0,
+            "{who}: broadcast must not deliver the same message twice — \
+             {duplicates} duplicate(s) in {} received",
+            seen.len()
+        );
+
+        for v in seen.iter() {
+            assert!(
+                (1..=n).contains(v),
+                "{who}: received `m{v}`, which was never sent — the ring returned \
+                 a stale or torn slot"
+            );
+        }
+
+        // The documented behaviour: slow subscribers fast-forward to the NEWEST
+        // window. A ring handing back the oldest surviving window would be just
+        // as ordered and just as duplicate-free, and would be the wrong
+        // messages — which is exactly what the SpscShm path does.
+        let last = *seen.last().expect("non-empty");
+        assert!(
+            last > n - 1024,
+            "{who}: the newest message received was m{last} of {n} — broadcast \
+             fast-forwards to the newest window, so an early window means the \
+             lapped-slot handling is wrong"
+        );
+    }
 }
 
 #[test]
