@@ -97,7 +97,14 @@ impl LiveNode {
     /// beats a fixed sleep: it is faster when things work and still bounded
     /// when they do not.
     fn wait_for(&self, args: &[&str], done: impl Fn(&str) -> bool) -> Option<String> {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // 60s, not 20s. This is a bound on *failure*, not on success: the loop
+        // returns the moment the output is right, so a longer deadline costs
+        // nothing when things work. Eight of these tests each spawn a scheduler
+        // process with RT threads, alongside the rest of the suite, and on a
+        // busy machine 20s was not enough for a node to appear — which failed
+        // as "node never appeared", indistinguishable from the defect these
+        // tests exist to catch.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
             let out = self.cli(args);
             if done(&out) {
