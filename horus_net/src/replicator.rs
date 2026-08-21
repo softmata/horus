@@ -825,8 +825,15 @@ impl Replicator {
             .map(|p| p.data_addr())
             .collect();
         let mcast = self.multicast_addr();
-        self.estop_broadcaster
+        let retry_delivery = self
+            .estop_broadcaster
             .tick(&self.transport, mcast, &peer_addrs);
+        if self.estop_broadcaster.should_warn(&retry_delivery) {
+            horus_core::terminal::eprint_line(
+                "[horus_net] CRITICAL: every e-stop retry failed to send; peers have \
+                 NOT been notified. Check the network interface and multicast route.",
+            );
+        }
 
         // SEND path (the other half of NET-F1): announce this robot's OWN e-stop to
         // the fleet. Drained here on the timer tick (worst-case ~TIMER_INTERVAL=50ms
@@ -853,8 +860,27 @@ impl Replicator {
             // retry copies byte-identical to the first send.
             match self.frame_system_topic(crate::registry::SYSTEM_TOPIC_ESTOP, &payload) {
                 Some(framed) => {
-                    self.estop_broadcaster
-                        .broadcast(&self.transport, framed, mcast, &peer_addrs);
+                    // The sends are best-effort — a safety path must not block on
+                    // a socket — but best-effort was written as `let _ =`, so a
+                    // broadcast that reached nobody looked exactly like one that
+                    // reached everybody. The framing failure below was already
+                    // reported on the principle "never drop an e-stop silently";
+                    // a dead interface is far likelier than an over-long reason
+                    // string and was the one case that stayed quiet.
+                    let delivery = self.estop_broadcaster.broadcast(
+                        &self.transport,
+                        framed,
+                        mcast,
+                        &peer_addrs,
+                    );
+                    if self.estop_broadcaster.should_warn(&delivery) {
+                        horus_core::terminal::eprint_line(&format!(
+                            "[horus_net] CRITICAL: local e-stop reached none of its {} \
+                             destinations; peers have NOT been notified. Check the \
+                             network interface and multicast route.",
+                            delivery.attempted
+                        ));
+                    }
                 }
                 None => {
                     // Only reachable if the reason string somehow exceeded a
