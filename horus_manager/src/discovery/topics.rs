@@ -30,12 +30,26 @@ pub(super) fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryI
             } else {
                 vec![]
             };
-            let (_status, age_string) = compute_topic_status(&procs, None);
-            let status = TopicStatus::Active;
-
             // Read header metadata directly from SHM file
             let topic_path = topics_dir.join(&t.name);
+
+            // Classify, rather than declaring everything Active.
+            //
+            // This called `compute_topic_status`, discarded its answer, and
+            // hardcoded `Active` — so `Idle` and `Stale` could never appear and
+            // every topic `horus topic list` printed was "active", including a
+            // 0-byte region left behind when a namespace was removed under a
+            // live publisher. It was hardcoded because the call passed `None`
+            // for the modification time, and with no age the classifier can only
+            // return Idle or Stale. Pass the real mtime and the three states
+            // work as documented.
+            let modified = std::fs::metadata(&topic_path)
+                .and_then(|m| m.modified())
+                .ok();
+            let (status, age_string) = compute_topic_status(&procs, modified);
             let header_info = read_topic_header_info(&topic_path);
+
+            let status = downgrade_without_header(status, header_info.is_some());
 
             // Use header type_name as primary, fall back to presence-based type
             let message_type = header_info
@@ -126,6 +140,22 @@ pub(super) fn cleanup_stale_topics_in_dir(shm_path: &Path) {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+}
+
+/// A topic with no readable header is Stale, whatever age and liveness say.
+///
+/// A region can outlive its contents: remove a namespace under a running
+/// publisher and the next open recreates the file empty, so it has a live
+/// creator PID and a modification time from seconds ago — "live process, recent
+/// write" — while carrying nothing. It listed as
+/// `sensors.imu  0 B  —  0.0 Hz  active` beside a publisher that was still
+/// sending, and no subscriber could ever receive through it.
+pub(super) fn downgrade_without_header(status: TopicStatus, has_header: bool) -> TopicStatus {
+    if has_header {
+        status
+    } else {
+        TopicStatus::Stale
     }
 }
 

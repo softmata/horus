@@ -2726,3 +2726,43 @@ fn test_process_exists_dead_pid() {
         "nonexistent PID should return false"
     );
 }
+
+// ── Topic status: a region can outlive its contents ─────────────────────────
+
+#[test]
+fn a_topic_with_no_header_is_stale_however_fresh_the_file_is() {
+    use super::topics::downgrade_without_header;
+
+    // Remove a namespace under a running publisher and the next open recreates
+    // the file empty. It then has a live creator PID and a modification time
+    // from seconds ago, so the age-and-liveness rule says Active — and
+    // `horus topic list` printed `sensors.imu  0 B  —  0.0 Hz  active` beside a
+    // publisher that was still sending, through a region no subscriber could
+    // ever receive from.
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Active, false),
+        TopicStatus::Stale
+    );
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Idle, false),
+        TopicStatus::Stale
+    );
+}
+
+#[test]
+fn a_topic_with_a_header_keeps_the_status_it_earned() {
+    use super::topics::downgrade_without_header;
+
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Active, true),
+        TopicStatus::Active
+    );
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Idle, true),
+        TopicStatus::Idle
+    );
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Stale, true),
+        TopicStatus::Stale
+    );
+}
