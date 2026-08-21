@@ -1814,6 +1814,7 @@ impl Scheduler {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats,
             miss_policy,

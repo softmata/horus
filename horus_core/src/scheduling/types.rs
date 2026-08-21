@@ -141,6 +141,7 @@ mod execution_class_tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -372,6 +373,114 @@ pub(crate) fn group_nodes_by_class(nodes: Vec<RegisteredNode>) -> NodeGroups {
 }
 
 /// Enhanced node registration info with lifecycle tracking and per-node rate control
+/// Which recurring RT diagnostic a throttled message belongs to.
+///
+/// One slot each, so a node reporting deadline misses does not suppress its own
+/// budget-violation reports — they are different faults and an operator needs to
+/// see both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Diag {
+    DeadlineMiss = 0,
+    BudgetViolation = 1,
+    SafeStateEnter = 2,
+    SafeStateLeave = 3,
+}
+
+/// Per-node, per-kind rate limiter for messages that can fire every tick.
+///
+/// A node that misses its deadline at 1 kHz produces a thousand identical lines
+/// a second. Measured on one node alternating hit/miss around a 1 ms deadline:
+/// 8044 lines and 528 KB in ten seconds — 4.6 GB/day from a single node, on a
+/// robot that has thirty. The information content is one line: this node is
+/// late, this often, by this much.
+///
+/// Emission is allowed at most once per `WINDOW` per kind. Everything in
+/// between is counted, and the count rides along on the next line that is
+/// allowed through, so nothing is hidden — only compressed.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DiagThrottle {
+    /// Last emission per kind, as nanos since the process-wide clock epoch.
+    last_ns: [u64; 4],
+    /// Occurrences suppressed since that emission, per kind.
+    suppressed: [u32; 4],
+}
+
+#[cfg(test)]
+mod diag_throttle_tests {
+    use super::{Diag, DiagThrottle};
+
+    const SEC: u64 = 1_000_000_000;
+
+    #[test]
+    fn first_occurrence_is_never_delayed() {
+        let mut t = DiagThrottle::default();
+        // A fault must appear the moment it happens, not up to a window later.
+        assert_eq!(t.allow(Diag::DeadlineMiss, 0), Some(0));
+    }
+
+    #[test]
+    fn suppressed_occurrences_are_counted_and_reported() {
+        let mut t = DiagThrottle::default();
+        assert_eq!(t.allow(Diag::DeadlineMiss, SEC), Some(0));
+        for i in 1..=500 {
+            assert_eq!(t.allow(Diag::DeadlineMiss, SEC + i), None);
+        }
+        // The next line through carries the count, so throttling hides the
+        // volume of output but never the volume of the fault.
+        assert_eq!(t.allow(Diag::DeadlineMiss, SEC * 2), Some(500));
+        // And the counter resets after being reported.
+        assert_eq!(t.allow(Diag::DeadlineMiss, SEC * 3), Some(0));
+    }
+
+    #[test]
+    fn kinds_do_not_suppress_each_other() {
+        let mut t = DiagThrottle::default();
+        assert_eq!(t.allow(Diag::DeadlineMiss, SEC), Some(0));
+        // A node missing deadlines must still be able to report that it is also
+        // overrunning its budget — different faults, different remedies.
+        assert_eq!(t.allow(Diag::BudgetViolation, SEC), Some(0));
+        assert_eq!(t.allow(Diag::SafeStateEnter, SEC), Some(0));
+        assert_eq!(t.allow(Diag::SafeStateLeave, SEC), Some(0));
+        // ...and each is independently throttled thereafter.
+        assert_eq!(t.allow(Diag::DeadlineMiss, SEC + 1), None);
+        assert_eq!(t.allow(Diag::BudgetViolation, SEC + 1), None);
+    }
+
+    #[test]
+    fn throttle_state_is_per_node_not_per_call_site() {
+        // The reason this type exists rather than `hlog_every!`: that macro
+        // keeps its timestamp in a `static` at the expansion point, so on a
+        // multi-node robot the first node to report silences the rest.
+        let (mut a, mut b) = (DiagThrottle::default(), DiagThrottle::default());
+        assert_eq!(a.allow(Diag::DeadlineMiss, SEC), Some(0));
+        assert_eq!(b.allow(Diag::DeadlineMiss, SEC), Some(0));
+    }
+}
+
+impl DiagThrottle {
+    /// One line per second per kind. Fast enough that an operator watching a
+    /// terminal sees the fault appear immediately, slow enough that a 1 kHz
+    /// node cannot outrun the log.
+    const WINDOW_NS: u64 = 1_000_000_000;
+
+    /// Returns `Some(suppressed_since_last)` when the caller should emit.
+    ///
+    /// Takes `now_ns` rather than reading the clock so the RT caller can reuse
+    /// a timestamp it already has, and so tests are deterministic.
+    pub(crate) fn allow(&mut self, kind: Diag, now_ns: u64) -> Option<u32> {
+        let i = kind as usize;
+        let last = self.last_ns[i];
+        // `last == 0` is the first occurrence: always let it through, so a fault
+        // is never delayed by up to a second the first time it happens.
+        if last != 0 && now_ns.saturating_sub(last) < Self::WINDOW_NS {
+            self.suppressed[i] = self.suppressed[i].saturating_add(1);
+            return None;
+        }
+        self.last_ns[i] = now_ns;
+        Some(std::mem::take(&mut self.suppressed[i]))
+    }
+}
+
 pub(crate) struct RegisteredNode {
     pub(crate) node: NodeKind,
     /// Cached node name — captured once at registration, used everywhere.
@@ -396,6 +505,13 @@ pub(crate) struct RegisteredNode {
     /// `NodeDegradationState::recovery_counter` documents recovery as intended.
     pub(crate) health_probe_counter: u64,
     pub(crate) is_paused: bool,
+    /// Rate limiting for this node's own RT diagnostics.
+    ///
+    /// Per node, not per call site: `hlog_every!` keeps its counter in a
+    /// `static` at the macro's expansion point, so on a multi-node robot one
+    /// node's message silences every other node's — which is worse than no
+    /// throttle, because the survivor looks like the only node in trouble.
+    pub(crate) diag: DiagThrottle,
     /// Whether `Miss::SafeMode` has already safed this node.
     ///
     /// `enter_safe_state()` is a state *transition* hook, but the SafeMode
