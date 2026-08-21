@@ -332,7 +332,7 @@ fn dirs_next_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
-fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
+pub(crate) fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     let mut messages = Vec::new();
 
     // Find the message type definitions.

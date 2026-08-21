@@ -319,9 +319,16 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
             ))
         }
 
-        // LaserScan (1476B): ranges[360]@0, angle_min@1440, angle_max@1444,
-        //                    range_min@1448, range_max@1452, angle_inc@1456, timestamp_ns@1468
-        "LaserScan" if data.len() >= 1476 => {
+        // LaserScan (1480B): ranges[360]@0, angle_min@1440, angle_max@1444,
+        //                    range_min@1448, range_max@1452, angle_inc@1456,
+        //                    time_inc@1460, scan_time@1464, timestamp_ns@1472
+        //
+        // Was documented as 1476B with timestamp_ns@1468, which cannot be: the
+        // struct is `#[repr(C)]` and a u64 cannot sit at an offset of 1468.
+        // `size_of` on the real definition reports 1480 with the timestamp at
+        // 1472. Nothing read the timestamp, so only the comment and the length
+        // guard were wrong — the guard accepted a length the type cannot have.
+        "LaserScan" if data.len() >= 1480 => {
             let rf = |off: usize| -> f32 {
                 f32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
             };
@@ -507,8 +514,41 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
             }
         }
 
-        _ => None, // Unknown type — fall back to hex
+        // Anything without a hand-written arm above: decode from the declared
+        // field layout instead of giving up.
+        //
+        // Nineteen of the ninety-two message types HORUS ships had an arm here.
+        // `Twist` — the type in the project template `horus new` generates —
+        // did not, so a developer running the starter project and echoing their
+        // own velocity command got 56 bytes of hex. The layout is not a secret:
+        // `horus msg info Twist` already prints `linear: [f64; 3]`, and every
+        // message struct is `#[repr(C)]`.
+        //
+        // The generic path declines unless the computed size matches the
+        // payload exactly, so a wrong layout falls back to hex rather than
+        // printing a plausible number that is not the value on the wire.
+        other => crate::commands::pod_decode::decode(other, data, message_registry()),
     }
+}
+
+/// Field layouts for every message type HORUS can find, parsed once.
+///
+/// `discover_messages` walks the filesystem and parses `horus_types/src`, which
+/// is far too expensive to repeat per message — `topic echo` prints at topic
+/// rate. An empty registry (sources not present, e.g. a stripped deployment)
+/// simply means the generic decoder declines and the hex dump stands.
+fn message_registry() -> &'static crate::commands::pod_decode::Registry {
+    static REGISTRY: std::sync::OnceLock<crate::commands::pod_decode::Registry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        crate::commands::msg::discover_messages()
+            .map(|msgs| {
+                msgs.into_iter()
+                    .map(|m| (m.name, m.fields))
+                    .collect::<crate::commands::pod_decode::Registry>()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Classify how a message payload should be displayed without printing.
