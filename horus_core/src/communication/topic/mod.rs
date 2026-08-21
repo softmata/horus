@@ -176,15 +176,75 @@ type TopicLifecycleHook = Box<dyn Fn(TopicLifecycleEvent) + Send + Sync>;
 
 static TOPIC_LIFECYCLE_HOOK: std::sync::OnceLock<TopicLifecycleHook> = std::sync::OnceLock::new();
 
+/// Topics that exist right now, so a hook installed later can be told about
+/// them.
+///
+/// The hook is a `OnceLock` set when the replicator starts, and the replicator
+/// starts from `scheduler.run()` — by which time every node has built its topics
+/// in `init()` or in its constructor. Those `Created` events fired into a hook
+/// that did not exist yet, so the network registry began life empty and stayed
+/// that way for exactly the topics a robot actually uses. Replaying on install
+/// closes that window without changing when anything else happens.
+///
+/// Handles are refcounted per name: one process routinely opens the same topic
+/// from several nodes, and the network layer only cares that the topic exists,
+/// not how many handles hold it. Dropping one handle must not erase a topic the
+/// others are still using.
+type LiveTopics = std::collections::HashMap<String, (TopicLifecycleEvent, usize)>;
+
+static LIVE_TOPICS: std::sync::Mutex<Option<LiveTopics>> = std::sync::Mutex::new(None);
+
 /// Set a global hook called when topics are created or dropped.
 ///
 /// Called by horus_net at replicator startup to populate its TopicRegistry.
 /// Can only be set once (first caller wins).
+///
+/// Topics that already exist are replayed to the hook as `Created` events
+/// before this returns, so a late-installed hook sees the same set it would
+/// have seen had it been installed first.
 pub fn set_topic_lifecycle_hook(hook: impl Fn(TopicLifecycleEvent) + Send + Sync + 'static) {
-    let _ = TOPIC_LIFECYCLE_HOOK.set(Box::new(hook));
+    let boxed: TopicLifecycleHook = Box::new(hook);
+    if TOPIC_LIFECYCLE_HOOK.set(boxed).is_err() {
+        // Not the first caller; the existing hook keeps ownership of the stream.
+        return;
+    }
+    // Snapshot and release before calling out: the hook is arbitrary user code
+    // and may itself create a topic, which would re-enter this lock.
+    let existing: Vec<TopicLifecycleEvent> = match LIVE_TOPICS.lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .map(|live| live.values().map(|(event, _)| event.clone()).collect())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    if let Some(hook) = TOPIC_LIFECYCLE_HOOK.get() {
+        for event in existing {
+            hook(event);
+        }
+    }
 }
 
 fn notify_topic_lifecycle(event: TopicLifecycleEvent) {
+    // Record first, so the set stays accurate whether or not a hook is
+    // installed yet.
+    if let Ok(mut guard) = LIVE_TOPICS.lock() {
+        let live = guard.get_or_insert_with(LiveTopics::new);
+        match &event {
+            TopicLifecycleEvent::Created { name, .. } => {
+                live.entry(name.clone())
+                    .and_modify(|(_, handles)| *handles += 1)
+                    .or_insert_with(|| (event.clone(), 1));
+            }
+            TopicLifecycleEvent::Dropped { name } => {
+                if let Some((_, handles)) = live.get_mut(name) {
+                    *handles -= 1;
+                    if *handles == 0 {
+                        live.remove(name);
+                    }
+                }
+            }
+        }
+    }
     if let Some(hook) = TOPIC_LIFECYCLE_HOOK.get() {
         hook(event);
     }

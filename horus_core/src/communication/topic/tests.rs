@@ -9882,3 +9882,45 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
             .join("\n  ")
     );
 }
+
+/// Several handles to one topic must not erase each other from the live set.
+///
+/// A process routinely opens the same topic from more than one node. The live
+/// set exists so a late-installed network hook can be told what already exists;
+/// if the first handle's `Drop` removed the entry, the replay would omit a
+/// topic that is still open and still publishing.
+#[test]
+fn the_live_topic_set_refcounts_handles_per_name() {
+    use super::{notify_topic_lifecycle, TopicLifecycleEvent, LIVE_TOPICS};
+
+    let name = format!("refcount_probe_{}", std::process::id());
+    let created = || TopicLifecycleEvent::Created {
+        name: name.clone(),
+        type_name_hash: 0,
+        type_size: 4,
+        is_pod: true,
+    };
+    let handles = || -> Option<usize> {
+        LIVE_TOPICS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|live| live.get(&name).map(|(_, n)| *n))
+    };
+
+    notify_topic_lifecycle(created());
+    assert_eq!(handles(), Some(1));
+
+    notify_topic_lifecycle(created());
+    assert_eq!(handles(), Some(2), "a second handle must be counted");
+
+    notify_topic_lifecycle(TopicLifecycleEvent::Dropped { name: name.clone() });
+    assert_eq!(
+        handles(),
+        Some(1),
+        "dropping one of two handles erased a topic that is still open"
+    );
+
+    notify_topic_lifecycle(TopicLifecycleEvent::Dropped { name: name.clone() });
+    assert_eq!(handles(), None, "the last handle must remove the entry");
+}
