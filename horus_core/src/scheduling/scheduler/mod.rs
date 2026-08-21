@@ -273,6 +273,9 @@ pub struct Scheduler {
     /// A rate needs two samples. The refresh runs about once a second, which is
     /// the natural place to take them.
     pub(super) presence_rate_samples: HashMap<String, (u64, Instant)>,
+    /// Nodes whose tick counter has been seen to rewind, so the warning about
+    /// it fires once each rather than on every presence refresh.
+    pub(super) presence_reset_reported: std::collections::HashSet<String>,
 
     /// Control topic for receiving CLI commands (pause/resume/shutdown).
     /// Drained at the start of each tick for deterministic behavior.
@@ -451,6 +454,7 @@ impl Scheduler {
             registry_slots: HashMap::new(),
             presence_roster: Vec::new(),
             presence_rate_samples: HashMap::new(),
+            presence_reset_reported: std::collections::HashSet::new(),
             control_topic: None,
             node_controls: None,
             params: None,
@@ -3538,6 +3542,47 @@ impl Scheduler {
                     (None, None) => (0, 0),
                 };
 
+                // A tick counter that goes backwards means its storage was
+                // reset under a running node.
+                //
+                // For an executor-owned node the count comes from the
+                // shared-memory node registry, so deleting the namespace — an
+                // operator clearing stale regions, `horus clean --shm
+                // --all-namespaces`, a stray `rm -rf /dev/shm/horus_*` —
+                // silently zeroes it while the node keeps ticking. Measured:
+                // `imu_driver Running Healthy 100 Hz 99.1 Hz 795 ticks` became
+                // `Running Healthy 100 Hz 0.0 Hz 0 ticks` and stayed there,
+                // while the process's own log kept reporting budget violations
+                // from the ticks it was still executing.
+                //
+                // Reporting the reset value makes every introspection tool
+                // agree on a number that is false. Hold the last known count —
+                // a monotonic counter that stalls is bad, one that rewinds is
+                // worse — and say what happened, once per node.
+                let regressed = self
+                    .presence_rate_samples
+                    .get(&entry.name)
+                    .is_some_and(|&(prev, _)| tick_count < prev);
+                let tick_count = if regressed {
+                    let prev = self
+                        .presence_rate_samples
+                        .get(&entry.name)
+                        .map(|&(t, _)| t)
+                        .unwrap_or(tick_count);
+                    if self.presence_reset_reported.insert(entry.name.clone()) {
+                        crate::terminal::eprint_line(&format!(
+                            "[horus] WARNING: the shared-memory node registry was reset \
+                             under running node '{}' (tick count fell from {} to {}). \
+                             The node is still executing; introspection will \
+                             under-report it until the process restarts.",
+                            entry.name, prev, tick_count
+                        ));
+                    }
+                    prev
+                } else {
+                    tick_count
+                };
+
                 // The whole point: these come from a process-wide registry, so
                 // the main thread can attribute topics for a node running on
                 // an executor thread.
@@ -3568,7 +3613,12 @@ impl Scheduler {
                     p.set_achieved_rate_hz(achieved);
                     new_samples.push((entry.name.clone(), tick_count, now));
 
-                    let health_str = if err_count > 10 {
+                    let health_str = if regressed {
+                        // Not Healthy: the runtime knows its own reporting is
+                        // broken, and "Healthy" beside a stalled tick count is
+                        // the reading an operator would act on.
+                        "Error"
+                    } else if err_count > 10 {
                         "Critical"
                     } else if err_count > 3 {
                         "Error"
