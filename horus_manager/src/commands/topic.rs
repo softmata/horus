@@ -815,27 +815,40 @@ pub fn topic_info(name: &str) -> HorusResult<()> {
         }
     }
 
-    println!();
-    println!("  {}", "Publishers:".cyan());
-    if topic.publishers.is_empty() {
-        println!("    {}", "(none)".dimmed());
-    } else {
-        for pub_name in &topic.publishers {
-            println!("    - {}", pub_name);
-        }
-    }
-
-    println!();
-    println!("  {}", "Subscribers:".cyan());
-    if topic.subscribers.is_empty() {
-        println!("    {}", "(none)".dimmed());
-    } else {
-        for sub_name in &topic.subscribers {
-            println!("    - {}", sub_name);
-        }
-    }
+    // Names when we have them, the ring's own count when we do not.
+    //
+    // `publishers`/`subscribers` are node names from the topic-node registry,
+    // which only records a topic opened from inside a node's tick. A service
+    // server, a CLI tool or any background thread never appears there, so a
+    // live topic with real traffic printed "(none)" under both headings — an
+    // answer that reads as "nobody is connected" when the truth is "nobody told
+    // us their name". The header count is the protocol's own record.
+    print_endpoints("Publishers:", &topic.publishers, topic.publisher_count);
+    print_endpoints("Subscribers:", &topic.subscribers, topic.subscriber_count);
 
     Ok(())
+}
+
+fn print_endpoints(heading: &str, names: &[String], count: u32) {
+    println!();
+    println!("  {}", heading.cyan());
+    if !names.is_empty() {
+        for name in names {
+            println!("    - {}", name);
+        }
+        return;
+    }
+    match count {
+        0 => println!("    {}", "(none)".dimmed()),
+        1 => println!(
+            "    {}",
+            "1 (unnamed — opened outside a node tick)".dimmed()
+        ),
+        n => println!(
+            "    {}",
+            format!("{n} (unnamed — opened outside a node tick)").dimmed()
+        ),
+    }
 }
 
 /// Measure topic publish rate
