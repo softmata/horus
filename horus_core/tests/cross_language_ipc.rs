@@ -552,9 +552,20 @@ sys.exit(1)  # Simulate crash
     // Rust publisher runs for 3s — should complete without hanging
     use horus_robotics::messages::sensor::Imu;
     let topic: Topic<Imu> = Topic::new("imu").expect("create topic");
+    // Count sends, not elapsed time.
+    //
+    // This published for 3s at 10ms intervals and asserted it had managed more
+    // than 100 — a throughput expectation, and one the machine can miss for
+    // reasons that have nothing to do with the crashed peer: running beside the
+    // rest of the suite it completed 88 iterations in 3s, and failed as "Rust
+    // should continue publishing after Python crash: 88" when Rust had in fact
+    // continued publishing the whole time. The claim is that the publisher
+    // survives its peer's death, so make it do a fixed amount of work and
+    // require that it finishes.
+    const SENDS: u64 = 300;
     let start = Instant::now();
     let mut sent = 0u64;
-    while start.elapsed() < Duration::from_secs(3) {
+    while sent < SENDS && start.elapsed() < Duration::from_secs(60) {
         let mut imu = Imu::default();
         imu.linear_acceleration = [0.0, 0.0, 9.81];
         topic.send(imu);
@@ -562,9 +573,9 @@ sys.exit(1)  # Simulate crash
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    assert!(
-        sent > 100,
-        "Rust should continue publishing after Python crash: {sent}"
+    assert_eq!(
+        sent, SENDS,
+        "Rust stopped publishing after the Python peer crashed, at {sent} of {SENDS}"
     );
 
     let output = child.wait_with_output().expect("child wait");

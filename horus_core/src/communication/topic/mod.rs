@@ -737,6 +737,26 @@ unsafe impl<T: Send> Send for RingTopic<T> {}
 unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
 
 #[allow(private_interfaces)]
+/// Where a consumer's read position lands after a migration resync.
+///
+/// `header.tail` is a single shared value. On a broadcast backend each consumer
+/// keeps its own independent position and the shared tail trails the slowest of
+/// them, so adopting it wholesale moved every consumer that was ahead
+/// *backward* — and its next `recv()` returned an older sequence than one it had
+/// already delivered. Measured by
+/// `recv_never_reorders_or_duplicates_when_lapped`: 5 inversions across
+/// 1,296,457 messages, on 3 of 16 consumers, at migration boundaries —
+/// "consumer 6: 23929 then 23497 (backward by 432)".
+///
+/// Take the later of the two, then clamp to the head: if the ring itself
+/// restarted, the head comes back smaller than our stale tail and the clamp puts
+/// us at "nothing to read yet" rather than stranding us beyond the producer
+/// forever. On a single-consumer backend the shared tail is this consumer's own
+/// position, so the max is a no-op.
+fn resynced_tail(local_tail: u64, shared_tail: u64, new_head: u64) -> u64 {
+    local_tail.max(shared_tail).min(new_head)
+}
+
 /// Drop module qualifiers from a type name, keeping its structure.
 ///
 /// This was `rsplit("::").next()`, which is right for a plain type and wrong
@@ -1920,8 +1940,27 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Re-sync head/tail from SHM after initialize_backend, in case an
         // auto-grow remapped the storage. Use header_ptr (always valid).
         let header_post = unsafe { &*self.header_ptr.get() };
-        local.local_head = header_post.sequence_or_head.load(Ordering::Acquire);
-        local.local_tail = header_post.tail.load(Ordering::Acquire);
+        let new_head = header_post.sequence_or_head.load(Ordering::Acquire);
+        let shared_tail = header_post.tail.load(Ordering::Acquire);
+        local.local_head = new_head;
+
+        // Never pull this consumer's read position backward.
+        //
+        // `header.tail` is a single shared value. On a broadcast backend each
+        // consumer keeps its own independent position, and the shared tail
+        // trails the slowest of them — so adopting it wholesale moved every
+        // consumer that was ahead *backward*, and its next `recv()` returned an
+        // older sequence than one it had already delivered. Measured by
+        // `recv_never_reorders_or_duplicates_when_lapped`: 5 inversions across
+        // 1,296,457 messages, on 3 of 16 consumers, at migration boundaries —
+        // "consumer 6: 23929 then 23497 (backward by 432)".
+        //
+        // Take the later of the two, then clamp to the head: if the ring itself
+        // restarted, head comes back smaller than our stale tail and the clamp
+        // puts us at "nothing to read yet" rather than stranding us beyond the
+        // producer forever. On a single-consumer backend the shared tail is this
+        // consumer's own position, so the max is a no-op.
+        local.local_tail = resynced_tail(local.local_tail, shared_tail, new_head);
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);
         self.process_epoch
@@ -3410,5 +3449,45 @@ mod type_name_tests {
     fn an_empty_or_unqualified_name_is_unchanged() {
         assert_eq!(strip_module_paths(""), "");
         assert_eq!(strip_module_paths("Bare"), "Bare");
+    }
+}
+
+#[cfg(test)]
+mod resync_tail_tests {
+    use super::resynced_tail;
+
+    #[test]
+    fn a_consumer_ahead_of_the_shared_tail_keeps_its_position() {
+        // The regression. On a broadcast backend the shared tail trails the
+        // slowest consumer, so a faster one adopting it is pulled backward and
+        // re-delivers messages it has already returned.
+        assert_eq!(resynced_tail(23_929, 23_497, 30_000), 23_929);
+    }
+
+    #[test]
+    fn a_fresh_handle_adopts_the_shared_position() {
+        // local_tail starts at 0, so there is nothing of its own to keep.
+        assert_eq!(resynced_tail(0, 5_000, 6_000), 5_000);
+    }
+
+    #[test]
+    fn a_restarted_ring_pulls_a_stale_tail_down_to_the_head() {
+        // If the head comes back smaller than our tail the ring restarted;
+        // keeping the old position would strand this consumer beyond the
+        // producer forever, waiting for sequences that will not arrive.
+        assert_eq!(resynced_tail(23_929, 0, 12), 12);
+    }
+
+    #[test]
+    fn a_single_consumer_backend_is_unaffected() {
+        // There the shared tail is this consumer's own position.
+        assert_eq!(resynced_tail(4_096, 4_096, 8_192), 4_096);
+    }
+
+    #[test]
+    fn the_result_is_never_beyond_the_producer() {
+        for (local, shared, head) in [(9u64, 3u64, 5u64), (0, 99, 7), (100, 100, 100)] {
+            assert!(resynced_tail(local, shared, head) <= head);
+        }
     }
 }

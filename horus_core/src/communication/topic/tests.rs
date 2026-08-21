@@ -6019,7 +6019,14 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
             ready.wait(); // all subs registered before the producer streams
                           // Wait for a producer warm-up message so every subscriber has
                           // completed the topology migration before the measured stream.
-            let warmup_deadline = Instant::now() + Duration::from_secs(5);
+                          // 20s, not 5s. These are bounds on *failure*: both this loop and the
+                          // drain below exit the moment they have what they need, so a longer
+                          // deadline costs nothing when things work. Three subscriber threads
+                          // plus a producer, running beside the other ~2300 tests on every
+                          // core, missed the warm-up inside 5s and failed as "sub2 never
+                          // observed the producer warm-up message" — a scheduling shortfall
+                          // wearing the costume of a delivery bug.
+            let warmup_deadline = Instant::now() + Duration::from_secs(20);
             let mut warmed_up = false;
             loop {
                 sub.check_migration_now();
@@ -6055,7 +6062,7 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
             let missed_before = sub.missed_count();
             ready.wait();
             let mut got = Vec::new();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(20);
             while (got.len() as u64) < n && Instant::now() < deadline {
                 sub.check_migration_now();
                 match sub.try_recv() {
