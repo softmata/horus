@@ -1017,8 +1017,13 @@ fn check_network() -> CheckResult {
         details.push("No remote peers (single-machine mode)".to_string());
     }
 
-    // Check 2: HORUS_NAMESPACE
-    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    // Check 2: the namespace this process is in
+    //
+    // Ask the accessor, not the environment. `shm_namespace` sanitises the
+    // variable and derives a namespace when it is unset, so reading the raw
+    // value made `horus doctor` report "Namespace: default" while the tree it
+    // had just counted namespaces in was a different one.
+    let namespace = horus_sys::shm::shm_namespace();
     details.push(format!("Namespace: {}", namespace));
 
     // Check 3: horus_net enabled check
