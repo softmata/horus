@@ -346,6 +346,21 @@ pub fn generate(
     )?;
     writeln!(cmake, "  endif()")?;
 
+    // Entry points for types written by `horus msg gen`.
+    //
+    // The built-in message types get theirs from libhorus_cpp.a; a generated
+    // type cannot, because adding symbols to that archive would mean editing
+    // and rebuilding the HORUS source tree. `run_cpp::build_cpp` builds the
+    // generated staticlib and passes it in with -D, so this file stays free of
+    // host paths — the same arrangement as HORUS_CPP_LIB above.
+    writeln!(cmake, "  if(HORUS_GEN_MSGS_LIB)")?;
+    writeln!(
+        cmake,
+        "    target_link_libraries({} PRIVATE ${{HORUS_GEN_MSGS_LIB}})",
+        target_name
+    )?;
+    writeln!(cmake, "  endif()")?;
+
     // Drop the sections nothing references, and strip in Release.
     //
     // A hello-world C++ node — one publisher, one tick() — linked to a 101 MB

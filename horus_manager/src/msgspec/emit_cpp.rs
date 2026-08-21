@@ -133,6 +133,9 @@ pub fn header(pkg: &Package, env: &layout::Env) -> String {
         out.push('\n');
     }
 
+    // Topic access. Kept in the same header so a user includes one file.
+    out.push_str(&super::emit_ffi::cpp_bindings(pkg));
+
     out.push_str(&format!(
         "}}  // namespace msg\n}}  // namespace {ns}\n\n#endif  // {guard}\n"
     ));

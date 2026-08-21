@@ -84,6 +84,26 @@ pub(crate) fn build_cpp(
             .and_then(|c| c.toolchain)
     });
 
+    // ── Generated message entry points ──────────────────────────────────
+    // Present only when `horus msg gen` has run in this project.
+    match ensure_generated_msgs_lib(project_dir, release, effective_target.as_deref()) {
+        Ok(Some(lib)) => {
+            configure_cmd.arg(format!("-DHORUS_GEN_MSGS_LIB={}", lib.display()));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            // Not fatal on its own: a project may include the generated header
+            // for its structs without publishing them from C++. The linker
+            // produces the real error if it needs the symbols.
+            log::warn!("generated message entry points unavailable: {e:#}");
+            eprintln!(
+                "{} generated message entry points unavailable — {}",
+                cli_output::ICON_WARN.yellow(),
+                e
+            );
+        }
+    }
+
     // ── HORUS C++ bindings ──────────────────────────────────────────────
     // The generated CMakeLists consumes HORUS_CPP_INCLUDE / HORUS_CPP_LIB.
     // Resolving them here keeps host paths out of the generated file.
@@ -230,6 +250,69 @@ pub(super) fn execute_cpp_binary(binary: &Path, args: &[String]) -> Result<()> {
 /// `horus_cpp/include`; the library is produced by building the `horus_cpp`
 /// crate (crate-type includes `staticlib`). Built on demand and cached by
 /// cargo, so the cost is paid once per source tree and profile.
+
+/// Build the staticlib `horus msg gen` wrote, if the project has one.
+///
+/// Returns `Ok(None)` when the project has no generated messages, which is the
+/// ordinary case.
+fn ensure_generated_msgs_lib(
+    project_dir: &Path,
+    release: bool,
+    target_arch: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    let crate_dir = project_dir.join(".horus/generated/msgs_ffi");
+    if !crate_dir.join("Cargo.toml").is_file() {
+        return Ok(None);
+    }
+
+    let triple = target_arch
+        .and_then(crate::toolchain::TargetArch::from_str)
+        .filter(|t| !t.rust_target().is_empty())
+        .filter(|t| t.rust_target() != current_host_triple())
+        .map(|t| t.rust_target());
+
+    let profile_dir = if release { "release" } else { "debug" };
+    let target_root = crate_dir.join("target");
+    let lib_name = format!(
+        "lib{}_msgs_ffi.a",
+        load_project_name(project_dir)
+            .unwrap_or_else(|_| "generated".to_string())
+            .replace('-', "_")
+    );
+    let lib_path = match triple {
+        Some(t) => target_root.join(t).join(profile_dir).join(&lib_name),
+        None => target_root.join(profile_dir).join(&lib_name),
+    };
+
+    eprintln!(
+        "{} Building generated message entry points...",
+        cli_output::ICON_INFO.cyan()
+    );
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&crate_dir)
+        .arg("build")
+        .env("CARGO_TARGET_DIR", &target_root);
+    if release {
+        cmd.arg("--release");
+    }
+    if let Some(t) = triple {
+        cmd.arg("--target").arg(t);
+        if let Some(linker) = cross_linker(t) {
+            let key = format!("CARGO_TARGET_{}_LINKER", t.to_uppercase().replace('-', "_"));
+            cmd.env(key, linker);
+        }
+    }
+    let status = cmd
+        .status()
+        .context("failed to invoke cargo for the generated message crate")?;
+    if !status.success() {
+        bail!("cargo build failed for {}", crate_dir.display());
+    }
+    if !lib_path.exists() {
+        bail!("expected {} after a successful build", lib_path.display());
+    }
+    Ok(Some(lib_path))
+}
 
 /// The cross linker for a Rust target triple, if it is installed.
 ///

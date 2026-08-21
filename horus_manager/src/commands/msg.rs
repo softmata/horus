@@ -2427,7 +2427,7 @@ mod robotics_message_discovery_tests {
 ///
 /// This produces all of them from one definition, with one layout hash.
 pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
-    use crate::msgspec::{canonical, emit_cpp, emit_python, emit_rust, layout, parse, Package};
+    use crate::msgspec::{canonical, emit_cpp, emit_ffi, emit_python, emit_rust, layout, parse, Package};
 
     let (manifest, root) = crate::manifest::HorusManifest::find_and_load()
         .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e}"))))?;
@@ -2556,6 +2556,14 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
         (
             gen_root.join("msgs/src/lib.rs"),
             emit_rust::lib_rs(&pkg, &env),
+        ),
+        (
+            gen_root.join("msgs_ffi/Cargo.toml"),
+            emit_ffi::cargo_toml(&pkg, &horus_src, &manifest.package.version),
+        ),
+        (
+            gen_root.join("msgs_ffi/src/lib.rs"),
+            emit_ffi::lib_rs(&pkg),
         ),
         (
             gen_root

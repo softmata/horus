@@ -740,3 +740,186 @@ fn a_reordered_cpp_struct_of_the_same_size_still_fails() {
         "the failure must name the field that moved:\n{err}"
     );
 }
+
+// ─── The C ABI ──────────────────────────────────────────────────────────────
+
+/// Helper: a project with one generated message.
+fn project_with_message(kind: &str, body: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("demo");
+    assert!(Command::new(horus())
+        .args(["new", "demo", kind])
+        .current_dir(tmp.path())
+        .output()
+        .expect("horus new")
+        .status
+        .success());
+    std::fs::create_dir_all(project.join("msgs")).expect("mkdir");
+    std::fs::write(project.join("msgs/m.hmsg"), body).expect("write");
+    let out = Command::new(horus())
+        .args(["msg", "gen"])
+        .current_dir(&project)
+        .output()
+        .expect("msg gen");
+    assert!(
+        out.status.success(),
+        "msg gen failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (tmp, project)
+}
+
+/// A generated type can be *read* from C++ as soon as the header exists.
+/// Publishing one needs entry points, and the ones HORUS ships live in
+/// `libhorus_cpp.a`: `impl_pod_topic_c_api!` emits `#[no_mangle] extern "C"`
+/// functions into that archive, which a user cannot add to without editing the
+/// HORUS source tree. Neither that macro nor `impl_topic_ffi!` can be reused
+/// from outside the crate either — they are not exported, and their bodies name
+/// `paste::paste!`, `FfiPublisher` and a `topic_ffi::` path unqualified.
+///
+/// So the entry points are generated per project, into a staticlib linked
+/// alongside `libhorus_cpp.a`. Nothing in the HORUS tree changes.
+#[test]
+fn generation_emits_a_c_abi_crate() {
+    let (_tmp, project) = project_with_message(
+        "--rust",
+        "#[topic = \"robot.telemetry\"]\nTelemetry { seq: u64, ok: bool }\n",
+    );
+
+    let ffi = project.join(".horus/generated/msgs_ffi");
+    assert!(ffi.join("Cargo.toml").is_file(), "no FFI crate manifest");
+    assert!(ffi.join("src/lib.rs").is_file(), "no FFI crate source");
+
+    let manifest = std::fs::read_to_string(ffi.join("Cargo.toml")).expect("manifest");
+    assert!(
+        manifest.contains("staticlib"),
+        "the C++ link needs a static archive:\n{manifest}"
+    );
+    // Not a path dependency of anything, so cargo never adopts it into the
+    // .horus workspace and refuses to build it without its own root.
+    assert!(
+        manifest.contains("[workspace]"),
+        "without its own workspace root cargo fails with \"current package \
+         believes it's in a workspace when it's not\":\n{manifest}"
+    );
+
+    let lib = std::fs::read_to_string(ffi.join("src/lib.rs")).expect("lib.rs");
+    for suffix in [
+        "_publisher_new",
+        "_publisher_send",
+        "_publisher_free",
+        "_subscriber_new",
+        "_subscriber_recv",
+        "_subscriber_free",
+    ] {
+        assert!(lib.contains(suffix), "missing entry point `{suffix}`");
+    }
+    assert_eq!(
+        lib.matches("#[no_mangle]").count(),
+        6,
+        "one exported symbol per entry point"
+    );
+}
+
+/// Two projects loaded into one process must not collide, and a generated name
+/// must never take a built-in `horus_<type>_` symbol.
+#[test]
+fn c_abi_symbols_are_namespaced_by_package_and_type() {
+    let (_tmp, project) = project_with_message("--rust", "Telemetry { seq: u64 }\n");
+    let lib = std::fs::read_to_string(project.join(".horus/generated/msgs_ffi/src/lib.rs"))
+        .expect("lib.rs");
+    assert!(
+        lib.contains("horus_gen_demo_telemetry_publisher_new"),
+        "symbols must carry both the package and the type:\n{lib}"
+    );
+    assert!(
+        !lib.contains("\"C\" fn horus_telemetry_"),
+        "a generated symbol must not take the built-in namespace"
+    );
+}
+
+/// The header a user includes must give them something to publish with, not
+/// just a struct to look at.
+#[test]
+fn the_header_carries_publisher_and_subscriber_wrappers() {
+    let (_tmp, project) = project_with_message("--cpp", "Telemetry { seq: u64 }\n");
+    let header =
+        std::fs::read_to_string(project.join(".horus/generated/include/demo/msgs.hpp"))
+            .expect("header");
+
+    assert!(header.contains("class TelemetryPublisher"), "{header}");
+    assert!(header.contains("class TelemetrySubscriber"), "{header}");
+    // It owns a raw handle; copying it would free twice.
+    assert!(
+        header.contains("TelemetryPublisher(const TelemetryPublisher&) = delete"),
+        "the publisher owns a handle and must not be copyable"
+    );
+    assert!(
+        header.contains("bool valid() const"),
+        "a caller must be able to tell whether the topic opened"
+    );
+}
+
+/// A wrapper that does not compile is worse than none.
+#[test]
+fn the_generated_topic_wrappers_compile() {
+    if !tool("g++") {
+        eprintln!("SKIP: needs g++");
+        return;
+    }
+    let (tmp, project) = project_with_message(
+        "--cpp",
+        "#[topic = \"robot.telemetry\"]\nTelemetry { seq: u64, ok: bool }\n",
+    );
+
+    let probe = tmp.path().join("p.cpp");
+    std::fs::write(
+        &probe,
+        "#include \"demo/msgs.hpp\"\n\
+         int main() {\n\
+         \x20 demo::msg::TelemetryPublisher p(demo::msg::TELEMETRY_TOPIC);\n\
+         \x20 demo::msg::TelemetrySubscriber s(demo::msg::TELEMETRY_TOPIC);\n\
+         \x20 demo::msg::Telemetry t{};\n\
+         \x20 t.seq = 1;\n\
+         \x20 t.set_ok(true);\n\
+         \x20 if (p.valid()) p.send(t);\n\
+         \x20 demo::msg::Telemetry got{};\n\
+         \x20 (void)s.recv(got);\n\
+         \x20 return 0;\n\
+         }\n",
+    )
+    .expect("write probe");
+
+    // -fsyntax-only: the symbols live in the staticlib, which this test does
+    // not build. Linking is covered by the ignored end-to-end test below.
+    let cc = Command::new("g++")
+        .args(["-std=c++17", "-fsyntax-only", "-I"])
+        .arg(project.join(".horus/generated/include"))
+        .arg(&probe)
+        .output()
+        .expect("g++ must run");
+    assert!(
+        cc.status.success(),
+        "the generated topic wrappers do not compile:\n{}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
+}
+
+#[test]
+fn the_cpp_build_links_the_generated_entry_points() {
+    let cmake =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cmake_gen.rs"))
+            .expect("cmake_gen.rs");
+    assert!(
+        cmake.contains("HORUS_GEN_MSGS_LIB"),
+        "nothing links the generated staticlib, so a C++ publisher fails at link"
+    );
+    let run_cpp = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/run/run_cpp.rs"),
+    )
+    .expect("run_cpp.rs");
+    assert!(
+        run_cpp.contains("ensure_generated_msgs_lib"),
+        "nothing builds the generated staticlib"
+    );
+}

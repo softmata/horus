@@ -34,6 +34,7 @@
 
 pub mod canonical;
 pub mod emit_cpp;
+pub mod emit_ffi;
 pub mod emit_python;
 pub mod emit_rust;
 pub mod layout;
