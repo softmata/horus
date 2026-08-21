@@ -39,6 +39,22 @@ pub fn print_line(msg: &str) {
     let _ = out.flush();
 }
 
+/// Print a line to stderr, using `\r\n` if in raw terminal mode.
+///
+/// The stderr twin of [`print_line`], and for the same reason: `eprintln!`
+/// panics when the write fails, and a robot's stderr fails routinely — the
+/// supervisor that launched it exits, or an operator pipes `horus run` into
+/// `head`. A panic on a background thread (the network replicator, a node's
+/// worker) unwinds that thread alone and leaves the process running with the
+/// subsystem silently dead, which is strictly worse than losing the message.
+#[inline]
+pub fn eprint_line(msg: &str) {
+    use std::io::Write;
+    let mut err = std::io::stderr();
+    let _ = write_line(&mut err, msg, is_raw_mode());
+    let _ = err.flush();
+}
+
 /// Write a single line to `out`, honouring raw-mode CRLF. Returns the write error
 /// (rather than panicking like `println!`) so callers on safety paths can swallow
 /// a broken stdout instead of unwinding.
@@ -66,6 +82,12 @@ mod tests {
         print_line("");
         print_line("hello from test");
         print_line("line with special chars: \t\x1b[0m");
+    }
+
+    #[test]
+    fn test_eprint_line_does_not_panic() {
+        eprint_line("");
+        eprint_line("hello from test");
     }
 
     /// Regression: the write path must RETURN a broken-stdout error, never panic

@@ -96,7 +96,9 @@ impl PresenceReceiver {
         // under shm_nodes_dir(). Reject separators / `..` / absolute components so an
         // untrusted peer cannot escape the directory. Fail closed — skip this entry.
         if !is_safe_path_component(&host_id) {
-            eprintln!("[horus_net] Rejecting presence broadcast: unsafe host_id (path traversal)");
+            horus_core::terminal::eprint_line(
+                "[horus_net] Rejecting presence broadcast: unsafe host_id (path traversal)",
+            );
             return;
         }
 

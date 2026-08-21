@@ -225,12 +225,12 @@ pub fn handle_remote_estop_at(
     match classify_estop_freshness_at(timestamp, now_ns) {
         Freshness::Fresh => {}
         Freshness::Stale => {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] Ignoring stale/implausible remote e-stop from host {:04x} \
                  (timestamp outside the {}s freshness window)",
                 host_id,
                 ESTOP_MAX_AGE_NS / 1_000_000_000
-            );
+            ));
             return false;
         }
         Freshness::ClockUnusable => {
@@ -265,7 +265,7 @@ pub fn handle_remote_estop_at(
         }
         EstopRemotePolicy::Warn => {
             let msg = format!("Remote e-stop from host {:04x}: {}", host_id, reason);
-            eprintln!("[horus_net] {}", msg);
+            horus_core::terminal::eprint_line(&format!("[horus_net] {}", msg));
             horus_core::scheduling::trigger_external_emergency_stop(msg);
             true
         }
@@ -398,23 +398,23 @@ fn is_fresh_estop(timestamp_ns: u64) -> bool {
 fn warn_estop_clock_unusable(host_id: u16, authenticated: bool) {
     if !ESTOP_CLOCK_WARNED.swap(true, Ordering::Relaxed) {
         if authenticated {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] WARNING: remote e-stop from host {:04x} differs from this \
                  machine's clock by more than a day — one of the two clocks is not set. \
                  ACTING on it anyway because it is authenticated (HORUS_ESTOP_KEY). \
                  Synchronise clocks (NTP/PTP): e-stop freshness compares ABSOLUTE wall \
                  time. (Fires once.)",
                 host_id
-            );
+            ));
         } else {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] WARNING: REJECTING remote e-stop from host {:04x} — its \
                  timestamp differs from this machine's clock by more than a day, so one \
                  of the two clocks is not set, and the packet is UNAUTHENTICATED. \
                  Remote e-stop is INERT on this node until clocks are synchronised \
                  (NTP/PTP) or HORUS_ESTOP_KEY is provisioned. (Fires once.)",
                 host_id
-            );
+            ));
         }
     }
 }
@@ -426,10 +426,10 @@ fn warn_estop_clock_unusable(host_id: u16, authenticated: bool) {
 /// disk-fill and an RT-jitter primitive.
 fn warn_unauthenticated_rejected() {
     if !ESTOP_FORGERY_WARNED.swap(true, Ordering::Relaxed) {
-        eprintln!(
+        horus_core::terminal::eprint_line(
             "[horus_net] WARNING: REJECTED a remote e-stop because HORUS_ESTOP_KEY is \
              not provisioned or its authentication tag is missing/invalid. The key must \
-             match on every node; otherwise someone may be forging packets. (Fires once.)"
+             match on every node; otherwise someone may be forging packets. (Fires once.)",
         );
     }
 }

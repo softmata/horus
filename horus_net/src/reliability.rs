@@ -96,10 +96,10 @@ impl ReliabilityLayer {
         for (key, entry) in &mut self.latched {
             if now.duration_since(entry.last_sent) >= LATCH_RESEND_INTERVAL {
                 if entry.resend_count >= MAX_LATCH_RESENDS {
-                    eprintln!(
+                    horus_core::terminal::eprint_line(&format!(
                         "[horus_net] Latched message on topic_hash={:#X} seq={} gave up after {} resends",
                         entry.topic_hash, entry.sequence, entry.resend_count
-                    );
+                    ));
                     to_remove.push(*key);
                 } else {
                     entry.resend_count += 1;

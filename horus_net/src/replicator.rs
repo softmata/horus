@@ -99,7 +99,9 @@ impl Replicator {
 
         if let DiscoveryMode::Multicast { ref group } = config.discovery_mode() {
             if let Err(e) = transport.join_multicast(group) {
-                eprintln!("[horus_net] Failed to join multicast group: {e}");
+                horus_core::terminal::eprint_line(&format!(
+                    "[horus_net] Failed to join multicast group: {e}"
+                ));
             }
         }
 
@@ -124,10 +126,10 @@ impl Replicator {
         let hb_interval = Duration::from_millis(config.safety.heartbeat_ms);
         let hb_action = LinkLostAction::from_str(&config.safety.on_link_lost);
         if crate::config::is_wsl2() {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] WSL2 detected — using relaxed timeouts (heartbeat {}ms, {} missed threshold)",
                 config.safety.heartbeat_ms, config.safety.missed_threshold
-            );
+            ));
         }
         let heartbeat = SafetyHeartbeat::with_config(
             peer_id,
@@ -184,14 +186,18 @@ impl Replicator {
         let mut event_loop = match PlatformEventLoop::new(TIMER_INTERVAL) {
             Ok(el) => el,
             Err(e) => {
-                eprintln!("[horus_net] Failed to create event loop: {e}");
+                horus_core::terminal::eprint_line(&format!(
+                    "[horus_net] Failed to create event loop: {e}"
+                ));
                 return;
             }
         };
 
         #[cfg(unix)]
         if let Err(e) = event_loop.register_udp(self.transport.raw_fd()) {
-            eprintln!("[horus_net] Failed to register UDP socket: {e}");
+            horus_core::terminal::eprint_line(&format!(
+                "[horus_net] Failed to register UDP socket: {e}"
+            ));
             return;
         }
 
@@ -208,7 +214,9 @@ impl Replicator {
                 Ok(events) => events,
                 Err(e) => {
                     if e.kind() != std::io::ErrorKind::Interrupted {
-                        eprintln!("[horus_net] Event loop error: {e}");
+                        horus_core::terminal::eprint_line(&format!(
+                            "[horus_net] Event loop error: {e}"
+                        ));
                     }
                     continue;
                 }
@@ -293,11 +301,11 @@ impl Replicator {
             self.filtered_count += 1;
             if !self.filtered_logged {
                 self.filtered_logged = true;
-                eprintln!(
+                horus_core::terminal::eprint_line(&format!(
                     "[horus_net] Dropped a datagram from {from} — outside the allowed \
                      peer range. Set HORUS_NET_ALLOW_PEERS to admit it (further drops \
                      are counted, not logged)."
-                );
+                ));
             }
             return;
         }
@@ -524,10 +532,10 @@ impl Replicator {
                     && local_entry.type_hash != remote_type_hash
                 {
                     self.metrics.record_type_mismatch();
-                    eprintln!(
+                    horus_core::terminal::eprint_line(&format!(
                         "[horus_net] Type mismatch on topic '{}': local type hash={:#x}, peer-announced type hash={:#x}. Rejecting import.",
                         name, local_entry.type_hash, remote_type_hash
-                    );
+                    ));
                     return;
                 }
             }
@@ -774,10 +782,10 @@ impl Replicator {
             let dead = self.peers.check_liveness();
             if !dead.is_empty() {
                 for dead_id in &dead {
-                    eprintln!(
+                    horus_core::terminal::eprint_line(&format!(
                         "[horus_net] Peer {:02X?}... lost (discovery timeout)",
                         &dead_id[..4]
-                    );
+                    ));
                     self.heartbeat.remove_peer(dead_id);
                     horus_core::scheduling::record_external_event(
                         horus_core::scheduling::BlackBoxEvent::NetPeerLost {
@@ -795,7 +803,7 @@ impl Replicator {
                 self.start_time,
                 NO_PEERS_TIMEOUT,
             ) {
-                eprintln!("{msg}");
+                horus_core::terminal::eprint_line(&msg);
             }
 
             // Presence broadcast (same 1s interval as discovery)
@@ -852,9 +860,9 @@ impl Replicator {
                     // Only reachable if the reason string somehow exceeded a
                     // datagram; encode_estop caps it at 200 bytes. Never drop an
                     // e-stop silently.
-                    eprintln!(
+                    horus_core::terminal::eprint_line(
                         "[horus_net] CRITICAL: local e-stop could not be framed for \
-                         broadcast (reason too long); peers will NOT be notified"
+                         broadcast (reason too long); peers will NOT be notified",
                     );
                 }
             }
@@ -984,7 +992,7 @@ impl Replicator {
         for peer in self.peers.alive_peers() {
             let (peer_matches, warnings) = find_matches(&local_entries, &peer.topics);
             for w in warnings {
-                eprintln!("[horus_net] {w}");
+                horus_core::terminal::eprint_line(&format!("[horus_net] {w}"));
             }
             all_matches.extend(peer_matches);
         }

@@ -168,10 +168,10 @@ impl SafetyHeartbeat {
             if !state.link_alive {
                 state.link_alive = true;
                 state.action_fired = false;
-                eprintln!(
+                horus_core::terminal::eprint_line(&format!(
                     "[horus_net] Link restored to peer {:02X?}...",
                     &peer_id[..4]
-                );
+                ));
             }
         }
     }
@@ -249,12 +249,12 @@ impl SafetyHeartbeat {
 
                 if !state.action_fired {
                     state.action_fired = true;
-                    eprintln!(
+                    horus_core::terminal::eprint_line(&format!(
                         "[horus_net] Link lost to peer {:02X?}... ({} missed heartbeats, {}ms)",
                         &peer_id[..4],
                         state.missed_count,
                         since_last.as_millis()
-                    );
+                    ));
                     link_lost.push((*peer_id, self.default_action));
                 }
             }

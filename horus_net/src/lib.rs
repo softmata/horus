@@ -84,7 +84,9 @@ pub fn start_replicator(config: NetConfig) -> Option<ReplicatorHandle> {
     let mut rep = match Replicator::new(registry, config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[horus_net] Failed to start replicator: {e}");
+            horus_core::terminal::eprint_line(&format!(
+                "[horus_net] Failed to start replicator: {e}"
+            ));
             return None;
         }
     };
@@ -144,7 +146,9 @@ impl Drop for ReplicatorHandle {
                 }
                 if std::time::Instant::now() >= deadline {
                     // Timeout — detach the thread (it will exit on next event loop cycle)
-                    eprintln!("[horus_net] Replicator thread did not stop within 3s, detaching");
+                    horus_core::terminal::eprint_line(
+                        "[horus_net] Replicator thread did not stop within 3s, detaching",
+                    );
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));

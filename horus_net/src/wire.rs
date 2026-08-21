@@ -442,13 +442,13 @@ pub struct InMessage {
 pub fn encode_single(header: &PacketHeader, msg: &OutMessage, buf: &mut [u8]) -> usize {
     let total = PacketHeader::SIZE + MessageHeader::SIZE + msg.payload.len();
     if buf.len() < total {
-        eprintln!(
+        horus_core::terminal::eprint_line(&format!(
             "[horus_net] Dropping a {}-byte message on topic hash {:#x} — it does not fit \
              the {}-byte send buffer",
             msg.payload.len(),
             msg.topic_hash,
             buf.len()
-        );
+        ));
         return 0;
     }
 
