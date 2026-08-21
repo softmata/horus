@@ -474,7 +474,15 @@ impl NodeInfo {
             }
         }
 
-        crate::hlog!(error, "{}", error_msg);
+        // Log against this node's own name rather than the ambient thread-local.
+        //
+        // `hlog!` reads `CURRENT_NODE`, which is empty on an executor thread —
+        // and is also treated as empty once `tick_start` is cleared, which this
+        // function has just done. So a node panic, the single most important
+        // entry in the log, was recorded against node "unknown": it printed
+        // `[ERROR] [unknown] Node 'boom' panicked: ...`, and `horus log --node
+        // boom` did not return it. The name is right here.
+        crate::core::hlog::log_as_node(crate::core::LogType::Error, &self.name, &error_msg);
         self.track_error(&error_msg);
     }
 
@@ -639,11 +647,16 @@ pub trait Node: Send {
 
     /// Handle errors (called by the scheduler on tick failure).
     ///
-    /// Override to add custom error recovery logic. The default logs via `hlog!()`.
+    /// Override to add custom error recovery logic. The default does nothing.
+    ///
+    /// It used to log the error again. Every caller — all four executors and
+    /// the main-thread path — calls `record_tick_failure` first, which already
+    /// logs at error level to the console and to the buffer `horus log` reads,
+    /// so the default put the identical text on screen a second time with a
+    /// redundant "Node error: " in front of it. This is a recovery hook, not a
+    /// reporting one; reporting is the scheduler's job and it does it.
     #[doc(hidden)]
-    fn on_error(&mut self, error: &str) {
-        crate::hlog!(error, "Node error: {}", error);
-    }
+    fn on_error(&mut self, _error: &str) {}
 
     /// Check if node is in safe state (for safety monitor).
     fn is_safe_state(&self) -> bool {
@@ -1070,6 +1083,47 @@ mod sub_millisecond_metrics_tests {
             0.0,
             "documents the defect: truncation made a 200us tick indistinguishable \
              from no work at all"
+        );
+    }
+}
+
+#[cfg(test)]
+mod failure_attribution_tests {
+    use super::*;
+    use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+
+    /// A node's own failure must be recorded against that node.
+    ///
+    /// `hlog!` reads the `CURRENT_NODE` thread-local, which is empty on an
+    /// executor thread and is treated as empty once the tick's `tick_start` has
+    /// been cleared — which `record_tick_failure` does a few lines before
+    /// logging. So a panic, the single most important entry a node produces,
+    /// was filed under node "unknown": the console printed
+    /// `[ERROR] [unknown] Node 'boom' panicked: ...` and `horus log --node boom`
+    /// returned nothing for it.
+    #[test]
+    fn a_tick_failure_is_logged_against_the_node_that_failed() {
+        let name = format!("attrib_probe_{}", std::process::id());
+        let mut info = NodeInfo::new(name.clone());
+        let marker = format!("boom marker {}", std::process::id());
+
+        info.record_tick_failure(marker.clone());
+
+        let mine: Vec<_> = GLOBAL_LOG_BUFFER
+            .get_all()
+            .into_iter()
+            .filter(|e| e.message.contains(&marker))
+            .collect();
+
+        assert!(
+            !mine.is_empty(),
+            "the failure never reached the log buffer at all"
+        );
+        assert!(
+            mine.iter().all(|e| e.node_name == name),
+            "a tick failure was filed under {:?} instead of {name:?} — \
+             `horus log --node {name}` would not find the node's own panic",
+            mine.iter().map(|e| &e.node_name).collect::<Vec<_>>()
         );
     }
 }

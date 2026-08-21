@@ -140,6 +140,41 @@ pub fn log_with_context(level: LogType, message: String) {
     emit_console(&level, &node_name, &message);
 }
 
+/// Log a message attributed to a named node, bypassing the thread-local.
+///
+/// `log_with_context` reads `CURRENT_NODE`, which is empty on an executor
+/// thread and is also treated as empty once the tick's `tick_start` has been
+/// cleared. Anything logged from those points came out as node "unknown" — and
+/// `horus log --node <name>` filters on that field, so the entries most worth
+/// filtering for (a node's own failures) were the ones it could not find.
+///
+/// Use this wherever the node is known at the call site.
+pub fn log_as_node(level: LogType, node_name: &str, message: &str) {
+    let now = chrono::Local::now();
+    let (tick_us, tick_number) = CURRENT_NODE.with(|ctx| match *ctx.borrow() {
+        Some(ref c) => (
+            c.tick_start
+                .map(|t| t.elapsed().as_micros() as u64)
+                .unwrap_or(0),
+            c.tick_number,
+        ),
+        None => (0, 0),
+    });
+
+    publish_log(LogEntry {
+        timestamp: now.format("%H:%M:%S%.3f").to_string(),
+        tick_number,
+        node_name: node_name.to_string(),
+        log_type: level.clone(),
+        topic: None,
+        message: message.to_string(),
+        tick_us,
+        ipc_ns: 0,
+    });
+
+    emit_console(&level, node_name, message);
+}
+
 /// Write one log line to the terminal.
 ///
 /// Public, and takes the node name explicitly, because there are three callers

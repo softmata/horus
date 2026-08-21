@@ -565,18 +565,15 @@ impl RtExecutor {
                     }
                 }
 
-                // `record_tick_failure` logs the message at error level, which
-                // reaches both the console and the shared log buffer that
-                // `horus log` reads — so the panic is now visible by default
-                // without this line, and printing it here too would put the
-                // same text on screen three times (raw, on_error, hlog).
-                //
-                // Kept behind --verbose as the RT-thread-specific detail line.
-                // Console output for a panic is now identical to the
-                // main-thread path, which is the point.
-                if monitors.verbose {
-                    print_line(&error_msg);
-                }
+                // `record_tick_failure` above already logged this at error level,
+                // which reaches both the console and the buffer `horus log`
+                // reads. This second copy was gated on `verbose` on the theory
+                // that verbose is opt-in — but `MonitoringConfig::verbose`
+                // defaults to *true*, so every default run printed the panic
+                // twice on two different streams (hlog to stderr, this to
+                // stdout), and a third time via the old `Node::on_error`
+                // default. With a Python node's traceback attached that is three
+                // multi-line blocks for one failure.
 
                 // Record to the blackbox (try_lock to avoid RT priority
                 // inversion, matching the budget/deadline paths above).

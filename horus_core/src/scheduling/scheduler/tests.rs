@@ -535,7 +535,15 @@ fn non_rt_watchdog_node_is_fed_no_spurious_estop() {
         .build()
         .unwrap();
     // Run well past the 50 ms watchdog; the node ticks many times, feeding it.
-    let _ = scheduler.run_for(300_u64.ms());
+    //
+    // Two seconds rather than 300 ms. The window has to cover scheduler startup
+    // plus at least six ticks on a machine that is busy — `cargo test` runs this
+    // alongside ~2300 other tests on every core — and at 300 ms a loaded box
+    // produced `got 0`, which reads as "the node never ran" rather than "the
+    // scheduler never got a timeslice". The watchdog under test is 50 ms, so a
+    // longer window makes the assertion stronger, not weaker: more chances for a
+    // spurious expiry to show up.
+    let _ = scheduler.run_for(2000_u64.ms());
     let ticks = counter.load(Ordering::SeqCst);
     assert!(ticks > 5, "node should tick many times, got {ticks}");
     let stats = scheduler.safety_stats().expect("safety monitor enabled");

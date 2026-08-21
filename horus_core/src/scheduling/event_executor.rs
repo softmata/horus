@@ -282,12 +282,14 @@ impl EventExecutor {
                                 }
                             }
 
-                            // record_tick_failure above logs at error level, reaching both
-                            // the console and the buffer `horus log` reads. Printing here too
-                            // would show the same text three times.
-                            if monitors.verbose {
-                                print_line(&error_msg);
-                            }
+                            // `record_tick_failure` above already logged this at error level, which
+                            // reaches both the console and the buffer `horus log` reads. This second
+                            // copy was gated on `verbose` on the theory that verbose is opt-in — but
+                            // `MonitoringConfig::verbose` defaults to *true*, so every default run
+                            // printed the panic twice on two different streams (hlog to stderr, this to
+                            // stdout), and a third time via the old `Node::on_error` default. With a
+                            // Python node's traceback attached that is three multi-line blocks for one
+                            // failure.
                             node.node.on_error(&error_msg);
 
                             // Enforce the failure policy (Fatal → safe + stop via
