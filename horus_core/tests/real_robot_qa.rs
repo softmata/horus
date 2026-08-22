@@ -370,7 +370,11 @@ fn test_10_node_robot_runs() {
         .unwrap();
 
     // Run for 3 seconds
-    sched.run_for(3_u64.secs()).unwrap();
+    // 8s, not 3s. Ten nodes each have to reach the ">50 ticks" floor below,
+    // which is about 17Hz apiece; on a machine running the rest of the suite on
+    // every core they managed 10Hz and the lidar node stopped at 30. The floor
+    // is the claim worth keeping — widen the window rather than lower it.
+    sched.run_for(8_u64.secs()).unwrap();
 
     // Verify all 10 nodes ticked
     let names = [
