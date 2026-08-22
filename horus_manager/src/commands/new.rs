@@ -140,6 +140,18 @@ pub fn create_new_project(
         }
     }
 
+    // Generate .horus/Cargo.toml now, so an editor works on first open.
+    //
+    // Without this the project has no cargo manifest until someone runs
+    // `horus build` or `horus run`, and rust-analyzer reports "failed to find
+    // any projects" with no IDE services at all. Best-effort: a project that
+    // scaffolded fine must not fail because the HORUS source tree could not be
+    // located for the IDE's benefit. See cargo_gen::ensure.
+    let ide_ready = crate::cargo_gen::ensure(&project_path);
+    if let crate::cargo_gen::Ensured::Failed(ref why) = ide_ready {
+        log::debug!("could not pre-generate .horus/Cargo.toml: {why}");
+    }
+
     // Register workspace in ~/.horus/workspaces.json
     // This makes it visible in monitors (horus monitor / horus monitor -t)
     if let Ok(mut registry) = crate::workspace::WorkspaceRegistry::load() {
@@ -158,6 +170,16 @@ pub fn create_new_project(
     println!("\nTo get started:");
     println!("  {} {}", "cd".cyan(), name);
     println!("  {} (auto-installs dependencies)", "horus run".cyan());
+
+    // Only claim the IDE is wired up when it actually is. On a machine where
+    // find_horus_source_dir() misses, the manifest was not written and saying
+    // otherwise would send the user looking for a problem in their editor.
+    if ide_ready == crate::cargo_gen::Ensured::Generated {
+        println!(
+            "\n{} rust-analyzer is ready — open the project and it will work.",
+            cli_output::ICON_SUCCESS.green()
+        );
+    }
 
     Ok(())
 }

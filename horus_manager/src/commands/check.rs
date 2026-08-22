@@ -156,6 +156,40 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
         );
     }
 
+    // Restore the IDE manifest if it is missing OR stale.
+    //
+    // `.horus/Cargo.toml` is gitignored, so a fresh clone of a HORUS project
+    // has no cargo manifest and rust-analyzer cannot load anything. `horus
+    // check` is the natural command to run on a project that "isn't working",
+    // so it is the right place to repair this. Only when absent or stale,
+    // though: rewriting it on every check would churn its mtime and make
+    // rust-analyzer reload the whole workspace each time.
+    //
+    // Stale matters as much as missing. The manifest bakes an absolute path to
+    // the HORUS source tree, and `horus upgrade` moves it (the installer cache
+    // is keyed `horus@<version>`), so an upgrade breaks every project at once.
+    // See cargo_gen::is_stale.
+    //
+    // Strictly advisory: this must never change run_check's exit code. A
+    // project is not invalid because its IDE scaffolding is missing.
+    let missing = !target_path.join(".horus/Cargo.toml").exists();
+    let stale = !missing && crate::cargo_gen::is_stale(target_path);
+    if missing || stale {
+        if let crate::cargo_gen::Ensured::Generated = crate::cargo_gen::ensure(target_path) {
+            if !quiet {
+                let why = if stale {
+                    "it pointed at a HORUS source tree that is no longer there"
+                } else {
+                    "rust-analyzer needs it; it is gitignored"
+                };
+                println!(
+                    "{} Regenerated .horus/Cargo.toml ({why})\n",
+                    cli_output::ICON_INFO.cyan()
+                );
+            }
+        }
+    }
+
     let mut total_errors = 0;
     let mut total_warnings = 0;
     let mut files_checked = 0;

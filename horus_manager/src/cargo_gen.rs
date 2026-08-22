@@ -805,6 +805,117 @@ pub fn sanitize_cargo_name(name: &str) -> String {
 // ─── Workspace generation ────────────────────────────────────────────────────
 
 use crate::manifest::{resolve_workspace_members, TargetType};
+/// Outcome of [`ensure`], so callers can tell "nothing to do" from "it broke".
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ensured {
+    /// `.horus/Cargo.toml` was written (or rewritten).
+    Generated,
+    /// Nothing to generate — not a Rust project with an entry point.
+    Skipped,
+    /// Generation was attempted and failed. Carries the reason for the caller
+    /// to surface; never fatal.
+    Failed(String),
+}
+
+/// Make `.horus/Cargo.toml` exist, best-effort and never fatal.
+///
+/// WHY THIS EXISTS. `.horus/Cargo.toml` is the only cargo manifest a template
+/// project has, and until now it was written exclusively by `horus build` and
+/// `horus run`. Before the first build there is no manifest anywhere, so
+/// rust-analyzer has no project to load at all — it reports
+/// `failed to find any projects` and offers zero IDE services on `src/main.rs`.
+/// The generated `.gitignore` also lists `.horus/Cargo.toml`, so a fresh clone
+/// of a HORUS project lands in the same state. Nothing told the user that a
+/// build is what turns the IDE on.
+///
+/// Generating it at `horus new` time closes that. Note what this deliberately
+/// is NOT: it is not a build, it does not resolve dependencies, and it does not
+/// touch the network. On the `horus new` path `horus.toml` has no dependencies
+/// yet, so `auto_install_registry_deps` returns at its `missing.is_empty()`
+/// guard before any resolver runs.
+///
+/// FAILURE IS NOT FATAL, BY DESIGN. [`generate`] hard-fails when the HORUS
+/// source tree cannot be found, because for a *build* that is the actionable
+/// error. For `horus new` it is not: the project is already valid on disk, and
+/// aborting scaffolding over a missing IDE convenience would be a regression.
+/// Callers get [`Ensured::Failed`] and decide what to say.
+pub fn ensure(project_dir: &Path) -> Ensured {
+    let manifest_path = project_dir.join(crate::manifest::HORUS_TOML);
+    let Ok(manifest) = crate::manifest::HorusManifest::load_from(&manifest_path) else {
+        return Ensured::Skipped;
+    };
+
+    // A workspace generates a root plus one manifest per member; entry-point
+    // probing happens per member inside generate_workspace.
+    if !manifest.is_workspace() {
+        // `generate` picks the `[[bin]]` by probing these two paths, and emits
+        // no target at all when neither exists (a `--lib` project, or Python or
+        // C++). A manifest with no target is worse than no manifest: cargo would
+        // look for `.horus/src/lib.rs`, which does not exist, and rust-analyzer
+        // reports a hard load error instead of simply having nothing to load.
+        let has_entry =
+            project_dir.join("main.rs").exists() || project_dir.join("src/main.rs").exists();
+        if !has_entry {
+            return Ensured::Skipped;
+        }
+    }
+
+    match generate_for_manifest(&manifest, project_dir, &[], false) {
+        Ok(_) => Ensured::Generated,
+        Err(e) => Ensured::Failed(format!("{e:#}")),
+    }
+}
+
+/// Whether `.horus/Cargo.toml` exists but points at a HORUS source tree that is
+/// no longer there.
+///
+/// The generated manifest bakes in an ABSOLUTE path, resolved once by
+/// `find_horus_source_dir()`. That path is not stable for the lifetime of the
+/// project. The resolver's last resort is the installer cache, keyed by version
+/// as `<cache>/horus@<version>`, so `horus upgrade` renames the directory every
+/// project was pointing at — invalidating all of them at once.
+///
+/// A stale manifest is a WORSE failure than a missing one. Missing means
+/// rust-analyzer has nothing to load; stale means `cargo metadata` dies with
+///
+/// ```text
+/// error: failed to load manifest for dependency `horus`
+/// Caused by: failed to read /…/horus@0.2.2/horus/Cargo.toml
+/// ```
+///
+/// and the editor reports a workspace-load failure. `horus build` already
+/// repairs this because it regenerates unconditionally, but a user whose editor
+/// broke after an upgrade has no reason to think "run a build" is the fix — so
+/// the cheap recovery commands should repair it too.
+///
+/// Detection is deliberately shallow: read the generated file, pull out the
+/// `path = "…"` values, and report true if any names a directory that does not
+/// exist. That catches the upgrade case and a moved or deleted checkout without
+/// re-running dependency resolution.
+pub fn is_stale(project_dir: &Path) -> bool {
+    let generated = project_dir.join(HORUS_DIR).join("Cargo.toml");
+    let Ok(text) = fs::read_to_string(&generated) else {
+        return false;
+    };
+
+    for line in text.lines() {
+        let Some(rest) = line.split("path = \"").nth(1) else {
+            continue;
+        };
+        let Some(raw) = rest.split('"').next() else {
+            continue;
+        };
+        let path = Path::new(raw);
+        // Relative entries are the project's own sources (`../src/main.rs`),
+        // resolved against `.horus/`; absolute ones are the HORUS source tree.
+        if path.is_absolute() && !path.exists() {
+            log::debug!("generated manifest points at a missing path: {raw}");
+            return true;
+        }
+    }
+    false
+}
+
 
 /// Smart dispatcher: routes to single-package or workspace generation.
 ///
@@ -2827,6 +2938,50 @@ mod tests {
         }
         // If resolve_workspace_members fails (e.g. glob issues in test env),
         // that's still correct dispatch — it tried the workspace path.
+    }
+
+    /// `horus upgrade` renames the installer cache directory the generated
+    /// manifest points at (`<cache>/horus@<version>`), which invalidates every
+    /// project at once. A stale manifest is a harder failure than a missing one
+    /// — `cargo metadata` dies with "failed to load manifest for dependency
+    /// `horus`" and rust-analyzer reports a workspace load error — so the cheap
+    /// recovery commands have to notice it, not just an absent file.
+    #[test]
+    fn is_stale_spots_a_dead_source_path_but_not_a_live_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let horus_dir = dir.path().join(".horus");
+        std::fs::create_dir_all(&horus_dir).unwrap();
+
+        let live = dir.path().join("live_source");
+        std::fs::create_dir_all(&live).unwrap();
+
+        // No generated manifest at all is "not stale" — that is the *missing*
+        // case, which callers detect separately.
+        assert!(
+            !is_stale(dir.path()),
+            "absent manifest must not read as stale"
+        );
+
+        // Relative entries are the project's own sources, resolved against
+        // `.horus/`; they must never be treated as a dead absolute path.
+        std::fs::write(
+            horus_dir.join("Cargo.toml"),
+            format!(
+                "[[bin]]\npath = \"../src/main.rs\"\n\n[dependencies]\nhorus = {{ path = \"{}\" }}\n",
+                live.display()
+            ),
+        )
+        .unwrap();
+        assert!(
+            !is_stale(dir.path()),
+            "a manifest pointing at a real tree is fine"
+        );
+
+        std::fs::remove_dir_all(&live).unwrap();
+        assert!(
+            is_stale(dir.path()),
+            "once the source tree is gone the manifest is stale"
+        );
     }
 
     #[test]
