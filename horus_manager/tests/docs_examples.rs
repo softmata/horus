@@ -878,6 +878,32 @@ fn undefined_names(errors: &[String]) -> Vec<String> {
 /// A "no field X on type T" / "T has no field named X" error where the page
 /// defines its own `T`, so the prelude's same-named type was picked only because
 /// the block was compiled alone.
+/// True when `page_source` declares `<keyword> <name>` as a whole word.
+///
+/// A plain `contains` was the original test, and it silently excused real
+/// defects. A page that declares `struct ImuSensor` contains the substring
+/// `struct Imu`, so every wrong-field error against the standard `Imu` message
+/// was absolved as "the page defines its own Imu" — the block never compiled
+/// and the suite still passed. The same shadowing holds for `Pose`/`PoseStamped`
+/// and `Twist`/`TwistWithCovariance`. The declared name must end where the
+/// searched-for name ends.
+fn declares(page_source: &str, keyword: &str, name: &str) -> bool {
+    let needle = format!("{keyword} {name}");
+    let bytes = page_source.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = page_source[from..].find(&needle) {
+        let end = from + pos + needle.len();
+        if !bytes
+            .get(end)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
 fn is_shadowed_field_error(error: &str, page_source: &str) -> bool {
     if !error.contains("E0560") && !error.contains("E0609") {
         return false;
@@ -890,7 +916,7 @@ fn is_shadowed_field_error(error: &str, page_source: &str) -> bool {
         .filter_map(|s| s.rsplit("::").next())
         .find(|s| s.chars().next().is_some_and(char::is_uppercase));
     let Some(ty) = ty else { return false };
-    page_source.contains(&format!("struct {ty}")) || page_source.contains(&format!("enum {ty}"))
+    declares(page_source, "struct", ty) || declares(page_source, "enum", ty)
 }
 
 /// True when every failure is an identifier the *same page* defines elsewhere.
@@ -925,20 +951,13 @@ fn is_page_local_name_error(error: &str, page_source: &str) -> bool {
     }
     names.iter().all(|n| {
         [
-            format!("struct {n}"),
-            format!("enum {n}"),
-            format!("trait {n}"),
-            format!("type {n}"),
-            format!("fn {n}"),
-            format!("mod {n}"),
+            "struct", "enum", "trait", "type", "fn", "mod",
             // A page may only ever `impl Node for MotorController`, treating the
             // type as one the reader already has in their project.
-            format!("impl {n}"),
-            format!("for {n} "),
-            format!("for {n}\n"),
+            "impl", "for",
         ]
         .iter()
-        .any(|d| page_source.contains(d.as_str()))
+        .any(|kw| declares(page_source, kw, n))
     })
 }
 
@@ -1207,6 +1226,42 @@ mod extractor {
         );
         // A type the page does NOT define stays a real finding.
         assert!(!is_shadowed_field_error(e, "no definitions here"));
+    }
+
+    #[test]
+    fn a_longer_type_name_does_not_excuse_a_field_error() {
+        // Regression: tutorials/01-sensor-node-rust.mdx defines `struct ImuSensor`
+        // and uses the prelude's `Imu`. A `contains("struct Imu")` test matched
+        // `struct ImuSensor`, so a genuinely wrong field on `Imu` was reported as
+        // "referenced types defined elsewhere on their page" and the suite passed
+        // with an example that did not compile.
+        let e = "src/lib.rs:12:9: error[E0609]: no field `linear_accel` on type `Imu`";
+        assert!(
+            !is_shadowed_field_error(e, "struct ImuSensor {\n    imu: Topic<Imu>,\n}"),
+            "a struct whose name merely starts with the message name must not absolve it"
+        );
+        // The page really defining the type still absolves it.
+        assert!(is_shadowed_field_error(e, "struct Imu {\n    linear_accel: f64,\n}"));
+        // And the boundary check holds for the name-resolution path too.
+        let missing = "src/lib.rs:3:5: error[E0433]: cannot find struct `Imu` in this scope";
+        assert!(!is_page_local_name_error(missing, "struct ImuSensor {}"));
+        assert!(is_page_local_name_error(missing, "struct Imu {}"));
+    }
+
+    #[test]
+    fn declares_requires_a_word_boundary() {
+        assert!(declares("struct Imu {}", "struct", "Imu"));
+        assert!(declares("struct Imu<T> {}", "struct", "Imu"));
+        assert!(declares("impl Node for Robot {}", "for", "Robot"));
+        assert!(!declares("struct ImuSensor {}", "struct", "Imu"));
+        assert!(!declares("struct Imu_Raw {}", "struct", "Imu"));
+        assert!(!declares("struct Imu2 {}", "struct", "Imu"));
+        // A later, genuine declaration is still found after a near-miss.
+        assert!(declares(
+            "struct ImuSensor {}\nstruct Imu {}",
+            "struct",
+            "Imu"
+        ));
     }
 
     #[test]
