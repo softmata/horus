@@ -159,7 +159,18 @@ fn dedent(code: &str) -> String {
 /// A block is an outline/placeholder rather than something a reader runs.
 fn is_illustrative(code: &str) -> bool {
     let t = code.trim();
-    if t.len() < 20 || t.contains("...") {
+    if t.len() < 20 {
+        return true;
+    }
+    // Only an ellipsis in *code* marks an outline. Testing the raw block made
+    // prose spend the block's whole gate: `tutorials/realtime-control-python
+    // .mdx` prints "1kHz RT motor loop starting..." on its last line, and that
+    // one string dropped the page's only example — the entire 1 kHz
+    // `RtMotorLoop` program — so it was never parsed and never checked against
+    // the module. The Rust harness has guarded this since `classify()`; see
+    // the `an_ellipsis_in_prose_does_not_skip_the_block` regression test in
+    // docs_examples.rs.
+    if strip_comments_and_strings(t).contains("...") {
         return true;
     }
     let lower = t.to_ascii_lowercase();
@@ -892,6 +903,28 @@ mod extractor {
         assert!(is_illustrative("x = 1"));
         assert!(!is_illustrative(
             "import horus\nsched = horus.Scheduler()\n"
+        ));
+    }
+
+    #[test]
+    fn an_ellipsis_in_prose_does_not_drop_the_block() {
+        // Regression: tutorials/realtime-control-python.mdx ends on
+        // `print("1kHz RT motor loop starting...")`. is_illustrative() tested
+        // the raw block for "...", so that one string skipped the page's only
+        // example — the whole 1 kHz RtMotorLoop program — and the file was
+        // neither parsed nor API-checked. Under HORUS_DOCS_FILTER it collected
+        // zero blocks and both tests panicked on the anti-vacuity assert.
+        assert!(
+            !is_illustrative("import horus\nprint(\"starting...\")\nhorus.Scheduler()\n"),
+            "a `...` inside a string is prose"
+        );
+        assert!(
+            !is_illustrative("import horus\n# more setup ...\nhorus.Scheduler()\n"),
+            "a `...` in a comment does not stop the block parsing"
+        );
+        // A real outline is still dropped.
+        assert!(is_illustrative(
+            "import horus\ncfg = ...\nhorus.Scheduler(cfg)\n"
         ));
     }
 }

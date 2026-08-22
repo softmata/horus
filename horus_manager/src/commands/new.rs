@@ -2109,38 +2109,194 @@ mod tests {
     ///
     /// Python was fixed first; Rust and C++ kept the literal, so two of the
     /// three languages `horus new` scaffolds still guaranteed the collision.
+    /// Every entry point `horus new` can scaffold: label, the function that
+    /// writes it, and where it lands under the project root.
+    ///
+    /// Enumerated once so a template cannot be added — or fixed in one
+    /// language and left broken in another — without every contract below
+    /// noticing. The previous version of `no_template_hard_codes_the_node_name`
+    /// covered the two Rust variants and Python but not C++, which is one of
+    /// the two languages the finding reported as broken.
+    type Template = (&'static str, fn(&Path) -> Result<()>, &'static str);
+
+    fn every_template() -> Vec<Template> {
+        vec![
+            ("rust", |p| create_main_rs(p, false), "src/main.rs"),
+            ("rust --macro", |p| create_main_rs(p, true), "src/main.rs"),
+            ("python", create_main_py, "main.py"),
+            ("cpp", |p| create_cpp_project(p, "my-robot"), "src/main.cpp"),
+        ]
+    }
+
+    /// Scaffold one template into `<tmp>/my-robot` and hand back the project
+    /// root plus the entry point's contents.
+    fn scaffold(write: fn(&Path) -> Result<()>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("my-robot");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(
+            project.join("horus.toml"),
+            "[package]\nname = \"my-robot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        create_clang_format(&project).unwrap();
+        write(&project).unwrap();
+        (dir, project)
+    }
+
     #[test]
     fn no_template_hard_codes_the_node_name() {
-        for use_macro in [false, true] {
-            let dir = tempfile::tempdir().unwrap().keep();
-            let project = dir.join("my-robot");
-            fs::create_dir_all(project.join("src")).unwrap();
-            create_main_rs(&project, use_macro).unwrap();
-            let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+        for (label, write, entry) in every_template() {
+            let (_tmp, project) = scaffold(write);
+            let content = fs::read_to_string(project.join(entry)).unwrap();
             assert!(
                 content.contains("my_robot_controller"),
-                "rust template (use_macro={use_macro}) must name the node after \
-                 the project, got:\n{content}"
+                "{label} template must name the node after the project, got:\n{content}"
             );
             assert!(
                 !content.contains("\"controller\""),
-                "rust template (use_macro={use_macro}) still hard-codes \"controller\""
+                "{label} template still hard-codes \"controller\":\n{content}"
             );
             assert!(
                 !content.contains("__NODE_NAME__"),
-                "placeholder was left unsubstituted"
+                "{label} template left the placeholder unsubstituted:\n{content}"
             );
-            let _ = fs::remove_dir_all(&dir);
         }
 
-        let dir = tempfile::tempdir().unwrap().keep();
-        let project = dir.join("arm2");
+        // The C++ template names the node twice — the constructor and the log
+        // tag — and both have to move together, or `horus log` shows a name no
+        // node claims.
+        let (_tmp, project) = scaffold(|p| create_cpp_project(p, "my-robot"));
+        let cpp = fs::read_to_string(project.join("src/main.cpp")).unwrap();
+        assert!(
+            cpp.contains("Node(\"my_robot_controller\")"),
+            "the C++ constructor must take the derived name:\n{cpp}"
+        );
+        assert!(
+            cpp.contains("horus::log::info(\"my_robot_controller\""),
+            "the C++ log tag must be the derived name too:\n{cpp}"
+        );
+
+        // Directory name, not the `name` argument: two copies of the same
+        // project under different directories must not collide.
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("arm2");
         fs::create_dir_all(&project).unwrap();
         create_main_py(&project).unwrap();
         let content = fs::read_to_string(project.join("main.py")).unwrap();
         assert!(content.contains("arm2_controller"), "python template");
         assert!(!content.contains("__NODE_NAME__"));
-        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// LIVE-2: a generated project has to survive the tools horus itself ships
+    /// as `horus fmt --check`. The Python template was the one the finding
+    /// caught, but nothing pinned the other three, so any of them could
+    /// regress into telling a new user their brand-new project is malformed.
+    ///
+    /// Python and C++ go through `build_fmt_commands` — literally the commands
+    /// `horus fmt --check` runs. Rust cannot: `horus fmt` shells out to
+    /// `cargo fmt`, which needs the `.horus/Cargo.toml` that does not exist
+    /// until the first build, so the template is handed to rustfmt (what
+    /// `cargo fmt` runs underneath) at the edition `cargo_gen` defaults to.
+    #[test]
+    fn every_template_is_already_formatted() {
+        for (label, write, entry) in every_template() {
+            let (_tmp, project) = scaffold(write);
+            let file = project.join(entry);
+
+            if entry.ends_with(".rs") {
+                if !tool_or_skip("rustfmt", label) {
+                    continue;
+                }
+                let out = try_run(
+                    "rustfmt",
+                    &["--check", "--edition", "2021"],
+                    &file,
+                    &project,
+                )
+                .expect("rustfmt is installed");
+                assert!(
+                    out.0 && out.1.trim().is_empty(),
+                    "{label} template is not rustfmt-clean:\n{}",
+                    out.1
+                );
+                continue;
+            }
+
+            let ctx = crate::dispatch::detect_context(&project);
+            let commands = crate::commands::fmt::build_fmt_commands(&ctx, true, Vec::new());
+            let bin = if entry.ends_with(".py") {
+                "ruff"
+            } else {
+                "clang-format"
+            };
+            let Some(cmd) = commands.iter().find(|c| c.bin == bin) else {
+                assert!(
+                    !tool_or_skip(bin, label),
+                    "{bin} is on PATH but `horus fmt` did not dispatch to it for {label}"
+                );
+                continue;
+            };
+            let out = std::process::Command::new(&cmd.bin)
+                .args(&cmd.args)
+                .current_dir(&project)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "`horus fmt --check` rejects the {label} template:\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// The other half: `horus lint` must pass on what `horus new` writes.
+    ///
+    /// Python only — `horus lint` for Rust is `cargo clippy`, which needs a
+    /// resolved dependency graph and a compile, and for C++ it is clang-tidy
+    /// against a compilation database that `horus build` produces. Both belong
+    /// in an integration test that actually builds the project.
+    #[test]
+    fn the_generated_python_template_passes_horus_lint() {
+        let (_tmp, project) = scaffold(create_main_py);
+        let ctx = crate::dispatch::detect_context(&project);
+        let commands = crate::commands::lint::build_lint_commands(&ctx, false, false, Vec::new());
+        let Some(cmd) = commands.iter().find(|c| c.bin == "ruff") else {
+            assert!(
+                !tool_or_skip("ruff", "python"),
+                "ruff is on PATH but `horus lint` did not dispatch to it"
+            );
+            return;
+        };
+        let out = std::process::Command::new(&cmd.bin)
+            .args(&cmd.args)
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "`horus lint` rejects a freshly generated Python project:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Skips when the tool is missing, fails when CI says it must not be —
+    /// shared with `fmt.rs` so every template contract uses one rule.
+    use crate::commands::fmt::tool_or_skip;
+
+    /// Run `bin` on one file, or `None` when it is not installed.
+    fn try_run(bin: &str, args: &[&str], file: &Path, cwd: &Path) -> Option<(bool, String)> {
+        let out = std::process::Command::new(bin)
+            .args(args)
+            .arg(file)
+            .current_dir(cwd)
+            .output()
+            .ok()?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Some((out.status.success(), text))
     }
 
     /// A hyphen is legal in a project directory but not in a node name we want

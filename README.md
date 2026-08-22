@@ -13,7 +13,7 @@
 
 [![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions)
 [![Version](https://img.shields.io/badge/v0.3.0-blue.svg)](https://github.com/softmata/horus/releases)
-[![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-%3E%3D1.90-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -129,8 +129,20 @@ fn main() -> Result<()> {
 }
 ```
 
-Prefer less boilerplate? `horus new --macro` scaffolds the same node with
-the `node!` macro, which generates the `struct` and `impl Node` above.
+**You need three concepts to read that**: a **node** (a struct with a `tick()`),
+a **topic** (`Topic::new("sensor.data")`), and the **scheduler** that runs them.
+Everything else in `main()` is timing policy and can wait: `tick_rate()` sets the
+scheduler's clock (default 100 Hz), `.order()` sequences nodes within a tick
+(default 0), `.rate()` moves a node onto its own real-time thread, and
+`.on_miss()` says what to do when a node overruns its deadline. Delete all four
+and the program still runs — every node ticks best-effort at 100 Hz. Add them
+back when timing matters.
+[Execution classes &rarr;](https://docs.horusrobotics.dev/concepts/execution-classes)
+
+Prefer less boilerplate? The `node!` macro writes the `struct` and `impl Node`
+for you. `horus new --macro` scaffolds a starter in that style — a single
+`Controller` publishing `Twist` on `motors.cmd_vel`, not the two-node example
+above.
 
 **Python** — same robot, 8 lines:
 
@@ -152,6 +164,11 @@ horus.run(
     horus.Node(name="ctrl", subs=["sensor.data"], pubs=["motor.cmd"], tick=controller_tick, rate=1000),
 )
 ```
+
+`node.recv(topic)` returns `None` when nothing is waiting. `node.has_msg(topic)`
+asks the same question without consuming the message — the reading is held and
+handed to the next `recv()`. `horus new --python` scaffolds a one-node starter
+that uses both.
 
 **C++** — same robot, idiomatic API:
 
@@ -201,6 +218,10 @@ int main() {
     sched.spin();
 }
 ```
+
+`horus::log::info(node_name, message)` writes to the HORUS log stream rather
+than stdout, so `horus log` sees it. `horus new --cpp` scaffolds a one-node
+starter that uses it.
 
 All three languages share the same topics over shared memory — zero overhead between Rust, Python, and C++.
 

@@ -154,9 +154,19 @@ fn is_full_manifest(code: &str) -> bool {
         && code.contains("version")
         && !code.contains("...")
         && !code.contains("<your")
-        // Cargo manifests appear on the migration pages for contrast.
+        // Cargo manifests appear on the migration pages for contrast, and on
+        // the plugin pages as the plugin's own `Cargo.toml` — a plugin is a
+        // Rust binary, so "Step 2: Set Up Cargo.toml" prints one. `[lib]` and
+        // `crate-type` caught the migration pages; `[[bin]]` and `edition` are
+        // what the plugin pages use, and both blocks were being written to a
+        // `horus.toml` and handed to `horus check`. That reported the plugin
+        // guide as documenting an unloadable project when what it documents is
+        // a correct Cargo manifest. None of these four keys exists in
+        // `KNOWN_TOP_LEVEL`, so a block carrying one is a Cargo manifest.
         && !code.contains("[lib]")
         && !code.contains("crate-type")
+        && !code.contains("[[bin]]")
+        && !code.contains("edition")
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -765,6 +775,26 @@ mod unit {
     }
 
     #[test]
+    fn cargo_manifests_are_not_horus_manifests() {
+        // The plugin guide's "Set Up Cargo.toml" block. It has a `[package]`
+        // with a name and a version, which is all the old check looked for.
+        let cargo = "[package]\nname = \"horus-mycommand\"\nversion = \"0.1.0\"\n\
+                     edition = \"2021\"\n\n[[bin]]\nname = \"mycommand\"\n\
+                     path = \"src/main.rs\"\n";
+        assert!(
+            !is_full_manifest(cargo),
+            "a Cargo.toml must not be validated as a horus.toml"
+        );
+
+        let horus = "[package]\nname = \"my_robot\"\nversion = \"0.1.0\"\n\
+                     [dependencies]\n";
+        assert!(
+            is_full_manifest(horus),
+            "a real horus.toml must still be checked"
+        );
+    }
+
+    #[test]
     fn manifest_completeness_detection() {
         assert!(is_full_manifest(
             "[package]\nname = \"a\"\nversion = \"0.1.0\"\n"
@@ -783,4 +813,114 @@ mod unit {
         let b = toml_blocks(md, "p.mdx");
         assert!(b[0].code.starts_with("[package]"), "{:?}", b[0].code);
     }
+}
+
+// ─── The published JSON Schema (CFG-5) ──────────────────────────────────────
+//
+// `horus schema` printed a schema that no URL served, so every project had to
+// generate and vendor its own copy — and a vendored schema goes stale on its
+// own schedule, which is the failure mode a schema exists to prevent. The
+// documentation site deploys from horus-docs, so a file under its `public/`
+// directory is live at a stable address; these tests keep that file honest.
+
+/// The committed copy must be exactly what the current structs generate.
+#[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
+fn the_published_schema_matches_the_generator() {
+    let docs = docs_dir().expect("set HORUS_DOCS_DIR=/path/to/horus-docs");
+
+    // Where the URL says the file is served from — `public/` is the site root.
+    let url = horus_manager::manifest::MANIFEST_SCHEMA_URL;
+    let path_part = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .map(|(_, p)| p)
+        .expect("MANIFEST_SCHEMA_URL must have a path");
+    let published = docs.join("public").join(path_part);
+
+    let committed = std::fs::read_to_string(&published).unwrap_or_else(|e| {
+        panic!(
+            "{} is missing ({e}).\n\n{url} is documented as the schema's home and is \
+             served from that file. Regenerate it with:\n    horus schema -o {}",
+            published.display(),
+            published.display()
+        )
+    });
+
+    let out = cargo_bin_cmd!("horus")
+        .arg("schema")
+        .output()
+        .expect("horus schema runs");
+    assert!(out.status.success(), "`horus schema` must succeed");
+    let generated = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert_eq!(
+        committed.trim_end(),
+        generated.trim_end(),
+        "the published schema has drifted from the manifest structs.\n\
+         An editor pointed at {url} is validating against a HORUS that no longer \
+         exists. Regenerate it:\n    horus schema -o {}",
+        published.display()
+    );
+
+    // A schema that does not name itself cannot be told apart from a stale
+    // vendored copy.
+    assert!(
+        committed.contains(url),
+        "the published schema must carry its own $id ({url})"
+    );
+}
+
+/// And the configuration page must point at it, or nobody finds it.
+#[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
+fn the_configuration_page_publishes_the_schema_url() {
+    let docs = docs_dir().expect("set HORUS_DOCS_DIR=/path/to/horus-docs");
+    let page = docs.join("content/docs/package-management/configuration.mdx");
+    let text = std::fs::read_to_string(&page).expect("the configuration reference must exist");
+    let url = horus_manager::manifest::MANIFEST_SCHEMA_URL;
+
+    assert!(
+        text.contains(url),
+        "{} never mentions {url}, so a reader has no way to associate the schema \
+         without generating and vendoring their own copy — which is the finding.",
+        page.display()
+    );
+}
+
+/// Version spellings the resolver accepts must be spellings the docs explain
+/// (CFG-2).
+///
+/// `"latest"` is accepted by `horus add pkg@latest` and by the registry
+/// resolver, HORUS's own root manifest used one, and the dependency grammar in
+/// the docs described `"*"` and semver constraints only. A reader had no way to
+/// learn that the two are the same to the registry — or that they are *not* the
+/// same to cargo, which rejects `latest` outright.
+#[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
+fn the_latest_version_spelling_is_documented() {
+    let docs = docs_dir().expect("set HORUS_DOCS_DIR=/path/to/horus-docs");
+    let resolver =
+        std::fs::read_to_string(repo_root().join("horus_manager/src/dependency_resolver.rs"))
+            .expect("the resolver must be readable");
+    let page = docs.join("content/docs/package-management/configuration.mdx");
+    let text = std::fs::read_to_string(&page).expect("the configuration reference must exist");
+
+    assert!(
+        resolver.contains("== \"latest\""),
+        "the resolver no longer special-cases `latest`. That is fine — but the \
+         configuration reference documents it, and that section has to go with it."
+    );
+    assert!(
+        text.contains("latest"),
+        "{} documents the dependency grammar and never mentions `latest`, which \
+         the resolver accepts.",
+        page.display()
+    );
+    assert!(
+        text.contains("not portable") || text.contains("HORUS registry only"),
+        "documenting `latest` without saying cargo and pip reject it would teach \
+         a spelling that breaks the generated build file: {}",
+        page.display()
+    );
 }

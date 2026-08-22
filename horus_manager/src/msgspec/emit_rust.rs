@@ -154,6 +154,28 @@ pub fn lib_rs(pkg: &Package, env: &layout::Env) -> String {
                  pub const TOPIC: &'static str = \"{topic}\";\n"
             ));
         }
+
+        // The checked opener. Types declared with `message!` get one of these
+        // from the macro; generated types had only `LAYOUT_HASH`, so the only
+        // way to open a topic for one was `Topic::<T>::new`, which passes no
+        // hash and leaves the check inert. That is the whole cross-language
+        // case: the C ABI below, and every C++ and Python caller through it,
+        // reaches a topic through this function.
+        out.push_str(&format!(
+            "\n    /// Open a topic for this message with layout checking on.\n\
+             \x20   ///\n\
+             \x20   /// Equivalent to `Topic::new_checked(name, Self::LAYOUT_HASH)`,\n\
+             \x20   /// and the same helper `message!` generates for hand-written\n\
+             \x20   /// types. Prefer it over `Topic::<{name}>::new(name)`: it costs\n\
+             \x20   /// nothing at runtime and turns a silently-misread message —\n\
+             \x20   /// same name, same size, reordered fields — into an error.\n\
+             \x20   pub fn topic(\n\
+             \x20       name: &str,\n\
+             \x20   ) -> horus_core::error::HorusResult<horus_core::communication::Topic<Self>> {{\n\
+             \x20       horus_core::communication::Topic::new_checked(name, Self::LAYOUT_HASH)\n\
+             \x20   }}\n",
+            name = m.name
+        ));
         out.push_str("}\n\n");
 
         // A size assertion, so a change in this file that alters the layout

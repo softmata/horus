@@ -150,22 +150,77 @@ pub fn list_messages(verbose: bool, filter: Option<&str>, json: bool) -> HorusRe
     Ok(())
 }
 
+/// Resolve a user-supplied type name to exactly one definition.
+///
+/// Accepts a bare name (`CmdVel`) or a module-qualified one
+/// (`sensor::LaserScan`), case-insensitively.
+///
+/// A bare name that matches definitions in more than one module used to
+/// resolve to whichever happened to sort first. Once `horus-tf` joined the
+/// registry that became a wrong answer with no warning: `TransformStamped`
+/// exists both in `horus_types::math` (translation/rotation/timestamp_ns) and
+/// in `horus-tf` (parent_frame/child_frame/timestamp_ns/transform), so
+/// `horus msg hash TransformStamped` printed the hash of a type the user was
+/// not asking about — precisely the layout-mismatch confusion the command
+/// exists to resolve. Report the ambiguity instead, and name the qualified
+/// spellings that settle it.
+fn resolve_message<'a>(messages: &'a [MessageInfo], name: &str) -> HorusResult<&'a MessageInfo> {
+    if let Some(msg) = messages
+        .iter()
+        .find(|m| format!("{}::{}", m.module, m.name).eq_ignore_ascii_case(name))
+    {
+        return Ok(msg);
+    }
+
+    let matches: Vec<&MessageInfo> = messages
+        .iter()
+        .filter(|m| m.name.eq_ignore_ascii_case(name))
+        .collect();
+
+    match matches.as_slice() {
+        [] => Err(HorusError::Config(ConfigError::Other(format!(
+            "Message type '{}' not found. Use 'horus msg list' to see available types.",
+            name
+        )))),
+        [only] => Ok(only),
+        many => {
+            // Same name and the same layout everywhere: there is nothing to
+            // choose between, so answering is not a guess.
+            let first = compute_message_definition_hash(many[0]);
+            if many
+                .iter()
+                .all(|m| compute_message_definition_hash(m) == first)
+            {
+                return Ok(many[0]);
+            }
+            let mut detail = String::new();
+            for m in many {
+                detail.push_str(&format!(
+                    "\n    {}::{}  {}  ({})",
+                    m.module,
+                    m.name,
+                    compute_message_definition_hash(m),
+                    m.source_file
+                ));
+            }
+            Err(HorusError::Config(ConfigError::Other(format!(
+                "Message type '{}' is ambiguous - {} types share that name with \
+                 different layouts:{}\n  Use the module-qualified name, e.g. \
+                 '{}::{}'.",
+                name,
+                many.len(),
+                detail,
+                many[0].module,
+                many[0].name
+            ))))
+        }
+    }
+}
+
 /// Show detailed info about a message type
 pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
     let messages = discover_messages()?;
-
-    // Find matching message
-    let msg = messages.iter().find(|m| {
-        m.name.eq_ignore_ascii_case(name)
-            || format!("{}::{}", m.module, m.name).eq_ignore_ascii_case(name)
-    });
-
-    let Some(msg) = msg else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Message type '{}' not found. Use 'horus msg list' to see available types.",
-            name
-        ))));
-    };
+    let msg = resolve_message(&messages, name)?;
 
     if json {
         let fields: Vec<_> = msg
@@ -237,18 +292,7 @@ pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
 /// Show message definition hash
 pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
     let messages = discover_messages()?;
-
-    let msg = messages.iter().find(|m| {
-        m.name.eq_ignore_ascii_case(name)
-            || format!("{}::{}", m.module, m.name).eq_ignore_ascii_case(name)
-    });
-
-    let Some(msg) = msg else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Message type '{}' not found.",
-            name
-        ))));
-    };
+    let msg = resolve_message(&messages, name)?;
     let hash = compute_message_definition_hash(msg);
 
     if json {
@@ -269,62 +313,239 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
 }
 
 /// Discover all message types from source files
-/// Message directories belonging to `horus-robotics`.
+/// Every crate that ships HORUS message definitions, resolved from the
+/// dependency graph rather than from a hard-coded crate name.
 ///
-/// The standard robotics messages (CmdVel, Imu, LaserScan, Odometry,
-/// JointState, ...) live in a separate git dependency, so they are not under
-/// the HORUS source tree. Cargo checks them out under
-/// `~/.cargo/git/checkouts/horus-robotics-<hash>/<rev>/`, and a local
-/// development checkout may sit beside the horus tree.
+/// The universal IPC types live in `horus_types/src`, but that is only part of
+/// the registry. The standard robotics messages (CmdVel, Imu, LaserScan,
+/// Odometry, ...) live in `horus-robotics` and the transform messages
+/// (TFMessage, StaticTransformStamped, TransformStamped) live in `horus-tf` —
+/// both separate git dependencies, checked out by cargo under
+/// `$CARGO_HOME/git/checkouts/<crate>-<hash>/<rev>/`.
 ///
-/// Returns every match; a missing directory is simply skipped, so this never
-/// turns an available message set into an error.
-fn robotics_message_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
+/// This used to key on the literal directory prefix `horus-robotics-` *and* on
+/// finding a `src/messages` **directory**, which missed two things at once:
+/// any other linked message crate, and `horus-tf`, which ships the whole module
+/// as a single `src/messages.rs` file. So `horus msg info TFMessage` said the
+/// type did not exist, and `horus msg hash TransformStamped` silently printed
+/// the hash of the *unrelated* `horus_types::math::TransformStamped`.
+///
+/// Discovery is now driven by the lockfile of the HORUS source tree, so it
+/// spans whatever message crates are actually linked, and recognises a message
+/// module by its shape (`src/messages/` **or** `src/messages.rs`).
+///
+/// Returns `(file, module)` pairs. A missing directory is simply skipped, so
+/// this never turns an available message set into an error.
+fn linked_message_files() -> Vec<(std::path::PathBuf, String)> {
+    // An explicit HORUS_SOURCE_DIR is an override: resolve the linked crates
+    // from *that* tree and nothing else, so a synthetic fixture root stays
+    // exactly as synthetic as the caller made it. It used to disable this whole
+    // function, which meant pointing the variable at a real HORUS checkout —
+    // the documented use ("path to a HORUS checkout, used to resolve message
+    // types") — reproduced the original bug verbatim:
+    //
+    //     $ HORUS_SOURCE_DIR=/path/to/horus horus msg info CmdVel
+    //     Error: Message type 'CmdVel' not found
+    //
+    // A real checkout has a Cargo.lock naming its message crates; a fixture
+    // directory does not, and so still contributes nothing.
+    let explicit = std::env::var_os("HORUS_SOURCE_DIR").map(std::path::PathBuf::from);
+    let source_root = match &explicit {
+        Some(p) => Some(p.clone()),
+        None => crate::commands::run::find_horus_source_dir().ok(),
+    };
+    linked_message_files_for(source_root.as_deref(), explicit.is_some())
+}
 
-    // An explicit HORUS_SOURCE_DIR is an override: honour it exactly rather
-    // than blending in whatever else happens to be on the machine.
-    if std::env::var_os("HORUS_SOURCE_DIR").is_some() {
-        return dirs;
+/// The body of [`linked_message_files`], with the environment read out of it so
+/// both branches are testable without mutating process state.
+///
+/// `explicit` is true when the caller pinned the tree with `HORUS_SOURCE_DIR`;
+/// that suppresses the machine-wide fallback scan but — unlike before — not the
+/// lockfile-driven discovery, which is the whole point of pointing the variable
+/// at a real checkout.
+fn linked_message_files_for(
+    source_root: Option<&Path>,
+    explicit: bool,
+) -> Vec<(std::path::PathBuf, String)> {
+    let mut out: Vec<(std::path::PathBuf, String)> = Vec::new();
+
+    let mut crate_roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(root) = &source_root {
+        for (name, rev) in git_packages_in_lock(&root.join("Cargo.lock")) {
+            // A sibling development checkout wins over the cargo cache, for
+            // anyone developing the two repos together.
+            let dir = root
+                .parent()
+                .map(|p| p.join(&name))
+                .filter(|p| p.join("src").is_dir())
+                .or_else(|| git_checkout_dir(&name, &rev));
+            let Some(dir) = dir else { continue };
+            if crate_roots.contains(&dir) {
+                continue;
+            }
+            crate_roots.push(dir.clone());
+            out.extend(message_files_in_crate(&dir, &name));
+        }
     }
 
-    // Cargo's git checkout cache.
-    if let Some(home) = std::env::var_os("CARGO_HOME")
+    // Fallback for an install with no lockfile to consult: recognise a message
+    // crate by its shape instead of by its name, so a user's own message crate
+    // is as visible as HORUS's own.
+    if out.is_empty() && !explicit {
+        if let Some(checkouts) = cargo_home().map(|h| h.join("git").join("checkouts")) {
+            let mut entries: Vec<std::path::PathBuf> = fs::read_dir(&checkouts)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                let dir_name = entry
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                // cargo names the directory "<crate>-<hash-of-url>".
+                let crate_name = dir_name
+                    .rsplit_once('-')
+                    .map(|(n, _)| n.to_string())
+                    .unwrap_or(dir_name);
+                let mut revs: Vec<std::path::PathBuf> = fs::read_dir(&entry)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .collect();
+                revs.sort();
+                for rev in revs {
+                    out.extend(message_files_in_crate(&rev, &crate_name));
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// The `.rs` files that make up a crate's message module, with the module label
+/// each one should be reported under.
+///
+/// Two shapes are accepted, because both are in use by crates HORUS links:
+/// `src/messages/<module>.rs` (horus-robotics) and a single flat
+/// `src/messages.rs` (horus-tf). Only the first was recognised, which is why
+/// every horus-tf message type was missing from the registry.
+fn message_files_in_crate(root: &Path, crate_name: &str) -> Vec<(std::path::PathBuf, String)> {
+    let mut out = Vec::new();
+
+    let dir = root.join("src").join("messages");
+    if dir.is_dir() {
+        let mut files: Vec<std::path::PathBuf> = fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            .collect();
+        files.sort();
+        for file in files {
+            let stem = file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if stem == "mod" {
+                continue;
+            }
+            out.push((file, stem));
+        }
+    }
+
+    let single = root.join("src").join("messages.rs");
+    if single.is_file() {
+        out.push((single, crate_module_label(crate_name)));
+    }
+
+    out
+}
+
+/// Module label for a crate that ships one flat `messages.rs`.
+///
+/// The file stem would be the useless label "messages" for every such crate, so
+/// the crate names the module instead: `horus-tf` -> `tf`, which is also what
+/// disambiguates `tf::TransformStamped` from `math::TransformStamped`.
+fn crate_module_label(crate_name: &str) -> String {
+    let base = crate_name
+        .strip_prefix("horus-")
+        .or_else(|| crate_name.strip_prefix("horus_"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or(crate_name);
+    base.replace('-', "_")
+}
+
+/// Git dependencies recorded in a `Cargo.lock`, as `(crate name, revision)`.
+fn git_packages_in_lock(lock: &Path) -> Vec<(String, String)> {
+    let Ok(text) = fs::read_to_string(lock) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut name: Option<String> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            name = None;
+        } else if let Some(rest) = line.strip_prefix("name = ") {
+            name = Some(rest.trim().trim_matches('"').to_string());
+        } else if let Some(rest) = line.strip_prefix("source = ") {
+            // "git+https://host/repo.git?rev=<rev>#<resolved sha>"
+            let src = rest.trim().trim_matches('"');
+            if !src.starts_with("git+") {
+                continue;
+            }
+            let Some((_, sha)) = src.split_once('#') else {
+                continue;
+            };
+            if let Some(name) = name.clone() {
+                out.push((name, sha.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The cargo checkout directory holding `<name>` at `<rev>`, if cargo has one.
+fn git_checkout_dir(name: &str, rev: &str) -> Option<std::path::PathBuf> {
+    let checkouts = cargo_home()?.join("git").join("checkouts");
+    let prefix = format!("{name}-");
+    for entry in fs::read_dir(&checkouts).ok()?.flatten() {
+        let dir_name = entry.file_name();
+        let dir_name = dir_name.to_string_lossy();
+        if !dir_name.starts_with(&prefix) {
+            continue;
+        }
+        // Each checkout holds one directory per revision, named with the
+        // abbreviated sha.
+        let Ok(revs) = fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for rev_dir in revs.flatten() {
+            let short = rev_dir.file_name();
+            let short = short.to_string_lossy();
+            if !short.is_empty() && rev.starts_with(short.as_ref()) && rev_dir.path().is_dir() {
+                return Some(rev_dir.path());
+            }
+        }
+    }
+    None
+}
+
+/// Cargo's home directory, without pulling in a dependency for one lookup.
+fn cargo_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("CARGO_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| dirs_next_home().map(|h| h.join(".cargo")))
-    {
-        let checkouts = home.join("git").join("checkouts");
-        if let Ok(entries) = fs::read_dir(&checkouts) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if !name.starts_with("horus-robotics-") {
-                    continue;
-                }
-                // Each checkout holds one directory per revision.
-                if let Ok(revs) = fs::read_dir(entry.path()) {
-                    for rev in revs.flatten() {
-                        let candidate = rev.path().join("src").join("messages");
-                        if candidate.is_dir() {
-                            dirs.push(candidate);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // A sibling checkout, for anyone developing the two repos together.
-    if let Ok(source_root) = crate::commands::run::find_horus_source_dir() {
-        if let Some(parent) = source_root.parent() {
-            let candidate = parent.join("horus-robotics").join("src").join("messages");
-            if candidate.is_dir() {
-                dirs.push(candidate);
-            }
-        }
-    }
-
-    dirs
 }
 
 /// Home directory, without pulling in a dependency for one lookup.
@@ -424,20 +645,17 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     }
 
     // The universal types are only half the picture. Every standard robotics
-    // message — CmdVel, Imu, LaserScan, Odometry — lives in `horus-robotics`,
-    // a separate git dependency, and this scan never looked there. So while a
-    // live topic reported its type correctly:
+    // message — CmdVel, Imu, LaserScan, Odometry — lives in `horus-robotics`
+    // and every transform message in `horus-tf`, both separate git
+    // dependencies, and this scan never looked there. So while a live topic
+    // reported its type correctly:
     //
     //     $ horus topic info cmd_vel      ->  Message Type: CmdVel
     //     $ horus msg info CmdVel         ->  Message type 'CmdVel' not found
     //
     // the introspection command could not describe the very types users
-    // publish. Collect every message source rather than stopping at the first.
-    // `search_paths` are alternative locations for the *same* directory
-    // (horus_types/src), so they stay first-match-wins — an explicit
-    // HORUS_SOURCE_DIR must not be blended with whatever else is on the
-    // machine. The robotics directories are a genuinely different source and
-    // are additive.
+    // publish. `linked_message_files()` collects every linked message crate.
+
     // The project's own messages, when there are any.
     //
     // Parsed from `msgs/*.hmsg` with the strict parser rather than scraped out
@@ -446,14 +664,41 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     // artifacts cannot compute the value two different ways.
     let mut messages: Vec<MessageInfo> = local_hmsg_messages();
 
-    let mut message_dirs: Vec<std::path::PathBuf> = Vec::new();
+    // `search_paths` are alternative locations for the *same* directory
+    // (horus_types/src), so they stay first-match-wins. The linked message
+    // crates are a genuinely different source and are additive.
+    let mut message_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    // Whether any message *source location* was found. Distinct from
+    // `message_files.is_empty()`: a located-but-empty directory is a project
+    // with no messages, not a broken installation.
+    let mut located_a_source = false;
     if let Some(found) = search_paths.iter().find(|p| p.is_dir()) {
-        message_dirs.push(found.clone());
+        located_a_source = true;
+        let mut files: Vec<std::path::PathBuf> = fs::read_dir(found)
+            .map_err(HorusError::Io)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|e| e == "rs").unwrap_or(false))
+            .collect();
+        files.sort();
+        for file in files {
+            let stem = file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if stem == "mod" {
+                continue;
+            }
+            message_files.push((file, stem));
+        }
     }
-    message_dirs.extend(robotics_message_dirs());
-    message_dirs.dedup();
+    let linked = linked_message_files();
+    located_a_source |= !linked.is_empty();
+    message_files.extend(linked);
+    message_files.dedup();
 
-    if message_dirs.is_empty() {
+    if !located_a_source {
         return Err(HorusError::Config(ConfigError::Other(
             "Could not find the HORUS message definitions (horus_types/src).\n  \
              Re-run the installer, or point HORUS_SOURCE at your HORUS source tree,\n  \
@@ -462,34 +707,11 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
         )));
     }
 
-    for messages_dir in &message_dirs {
-        // Parse each .rs file in the messages directory
-        for entry in fs::read_dir(messages_dir).map_err(HorusError::Io)? {
-            let entry = entry.map_err(HorusError::Io)?;
-            let path = entry.path();
-
-            if path.extension().map(|e| e == "rs").unwrap_or(false) {
-                let filename = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                // Skip mod.rs
-                if filename == "mod" {
-                    continue;
-                }
-
-                // Parse the file for struct definitions
-                if let Ok(content) = fs::read_to_string(&path) {
-                    let file_messages = parse_messages_from_source(
-                        &content,
-                        &filename,
-                        path.to_string_lossy().to_string(),
-                    );
-                    messages.extend(file_messages);
-                }
-            }
+    for (path, module) in &message_files {
+        if let Ok(content) = fs::read_to_string(path) {
+            let file_messages =
+                parse_messages_from_source(&content, module, path.to_string_lossy().to_string());
+            messages.extend(file_messages);
         }
     }
 
@@ -618,9 +840,14 @@ fn parse_messages_from_source(source: &str, module: &str, source_file: String) -
 /// Extract struct name from "pub struct Foo" or "pub struct Foo {"
 fn extract_struct_name(line: &str) -> Option<&str> {
     let line = line.trim_start_matches("pub struct ").trim();
-    // Handle generics like "Foo<T>" or "Foo {"
+    // Handle generics like "Foo<T>", "Foo {", "Foo(f64);" and the unit struct
+    // "Foo;". The terminator of a unit struct used to be missing from this
+    // list, so `pub struct PauseRequest;` was registered under the name
+    // "PauseRequest;" — `horus msg list` printed the semicolon, `horus msg
+    // info PauseRequest` reported the type did not exist, and only the
+    // unspellable `horus msg info 'PauseRequest;'` worked.
     let name = line
-        .split(|c: char| c == '<' || c == '{' || c == '(' || c.is_whitespace())
+        .split(|c: char| c == '<' || c == '{' || c == '(' || c == ';' || c.is_whitespace())
         .next()?;
     if name.is_empty() || !name.chars().next()?.is_uppercase() {
         return None;
@@ -764,15 +991,36 @@ mod tests {
         assert_eq!(extract_struct_name("pub struct Vec3<T> {"), Some("Vec3"));
     }
 
+    /// A unit struct's name must not carry its terminating semicolon.
+    ///
+    /// This test used to assert `starts_with("Empty")` and *document* the
+    /// semicolon as expected, so it passed while the parser produced the name
+    /// "Empty;". That is a name no user can type: `horus msg list` printed
+    /// "PauseRequest;", `horus msg info PauseRequest` answered "Message type
+    /// 'PauseRequest' not found", and only `horus msg info 'PauseRequest;'`
+    /// worked. horus-robotics ships four such types (PauseRequest,
+    /// ResumeRequest, ResetRequest, GetStateRequest).
     #[test]
     fn extract_struct_name_unit() {
-        // Unit structs: the semicolon is part of the split remainder, but "Empty;"
-        // doesn't split on ';' — it's kept. The function splits on '<', '{', '(' and whitespace.
-        // "Empty;" doesn't match any of those, so the full "Empty;" is returned.
-        let result = extract_struct_name("pub struct Empty;");
-        assert!(result.is_some());
-        // The name includes the semicolon because ';' isn't a split char
-        assert!(result.unwrap().starts_with("Empty"));
+        assert_eq!(extract_struct_name("pub struct Empty;"), Some("Empty"));
+    }
+
+    /// The real witnesses, verbatim from horus-robotics
+    /// `src/messages/simulation.rs`.
+    #[test]
+    fn unit_structs_from_robotics_sources_parse_to_typeable_names() {
+        let source = "\
+/// Pause the simulation
+#[derive(Debug, Clone, Copy)]
+pub struct PauseRequest;
+
+/// Resume the simulation
+#[derive(Debug, Clone, Copy)]
+pub struct ResumeRequest;
+";
+        let parsed = parse_messages_from_source(source, "simulation", "simulation.rs".into());
+        let names: Vec<&str> = parsed.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["PauseRequest", "ResumeRequest"]);
     }
 
     #[test]
@@ -2354,9 +2602,13 @@ mod robotics_message_discovery_tests {
     ///     $ horus msg info CmdVel      ->  Message type 'CmdVel' not found
     #[test]
     fn standard_robotics_messages_are_discoverable() {
-        let dirs = robotics_message_dirs();
-        if dirs.is_empty() {
-            eprintln!("skipping: no horus-robotics checkout on this machine");
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let files = linked_message_files();
+        if files.is_empty() {
+            eprintln!("skipping: no linked message crate checkout on this machine");
             return;
         }
 
@@ -2376,6 +2628,10 @@ mod robotics_message_discovery_tests {
     /// The universal types must not be lost by adding the second source.
     #[test]
     fn universal_types_are_still_present() {
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let messages = discover_messages().expect("discovery must succeed");
         let names: Vec<&str> = messages.iter().map(|m| m.name.as_str()).collect();
         for expected in ["Twist", "Pose2D"] {
@@ -2387,6 +2643,10 @@ mod robotics_message_discovery_tests {
     /// cache) must be listed once.
     #[test]
     fn types_are_not_duplicated_across_source_trees() {
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let messages = discover_messages().expect("discovery must succeed");
         let mut seen = std::collections::HashSet::new();
         for m in &messages {
@@ -2399,16 +2659,313 @@ mod robotics_message_discovery_tests {
         }
     }
 
+    /// A linked message crate that is neither named `horus-robotics` nor lays
+    /// its messages out as a directory must still be in the registry.
+    ///
+    /// Discovery keyed on the literal directory prefix `horus-robotics-` and on
+    /// finding a `src/messages` **directory**. `horus-tf` — a first-party,
+    /// always-linked dependency — ships `src/messages.rs` instead, so
+    /// `horus msg info TFMessage` and `horus msg info StaticTransformStamped`
+    /// both answered "not found", and any crate with another name was invisible
+    /// whatever its layout.
+    ///
+    /// Hermetic: a synthetic source tree whose lockfile names a synthetic
+    /// crate, resolved through the sibling-checkout path.
+    #[test]
+    fn a_flat_messages_module_in_any_linked_crate_is_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path().join("horus");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(
+            source_root.join("Cargo.lock"),
+            "[[package]]\nname = \"my-msgs\"\nversion = \"0.1.0\"\n\
+             source = \"git+https://example.invalid/my-msgs.git?rev=abc1234#abc1234def\"\n",
+        )
+        .unwrap();
+
+        let crate_src = tmp.path().join("my-msgs").join("src");
+        std::fs::create_dir_all(&crate_src).unwrap();
+        std::fs::write(
+            crate_src.join("messages.rs"),
+            "/// A flat message module\npub struct Beacon {\n    pub id: u32,\n}\n",
+        )
+        .unwrap();
+
+        // `true` is exactly the state `HORUS_SOURCE_DIR=<dir>` puts us in.
+        let files = linked_message_files_for(Some(&source_root), true);
+        let found: Vec<String> = files
+            .iter()
+            .map(|(f, m)| format!("{}:{}", m, f.display()))
+            .collect();
+
+        assert!(
+            files
+                .iter()
+                .any(|(f, m)| f.ends_with("src/messages.rs") && m == "my_msgs"),
+            "a crate shipping src/messages.rs must contribute it under the \
+             crate's own module label; got {found:?}"
+        );
+    }
+
+    /// The directory layout must keep working, with one module per file.
+    #[test]
+    fn a_messages_directory_in_any_linked_crate_is_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path().join("horus");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(
+            source_root.join("Cargo.lock"),
+            "[[package]]\nname = \"my-msgs\"\nversion = \"0.1.0\"\n\
+             source = \"git+https://example.invalid/my-msgs.git?rev=abc1234#abc1234def\"\n",
+        )
+        .unwrap();
+
+        let msgs = tmp.path().join("my-msgs").join("src").join("messages");
+        std::fs::create_dir_all(&msgs).unwrap();
+        std::fs::write(msgs.join("mod.rs"), "pub mod sensor;\n").unwrap();
+        std::fs::write(
+            msgs.join("sensor.rs"),
+            "pub struct Beacon {\n    pub id: u32,\n}\n",
+        )
+        .unwrap();
+
+        let files = linked_message_files_for(Some(&source_root), true);
+        assert!(
+            files
+                .iter()
+                .any(|(f, m)| f.ends_with("messages/sensor.rs") && m == "sensor"),
+            "got {files:?}"
+        );
+        assert!(
+            !files.iter().any(|(f, _)| f.ends_with("mod.rs")),
+            "mod.rs is not a message module: {files:?}"
+        );
+    }
+
+    /// Pointing `HORUS_SOURCE_DIR` at a real HORUS checkout — the use the
+    /// environment-variable reference documents ("path to a HORUS checkout,
+    /// used to resolve message types and sources") — must not empty the
+    /// registry.
+    ///
+    /// It used to return early from discovery whenever the variable was set, so
+    /// the documented switch reproduced the original bug verbatim:
+    /// `HORUS_SOURCE_DIR=/path/to/horus horus msg info CmdVel` -> "Message type
+    /// 'CmdVel' not found", and `horus msg list` fell from 97 entries to 31.
+    #[test]
+    fn an_explicit_source_dir_still_spans_the_linked_message_crates() {
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(root) = crate::commands::run::find_horus_source_dir() else {
+            eprintln!("skipping: no HORUS source tree on this machine");
+            return;
+        };
+        if !root.join("Cargo.lock").is_file() {
+            eprintln!("skipping: {} has no Cargo.lock", root.display());
+            return;
+        }
+        let linked = git_packages_in_lock(&root.join("Cargo.lock"));
+        let Some((name, rev)) = linked
+            .iter()
+            .find(|(n, r)| git_checkout_dir(n, r).is_some_and(|d| !message_files_in_crate(&d, n).is_empty()))
+        else {
+            eprintln!("skipping: no linked message crate is checked out");
+            return;
+        };
+
+        let files = linked_message_files_for(Some(&root), true);
+        assert!(
+            !files.is_empty(),
+            "`{name}` at {rev} ships message definitions and is linked by \
+             {}, but an explicit HORUS_SOURCE_DIR reported no message files \
+             at all",
+            root.display()
+        );
+    }
+
+    /// End to end on this machine: the transform messages horus-tf publishes
+    /// must be describable. Skipped where cargo has not checked horus-tf out.
+    #[test]
+    fn horus_tf_message_types_are_in_the_registry() {
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let checked_out = cargo_home()
+            .map(|h| h.join("git").join("checkouts"))
+            .and_then(|c| fs::read_dir(c).ok())
+            .map(|it| {
+                it.flatten()
+                    .any(|e| e.file_name().to_string_lossy().starts_with("horus-tf-"))
+            })
+            .unwrap_or(false);
+        if !checked_out {
+            eprintln!("skipping: no horus-tf checkout on this machine");
+            return;
+        }
+
+        let messages = discover_messages().expect("discovery must succeed");
+        let names: Vec<&str> = messages.iter().map(|m| m.name.as_str()).collect();
+        for expected in ["TFMessage", "StaticTransformStamped"] {
+            assert!(
+                names.contains(&expected),
+                "`{expected}` is published by horus-tf and must be describable \
+                 by `horus msg info`; found {} types",
+                names.len()
+            );
+        }
+    }
+
+    /// Every discovered type must be spellable on the command line.
+    ///
+    /// `pub struct PauseRequest;` was registered as "PauseRequest;", so
+    /// `horus msg list` advertised a name that `horus msg info` then rejected.
+    #[test]
+    fn every_discovered_name_is_a_plain_identifier() {
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let messages = discover_messages().expect("discovery must succeed");
+        for m in &messages {
+            assert!(
+                !m.name.is_empty()
+                    && m.name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "`{}` (from {}) is not a name a user can type",
+                m.name,
+                m.source_file
+            );
+        }
+    }
+
+    fn msg(module: &str, name: &str, fields: &[(&str, &str)]) -> MessageInfo {
+        MessageInfo {
+            name: name.to_string(),
+            module: module.to_string(),
+            fields: fields
+                .iter()
+                .map(|(n, t)| FieldInfo {
+                    name: n.to_string(),
+                    field_type: t.to_string(),
+                    doc: String::new(),
+                })
+                .collect(),
+            doc: String::new(),
+            source_file: format!("{module}.rs"),
+        }
+    }
+
+    /// Two different types sharing a name must not be silently picked between.
+    ///
+    /// `TransformStamped` exists in `horus_types::math`
+    /// (translation/rotation/timestamp_ns) and in `horus-tf`
+    /// (parent_frame/child_frame/timestamp_ns/transform). Lookup took the first
+    /// match in sort order, so `horus msg hash TransformStamped` printed a hash
+    /// for a type the user was not asking about — the exact
+    /// wrong-layout-number confusion the command exists to settle.
+    #[test]
+    fn a_name_shared_by_two_layouts_is_reported_as_ambiguous() {
+        let messages = vec![
+            msg(
+                "math",
+                "TransformStamped",
+                &[("translation", "[f64; 3]"), ("timestamp_ns", "u64")],
+            ),
+            msg(
+                "tf",
+                "TransformStamped",
+                &[("parent_frame", "[u8; 64]"), ("timestamp_ns", "u64")],
+            ),
+        ];
+
+        let err = resolve_message(&messages, "TransformStamped")
+            .expect_err("an ambiguous name must not resolve to a guess");
+        let text = format!("{err}");
+        assert!(text.contains("ambiguous"), "{text}");
+        assert!(
+            text.contains("math::TransformStamped") && text.contains("tf::TransformStamped"),
+            "the error must name both candidates: {text}"
+        );
+
+        // ...and the qualified spelling it suggests must work.
+        let picked = resolve_message(&messages, "tf::TransformStamped").expect("qualified lookup");
+        assert_eq!(picked.module, "tf");
+        assert_eq!(
+            resolve_message(&messages, "math::TransformStamped")
+                .unwrap()
+                .module,
+            "math"
+        );
+    }
+
+    /// The same layout under two module labels is not a question, so it must
+    /// still answer rather than error.
+    #[test]
+    fn a_name_shared_by_identical_layouts_still_resolves() {
+        let messages = vec![
+            msg("a", "Ping", &[("timestamp_ns", "u64")]),
+            msg("b", "Ping", &[("timestamp_ns", "u64")]),
+        ];
+        let picked = resolve_message(&messages, "Ping").expect("identical layouts must resolve");
+        assert_eq!(picked.name, "Ping");
+    }
+
+    /// An unknown name keeps the message `horus msg list` is advertised in.
+    #[test]
+    fn an_unknown_name_still_says_not_found() {
+        let messages = vec![msg("a", "Ping", &[("timestamp_ns", "u64")])];
+        let err = resolve_message(&messages, "Nope").expect_err("must not resolve");
+        let text = format!("{err}");
+        assert!(text.contains("Nope") && text.contains("not found"), "{text}");
+    }
+
+    #[test]
+    fn git_packages_are_read_out_of_a_lockfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("Cargo.lock");
+        std::fs::write(
+            &lock,
+            "[[package]]\nname = \"serde\"\nversion = \"1.0\"\n\
+             source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n\
+             [[package]]\nname = \"horus-tf\"\nversion = \"0.2.0\"\n\
+             source = \"git+https://github.com/softmata/horus-tf.git?rev=d525dfc#d525dfcf58b9\"\n\n\
+             [[package]]\nname = \"horus_core\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+
+        let pkgs = git_packages_in_lock(&lock);
+        assert_eq!(
+            pkgs,
+            vec![("horus-tf".to_string(), "d525dfcf58b9".to_string())],
+            "only git packages, paired with their resolved sha"
+        );
+    }
+
+    #[test]
+    fn a_flat_module_is_labelled_by_its_crate() {
+        assert_eq!(crate_module_label("horus-tf"), "tf");
+        assert_eq!(crate_module_label("horus_tf"), "tf");
+        assert_eq!(crate_module_label("my-msgs"), "my_msgs");
+        assert_eq!(crate_module_label("horus"), "horus");
+    }
+
     /// Discovery must never fail because an optional source is absent.
     #[test]
     fn missing_robotics_checkout_is_not_an_error() {
-        // robotics_message_dirs only returns directories that exist, so an
-        // absent checkout contributes nothing rather than erroring.
-        for dir in robotics_message_dirs() {
+        // Serialised against the tests that mutate HORUS_SOURCE_DIR/HORUS_SOURCE:
+        // discovery reads both, so a concurrent fixture would swap the registry
+        // out from under this assertion.
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // linked_message_files only returns files that exist, so an absent
+        // checkout contributes nothing rather than erroring.
+        for (file, _module) in linked_message_files() {
             assert!(
-                dir.is_dir(),
+                file.is_file(),
                 "{} was returned but does not exist",
-                dir.display()
+                file.display()
             );
         }
     }
