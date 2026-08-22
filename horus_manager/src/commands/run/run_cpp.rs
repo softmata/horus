@@ -72,6 +72,32 @@ pub(crate) fn build_cpp(
         .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
         .arg(format!("-DCMAKE_BUILD_TYPE={}", build_type));
 
+    // Pick a generator we can actually drive.
+    //
+    // This call passed no `-G`, so cmake always chose its default — "Unix
+    // Makefiles" on Linux and macOS — which needs `make`. `horus doctor`
+    // meanwhile advertised ninja as a satisfying alternative for the C++
+    // toolchain, so a machine with cmake, clang++ and ninja but no make was
+    // reported ready and then failed at the first build with
+    //
+    //     CMake Error: CMake was unable to find a build program corresponding
+    //     to "Unix Makefiles". CMAKE_MAKE_PROGRAM is not set.
+    //
+    // Narrowing doctor to demand make would also have removed the false green,
+    // but at the cost of telling a ninja user to install a build tool they
+    // already have a better version of. Selecting the generator instead makes
+    // doctor's claim true: ninja is genuinely sufficient now.
+    //
+    // make is preferred when both exist, so an existing build tree keeps its
+    // generator and cmake does not error on a generator change.
+    if let Some(generator) = crate::commands::run::select_cmake_generator(
+        crate::commands::run::generator_available("make"),
+        crate::commands::run::generator_available("gmake"),
+        crate::commands::run::generator_available("ninja"),
+    ) {
+        configure_cmd.arg("-G").arg(generator);
+    }
+
     // ── Cross-compilation target ────────────────────────────────────────
     // Resolved before the bindings, which must be built for the same
     // architecture the C++ compiler targets.

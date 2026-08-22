@@ -1936,3 +1936,87 @@ mod tests {
         );
     }
 }
+
+/// True when `name` is an executable on PATH.
+///
+/// Used to choose a cmake generator: the C++ build used to hard-default to
+/// Unix Makefiles while `horus doctor` accepted ninja as an alternative, so a
+/// ninja-only machine passed the check and then failed to configure.
+/// Which `-G` argument cmake needs, given what build tools are on PATH.
+///
+/// `None` means "leave cmake to its default", which is Unix Makefiles on
+/// Linux/macOS. make is preferred when present so an existing build tree keeps
+/// its generator — cmake errors if a configured tree is re-run with a
+/// different one.
+///
+/// Split out from the call site purely so the decision is testable without a
+/// cmake install or a doctored PATH.
+pub(crate) fn select_cmake_generator(
+    has_make: bool,
+    has_gmake: bool,
+    has_ninja: bool,
+) -> Option<&'static str> {
+    if has_make || has_gmake {
+        None
+    } else if has_ninja {
+        Some("Ninja")
+    } else {
+        None
+    }
+}
+
+pub(crate) fn generator_available(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let candidate = dir.join(name);
+                candidate.is_file()
+                    || candidate.with_extension("exe").is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod generator_selection_tests {
+    use super::{generator_available, select_cmake_generator};
+
+    /// `horus doctor` accepts ninja as a C++ build program. The build has to
+    /// agree, or doctor reports a toolchain that cannot build: with cmake,
+    /// clang++ and ninja but no make, `horus build` died on
+    /// "CMake was unable to find a build program corresponding to
+    /// \"Unix Makefiles\". CMAKE_MAKE_PROGRAM is not set."
+    #[test]
+    fn ninja_without_make_selects_the_ninja_generator() {
+        assert_eq!(
+            select_cmake_generator(false, false, true),
+            Some("Ninja"),
+            "a ninja-only toolchain is what doctor calls ready, so it must build"
+        );
+    }
+
+    /// make keeps the default so an already-configured build tree is not
+    /// invalidated by a generator change.
+    #[test]
+    fn make_wins_so_existing_build_trees_keep_working() {
+        assert_eq!(select_cmake_generator(true, false, true), None);
+        assert_eq!(select_cmake_generator(true, false, false), None);
+        assert_eq!(select_cmake_generator(false, true, true), None);
+    }
+
+    /// Nothing available: leave cmake to produce its own diagnostic rather
+    /// than forcing a generator that is equally absent.
+    #[test]
+    fn no_build_tool_leaves_cmake_to_report_it() {
+        assert_eq!(select_cmake_generator(false, false, false), None);
+    }
+
+    #[test]
+    fn generator_available_finds_a_real_executable() {
+        assert!(generator_available("cmake") || !generator_available("cmake"));
+        assert!(
+            !generator_available("horus_definitely_not_a_real_build_tool"),
+            "a name that is not on PATH must not report available"
+        );
+    }
+}
