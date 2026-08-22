@@ -327,3 +327,48 @@ fn a_topic_built_in_a_constructor_still_names_its_publisher() {
         )
     });
 }
+
+/// `topic echo` must print every message, not sample the newest slot.
+///
+/// It read the latest slot and asked "is it different from the one I last
+/// saw", which skips everything published while the poll slept: on a 40 Hz
+/// topic that produced one message in twelve seconds. `echo` is the command
+/// people leave running to watch a topic, and a silent sampler is worse than a
+/// slow one — absence of output reads as absence of traffic.
+///
+/// The test node publishes a counter, so "did it miss anything" is answerable
+/// exactly: consecutive values or not.
+#[test]
+fn topic_echo_streams_every_message_in_order() {
+    let _serial = serialize();
+    let node = LiveNode::spawn("live_echo", true);
+
+    // Wait for the topic to exist before echoing.
+    node.wait_for(&["topic", "list"], |o| o.contains(&node.topic))
+        .unwrap_or_else(|| panic!("topic never appeared:\n{}", node.cli(&["topic", "list"])));
+
+    let out = node.cli(&["topic", "echo", &node.topic, "--count", "20"]);
+
+    let values: Vec<u64> = out
+        .lines()
+        .filter_map(|l| l.split(": ").nth(1))
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+
+    assert!(
+        values.len() >= 10,
+        "echo returned {} values; it was asked for 20:\n{out}",
+        values.len()
+    );
+
+    let gaps: Vec<(u64, u64)> = values
+        .windows(2)
+        .filter(|w| w[1] != w[0] + 1)
+        .map(|w| (w[0], w[1]))
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "echo skipped messages — the publisher emits a counter, so these jumps \
+         are messages that were published and never printed: {gaps:?}\n{out}"
+    );
+}

@@ -671,6 +671,7 @@ pub unsafe fn set_topic_verbose(shm_ptr: *mut u8, enabled: bool) {
 pub const TOPIC_HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
 
 /// Result returned by `read_latest_slot_bytes`.
+#[derive(Clone)]
 pub struct TopicSlotRead {
     /// Raw payload bytes of the most-recently-written message slot.
     /// For POD types this is the raw struct bytes.  For non-POD types this
@@ -712,6 +713,20 @@ pub struct TopicSlotRead {
 pub fn read_latest_slot_bytes(
     path: &std::path::Path,
     last_write_idx: u64,
+) -> Option<TopicSlotRead> {
+    read_slot_inner(path, last_write_idx, None)
+}
+
+/// Shared body of [`read_latest_slot_bytes`] and [`read_slots_since`].
+///
+/// `ordinal` selects a specific message by its `messages_total` count; `None`
+/// means the newest. Every validation below applies either way — these files
+/// are read across namespaces and are not trusted input, so there is one
+/// validated path rather than two.
+fn read_slot_inner(
+    path: &std::path::Path,
+    last_write_idx: u64,
+    ordinal: Option<u64>,
 ) -> Option<TopicSlotRead> {
     use memmap2::MmapOptions;
     use std::fs::File;
@@ -822,8 +837,17 @@ pub fn read_latest_slot_bytes(
         return None;
     }
 
-    // Index of the last-written slot (write_idx was incremented *after* the write)
-    let last_written = ((write_idx.wrapping_sub(1)) as usize) & cap_mask;
+    // Which slot to read. `write_idx` counts messages and is incremented *after*
+    // the write, so message N lives at `(N - 1) & mask`.
+    let target = ordinal.unwrap_or(write_idx);
+    if target == 0 || target > write_idx {
+        return None;
+    }
+    // Already lapped: the producer has written a full ring since this message.
+    if write_idx.saturating_sub(target) >= capacity as u64 {
+        return None;
+    }
+    let last_written = ((target.wrapping_sub(1)) as usize) & cap_mask;
 
     // ── 5. Extract payload bytes ──────────────────────────────────────────────
     let payload = if is_pod {
@@ -2193,4 +2217,83 @@ mod echo_freshness_tests {
 
         let _ = 1_u64.ms();
     }
+}
+
+/// Every message still in the ring since `last_write_idx`, oldest first.
+///
+/// `read_latest_slot_bytes` returns only the newest slot, so a caller polling a
+/// topic sees whatever happened to be there at each poll and nothing in
+/// between. That is a sampler, and `horus topic echo` was built on it: on a
+/// 40 Hz topic it printed one message in twelve seconds, because "is the newest
+/// slot different from the one I last saw" is a question that skips everything
+/// published while the caller was asleep.
+///
+/// Messages are addressed by `messages_total`, which is incremented on every
+/// `send()` regardless of backend, so message N lives at slot `(N - 1) & mask`
+/// until the ring laps it. This returns what is still recoverable and tells the
+/// caller what is not: `missed` is the number of messages that were overwritten
+/// before it got to them, which is real information on a slow reader rather
+/// than a silent gap.
+///
+/// `max` bounds the work per call. Anything beyond it is not lost — it is
+/// simply returned by the next call, because this resumes from
+/// `last_write_idx` rather than from the head.
+///
+/// The returned count is messages the ring overwrote before this reader got to
+/// them. That is real information on a slow reader; a silent hole in the
+/// numbering is not.
+pub fn read_slots_since(
+    path: &std::path::Path,
+    last_write_idx: u64,
+    max: usize,
+) -> (Vec<TopicSlotRead>, u64) {
+    // The head first, from a single cheap read, so the loop below knows the
+    // range before it starts opening slots.
+    let Some(head) = read_latest_slot_bytes(path, last_write_idx) else {
+        return (Vec::new(), 0);
+    };
+    let write_idx = head.write_idx;
+
+    // First call: hand back just the newest, rather than replaying a full ring
+    // of history the caller never asked for.
+    if last_write_idx == 0 {
+        return (vec![head], 0);
+    }
+
+    let available = write_idx.saturating_sub(last_write_idx);
+    if available == 0 {
+        return (Vec::new(), 0);
+    }
+
+    // Resume from where the caller left off, oldest first — not the newest
+    // `max`. Those differ: with `--count 20` and 28 messages waiting, taking
+    // the newest twenty delivers a run with an eight-message hole in the
+    // middle, when what was asked for was twenty consecutive messages. Taking
+    // the oldest twenty gives exactly that, and the rest arrive on the next
+    // call.
+    let want = available.min(max as u64);
+
+    let mut out = Vec::with_capacity(want as usize);
+    let mut lapped = 0u64;
+    for n in (last_write_idx + 1)..=(last_write_idx + want) {
+        if n == write_idx {
+            out.push(head.clone());
+        } else if let Some(slot) = read_one_slot(path, n) {
+            out.push(slot);
+        } else {
+            // The producer overwrote this slot before we reached it. Count it
+            // rather than leaving a hole in the caller's numbering.
+            lapped += 1;
+        }
+    }
+    (out, lapped)
+}
+
+/// One message by its `messages_total` ordinal, if it is still in the ring.
+///
+/// Shares every validation `read_latest_slot_bytes` performs — the magic check,
+/// the power-of-two capacity and mask agreement, and the mapping-length checks —
+/// because these files are read across namespaces and are not trusted input.
+fn read_one_slot(path: &std::path::Path, ordinal: u64) -> Option<TopicSlotRead> {
+    read_slot_inner(path, 0, Some(ordinal))
 }

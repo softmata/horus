@@ -419,7 +419,7 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use header::{
-    read_latest_slot_bytes, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
+    read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
     set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;

@@ -135,7 +135,7 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
 /// recently written slot is inspected, so the output is actual message data
 /// rather than binary ring-buffer internals.
 pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusResult<()> {
-    use horus_core::communication::read_latest_slot_bytes;
+    use horus_core::communication::read_slots_since;
 
     let topics = discover_shared_memory()?;
 
@@ -210,11 +210,40 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
             }
         }
 
-        if let Some(slot) = read_latest_slot_bytes(&topic_path, last_write_idx) {
-            last_write_idx = slot.write_idx;
+        // Every message published since the last poll, not just the newest.
+        //
+        // This read the latest slot and asked "is it different from the one I
+        // last saw", which is a sampler: everything published while the poll
+        // slept was skipped without a word. On a 40 Hz topic it printed one
+        // message in twelve seconds. `echo` is the command people leave running
+        // to watch a topic, and a silent sampler is worse than a slow one —
+        // absence of output reads as absence of traffic.
+        let budget = count
+            .map(|c| c.saturating_sub(messages_received))
+            .unwrap_or(usize::MAX)
+            .min(4096);
+        let (slots, missed) = read_slots_since(&topic_path, last_write_idx, budget);
+
+        if missed > 0 {
+            // Say so rather than leaving a gap in the numbering. A reader that
+            // cannot keep up is ordinary; not knowing it happened is not.
+            println!(
+                "  {} {} message(s) were overwritten before this reader reached \
+                 them — the publisher is lapping the ring faster than this can \
+                 read it",
+                cli_output::ICON_WARN.yellow(),
+                missed
+            );
+        }
+
+        for slot in slots {
+            last_write_idx = last_write_idx.max(slot.write_idx);
             messages_received += 1;
             let type_name = topic.message_type.as_deref().unwrap_or("");
             print_message(&slot.payload, messages_received, slot.is_pod, type_name);
+            if count.is_some_and(|c| messages_received >= c) {
+                break;
+            }
         }
 
         std::thread::sleep(sleep_duration);
