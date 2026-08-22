@@ -134,7 +134,10 @@ pub fn login() -> HorusResult<()> {
             println!("You can complete login manually:");
             println!("  1. Visit: {}/dashboard/keys", registry_url.cyan());
             println!("  2. Generate an API key");
-            println!("  3. Run: {}", "horus auth generate-key".cyan());
+            // `api-key`, the subcommand that exists. `generate-key` produced
+            // "error: unrecognized subcommand", as step 3 of the instructions
+            // for recovering from a failed login.
+            println!("  3. Run: {}", "horus auth api-key".cyan());
             Ok(())
         }
     }
@@ -276,7 +279,7 @@ fn wait_for_oauth_callback(
              as belonging to this login. Refusing to exchange the authorization code — any \
              local process able to reach the callback port could have supplied it.\n  \
              If your registry does not yet return `state`, you can opt out for now with \
-             HORUS_AUTH_ALLOW_MISSING_STATE=1, or use `horus auth generate-key` instead."
+             HORUS_AUTH_ALLOW_MISSING_STATE=1, or use `horus auth api-key` instead."
                 .to_string()
         } else {
             "OAuth state mismatch — the callback did not come from the login this command \
@@ -515,7 +518,7 @@ pub fn whoami() -> HorusResult<()> {
         println!();
         println!("To authenticate:");
         println!("  1. Run: {}", "horus auth login".cyan());
-        println!("  2. Then: {}", "horus auth generate-key".cyan());
+        println!("  2. Then: {}", "horus auth api-key".cyan());
         return Ok(());
     }
 

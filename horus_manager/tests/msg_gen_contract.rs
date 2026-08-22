@@ -99,7 +99,10 @@ fn attributes_and_docs_are_carried() {
 #[test]
 fn arrays_carry_their_length() {
     let pkg = package("R { history: [f32; 16] }");
-    assert_eq!(canonical::render_rust(&pkg.messages[0].fields[0].ty), "[f32; 16]");
+    assert_eq!(
+        canonical::render_rust(&pkg.messages[0].fields[0].ty),
+        "[f32; 16]"
+    );
 }
 
 /// The transport reads and writes messages with a raw `ptr::read`/`ptr::write`.
@@ -147,14 +150,20 @@ fn a_semicolon_separator_is_reported_as_such() {
 #[test]
 fn a_duplicate_field_is_reported_with_the_first_location() {
     let errs = errors("R {\n  a: u8,\n  a: u16,\n}");
-    assert!(errs.iter().any(|e| e.contains("duplicate field `a`")), "{errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("duplicate field `a`")),
+        "{errs:?}"
+    );
     assert!(errs.iter().any(|e| e.contains("line 2")), "{errs:?}");
 }
 
 #[test]
 fn an_unknown_attribute_is_an_error_not_a_shrug() {
     let errs = errors("#[fixd]\nR { a: u8 }");
-    assert!(errs.iter().any(|e| e.contains("unknown attribute")), "{errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("unknown attribute")),
+        "{errs:?}"
+    );
 }
 
 #[test]
@@ -175,7 +184,10 @@ fn diagnostics_carry_a_line_and_column() {
 #[test]
 fn parsing_recovers_and_reports_more_than_the_first_error() {
     let errs = errors("A { x: String }\nB { y: Vec }");
-    assert!(errs.len() >= 2, "expected both to be reported, got {errs:?}");
+    assert!(
+        errs.len() >= 2,
+        "expected both to be reported, got {errs:?}"
+    );
 }
 
 // ─── Canonical form and hash ────────────────────────────────────────────────
@@ -281,7 +293,11 @@ fn rust_cpp_python_and_the_cli_agree_on_size_and_hash() {
         .current_dir(tmp.path())
         .output()
         .expect("horus new must run");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     std::fs::create_dir_all(project.join("msgs")).expect("mkdir msgs");
     std::fs::write(
@@ -322,7 +338,11 @@ fn rust_cpp_python_and_the_cli_agree_on_size_and_hash() {
     let json: serde_json::Value =
         serde_json::from_str(&report).unwrap_or_else(|e| panic!("{e}\n{report}"));
     let entries = json["messages"].as_array().expect("messages");
-    assert_eq!(entries.len(), 2, "both messages should be generated:\n{report}");
+    assert_eq!(
+        entries.len(),
+        2,
+        "both messages should be generated:\n{report}"
+    );
     let sizes: Vec<(String, u64, String)> = entries
         .iter()
         .map(|m| {
@@ -398,8 +418,14 @@ fn rust_cpp_python_and_the_cli_agree_on_size_and_hash() {
 
     assert_eq!(cpp_size, cli_size, "C++ and the CLI disagree on size");
     assert_eq!(py_size, cli_size, "Python and the CLI disagree on size");
-    assert_eq!(cpp_hash, cli_hash, "C++ and the CLI disagree on the layout hash");
-    assert_eq!(py_hash, cli_hash, "Python and the CLI disagree on the layout hash");
+    assert_eq!(
+        cpp_hash, cli_hash,
+        "C++ and the CLI disagree on the layout hash"
+    );
+    assert_eq!(
+        py_hash, cli_hash,
+        "Python and the CLI disagree on the layout hash"
+    );
 
     // The second row: the array-only type, where nothing absorbs a mistake.
     let (name, want_size, want_hash) = &sizes[1];
@@ -473,8 +499,11 @@ fn a_widened_cpp_field_fails_the_static_assert() {
     std::fs::write(&header, broken).expect("write");
 
     let probe = tmp.path().join("p.cpp");
-    std::fs::write(&probe, "#include \"demo/msgs.hpp\"\nint main() { return 0; }\n")
-        .expect("write probe");
+    std::fs::write(
+        &probe,
+        "#include \"demo/msgs.hpp\"\nint main() { return 0; }\n",
+    )
+    .expect("write probe");
     let cc = Command::new("g++")
         .args(["-std=c++17", "-fsyntax-only", "-I"])
         .arg(project.join(".horus/generated/include"))
@@ -584,7 +613,10 @@ fn a_reference_to_an_unknown_type_is_refused() {
         .current_dir(&project)
         .output()
         .expect("gen");
-    assert!(!out.status.success(), "an unsizeable reference must be refused");
+    assert!(
+        !out.status.success(),
+        "an unsizeable reference must be refused"
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("Vector3"), "{err}");
 }
@@ -632,7 +664,10 @@ fn generation_is_deterministic() {
             .status
             .success());
         std::fs::create_dir_all(project.join("msgs")).expect("mkdir");
-        for (name, body) in [("z.hmsg", "Zed { a: u64 }\n"), ("a.hmsg", "Ay { b: u32 }\n")] {
+        for (name, body) in [
+            ("z.hmsg", "Zed { a: u64 }\n"),
+            ("a.hmsg", "Ay { b: u32 }\n"),
+        ] {
             std::fs::write(project.join("msgs").join(name), body).expect("write");
         }
         assert!(Command::new(horus())
@@ -654,10 +689,9 @@ fn generation_is_deterministic() {
 /// never declared, cargo compiled none of it, and nothing reported an error.
 #[test]
 fn the_generated_crate_is_a_dependency_of_the_project() {
-    let src = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cargo_gen.rs"),
-    )
-    .expect("cargo_gen.rs");
+    let src =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cargo_gen.rs"))
+            .expect("cargo_gen.rs");
     assert!(
         src.contains("write_generated_msgs_dep"),
         "nothing adds the generated crate to the project manifest"
@@ -670,10 +704,9 @@ fn the_generated_crate_is_a_dependency_of_the_project() {
 
 #[test]
 fn the_generated_include_path_is_on_the_cpp_include_path() {
-    let src = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cmake_gen.rs"),
-    )
-    .expect("cmake_gen.rs");
+    let src =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cmake_gen.rs"))
+            .expect("cmake_gen.rs");
     assert!(
         src.contains("generated/include"),
         "a C++ project cannot include what msg gen writes"
@@ -720,8 +753,11 @@ fn a_reordered_cpp_struct_of_the_same_size_still_fails() {
     std::fs::write(&header, swapped).expect("write");
 
     let probe = tmp.path().join("p.cpp");
-    std::fs::write(&probe, "#include \"demo/msgs.hpp\"\nint main() { return 0; }\n")
-        .expect("write probe");
+    std::fs::write(
+        &probe,
+        "#include \"demo/msgs.hpp\"\nint main() { return 0; }\n",
+    )
+    .expect("write probe");
     let cc = Command::new("g++")
         .args(["-std=c++17", "-fsyntax-only", "-I"])
         .arg(project.join(".horus/generated/include"))
@@ -843,9 +879,8 @@ fn c_abi_symbols_are_namespaced_by_package_and_type() {
 #[test]
 fn the_header_carries_publisher_and_subscriber_wrappers() {
     let (_tmp, project) = project_with_message("--cpp", "Telemetry { seq: u64 }\n");
-    let header =
-        std::fs::read_to_string(project.join(".horus/generated/include/demo/msgs.hpp"))
-            .expect("header");
+    let header = std::fs::read_to_string(project.join(".horus/generated/include/demo/msgs.hpp"))
+        .expect("header");
 
     assert!(header.contains("class TelemetryPublisher"), "{header}");
     assert!(header.contains("class TelemetrySubscriber"), "{header}");

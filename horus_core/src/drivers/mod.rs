@@ -259,6 +259,34 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
 
 /// Parse the `[hardware]`/`[drivers]` config and return `(name, use_name, params)` tuples
 /// without creating nodes. Used by Python bindings which handle node instantiation themselves.
+/// The robot's name from `[robot].name` in the manifest.
+///
+/// The manifest documents this field as "used in topic naming", and the
+/// convention it supports is `"{robot_name}.{sensor}.{data_type}"` — but nothing
+/// exposed it, so a Python or Rust node had no way to read the name it is
+/// supposed to build its topic names from. `test_robot_name_from_config` called
+/// a `robot_name()` that did not exist and failed with
+/// `'list' object has no attribute 'robot_name'`.
+///
+/// Returns `None` when there is no `[robot]` section or no name in it.
+pub fn robot_name_from<P: AsRef<Path>>(path: P) -> HorusResult<Option<String>> {
+    let path = path.as_ref();
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| ConfigError::Other(format!("failed to read {}: {}", path.display(), e)))?;
+    let table: toml::Value = toml::from_str(&content)
+        .map_err(|e| ConfigError::Other(format!("failed to parse {}: {}", path.display(), e)))?;
+    Ok(table
+        .get("robot")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string))
+}
+
+/// The robot's name from the manifest found by [`find_manifest`].
+pub fn robot_name() -> HorusResult<Option<String>> {
+    robot_name_from(find_manifest()?)
+}
+
 pub fn load_config_entries<P: AsRef<Path>>(
     path: P,
 ) -> HorusResult<Vec<(String, String, NodeParams)>> {

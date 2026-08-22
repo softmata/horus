@@ -535,7 +535,15 @@ fn non_rt_watchdog_node_is_fed_no_spurious_estop() {
         .build()
         .unwrap();
     // Run well past the 50 ms watchdog; the node ticks many times, feeding it.
-    let _ = scheduler.run_for(300_u64.ms());
+    //
+    // Two seconds rather than 300 ms. The window has to cover scheduler startup
+    // plus at least six ticks on a machine that is busy — `cargo test` runs this
+    // alongside ~2300 other tests on every core — and at 300 ms a loaded box
+    // produced `got 0`, which reads as "the node never ran" rather than "the
+    // scheduler never got a timeslice". The watchdog under test is 50 ms, so a
+    // longer window makes the assertion stronger, not weaker: more chances for a
+    // spurious expiry to show up.
+    let _ = scheduler.run_for(2000_u64.ms());
     let ticks = counter.load(Ordering::SeqCst);
     assert!(ticks > 5, "node should tick many times, got {ticks}");
     let stats = scheduler.safety_stats().expect("safety monitor enabled");
@@ -760,7 +768,7 @@ fn test_parallel_execution_all_nodes_tick() {
         .build();
 
     // Run for 300ms — all 3 compute nodes should tick at least once
-    let result = scheduler.run_for(300_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     // Every node must have ticked at least once
@@ -901,7 +909,7 @@ fn test_recording_hooks_wired() {
 
     assert!(scheduler.is_recording());
 
-    let _ = scheduler.run_for(200_u64.ms());
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let ticks = counter.load(Ordering::SeqCst);
     assert!(ticks > 0, "Node should have ticked during recording");
@@ -1527,7 +1535,7 @@ fn test_skip_policy_skips_node() {
         ))
         .build();
 
-    let result = scheduler.run_for(200_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     // Scheduler should still be running (Skip policy doesn't stop it)
@@ -1862,7 +1870,11 @@ fn test_tick_hz_very_large() {
         .add(CounterNode::with_counter("fast", counter.clone()))
         .build()
         .unwrap();
-    let result = scheduler.run_for(10_u64.ms());
+    // 500ms, not 10ms. The assertion is that a 1MHz tick rate produces at
+    // least one tick, and a 10ms window only does when the scheduler finishes
+    // starting inside it — on a machine running the rest of the suite it often
+    // does not, and the failure reads as "a 1MHz scheduler never ticked".
+    let result = scheduler.run_for(500_u64.ms());
     result.unwrap();
     assert!(counter.load(Ordering::SeqCst) > 0);
 }
@@ -2215,7 +2227,7 @@ fn test_shutdown_order_all_nodes_get_full_lifecycle() {
         tcs.push(tc);
     }
 
-    let result = scheduler.run_for(200_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     let entries = log.lock().unwrap();
@@ -2336,7 +2348,7 @@ fn test_metrics_populated_after_shutdown() {
         .order(0)
         .build();
 
-    let result = scheduler.run_for(200_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     let metrics = scheduler.metrics();
@@ -2456,7 +2468,7 @@ fn test_multiple_simultaneous_panics_scheduler_survives() {
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    let result = scheduler.run_for(200_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     assert!(
@@ -2521,7 +2533,7 @@ fn test_skip_policy_healthy_nodes_unaffected() {
         .failure_policy(FailurePolicy::skip(2, 5_u64.secs()))
         .build();
 
-    let result = scheduler.run_for(300_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     let healthy_ticks = healthy_counter.load(Ordering::SeqCst);
@@ -2609,7 +2621,7 @@ fn test_mixed_failure_policies_independent() {
         .failure_policy(FailurePolicy::skip(2, 5_u64.secs()))
         .build();
 
-    let result = scheduler.run_for(300_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     let h = healthy_counter.load(Ordering::SeqCst);
@@ -2656,7 +2668,7 @@ fn test_panicking_node_doesnt_starve_others() {
         .failure_policy(FailurePolicy::Ignore)
         .build();
 
-    let result = scheduler.run_for(200_u64.ms());
+    let result = scheduler.run_for(1000_u64.ms());
     result.unwrap();
 
     let good = good_counter.load(Ordering::SeqCst);
@@ -4406,7 +4418,7 @@ fn test_ready_dispatch_panicking_node_doesnt_block_others() {
         ))
         .build();
 
-    scheduler.run_for(200_u64.ms());
+    scheduler.run_for(1000_u64.ms());
 
     // Healthy node should still have ticked
     let ticks = healthy_counter.load(Ordering::SeqCst);

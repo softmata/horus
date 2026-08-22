@@ -808,10 +808,13 @@ impl RegistryClient {
                         crate::cli_output::ICON_INFO.cyan()
                     );
                     if let Some(id) = job_id {
-                        println!(
-                            "   Track status: horus pkg status {} v{} --verification",
-                            name, version
-                        );
+                        // `horus pkg` is not a subcommand of this CLI and never
+                        // has been — following this printed nothing but
+                        // "error: unrecognized subcommand 'pkg'". `horus info`
+                        // is the command that shows a package's state; the job
+                        // id below is the handle for the verification itself.
+                        println!("   Track status: horus info {}", name);
+                        let _ = version;
                         println!("   Job ID: {}", id);
                     }
                     println!(

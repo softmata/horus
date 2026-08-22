@@ -52,8 +52,17 @@ impl PresenceReceiver {
     pub fn new() -> Self {
         Self {
             active_hosts: HashMap::new(),
-            local_namespace: std::env::var("HORUS_NAMESPACE")
-                .unwrap_or_else(|_| "default".to_string()),
+            // The one accessor, not a second reading of the environment.
+            //
+            // `shm_namespace()` is what every other part of the process uses to
+            // decide which `/dev/shm/horus_*` tree it belongs to, and it does
+            // more than read `HORUS_NAMESPACE`: it sanitises the value and
+            // derives one when the variable is unset. Reading the variable here
+            // instead meant this filter could disagree with the directory the
+            // very next line writes into — accepting a broadcast for a
+            // namespace this process is not in, or rejecting one for the
+            // namespace it is.
+            local_namespace: horus_sys::shm::shm_namespace(),
         }
     }
 
@@ -96,7 +105,9 @@ impl PresenceReceiver {
         // under shm_nodes_dir(). Reject separators / `..` / absolute components so an
         // untrusted peer cannot escape the directory. Fail closed — skip this entry.
         if !is_safe_path_component(&host_id) {
-            eprintln!("[horus_net] Rejecting presence broadcast: unsafe host_id (path traversal)");
+            horus_core::terminal::eprint_line(
+                "[horus_net] Rejecting presence broadcast: unsafe host_id (path traversal)",
+            );
             return;
         }
 
@@ -226,7 +237,12 @@ impl PresenceReceiver {
 ///
 /// Returns None if no local nodes exist.
 pub fn build_local_presence(peer_id_hash: u16) -> Option<Vec<u8>> {
-    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    // The same accessor the receiver filters on, and the same one that decides
+    // which `/dev/shm/horus_*` tree this process belongs to. Reading the
+    // environment directly is a second, subtly different answer — it skips the
+    // sanitising and the derivation for an unset variable — so a broadcast
+    // could announce a namespace this process is not actually in.
+    let namespace = horus_sys::shm::shm_namespace();
 
     let presences = horus_core::NodePresence::read_all();
     if presences.is_empty() {
@@ -270,6 +286,40 @@ pub fn build_local_presence(peer_id_hash: u16) -> Option<Vec<u8>> {
     }
 
     Some(buf)
+}
+
+#[cfg(test)]
+mod namespace_agreement_tests {
+    use super::*;
+
+    /// The sender and the receiver must decide "which namespace am I in" the
+    /// same way, and the same way as the directory they both use.
+    ///
+    /// Both read `HORUS_NAMESPACE` directly while the directory comes from
+    /// `shm_namespace()`. Those are not the same answer: `shm_namespace`
+    /// sanitises the variable and derives one when it is unset, which is the
+    /// case for every test binary. A node could announce a namespace it was not
+    /// in, or reject a peer that was in its own.
+    #[test]
+    fn both_sides_use_the_shared_accessor() {
+        let expected = horus_sys::shm::shm_namespace();
+        assert_eq!(
+            PresenceReceiver::new().local_namespace,
+            expected,
+            "the receiver filters on a namespace other than this process's"
+        );
+
+        // The sender stamps the same value into the payload. Decode the
+        // namespace field back out of a payload it built.
+        if let Some(payload) = build_local_presence(0x1234) {
+            let ns_len = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+            let announced = String::from_utf8_lossy(&payload[2..2 + ns_len]).to_string();
+            assert_eq!(
+                announced, expected,
+                "the broadcast announces a namespace other than this process's"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -94,8 +94,8 @@ fn a_typo_inside_the_rust_section_is_reported() {
         .current_dir(tmp.path())
         .output()
         .expect("horus check must run");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert!(
         text.contains("profiel"),
         "an unknown [rust] key must be reported:\n{text}"

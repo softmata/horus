@@ -510,7 +510,7 @@ fn locate_plugin_binary(command: &str) -> Result<PathBuf> {
     }
     Err(anyhow!(
         "No plugin binary found for command '{}'. Install it first \
-         (e.g. 'horus plugin install --local <package>').",
+         (e.g. 'horus install --local <package>').",
         command
     ))
 }
@@ -4980,7 +4980,7 @@ name = "minimal"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -5081,7 +5081,7 @@ name = "minimal"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -5206,7 +5206,7 @@ lidar = "rplidar-a2"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };

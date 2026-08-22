@@ -175,7 +175,9 @@ fn build_directories_are_not_collected() {
 
     let files = dispatch::cpp_source_files(tmp.path());
     assert!(
-        files.iter().all(|p| !p.to_string_lossy().contains("generated.cpp")),
+        files
+            .iter()
+            .all(|p| !p.to_string_lossy().contains("generated.cpp")),
         "collected build output: {files:?}"
     );
     assert_eq!(files.len(), 1, "{files:?}");
@@ -342,7 +344,9 @@ fn the_generated_cmake_drops_unused_sections() {
 #[test]
 fn stripping_is_release_only() {
     let src = std::fs::read_to_string("src/cmake_gen.rs").expect("read cmake_gen.rs");
-    let at = src.find(":-s>").expect("release strip flag must be present");
+    let at = src
+        .find(":-s>")
+        .expect("release strip flag must be present");
     let line = src[..at].lines().last().unwrap_or_default();
     assert!(
         line.contains("CONFIG:Release"),
@@ -484,8 +488,8 @@ fn a_cpp_project_cross_compiles_to_an_aarch64_binary() {
         .current_dir(&project)
         .output()
         .expect("horus deploy must run");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
 
     let binary = project.join(".horus/cpp-build/xdemo");
     assert!(binary.is_file(), "no binary was produced:\n{text}");

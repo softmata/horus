@@ -306,7 +306,10 @@ fn check_toolchains() -> CheckResult {
     // Python, C++ ready" on a toolchain too old to build HORUS; the user found
     // out minutes into a build, from a cargo error about a package they had
     // never heard of.
-    if let Some(found_version) = dispatch::tool_version("rustc").as_deref().and_then(parse_semver) {
+    if let Some(found_version) = dispatch::tool_version("rustc")
+        .as_deref()
+        .and_then(parse_semver)
+    {
         if let Some(required) = MINIMUM_RUSTC.and_then(parse_semver) {
             if found_version < required {
                 health = Health::Warn;
@@ -1014,8 +1017,13 @@ fn check_network() -> CheckResult {
         details.push("No remote peers (single-machine mode)".to_string());
     }
 
-    // Check 2: HORUS_NAMESPACE
-    let namespace = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    // Check 2: the namespace this process is in
+    //
+    // Ask the accessor, not the environment. `shm_namespace` sanitises the
+    // variable and derives a namespace when it is unset, so reading the raw
+    // value made `horus doctor` report "Namespace: default" while the tree it
+    // had just counted namespaces in was a different one.
+    let namespace = horus_sys::shm::shm_namespace();
     details.push(format!("Namespace: {}", namespace));
 
     // Check 3: horus_net enabled check
@@ -1110,7 +1118,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         }
@@ -1290,9 +1298,18 @@ mod tests {
     #[test]
     fn semver_is_compared_numerically_not_lexically() {
         // "1.100" < "1.9" as strings. The whole point of parsing.
-        assert!(super::parse_semver("rustc 1.100.0").unwrap() > super::parse_semver("rustc 1.9.0").unwrap());
-        assert!(super::parse_semver("rustc 1.90.0").unwrap() < super::parse_semver("rustc 1.92.0").unwrap());
-        assert_eq!(super::parse_semver("rustc 1.97.1 (8bab26f4f 2026-07-14)"), Some((1, 97, 1)));
+        assert!(
+            super::parse_semver("rustc 1.100.0").unwrap()
+                > super::parse_semver("rustc 1.9.0").unwrap()
+        );
+        assert!(
+            super::parse_semver("rustc 1.90.0").unwrap()
+                < super::parse_semver("rustc 1.92.0").unwrap()
+        );
+        assert_eq!(
+            super::parse_semver("rustc 1.97.1 (8bab26f4f 2026-07-14)"),
+            Some((1, 97, 1))
+        );
         assert_eq!(super::parse_semver("cmake version 4.2.3"), Some((4, 2, 3)));
         assert_eq!(super::parse_semver("Python 3.14"), Some((3, 14, 0)));
     }
@@ -1300,7 +1317,10 @@ mod tests {
     /// A pre-release suffix must not defeat the parse.
     #[test]
     fn semver_ignores_a_prerelease_suffix() {
-        assert_eq!(super::parse_semver("rustc 1.98.0-nightly"), Some((1, 98, 0)));
+        assert_eq!(
+            super::parse_semver("rustc 1.98.0-nightly"),
+            Some((1, 98, 0))
+        );
     }
 
     #[test]

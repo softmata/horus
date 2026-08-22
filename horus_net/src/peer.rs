@@ -109,12 +109,12 @@ impl PeerTable {
                     None => {
                         if !self.cap_warned {
                             self.cap_warned = true;
-                            eprintln!(
+                            horus_core::terminal::eprint_line(&format!(
                                 "[horus_net] Peer table is full ({} live peers); ignoring further \
                                  announcements. If this is not a real fleet of that size, a host \
                                  is forging peer ids — check HORUS_NET_ALLOW_PEERS. (Fires once.)",
                                 crate::netfilter::MAX_PEERS
-                            );
+                            ));
                         }
                         return;
                     }

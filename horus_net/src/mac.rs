@@ -338,9 +338,9 @@ fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32]
 pub fn estop_authenticated() -> bool {
     let active = estop_key().is_some();
     if active && !KEY_ACTIVE_LOGGED.swap(true, Ordering::Relaxed) {
-        eprintln!(
+        horus_core::terminal::eprint_line(
             "[horus_net] Networked e-stop is AUTHENTICATED (HORUS_ESTOP_KEY is set). \
-             Unauthenticated e-stop packets will be rejected."
+             Unauthenticated e-stop packets will be rejected.",
         );
     }
     active

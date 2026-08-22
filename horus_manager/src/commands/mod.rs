@@ -30,6 +30,7 @@ pub mod node;
 pub mod param;
 pub mod pkg;
 pub mod plugin;
+pub mod pod_decode;
 pub mod proxy;
 pub mod record;
 pub mod run;

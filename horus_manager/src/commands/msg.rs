@@ -332,7 +332,6 @@ fn dirs_next_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
-
 /// Messages declared in this project's `msgs/*.hmsg`, if we are in a project.
 ///
 /// Silent when there is no project or no `msgs/` directory — `horus msg list`
@@ -387,7 +386,7 @@ fn local_hmsg_messages() -> Vec<MessageInfo> {
     out
 }
 
-fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
+pub(crate) fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     // Find the message type definitions.
     //
     // These used to live in `horus_library/messages`, but horus_library was
@@ -2427,7 +2426,9 @@ mod robotics_message_discovery_tests {
 ///
 /// This produces all of them from one definition, with one layout hash.
 pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
-    use crate::msgspec::{canonical, emit_cpp, emit_ffi, emit_python, emit_rust, layout, parse, Package};
+    use crate::msgspec::{
+        canonical, emit_cpp, emit_ffi, emit_python, emit_rust, layout, parse, Package,
+    };
 
     let (manifest, root) = crate::manifest::HorusManifest::find_and_load()
         .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e}"))))?;
@@ -2467,8 +2468,9 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
     let mut messages = Vec::new();
     let mut diags = Vec::new();
     for file in &files {
-        let text = std::fs::read_to_string(file)
-            .map_err(|e| HorusError::Config(ConfigError::Other(format!("{}: {e}", file.display()))))?;
+        let text = std::fs::read_to_string(file).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!("{}: {e}", file.display())))
+        })?;
         match parse::parse_file(&text, file) {
             Ok(mut m) => messages.append(&mut m),
             Err(mut d) => diags.append(&mut d),
@@ -2561,10 +2563,7 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
             gen_root.join("msgs_ffi/Cargo.toml"),
             emit_ffi::cargo_toml(&pkg, &horus_src, &manifest.package.version),
         ),
-        (
-            gen_root.join("msgs_ffi/src/lib.rs"),
-            emit_ffi::lib_rs(&pkg),
-        ),
+        (gen_root.join("msgs_ffi/src/lib.rs"), emit_ffi::lib_rs(&pkg)),
         (
             gen_root
                 .join("include")

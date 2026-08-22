@@ -252,7 +252,6 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     Ok(())
 }
 
-
 /// Python files that look like tests, by pytest's own default discovery rules.
 ///
 /// Used to tell "no tests" from "tests that cannot run": a generated project

@@ -271,19 +271,40 @@ mod tests {
 
     #[test]
     fn fds_closed_on_drop() {
-        let (epoll_fd, event_fd, timer_fd);
-        {
+        // Probing the raw fd numbers after Drop — `fcntl(fd, F_GETFD) == -1` —
+        // is not reliable in a test binary. Cargo runs these on 16 threads and
+        // another thread can open something that lands on exactly the number we
+        // just released, so the probe succeeds and the test fails for a reason
+        // unrelated to Drop. Observed roughly one run in ten, which reads as
+        // flaky infrastructure rather than the fd reuse it is.
+        //
+        // What this is really asserting is that EpollLoop leaks no descriptors,
+        // so measure that directly: create and drop many loops and check the
+        // process's open-descriptor count does not grow by three per iteration.
+        fn open_fds() -> usize {
+            std::fs::read_dir("/proc/self/fd")
+                .map(|d| d.count())
+                .expect("/proc/self/fd is readable on Linux")
+        }
+
+        const ITERATIONS: usize = 128;
+        let baseline = open_fds();
+        for _ in 0..ITERATIONS {
             let el = EpollLoop::new(Duration::from_millis(50)).unwrap();
-            epoll_fd = el.epoll_fd;
-            event_fd = el.event_fd;
-            timer_fd = el.timer_fd;
+            assert!(el.epoll_fd >= 0 && el.event_fd >= 0 && el.timer_fd >= 0);
+            drop(el);
         }
-        // After drop, fds should be closed. Attempting to use them should fail.
-        // We can verify by checking fcntl returns -1/EBADF
-        unsafe {
-            assert_eq!(libc::fcntl(epoll_fd, libc::F_GETFD), -1);
-            assert_eq!(libc::fcntl(event_fd, libc::F_GETFD), -1);
-            assert_eq!(libc::fcntl(timer_fd, libc::F_GETFD), -1);
-        }
+        let after = open_fds();
+
+        // Leaking all three would be 384 descriptors; leaking one, 128.
+        // Concurrent tests open and close sockets throughout, which moves the
+        // count by a few dozen either way, so the threshold sits well below one
+        // fd per iteration and well above the noise.
+        const NOISE_ALLOWANCE: usize = 40;
+        assert!(
+            after <= baseline + NOISE_ALLOWANCE,
+            "EpollLoop::drop is leaking descriptors: {baseline} open before \
+             {ITERATIONS} create/drop cycles, {after} after"
+        );
     }
 }

@@ -19,15 +19,16 @@ fn test_50_hosts_presence_discovery() {
     let nodes_dir = horus_sys::shm::shm_nodes_dir();
     let _ = std::fs::create_dir_all(&nodes_dir);
 
-    // Clean up any existing remote files
-    if let Ok(entries) = std::fs::read_dir(&nodes_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("remote_") || name.starts_with("bridged_") {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    // Own prefix, and touch nothing else.
+    //
+    // The presence directory is shared by every test in this binary and by any
+    // horus process on the machine. This test used to delete every `remote_*`
+    // and `bridged_*` file on entry and then count all `remote_*` files — while
+    // `test_presence_rapid_churn`, running in parallel, was creating and
+    // deleting `remote_churn_*` in the same directory. Each test corrupted the
+    // other's state, and the failure surfaced here as "Should have 50 remote
+    // presence files".
+    let prefix = format!("remote_h50_{}_", std::process::id());
 
     let now_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -50,7 +51,7 @@ fn test_50_hosts_presence_discovery() {
             now_ns,
             nodes_json.join(",")
         );
-        let path = nodes_dir.join(format!("remote_{}.json", host_id));
+        let path = nodes_dir.join(format!("{prefix}{host_id}.json"));
         std::fs::write(&path, &json).unwrap();
     }
 
@@ -59,7 +60,7 @@ fn test_50_hosts_presence_discovery() {
     let files: Vec<_> = std::fs::read_dir(&nodes_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("remote_"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
         .collect();
     let elapsed = start.elapsed();
 
@@ -70,9 +71,9 @@ fn test_50_hosts_presence_discovery() {
         elapsed
     );
 
-    // Clean up
+    // Clean up only what this test wrote.
     for host in 0..50u32 {
-        let path = nodes_dir.join(format!("remote_host_{:04}.json", host));
+        let path = nodes_dir.join(format!("{prefix}host_{host:04}.json"));
         let _ = std::fs::remove_file(&path);
     }
 }
@@ -91,10 +92,15 @@ fn test_presence_rapid_churn() {
         .unwrap()
         .as_nanos() as u64;
 
+    // Own prefix, like the 50-host test above: the presence directory is shared
+    // with every other horus process on the machine, so an unscoped name makes
+    // two concurrent test runs count each other's files.
+    let prefix = format!("remote_churn_{}_", std::process::id());
+
     // Rapidly create and delete presence files (simulating hosts joining/leaving)
     for cycle in 0..100u32 {
-        let host_id = format!("churn_{:04}", cycle % 20);
-        let path = nodes_dir.join(format!("remote_{}.json", host_id));
+        let host_id = format!("{:04}", cycle % 20);
+        let path = nodes_dir.join(format!("{prefix}{host_id}.json"));
 
         if cycle % 3 == 0 {
             // Delete
@@ -113,7 +119,7 @@ fn test_presence_rapid_churn() {
     let files: Vec<_> = std::fs::read_dir(&nodes_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("remote_churn_"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
         .collect();
 
     // Some files should exist (not all deleted)

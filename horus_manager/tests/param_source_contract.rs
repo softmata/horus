@@ -24,8 +24,7 @@ fn param_list(dir: &std::path::Path) -> String {
         .current_dir(dir)
         .output()
         .expect("horus param list must run");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-        + &String::from_utf8_lossy(&out.stderr)
+    String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
 }
 
 #[test]
@@ -58,10 +57,7 @@ fn with_a_params_file_the_path_is_named() {
         text.contains("Stored in:"),
         "the file exists and is what the values came from:\n{text}"
     );
-    assert!(
-        !text.contains("Built-in defaults"),
-        "{text}"
-    );
+    assert!(!text.contains("Built-in defaults"), "{text}");
 }
 
 /// `HORUS_PARAM_*` beats both the file and the defaults, so a value on screen

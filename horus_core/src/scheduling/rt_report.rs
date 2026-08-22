@@ -155,99 +155,124 @@ impl RtReport {
         };
         let check = |b: bool| if b { "✓" } else { "✗" };
 
-        println!("╔══════════════════════════════════════════════════════════════╗");
-        println!("║               HORUS RT READINESS REPORT                     ║");
-        println!("║               Grade: {:20}                  ║", grade_str);
-        println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║  SYSTEM                                                     ║");
-        println!(
+        crate::terminal::print_line(
+            "╔══════════════════════════════════════════════════════════════╗",
+        );
+        crate::terminal::print_line(
+            "║               HORUS RT READINESS REPORT                     ║",
+        );
+        crate::terminal::print_line(&format!(
+            "║               Grade: {:20}                  ║",
+            grade_str
+        ));
+        crate::terminal::print_line(
+            "╠══════════════════════════════════════════════════════════════╣",
+        );
+        crate::terminal::print_line(
+            "║  SYSTEM                                                     ║",
+        );
+        crate::terminal::print_line(&format!(
             "║    Kernel:         {}",
             if self.kernel.len() > 40 {
                 &self.kernel[..40]
             } else {
                 &self.kernel
             }
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    PREEMPT_RT:     {}                                        ║",
             check(self.preempt_rt)
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    SCHED_FIFO:     {}                                        ║",
             check(self.sched_fifo)
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    Memory lock:    {}                                        ║",
             check(self.memory_locking)
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    CPUs:           {} total, {} isolated                     ║",
             self.cpu_count,
             self.isolated_cpus.len()
+        ));
+        crate::terminal::print_line(
+            "╠══════════════════════════════════════════════════════════════╣",
         );
-        println!("╠══════════════════════════════════════════════════════════════╣");
-        println!(
+        crate::terminal::print_line(&format!(
             "║  JITTER BENCHMARK @ 1kHz ({} samples)                       ║",
             self.jitter_samples
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    Min:    {:8.1} μs                                       ║",
             self.jitter_min_us
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    Mean:   {:8.1} μs                                       ║",
             self.jitter_mean_us
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    P50:    {:8.1} μs                                       ║",
             self.jitter_p50_us
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    P99:    {:8.1} μs                                       ║",
             self.jitter_p99_us
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    P999:   {:8.1} μs                                       ║",
             self.jitter_p999_us
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    Max:    {:8.1} μs                                       ║",
             self.jitter_max_us
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    Rate:   {:8.1} Hz (target: 1000 Hz)                     ║",
             self.actual_rate_hz
+        ));
+        crate::terminal::print_line(
+            "╠══════════════════════════════════════════════════════════════╣",
         );
-        println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║  IPC BENCHMARK                                              ║");
-        println!(
+        crate::terminal::print_line(
+            "║  IPC BENCHMARK                                              ║",
+        );
+        crate::terminal::print_line(&format!(
             "║    Latency:    {:8.0} ns per message                       ║",
             self.ipc_latency_ns
-        );
-        println!(
+        ));
+        crate::terminal::print_line(&format!(
             "║    Throughput: {:8.0} msg/sec                              ║",
             self.ipc_throughput_msg_per_sec
+        ));
+        crate::terminal::print_line(
+            "╠══════════════════════════════════════════════════════════════╣",
         );
-        println!("╠══════════════════════════════════════════════════════════════╣");
 
         if self.issues.is_empty() {
-            println!("║  No issues found — system is RT-ready.                     ║");
+            crate::terminal::print_line(
+                "║  No issues found — system is RT-ready.                     ║",
+            );
         } else {
-            println!(
+            crate::terminal::print_line(&format!(
                 "║  ISSUES ({})                                                ║",
                 self.issues.len()
-            );
+            ));
             for issue in &self.issues {
-                println!("║    ✗ {}", issue);
+                crate::terminal::print_line(&format!("║    ✗ {}", issue));
             }
         }
         if !self.recommendations.is_empty() {
-            println!("║  RECOMMENDATIONS                                            ║");
+            crate::terminal::print_line(
+                "║  RECOMMENDATIONS                                            ║",
+            );
             for rec in &self.recommendations {
-                println!("║    → {}", rec);
+                crate::terminal::print_line(&format!("║    → {}", rec));
             }
         }
-        println!("╚══════════════════════════════════════════════════════════════╝");
+        crate::terminal::print_line(
+            "╚══════════════════════════════════════════════════════════════╝",
+        );
     }
 }
 

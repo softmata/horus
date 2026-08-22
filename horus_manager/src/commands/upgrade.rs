@@ -1,4 +1,4 @@
-//! `horus upgrade` — upgrade horus CLI and plugins.
+//! `horus self update` — upgrade horus CLI and plugins.
 //!
 //! Checks for newer versions of horus and installed plugins,
 //! downloads and installs updates.
@@ -6,13 +6,15 @@
 use anyhow::Result;
 use colored::*;
 
-/// Run `horus upgrade`.
+/// Run `horus self update`.
 ///
 /// - `check_only`: If true, show available updates without installing.
 pub fn run_upgrade(check_only: bool) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
 
-    println!("{}", "horus upgrade".bold());
+    // The banner names the command that runs this: `horus self update`. It
+    // said "horus upgrade", which this CLI does not have.
+    println!("{}", "horus self update".bold());
     println!();
     println!("  Current version: {}", current_version.cyan());
 

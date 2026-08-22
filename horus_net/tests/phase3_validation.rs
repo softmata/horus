@@ -179,6 +179,11 @@ fn production_scenario_link_loss_safe_state() {
     );
     let peer_a = [1u8; 16];
     hb.add_peer(peer_a, "192.168.1.10:9100".parse().unwrap());
+    // The peer answers, so the link is established rather than merely expected.
+    // A peer that has never answered is inside the introduction grace period —
+    // it cannot have heard of us yet — and losing a link means losing one that
+    // existed.
+    hb.on_received(&peer_a);
 
     // Peer alive initially
     assert!(hb.is_link_alive(&peer_a));

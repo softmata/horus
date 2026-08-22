@@ -26,8 +26,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::types::Diag;
 use crate::error::{Error, Result};
 use crate::terminal::print_line;
+
+/// Monotonic nanoseconds for throttling. `Instant` has no epoch to compare
+/// against across calls, and `SystemTime` can step backwards under NTP — which
+/// would make a throttle window either never expire or expire instantly.
+fn monotonic_nanos() -> u64 {
+    use std::sync::OnceLock;
+    static ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as u64
+}
+
+/// `" (+N more in the last second)"`, or nothing when N is zero.
+///
+/// The count is what keeps throttling honest: an operator sees both that the
+/// fault is happening and how often, without the log being destroyed by it.
+fn suppressed_suffix(hidden: u32) -> String {
+    if hidden == 0 {
+        String::new()
+    } else {
+        format!(" (+{hidden} more in the last second)")
+    }
+}
 
 use super::primitives::{DeadlineAction, NodeRunner, TimingEnforcer};
 use super::types::{RegisteredNode, SharedMonitors};
@@ -273,12 +298,16 @@ impl RtExecutor {
                 TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
             {
                 if monitors.verbose {
-                    print_line(&format!(
-                        "[RT-thread] budget violation in '{}': {:?} > {:?}",
-                        node.name,
-                        budget_result.violation.actual(),
-                        budget_result.violation.budget()
-                    ));
+                    if let Some(hidden) = node.diag.allow(Diag::BudgetViolation, monotonic_nanos())
+                    {
+                        print_line(&format!(
+                            "[RT-thread] budget violation in '{}': {:?} > {:?}{}",
+                            node.name,
+                            budget_result.violation.actual(),
+                            budget_result.violation.budget(),
+                            suppressed_suffix(hidden)
+                        ));
+                    }
                 }
                 if let Some(ref mut stats) = node.rt_stats {
                     stats.record_budget_violation();
@@ -348,17 +377,25 @@ impl RtExecutor {
                 // A permanent latch would silently disable the policy after
                 // the first miss.
                 node.in_safe_mode = false;
-                print_line(&format!(
-                    "[RT-thread] SafeMode: '{}' met its deadline again, leaving safe state",
-                    node.name
-                ));
+                if let Some(hidden) = node.diag.allow(Diag::SafeStateLeave, monotonic_nanos()) {
+                    print_line(&format!(
+                        "[RT-thread] SafeMode: '{}' met its deadline again, leaving safe state{}",
+                        node.name,
+                        suppressed_suffix(hidden)
+                    ));
+                }
             }
             if let Some(dm) = miss {
                 if monitors.verbose {
-                    print_line(&format!(
-                        "[RT-thread] Deadline miss in '{}': {:?} > {:?}",
-                        node.name, dm.elapsed, dm.deadline
-                    ));
+                    if let Some(hidden) = node.diag.allow(Diag::DeadlineMiss, monotonic_nanos()) {
+                        print_line(&format!(
+                            "[RT-thread] Deadline miss in '{}': {:?} > {:?}{}",
+                            node.name,
+                            dm.elapsed,
+                            dm.deadline,
+                            suppressed_suffix(hidden)
+                        ));
+                    }
                 }
                 if let Some(ref mut stats) = node.rt_stats {
                     stats.record_deadline_miss();
@@ -421,10 +458,15 @@ impl RtExecutor {
                         // for as long as the overload lasted.
                         if !node.in_safe_mode {
                             node.in_safe_mode = true;
-                            print_line(&format!(
-                                "[RT-thread] SafeMode: '{}' entering safe state after deadline miss",
-                                node.name
-                            ));
+                            if let Some(hidden) =
+                                node.diag.allow(Diag::SafeStateEnter, monotonic_nanos())
+                            {
+                                print_line(&format!(
+                                    "[RT-thread] SafeMode: '{}' entering safe state after deadline miss{}",
+                                    node.name,
+                                    suppressed_suffix(hidden)
+                                ));
+                            }
                             node.node.enter_safe_state();
                         }
                     }
@@ -523,18 +565,15 @@ impl RtExecutor {
                     }
                 }
 
-                // `record_tick_failure` logs the message at error level, which
-                // reaches both the console and the shared log buffer that
-                // `horus log` reads — so the panic is now visible by default
-                // without this line, and printing it here too would put the
-                // same text on screen three times (raw, on_error, hlog).
-                //
-                // Kept behind --verbose as the RT-thread-specific detail line.
-                // Console output for a panic is now identical to the
-                // main-thread path, which is the point.
-                if monitors.verbose {
-                    print_line(&error_msg);
-                }
+                // `record_tick_failure` above already logged this at error level,
+                // which reaches both the console and the buffer `horus log`
+                // reads. This second copy was gated on `verbose` on the theory
+                // that verbose is opt-in — but `MonitoringConfig::verbose`
+                // defaults to *true*, so every default run printed the panic
+                // twice on two different streams (hlog to stderr, this to
+                // stdout), and a third time via the old `Node::on_error`
+                // default. With a Python node's traceback attached that is three
+                // multi-line blocks for one failure.
 
                 // Record to the blackbox (try_lock to avoid RT priority
                 // inversion, matching the budget/deadline paths above).
@@ -790,10 +829,10 @@ impl RtExecutor {
                     Err(_) => {
                         if monitors.verbose {
                             // Avoid format!() heap allocation in RT path — write directly to stderr
-                            eprintln!(
+                            crate::terminal::print_line(&format!(
                                 "[RT-thread] Infrastructure panic for '{}' — node stopped",
                                 node.name
-                            );
+                            ));
                         }
                         node.is_stopped = true;
                     }
@@ -1111,6 +1150,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1276,6 +1316,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1541,6 +1582,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1740,6 +1782,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1858,6 +1901,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
@@ -1981,6 +2025,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
@@ -2255,6 +2300,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,
@@ -2344,6 +2390,7 @@ mod tests {
                 is_stopped: false,
                 health_probe_counter: 0,
                 is_paused: false,
+                diag: Default::default(),
                 in_safe_mode: false,
                 rt_stats: None,
                 miss_policy: Miss::Warn,
@@ -2465,6 +2512,7 @@ mod tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats: Some(crate::core::RtStats::default()),
             miss_policy: Miss::Warn,

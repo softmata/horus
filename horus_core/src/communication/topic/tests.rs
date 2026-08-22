@@ -6123,7 +6123,7 @@ fn broadcast_two_subscribers_each_get_full_stream() {
 }
 
 #[test]
-fn multithread_nonpod_subscribers_each_get_full_stream() {
+fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
     // The REAL multi-subscriber pattern: each subscriber is on its OWN thread (as
     // separate HORUS nodes are), so the (pid, thread)-keyed participant registration
     // counts subs = 2 and the detector selects a DESIGNED broadcast backend — not the
@@ -6163,13 +6163,14 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
             ready.wait(); // all subs registered before the producer streams
                           // Wait for a producer warm-up message so every subscriber has
                           // completed the topology migration before the measured stream.
-            // 30 s, not 5. This is a hang guard, not a timing assertion — the
-            // producer re-sends the warm-up for 60 s, so the only thing a short
-            // deadline here buys is a failure when the machine is busy. Under
-            // the full crate suite (2 200+ tests, several of them doing their own
-            // shared-memory work) 5 s was not enough, and reported a scheduling
-            // delay as "sub1 never observed the producer warm-up message".
-            let warmup_deadline = Instant::now() + Duration::from_secs(30);
+                          // 60s, not 5s, matching the producer's resend bound below. Both
+                          // are hang guards, not timing assertions: this loop exits the
+                          // moment the warm-up arrives, so a longer deadline costs nothing
+                          // when things work. A subscriber that gives up while the producer
+                          // is still sending reports a timeout for a warm-up that was on its
+                          // way — under the full suite, 5s reported a scheduling shortfall as
+                          // "sub2 never observed the producer warm-up message".
+            let warmup_deadline = Instant::now() + Duration::from_secs(60);
             let mut warmed_up = false;
             loop {
                 sub.check_migration_now();
@@ -6193,8 +6194,19 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                 std::thread::yield_now();
             }
             ready.wait();
+            // Clear the leftover warm-ups before measuring. The producer
+            // re-sends `__horus_ready__` until *both* subscribers ack, so the
+            // one that acked first has copies queued behind it. Filtering them
+            // out of `got` is not enough — a lap that passes over them counts
+            // toward `missed_count()` while contributing nothing to `got`, so
+            // the accounting would never balance. Drain to empty, then baseline,
+            // then meet the producer again so the measured stream starts against
+            // an empty ring.
+            while sub.try_recv().is_some() {}
+            let missed_before = sub.missed_count();
+            ready.wait();
             let mut got = Vec::new();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(20);
             while (got.len() as u64) < n && Instant::now() < deadline {
                 sub.check_migration_now();
                 match sub.try_recv() {
@@ -6206,7 +6218,13 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
                     None => std::thread::yield_now(),
                 }
             }
-            (tag, got, sub.backend_name().to_string(), warmed_up)
+            (
+                tag,
+                got,
+                sub.backend_name().to_string(),
+                warmed_up,
+                sub.missed_count().saturating_sub(missed_before),
+            )
         })
     };
     let h1 = spawn_sub("sub1");
@@ -6241,30 +6259,68 @@ fn multithread_nonpod_subscribers_each_get_full_stream() {
         std::thread::sleep(Duration::from_millis(2));
     }
     ready.wait(); // both subscribers observed the producer and migrated
+    ready.wait(); // ...and have drained the warm-up copies, so the ring is empty
     for v in 1..=n {
         producer.send(format!("m{v}"));
     }
-    let (t1, got1, be1, warm1) = h1.join().unwrap();
-    let (t2, got2, be2, warm2) = h2.join().unwrap();
+    let (t1, got1, be1, warm1, miss1) = h1.join().unwrap();
+    let (t2, got2, be2, warm2, miss2) = h2.join().unwrap();
     // Surface a warm-up timeout as a failure here rather than as a panic inside
     // the subscriber thread — see the comment at the warm-up loop.
     assert!(warm1, "{t1} never observed the producer warm-up message");
     assert!(warm2, "{t2} never observed the producer warm-up message");
     eprintln!(
-        "DIAG mt-nonpod: {t1} backend={be1} got={} | {t2} backend={be2} got={} | producer={}",
+        "DIAG mt-nonpod: {t1} backend={be1} got={} missed={miss1} | \
+         {t2} backend={be2} got={} missed={miss2} | producer={}",
         got1.len(),
         got2.len(),
         producer.backend_name(),
     );
-    let expected: Vec<String> = (1..=n).map(|v| format!("m{v}")).collect();
-    assert_eq!(
-        got1, expected,
-        "{t1} (multi-thread non-POD broadcast) must receive every message"
-    );
-    assert_eq!(
-        got2, expected,
-        "{t2} (multi-thread non-POD broadcast) must receive every message"
-    );
+
+    // What broadcast guarantees is that each subscriber gets its own stream in
+    // order, and that anything it does not get is *counted*. It does not
+    // guarantee delivery of every message: the ring is bounded and the producer
+    // overwrites rather than blocking, so a subscriber the OS deschedules for
+    // long enough is lapped. That is ordinary on a loaded machine — observed
+    // here as one subscriber receiving 306 of 400 with a 94-message hole — and
+    // asserting "every message" made this test fail for the one reason it
+    // should not: the framework behaving as designed.
+    //
+    // Silent loss is what must not happen, so assert the invariants that hold:
+    // no reordering, no duplication, and every absent message accounted for by
+    // `missed_count()`.
+    let index_of = |m: &String| -> u64 {
+        m.strip_prefix('m')
+            .and_then(|d| d.parse().ok())
+            .unwrap_or_else(|| panic!("received {m:?}, which was never sent"))
+    };
+    for (who, got, missed) in [(t1, &got1, miss1), (t2, &got2, miss2)] {
+        assert!(
+            !got.is_empty(),
+            "{who} (multi-thread non-POD broadcast) received nothing at all"
+        );
+        let seen: Vec<u64> = got.iter().map(index_of).collect();
+        assert!(
+            seen.windows(2).all(|w| w[1] > w[0]),
+            "{who} received messages out of order or duplicated: {seen:?}"
+        );
+        let (first, last) = (seen[0], seen[seen.len() - 1]);
+        let holes = (last - first + 1) - seen.len() as u64;
+        let lost_prefix = first - 1;
+        assert!(
+            missed >= holes + lost_prefix,
+            "{who} is missing {} messages before m{last} ({lost_prefix} from the \
+             start, {holes} in gaps) but reports only {missed} skipped. Being \
+             lapped is expected; losing data without counting it is the defect.",
+            holes + lost_prefix
+        );
+        assert!(
+            missed + seen.len() as u64 <= n,
+            "{who} claims {missed} skipped on top of {} received, which is more \
+             than the {n} sent",
+            seen.len()
+        );
+    }
 }
 
 #[test]
@@ -6412,13 +6468,15 @@ fn multithread_nonpod_lapped_stream_stays_ordered() {
             }
         }
         assert_eq!(
-            inversions, 0,
+            inversions,
+            0,
             "{who}: broadcast may drop messages, but never deliver them out of \
              order — {inversions} inversion(s) in {} received",
             seen.len()
         );
         assert_eq!(
-            duplicates, 0,
+            duplicates,
+            0,
             "{who}: broadcast must not deliver the same message twice — \
              {duplicates} duplicate(s) in {} received",
             seen.len()
@@ -6452,7 +6510,7 @@ fn same_thread_multihandle_nonpod_serde_flush_fix() {
     // participants are keyed by (pid, thread), both collapse to ONE subscriber, so the
     // detector selects the single-consumer SpscShm rather than a broadcast backend
     // (real subscribers live on separate threads/nodes and DO get a broadcast backend —
-    // see multithread_nonpod_subscribers_each_get_full_stream). On SpscShm both handles
+    // see multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream). On SpscShm both handles
     // still read via their own local_tail WHILE the shared consumed frontier lags.
     //
     // REGRESSION GATE for the serde-recv flush fix: recv_shm_mpsc_serde used to flush
@@ -8514,6 +8572,21 @@ fn send_blocking_zero_duration_returns_immediately() {
     let elapsed = start.elapsed();
 
     assert_eq!(result, Err(SendBlockingError::Timeout));
+    // The bound is generous because the measuring thread can itself be
+    // descheduled, but the failure it catches is structural, not scheduling
+    // noise: phase 3 used to run eight unconditional `yield_now()` calls before
+    // ever looking at the deadline. On an idle machine that is 2.8µs; with 32
+    // competing threads it is 9.8ms mean / 102ms worst, and with 128 it is
+    // 236ms / 359ms. Measured end to end through this call:
+    //
+    //     load    before (mean/worst)     after (mean/worst)
+    //        0     20.1µs /   30.1µs      16.2µs /  22.5µs
+    //       32     59.5ms /  148.0ms      29.1µs /   3.1ms
+    //      128    231.6ms /  368.0ms     134.7µs /  30.0ms
+    //
+    // A robot running more nodes than it has cores is oversubscribed by design,
+    // and 59ms is 59 missed ticks at 1kHz for a caller that asked to wait for
+    // nothing.
     assert!(
         elapsed < 50_u64.ms(),
         "Zero timeout should return near-instantly, got {:?}",
@@ -10243,4 +10316,46 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+}
+
+/// Several handles to one topic must not erase each other from the live set.
+///
+/// A process routinely opens the same topic from more than one node. The live
+/// set exists so a late-installed network hook can be told what already exists;
+/// if the first handle's `Drop` removed the entry, the replay would omit a
+/// topic that is still open and still publishing.
+#[test]
+fn the_live_topic_set_refcounts_handles_per_name() {
+    use super::{notify_topic_lifecycle, TopicLifecycleEvent, LIVE_TOPICS};
+
+    let name = format!("refcount_probe_{}", std::process::id());
+    let created = || TopicLifecycleEvent::Created {
+        name: name.clone(),
+        type_name_hash: 0,
+        type_size: 4,
+        is_pod: true,
+    };
+    let handles = || -> Option<usize> {
+        LIVE_TOPICS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|live| live.get(&name).map(|t| t.handles))
+    };
+
+    notify_topic_lifecycle(created());
+    assert_eq!(handles(), Some(1));
+
+    notify_topic_lifecycle(created());
+    assert_eq!(handles(), Some(2), "a second handle must be counted");
+
+    notify_topic_lifecycle(TopicLifecycleEvent::Dropped { name: name.clone() });
+    assert_eq!(
+        handles(),
+        Some(1),
+        "dropping one of two handles erased a topic that is still open"
+    );
+
+    notify_topic_lifecycle(TopicLifecycleEvent::Dropped { name: name.clone() });
+    assert_eq!(handles(), None, "the last handle must remove the entry");
 }

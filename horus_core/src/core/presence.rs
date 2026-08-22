@@ -91,6 +91,30 @@ pub struct NodePresence {
     achieved_rate_hz: Option<f64>,
 }
 
+/// How long an unparseable presence file is left alone before it is removed.
+///
+/// Long enough that a live writer using a shape this build does not know — a
+/// newer horus, a protocol bridge — is never deleted out from under itself.
+const UNPARSEABLE_GRACE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Whether this file is a remote/bridged *host* record rather than a node
+/// presence file. They share the directory and are written with these prefixes.
+fn is_host_record(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("remote_") || n.starts_with("bridged_"))
+}
+
+/// Whether `path` was last modified longer than `age` ago. Unknown age counts
+/// as young: without evidence that a file is old, leave it.
+fn older_than(path: &std::path::Path, age: std::time::Duration) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > age)
+}
+
 impl NodePresence {
     pub fn name(&self) -> &str {
         &self.name
@@ -226,6 +250,40 @@ impl NodePresence {
 /// - Must not be empty
 ///
 /// Returns `Ok(())` if valid, `Err(reason)` if invalid.
+/// Replace control characters so an interpolated string cannot inject lines or
+/// terminal escapes into the runtime's own output.
+///
+/// C0 (including newline, carriage return and ESC), DEL, and the C1 range are
+/// rendered as `\xNN`. Everything else — including all printable Unicode — is
+/// left alone, so ordinary names are unchanged and the mapping is stable across
+/// runs.
+///
+/// This is applied to node names at registration. Names reach the runtime from
+/// application code and from launch files, and are interpolated into dozens of
+/// messages; a newline in one of them puts an attacker-chosen line on the
+/// runtime's stdout, where an operator dashboard or `grep EMERGENCY` will read
+/// it as the runtime's own.
+pub fn escape_control_chars(s: &str) -> String {
+    // Fast path: the overwhelmingly common case is a clean name, and this runs
+    // once per node at registration.
+    if !s
+        .chars()
+        .any(|c| c.is_control() || ('\u{80}'..='\u{9f}').contains(&c))
+    {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) {
+            use std::fmt::Write as _;
+            let _ = write!(out, "\\x{:02x}", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn validate_node_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("node name must not be empty".into());
@@ -377,12 +435,12 @@ impl NodePresence {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(existing) = serde_json::from_str::<NodePresence>(&content) {
                     if existing.pid != self.pid && is_alive(existing.pid, existing.pid_start_time) {
-                        eprintln!(
+                        crate::terminal::eprint_line(&format!(
                             "[horus] WARNING: node '{}' already registered by PID {} \
                              (this is PID {}). Overwriting presence file — \
                              duplicate node names cause unreliable discovery.",
                             self.name, existing.pid, self.pid
-                        );
+                        ));
                     }
                 }
             }
@@ -442,6 +500,21 @@ impl NodePresence {
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
+                if is_host_record(&path) {
+                    // A remote or bridged *host* record, written by horus_net or
+                    // a protocol bridge. It shares this directory but has a
+                    // different shape — host_id, is_remote, a list of nodes —
+                    // and no local pid, so it cannot parse as a NodePresence.
+                    //
+                    // It used to fall into the "corrupt JSON" arm below and be
+                    // deleted. Every local scan — `horus node list`, the
+                    // monitor, any `read_all` — therefore destroyed the fleet's
+                    // record of its remote members, and whichever observer ran
+                    // second saw nothing. Caught by
+                    // `test_bridged_presence_file_format_readable`, which wrote
+                    // a bridged record and could not read it back.
+                    continue;
+                }
                 if path.extension().is_some_and(|ext| ext == "json") {
                     match fs::read_to_string(&path) {
                         Ok(content) => {
@@ -457,8 +530,14 @@ impl NodePresence {
                                     }
                                 }
                                 Err(_) => {
-                                    // Corrupt JSON — remove the file so it doesn't persist
-                                    let _ = fs::remove_file(&path);
+                                    // Unparseable. Remove it only once it is old
+                                    // enough that no live writer can be mid-write
+                                    // or using a shape this build predates —
+                                    // deleting another process's data because
+                                    // *we* cannot read it is the wrong default.
+                                    if older_than(&path, UNPARSEABLE_GRACE) {
+                                        let _ = fs::remove_file(&path);
+                                    }
                                 }
                             }
                         }
@@ -811,5 +890,124 @@ mod tests {
         );
 
         let _ = NodePresence::remove(&name);
+    }
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::escape_control_chars;
+
+    #[test]
+    fn ordinary_names_are_untouched() {
+        for name in ["motor_ctrl", "lidar-front", "imu.left", "Node1"] {
+            assert_eq!(escape_control_chars(name), name);
+        }
+    }
+
+    #[test]
+    fn newlines_cannot_forge_a_log_line() {
+        // The demonstrated attack: a name that closes the current line and
+        // opens one that reads as the runtime's own emergency stop.
+        let evil = "arm\n EMERGENCY STOP: forged";
+        let safe = escape_control_chars(evil);
+        assert!(
+            !safe.contains('\n'),
+            "escaped name still contains a newline: {safe:?}"
+        );
+        assert!(
+            safe.contains("\\x0a"),
+            "newline should be visible as an escape: {safe:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_escapes_are_neutralised() {
+        let safe = escape_control_chars("red\u{1b}[31mFAKE\u{1b}[0m");
+        assert!(!safe.contains('\u{1b}'), "ESC survived: {safe:?}");
+    }
+
+    #[test]
+    fn c1_range_is_escaped_too() {
+        // C1 controls can also drive a terminal, and arrive via UTF-8.
+        let safe = escape_control_chars("a\u{85}b\u{9b}c");
+        assert!(
+            !safe.contains('\u{85}') && !safe.contains('\u{9b}'),
+            "{safe:?}"
+        );
+    }
+
+    #[test]
+    fn escaping_is_stable() {
+        // A name is an identity: the same input must map to the same output on
+        // every run and in every process, or the registry disagrees with itself.
+        let a = escape_control_chars("arm\tjoint");
+        let b = escape_control_chars("arm\tjoint");
+        assert_eq!(a, b);
+        assert!(!a.contains('\t'));
+    }
+
+    #[test]
+    fn printable_unicode_survives() {
+        // Escaping is about control characters, not about being ASCII-only.
+        assert_eq!(escape_control_chars("arm_左"), "arm_左");
+    }
+}
+
+#[cfg(test)]
+mod host_record_tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_or_bridged_record_is_not_a_node_presence_file() {
+        // These share the presence directory but have a different shape —
+        // host_id, is_remote, a list of nodes — and no local pid, so they cannot
+        // parse as a NodePresence. They used to be deleted as "corrupt JSON" by
+        // any local scan, so `horus node list`, the monitor, or any `read_all`
+        // destroyed the fleet's record of its remote members and whichever
+        // observer ran second saw nothing.
+        assert!(is_host_record(std::path::Path::new(
+            "/x/remote_host_0001.json"
+        )));
+        assert!(is_host_record(std::path::Path::new(
+            "/x/bridged_zenoh_fleet.json"
+        )));
+        assert!(!is_host_record(std::path::Path::new("/x/imu_driver.json")));
+        assert!(!is_host_record(std::path::Path::new("/x/controller.json")));
+    }
+
+    #[test]
+    fn a_read_all_leaves_host_records_alone() {
+        let dir = shm_nodes_dir();
+        let _ = fs::create_dir_all(&dir);
+        let name = format!("remote_readall_probe_{}.json", std::process::id());
+        let path = dir.join(&name);
+        // Deliberately a shape NodePresence cannot parse.
+        fs::write(&path, r#"{"host_id":"peer","is_remote":true,"nodes":[]}"#)
+            .expect("write host record");
+
+        let _ = NodePresence::read_all();
+
+        assert!(
+            path.exists(),
+            "read_all deleted a remote host record it could not parse"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_freshly_written_unparseable_file_survives_one_scan() {
+        // Deleting another process's data because *we* cannot read it is the
+        // wrong default: a newer horus, or a bridge, may be writing a shape this
+        // build predates.
+        let dir = shm_nodes_dir();
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join(format!("unknown_shape_{}.json", std::process::id()));
+        fs::write(&path, r#"{"something":"else"}"#).expect("write");
+
+        let _ = NodePresence::read_all();
+
+        assert!(path.exists(), "a fresh unparseable file was deleted");
+        assert!(!older_than(&path, UNPARSEABLE_GRACE));
+        let _ = fs::remove_file(&path);
     }
 }

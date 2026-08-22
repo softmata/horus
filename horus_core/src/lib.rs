@@ -35,7 +35,13 @@ pub mod params;
 pub mod scheduling;
 #[doc(hidden)]
 pub mod services;
-pub(crate) mod terminal;
+/// Non-panicking console output.
+///
+/// Exposed because `println!`/`eprintln!` panic when the write fails, and a
+/// robot's stdout fails routinely: the supervisor that launched it exits, or an
+/// operator pipes `horus run` into `head`. Anything printing from a node, a
+/// background thread, or a safety path should use these instead.
+pub mod terminal;
 #[doc(hidden)]
 pub mod types;
 pub(crate) mod utils;

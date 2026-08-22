@@ -46,7 +46,10 @@ fn load_document() -> Result<toml_edit::DocumentMut> {
             Some(span) => {
                 let before = &content[..span.start.min(content.len())];
                 let line = before.matches('\n').count() + 1;
-                let col = before.rfind('\n').map(|nl| span.start - nl).unwrap_or(span.start + 1);
+                let col = before
+                    .rfind('\n')
+                    .map(|nl| span.start - nl)
+                    .unwrap_or(span.start + 1);
                 format!("{HORUS_TOML}:{line}:{col}")
             }
             None => HORUS_TOML.to_string(),

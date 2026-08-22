@@ -5,7 +5,7 @@
 //!
 //! ```toml
 //! [scripts]
-//! sim = "horus sim start --world warehouse"
+//! release = "horus run --release"
 //! deploy-pi = "horus deploy robot@192.168.1.5 --release"
 //! test-hw = "cargo test --features hardware"
 //! ```
@@ -38,9 +38,13 @@ pub fn run_scripts(name: Option<String>, args: Vec<String>) -> HorusResult<()> {
                     cli_output::ICON_INFO.cyan()
                 );
                 println!(
-                    "\n  Add scripts to horus.toml:\n\n  {}\n  {} = \"horus sim start --world warehouse\"\n  {} = \"cargo test --features hardware\"",
+                    // Use commands that exist. `horus sim start` was the
+                    // example here and `sim` is not a subcommand, so the sample
+                    // a reader is most likely to paste taught a command that
+                    // errors out.
+                    "\n  Add scripts to horus.toml:\n\n  {}\n  {} = \"horus run --release\"\n  {} = \"cargo test --features hardware\"",
                     "[scripts]".cyan(),
-                    "sim".green(),
+                    "release".green(),
                     "test-hw".green(),
                 );
             } else {

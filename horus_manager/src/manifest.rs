@@ -29,7 +29,7 @@
 //! lidar = "rplidar-a2"
 //!
 //! [scripts]
-//! sim = "horus sim start --world warehouse"
+//! release = "horus run --release"
 //! deploy-pi = "horus deploy robot@192.168.1.5 --release"
 //!
 //! [ignore]
@@ -207,7 +207,9 @@ pub struct HorusManifest {
     )]
     pub dev_dependencies: BTreeMap<String, DependencyValue>,
 
-    /// `[sim-dependencies]` -- simulation asset dependencies (auto-installed on `horus sim3d`).
+    /// `[sim-dependencies]` -- simulation asset dependencies, installed by the
+    /// simulation tooling. (There is no `horus sim` subcommand in this CLI; the
+    /// doc named one that does not exist.)
     ///
     /// Package types: robot, world, sensor-preset, task, actuator-preset.
     /// Resolved from horus-registry and cached in `.horus/packages/`.
@@ -1103,11 +1105,7 @@ fn table_header(content: &str, span: &std::ops::Range<usize>) -> Option<String> 
     let first = text.lines().next()?.trim_end();
     // `[package]` and `[[bin]]` alike: stop after the last consecutive `]`.
     let close = first.find(']')?;
-    let end = first[close..]
-        .chars()
-        .take_while(|c| *c == ']')
-        .count()
-        + close;
+    let end = first[close..].chars().take_while(|c| *c == ']').count() + close;
     Some(first[..end].to_string())
 }
 
@@ -1772,7 +1770,7 @@ version = "not-semver"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -1824,7 +1822,7 @@ version = "not-semver"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".into()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2009,13 +2007,13 @@ name = "my-robot"
 version = "0.1.0"
 
 [scripts]
-sim = "horus sim start --world warehouse"
+release = "horus run --release"
 deploy-pi = "horus deploy robot@192.168.1.5 --release"
 test-hw = "cargo test --features hardware"
 "#;
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
         assert_eq!(manifest.scripts.len(), 3);
-        assert_eq!(manifest.scripts["sim"], "horus sim start --world warehouse");
+        assert_eq!(manifest.scripts["release"], "horus run --release");
     }
 
     #[test]
@@ -2275,7 +2273,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -2399,7 +2397,7 @@ gps = true
 imu = false
 
 [scripts]
-sim = "horus sim start --world warehouse"
+release = "horus run --release"
 deploy-pi = "horus deploy robot@192.168.1.5 --release"
 test-hw = "cargo test --features hardware"
 lint = "cargo clippy -- -D warnings"
@@ -2944,7 +2942,7 @@ sys-dep = { source = "system" }
             },
             enable: vec!["cuda".to_string(), "profiling".to_string()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -3038,7 +3036,7 @@ sys-dep = { source = "system" }
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -3669,7 +3667,7 @@ camera = "opencv"
 lidar = true
 
 [scripts]
-sim = "horus sim start"
+release = "horus run --release"
 deploy = "horus deploy"
 
 [ignore]
@@ -4063,7 +4061,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec!["cuda".to_string()],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4136,7 +4134,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4167,7 +4165,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -4198,7 +4196,7 @@ version = "0.1.0"
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };

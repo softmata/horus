@@ -85,13 +85,13 @@ impl Fragmenter {
         }
 
         if msg.payload.len() > MAX_REASSEMBLY_SIZE {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] Message on '{}' is {}B (max {}B for horus_net). \
                  Use horus-zenoh for large data.",
                 msg.topic_name,
                 msg.payload.len(),
                 MAX_REASSEMBLY_SIZE
-            );
+            ));
             return vec![];
         }
 

@@ -57,7 +57,9 @@ impl OptimizerChain {
                 "delta" => chain.add(Box::new(delta::DeltaOptimizer::new())),
                 "spatial" => chain.add(Box::new(spatial::SpatialOptimizer::new())),
                 "predict" => chain.add(Box::new(predict::PredictOptimizer::new())),
-                other => eprintln!("[horus_net] Unknown optimizer: {other}"),
+                other => horus_core::terminal::eprint_line(&format!(
+                    "[horus_net] Unknown optimizer: {other}"
+                )),
             }
         }
         chain

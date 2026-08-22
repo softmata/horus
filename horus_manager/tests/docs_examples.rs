@@ -144,8 +144,7 @@ fn delimiters_balance(code: &str) -> bool {
             '\'' => {
                 // A lifetime, not a char literal, if what follows is an
                 // identifier that is not immediately closed by another quote.
-                let is_char_lit = i + 2 < b.len()
-                    && ((b[i + 1] == '\\' ) || b[i + 2] == '\'');
+                let is_char_lit = i + 2 < b.len() && ((b[i + 1] == '\\') || b[i + 2] == '\'');
                 if is_char_lit {
                     i += 1;
                     while i < b.len() {
@@ -308,8 +307,7 @@ fn strip_strings_and_comments(code: &str) -> String {
             '\'' => {
                 // A lifetime, not a char literal, if what follows is an
                 // identifier that is not immediately closed by another quote.
-                let is_char_lit =
-                    i + 2 < b.len() && ((b[i + 1] == '\\') || b[i + 2] == '\'');
+                let is_char_lit = i + 2 < b.len() && ((b[i + 1] == '\\') || b[i + 2] == '\'');
                 out.push('\'');
                 if is_char_lit {
                     i += 1;
@@ -1324,7 +1322,11 @@ mod extractor {
         // for "...", so that one string skipped the tutorial's entire main
         // example as an outline — a deliberate typo in it still passed.
         let in_string = "fn main() {\n    println!(\"Waiting...\");\n}";
-        assert_eq!(classify(in_string), None, "a `...` inside a string is prose");
+        assert_eq!(
+            classify(in_string),
+            None,
+            "a `...` inside a string is prose"
+        );
 
         let in_comment = "fn main() {\n    // more setup ...\n    let x = 1;\n}";
         assert_eq!(
@@ -1342,7 +1344,10 @@ mod extractor {
     fn strip_strings_and_comments_blanks_only_prose() {
         let stripped = strip_strings_and_comments("let s = \"a...b\"; let n = 1;");
         assert!(!stripped.contains("..."), "string body must be blanked");
-        assert!(stripped.contains("let n = 1;"), "code must survive: {stripped}");
+        assert!(
+            stripped.contains("let n = 1;"),
+            "code must survive: {stripped}"
+        );
 
         let stripped = strip_strings_and_comments("let n = 1; // trailing ...\nlet m = 2;");
         assert!(!stripped.contains("..."));
@@ -1368,7 +1373,10 @@ mod extractor {
             "a struct whose name merely starts with the message name must not absolve it"
         );
         // The page really defining the type still absolves it.
-        assert!(is_shadowed_field_error(e, "struct Imu {\n    linear_accel: f64,\n}"));
+        assert!(is_shadowed_field_error(
+            e,
+            "struct Imu {\n    linear_accel: f64,\n}"
+        ));
         // And the boundary check holds for the name-resolution path too.
         let missing = "src/lib.rs:3:5: error[E0433]: cannot find struct `Imu` in this scope";
         assert!(!is_page_local_name_error(missing, "struct ImuSensor {}"));
@@ -1538,7 +1546,9 @@ mod extractor {
     /// suppressed every other diagnostic in it.
     #[test]
     fn unbalanced_excerpts_are_rejected() {
-        assert!(!delimiters_balance("impl Node for A {\n    fn tick(&mut self) {"));
+        assert!(!delimiters_balance(
+            "impl Node for A {\n    fn tick(&mut self) {"
+        ));
         assert!(!delimiters_balance("let x = foo(1, 2;"));
         assert!(!delimiters_balance("}"));
     }

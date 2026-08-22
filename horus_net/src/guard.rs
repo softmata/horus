@@ -74,13 +74,32 @@ impl ImportExportGuard {
         match &self.import_mode {
             ImportMode::Deny => false,
             ImportMode::Auto => {
-                // Allow if we subscribe but don't publish
-                if let Some(ref reg) = self.registry {
-                    let is_sub = reg.has_subscribers(topic_name);
-                    let is_pub = reg.has_publishers(topic_name);
-                    is_sub && !is_pub
-                } else {
-                    false
+                // Import a topic this process subscribes to and does not itself
+                // publish.
+                //
+                // This distinction was unobservable for a long time: the
+                // lifecycle hook only learns that a topic was *created*, and a
+                // `Topic<T>` handle can both send and recv, so every topic
+                // registered as `Both` — first denying 100% of imports (a robot
+                // configured exactly as documented received nothing, silently),
+                // then, when that was patched by treating `Both` as importable,
+                // allowing a remote peer to overwrite commands this robot
+                // produces itself.
+                //
+                // horus_core now reports the direction on a handle's first send
+                // or first recv (`TopicLifecycleEvent::RoleObserved`), so the
+                // roles here are real and the original intent holds again.
+                match self.registry {
+                    Some(ref reg) => match reg.get(topic_name).map(|e| e.role) {
+                        Some(crate::registry::TopicRole::Subscriber) => true,
+                        // We publish it: a remote write would fight our own.
+                        Some(crate::registry::TopicRole::Publisher) => false,
+                        Some(crate::registry::TopicRole::Both) => false,
+                        // Not open here at all — this is how another robot's
+                        // traffic stays out.
+                        None => false,
+                    },
+                    None => false,
                 }
             }
             ImportMode::AllowList(patterns) => glob_match_any(topic_name, patterns),
@@ -218,14 +237,72 @@ mod tests {
         let reg = make_registry();
         let guard = ImportExportGuard::new_default(reg);
 
-        // cmd_vel: we subscribe but don't publish → allow
+        // cmd_vel: role known to be Subscriber → allow
         assert!(guard.allow_import("cmd_vel"));
-        // imu: we publish AND subscribe → deny (prevents conflict)
+        // imu: registered `Both` — we publish it as well as subscribe — so a
+        // remote write would fight the value produced here.
         assert!(!guard.allow_import("imu"));
         // odom: we only publish → deny
         assert!(!guard.allow_import("odom"));
         // unknown: not in registry → deny
         assert!(!guard.allow_import("unknown"));
+    }
+
+    #[test]
+    fn auto_imports_what_we_subscribe_to_and_not_what_we_publish() {
+        // The regression this guards, in both of its forms.
+        //
+        // `start_replicator` installs a hook that used to register every topic
+        // as `TopicRole::Both`, because a `Topic<T>` handle can both send and
+        // recv and the hook only learned that a topic was *created*. With
+        // `Both` treated as "we publish", `Auto` — the default — admitted
+        // nothing: a robot configured exactly as documented received no remote
+        // data at all, with no error anywhere. With `Both` treated as "we
+        // subscribe", imports worked but a remote peer could overwrite the very
+        // commands this robot produces.
+        //
+        // horus_core now reports direction on first send / first recv, so these
+        // roles are what production actually assigns.
+        let reg = std::sync::Arc::new(crate::registry::TopicRegistry::new());
+        // Created, then first recv.
+        reg.register(
+            "sensor.imu",
+            topic_hash("sensor.imu"),
+            64,
+            TopicRole::Subscriber,
+            true,
+        );
+        // Created, then first send: merges to `Both`.
+        reg.register(
+            "cmd_vel",
+            topic_hash("cmd_vel"),
+            16,
+            TopicRole::Subscriber,
+            true,
+        );
+        reg.register(
+            "cmd_vel",
+            topic_hash("cmd_vel"),
+            16,
+            TopicRole::Publisher,
+            true,
+        );
+
+        let guard = ImportExportGuard::new_default(reg);
+
+        assert!(
+            guard.allow_import("sensor.imu"),
+            "a topic this process only receives on must accept remote data — \
+             otherwise no remote data ever arrives"
+        );
+        assert!(
+            !guard.allow_import("cmd_vel"),
+            "a topic this process publishes must not accept remote writes — \
+             they would fight the commands produced here"
+        );
+        // A topic this process has never opened is still not imported, which is
+        // what keeps an unrelated robot's traffic out.
+        assert!(!guard.allow_import("someone.elses.topic"));
     }
 
     #[test]

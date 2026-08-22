@@ -43,9 +43,7 @@ pub fn size_align(t: &Type, env: &Env) -> Result<(usize, usize), String> {
             let (s, a) = size_align(elem, env)?;
             (s * n, a)
         }
-        Type::Ref(r) => *env
-            .get(&r.short)
-            .ok_or_else(|| r.short.clone())?,
+        Type::Ref(r) => *env.get(&r.short).ok_or_else(|| r.short.clone())?,
     })
 }
 

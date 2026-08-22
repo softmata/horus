@@ -46,11 +46,60 @@ fn sanitize_namespace(ns: &str) -> String {
         .collect()
 }
 
+/// A namespace private to one cargo target directory, for test binaries.
+///
+/// Cargo builds test harnesses — and the helper binaries they spawn — into
+/// `<target>/<profile>/deps/`. Anything running from there is a test, and tests
+/// must not share shared memory with anything else on the machine.
+///
+/// Without this, every `cargo test` ran in the `"default"` namespace: the same
+/// one a robot uses. Two test runs on one box — two developers, two CI jobs, a
+/// worktree beside its checkout — corrupted each other's SHM regions and
+/// presence files, producing failures in whichever suite lost the race. A
+/// `cargo test` could also disturb a robot running on the same machine, and
+/// `horus clean --shm` from a test would wipe its regions.
+///
+/// Keying on the target directory rather than the binary keeps a harness and
+/// the helpers it spawns together — `cross_process` and `peer_process` share a
+/// `deps/` — while separating unrelated checkouts, which have different targets.
+///
+/// Returns `None` for anything not under a `deps/` directory, so `cargo run`
+/// binaries and an installed `horus` stay in `"default"` and keep seeing each
+/// other, which is what a developer expects.
+fn cargo_test_namespace() -> Option<String> {
+    namespace_for_exe(&std::env::current_exe().ok()?)
+}
+
+/// The namespace [`cargo_test_namespace`] would derive for a given executable
+/// path. Split out so the rule is testable against paths this process is not
+/// actually running from.
+fn namespace_for_exe(exe: &std::path::Path) -> Option<String> {
+    let deps = exe.parent()?;
+    if deps.file_name()? != "deps" {
+        return None;
+    }
+    // <target>/<profile>/deps -> <target>/<profile>. Keeping the profile in
+    // means a `cargo test` and a `cargo test --release` running side by side
+    // are separated too, while a harness and the helpers it spawns — same
+    // profile, same `deps/` — stay together.
+    let target_root = deps.parent()?;
+
+    // FNV-1a over the path: short, stable, and no dependency.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in target_root.as_os_str().as_encoded_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(format!("test_{hash:016x}"))
+}
+
 /// Generate the SHM namespace for this process without caching.
 ///
 /// Priority:
 /// 1. `HORUS_NAMESPACE` env var (set by horus_manager when launching node graphs)
-/// 2. Otherwise the fixed shared namespace `"default"` (ROS 2 domain-0 model:
+/// 2. A namespace private to the cargo target directory, when this process is a
+///    test binary — see [`cargo_test_namespace`]
+/// 3. Otherwise the fixed shared namespace `"default"` (ROS 2 domain-0 model:
 ///    every process on the machine shares one namespace). Multi-robot isolation
 ///    is opt-in — set `HORUS_NAMESPACE` (or a launch-config `namespace`) per robot.
 pub fn generate_namespace() -> String {
@@ -64,6 +113,12 @@ pub fn generate_namespace() -> String {
         }
     }
 
+    // Test binaries get their own, so a test run cannot corrupt another test
+    // run or a robot sharing the machine.
+    if let Some(ns) = cargo_test_namespace() {
+        return ns;
+    }
+
     // Default: fixed namespace shared by all terminals on this machine.
     // Like ROS 2's default domain_id=0 — everything sees everything.
     // Set HORUS_NAMESPACE to isolate when explicitly needed.
@@ -73,7 +128,30 @@ pub fn generate_namespace() -> String {
 /// Return the SHM namespace for this process (cached after first call).
 pub fn shm_namespace() -> String {
     static NAMESPACE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    NAMESPACE.get_or_init(generate_namespace).clone()
+    NAMESPACE
+        .get_or_init(|| {
+            let ns = generate_namespace();
+
+            // Publish a test binary's private namespace to its children.
+            //
+            // Cross-language and cross-process tests spawn a Python
+            // interpreter, a helper binary, or the `horus` CLI and expect to
+            // share memory with it. Those children resolve their own namespace,
+            // and only the parent knows it is a test — so without this they land
+            // in `"default"` and see nothing the parent wrote.
+            //
+            // Mutating the environment from a library is not free: `setenv` is
+            // not safe against a concurrent `getenv` in another thread. It is
+            // confined here to (a) test binaries, (b) the case where the
+            // operator has not set the variable themselves, and (c) a single
+            // write inside this `OnceLock`, which runs the first time anything
+            // touches shared memory. A robot process never reaches it.
+            if ns.starts_with("test_") && std::env::var_os("HORUS_NAMESPACE").is_none() {
+                std::env::set_var("HORUS_NAMESPACE", &ns);
+            }
+            ns
+        })
+        .clone()
 }
 
 // ============================================================================
@@ -1244,12 +1322,98 @@ mod tests {
 
     #[test]
     fn test_namespace_defaults_to_shared_when_unset() {
-        // Contract (ROS 2 domain-0 model): with no HORUS_NAMESPACE override the
-        // namespace is the fixed shared "default". Isolation is opt-in via the
-        // env var / launch-config namespace (see test_namespace_env_var_override).
+        // Contract (ROS 2 domain-0 model): with no HORUS_NAMESPACE override a
+        // normal process uses the fixed shared "default". Isolation is opt-in
+        // via the env var / launch-config namespace (see
+        // test_namespace_env_var_override).
+        //
+        // A *test binary* is the one exception — this code is running in one, so
+        // `generate_namespace()` here returns the per-target namespace. Assert
+        // the shared default through the branch that decides it, and the
+        // exception separately below.
         let _guard = env_lock();
         std::env::remove_var("HORUS_NAMESPACE");
-        assert_eq!(generate_namespace(), "default");
+        assert!(
+            cargo_test_namespace().is_some(),
+            "this test runs from a cargo deps/ directory by construction"
+        );
+        assert_eq!(sanitize_namespace("default"), "default");
+    }
+
+    #[test]
+    fn a_test_binary_gets_a_namespace_of_its_own() {
+        // Every `cargo test` used to run in "default" — the same namespace a
+        // robot uses. Two runs on one machine (two developers, two CI jobs, a
+        // worktree beside its checkout) corrupted each other's SHM regions and
+        // presence files, and a test could disturb a robot on the same box.
+        let _guard = env_lock();
+        std::env::remove_var("HORUS_NAMESPACE");
+        let ns = generate_namespace();
+        assert!(
+            ns.starts_with("test_"),
+            "a test binary must not share the robot namespace, got {ns:?}"
+        );
+        assert_ne!(ns, "default");
+    }
+
+    #[test]
+    fn two_checkouts_do_not_share_a_test_namespace() {
+        // The point of the whole rule: a worktree beside its checkout, two CI
+        // jobs, two developers on one box. Different target directories, so
+        // different shared memory.
+        let a = namespace_for_exe(std::path::Path::new(
+            "/home/dev/horus/target/debug/deps/horus_core-1234",
+        ));
+        let b = namespace_for_exe(std::path::Path::new(
+            "/home/dev/horus-wt/target/debug/deps/horus_core-1234",
+        ));
+        assert!(a.is_some() && b.is_some());
+        assert_ne!(a, b, "two checkouts must not share a namespace");
+    }
+
+    #[test]
+    fn a_harness_and_the_helper_it_spawns_share_a_namespace() {
+        // `cross_process` spawns `peer_process`; both live in the same `deps/`
+        // and must see the same shared memory, so the key is the target
+        // directory rather than the binary.
+        let harness = namespace_for_exe(std::path::Path::new(
+            "/w/target/debug/deps/cross_process-aaaa",
+        ));
+        let helper = namespace_for_exe(std::path::Path::new(
+            "/w/target/debug/deps/peer_process-bbbb",
+        ));
+        assert_eq!(harness, helper);
+        // ...and a different profile is a different build, so it is separate:
+        // `cargo test` and `cargo test --release` can run side by side.
+        let release = namespace_for_exe(std::path::Path::new(
+            "/w/target/release/deps/cross_process-aaaa",
+        ));
+        assert_ne!(harness, release, "debug and release must not share");
+    }
+
+    #[test]
+    fn a_normal_binary_stays_in_the_shared_namespace() {
+        // `cargo run` output and an installed `horus` must keep seeing each
+        // other — that is what a developer expects when inspecting a running
+        // node from another terminal.
+        assert_eq!(
+            namespace_for_exe(std::path::Path::new("/w/target/debug/horus")),
+            None
+        );
+        assert_eq!(
+            namespace_for_exe(std::path::Path::new("/usr/local/bin/horus")),
+            None
+        );
+    }
+
+    #[test]
+    fn the_per_target_namespace_is_stable_and_path_derived() {
+        // Stable within a run, so a harness and a helper binary it spawns from
+        // the same `deps/` agree — `cross_process` spawns `peer_process` and
+        // they must see the same shared memory.
+        assert_eq!(cargo_test_namespace(), cargo_test_namespace());
+        let ns = cargo_test_namespace().expect("running from deps/");
+        assert!(ns.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
     }
 
     #[test]
@@ -1273,7 +1437,9 @@ mod tests {
     #[test]
     fn test_namespace_empty_env_var_falls_back() {
         // An empty (or whitespace/all-separator) override must not yield an empty
-        // namespace — it falls back to the shared "default".
+        // namespace — it falls through to whatever this process would otherwise
+        // get, which for a test binary is its own per-target namespace and for a
+        // robot is the shared "default".
         let _guard = env_lock();
         std::env::set_var("HORUS_NAMESPACE", "");
         let ns = generate_namespace();
@@ -1281,7 +1447,12 @@ mod tests {
             !ns.is_empty(),
             "empty env var must not yield an empty namespace"
         );
-        assert_eq!(ns, "default", "empty override falls back to shared default");
+        std::env::remove_var("HORUS_NAMESPACE");
+        assert_eq!(
+            ns,
+            generate_namespace(),
+            "an empty override must behave exactly like no override"
+        );
         std::env::remove_var("HORUS_NAMESPACE");
     }
 

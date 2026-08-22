@@ -959,18 +959,30 @@ impl PyTensorHandle {
 
     /// Convert dtype: t.astype("float16")
     fn astype<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dtype: &str) -> PyResult<Self> {
-        let inner = slf.borrow();
-        let handle = inner
-            .handle
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let new_dtype = parse_dtype(dtype)?;
-        if handle.dtype() == new_dtype {
-            return Ok(Self {
-                handle: Some(handle.clone()),
-                view_keepalive: None,
-            });
+
+        // Scope the borrow, exactly as `numpy` above does and for the same
+        // reason: `Self::numpy(slf, ..)` ends in `numpy.asarray(slf)`, which
+        // reads `__array_interface__` and takes `slf.borrow_mut()` to record its
+        // keepalive. Holding an immutable borrow across that call panicked:
+        //
+        //     pyo3_runtime.PanicException: Already borrowed: PyBorrowMutError
+        //
+        // so `astype` and its four `to_*` shorthands failed on every call.
+        {
+            let inner = slf.borrow();
+            let handle = inner
+                .handle
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+            if handle.dtype() == new_dtype {
+                return Ok(Self {
+                    handle: Some(handle.clone()),
+                    view_keepalive: None,
+                });
+            }
         }
+
         let np = py.import("numpy")?;
         let np_dtype = np.call_method1("dtype", (dtype,))?;
         let src = Self::numpy(slf, py)?;

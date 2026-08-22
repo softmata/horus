@@ -135,6 +135,10 @@ fn sc10_heartbeat_safe_state_within_200ms() {
         LinkLostAction::SafeState,
     );
     hb.add_peer([1; 16], "192.168.1.10:9100".parse().unwrap());
+    // Establish the link before letting it go silent. A peer that has never
+    // answered is inside the introduction grace period — it cannot have heard
+    // of us yet — and losing a link means losing one that existed.
+    hb.on_received(&[1; 16]);
 
     std::thread::sleep(Duration::from_millis(60));
 

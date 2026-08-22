@@ -303,6 +303,8 @@ fn test_shared_memory_info_creation() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
 
     assert_eq!(shm.topic_name, "robot.pose");
@@ -359,6 +361,8 @@ fn test_shared_memory_info_inactive() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
 
     assert!(!shm.active);
@@ -783,6 +787,8 @@ fn test_discovery_cache_update_shared_memory() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     }];
 
     cache.update_shared_memory(shm);
@@ -890,6 +896,8 @@ fn test_shared_memory_info_clone() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
 
     let cloned = shm.clone();
@@ -1638,6 +1646,8 @@ fn test_system_topic_detection() {
         is_system: true,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
     assert!(system_shm.is_system);
 
@@ -1656,6 +1666,8 @@ fn test_system_topic_detection() {
         is_system: false,
         messages_total: 0,
         topic_kind: 0,
+        publisher_count: 0,
+        subscriber_count: 0,
     };
     assert!(!user_shm.is_system);
 
@@ -2242,15 +2254,54 @@ fn test_crash_corrupt_json_variants() {
         "valid node must survive alongside corrupt files"
     );
 
-    // Corrupt UTF-8 files should be cleaned up
-    // (read_all removes files that fail JSON parse but are valid UTF-8)
+    // Corrupt files are NOT removed on sight any more.
+    //
+    // `read_all` used to delete anything it could not parse, which also deleted
+    // the fleet's remote and bridged *host* records — they share this directory,
+    // have a different shape, and never parse as a `NodePresence`. The same
+    // reasoning the binary-file case below already applies ("we don't delete
+    // files we can't even read") extends to a file we can read but do not
+    // understand: a newer horus, or a protocol bridge, may be writing a shape
+    // this build predates.
+    //
+    // They are cleaned once they are old enough that no live writer can be
+    // mid-write, so a fresh one survives a scan and an aged one does not.
+    for suffix in ["truncated", "empty", "wrong_schema", "no_brace"] {
+        let path = w
+            .nodes_dir
+            .join(format!("{}_{}.json", corrupt_prefix, suffix));
+        assert!(
+            path.exists(),
+            "a freshly written corrupt file was deleted on sight: {}",
+            suffix
+        );
+    }
+
+    // Age them past the grace period and scan again.
+    for suffix in ["truncated", "empty", "wrong_schema", "no_brace"] {
+        let path = w
+            .nodes_dir
+            .join(format!("{}_{}.json", corrupt_prefix, suffix));
+        let aged = std::process::Command::new("touch")
+            .args(["-d", "-1 hour"])
+            .arg(&path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(
+            aged,
+            "could not age {} for the second half of this test",
+            suffix
+        );
+    }
+    let _ = NodePresence::read_all();
     for suffix in ["truncated", "empty", "wrong_schema", "no_brace"] {
         let path = w
             .nodes_dir
             .join(format!("{}_{}.json", corrupt_prefix, suffix));
         assert!(
             !path.exists(),
-            "corrupt file {} should be cleaned up",
+            "corrupt file {} should be cleaned up once it is old",
             suffix
         );
     }
@@ -2712,5 +2763,45 @@ fn test_process_exists_dead_pid() {
     assert!(
         !process_exists(4_294_967),
         "nonexistent PID should return false"
+    );
+}
+
+// ── Topic status: a region can outlive its contents ─────────────────────────
+
+#[test]
+fn a_topic_with_no_header_is_stale_however_fresh_the_file_is() {
+    use super::topics::downgrade_without_header;
+
+    // Remove a namespace under a running publisher and the next open recreates
+    // the file empty. It then has a live creator PID and a modification time
+    // from seconds ago, so the age-and-liveness rule says Active — and
+    // `horus topic list` printed `sensors.imu  0 B  —  0.0 Hz  active` beside a
+    // publisher that was still sending, through a region no subscriber could
+    // ever receive from.
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Active, false),
+        TopicStatus::Stale
+    );
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Idle, false),
+        TopicStatus::Stale
+    );
+}
+
+#[test]
+fn a_topic_with_a_header_keeps_the_status_it_earned() {
+    use super::topics::downgrade_without_header;
+
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Active, true),
+        TopicStatus::Active
+    );
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Idle, true),
+        TopicStatus::Idle
+    );
+    assert_eq!(
+        downgrade_without_header(TopicStatus::Stale, true),
+        TopicStatus::Stale
     );
 }

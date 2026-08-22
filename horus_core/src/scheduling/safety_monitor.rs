@@ -38,7 +38,9 @@ pub fn trigger_external_emergency_stop(reason: String) {
         hook(reason);
     } else {
         drop(guard);
-        eprintln!("[horus] External emergency stop (no scheduler): {reason}");
+        crate::terminal::print_line(&format!(
+            "[horus] External emergency stop (no scheduler): {reason}"
+        ));
     }
 }
 
@@ -74,10 +76,10 @@ pub fn trigger_external_safe_state(reason: String) {
         hook(reason);
     } else {
         drop(guard);
-        eprintln!(
+        crate::terminal::print_line(&format!(
             "[horus] safe-state requested but no scheduler hook is installed; \
              escalating to emergency stop: {reason}"
-        );
+        ));
         trigger_external_emergency_stop(reason);
     }
 }

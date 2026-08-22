@@ -225,12 +225,12 @@ pub fn handle_remote_estop_at(
     match classify_estop_freshness_at(timestamp, now_ns) {
         Freshness::Fresh => {}
         Freshness::Stale => {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] Ignoring stale/implausible remote e-stop from host {:04x} \
                  (timestamp outside the {}s freshness window)",
                 host_id,
                 ESTOP_MAX_AGE_NS / 1_000_000_000
-            );
+            ));
             return false;
         }
         Freshness::ClockUnusable => {
@@ -265,7 +265,7 @@ pub fn handle_remote_estop_at(
         }
         EstopRemotePolicy::Warn => {
             let msg = format!("Remote e-stop from host {:04x}: {}", host_id, reason);
-            eprintln!("[horus_net] {}", msg);
+            horus_core::terminal::eprint_line(&format!("[horus_net] {}", msg));
             horus_core::scheduling::trigger_external_emergency_stop(msg);
             true
         }
@@ -398,23 +398,23 @@ fn is_fresh_estop(timestamp_ns: u64) -> bool {
 fn warn_estop_clock_unusable(host_id: u16, authenticated: bool) {
     if !ESTOP_CLOCK_WARNED.swap(true, Ordering::Relaxed) {
         if authenticated {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] WARNING: remote e-stop from host {:04x} differs from this \
                  machine's clock by more than a day — one of the two clocks is not set. \
                  ACTING on it anyway because it is authenticated (HORUS_ESTOP_KEY). \
                  Synchronise clocks (NTP/PTP): e-stop freshness compares ABSOLUTE wall \
                  time. (Fires once.)",
                 host_id
-            );
+            ));
         } else {
-            eprintln!(
+            horus_core::terminal::eprint_line(&format!(
                 "[horus_net] WARNING: REJECTING remote e-stop from host {:04x} — its \
                  timestamp differs from this machine's clock by more than a day, so one \
                  of the two clocks is not set, and the packet is UNAUTHENTICATED. \
                  Remote e-stop is INERT on this node until clocks are synchronised \
                  (NTP/PTP) or HORUS_ESTOP_KEY is provisioned. (Fires once.)",
                 host_id
-            );
+            ));
         }
     }
 }
@@ -426,10 +426,10 @@ fn warn_estop_clock_unusable(host_id: u16, authenticated: bool) {
 /// disk-fill and an RT-jitter primitive.
 fn warn_unauthenticated_rejected() {
     if !ESTOP_FORGERY_WARNED.swap(true, Ordering::Relaxed) {
-        eprintln!(
+        horus_core::terminal::eprint_line(
             "[horus_net] WARNING: REJECTED a remote e-stop because HORUS_ESTOP_KEY is \
              not provisioned or its authentication tag is missing/invalid. The key must \
-             match on every node; otherwise someone may be forging packets. (Fires once.)"
+             match on every node; otherwise someone may be forging packets. (Fires once.)",
         );
     }
 }
@@ -441,6 +441,30 @@ fn warn_unauthenticated_rejected() {
 pub struct EstopBroadcaster {
     /// Pending retries: (payload, remaining_retries, next_retry_at)
     pending_retries: Vec<(Vec<u8>, u8, Instant)>,
+    /// Whether this episode's total-failure warning has already been emitted.
+    failure_reported: bool,
+}
+
+/// What actually left the machine on one broadcast attempt.
+///
+/// The sends are best-effort by design — a safety path must not block on a
+/// socket — but "best effort" was implemented as `let _ =`, so a broadcast that
+/// reached nobody was indistinguishable from one that reached everybody. That
+/// is the wrong silence: triple redundancy that fails invisibly is worse than
+/// no redundancy, because the operator believes it worked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EstopDelivery {
+    /// Datagrams the broadcaster tried to send (multicast + one per peer).
+    pub attempted: usize,
+    /// Datagrams the kernel accepted.
+    pub sent: usize,
+}
+
+impl EstopDelivery {
+    /// Every send failed: the e-stop never left this machine.
+    pub fn nothing_sent(&self) -> bool {
+        self.attempted > 0 && self.sent == 0
+    }
 }
 
 const RETRY_COUNT: u8 = 3;
@@ -456,6 +480,21 @@ impl EstopBroadcaster {
     pub fn new() -> Self {
         Self {
             pending_retries: Vec::new(),
+            failure_reported: false,
+        }
+    }
+
+    /// Whether the caller should warn about this outcome.
+    ///
+    /// True the first time an episode fails to get anything out, and not again
+    /// until the next e-stop: the retries run on a 50ms timer and a warning per
+    /// tick would bury the one that matters.
+    pub fn should_warn(&mut self, delivery: &EstopDelivery) -> bool {
+        if delivery.nothing_sent() && !self.failure_reported {
+            self.failure_reported = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -466,15 +505,25 @@ impl EstopBroadcaster {
         payload: Vec<u8>,
         multicast_addr: Option<SocketAddr>,
         peer_addrs: &[SocketAddr],
-    ) {
+    ) -> EstopDelivery {
+        // A new episode: the previous one's warning must not suppress this one's.
+        self.failure_reported = false;
+        let mut delivery = EstopDelivery::default();
+
         // 1. Multicast (fast, reaches all LAN peers)
         if let Some(mcast) = multicast_addr {
-            let _ = transport.send_to(&payload, mcast);
+            delivery.attempted += 1;
+            if transport.send_to(&payload, mcast).is_ok() {
+                delivery.sent += 1;
+            }
         }
 
         // 2. Unicast to each known peer (backup)
         for addr in peer_addrs {
-            let _ = transport.send_to(&payload, *addr);
+            delivery.attempted += 1;
+            if transport.send_to(&payload, *addr).is_ok() {
+                delivery.sent += 1;
+            }
         }
 
         // 3. Schedule retries
@@ -485,6 +534,7 @@ impl EstopBroadcaster {
                 Instant::now() + RETRY_INTERVAL * (i as u32 + 1),
             ));
         }
+        delivery
     }
 
     /// Process pending retries. Called on each timer tick.
@@ -493,24 +543,32 @@ impl EstopBroadcaster {
         transport: &T,
         multicast_addr: Option<SocketAddr>,
         peer_addrs: &[SocketAddr],
-    ) {
+    ) -> EstopDelivery {
         let now = Instant::now();
+        let mut delivery = EstopDelivery::default();
         let mut i = 0;
         while i < self.pending_retries.len() {
             if now >= self.pending_retries[i].2 {
                 let (ref payload, _, _) = self.pending_retries[i];
                 // Resend to multicast + all peers
                 if let Some(mcast) = multicast_addr {
-                    let _ = transport.send_to(payload, mcast);
+                    delivery.attempted += 1;
+                    if transport.send_to(payload, mcast).is_ok() {
+                        delivery.sent += 1;
+                    }
                 }
                 for addr in peer_addrs {
-                    let _ = transport.send_to(payload, *addr);
+                    delivery.attempted += 1;
+                    if transport.send_to(payload, *addr).is_ok() {
+                        delivery.sent += 1;
+                    }
                 }
                 self.pending_retries.swap_remove(i);
             } else {
                 i += 1;
             }
         }
+        delivery
     }
 
     /// Clear all pending retries (on shutdown).
@@ -904,5 +962,127 @@ mod tests {
             Some(&KEY_A),
             unset_now
         ));
+    }
+}
+
+#[cfg(test)]
+mod delivery_reporting_tests {
+    use super::*;
+    use crate::transport::Transport;
+    use std::net::SocketAddr;
+
+    /// A transport whose sends always fail — a downed interface, a firewall
+    /// rejecting multicast, an unroutable peer.
+    struct DeadTransport;
+    impl Transport for DeadTransport {
+        fn send_to(&self, _data: &[u8], _addr: SocketAddr) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::NetworkUnreachable))
+        }
+        fn recv_from(&self, _buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        }
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok("127.0.0.1:0".parse().unwrap())
+        }
+        fn join_multicast(&self, _group: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn raw_fd(&self) -> i32 {
+            -1
+        }
+    }
+
+    /// A transport that accepts everything.
+    struct LiveTransport;
+    impl Transport for LiveTransport {
+        fn send_to(&self, data: &[u8], _addr: SocketAddr) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+        fn recv_from(&self, _buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        }
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok("127.0.0.1:0".parse().unwrap())
+        }
+        fn join_multicast(&self, _group: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn raw_fd(&self) -> i32 {
+            -1
+        }
+    }
+
+    fn addrs() -> (Option<SocketAddr>, Vec<SocketAddr>) {
+        (
+            Some("239.69.72.1:9100".parse().unwrap()),
+            vec![
+                "192.168.1.10:9100".parse().unwrap(),
+                "192.168.1.11:9100".parse().unwrap(),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_broadcast_that_reached_nobody_says_so() {
+        // The regression: every send was `let _ =`, so an e-stop that never left
+        // the machine was indistinguishable from one that reached the whole
+        // fleet. Triple redundancy that fails invisibly is worse than none,
+        // because the operator believes it worked.
+        let (mcast, peers) = addrs();
+        let mut b = EstopBroadcaster::new();
+        let delivery = b.broadcast(&DeadTransport, vec![1, 2, 3], mcast, &peers);
+
+        assert_eq!(delivery.attempted, 3, "multicast + two peers");
+        assert_eq!(delivery.sent, 0);
+        assert!(delivery.nothing_sent());
+        assert!(b.should_warn(&delivery), "the operator must be told");
+    }
+
+    #[test]
+    fn the_warning_fires_once_per_episode_not_once_per_retry() {
+        // Retries run on a 50ms timer. A warning per tick would bury the one
+        // that matters under repetitions of itself.
+        let (mcast, peers) = addrs();
+        let mut b = EstopBroadcaster::new();
+        let first = b.broadcast(&DeadTransport, vec![1], mcast, &peers);
+        assert!(b.should_warn(&first));
+
+        let again = b.tick(&DeadTransport, mcast, &peers);
+        assert!(
+            !b.should_warn(&again),
+            "the same episode must not warn twice"
+        );
+
+        // ...but the next e-stop is a new episode and warns again.
+        let second = b.broadcast(&DeadTransport, vec![2], mcast, &peers);
+        assert!(
+            b.should_warn(&second),
+            "a later e-stop must not be silenced by an earlier one"
+        );
+    }
+
+    #[test]
+    fn a_partial_delivery_is_not_reported_as_failure() {
+        // Reaching one peer is what the redundancy is for; warning about it
+        // would train operators to ignore the message.
+        let (mcast, peers) = addrs();
+        let mut b = EstopBroadcaster::new();
+        let delivery = b.broadcast(&LiveTransport, vec![1], mcast, &peers);
+
+        assert_eq!(delivery.sent, delivery.attempted);
+        assert!(!delivery.nothing_sent());
+        assert!(!b.should_warn(&delivery));
+    }
+
+    #[test]
+    fn no_destinations_is_not_a_delivery_failure() {
+        // A single robot with no peers and no multicast group has nothing to
+        // notify. That is not the same as failing to notify.
+        let mut b = EstopBroadcaster::new();
+        let delivery = b.broadcast(&DeadTransport, vec![1], None, &[]);
+
+        assert_eq!(delivery.attempted, 0);
+        assert!(!delivery.nothing_sent());
+        assert!(!b.should_warn(&delivery));
     }
 }

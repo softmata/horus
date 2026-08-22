@@ -128,6 +128,29 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
     Ok(())
 }
 
+/// How long `echo` waits for a topic to be created before giving up.
+///
+/// Long enough to start a robot in another terminal, short enough that a typo
+/// in the topic name is still reported rather than hung on.
+const WAIT_FOR_TOPIC: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Match by exact name, path suffix, or base name.
+fn find_topic<'a>(
+    topics: &'a [crate::discovery::SharedMemoryInfo],
+    name: &str,
+) -> Option<&'a crate::discovery::SharedMemoryInfo> {
+    topics.iter().find(|t| {
+        let tn = &t.topic_name;
+        tn == name
+            || tn.ends_with(&format!("/{}", name))
+            || tn
+                .rsplit('/')
+                .next()
+                .map(|base| base == name)
+                .unwrap_or(false)
+    })
+}
+
 /// Echo messages from a topic
 ///
 /// Reads the ring buffer directly from the topic's shared-memory backing file
@@ -137,25 +160,46 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
 pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusResult<()> {
     use horus_core::communication::read_slots_since;
 
-    let topics = discover_shared_memory()?;
-
-    // Find the topic - match by exact name, path suffix, or base name
-    let topic = topics.iter().find(|t| {
-        t.topic_name == name
-            || t.topic_name.ends_with(&format!("/{}", name))
-            || t.topic_name
-                .rsplit('/')
-                .next()
-                .map(|base| base == name)
-                .unwrap_or(false)
-    });
-
-    let Some(topic) = topic else {
-        return Err(HorusError::Config(ConfigError::Other(format!(
-            "Topic '{}' not found. Use 'horus topic list' to see available topics.",
-            name
-        ))));
+    // Wait for the topic to appear rather than refusing outright.
+    //
+    // A topic only exists once something opens it, so `echo` on a topic whose
+    // publisher has not started yet failed immediately — which broke the
+    // obvious pairing with the tool right next to it in `--help`. `horus topic
+    // pub` creates the topic, sends, and exits, releasing the region as its
+    // last holder; with the default `-n 1` that whole life is a few
+    // milliseconds. So `echo` first said "not found", and `pub` first left
+    // nothing to look at. The two testing commands could not be used together
+    // in either order.
+    //
+    // Waiting also matches what an operator means by `horus topic echo cmd_vel`
+    // before starting the robot.
+    let deadline = std::time::Instant::now() + WAIT_FOR_TOPIC;
+    let mut announced_wait = false;
+    let topics = loop {
+        let topics = discover_shared_memory()?;
+        if find_topic(&topics, name).is_some() {
+            break topics;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Topic '{}' did not appear within {}s. Use 'horus topic list' to \
+                 see available topics.",
+                name,
+                WAIT_FOR_TOPIC.as_secs()
+            ))));
+        }
+        if !announced_wait {
+            announced_wait = true;
+            println!(
+                "  {} waiting for '{}' to appear…",
+                cli_output::ICON_INFO.cyan(),
+                name
+            );
+        }
+        // Discovery is cached for 250ms; polling faster only re-reads the cache.
+        std::thread::sleep(std::time::Duration::from_millis(250));
     };
+    let topic = find_topic(&topics, name).expect("just matched");
     // Defence in depth: the name came from a discovery scan, which parses .meta
     // files out of /dev/shm — mode 1777, so it walks other users' trees. The
     // parse boundary in horus_sys now rejects escaping names, but joining an
@@ -348,9 +392,16 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
             ))
         }
 
-        // LaserScan (1476B): ranges[360]@0, angle_min@1440, angle_max@1444,
-        //                    range_min@1448, range_max@1452, angle_inc@1456, timestamp_ns@1468
-        "LaserScan" if data.len() >= 1476 => {
+        // LaserScan (1480B): ranges[360]@0, angle_min@1440, angle_max@1444,
+        //                    range_min@1448, range_max@1452, angle_inc@1456,
+        //                    time_inc@1460, scan_time@1464, timestamp_ns@1472
+        //
+        // Was documented as 1476B with timestamp_ns@1468, which cannot be: the
+        // struct is `#[repr(C)]` and a u64 cannot sit at an offset of 1468.
+        // `size_of` on the real definition reports 1480 with the timestamp at
+        // 1472. Nothing read the timestamp, so only the comment and the length
+        // guard were wrong — the guard accepted a length the type cannot have.
+        "LaserScan" if data.len() >= 1480 => {
             let rf = |off: usize| -> f32 {
                 f32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]))
             };
@@ -536,8 +587,41 @@ fn decode_pod_fields(data: &[u8], type_name: &str) -> Option<String> {
             }
         }
 
-        _ => None, // Unknown type — fall back to hex
+        // Anything without a hand-written arm above: decode from the declared
+        // field layout instead of giving up.
+        //
+        // Nineteen of the ninety-two message types HORUS ships had an arm here.
+        // `Twist` — the type in the project template `horus new` generates —
+        // did not, so a developer running the starter project and echoing their
+        // own velocity command got 56 bytes of hex. The layout is not a secret:
+        // `horus msg info Twist` already prints `linear: [f64; 3]`, and every
+        // message struct is `#[repr(C)]`.
+        //
+        // The generic path declines unless the computed size matches the
+        // payload exactly, so a wrong layout falls back to hex rather than
+        // printing a plausible number that is not the value on the wire.
+        other => crate::commands::pod_decode::decode(other, data, message_registry()),
     }
+}
+
+/// Field layouts for every message type HORUS can find, parsed once.
+///
+/// `discover_messages` walks the filesystem and parses `horus_types/src`, which
+/// is far too expensive to repeat per message — `topic echo` prints at topic
+/// rate. An empty registry (sources not present, e.g. a stripped deployment)
+/// simply means the generic decoder declines and the hex dump stands.
+fn message_registry() -> &'static crate::commands::pod_decode::Registry {
+    static REGISTRY: std::sync::OnceLock<crate::commands::pod_decode::Registry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        crate::commands::msg::discover_messages()
+            .map(|msgs| {
+                msgs.into_iter()
+                    .map(|m| (m.name, m.fields))
+                    .collect::<crate::commands::pod_decode::Registry>()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Classify how a message payload should be displayed without printing.
@@ -578,6 +662,23 @@ fn sanitize_for_terminal(s: &str) -> String {
     out
 }
 
+/// A bincode-encoded `String`, if that is what these bytes are.
+///
+/// bincode writes a `String` as a `u64` little-endian length followed by the
+/// UTF-8. Requiring the length to account for the payload exactly makes a false
+/// positive essentially impossible: arbitrary binary would have to open with a
+/// length that lands precisely on its own end and then be valid UTF-8.
+fn bincode_string(data: &[u8]) -> Option<String> {
+    if data.len() < 8 {
+        return None;
+    }
+    let len = u64::from_le_bytes(data[..8].try_into().ok()?) as usize;
+    if len.checked_add(8)? != data.len() {
+        return None;
+    }
+    std::str::from_utf8(&data[8..]).ok().map(str::to_string)
+}
+
 fn classify_message(data: &[u8], is_pod: bool, type_name: &str) -> MessageFormat {
     if is_pod {
         // Try field decoding for known types
@@ -596,6 +697,18 @@ fn classify_message(data: &[u8], is_pod: bool, type_name: &str) -> MessageFormat
         return MessageFormat::PodHex;
     }
 
+    // A bincode-encoded `String`: an 8-byte little-endian length followed by
+    // exactly that many bytes. `horus topic pub` publishes its JSON this way,
+    // so without unwrapping the prefix the framework's own two testing commands
+    // still showed each other a hex dump.
+    if let Some(text) = bincode_string(data) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+                return MessageFormat::Json(pretty);
+            }
+        }
+        return MessageFormat::PodText(text);
+    }
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) {
         return MessageFormat::Json(serde_json::to_string_pretty(&json).unwrap_or_default());
     }
@@ -731,27 +844,40 @@ pub fn topic_info(name: &str) -> HorusResult<()> {
         }
     }
 
-    println!();
-    println!("  {}", "Publishers:".cyan());
-    if topic.publishers.is_empty() {
-        println!("    {}", "(none)".dimmed());
-    } else {
-        for pub_name in &topic.publishers {
-            println!("    - {}", pub_name);
-        }
-    }
-
-    println!();
-    println!("  {}", "Subscribers:".cyan());
-    if topic.subscribers.is_empty() {
-        println!("    {}", "(none)".dimmed());
-    } else {
-        for sub_name in &topic.subscribers {
-            println!("    - {}", sub_name);
-        }
-    }
+    // Names when we have them, the ring's own count when we do not.
+    //
+    // `publishers`/`subscribers` are node names from the topic-node registry,
+    // which only records a topic opened from inside a node's tick. A service
+    // server, a CLI tool or any background thread never appears there, so a
+    // live topic with real traffic printed "(none)" under both headings — an
+    // answer that reads as "nobody is connected" when the truth is "nobody told
+    // us their name". The header count is the protocol's own record.
+    print_endpoints("Publishers:", &topic.publishers, topic.publisher_count);
+    print_endpoints("Subscribers:", &topic.subscribers, topic.subscriber_count);
 
     Ok(())
+}
+
+fn print_endpoints(heading: &str, names: &[String], count: u32) {
+    println!();
+    println!("  {}", heading.cyan());
+    if !names.is_empty() {
+        for name in names {
+            println!("    - {}", name);
+        }
+        return;
+    }
+    match count {
+        0 => println!("    {}", "(none)".dimmed()),
+        1 => println!(
+            "    {}",
+            "1 (unnamed — opened outside a node tick)".dimmed()
+        ),
+        n => println!(
+            "    {}",
+            format!("{n} (unnamed — opened outside a node tick)").dimmed()
+        ),
+    }
 }
 
 /// Measure topic publish rate
@@ -1054,8 +1180,24 @@ pub fn publish_topic(
         )))
     })?;
 
+    // Publish the JSON as text, not as a `serde_json::Value`.
+    //
+    // horus_core serialises serde topics with bincode, and bincode cannot
+    // deserialize a `Value` at all — it is not self-describing, so `Value`'s
+    // `deserialize_any` is unsupported:
+    //
+    //     round-trip FAILS: Bincode does not support the
+    //                       serde::Deserializer::deserialize_any method
+    //
+    // So `Topic<serde_json::Value>` could be written and never read, by
+    // anything: `horus topic echo` fell through to a hex dump, and a node
+    // subscribing with the same type would have received nothing. A `String`
+    // round-trips, `echo` renders it through its existing JSON branch, and the
+    // bytes carry their own structure.
+    let json_text = value.to_string();
+
     // Create topic using the proper ring buffer protocol
-    let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
+    let topic: Topic<String> = Topic::new(name).map_err(|e| {
         HorusError::Communication(horus_core::error::CommunicationError::TopicCreationFailed {
             topic: name.to_string(),
             reason: e.to_string(),
@@ -1098,7 +1240,7 @@ pub fn publish_topic(
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
-        topic.send(value.clone());
+        topic.send(json_text.clone());
         published += 1;
         println!(
             "  [{}] Published: {}",
@@ -1471,5 +1613,75 @@ mod terminal_sanitize_tests {
     fn ordinary_text_is_untouched() {
         let s = "linear_x: 0.5, angular_z: -1.25 — 温度 42°C";
         assert_eq!(sanitize_for_terminal(s), s);
+    }
+}
+
+#[cfg(test)]
+mod pub_echo_roundtrip_tests {
+    use super::*;
+
+    fn bincode_encoded(text: &str) -> Vec<u8> {
+        let mut v = (text.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(text.as_bytes());
+        v
+    }
+
+    #[test]
+    fn a_published_json_message_reads_back_as_json() {
+        // The round-trip through the framework's own two testing commands.
+        // `topic pub` used to publish a `serde_json::Value`, which horus_core
+        // serialises with bincode — and bincode cannot deserialize a `Value` at
+        // all ("does not support deserialize_any"), so the payload could be
+        // written and never read, by anything. `echo` fell through to a hex
+        // dump and a node subscribing with the same type would have got
+        // nothing.
+        let data = bincode_encoded(r#"{"linear":7.5,"label":"hi"}"#);
+        match classify_message(&data, false, "String") {
+            MessageFormat::Json(text) => {
+                assert!(text.contains("\"linear\""), "got {text}");
+                assert!(text.contains("7.5"), "got {text}");
+            }
+            other => panic!("expected JSON, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_published_plain_string_reads_back_as_text() {
+        let data = bincode_encoded("hello robot");
+        match classify_message(&data, false, "String") {
+            MessageFormat::PodText(text) => assert_eq!(text, "hello robot"),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_length_prefix_must_account_for_the_payload_exactly() {
+        // The guard against reading arbitrary binary as a string: the leading
+        // u64 has to land precisely on the end of the buffer.
+        let mut short = bincode_encoded("hello");
+        short.push(b'!'); // one byte too many for the declared length
+        assert!(bincode_string(&short).is_none());
+
+        let truncated = &bincode_encoded("hello")[..10];
+        assert!(bincode_string(truncated).is_none());
+
+        assert!(
+            bincode_string(&[0u8; 4]).is_none(),
+            "too short for a prefix"
+        );
+    }
+
+    #[test]
+    fn a_declared_length_that_would_overflow_is_rejected() {
+        let mut data = u64::MAX.to_le_bytes().to_vec();
+        data.extend_from_slice(b"x");
+        assert!(bincode_string(&data).is_none());
+    }
+
+    #[test]
+    fn invalid_utf8_is_not_a_string() {
+        let mut data = 2u64.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0xff, 0xfe]);
+        assert!(bincode_string(&data).is_none());
     }
 }

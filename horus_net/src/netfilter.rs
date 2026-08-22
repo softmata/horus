@@ -146,10 +146,10 @@ impl PeerFilter {
             trimmed.to_lowercase().as_str(),
             "any" | "*" | "all" | "0.0.0.0/0"
         ) {
-            eprintln!(
+            horus_core::terminal::eprint_line(
                 "[horus_net] WARNING: HORUS_NET_ALLOW_PEERS=any — the replicator will \
                  accept UDP from ANY routable host, including the public internet. \
-                 Set HORUS_ESTOP_KEY so the safety channel is still authenticated."
+                 Set HORUS_ESTOP_KEY so the safety channel is still authenticated.",
             );
             return Self::Any;
         }
@@ -162,16 +162,16 @@ impl PeerFilter {
             }
             match Cidr::parse(entry) {
                 Some(c) => cidrs.push(c),
-                None => eprintln!(
+                None => horus_core::terminal::eprint_line(&format!(
                     "[horus_net] WARNING: ignoring unparseable HORUS_NET_ALLOW_PEERS \
                      entry {entry:?} (expected `a.b.c.d` or `a.b.c.d/len`)"
-                ),
+                )),
             }
         }
         if cidrs.is_empty() {
-            eprintln!(
+            horus_core::terminal::eprint_line(
                 "[horus_net] WARNING: HORUS_NET_ALLOW_PEERS had no usable entries; \
-                 falling back to the default private-space-only filter."
+                 falling back to the default private-space-only filter.",
             );
             return Self::default();
         }
@@ -326,11 +326,11 @@ where
     map.clear();
     if !*warned {
         *warned = true;
-        eprintln!(
+        horus_core::terminal::eprint_line(&format!(
             "[horus_net] Per-peer tracking table hit its {MAX_TRACKED_KEYS}-entry cap and was \
              reset. This normally means a peer is varying its sender or topic hash — check \
              HORUS_NET_ALLOW_PEERS. (Fires once.)"
-        );
+        ));
     }
     true
 }

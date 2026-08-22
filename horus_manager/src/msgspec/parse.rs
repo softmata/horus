@@ -201,8 +201,22 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
-            if matches!(b, b'{' | b'}' | b'[' | b']' | b':' | b',' | b';' | b'=' | b'#' | b'<' | b'>' | b'&' | b'(' | b')')
-            {
+            if matches!(
+                b,
+                b'{' | b'}'
+                    | b'['
+                    | b']'
+                    | b':'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b'#'
+                    | b'<'
+                    | b'>'
+                    | b'&'
+                    | b'('
+                    | b')'
+            ) {
                 self.bump();
                 out.push(Spanned {
                     tok: Tok::Punct(b as char),
@@ -284,8 +298,7 @@ impl Parser {
 
     fn error(&mut self, message: impl Into<String>) {
         let (line, col) = self.here();
-        self.errors
-            .push(Diag::new(&self.file, line, col, message));
+        self.errors.push(Diag::new(&self.file, line, col, message));
     }
 
     fn error_with_help(&mut self, message: impl Into<String>, help: impl Into<String>) {
@@ -314,7 +327,10 @@ impl Parser {
 
     fn parse_docs(&mut self) -> Vec<String> {
         let mut docs = Vec::new();
-        while let Some(Spanned { tok: Tok::Doc(d), .. }) = self.peek() {
+        while let Some(Spanned {
+            tok: Tok::Doc(d), ..
+        }) = self.peek()
+        {
             docs.push(d.clone());
             self.pos += 1;
         }
@@ -333,7 +349,9 @@ impl Parser {
                 return topic;
             }
             let name = match self.next() {
-                Some(Spanned { tok: Tok::Ident(n), .. }) => n,
+                Some(Spanned {
+                    tok: Tok::Ident(n), ..
+                }) => n,
                 _ => {
                     self.error("expected an attribute name after `#[`");
                     return topic;
@@ -345,7 +363,9 @@ impl Parser {
                         self.error("`#[topic]` needs a value: `#[topic = \"name\"]`");
                     } else {
                         match self.next() {
-                            Some(Spanned { tok: Tok::Str(s), .. }) => topic = Some(s),
+                            Some(Spanned {
+                                tok: Tok::Str(s), ..
+                            }) => topic = Some(s),
                             _ => self.error("`#[topic]` takes a string: `#[topic = \"name\"]`"),
                         }
                     }
@@ -380,7 +400,9 @@ impl Parser {
                 return None;
             }
             let len = match self.next() {
-                Some(Spanned { tok: Tok::Int(n), .. }) => n,
+                Some(Spanned {
+                    tok: Tok::Int(n), ..
+                }) => n,
                 _ => {
                     self.error_with_help(
                         "expected an array length",
@@ -411,7 +433,9 @@ impl Parser {
 
         let (line, col) = self.here();
         let name = match self.next() {
-            Some(Spanned { tok: Tok::Ident(n), .. }) => n,
+            Some(Spanned {
+                tok: Tok::Ident(n), ..
+            }) => n,
             _ => {
                 self.error("expected a type");
                 return None;
@@ -420,8 +444,13 @@ impl Parser {
 
         if let Some((_, why)) = NOT_POD.iter().find(|(n, _)| *n == name) {
             self.errors.push(
-                Diag::new(&self.file, line, col, format!("`{name}` cannot be used in a message"))
-                    .with_help(*why),
+                Diag::new(
+                    &self.file,
+                    line,
+                    col,
+                    format!("`{name}` cannot be used in a message"),
+                )
+                .with_help(*why),
             );
             // Swallow any generic arguments so recovery lands cleanly.
             if self.at_punct('<') {
@@ -481,7 +510,9 @@ impl Parser {
 
         let (line, _) = self.here();
         let name = match self.next() {
-            Some(Spanned { tok: Tok::Ident(n), .. }) => n,
+            Some(Spanned {
+                tok: Tok::Ident(n), ..
+            }) => n,
             Some(Spanned { tok, line, col }) => {
                 self.errors.push(Diag::new(
                     &self.file,
@@ -497,8 +528,13 @@ impl Parser {
 
         if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             self.errors.push(
-                Diag::new(&self.file, line, 1, format!("message name `{name}` must be CamelCase"))
-                    .with_help("the name becomes a Rust struct, a C++ struct and a Python class"),
+                Diag::new(
+                    &self.file,
+                    line,
+                    1,
+                    format!("message name `{name}` must be CamelCase"),
+                )
+                .with_help("the name becomes a Rust struct, a C++ struct and a Python class"),
             );
         }
 
@@ -528,7 +564,9 @@ impl Parser {
 
             let (fline, fcol) = self.here();
             let fname = match self.next() {
-                Some(Spanned { tok: Tok::Ident(n), .. }) => n,
+                Some(Spanned {
+                    tok: Tok::Ident(n), ..
+                }) => n,
                 Some(Spanned { tok, line, col }) => {
                     self.errors.push(Diag::new(
                         &self.file,
@@ -601,8 +639,13 @@ impl Parser {
 
         if fields.is_empty() {
             self.errors.push(
-                Diag::new(&self.file, line, 1, format!("message `{name}` has no fields"))
-                    .with_help("a zero-sized message carries nothing"),
+                Diag::new(
+                    &self.file,
+                    line,
+                    1,
+                    format!("message `{name}` has no fields"),
+                )
+                .with_help("a zero-sized message carries nothing"),
             );
             return None;
         }

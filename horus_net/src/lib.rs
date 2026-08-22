@@ -67,13 +67,41 @@ pub fn start_replicator(config: NetConfig) -> Option<ReplicatorHandle> {
                 type_size,
                 is_pod,
             } => {
+                // Presence only. A `Topic<T>` handle can send *and* receive, so
+                // at construction its direction is genuinely unknown; recording
+                // `Both` here was what collapsed the import guard's
+                // publisher/subscriber distinction. `Subscriber` is the enum's
+                // own default and the safe reading of "open but unused": it
+                // admits remote data for a topic nobody here writes, and the
+                // first local send upgrades the entry to `Both`, which denies
+                // it. The window between the two is one node tick, inside the
+                // peer's one-second announce cycle.
                 reg_clone.register(
                     &name,
                     type_name_hash,
                     type_size,
-                    crate::registry::TopicRole::Both, // Topic can be pub or sub
+                    crate::registry::TopicRole::Subscriber,
                     is_pod,
                 );
+            }
+            TopicLifecycleEvent::RoleObserved {
+                name,
+                publisher,
+                type_name_hash,
+                type_size,
+                is_pod,
+            } => {
+                // First send or first recv on a handle — the earliest point the
+                // direction is knowable. `register` merges, so a topic used both
+                // ways ends up `Both` and stops importing, which is the
+                // documented behaviour: a remote peer must not overwrite the
+                // commands this robot produces itself.
+                let role = if publisher {
+                    crate::registry::TopicRole::Publisher
+                } else {
+                    crate::registry::TopicRole::Subscriber
+                };
+                reg_clone.register(&name, type_name_hash, type_size, role, is_pod);
             }
             TopicLifecycleEvent::Dropped { name } => {
                 reg_clone.unregister(&name, crate::registry::TopicRole::Both);
@@ -84,7 +112,9 @@ pub fn start_replicator(config: NetConfig) -> Option<ReplicatorHandle> {
     let mut rep = match Replicator::new(registry, config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[horus_net] Failed to start replicator: {e}");
+            horus_core::terminal::eprint_line(&format!(
+                "[horus_net] Failed to start replicator: {e}"
+            ));
             return None;
         }
     };
@@ -144,7 +174,9 @@ impl Drop for ReplicatorHandle {
                 }
                 if std::time::Instant::now() >= deadline {
                     // Timeout — detach the thread (it will exit on next event loop cycle)
-                    eprintln!("[horus_net] Replicator thread did not stop within 3s, detaching");
+                    horus_core::terminal::eprint_line(
+                        "[horus_net] Replicator thread did not stop within 3s, detaching",
+                    );
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));

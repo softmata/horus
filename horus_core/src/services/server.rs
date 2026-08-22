@@ -251,14 +251,24 @@ fn run_server_loop<Req, Res>(
                 {
                     if let Ok(typed_payload) = serde_json::from_value::<Req>(json_req.payload) {
                         let request_id = json_req.request_id;
-                        let response = match handler(typed_payload) {
-                            Ok(payload) => {
-                                let json_payload = serde_json::to_value(&payload)
-                                    .unwrap_or(serde_json::Value::Null);
-                                ServiceResponse::success(request_id, json_payload)
-                            }
-                            Err(err_msg) => ServiceResponse::failure(request_id, err_msg),
-                        };
+                        // Same containment as the typed path below: a panic
+                        // here would take down the gateway thread and with it
+                        // every service reachable through the CLI.
+                        let response =
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                handler(typed_payload)
+                            })) {
+                                Ok(Ok(payload)) => {
+                                    let json_payload = serde_json::to_value(&payload)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    ServiceResponse::success(request_id, json_payload)
+                                }
+                                Ok(Err(err_msg)) => ServiceResponse::failure(request_id, err_msg),
+                                Err(_) => ServiceResponse::failure(
+                                    request_id,
+                                    "service handler panicked".to_string(),
+                                ),
+                            };
                         let res_file =
                             gateway_dir.join(format!("{}.response.{}.json", svc_name, request_id));
                         let _ = serde_json::to_vec(&response).map(|bytes| {
@@ -302,9 +312,26 @@ fn run_server_loop<Req, Res>(
             let request_id = req.request_id;
             let client_response_topic = req.response_topic;
 
-            let response = match handler(req.payload) {
-                Ok(payload) => ServiceResponse::success(request_id, payload),
-                Err(err_msg) => ServiceResponse::failure(request_id, err_msg),
+            // The handler is user code. Without this, one panic unwinds the
+            // whole polling thread and the service stops answering — forever,
+            // and silently: the `ServiceServer` handle stays alive, `stop()`
+            // still appears to work, and every later call from every client
+            // times out with no indication that the server is gone. The comment
+            // below already makes this argument for a malformed topic name; the
+            // handler deserves the same containment, and the scheduler already
+            // treats a node's `tick()` this way.
+            let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handler(req.payload)
+            })) {
+                Ok(Ok(payload)) => ServiceResponse::success(request_id, payload),
+                Ok(Err(err_msg)) => ServiceResponse::failure(request_id, err_msg),
+                Err(_) => {
+                    // Answer this caller rather than leaving it to time out: a
+                    // permanent error is actionable, a timeout looks like a slow
+                    // network. The panic itself has already been reported by the
+                    // panic hook.
+                    ServiceResponse::failure(request_id, "service handler panicked")
+                }
             };
 
             // Route response to per-client topic if specified,

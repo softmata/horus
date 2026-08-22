@@ -154,7 +154,11 @@ fn test_freshness_stop_kills_node() {
         .build()
         .unwrap();
 
-    sched.run_for(1_u64.secs()).unwrap();
+    // 2s at 100Hz. The assertion below wants "well over 50 ticks", and a 1s
+    // window at 100Hz lands right on that boundary once startup is subtracted —
+    // it failed with exactly 50. Doubling the window puts the check clear of
+    // the edge instead of moving the threshold, so it still means what it says.
+    sched.run_for(2_u64.secs()).unwrap();
 
     let stopped_ticks = count.load(Ordering::SeqCst);
     let healthy_ticks = healthy_count.load(Ordering::SeqCst);
@@ -404,6 +408,13 @@ fn test_remote_log_entries_readable_from_buffer() {
 
 #[test]
 fn test_remote_presence_file_format_readable() {
+    // Serialise against the tests that wipe the presence directory.
+    //
+    // `cleanup_stale_shm` does `remove_dir_all` on the nodes directory and holds
+    // a lock while it does; tests that do not take that lock run concurrently
+    // and lose files mid-test. This one wrote a record and then could not read
+    // it back — `Os { code: 2, kind: NotFound }` — on roughly two runs in five.
+    let _shm_guard = cleanup_stale_shm();
     let nodes_dir = horus_sys::shm::shm_nodes_dir();
     let _ = std::fs::create_dir_all(&nodes_dir);
 
@@ -454,6 +465,13 @@ fn unique_presence_file(prefix: &str) -> String {
 
 #[test]
 fn test_bridged_presence_file_format_readable() {
+    // Serialise against the tests that wipe the presence directory.
+    //
+    // `cleanup_stale_shm` does `remove_dir_all` on the nodes directory and holds
+    // a lock while it does; tests that do not take that lock run concurrently
+    // and lose files mid-test. This one wrote a record and then could not read
+    // it back — `Os { code: 2, kind: NotFound }` — on roughly two runs in five.
+    let _shm_guard = cleanup_stale_shm();
     let nodes_dir = horus_sys::shm::shm_nodes_dir();
     let _ = std::fs::create_dir_all(&nodes_dir);
 

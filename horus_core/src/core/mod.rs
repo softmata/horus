@@ -47,7 +47,7 @@ pub use duration_ext::{DurationExt, Frequency};
 pub use node::NodeInfo;
 pub use node::{HealthStatus, LogSummary, Node, NodeMetrics, NodeState, TopicMetadata};
 #[doc(hidden)]
-pub use presence::{validate_node_name, NodePresence};
+pub use presence::{escape_control_chars, validate_node_name, NodePresence};
 #[doc(hidden)]
 pub use rt_node::BudgetViolation;
 pub use rt_node::{Miss, RtStats};

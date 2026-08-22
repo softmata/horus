@@ -31,6 +31,23 @@ impl ShmRegion {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let size = file.metadata()?.len() as usize;
         anyhow::ensure!(size >= minimum_size, "existing SHM region is too small");
+        // Take the same shared lock `new()` does. The module contract is that
+        // *every* holder keeps LOCK_SH for the lifetime of its region — that is
+        // what makes both stale detection and the last-one-out check in `drop`
+        // correct. A holder that joined here without the lock was invisible to
+        // both: the creator could see an uncontended file and unlink it while
+        // this region was still mapped.
+        //
+        // SAFETY: file.as_raw_fd() is a valid open fd; LOCK_SH is a valid flock op.
+        let flock_ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        if flock_ret != 0 {
+            anyhow::bail!(
+                "Failed to acquire shared lock on SHM file '{}': {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
         Ok(Self {
             mmap,
@@ -243,14 +260,52 @@ impl ShmRegion {
 
 impl Drop for ShmRegion {
     fn drop(&mut self) {
-        // flock(LOCK_SH) is automatically released when _file is dropped (fd closed).
-        // We only need to unlink the file if we're the owner.
-        if self.owner {
-            super::remove_topic_meta(&self.topic_name);
-            if self.path.exists() {
-                let _ = std::fs::remove_file(&self.path);
-            }
+        // Unlink only if nobody else still has this region open.
+        //
+        // "Owner" means only that this process won the race to create the file,
+        // which says nothing about who is still using it. Unlinking on that
+        // basis alone breaks the ordinary restart: a publisher that created the
+        // topic exits, takes the file with it, and every subscriber still mapped
+        // to the now-orphaned inode keeps polling an address nobody will ever
+        // write to again. The next publisher creates a fresh file, and the two
+        // groups are on different memory with nothing to detect it. Measured
+        // with a 20-message publisher, a subscriber running 8 s, and a second
+        // publisher starting at t=4 s:
+        //
+        //     t=1s received=20 last_seq=20     <- first publisher
+        //     t=4s [second publisher sends seq 1000..1020]
+        //     t=5s received=0  last_seq=20     <- and every second after
+        //
+        // The subscriber never recovers. It reproduces only when the publisher
+        // happens to be the creator, which is why it looks intermittent: run the
+        // subscriber first and everything works.
+        //
+        // Every holder keeps LOCK_SH for the lifetime of its region (see the
+        // open path above), so a non-blocking LOCK_EX answers exactly the
+        // question that matters — am I the last one out? If it fails, someone
+        // else is still mapped and the file must survive. If the file is instead
+        // left behind by a crash, the existing stale-detection path reclaims it
+        // when the next process opens the topic.
+        // Note this is deliberately not gated on `self.owner`. The creator is
+        // often not the last to leave — a publisher restarts while its
+        // subscribers keep running — and if only owners cleaned up, a region
+        // whose creator left first would survive until reboot. Whoever turns out
+        // to be last does the cleanup.
+        //
+        // SAFETY: `_file` is open for the whole lifetime of `self`, so the fd is
+        // valid here; LOCK_EX | LOCK_NB is a valid flock operation.
+        let sole_holder =
+            unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 };
+        if !sole_holder {
+            // Another holder still has it mapped — leave the region alone.
+            return;
         }
+
+        super::remove_topic_meta(&self.topic_name);
+        if self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+        // The exclusive lock is released with the fd when `_file` drops.
     }
 }
 

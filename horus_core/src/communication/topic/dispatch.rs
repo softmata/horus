@@ -662,26 +662,28 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
         // SAFETY: ring points into valid ShmFanoutRing. recv_pod reads T bytes
         // from SHM slots via SIMD-aware copy (invariant 6). sub_id identifies this
         // consumer's SPSC channel within the fanout matrix.
-        unsafe { ring.recv_pod(sub_id) }
+        unsafe { ring.recv_pod(sub_id, &mut local.missed) }
     } else {
         // SAFETY: same as recv_pod — reads serialized bytes from SHM. A payload
         // that is exactly a sentinel-prefixed SpillDescriptor (40 bytes) is a
         // spilled large message → reconstruct from the pool; otherwise the bytes
         // are an inline bincode message.
         unsafe {
-            ring.recv_serde(sub_id).and_then(|bytes| {
-                if bytes.len() == std::mem::size_of::<SpillDescriptor>()
-                    && u64::from_ne_bytes(bytes[..8].try_into().expect("len == 40 >= 8"))
-                        == SPILL_SENTINEL
-                {
-                    // SAFETY: `bytes` holds exactly a SpillDescriptor (repr(C), 40B);
-                    // read_unaligned copies it out with no alignment assumption.
-                    let desc = std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor);
-                    read_spilled_retained::<T>(desc, topic.name())
-                } else {
-                    bincode::deserialize(&bytes).ok()
-                }
-            })
+            ring.recv_serde(sub_id, &mut local.missed)
+                .and_then(|bytes| {
+                    if bytes.len() == std::mem::size_of::<SpillDescriptor>()
+                        && u64::from_ne_bytes(bytes[..8].try_into().expect("len == 40 >= 8"))
+                            == SPILL_SENTINEL
+                    {
+                        // SAFETY: `bytes` holds exactly a SpillDescriptor (repr(C), 40B);
+                        // read_unaligned copies it out with no alignment assumption.
+                        let desc =
+                            std::ptr::read_unaligned(bytes.as_ptr() as *const SpillDescriptor);
+                        read_spilled_retained::<T>(desc, topic.name())
+                    } else {
+                        bincode::deserialize(&bytes).ok()
+                    }
+                })
         }
     };
 
@@ -1357,7 +1359,7 @@ pub(super) fn recv_shm_pod_broadcast<
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
-    let mut tail = local.local_tail;
+    let tail = local.local_tail;
     if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if local.local_head.wrapping_sub(tail) == 0 {
@@ -1368,12 +1370,60 @@ pub(super) fn recv_shm_pod_broadcast<
 
     let behind = local.local_head.wrapping_sub(tail);
     if behind > local.cached_capacity {
-        tail = local.local_head;
-        local.local_tail = tail;
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if local.local_head.wrapping_sub(tail) == 0 {
-            return None;
+        // Land on a slot the producer has actually written. Setting `tail =
+        // local_head` looks like "skip to the newest", but `head` names the slot
+        // the producer will write *next*: its ready-flag still belongs to the
+        // message from a lap ago, so the `v1 < tail + 1` test below rejects it
+        // and returns None. `local_tail` is then head again on the next call,
+        // and again after that — a consumer that falls one lap behind receives
+        // nothing, for as long as it stays behind, with no error anywhere.
+        //
+        // Measured on a 264-byte POD topic (16-slot ring) published at 1 kHz to
+        // two subscribers, 3000 messages, varying the consumer's poll interval:
+        //
+        //     poll   1 ms -> 6000 of 6000 received
+        //     poll  20 ms ->   35 of 6000
+        //     poll 100 ms ->    0 of 6000   (last_seq = 0, never delivered once)
+        //
+        // and `dropped_count()` on the publisher read 0 throughout, because the
+        // producer never failed a send — it is the consumer that is stuck.
+        //
+        // A 10 Hz node reading a 1 kHz sensor is ordinary multi-rate robotics,
+        // and seqlock.rs:10-15 states the intended contract for exactly that
+        // case: "a 30 Hz node reading a 500 Hz sensor should get the MOST RECENT
+        // data". Land half a lap back from the head, the same landing point the
+        // `v1 > tail + 1` branch below already uses and for the same reason —
+        // `head - capacity` is the slot the producer overwrites next, so it
+        // re-laps immediately.
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        let cap = local.cached_capacity;
+        // Reaching here implies head >= tail + cap + 1 > cap, so this cannot
+        // wrap; guarded anyway because `head` is re-loaded and could in
+        // principle be observed smaller than the cached value.
+        if head > cap {
+            let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            // Same two rules as the `v1 > tail + 1` site below, for the same
+            // reasons: never move the tail backward — `cached_capacity` is a
+            // cached value and a re-sized ring can compute a resume point behind
+            // where this consumer already is — and count the skip, because
+            // drop-oldest here used to be silent (`dropped_count()` reports send
+            // failures, and an overwriting producer never fails a send). See
+            // `LocalState::missed`.
+            if resume > local.local_tail {
+                local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
+                local.local_tail = resume;
+                local.local_head = head;
+            }
         }
+        // Return rather than falling through to read the slot we just landed
+        // on, exactly as the `v1 > tail + 1` branch below does. Reading
+        // immediately after re-seating the cursor means validating a slot the
+        // producer may be writing *right now*, in the middle of the ring rather
+        // than behind it; `recv_never_reorders_or_duplicates_when_lapped` went
+        // from 8/8 to 5/6 when this branch read directly, and back to passing
+        // when it defers. The caller's next poll does the read against a cursor
+        // that has settled, and a drain loop reaches it on the same pass.
+        return None;
     }
 
     let index = (tail & mask) as usize;
@@ -1433,36 +1483,25 @@ pub(super) fn recv_shm_pod_broadcast<
         let cap = local.cached_capacity;
         if head > cap {
             let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
-            // Never move the tail backward.
+            // Never move the tail backward, and count what we skip when we do
+            // move it forward. Both branches fixed this site; both fixes hold.
             //
             // The argument that `resume > tail` always holds relies on
             // `cached_capacity` being the ring's current capacity. It is a
             // cached value, and a topology change re-sizes the ring — so a
             // capacity larger than the live one computes a resume point behind
             // where this consumer already is, and the next accepted slot then
-            // delivers a message older than the last one returned. That is a
-            // reordering the caller cannot distinguish from a ring defect, and
-            // it survives the rejection above precisely because the rejection
-            // is what installs this value.
+            // delivers a message older than the last one returned. Skipping the
+            // update loses nothing: the slot is rejected either way, and the
+            // next call re-derives a resume point from a fresher head.
             //
-            // Skipping the update loses nothing: the slot is rejected either
-            // way, and the next call re-derives a resume point from a fresher
-            // head.
-            //
-            // This closes one identified route to a backward tail. It is not
-            // measured to reduce the residual reordering seen under a saturated
-            // parallel run — 4 inversions in 1.23M messages before, 1 in 441k
-            // after, which is the same rate within noise.
-            //
-            // Where that residual comes from is still unknown, and one earlier
-            // guess is now ruled out: `Topic::sync_shm_state` adopts
-            // `header.tail` unconditionally when the data plane changes, which
-            // would regress a consumer — but instrumenting it showed the branch
-            // is never taken during this test. 26 syncs, every one same-plane,
-            // none regressing. The producer-side `local_tail` resets in this
-            // file are backpressure bookkeeping on the *sending* handle and
-            // cannot reorder a consumer either.
+            // The skip itself is drop-oldest, which is the designed behaviour
+            // here but used to be silent: `dropped_count()` reports send
+            // failures and an overwriting producer never fails a send, so a
+            // lapped consumer lost data with every observability surface
+            // reading zero. See `LocalState::missed`.
             if resume > local.local_tail {
+                local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
                 local.local_tail = resume;
                 local.local_head = head;
             }

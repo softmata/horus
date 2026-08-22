@@ -89,7 +89,7 @@ pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<()> {
     // Find the requested cores
     for &core_idx in cores {
         if core_idx < core_ids.len() && core_affinity::set_for_current(core_ids[core_idx]) {
-            println!("[RT] Pinned thread to core {}", core_idx);
+            crate::terminal::print_line(&format!("[RT] Pinned thread to core {}", core_idx));
             return Ok(());
         }
     }
@@ -119,7 +119,7 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
             RuntimeError::MemoryLockError(msg)
         }
     })?;
-    println!("[RT] All memory locked");
+    crate::terminal::print_line("[RT] All memory locked");
     Ok(())
 }
 
@@ -130,7 +130,10 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
 #[doc(hidden)]
 pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
     crate::core::rt_config::prefault_stack(stack_size);
-    println!("[RT] Pre-faulted {}KB of stack", stack_size / 1024);
+    crate::terminal::print_line(&format!(
+        "[RT] Pre-faulted {}KB of stack",
+        stack_size / 1024
+    ));
     Ok(())
 }
 
@@ -153,7 +156,7 @@ pub fn set_realtime_priority(priority: i32) -> RuntimeResult<()> {
             RuntimeError::SchedulingError(msg)
         }
     })?;
-    println!("[RT] Set RT priority {}", priority);
+    crate::terminal::print_line(&format!("[RT] Set RT priority {}", priority));
     Ok(())
 }
 

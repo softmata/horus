@@ -32,12 +32,34 @@ fn horus_cmd() -> Command {
     Command::new(horus_bin())
 }
 
+/// Skip the test when the CLI has not been built.
+///
+/// These tests spawn the `horus` binary, which lives in horus_manager. A
+/// workspace-wide `cargo test` builds it; `cargo test -p horus_core` does not,
+/// and cargo has no stable way for one package's test to depend on another
+/// package's binary. Without this guard those runs failed with a bare
+/// `NotFound` — a contributor's first `cargo test -p horus_core` reporting five
+/// failures that say nothing about the code under test.
+macro_rules! require_cli {
+    () => {
+        if !horus_bin().exists() {
+            eprintln!(
+                "skipped: {} not built — run `cargo build -p horus_manager`, or a \
+                 workspace-wide `cargo test`",
+                horus_bin().display()
+            );
+            return;
+        }
+    };
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // TEST 1: horus --version
 // ════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn cli_version() {
+    require_cli!();
     let output = horus_cmd()
         .arg("--version")
         .output()
@@ -59,6 +81,7 @@ fn cli_version() {
 
 #[test]
 fn cli_new_rust_project() {
+    require_cli!();
     let tmpdir = tempfile::TempDir::new().unwrap();
     let proj_dir = tmpdir.path().join("test_proj");
 
@@ -102,6 +125,7 @@ fn cli_new_rust_project() {
 
 #[test]
 fn cli_new_python_project() {
+    require_cli!();
     let tmpdir = tempfile::TempDir::new().unwrap();
 
     let output = horus_cmd()
@@ -129,6 +153,7 @@ fn cli_new_python_project() {
 
 #[test]
 fn cli_doctor() {
+    require_cli!();
     let output = horus_cmd()
         .arg("doctor")
         .output()
@@ -156,6 +181,7 @@ fn cli_doctor() {
 
 #[test]
 fn cli_clean_shm() {
+    require_cli!();
     // Create some SHM files first
     let shm_dir = horus_sys::shm::shm_topics_dir();
     let _ = std::fs::create_dir_all(&shm_dir);
@@ -182,6 +208,7 @@ fn cli_clean_shm() {
 
 #[test]
 fn cli_check_valid_project() {
+    require_cli!();
     let tmpdir = tempfile::TempDir::new().unwrap();
 
     // First create a project
@@ -217,6 +244,7 @@ fn cli_check_valid_project() {
 
 #[test]
 fn cli_msg_list() {
+    require_cli!();
     let output = horus_cmd()
         .args(["msg", "list"])
         .env("HORUS_SOURCE_DIR", env!("CARGO_MANIFEST_DIR"))
@@ -246,6 +274,7 @@ fn cli_msg_list() {
 
 #[test]
 fn cli_param_set_get() {
+    require_cli!();
     let tmpdir = tempfile::TempDir::new().unwrap();
 
     // Create a minimal project for param context

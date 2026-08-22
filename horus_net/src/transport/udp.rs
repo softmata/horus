@@ -140,7 +140,9 @@ mod tests {
         let result = transport.join_multicast("224.0.69.72");
         // May fail in CI without multicast support, but shouldn't panic
         if let Err(e) = &result {
-            eprintln!("multicast join failed (expected in some CI): {e}");
+            horus_core::terminal::eprint_line(&format!(
+                "multicast join failed (expected in some CI): {e}"
+            ));
         }
     }
 

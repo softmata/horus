@@ -303,15 +303,15 @@ impl TelemetryManager {
 
     /// Export to stdout (for debugging)
     fn export_to_stdout(&self, snapshot: &TelemetrySnapshot) -> Result<(), String> {
-        println!("[TELEMETRY] === Metrics Snapshot ===");
-        println!(
+        crate::terminal::print_line("[TELEMETRY] === Metrics Snapshot ===");
+        crate::terminal::print_line(&format!(
             "  Scheduler: {} | Uptime: {:.1}s",
             snapshot.scheduler_name, snapshot.uptime_secs
-        );
+        ));
         for metric in &snapshot.metrics {
-            println!("  {} = {:?}", metric.name, metric.value);
+            crate::terminal::print_line(&format!("  {} = {:?}", metric.name, metric.value));
         }
-        println!("[TELEMETRY] ========================");
+        crate::terminal::print_line("[TELEMETRY] ========================");
         Ok(())
     }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "HORUS"
+name = "horus-workspace"
 version = "0.2.0"
 
 [dependencies]

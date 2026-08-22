@@ -273,6 +273,9 @@ pub struct Scheduler {
     /// A rate needs two samples. The refresh runs about once a second, which is
     /// the natural place to take them.
     pub(super) presence_rate_samples: HashMap<String, (u64, Instant)>,
+    /// Nodes whose tick counter has been seen to rewind, so the warning about
+    /// it fires once each rather than on every presence refresh.
+    pub(super) presence_reset_reported: std::collections::HashSet<String>,
 
     /// Control topic for receiving CLI commands (pause/resume/shutdown).
     /// Drained at the start of each tick for deterministic behavior.
@@ -451,6 +454,7 @@ impl Scheduler {
             registry_slots: HashMap::new(),
             presence_roster: Vec::new(),
             presence_rate_samples: HashMap::new(),
+            presence_reset_reported: std::collections::HashSet::new(),
             control_topic: None,
             node_controls: None,
             params: None,
@@ -1732,7 +1736,25 @@ impl Scheduler {
         let miss_policy = config.miss_policy;
         let execution_class = config.execution_class;
 
-        let node_name = node.name().to_string();
+        // Neutralise control characters before the name is stored, so no later
+        // format! can be tricked into emitting them.
+        //
+        // A node name is application- or config-supplied text — under `horus
+        // launch` it comes straight out of a YAML file — and it is interpolated
+        // into dozens of runtime messages. A name containing a newline injects
+        // whole lines into the runtime's own stdout. Demonstrated with a node
+        // named "arm\n EMERGENCY STOP: forged\n\x1b[31mFAKE\x1b[0m": the
+        // scheduler emitted four forged " EMERGENCY STOP:" lines and live ANSI
+        // escapes, and printed the raw name four more times *inside* its own
+        // "Invalid node name" warning. Any operator dashboard, `grep EMERGENCY`
+        // or log parser reading stdout is fooled.
+        //
+        // Escaping rather than rejecting: a name is an identity that shows up in
+        // the registry, the blackbox and `horus node list`, and refusing to
+        // start a robot over a stray character is a worse failure than showing
+        // that character safely. The mapping is deterministic, so a name stays
+        // stable across runs and processes.
+        let node_name = crate::core::escape_control_chars(node.name());
 
         // Refuse a duplicate node name.
         //
@@ -1814,6 +1836,7 @@ impl Scheduler {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            diag: Default::default(),
             in_safe_mode: false,
             rt_stats,
             miss_policy,
@@ -2483,6 +2506,11 @@ impl Scheduler {
 
         rt.block_on(async {
             let start_time = Instant::now();
+            // Where the run began on the scheduler's own clock. `elapsed()` is
+            // measured from clock construction — which for a WallClock is when
+            // the Scheduler was built, possibly long before this call — so the
+            // duration check has to be relative to here.
+            let clock_start = self.clock.elapsed();
 
             // `finalize_and_init()` above (run_with_filter) already ran both of
             // these. Running them again printed "Safety monitor configured for
@@ -2804,7 +2832,7 @@ impl Scheduler {
 
             // Main tick loop
             while self.is_running() {
-                if self.should_stop_loop(start_time, duration) {
+                if self.should_stop_loop(clock_start, duration) {
                     break;
                 }
                 self.process_control_commands();
@@ -2932,7 +2960,7 @@ impl Scheduler {
             };
 
             // 4. Also print to stderr (visible in logs)
-            eprintln!("{}", report);
+            crate::terminal::eprint_line(&report);
 
             // 5. Chain to previous hook
             prev_hook(info);
@@ -3067,14 +3095,27 @@ impl Scheduler {
     }
 
     /// Check if the main loop should stop (duration limit, replay stop tick, or SIGTERM).
-    fn should_stop_loop(&self, start_time: Instant, duration: Option<Duration>) -> bool {
+    fn should_stop_loop(&self, clock_start: Duration, duration: Option<Duration>) -> bool {
         // Ctrl+C handler sets self.running = false
         if !self.running.load(Ordering::SeqCst) {
             return true;
         }
 
         if let Some(max_duration) = duration {
-            if start_time.elapsed() >= max_duration {
+            // Measure against the scheduler's own clock, not the wall.
+            //
+            // In deterministic mode `self.clock` is a `SimClock` that advances
+            // by exactly one tick period per tick, and the point of the mode is
+            // that a run does not depend on how fast the machine is. This read
+            // `start_time.elapsed()` — real time — so the tick count varied with
+            // load: `duration=0.2s` at 100Hz produced 18, 18, 18, 18, 18, 19
+            // ticks across six runs of the same program, and
+            // `test_deterministic_produces_same_output` was reporting exactly
+            // that.
+            //
+            // `WallClock::elapsed` is real time, so nothing changes for an
+            // ordinary run.
+            if self.clock.elapsed().saturating_sub(clock_start) >= max_duration {
                 print_line(&format!(
                     "Scheduler reached time limit of {:?}",
                     max_duration
@@ -3519,6 +3560,47 @@ impl Scheduler {
                     (None, None) => (0, 0),
                 };
 
+                // A tick counter that goes backwards means its storage was
+                // reset under a running node.
+                //
+                // For an executor-owned node the count comes from the
+                // shared-memory node registry, so deleting the namespace — an
+                // operator clearing stale regions, `horus clean --shm
+                // --all-namespaces`, a stray `rm -rf /dev/shm/horus_*` —
+                // silently zeroes it while the node keeps ticking. Measured:
+                // `imu_driver Running Healthy 100 Hz 99.1 Hz 795 ticks` became
+                // `Running Healthy 100 Hz 0.0 Hz 0 ticks` and stayed there,
+                // while the process's own log kept reporting budget violations
+                // from the ticks it was still executing.
+                //
+                // Reporting the reset value makes every introspection tool
+                // agree on a number that is false. Hold the last known count —
+                // a monotonic counter that stalls is bad, one that rewinds is
+                // worse — and say what happened, once per node.
+                let regressed = self
+                    .presence_rate_samples
+                    .get(&entry.name)
+                    .is_some_and(|&(prev, _)| tick_count < prev);
+                let tick_count = if regressed {
+                    let prev = self
+                        .presence_rate_samples
+                        .get(&entry.name)
+                        .map(|&(t, _)| t)
+                        .unwrap_or(tick_count);
+                    if self.presence_reset_reported.insert(entry.name.clone()) {
+                        crate::terminal::eprint_line(&format!(
+                            "[horus] WARNING: the shared-memory node registry was reset \
+                             under running node '{}' (tick count fell from {} to {}). \
+                             The node is still executing; introspection will \
+                             under-report it until the process restarts.",
+                            entry.name, prev, tick_count
+                        ));
+                    }
+                    prev
+                } else {
+                    tick_count
+                };
+
                 // The whole point: these come from a process-wide registry, so
                 // the main thread can attribute topics for a node running on
                 // an executor thread.
@@ -3549,7 +3631,12 @@ impl Scheduler {
                     p.set_achieved_rate_hz(achieved);
                     new_samples.push((entry.name.clone(), tick_count, now));
 
-                    let health_str = if err_count > 10 {
+                    let health_str = if regressed {
+                        // Not Healthy: the runtime knows its own reporting is
+                        // broken, and "Healthy" beside a stalled tick count is
+                        // the reading an operator would act on.
+                        "Error"
+                    } else if err_count > 10 {
                         "Critical"
                     } else if err_count > 3 {
                         "Error"
@@ -3565,7 +3652,8 @@ impl Scheduler {
                         live.and_then(|n| n.pinned_core),
                         caps.is_some_and(|c| c.mlockall_permitted),
                         caps.is_some_and(|c| c.preempt_rt),
-                        live.and_then(|n| n.tick_budget).map(|b| b.as_micros() as u64),
+                        live.and_then(|n| n.tick_budget)
+                            .map(|b| b.as_micros() as u64),
                         live.and_then(|n| n.deadline).map(|d| d.as_micros() as u64),
                         self.rt
                             .degradations
@@ -3730,14 +3818,14 @@ impl Scheduler {
 
         let sep = "=".repeat(90);
         let thin_sep = "-".repeat(90);
-        eprintln!("\n{}", sep);
-        eprintln!("TIMING REPORT (per-node)");
-        eprintln!("{}", sep);
-        eprintln!(
+        crate::terminal::eprint_line(&format!("\n{}", sep));
+        crate::terminal::eprint_line("TIMING REPORT (per-node)");
+        crate::terminal::eprint_line(&sep);
+        crate::terminal::eprint_line(&format!(
             "{:<20} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8}",
             "Node", "Avg(us)", "P99(us)", "Max(us)", "Stddev", "Budget(us)", "Overruns", "Misses"
-        );
-        eprintln!("{}", thin_sep);
+        ));
+        crate::terminal::eprint_line(&thin_sep);
 
         // Sort nodes by name for consistent output
         let mut node_names: Vec<&String> = profiler.node_stats.keys().collect();
@@ -3780,7 +3868,7 @@ impl Scheduler {
                 ""
             };
 
-            eprintln!(
+            crate::terminal::eprint_line(&format!(
                 "{:<20} {:>8.0} {:>8} {:>8.0} {:>8.1} {:>10} {:>8} {:>7}{}",
                 truncate_name(name, 20),
                 stats.avg_us,
@@ -3791,7 +3879,7 @@ impl Scheduler {
                 overruns_str,
                 misses_str,
                 status,
-            );
+            ));
 
             // Generate suggestions
             if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
@@ -3810,21 +3898,21 @@ impl Scheduler {
             }
         }
 
-        eprintln!("{}", thin_sep);
-        eprintln!(
+        crate::terminal::eprint_line(&thin_sep);
+        crate::terminal::eprint_line(&format!(
             "Total nodes: {}  |  Ticked: {}",
             self.nodes.len(),
             node_names.len()
-        );
+        ));
 
         if !suggestions.is_empty() {
-            eprintln!("\nSuggestions:");
+            crate::terminal::eprint_line("\nSuggestions:");
             for s in &suggestions {
-                eprintln!("{}", s);
+                crate::terminal::eprint_line(&s);
             }
         }
 
-        eprintln!("{}\n", sep);
+        crate::terminal::eprint_line(&format!("{}\n", sep));
     }
 
     /// Get information about all registered nodes

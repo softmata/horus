@@ -106,6 +106,16 @@ fn every_crate_inherits_the_workspace_rust_version() {
     let mut offenders = Vec::new();
 
     for entry in std::fs::read_dir(&root).expect("read repo root").flatten() {
+        // Workspace members only. `horus run`/`horus build` generate a
+        // `.horus/Cargo.toml` in whatever directory they are invoked from, and
+        // it is gitignored build output — not a crate anyone declares an MSRV
+        // for. Scanning it failed this test with ".horus: declares no
+        // rust-version" whenever a CLI test had run here first, which is a
+        // property of the working directory rather than of the repo.
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if dir_name.starts_with('.') || dir_name == "target" {
+            continue;
+        }
         let manifest = entry.path().join("Cargo.toml");
         if !manifest.is_file() {
             continue;
@@ -115,7 +125,10 @@ fn every_crate_inherits_the_workspace_rust_version() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        match text.lines().find(|l| l.trim_start().starts_with("rust-version")) {
+        match text
+            .lines()
+            .find(|l| l.trim_start().starts_with("rust-version"))
+        {
             Some(line) if line.contains("workspace = true") => {}
             Some(line) => offenders.push(format!("{name}: {}", line.trim())),
             None => offenders.push(format!("{name}: declares no rust-version")),
@@ -198,7 +211,11 @@ fn network_dependent_tests_are_ignored_by_default() {
     let mut unguarded = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
-        let Some(name) = line.trim().strip_prefix("fn ").and_then(|r| r.split('(').next()) else {
+        let Some(name) = line
+            .trim()
+            .strip_prefix("fn ")
+            .and_then(|r| r.split('(').next())
+        else {
             continue;
         };
         // The body, up to the next test or the end of the block.
@@ -286,8 +303,7 @@ fn the_dockerfile_pins_the_workspace_msrv() {
 /// build` with a confusing "failed to load manifest" rather than at the COPY.
 #[test]
 fn the_dockerfile_copies_every_workspace_member() {
-    let dockerfile =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let dockerfile = std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
     let root = std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("Cargo.toml");
 
     let start = root.find("members").expect("workspace members");
@@ -317,8 +333,7 @@ fn the_dockerfile_copies_every_workspace_member() {
 /// one committed.
 #[test]
 fn the_dockerfile_can_use_the_committed_lockfile() {
-    let dockerfile =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let dockerfile = std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
     if !dockerfile.contains("--locked") {
         return;
     }
@@ -335,8 +350,7 @@ fn the_dockerfile_can_use_the_committed_lockfile() {
 /// default is the CLI image; this keeps that true.
 #[test]
 fn the_slim_image_is_still_the_default_target() {
-    let dockerfile =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let dockerfile = std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
     let stages: Vec<&str> = dockerfile
         .lines()
         .filter_map(|l| l.trim().strip_prefix("FROM "))
@@ -364,13 +378,9 @@ fn the_slim_image_is_still_the_default_target() {
 /// building both images and running the examples.
 #[test]
 fn the_slim_image_is_not_advertised_for_building_or_running() {
-    let dockerfile =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let dockerfile = std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
 
-    let cli_section = dockerfile
-        .split("── horus:dev")
-        .next()
-        .unwrap_or_default();
+    let cli_section = dockerfile.split("── horus:dev").next().unwrap_or_default();
 
     for command in [" horus:cli run", " horus:cli build", " horus:cli test"] {
         assert!(
@@ -387,8 +397,7 @@ fn the_slim_image_is_not_advertised_for_building_or_running() {
 /// measures the container.
 #[test]
 fn the_dockerfile_documents_the_realtime_capability() {
-    let dockerfile =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let dockerfile = std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
     assert!(
         dockerfile.contains("SYS_NICE"),
         "nothing tells the reader that real-time scheduling in a container needs \
@@ -402,8 +411,7 @@ fn the_dockerfile_documents_the_realtime_capability() {
 /// step that has nothing to do with what changed.
 #[test]
 fn commands_the_dockerfile_runs_exist() {
-    let dockerfile =
-        std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
+    let dockerfile = std::fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile");
     // Extract the subcommand from every `horus <word>` in the file rather than
     // testing for a fixed list. A `contains("horus man")` check is still true
     // after the command is renamed to `horus manpage`, and passed while the
@@ -413,10 +421,11 @@ fn commands_the_dockerfile_runs_exist() {
     // Only RUN lines. The header quotes HORUS's own output — including
     // `horus hint [preflight] H060`, which is a diagnostic, not a subcommand —
     // and scanning comments turned that into a false failure.
-    for line in dockerfile.lines().filter(|l| l.trim_start().starts_with("RUN ")
-        || l.trim_start().starts_with("&& ")
-        || l.contains("&& horus "))
-    {
+    for line in dockerfile.lines().filter(|l| {
+        l.trim_start().starts_with("RUN ")
+            || l.trim_start().starts_with("&& ")
+            || l.contains("&& horus ")
+    }) {
         let mut rest = line;
         while let Some(at) = rest.find("horus ") {
             rest = &rest[at + "horus ".len()..];
@@ -449,4 +458,37 @@ fn commands_the_dockerfile_runs_exist() {
         missing.is_empty(),
         "the Dockerfile runs commands that do not exist: {missing:?}"
     );
+}
+
+// ─── The framework's own manifest ───────────────────────────────────────────
+
+/// HORUS's own `horus.toml` must pass HORUS's own validator.
+///
+/// It did not. The package was named `HORUS`, which the charset rule rejects
+/// ("must contain only lowercase letters, digits, hyphens, underscores, '@' and
+/// '/'"), so `horus doctor` run inside this repository reported:
+///
+/// ```text
+///   x Manifest — horus.toml invalid
+///   Summary: 9 ok, 1 warnings, 1 failures
+/// ```
+///
+/// Lowercasing it was not enough either — `horus` is on the reserved list — so
+/// the manifest was in a position no name could satisfy without noticing both
+/// rules. A diagnostic tool that fails on its own project teaches people to
+/// ignore it.
+#[test]
+fn the_repository_manifest_passes_the_validator_it_ships() {
+    let path = repo_root().join("horus.toml");
+    let text = std::fs::read_to_string(&path).expect("the repo has a horus.toml");
+    let manifest: horus_manager::manifest::HorusManifest =
+        toml::from_str(&text).expect("horus.toml must parse");
+
+    if let Err(errors) = manifest.validate() {
+        panic!(
+            "HORUS's own horus.toml fails HORUS's own validator:\n  {errors}\n\n\
+             `horus doctor` reports this as a failure to anyone running it in \
+             this repository."
+        );
+    }
 }

@@ -111,6 +111,12 @@ pub(super) unsafe fn seqlock_consume<R>(
     tail: &AtomicU64,
     read_slot: impl Fn(usize) -> R,
     discard: impl Fn(R),
+    // Incremented by the number of messages skipped when the producer laps the
+    // consumer. Drop-oldest is the designed behaviour under overload, but it was
+    // previously invisible: nothing counted the gap, and `dropped_count()`
+    // reports send failures, which a never-failing producer never has. A slow
+    // subscriber lost data with every observability surface reading zero.
+    skipped: &mut u64,
 ) -> Option<R> {
     let mut next = tail.load(Ordering::Acquire);
     for _ in 0..SEQLOCK_MAX_ATTEMPTS {
@@ -122,8 +128,10 @@ pub(super) unsafe fn seqlock_consume<R>(
         if avail > capacity {
             // Lapped: the producer is more than a full ring ahead, so slot
             // `next` was overwritten. Fast-forward to the oldest still-live
-            // position (drop-oldest).
-            next = h.wrapping_sub(capacity);
+            // position (drop-oldest), counting what we skipped past.
+            let resume = h.wrapping_sub(capacity);
+            *skipped = skipped.wrapping_add(resume.wrapping_sub(next));
+            next = resume;
         }
         let idx = (next & mask) as usize;
         let expected = next << 1;

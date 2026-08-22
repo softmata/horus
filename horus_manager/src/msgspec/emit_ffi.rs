@@ -20,7 +20,7 @@
 //! into one process cannot collide, and so a name can never clash with the
 //! built-in `horus_<type>_` set.
 
-use super::{Package, MsgDef};
+use super::{MsgDef, Package};
 
 /// Lowercase-with-underscores, from a CamelCase message name.
 fn snake(name: &str) -> String {

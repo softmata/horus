@@ -42,7 +42,10 @@ fn readme() -> String {
 /// The first ```rust fence in the README — the Quick Start.
 fn quick_start() -> String {
     let text = readme();
-    let start = text.find("```rust").expect("README must contain a Rust example") + 7;
+    let start = text
+        .find("```rust")
+        .expect("README must contain a Rust example")
+        + 7;
     let rest = &text[start..];
     let end = rest.find("```").expect("unterminated fence");
     rest[..end].trim_start_matches('\n').to_string()
@@ -146,8 +149,8 @@ fn the_readme_and_the_default_template_speak_the_same_language() {
     let mut missing = Vec::new();
     for construct in SHARED_CONSTRUCTS {
         // `sched` vs `scheduler` is a naming difference, not a language one.
-        let in_readme = readme.contains(construct)
-            || readme.contains(&construct.replace("scheduler", "sched"));
+        let in_readme =
+            readme.contains(construct) || readme.contains(&construct.replace("scheduler", "sched"));
         let in_template = template.contains(construct)
             || template.contains(&construct.replace("scheduler", "sched"));
         if in_readme != in_template {

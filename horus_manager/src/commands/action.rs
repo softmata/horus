@@ -395,8 +395,13 @@ pub fn action_info(name: &str) -> HorusResult<()> {
         } else {
             "x".red().to_string()
         };
+        // Dots, not slashes. `pick_object.goal` is the name on disk — this
+        // very function matches on `.goal`/`.result`/… to find the action —
+        // and dots are what `horus topic echo` accepts. Printing a slash gave
+        // a name that does not exist, in the one place someone would copy it
+        // from.
         println!(
-            "    {} {}/{:<12} — {}",
+            "    {} {}.{:<12} — {}",
             status,
             action.name,
             suffix,
@@ -417,7 +422,10 @@ pub fn action_info(name: &str) -> HorusResult<()> {
     );
     println!();
     println!(
-        "  {} Use 'horus action send_goal {} <goal_json>' to send a goal",
+        // `send-goal`, with a hyphen: `send_goal` is the Rust function's name
+        // and not a command. Following this tip verbatim produced
+        // "error: unrecognized subcommand 'send_goal'".
+        "  {} Use 'horus action send-goal {} <goal_json>' to send a goal",
         "Tip:".dimmed(),
         action.name
     );
@@ -427,7 +435,7 @@ pub fn action_info(name: &str) -> HorusResult<()> {
 
 // ─── send_goal ────────────────────────────────────────────────────────────────
 
-/// Send a goal to an action server (`horus action send_goal <name> <goal_json>`)
+/// Send a goal to an action server (`horus action send-goal <name> <goal_json>`)
 ///
 /// Sends the goal and then monitors status/feedback/result until completion or
 /// timeout.  Equivalent to `ros2 action send_goal`.
@@ -452,7 +460,7 @@ pub fn send_goal(
     let goal_value: serde_json::Value =
         serde_json::from_str(goal_json).map_err(|e| {
             HorusError::Config(ConfigError::Other(format!(
-                "Invalid goal JSON: {}\n  Example: horus action send_goal {} '{{\"x\": 1.0, \"y\": 2.0}}'",
+                "Invalid goal JSON: {}\n  Example: horus action send-goal {} '{{\"x\": 1.0, \"y\": 2.0}}'",
                 e, name
             )))
         })?;
@@ -620,7 +628,7 @@ pub fn send_goal(
     Ok(())
 }
 
-/// Cancel a goal on an action server (`horus action cancel_goal <name>`)
+/// Cancel a goal on an action server (`horus action cancel-goal <name>`)
 pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
     use horus_core::communication::Topic;
 

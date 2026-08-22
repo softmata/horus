@@ -46,6 +46,15 @@ struct PeerHeartbeatState {
     last_received: Instant,
     /// Number of consecutive missed heartbeats.
     missed_count: u32,
+    /// When this peer was first discovered, for the introduction grace period.
+    first_seen: Instant,
+    /// Whether a heartbeat has ever arrived from this peer.
+    ///
+    /// Until one has, the peer cannot be judged on missed beats: we discovered
+    /// it from its announcement, but it does not know about *us* until its own
+    /// announce cycle comes round, and it does not start heartbeating back
+    /// before that.
+    ever_received: bool,
     /// Whether this link is considered alive.
     link_alive: bool,
     /// Whether we've already fired the link-lost action for this peer.
@@ -71,6 +80,16 @@ pub struct SafetyHeartbeat {
 }
 
 impl SafetyHeartbeat {
+    /// How long a newly discovered peer has to say something before its silence
+    /// counts against it.
+    ///
+    /// Discovery announcements go out on a 1 s cycle, so a peer can legitimately
+    /// take that long to learn we exist and start heartbeating. Two seconds
+    /// leaves room for one missed announcement without turning fleet assembly
+    /// into a link-loss event; a peer that is genuinely absent is still
+    /// declared lost, just after evidence rather than before it.
+    const DISCOVERY_GRACE: Duration = Duration::from_secs(2);
+
     /// Create with default settings: 50ms interval, 3 missed threshold, Warn action.
     pub fn new(our_peer_id: [u8; 16]) -> Self {
         Self {
@@ -108,6 +127,8 @@ impl SafetyHeartbeat {
             last_sent: now - self.interval, // Send immediately on next tick
             last_received: now,
             missed_count: 0,
+            first_seen: now,
+            ever_received: false,
             link_alive: true,
             action_fired: false,
             rtt_us: 0.0,
@@ -143,13 +164,14 @@ impl SafetyHeartbeat {
 
             state.last_received = now;
             state.missed_count = 0;
+            state.ever_received = true;
             if !state.link_alive {
                 state.link_alive = true;
                 state.action_fired = false;
-                eprintln!(
+                horus_core::terminal::eprint_line(&format!(
                     "[horus_net] Link restored to peer {:02X?}...",
                     &peer_id[..4]
-                );
+                ));
             }
         }
     }
@@ -204,18 +226,35 @@ impl SafetyHeartbeat {
             // heartbeats before declaring link dead", so a threshold of 3 must
             // declare the link dead on the 3rd missed beat — `>` waited for the
             // 4th, one full interval of extra latency before a safety action.
-            if expected_count >= self.missed_threshold && state.link_alive {
+            // A peer that has never answered yet is not a lost link — it is a
+            // peer that has not been introduced. `add_peer` starts this clock
+            // the moment discovery sees an announcement, but the far side only
+            // learns about us on its own announce cycle, up to
+            // `DISCOVERY_GRACE` later, and does not heartbeat before that. At
+            // the default 50 ms interval and threshold of 3, that meant
+            // declaring the link lost ~150 ms after meeting a peer that was
+            // perfectly healthy — measured at 196 ms on loopback with two real
+            // replicators. With `on_link_lost = "stop"` that halts a working
+            // robot during startup, which is the worst possible false positive:
+            // a safety action firing because the fleet was still assembling.
+            //
+            // So hold off until either the peer has spoken once, or it has had
+            // long enough that silence is genuinely evidence of absence.
+            let introduced =
+                state.ever_received || now.duration_since(state.first_seen) > Self::DISCOVERY_GRACE;
+
+            if introduced && expected_count >= self.missed_threshold && state.link_alive {
                 state.link_alive = false;
                 state.missed_count = expected_count;
 
                 if !state.action_fired {
                     state.action_fired = true;
-                    eprintln!(
+                    horus_core::terminal::eprint_line(&format!(
                         "[horus_net] Link lost to peer {:02X?}... ({} missed heartbeats, {}ms)",
                         &peer_id[..4],
                         state.missed_count,
                         since_last.as_millis()
-                    );
+                    ));
                     link_lost.push((*peer_id, self.default_action));
                 }
             }
@@ -348,6 +387,10 @@ mod tests {
             LinkLostAction::Warn,
         );
         hb.add_peer([1; 16], peer_addr());
+        // Establish the link before letting it go silent: link loss is only
+        // meaningful for a peer that has answered at least once. Without this
+        // the test exercises the introduction grace period instead.
+        hb.on_received(&[1; 16]);
         let mut seq = 0u32;
 
         // Wait for timeout (3 * 10ms = 30ms)
@@ -370,6 +413,10 @@ mod tests {
             LinkLostAction::SafeState,
         );
         hb.add_peer([1; 16], peer_addr());
+        // Establish the link before letting it go silent: link loss is only
+        // meaningful for a peer that has answered at least once. Without this
+        // the test exercises the introduction grace period instead.
+        hb.on_received(&[1; 16]);
         let mut seq = 0u32;
 
         std::thread::sleep(Duration::from_millis(50));
@@ -392,6 +439,10 @@ mod tests {
             LinkLostAction::Warn,
         );
         hb.add_peer([1; 16], peer_addr());
+        // Establish the link before letting it go silent: link loss is only
+        // meaningful for a peer that has answered at least once. Without this
+        // the test exercises the introduction grace period instead.
+        hb.on_received(&[1; 16]);
         let mut seq = 0u32;
 
         // Timeout → link lost
@@ -414,6 +465,10 @@ mod tests {
             LinkLostAction::SafeState,
         );
         hb.add_peer([1; 16], peer_addr());
+        // Establish the link before letting it go silent: link loss is only
+        // meaningful for a peer that has answered at least once. Without this
+        // the test exercises the introduction grace period instead.
+        hb.on_received(&[1; 16]);
         let mut seq = 0u32;
 
         std::thread::sleep(Duration::from_millis(50));
@@ -432,6 +487,11 @@ mod tests {
         );
         hb.add_peer([1; 16], peer_addr());
         hb.add_peer([2; 16], peer_addr());
+        // Establish the link before letting it go silent: link loss is only
+        // meaningful for a peer that has answered at least once. Without this
+        // the test exercises the introduction grace period instead.
+        hb.on_received(&[1; 16]);
+        hb.on_received(&[2; 16]);
         assert_eq!(hb.alive_count(), 2);
 
         std::thread::sleep(Duration::from_millis(50));
@@ -513,6 +573,10 @@ mod unit_safety_tests {
         let mut hb = SafetyHeartbeat::with_config([1u8; 16], interval, 3, LinkLostAction::Warn);
         let peer = [2u8; 16];
         hb.add_peer(peer, "127.0.0.1:9100".parse().unwrap());
+        // Establish the link before letting it go silent: link loss is only
+        // meaningful for a peer that has answered at least once. Without this
+        // the test exercises the introduction grace period instead.
+        hb.on_received(&peer);
 
         // Exactly 3 intervals of silence must be enough to declare the link dead.
         std::thread::sleep(interval * 3 + Duration::from_millis(3));
@@ -521,6 +585,56 @@ mod unit_safety_tests {
         assert!(
             !hb.is_link_alive(&peer),
             "a threshold of 3 must declare the link dead at 3 missed beats, not 4"
+        );
+    }
+}
+
+#[cfg(test)]
+mod introduction_grace_tests {
+    use super::tests_support::MockTransport;
+    use super::*;
+
+    fn peer(n: u8) -> PeerId {
+        [n; 16]
+    }
+
+    #[test]
+    fn a_peer_that_has_never_spoken_is_not_declared_lost_immediately() {
+        // The regression: `add_peer` starts the liveness clock the moment
+        // discovery sees an announcement, but the far side does not know about
+        // us until its own announce cycle and does not heartbeat before then.
+        // Judging it on missed beats at 50ms x 3 declared a healthy peer lost
+        // ~150ms after meeting it — and with `on_link_lost = "stop"` that halts
+        // a working robot while the fleet is still assembling.
+        let mut hb = SafetyHeartbeat::new([9; 16]);
+        hb.add_peer(peer(1), "127.0.0.1:9101".parse().unwrap());
+
+        // Well past threshold * interval, but inside the introduction grace.
+        std::thread::sleep(Duration::from_millis(250));
+        let mut seq = 0u32;
+        let lost = hb.tick(&MockTransport::new(), 0, &mut seq);
+        assert!(
+            lost.is_empty(),
+            "a peer that has not had time to learn we exist was declared lost: {lost:?}"
+        );
+        assert!(hb.is_link_alive(&peer(1)));
+    }
+
+    #[test]
+    fn a_peer_that_answered_once_is_judged_normally_afterwards() {
+        // The grace covers introduction only. Once a peer has spoken, silence
+        // is real evidence and the normal threshold applies — otherwise the
+        // grace would delay every genuine link-loss action by two seconds.
+        let mut hb = SafetyHeartbeat::new([9; 16]);
+        hb.add_peer(peer(2), "127.0.0.1:9102".parse().unwrap());
+        hb.on_received(&peer(2));
+
+        std::thread::sleep(Duration::from_millis(250));
+        let mut seq = 0u32;
+        let lost = hb.tick(&MockTransport::new(), 0, &mut seq);
+        assert!(
+            !lost.is_empty(),
+            "a peer that answered and then went silent should be reported lost"
         );
     }
 }

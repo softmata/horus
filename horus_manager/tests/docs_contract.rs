@@ -57,8 +57,7 @@ fn the_configuration_reference_covers_every_manifest_table() {
         // one existed: a language-detection table lists `rust` as a *language*,
         // which made the `[rust]` config section look documented while it was
         // absent entirely. Deleting the whole section still passed this test.
-        let documented =
-            doc.contains(&format!("[{key}]")) || doc.contains(&format!("{key} = "));
+        let documented = doc.contains(&format!("[{key}]")) || doc.contains(&format!("{key} = "));
         if !documented {
             undocumented.push(*key);
         }
@@ -341,7 +340,10 @@ fn every_environment_variable_is_in_the_reference_page() {
     };
     let page = root.join("content/docs/development/environment-variables.mdx");
     let Ok(text) = std::fs::read_to_string(&page) else {
-        panic!("the environment variable reference must exist at {}", page.display());
+        panic!(
+            "the environment variable reference must exist at {}",
+            page.display()
+        );
     };
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -367,7 +369,8 @@ fn every_environment_variable_is_in_the_reference_page() {
                 }
                 continue;
             }
-            if path.extension().is_none_or(|e| e != "rs") || !path.to_string_lossy().contains("/src/")
+            if path.extension().is_none_or(|e| e != "rs")
+                || !path.to_string_lossy().contains("/src/")
             {
                 continue;
             }
@@ -386,7 +389,9 @@ fn every_environment_variable_is_in_the_reference_page() {
                     continue;
                 };
                 if rest.starts_with("HORUS_")
-                    && rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && rest
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
                 {
                     names.insert(rest.to_string());
                 }
@@ -401,7 +406,10 @@ fn every_environment_variable_is_in_the_reference_page() {
         names.len()
     );
 
-    let missing: Vec<&String> = names.iter().filter(|n| !text.contains(n.as_str())).collect();
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|n| !text.contains(n.as_str()))
+        .collect();
     assert!(
         missing.is_empty(),
         "these are read from the environment but absent from the reference page:\n  {}",

@@ -10,7 +10,14 @@ use horus_core::NodePresence;
 use std::path::Path;
 
 /// Run the clean command
-pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -> HorusResult<()> {
+pub fn run_clean(
+    shm: bool,
+    all: bool,
+    dry_run: bool,
+    force: bool,
+    all_namespaces: bool,
+    json: bool,
+) -> HorusResult<()> {
     if json {
         let mut items = Vec::new();
         if !shm || all {
@@ -84,7 +91,7 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
                     clean_pycache(false)?;
                 }
                 if shm || all {
-                    clean_shared_memory(false, force)?;
+                    clean_shared_memory(false, force, all_namespaces)?;
                 }
                 if all {
                     clean_horus_cache(false)?;
@@ -121,7 +128,7 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
 
     // Clean shared memory
     if shm || all {
-        cleaned_anything |= clean_shared_memory(dry_run, force)?;
+        cleaned_anything |= clean_shared_memory(dry_run, force, all_namespaces)?;
     }
 
     // Clean HORUS cache directory
@@ -202,8 +209,38 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
     Ok(cleaned)
 }
 
+/// Which namespaces a clean should remove.
+///
+/// `--force` is documented as "force clean even if HORUS processes are
+/// running" — it overrides the safety check. It used to also widen the *target
+/// set*, from "stale namespaces" to "every namespace on the machine", and it
+/// ignored `HORUS_NAMESPACE` entirely. Measured on a shared box:
+/// `HORUS_NAMESPACE=mine horus clean --shm --force` removed 20 namespaces and
+/// 55.5 GB, including another user's live 48 GB one — and the robot in it kept
+/// running, publishing into an unlinked region, while every introspection
+/// command reported it Running / Healthy at 0 Hz.
+///
+/// A live namespace that is not this process's belongs to another robot or
+/// another developer. Overriding the guard on your own must not take theirs
+/// down with it, so `--force` reaches stale namespaces plus the current one.
+/// `--all-namespaces` is the deliberate machine-wide sweep.
+fn namespaces_to_remove<'a>(
+    namespaces: &'a [NamespaceInfo],
+    current_ns: &str,
+    force: bool,
+    all_namespaces: bool,
+) -> Vec<&'a NamespaceInfo> {
+    if all_namespaces {
+        return namespaces.iter().collect();
+    }
+    namespaces
+        .iter()
+        .filter(|ns| !ns.alive || (force && ns.dir_name == current_ns))
+        .collect()
+}
+
 /// Clean shared memory — scans ALL horus_* namespace directories
-fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
+fn clean_shared_memory(dry_run: bool, force: bool, all_namespaces: bool) -> HorusResult<bool> {
     let namespaces = list_all_horus_namespaces();
 
     if namespaces.is_empty() {
@@ -272,22 +309,52 @@ fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
         );
         if !active.is_empty() {
             println!(
-                "  {} Use {} to also remove active namespaces.",
+                "  {} Use {} to also remove this namespace, or {} for every \
+                 namespace on the machine.",
                 "Tip:".dimmed(),
-                "--force".white().bold()
+                "--force".white().bold(),
+                "--all-namespaces".white().bold()
             );
         }
         return Ok(false);
     }
 
-    // Determine which namespaces to remove
-    let to_remove: Vec<&NamespaceInfo> = if force {
-        // With --force: remove all namespaces (stale + active, including current)
-        namespaces.iter().collect()
-    } else {
-        // Default: remove only stale namespaces
-        stale
-    };
+    let to_remove: Vec<&NamespaceInfo> =
+        namespaces_to_remove(&namespaces, &current_ns, force, all_namespaces);
+
+    // Say what was deliberately left alone, so "freed nothing" is never a
+    // mystery.
+    if !all_namespaces {
+        let spared: Vec<&str> = active
+            .iter()
+            .filter(|ns| ns.dir_name != current_ns)
+            .map(|ns| ns.dir_name.as_str())
+            .collect();
+        if !spared.is_empty() {
+            const SHOWN: usize = 5;
+            let mut names = spared
+                .iter()
+                .take(SHOWN)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if spared.len() > SHOWN {
+                names.push_str(&format!(" and {} more", spared.len() - SHOWN));
+            }
+            println!(
+                "  {} Left {} live namespace(s) belonging to other processes: {}",
+                cli_output::ICON_INFO.cyan(),
+                spared.len(),
+                names
+            );
+            println!(
+                "  {} Use {} to remove those too.",
+                "Tip:".dimmed(),
+                "--all-namespaces".white().bold()
+            );
+            println!();
+        }
+    }
 
     if to_remove.is_empty() {
         return Ok(false);
@@ -596,7 +663,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // No target/, no shm — dry run should succeed
-        let result = run_clean(false, false, true, false, false);
+        let result = run_clean(false, false, true, false, false, false);
         std::env::set_current_dir(&prev).unwrap();
         result.unwrap();
     }
@@ -613,7 +680,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // Dry run should not delete
-        let result = run_clean(false, false, true, false, false);
+        let result = run_clean(false, false, true, false, false, false);
         std::env::set_current_dir(&prev).unwrap();
         result.unwrap();
         assert!(target.exists(), "dry run should NOT delete target/");
@@ -630,7 +697,7 @@ mod tests {
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = run_clean(false, false, false, false, false);
+        let result = run_clean(false, false, false, false, false, false);
         std::env::set_current_dir(&prev).unwrap();
         result.unwrap();
         assert!(!target.exists(), "clean should delete target/");
@@ -644,7 +711,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // JSON mode with dry_run — should succeed and output valid JSON
-        let result = run_clean(false, false, true, false, true);
+        let result = run_clean(false, false, true, false, false, true);
         std::env::set_current_dir(&prev).unwrap();
         result.unwrap();
     }
@@ -661,7 +728,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         // shm=true means only clean shared memory, not target/
-        let result = run_clean(true, false, false, false, false);
+        let result = run_clean(true, false, false, false, false, false);
         std::env::set_current_dir(&prev).unwrap();
         result.unwrap();
         assert!(target.exists(), "shm-only clean should NOT touch target/");
@@ -696,5 +763,78 @@ mod tests {
         std::env::set_current_dir(&prev).unwrap();
         assert!(result.is_ok());
         assert!(!result.unwrap()); // Returns false because no target/
+    }
+}
+
+#[cfg(test)]
+mod namespace_scope_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn ns(name: &str, alive: bool) -> NamespaceInfo {
+        NamespaceInfo {
+            path: PathBuf::from("/dev/shm").join(name),
+            dir_name: name.to_string(),
+            pgid: None,
+            uid: None,
+            alive,
+            size_bytes: 0,
+            file_count: 0,
+        }
+    }
+
+    fn names(v: Vec<&NamespaceInfo>) -> Vec<String> {
+        let mut out: Vec<String> = v.into_iter().map(|n| n.dir_name.clone()).collect();
+        out.sort();
+        out
+    }
+
+    fn fleet() -> Vec<NamespaceInfo> {
+        vec![
+            ns("horus_mine", true),   // this process
+            ns("horus_theirs", true), // another robot, another developer
+            ns("horus_dead", false),  // left by a process that exited
+        ]
+    }
+
+    #[test]
+    fn the_default_removes_only_what_nothing_is_using() {
+        assert_eq!(
+            names(namespaces_to_remove(&fleet(), "horus_mine", false, false)),
+            vec!["horus_dead"]
+        );
+    }
+
+    #[test]
+    fn force_reaches_this_namespace_and_not_someone_elses() {
+        // The regression. `--force` is documented as overriding the
+        // running-processes check, but it used to widen the target set to every
+        // namespace on the machine and ignore HORUS_NAMESPACE entirely:
+        // `HORUS_NAMESPACE=mine horus clean --shm --force` removed 20
+        // namespaces and 55.5GB, including another user's live 48GB one. The
+        // robot in it kept running, publishing into an unlinked region, while
+        // every introspection command reported it Running / Healthy at 0 Hz.
+        assert_eq!(
+            names(namespaces_to_remove(&fleet(), "horus_mine", true, false)),
+            vec!["horus_dead", "horus_mine"]
+        );
+    }
+
+    #[test]
+    fn the_machine_wide_sweep_is_opt_in_and_takes_everything() {
+        assert_eq!(
+            names(namespaces_to_remove(&fleet(), "horus_mine", false, true)),
+            vec!["horus_dead", "horus_mine", "horus_theirs"]
+        );
+    }
+
+    #[test]
+    fn force_without_a_namespace_of_our_own_touches_nothing_live() {
+        // `horus clean --shm --force` run where this process has no namespace
+        // yet must not take that as licence to clear someone else's.
+        assert_eq!(
+            names(namespaces_to_remove(&fleet(), "horus_absent", true, false)),
+            vec!["horus_dead"]
+        );
     }
 }

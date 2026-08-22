@@ -13,6 +13,45 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// Run the check command on a path (directory or file)
+/// Resolve every module a Python file imports, and name the first one missing.
+///
+/// Single braces in the f-strings: `{{` is an escaped brace in Python, so the
+/// doubled form printed the literal text `ModuleNotFoundError: {e.name}` and
+/// `horus check` reported that a module was missing without ever saying which.
+/// The doubling was right while this was built with `format!`; moving it to a
+/// raw string and passing the path through argv left the escaping behind.
+///
+/// The path arrives as `argv[1]`, never interpolated: it comes from the repo
+/// being checked, so a quote or newline in a `.py` filename would otherwise
+/// become Python code executed by `horus check`.
+const PY_IMPORT_CHECK: &str = r#"
+import ast, sys
+try:
+    with open(sys.argv[1]) as f:
+        tree = ast.parse(f.read())
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            # `node.level` is the number of leading dots. A relative import
+            # names a sibling module, not a distribution, and resolving it
+            # needs the package context this check does not have. Without the
+            # guard, `from .generator import X` was reported as a missing
+            # third-party module called `generator`.
+            imports.add(node.module.split('.')[0])
+    for imp in imports:
+        if imp not in ('__future__',):
+            __import__(imp)
+except ModuleNotFoundError as e:
+    print(f'ModuleNotFoundError: {e.name}', file=sys.stderr)
+    sys.exit(1)
+except ImportError as e:
+    print(f'ImportError: {e}', file=sys.stderr)
+    sys.exit(1)
+"#;
+
 pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<()> {
     let target_path = path.unwrap_or_else(|| PathBuf::from("."));
     log::debug!("checking path: {:?}", target_path);
@@ -220,7 +259,9 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             let ext = path.extension().and_then(|e| e.to_str());
 
             if filename == HORUS_TOML {
-                horus_manifests.push(path.to_path_buf());
+                if !is_cargo_test_dir_manifest(path) {
+                    horus_manifests.push(path.to_path_buf());
+                }
             } else if ext == Some("rs") && filename != "build.rs" {
                 rust_files.push(path.to_path_buf());
             } else if ext == Some("py") {
@@ -493,28 +534,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             match syntax_check {
                 Ok(result) if result.status.success() => {
                     // Syntax OK - now check imports
-                    let import_script = r#"
-import ast, sys
-try:
-    with open(sys.argv[1]) as f:
-        tree = ast.parse(f.read())
-    imports = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imports.add(alias.name.split('.')[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module.split('.')[0])
-    for imp in imports:
-        if imp not in ('__future__',):
-            __import__(imp)
-except ModuleNotFoundError as e:
-    print(f'ModuleNotFoundError: {{e.name}}', file=sys.stderr)
-    sys.exit(1)
-except ImportError as e:
-    print(f'ImportError: {{e}}', file=sys.stderr)
-    sys.exit(1)
-"#;
+                    let import_script = PY_IMPORT_CHECK;
 
                     // The filename comes from the repo being checked, so it is
                     // attacker-controlled for anyone who can get a repo cloned.
@@ -562,7 +582,8 @@ except ImportError as e:
                     }
                     record_diagnostic(
                         "error",
-                        py_path                            .strip_prefix(target_path)
+                        py_path
+                            .strip_prefix(target_path)
                             .unwrap_or(py_path)
                             .display()
                             .to_string(),
@@ -633,6 +654,27 @@ except ImportError as e:
         ))));
     }
     Ok(())
+}
+
+/// Whether this `horus.toml` sits in a crate's `tests/` directory.
+///
+/// Cargo integration tests live in `<crate>/tests/`, so such a directory is full
+/// of `.rs` files with no `main.rs` and no `Cargo.toml` of its own. Language
+/// detection called that a Rust project and required a main file, so
+/// `horus check` on this repository reported
+/// `horus_core/tests/horus.toml: main file not found for 'Rust'` and exited 1.
+/// A manifest kept beside integration tests is fixture data, not an
+/// application.
+fn is_cargo_test_dir_manifest(manifest: &std::path::Path) -> bool {
+    let Some(dir) = manifest.parent() else {
+        return false;
+    };
+    if dir.file_name().and_then(|n| n.to_str()) != Some("tests") {
+        return false;
+    }
+    dir.parent()
+        .map(|crate_root| crate_root.join(CARGO_TOML).is_file())
+        .unwrap_or(false)
 }
 
 /// Check a single file (horus.toml, .rs, or .py)
@@ -2001,5 +2043,142 @@ test-hw = "echo hardware test"
             "Build metadata version should pass: {:?}",
             result.err()
         );
+    }
+}
+
+#[cfg(test)]
+mod import_check_tests {
+    use super::PY_IMPORT_CHECK;
+
+    fn run_on(source: &str) -> (bool, String) {
+        // Unique per call: these tests run in parallel and shared one filename,
+        // so they overwrote each other's probe and failed on whichever lost.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("horus_import_check_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join(format!("probe_{}.py", SEQ.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&file, source).expect("write probe");
+        let out = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(PY_IMPORT_CHECK)
+            .arg(&file)
+            .output()
+            .expect("python3 must run");
+        let _ = std::fs::remove_file(&file);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn a_missing_module_is_named() {
+        // The regression: `{{e.name}}` is an escaped brace in a Python f-string,
+        // so this printed the literal `ModuleNotFoundError: {e.name}` and
+        // `horus check` reported that a module was missing without ever saying
+        // which one. Four files in this repo reported it that way.
+        let (ok, stderr) = run_on("import definitely_not_a_real_module_xyz\n");
+        assert!(!ok, "importing a missing module must fail the check");
+        assert!(
+            stderr.contains("definitely_not_a_real_module_xyz"),
+            "the missing module was not named: {stderr:?}"
+        );
+        assert!(
+            !stderr.contains("{e.name}"),
+            "the f-string placeholder was printed literally: {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn a_relative_import_is_not_a_missing_package() {
+        // `from .generator import X` names a sibling module, not a
+        // distribution, and resolving it needs the package context this check
+        // does not have. It was reported as a missing third-party module called
+        // `generator`, so `horus check` told developers their own package had
+        // unmet dependencies.
+        let (ok, stderr) = run_on("from .sibling import thing\nfrom . import other\n");
+        assert!(ok, "a relative import must not fail the check: {stderr:?}");
+        assert!(!stderr.contains("sibling"), "{stderr:?}");
+    }
+
+    #[test]
+    fn an_absolute_import_of_the_same_name_is_still_checked() {
+        // The guard is about the leading dot, not the name.
+        let (ok, _) = run_on("import sibling_module_that_does_not_exist\n");
+        assert!(
+            !ok,
+            "an absolute import of a missing module must still fail"
+        );
+    }
+
+    #[test]
+    fn a_file_whose_imports_all_resolve_passes() {
+        let (ok, stderr) = run_on("import sys, os\nfrom pathlib import Path\n");
+        assert!(ok, "stdlib imports must resolve: {stderr:?}");
+    }
+
+    #[test]
+    fn the_path_is_taken_from_argv_not_interpolated() {
+        // A filename is attacker-controlled for anyone who can get a repo
+        // cloned; interpolating it into the script would make a quote or a
+        // newline in a `.py` name into Python that `horus check` executes.
+        assert!(
+            PY_IMPORT_CHECK.contains("sys.argv[1]"),
+            "the script must read its path from argv"
+        );
+    }
+}
+
+#[cfg(test)]
+mod test_dir_manifest_tests {
+    use super::is_cargo_test_dir_manifest;
+    use std::path::Path;
+
+    fn scratch() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("horus_check_fixture_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn a_manifest_beside_integration_tests_is_fixture_data() {
+        // Cargo integration tests live in `<crate>/tests/`, so that directory is
+        // full of `.rs` files with no `main.rs` and no `Cargo.toml`. Language
+        // detection called it a Rust project and demanded a main file, so
+        // `horus check` on this repository reported
+        // `horus_core/tests/horus.toml: main file not found for 'Rust'` and
+        // exited 1.
+        let root = scratch().join("crate_a");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&tests).expect("mkdir");
+        std::fs::write(root.join("Cargo.toml"), "[package]\n").expect("write");
+        let manifest = tests.join("horus.toml");
+        std::fs::write(&manifest, "[package]\n").expect("write");
+
+        assert!(is_cargo_test_dir_manifest(&manifest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_project_that_merely_lives_in_a_tests_directory_is_still_checked() {
+        // Without a Cargo.toml one level up it is not a cargo test directory —
+        // it is somebody's project that happens to be called `tests`.
+        let root = scratch().join("standalone");
+        let tests = root.join("tests");
+        std::fs::create_dir_all(&tests).expect("mkdir");
+        let manifest = tests.join("horus.toml");
+        std::fs::write(&manifest, "[package]\n").expect("write");
+
+        assert!(!is_cargo_test_dir_manifest(&manifest));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_ordinary_project_manifest_is_checked() {
+        assert!(!is_cargo_test_dir_manifest(Path::new(
+            "/w/robot/horus.toml"
+        )));
+        assert!(!is_cargo_test_dir_manifest(Path::new("/w/horus.toml")));
     }
 }

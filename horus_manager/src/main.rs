@@ -386,6 +386,10 @@ enum Commands {
         #[arg(short = 'f', long = "force")]
         force: bool,
 
+        /// Also remove live namespaces belonging to other processes
+        #[arg(long = "all-namespaces")]
+        all_namespaces: bool,
+
         /// Output as JSON
         #[arg(long = "json")]
         json: bool,
@@ -2682,8 +2686,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             all,
             dry_run,
             force,
+            all_namespaces,
             json,
-        } => commands::clean::run_clean(shm, all, dry_run, force, json),
+        } => commands::clean::run_clean(shm, all, dry_run, force, all_namespaces, json),
 
         Commands::Launch {
             file,

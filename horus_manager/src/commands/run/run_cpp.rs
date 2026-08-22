@@ -418,10 +418,7 @@ fn ensure_horus_cpp(release: bool, target_arch: Option<&str>) -> Result<(PathBuf
             // reached. The same GCC the CMake toolchain file names is the right
             // linker here.
             if let Some(linker) = cross_linker(t) {
-                let key = format!(
-                    "CARGO_TARGET_{}_LINKER",
-                    t.to_uppercase().replace('-', "_")
-                );
+                let key = format!("CARGO_TARGET_{}_LINKER", t.to_uppercase().replace('-', "_"));
                 cmd.env(key, linker);
             }
         }
@@ -718,7 +715,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -833,7 +830,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -962,7 +959,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -1054,7 +1051,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -1118,7 +1115,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };
@@ -1172,7 +1169,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
-        rust: None,
+            rust: None,
             hooks: Default::default(),
             network: None,
         };

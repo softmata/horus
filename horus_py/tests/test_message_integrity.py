@@ -21,25 +21,33 @@ class TestPose2D:
 
     def test_pose2d_pubsub(self):
         """Test Pose2D through pub/sub"""
+        # Drive the publisher from what has been received, not from its own
+        # tick count. A topic keeps the latest value, so a message the
+        # subscriber's tick did not land on is gone — the publisher used to move
+        # on regardless and the test then required every value to have arrived.
+        # It failed two runs in three. Holding each value until it is
+        # acknowledged makes the exchange deterministic; the subscriber ignores
+        # consecutive repeats, and the values are distinct by construction so no
+        # real one is dropped.
         test_values = []
         received_values = []
-        tick_count = [0]
 
         def publisher(node):
-            tick = tick_count[0]
-            tick_count[0] += 1
-            if tick < 5:
-                x, y, theta = float(tick), float(tick) * 2.0, float(tick) * 0.5
-                pose = Pose2D(x=x, y=y, theta=theta)
-                node.send("Pose2D", pose)
-                test_values.append((x, y, theta))
+            i = len(received_values)
+            if i < 5:
+                x, y, theta = float(i), float(i) * 2.0, float(i) * 0.5
+                node.send("Pose2D", Pose2D(x=x, y=y, theta=theta))
+                if len(test_values) == i:
+                    test_values.append((x, y, theta))
             else:
                 node.request_stop()
 
         def subscriber(node):
             msg = node.recv("Pose2D")
             if msg:
-                received_values.append((msg.x, msg.y, msg.theta))
+                value = (msg.x, msg.y, msg.theta)
+                if not received_values or received_values[-1] != value:
+                    received_values.append(value)
             if len(received_values) >= 5:
                 node.request_stop()
 
@@ -84,12 +92,15 @@ class TestTwist:
         received = []
         sent = [False]
 
+        # Keep publishing until it has been received — see the LaserScan test
+        # below. A topic holds only the latest value, so sending once and
+        # stopping loses the message whenever the subscriber's first tick has
+        # not run yet.
         def pub_node(node):
-            if not sent[0]:
-                twist = Twist(linear_x=2.5, angular_z=1.2)
-                node.send("Twist", twist)
+            if not received:
+                node.send("Twist", Twist(linear_x=2.5, angular_z=1.2))
                 sent[0] = True
-            elif sent[0]:
+            else:
                 node.request_stop()
 
         def sub_node(node):
@@ -125,23 +136,30 @@ class TestCmdVel:
             (-0.5, -0.2),
             (2.0, 1.0),
         ]
+        # Drive the publisher from what has been received, not from its own
+        # tick count. A topic keeps the latest value, so a message the
+        # subscriber's tick did not land on is gone — the publisher used to move
+        # on regardless and the test then required every value to have arrived.
+        # It failed two runs in three. Holding each value until it is
+        # acknowledged makes the exchange deterministic; the subscriber ignores
+        # consecutive repeats, and the values are distinct by construction so no
+        # real one is dropped.
         received_data = []
-        tick_count = [0]
 
         def pub_node(node):
-            tick = tick_count[0]
-            tick_count[0] += 1
-            if tick < len(test_data):
-                linear, angular = test_data[tick]
-                cmd = CmdVel(linear=linear, angular=angular)
-                node.send("CmdVel", cmd)
+            i = len(received_data)
+            if i < len(test_data):
+                linear, angular = test_data[i]
+                node.send("CmdVel", CmdVel(linear=linear, angular=angular))
             else:
                 node.request_stop()
 
         def sub_node(node):
             msg = node.recv("CmdVel")
             if msg:
-                received_data.append((msg.linear, msg.angular))
+                value = (msg.linear, msg.angular)
+                if not received_data or received_data[-1] != value:
+                    received_data.append(value)
             if len(received_data) >= len(test_data):
                 node.request_stop()
 
@@ -182,9 +200,14 @@ class TestLaserScan:
         received_ranges = None
         sent = [False]
 
+        # Keep publishing until it has been received. Sending once and stopping
+        # relies on the subscriber's very first tick landing after the
+        # publisher's — a topic holds only the latest value, so losing that race
+        # loses the message, and the assertions below then report a scan that
+        # was never delivered.
         def pub_node(node):
             nonlocal sent_ranges
-            if not sent[0]:
+            if received_ranges is None:
                 scan = LaserScan()
                 sent_ranges = [float(i) * 0.1 for i in range(360)]
                 scan.ranges = sent_ranges

@@ -39,6 +39,25 @@ pub fn load(py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
     load_from(py, path_str)
 }
 
+/// The robot's name from ``[robot].name`` in ``horus.toml``.
+///
+/// The manifest documents this field as "used in topic naming", and the
+/// convention it supports is ``"{robot_name}.{sensor}.{data_type}"`` — but
+/// nothing exposed it, so Python code had no way to read the name it is meant
+/// to build its topic names from.
+///
+/// Returns ``None`` when the manifest has no ``[robot]`` section.
+#[pyfunction]
+pub fn robot_name() -> PyResult<Option<String>> {
+    horus_core::drivers::robot_name().map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
+/// The robot's name from a specific manifest path.
+#[pyfunction]
+pub fn robot_name_from(path: &str) -> PyResult<Option<String>> {
+    horus_core::drivers::robot_name_from(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
 /// Load hardware config from a specific config file path.
 #[pyfunction]
 pub fn load_from(py: Python<'_>, path: &str) -> PyResult<Vec<(String, Py<PyAny>)>> {
@@ -90,6 +109,8 @@ pub fn register_drivers_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     hardware.add_function(wrap_pyfunction!(load, &hardware)?)?;
     hardware.add_function(wrap_pyfunction!(load_from, &hardware)?)?;
     hardware.add_function(wrap_pyfunction!(register_driver, &hardware)?)?;
+    hardware.add_function(wrap_pyfunction!(robot_name, &hardware)?)?;
+    hardware.add_function(wrap_pyfunction!(robot_name_from, &hardware)?)?;
     hardware.add_class::<PyDriverParams>()?;
 
     hardware.setattr(

@@ -65,6 +65,13 @@ enum ServerEvent<A: Action> {
     Feedback(GoalId, <A as Action>::Feedback),
     /// The goal's execute callback returned; carries the final outcome.
     Completed(GoalId, GoalOutcome<A>),
+    /// The goal's execute callback panicked, so there is no outcome to carry.
+    ///
+    /// Distinct from `Completed` because `GoalOutcome` variants all carry an
+    /// `A::Result`, and a panicked callback never produced one. Without this the
+    /// goal could not be finalised at all and would sit `Active` forever, still
+    /// holding its concurrency slot.
+    Panicked(GoalId),
 }
 
 /// Outcome of applying the preemption policy to an incoming (goal-callback-
@@ -743,8 +750,24 @@ where
             let spawn = std::thread::Builder::new()
                 .name(format!("horus-action-{}", A::name()))
                 .spawn(move || {
-                    let outcome = callback(handle);
-                    events.lock().push(ServerEvent::Completed(goal_id, outcome));
+                    // The execute callback is user code, and the `Completed`
+                    // push below is what finalises the goal. If a panic skips
+                    // it, the goal stays `Active` forever: it keeps its
+                    // concurrency slot, so with `max_concurrent_goals(1)` and
+                    // `RejectNew` the server refuses every later goal, and the
+                    // client waits on a result that will never arrive. Nothing
+                    // reports it — the server looks healthy and simply stops
+                    // accepting work.
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        callback(handle)
+                    })) {
+                        Ok(outcome) => events.lock().push(ServerEvent::Completed(goal_id, outcome)),
+                        // Finalise the goal rather than leaving it hanging. A
+                        // caller can retry or escalate on an abort; it can do
+                        // nothing at all with silence. The panic itself has
+                        // already been reported by the panic hook.
+                        Err(_) => events.lock().push(ServerEvent::Panicked(goal_id)),
+                    }
                 });
 
             match spawn {
@@ -846,6 +869,33 @@ where
         self.process_goal_queue();
     }
 
+    /// Finalise a goal whose execute callback panicked.
+    ///
+    /// Separate from `complete_goal` because every `GoalOutcome` variant carries
+    /// an `A::Result`, and a callback that panicked never produced one.
+    /// Fabricating a result would mean constraining `A::Result: Default` on
+    /// every action in the system to serve one error path.
+    ///
+    /// So the goal is finalised by status only: it leaves `active_goals`, its
+    /// concurrency slot is released, queued goals proceed, and subscribers see
+    /// `Aborted`. What a caller does not get is a result payload — which is
+    /// honest, since none exists. Before this, the goal stayed `Active`
+    /// forever: with `max_concurrent_goals(1)` and `RejectNew` the server
+    /// refused every subsequent goal while appearing healthy.
+    fn abort_goal_without_result(&mut self, goal_id: GoalId, reason: &str) {
+        self.goals_aborted.fetch_add(1, Ordering::Relaxed);
+        log::error!(
+            "ActionServer '{}': Goal {} aborted — {}. No result was produced, so \
+             subscribers see the status only.",
+            A::name(),
+            goal_id,
+            reason
+        );
+        self.active_goals.remove(&goal_id);
+        self.publish_status(goal_id, GoalStatus::Aborted);
+        self.process_goal_queue();
+    }
+
     /// Dispatch feedback + completion events produced by goal-execution threads.
     ///
     /// This is the ONLY place feedback is published and the ONLY place completed
@@ -874,6 +924,12 @@ where
                         let _ = join.join();
                     }
                     self.complete_goal(goal_id, outcome);
+                }
+                ServerEvent::Panicked(goal_id) => {
+                    if let Some(join) = self.goal_threads.remove(&goal_id) {
+                        let _ = join.join();
+                    }
+                    self.abort_goal_without_result(goal_id, "execute callback panicked");
                 }
             }
         }

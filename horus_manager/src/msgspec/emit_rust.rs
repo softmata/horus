@@ -176,10 +176,7 @@ pub fn lib_rs(pkg: &Package, env: &layout::Env) -> String {
          pub const GENERATED_TYPES: &[(&str, u32)] = &[\n",
     );
     for m in &pkg.messages {
-        out.push_str(&format!(
-            "    (\"{}\", {}::LAYOUT_HASH),\n",
-            m.name, m.name
-        ));
+        out.push_str(&format!("    (\"{}\", {}::LAYOUT_HASH),\n", m.name, m.name));
     }
     out.push_str("];\n");
 

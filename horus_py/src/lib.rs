@@ -1,3 +1,22 @@
+// Building the tests with `extension-module` on cannot link: the feature tells
+// pyo3 to leave Python's symbols to the interpreter that will dlopen the `.so`,
+// and a test binary has no interpreter to get them from. Cargo cannot vary
+// features per target, so the feature has to be on by default (maturin and
+// `cargo build` need it) and off for tests.
+//
+// Without this, `cargo test -p horus_py` ends in ~40 lines of
+// `rust-lld: error: undefined symbol: PyEval_RestoreThread` and similar, which
+// says nothing about what to do. The instruction was in a comment in Cargo.toml,
+// which is not where anyone is looking when the linker fails.
+#[cfg(all(test, feature = "extension-module"))]
+compile_error!(
+    "run the horus_py tests with `--no-default-features`, e.g. \
+     `cargo test -p horus_py --no-default-features`. The `extension-module` \
+     feature is on by default so `cargo build` and maturin produce a working \
+     .so, but it leaves Python's symbols unresolved and a test binary cannot \
+     link them."
+);
+
 use pyo3::prelude::*;
 
 // Declared unconditionally so cargo compiles whatever `horus.msggen` writes

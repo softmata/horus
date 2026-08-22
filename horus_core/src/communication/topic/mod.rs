@@ -168,6 +168,21 @@ pub enum TopicLifecycleEvent {
         type_size: u32,
         is_pod: bool,
     },
+    /// A handle was first used in one direction: `publisher` is true on its
+    /// first send, false on its first recv.
+    ///
+    /// `Created` cannot carry this. A `Topic<T>` handle can both send and
+    /// receive, so at construction the direction is genuinely unknown — which
+    /// is why the network layer used to record every topic as "both" and lose
+    /// the distinction its import guard depends on. First use is the earliest
+    /// moment the answer exists.
+    RoleObserved {
+        name: String,
+        publisher: bool,
+        type_name_hash: u32,
+        type_size: u32,
+        is_pod: bool,
+    },
     /// A topic was dropped.
     Dropped { name: String },
 }
@@ -176,15 +191,108 @@ type TopicLifecycleHook = Box<dyn Fn(TopicLifecycleEvent) + Send + Sync>;
 
 static TOPIC_LIFECYCLE_HOOK: std::sync::OnceLock<TopicLifecycleHook> = std::sync::OnceLock::new();
 
+/// Topics that exist right now, so a hook installed later can be told about
+/// them.
+///
+/// The hook is a `OnceLock` set when the replicator starts, and the replicator
+/// starts from `scheduler.run()` — by which time every node has built its topics
+/// in `init()` or in its constructor. Those `Created` events fired into a hook
+/// that did not exist yet, so the network registry began life empty and stayed
+/// that way for exactly the topics a robot actually uses. Replaying on install
+/// closes that window without changing when anything else happens.
+///
+/// Handles are refcounted per name: one process routinely opens the same topic
+/// from several nodes, and the network layer only cares that the topic exists,
+/// not how many handles hold it. Dropping one handle must not erase a topic the
+/// others are still using.
+struct LiveTopic {
+    created: TopicLifecycleEvent,
+    /// Handles currently open on this name.
+    handles: usize,
+    /// Role events already seen, replayed to a late hook after `created`.
+    roles: Vec<TopicLifecycleEvent>,
+}
+
+type LiveTopics = std::collections::HashMap<String, LiveTopic>;
+
+static LIVE_TOPICS: std::sync::Mutex<Option<LiveTopics>> = std::sync::Mutex::new(None);
+
 /// Set a global hook called when topics are created or dropped.
 ///
 /// Called by horus_net at replicator startup to populate its TopicRegistry.
 /// Can only be set once (first caller wins).
+///
+/// Topics that already exist are replayed to the hook as `Created` events
+/// before this returns, so a late-installed hook sees the same set it would
+/// have seen had it been installed first.
 pub fn set_topic_lifecycle_hook(hook: impl Fn(TopicLifecycleEvent) + Send + Sync + 'static) {
-    let _ = TOPIC_LIFECYCLE_HOOK.set(Box::new(hook));
+    let boxed: TopicLifecycleHook = Box::new(hook);
+    if TOPIC_LIFECYCLE_HOOK.set(boxed).is_err() {
+        // Not the first caller; the existing hook keeps ownership of the stream.
+        return;
+    }
+    // Snapshot and release before calling out: the hook is arbitrary user code
+    // and may itself create a topic, which would re-enter this lock.
+    let existing: Vec<TopicLifecycleEvent> = match LIVE_TOPICS.lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .map(|live| {
+                live.values()
+                    .flat_map(|t| {
+                        // `Created` first: a hook may key its own state on it.
+                        std::iter::once(t.created.clone()).chain(t.roles.iter().cloned())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    if let Some(hook) = TOPIC_LIFECYCLE_HOOK.get() {
+        for event in existing {
+            hook(event);
+        }
+    }
 }
 
 fn notify_topic_lifecycle(event: TopicLifecycleEvent) {
+    // Record first, so the set stays accurate whether or not a hook is
+    // installed yet.
+    if let Ok(mut guard) = LIVE_TOPICS.lock() {
+        let live = guard.get_or_insert_with(LiveTopics::new);
+        match &event {
+            TopicLifecycleEvent::Created { name, .. } => {
+                live.entry(name.clone())
+                    .and_modify(|t| t.handles += 1)
+                    .or_insert_with(|| LiveTopic {
+                        created: event.clone(),
+                        handles: 1,
+                        roles: Vec::new(),
+                    });
+            }
+            TopicLifecycleEvent::RoleObserved {
+                name, publisher, ..
+            } => {
+                if let Some(t) = live.get_mut(name) {
+                    // At most two entries per name — publisher and subscriber —
+                    // however many handles observe them.
+                    let already = t.roles.iter().any(|e| {
+                        matches!(e, TopicLifecycleEvent::RoleObserved { publisher: p, .. } if p == publisher)
+                    });
+                    if !already {
+                        t.roles.push(event.clone());
+                    }
+                }
+            }
+            TopicLifecycleEvent::Dropped { name } => {
+                if let Some(t) = live.get_mut(name) {
+                    t.handles -= 1;
+                    if t.handles == 0 {
+                        live.remove(name);
+                    }
+                }
+            }
+        }
+    }
     if let Some(hook) = TOPIC_LIFECYCLE_HOOK.get() {
         hook(event);
     }
@@ -419,8 +527,9 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use header::{
-    read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
-    set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
+    read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total,
+    read_topic_sequence, set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead,
+    TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
@@ -629,6 +738,66 @@ unsafe impl<T: Send> Send for RingTopic<T> {}
 unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
 
 #[allow(private_interfaces)]
+/// Where a consumer's read position lands after a migration resync.
+///
+/// `header.tail` is a single shared value. On a broadcast backend each consumer
+/// keeps its own independent position and the shared tail trails the slowest of
+/// them, so adopting it wholesale moved every consumer that was ahead
+/// *backward* — and its next `recv()` returned an older sequence than one it had
+/// already delivered. Measured by
+/// `recv_never_reorders_or_duplicates_when_lapped`: 5 inversions across
+/// 1,296,457 messages, on 3 of 16 consumers, at migration boundaries —
+/// "consumer 6: 23929 then 23497 (backward by 432)".
+///
+/// Take the later of the two, then clamp to the head: if the ring itself
+/// restarted, the head comes back smaller than our stale tail and the clamp puts
+/// us at "nothing to read yet" rather than stranding us beyond the producer
+/// forever. On a single-consumer backend the shared tail is this consumer's own
+/// position, so the max is a no-op.
+///
+/// The guard applies only once something has been delivered. Before that there
+/// is no ordering to preserve, and refusing to move backward would strand a
+/// just-registered handle ahead of messages published while it was joining —
+/// the late-join adjustment can leave `local_tail` well past them.
+fn resynced_tail(local_tail: u64, shared_tail: u64, new_head: u64, delivered: bool) -> u64 {
+    if !delivered {
+        // Nothing has been handed to this consumer yet, so there is no ordering
+        // to preserve and no message to re-deliver. Adopting the shared position
+        // is what lets a handle that registered moments ago still see what was
+        // published while it was joining.
+        return shared_tail.min(new_head);
+    }
+    local_tail.max(shared_tail).min(new_head)
+}
+
+/// Drop module qualifiers from a type name, keeping its structure.
+///
+/// This was `rsplit("::").next()`, which is right for a plain type and wrong
+/// for a generic one: `horus_core::services::ServiceResponse<pkg::AddTwoIntsResponse>`
+/// has `AddTwoIntsResponse>` as its last `::`-separated segment, so that is
+/// what went into the header and what `horus topic info` printed — a name with
+/// a stray closing bracket and no mention of the wrapper it is actually inside.
+/// Every service topic showed one.
+///
+/// Qualifiers are stripped per segment instead, so the same input yields
+/// `ServiceResponse<AddTwoIntsResponse>`.
+fn strip_module_paths(full: &str) -> String {
+    let mut out = String::with_capacity(full.len());
+    let mut segment = String::new();
+    for c in full.chars() {
+        // Anything that ends an identifier: generics, tuples, arrays, refs.
+        if matches!(c, '<' | '>' | ',' | ' ' | '(' | ')' | '[' | ']' | '&' | ';') {
+            out.push_str(segment.rsplit("::").next().unwrap_or(&segment));
+            segment.clear();
+            out.push(c);
+        } else {
+            segment.push(c);
+        }
+    }
+    out.push_str(segment.rsplit("::").next().unwrap_or(&segment));
+    out
+}
+
 impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<T> {
     /// Header size in shared memory
     const HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
@@ -787,9 +956,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
-        // Extract a short type name for the header (e.g. "CmdVel" from "horus_robotics::messages::CmdVel")
+        // Extract a short type name for the header (e.g. "CmdVel" from
+        // "horus_robotics::messages::CmdVel").
         let full_type_name = std::any::type_name::<T>();
-        let short_type_name = full_type_name.rsplit("::").next().unwrap_or(full_type_name);
+        let short_type_name = &strip_module_paths(full_type_name);
         let final_slot_size = Self::negotiate_shm_header(
             name,
             &storage,
@@ -926,10 +1096,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let existing_type = header.type_name_str();
         let is_generic = type_name_str.eq_ignore_ascii_case("GenericMessage")
             || existing_type.eq_ignore_ascii_case("GenericMessage");
+        // Compare what was actually stored, not what we would have liked to
+        // store. `type_name` is a fixed 32-byte field, so a longer name is
+        // written truncated — and then a second opener of the *same* type
+        // compared its full name against the truncated one and declared a type
+        // mismatch against itself:
+        //
+        //   Existing type 'ActionFeedback<CancelTopicFeedb',
+        //   attempted 'ActionFeedback<CancelTopicFeedback>'
+        //
+        // Any type whose name reaches the field width hit this; generic types
+        // (`ActionFeedback<…>`, `ServiceResponse<…>`) reach it easily.
+        let attempted_as_stored = super::topic::header::type_name_as_stored(type_name_str);
         if !is_generic
             && !existing_type.is_empty()
             && !type_name_str.is_empty()
-            && !existing_type.eq_ignore_ascii_case(type_name_str)
+            && !existing_type.eq_ignore_ascii_case(attempted_as_stored)
         {
             // Was wrapped in a bare String, which renders through the
             // `From<String>` impl as "Communication serialization failed:" —
@@ -1153,6 +1335,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         } else {
             TopicRole::Consumer
         };
+
+        // Tell the network layer which direction this handle actually uses.
+        //
+        // This runs once per handle per direction — `ensure_role` returns early
+        // once the role already covers the call — so it is off the hot path, and
+        // it is the earliest point at which the answer is knowable at all.
+        // Without it the import guard cannot tell a topic this robot publishes
+        // from one it merely subscribes to, and "deny imports for topics we
+        // publish" degrades either to denying everything or to allowing a remote
+        // peer to overwrite our own commands.
+        notify_topic_lifecycle(TopicLifecycleEvent::RoleObserved {
+            name: self.name.clone(),
+            publisher: is_producer,
+            type_name_hash: fnv1a_type_hash(std::any::type_name::<T>()),
+            type_size: std::mem::size_of::<T>() as u32,
+            is_pod: local.is_pod,
+        });
 
         // Late-join fix: if the ring has wrapped since no consumer was reading,
         // advance tail to skip overwritten slots. Without this, a new consumer
@@ -1754,8 +1953,32 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Re-sync head/tail from SHM after initialize_backend, in case an
         // auto-grow remapped the storage. Use header_ptr (always valid).
         let header_post = unsafe { &*self.header_ptr.get() };
-        local.local_head = header_post.sequence_or_head.load(Ordering::Acquire);
-        local.local_tail = header_post.tail.load(Ordering::Acquire);
+        let new_head = header_post.sequence_or_head.load(Ordering::Acquire);
+        let shared_tail = header_post.tail.load(Ordering::Acquire);
+        local.local_head = new_head;
+
+        // Never pull this consumer's read position backward.
+        //
+        // `header.tail` is a single shared value. On a broadcast backend each
+        // consumer keeps its own independent position, and the shared tail
+        // trails the slowest of them — so adopting it wholesale moved every
+        // consumer that was ahead *backward*, and its next `recv()` returned an
+        // older sequence than one it had already delivered. Measured by
+        // `recv_never_reorders_or_duplicates_when_lapped`: 5 inversions across
+        // 1,296,457 messages, on 3 of 16 consumers, at migration boundaries —
+        // "consumer 6: 23929 then 23497 (backward by 432)".
+        //
+        // Take the later of the two, then clamp to the head: if the ring itself
+        // restarted, head comes back smaller than our stale tail and the clamp
+        // puts us at "nothing to read yet" rather than stranding us beyond the
+        // producer forever. On a single-consumer backend the shared tail is this
+        // consumer's own position, so the max is a no-op.
+        local.local_tail = resynced_tail(
+            local.local_tail,
+            shared_tail,
+            new_head,
+            local.msg_counter > 0,
+        );
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);
         self.process_epoch
@@ -1781,6 +2004,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[cfg(test)]
     pub fn migration_metrics(&self) -> &MigrationMetrics {
         &self.metrics
+    }
+
+    /// Messages this handle's consumer side skipped past after being lapped.
+    ///
+    /// Per handle, not per topic: it is this consumer that fell behind. See
+    /// `LocalState::missed`.
+    pub fn missed_count(&self) -> u64 {
+        self.local().missed
     }
 
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
@@ -1917,6 +2148,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // path fires on every attempt so the user sees it.
         const SPIN_ITERS: u32 = 64;
         const YIELD_ITERS: u32 = 4;
+        /// How long the yield phase may spend before giving up and dropping.
+        ///
+        /// `send` is the lossy publish: it never blocks and never fails, it
+        /// drops. But `yield_now` hands the CPU to whatever else is runnable and
+        /// getting it back is a scheduling decision, not a bounded wait. Four
+        /// unconditional yields on a full ring measured 26.4ms mean / 58.6ms
+        /// worst with 32 competing threads, and 109.6ms / 199.0ms with 128 — on
+        /// a call that is supposed to drop rather than wait, from a control loop
+        /// that may be running at 1kHz. A robot running more nodes than it has
+        /// cores is oversubscribed by design, so this is the ordinary case.
+        ///
+        /// 200μs is far above the ~1.4μs the four yields cost on an idle
+        /// machine, so nothing changes when the machine is quiet; it only stops
+        /// the loop once yielding has demonstrably become expensive.
+        const YIELD_BUDGET: std::time::Duration = std::time::Duration::from_micros(200);
 
         for _ in 0..SPIN_ITERS {
             std::hint::spin_loop();
@@ -1925,11 +2171,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 Err(returned) => msg = returned,
             }
         }
+        let yield_start = std::time::Instant::now();
         for _ in 0..YIELD_ITERS {
             std::thread::yield_now();
             match self.try_send(msg) {
                 Ok(()) => return,
                 Err(returned) => msg = returned,
+            }
+            if yield_start.elapsed() >= YIELD_BUDGET {
+                break;
             }
         }
         self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
@@ -1971,8 +2221,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             };
         }
 
-        // Phase 3: yield (microsecond range)
+        // Phase 3: yield (microsecond range on an idle machine — unbounded on a
+        // busy one).
+        //
+        // Check the deadline BEFORE each yield. `yield_now` hands the CPU to
+        // whatever else is runnable, and on a loaded machine getting it back can
+        // take tens of milliseconds; eight of those ran unconditionally, so
+        // `send_blocking(msg, Duration::ZERO)` — which reads as "try, do not
+        // block" — was measured at 56 ms. At 1 kHz that is 56 missed ticks for a
+        // caller that asked to wait for nothing. The spin phase above stays
+        // unchecked on purpose: 256 `spin_loop` hints cost well under a
+        // microsecond, less than the clock read that would guard them.
         for _ in 0..8u32 {
+            if std::time::Instant::now() >= deadline {
+                return Err(SendBlockingError::Timeout);
+            }
             std::thread::yield_now();
             msg = match self.try_send(msg) {
                 Ok(()) => return Ok(()),
@@ -2479,20 +2742,55 @@ impl<T: TopicMessage> Topic<T> {
         self.ring.metrics()
     }
 
-    /// Number of messages dropped because the ring buffer was full.
+    /// Number of messages dropped by the **producer** because the ring was full.
     ///
     /// This is the count of `send()` calls where the message was discarded
-    /// after the bounded spin+yield retry failed. Useful for detecting
-    /// backpressure or slow consumers.
+    /// after the bounded spin+yield retry failed.
+    ///
+    /// This is *not* the way to detect a slow consumer. The broadcast backends
+    /// overwrite rather than fail, so their producers never record a drop while
+    /// a subscriber that falls a full lap behind loses everything in between —
+    /// [`missed_count`](Self::missed_count) is that number, and it is counted on
+    /// the consumer side where the loss actually happens.
     ///
     /// # Example
     /// ```rust,ignore
     /// if topic.dropped_count() > 0 {
-    ///     eprintln!("WARNING: {} messages dropped on '{}'", topic.dropped_count(), topic.name());
+    ///     horus_core::terminal::eprint_line(&format!(
+    ///         "WARNING: publisher dropped {} messages on '{}'",
+    ///         topic.dropped_count(),
+    ///         topic.name()
+    ///     ));
     /// }
     /// ```
     pub fn dropped_count(&self) -> u64 {
         self.ring.metrics().send_failures()
+    }
+
+    /// Number of messages **this subscriber** skipped past because the producer
+    /// lapped it.
+    ///
+    /// Drop-oldest under overload is by design: a 10 Hz node reading a 1 kHz
+    /// sensor should get the most recent sample, not a backlog. What was missing
+    /// is the number — nothing counted the gap, so a subscriber losing 144 of
+    /// 400 messages looked identical to one losing none.
+    ///
+    /// The count is per handle and per direction: it belongs to the consumer
+    /// that fell behind, not to the topic, so two subscribers on the same topic
+    /// report independently.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if topic.missed_count() > 0 {
+    ///     horus_core::terminal::eprint_line(&format!(
+    ///         "WARNING: fell behind on '{}' — skipped {} messages",
+    ///         topic.name(),
+    ///         topic.missed_count()
+    ///     ));
+    /// }
+    /// ```
+    pub fn missed_count(&self) -> u64 {
+        self.ring.missed_count()
     }
 
     /// Check if a message is available without consuming it.
@@ -3116,5 +3414,103 @@ impl Topic<Tensor> {
             return None;
         }
         crate::memory::TensorHandle::from_owned(tensor, pool).ok()
+    }
+}
+
+#[cfg(test)]
+mod type_name_tests {
+    use super::strip_module_paths;
+
+    #[test]
+    fn a_plain_type_keeps_only_its_name() {
+        assert_eq!(
+            strip_module_paths("horus_robotics::messages::CmdVel"),
+            "CmdVel"
+        );
+        assert_eq!(strip_module_paths("f64"), "f64");
+    }
+
+    #[test]
+    fn a_generic_type_keeps_its_structure() {
+        // The regression. `rsplit("::").next()` returned `AddTwoIntsResponse>`
+        // for this — a stray closing bracket, and no sign of the wrapper the
+        // payload is actually inside. Every service topic reported one, and it
+        // is what `horus topic info` printed as the message type.
+        assert_eq!(
+            strip_module_paths(
+                "horus_core::services::ServiceResponse<pkg::svc::AddTwoIntsResponse>"
+            ),
+            "ServiceResponse<AddTwoIntsResponse>"
+        );
+    }
+
+    #[test]
+    fn nested_and_multi_argument_generics_survive() {
+        assert_eq!(
+            strip_module_paths("a::Outer<b::Inner<c::Leaf>, d::Other>"),
+            "Outer<Inner<Leaf>, Other>"
+        );
+        assert_eq!(
+            strip_module_paths("core::option::Option<alloc::vec::Vec<u8>>"),
+            "Option<Vec<u8>>"
+        );
+    }
+
+    #[test]
+    fn arrays_tuples_and_references_survive() {
+        assert_eq!(strip_module_paths("[pkg::Item; 8]"), "[Item; 8]");
+        assert_eq!(strip_module_paths("(pkg::A, pkg::B)"), "(A, B)");
+        assert_eq!(strip_module_paths("&pkg::Thing"), "&Thing");
+    }
+
+    #[test]
+    fn an_empty_or_unqualified_name_is_unchanged() {
+        assert_eq!(strip_module_paths(""), "");
+        assert_eq!(strip_module_paths("Bare"), "Bare");
+    }
+}
+
+#[cfg(test)]
+mod resync_tail_tests {
+    use super::resynced_tail;
+
+    #[test]
+    fn a_consumer_ahead_of_the_shared_tail_keeps_its_position() {
+        // The regression. On a broadcast backend the shared tail trails the
+        // slowest consumer, so a faster one adopting it is pulled backward and
+        // re-delivers messages it has already returned.
+        assert_eq!(resynced_tail(23_929, 23_497, 30_000, true), 23_929);
+    }
+
+    #[test]
+    fn a_handle_that_has_delivered_nothing_adopts_the_shared_position() {
+        // There is no ordering to preserve yet, and refusing to move backward
+        // would strand a just-registered handle ahead of messages published
+        // while it was joining — the late-join adjustment can leave `local_tail`
+        // well past them.
+        assert_eq!(resynced_tail(0, 5_000, 6_000, false), 5_000);
+        assert_eq!(resynced_tail(9_000, 5_000, 6_000, false), 5_000);
+    }
+
+    #[test]
+    fn a_restarted_ring_pulls_a_stale_tail_down_to_the_head() {
+        // If the head comes back smaller than our tail the ring restarted;
+        // keeping the old position would strand this consumer beyond the
+        // producer forever, waiting for sequences that will not arrive.
+        assert_eq!(resynced_tail(23_929, 0, 12, true), 12);
+    }
+
+    #[test]
+    fn a_single_consumer_backend_is_unaffected() {
+        // There the shared tail is this consumer's own position.
+        assert_eq!(resynced_tail(4_096, 4_096, 8_192, true), 4_096);
+    }
+
+    #[test]
+    fn the_result_is_never_beyond_the_producer() {
+        for (local, shared, head) in [(9u64, 3u64, 5u64), (0, 99, 7), (100, 100, 100)] {
+            assert!(resynced_tail(local, shared, head, true) <= head);
+            assert!(resynced_tail(local, shared, head, false) <= head);
+        }
     }
 }

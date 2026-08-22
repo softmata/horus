@@ -204,7 +204,12 @@ impl std::fmt::Display for Diag {
 }
 
 impl Diag {
-    pub fn new(file: &std::path::Path, line: usize, col: usize, message: impl Into<String>) -> Self {
+    pub fn new(
+        file: &std::path::Path,
+        line: usize,
+        col: usize,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             file: file.to_path_buf(),
             line,

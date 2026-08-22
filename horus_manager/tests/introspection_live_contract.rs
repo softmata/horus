@@ -105,8 +105,7 @@ impl LiveNode {
             .env("HORUS_NAMESPACE", &self.namespace)
             .output()
             .expect("horus must run");
-        String::from_utf8_lossy(&out.stdout).into_owned()
-            + &String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
     }
 
     /// Poll `horus <args>` until its output satisfies `done`, or give up.
@@ -116,10 +115,14 @@ impl LiveNode {
     /// beats a fixed sleep: it is faster when things work and still bounded
     /// when they do not.
     fn wait_for(&self, args: &[&str], done: impl Fn(&str) -> bool) -> Option<String> {
-        // Generous because this is a liveness bound, not a timing
-        // assertion: the values under test appear on a ~1 Hz presence refresh,
-        // and a loaded machine can delay a child's first publish by seconds.
-        let deadline = Instant::now() + Duration::from_secs(45);
+        // 60s. This is a bound on *failure*, not on success: the loop returns
+        // the moment the output is right, so a longer deadline costs nothing
+        // when things work. The values under test appear on a ~1 Hz presence
+        // refresh, and eight of these tests each spawn a scheduler process with
+        // RT threads alongside the rest of the suite — on a busy machine a
+        // shorter bound failed as "node never appeared", indistinguishable from
+        // the defect these tests exist to catch.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
             let out = self.cli(args);
             if done(&out) {
@@ -192,9 +195,10 @@ fn a_main_thread_node_reports_the_ticks_it_has_executed() {
     let node = LiveNode::spawn("live_ticks_be", true);
     let out = node
         .wait_for(&["node", "list"], |o| {
-            o.lines()
-                .filter(|l| l.contains("ci_test_node"))
-                .any(|l| l.split_whitespace().any(|f| f.parse::<u64>().is_ok_and(|n| n > 0)))
+            o.lines().filter(|l| l.contains("ci_test_node")).any(|l| {
+                l.split_whitespace()
+                    .any(|f| f.parse::<u64>().is_ok_and(|n| n > 0))
+            })
         })
         .unwrap_or_else(|| {
             panic!(
@@ -210,9 +214,10 @@ fn an_executor_owned_node_reports_the_ticks_it_has_executed() {
     let _serial = serialize();
     let node = LiveNode::spawn("live_ticks_rt", false);
     node.wait_for(&["node", "info", "ci_test_node"], |o| {
-        o.lines()
-            .filter(|l| l.contains("Ticks"))
-            .any(|l| l.split_whitespace().any(|f| f.parse::<u64>().is_ok_and(|n| n > 0)))
+        o.lines().filter(|l| l.contains("Ticks")).any(|l| {
+            l.split_whitespace()
+                .any(|f| f.parse::<u64>().is_ok_and(|n| n > 0))
+        })
     })
     .unwrap_or_else(|| {
         panic!(
@@ -230,7 +235,9 @@ fn node_info_reports_a_measured_rate_beside_the_configured_one() {
     let _serial = serialize();
     let node = LiveNode::spawn("live_rate", true);
     let out = node
-        .wait_for(&["node", "info", "ci_test_node"], |o| o.contains("achieving"))
+        .wait_for(&["node", "info", "ci_test_node"], |o| {
+            o.contains("achieving")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "no measured rate was ever reported:\n{}",

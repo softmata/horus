@@ -24,6 +24,28 @@ struct DiscoveredService {
     response_subscribers: usize,
 }
 
+impl DiscoveredService {
+    /// Servers listening on this service.
+    ///
+    /// A server subscribes to the request topic, so that is where the count
+    /// lives. It was read off the *shared* response topic's publishers, which
+    /// real traffic never touches: a server routes each answer to the
+    /// per-client response topic named in the request
+    /// (`add_two_ints.response.<id>`), leaving the shared one at zero
+    /// permanently. So `horus service list` printed `Servers 0` for a service
+    /// that answered calls correctly — measured against a live server: request
+    /// topic `pubs=1 subs=1 total=1000`, shared response topic all zeros, and
+    /// the per-client topic carrying the 1000 responses.
+    fn servers(&self) -> usize {
+        self.request_subscribers
+    }
+
+    /// Clients calling this service — they publish requests.
+    fn clients(&self) -> usize {
+        self.request_publishers
+    }
+}
+
 /// Discover active services by scanning SHM topics for `.request` + `.response` pairs.
 fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
     let topics = discover_shared_memory()?;
@@ -52,8 +74,17 @@ fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
                     response_subscribers: 0,
                 });
             entry.has_request = true;
-            entry.request_publishers = topic.publishers.len();
-            entry.request_subscribers = topic.subscribers.len();
+            // Endpoint counts come from the ring header, not the topic-node
+            // registry name lists.
+            //
+            // The registry only records a topic opened from inside a node's
+            // tick, and a service server opens its topics on a background
+            // thread — so `publishers`/`subscribers` were empty for every
+            // service, and `horus service list` reported `Servers 0` for a
+            // service that answered calls correctly. That is the first thing
+            // someone checks when a call times out.
+            entry.request_publishers = topic.publisher_count as usize;
+            entry.request_subscribers = topic.subscriber_count as usize;
         } else if let Some(svc_name) = topic.topic_name.strip_suffix(".response").or_else(|| {
             topic
                 .topic_name
@@ -72,8 +103,8 @@ fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
                     response_subscribers: 0,
                 });
             entry.has_response = true;
-            entry.response_publishers = topic.publishers.len();
-            entry.response_subscribers = topic.subscribers.len();
+            entry.response_publishers = topic.publisher_count as usize;
+            entry.response_subscribers = topic.subscriber_count as usize;
         }
     }
 
@@ -96,8 +127,8 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
                 serde_json::json!({
                     "name": s.name,
                     "active": s.has_request && s.has_response,
-                    "servers": s.response_publishers,
-                    "clients": s.request_publishers,
+                    "servers": s.servers(),
+                    "clients": s.clients(),
                 })
             })
             .collect();
@@ -135,10 +166,10 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
             };
             println!("  {} {}", "Service:".cyan(), svc.name.white().bold());
             println!("    {} {}", "Status:".dimmed(), status);
-            println!("    {} {}", "Servers:".dimmed(), svc.response_publishers);
-            println!("    {} {}", "Clients:".dimmed(), svc.request_publishers);
-            println!("    {} {}/request", "Request topic:".dimmed(), svc.name);
-            println!("    {} {}/response", "Response topic:".dimmed(), svc.name);
+            println!("    {} {}", "Servers:".dimmed(), svc.servers());
+            println!("    {} {}", "Clients:".dimmed(), svc.clients());
+            println!("    {} {}.request", "Request topic:".dimmed(), svc.name);
+            println!("    {} {}.response", "Response topic:".dimmed(), svc.name);
             println!();
         }
     } else {
@@ -158,7 +189,10 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
             };
             println!(
                 "  {:<35} {:>8} {:>8} {}",
-                svc.name, svc.response_publishers, svc.request_publishers, status
+                svc.name,
+                svc.servers(),
+                svc.clients(),
+                status
             );
         }
     }
@@ -171,7 +205,7 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
 
 // ─── service_type ─────────────────────────────────────────────────────────────
 
-/// Show type info for a service (`horus service type <name>`)
+/// Show type info for a service (`horus service info <name>`)
 pub fn service_type(name: &str) -> HorusResult<()> {
     let services = discover_services()?;
 
@@ -195,13 +229,17 @@ pub fn service_type(name: &str) -> HorusResult<()> {
     println!("{}", "Service Type Information".green().bold());
     println!();
     println!("  {} {}", "Name:".cyan(), svc.name.white().bold());
+    // Dots, not slashes: `add_two_ints.request` is the name on disk and the one
+    // `horus topic echo` accepts. Printing a slash gave a name that does not
+    // exist, in the one place someone would copy it from.
     println!(
-        "  {} {}/request  (ServiceRequest<Req>)",
+        "  {} {}.request  (ServiceRequest<Req>)",
         "Request topic:".cyan(),
         svc.name
     );
     println!(
-        "  {} {}/response (ServiceResponse<Res>)",
+        "  {} {}.response (ServiceResponse<Res>, per-client topics carry the \
+         actual replies)",
         "Response topic:".cyan(),
         svc.name
     );
@@ -214,8 +252,8 @@ pub fn service_type(name: &str) -> HorusResult<()> {
             "incomplete".yellow()
         }
     );
-    println!("  {} {}", "Servers:".cyan(), svc.response_publishers);
-    println!("  {} {}", "Clients:".cyan(), svc.request_publishers);
+    println!("  {} {}", "Servers:".cyan(), svc.servers());
+    println!("  {} {}", "Clients:".cyan(), svc.clients());
     println!();
     println!(
         "  {} Use 'horus service call {} <request_json>' to call this service",
@@ -681,8 +719,39 @@ mod tests {
             response_subscribers: 5,
         };
         assert!(svc.has_request && svc.has_response, "Should be active");
-        assert_eq!(svc.request_publishers, 5, "5 clients publishing requests");
-        assert_eq!(svc.response_publishers, 3, "3 servers publishing responses");
+        assert_eq!(svc.clients(), 5, "5 clients publishing requests");
+        assert_eq!(
+            svc.servers(),
+            3,
+            "3 servers, counted where they are visible: subscribed to requests"
+        );
+    }
+
+    #[test]
+    fn a_live_server_is_not_reported_as_zero() {
+        // The regression, in the shape a real service actually has. Servers used
+        // to be counted as publishers of the *shared* response topic — which no
+        // reply ever uses: a server routes each answer to the per-client topic
+        // named in the request. Measured against a live server handling 1000
+        // calls:
+        //
+        //   add_two_ints.request                pubs=1 subs=1 total=1000
+        //   add_two_ints.response               pubs=0 subs=0 total=0
+        //   add_two_ints.response.1549808024997 pubs=1 subs=1 total=1000
+        //
+        // so `horus service list` printed `Servers 0` for a service answering
+        // correctly — the first thing anyone checks when a call times out.
+        let svc = DiscoveredService {
+            name: "add_two_ints".to_string(),
+            has_request: true,
+            has_response: true,
+            request_publishers: 1,  // the client
+            request_subscribers: 1, // the server
+            response_publishers: 0, // shared response topic: never used
+            response_subscribers: 0,
+        };
+        assert_eq!(svc.servers(), 1, "a server that is serving must not read 0");
+        assert_eq!(svc.clients(), 1);
     }
 
     // ── Battle tests: topic suffix parsing edge cases ─────────────────────
