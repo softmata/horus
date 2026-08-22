@@ -129,6 +129,10 @@ pub fn error_code_info(code: &str) -> Option<(&'static str, &'static str)> {
         "H005" => Some(("missing-pkg-config", "pkg-config tool not installed")),
         "H006" => Some(("missing-openssl", "OpenSSL development headers missing")),
         "H007" => Some(("missing-c-compiler", "C compiler (cc) not found")),
+        "H008" => Some((
+            "first-party-crate",
+            "HORUS's own crate cannot be resolved (it is not on crates.io)",
+        )),
         // ── Pip errors ──────────────────────────────────
         "H010" => Some(("pip-not-found", "Python package not found on PyPI")),
         "H011" => Some(("pip-version-conflict", "Python dependency version conflict")),
@@ -234,21 +238,30 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
 
     // Missing crate
     if let Some(crate_name) = extract_pattern(stderr, r"no matching package named `([^`]+)`") {
-        let mut diag = Diagnostic::new(
-            "cargo",
-            "H001",
-            format!("Crate '{}' not found on crates.io", crate_name),
-            format!(
-                "Crate '{}' not found on crates.io. Check the name or add it with:\n  {}",
-                crate_name.cyan(),
-                format!("horus add {}", crate_name).green()
-            ),
-        )
-        .with_fix(Fix::Command {
-            command: format!("horus add {}", crate_name),
-        });
-        maybe_suggest_typo(&mut diag, &crate_name, COMMON_CRATES);
-        diagnostics.push(diag);
+        if is_first_party_crate(&crate_name) {
+            // HORUS's own crates have never been on crates.io. Telling the user
+            // one of them is "not found on crates.io. Check the name or add it
+            // with: horus add horus_core" is wrong on all three counts: the name
+            // is right, crates.io is the wrong place to look, and `horus add`
+            // writes a registry dependency that can never resolve.
+            diagnostics.push(first_party_crate_hint(&crate_name));
+        } else {
+            let mut diag = Diagnostic::new(
+                "cargo",
+                "H001",
+                format!("Crate '{}' not found on crates.io", crate_name),
+                format!(
+                    "Crate '{}' not found on crates.io. Check the name or add it with:\n  {}",
+                    crate_name.cyan(),
+                    format!("horus add {}", crate_name).green()
+                ),
+            )
+            .with_fix(Fix::Command {
+                command: format!("horus add {}", crate_name),
+            });
+            maybe_suggest_typo(&mut diag, &crate_name, COMMON_CRATES);
+            diagnostics.push(diag);
+        }
     }
 
     // Version not found
@@ -373,21 +386,28 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
         stderr,
         r"error\[E0433\]: (?:failed to resolve: use of undeclared crate or module|cannot find module or crate) `([^`]+)`",
     ) {
-        diagnostics.push(
-            Diagnostic::new(
-                "cargo",
-                "H030",
-                format!("Crate or module '{}' not declared", name),
-                format!(
-                    "Crate or module '{}' is not declared. Add it to your project:\n  {}",
-                    name.cyan(),
-                    format!("horus add {}", name).green()
-                ),
-            )
-            .with_fix(Fix::Command {
-                command: format!("horus add {}", name),
-            }),
-        );
+        if is_first_party_crate(&name) {
+            // Same wrong advice by another route: `horus add horus_core`
+            // cannot bring in a crate that is supplied as a path dependency
+            // from the HORUS source tree.
+            diagnostics.push(first_party_crate_hint(&name));
+        } else {
+            diagnostics.push(
+                Diagnostic::new(
+                    "cargo",
+                    "H030",
+                    format!("Crate or module '{}' not declared", name),
+                    format!(
+                        "Crate or module '{}' is not declared. Add it to your project:\n  {}",
+                        name.cyan(),
+                        format!("horus add {}", name).green()
+                    ),
+                )
+                .with_fix(Fix::Command {
+                    command: format!("horus add {}", name),
+                }),
+            );
+        }
     }
 
     // E0599: no method found
@@ -892,6 +912,72 @@ pub fn exit_code_hint(tool: &str, code: i32) -> Vec<Diagnostic> {
     diagnostics
 }
 
+// ── First-party crates ──────────────────────────────────────────────────────
+
+/// The crates HORUS ships itself.
+///
+/// None of these is published to crates.io. A generated project gets them as
+/// path dependencies pointing at the HORUS source tree, injected into
+/// `.horus/Cargo.toml` by `cargo_gen::write_horus_path_deps`, plus the
+/// `[patch]` tables that redirect the git-sourced ones. So when cargo says
+/// `no matching package named horus_core found`, the name is not a typo and
+/// the registry is not where the answer is: HORUS could not supply its own
+/// source tree, and that is what has to be reported.
+pub const FIRST_PARTY_CRATES: &[&str] = &[
+    "horus",
+    "horus-robotics",
+    "horus-tf",
+    "horus_core",
+    "horus_cpp",
+    "horus_cpp_macros",
+    "horus_library",
+    "horus_macros",
+    "horus_manager",
+    "horus_net",
+    "horus_py",
+    "horus_sys",
+    "horus_types",
+];
+
+/// Whether `name` is a crate HORUS supplies rather than one cargo can fetch.
+pub fn is_first_party_crate(name: &str) -> bool {
+    FIRST_PARTY_CRATES.contains(&name)
+}
+
+/// The diagnostic for a HORUS crate cargo could not resolve.
+///
+/// Names the actual cause (HORUS's source tree is not reachable from this
+/// build) and gives remedies that exist, instead of sending the user to
+/// crates.io and to `horus add`, neither of which can supply these crates.
+fn first_party_crate_hint(name: &str) -> Diagnostic {
+    Diagnostic::new(
+        "cargo",
+        "H008",
+        format!("'{}' ships with HORUS and is not a crates.io package", name),
+        format!(
+            "'{}' is part of HORUS itself, so it is not on crates.io, and \
+             `horus add` installs registry packages — it cannot supply this one.\n  \
+             HORUS puts horus, horus_core, horus_macros and horus_library on \
+             every generated project's path automatically — `use horus::prelude::*;` \
+             needs no entry in horus.toml.\n  \
+             Cargo failing to see them means HORUS could not find its own source \
+             tree — the same tree the `[patch]` tables in .horus/Cargo.toml \
+             redirect horus-robotics and horus-tf at. Check the installation \
+             with:\n  {}\n  \
+             or point HORUS at a checkout with {}, or reinstall with {}.\n  \
+             If this project has its own Cargo.toml, HORUS builds from that file \
+             and adds nothing to it — declare the dependency there yourself.",
+            name.cyan(),
+            "horus doctor".green(),
+            "HORUS_SOURCE=/path/to/horus".green(),
+            "./install.sh".green(),
+        ),
+    )
+    .with_fix(Fix::Command {
+        command: "horus doctor".to_string(),
+    })
+}
+
 // ── Fuzzy matching ──────────────────────────────────────────────────────────
 
 /// Common Rust crates for "did you mean?" suggestions.
@@ -924,9 +1010,11 @@ const COMMON_CRATES: &[&str] = &[
     "wgpu",
     "winit",
     "image",
-    "horus",
-    "horus_core",
-    "horus_library",
+    // No HORUS crate belongs in this table. It feeds "Did you mean: X?" on a
+    // diagnostic whose fix is `horus add X`, and `horus add horus_core` writes
+    // a crates.io dependency for a crate that is not on crates.io — so a
+    // suggestion from here would have replaced one dead end with another.
+    // Pinned by `no_first_party_crate_is_offered_as_a_crates_io_suggestion`.
     "rclrs",
     "prost",
     "tonic",
@@ -954,7 +1042,9 @@ const COMMON_PYTHON_PACKAGES: &[&str] = &[
     "flask",
     "fastapi",
     "horus",
-    "horus-py",
+    // The distribution is `horus-robotics`; it installs the module `horus`.
+    // `horus-py` is the name of the source directory and of nothing on PyPI.
+    "horus-robotics",
     "rclpy",
     "pyyaml",
     "toml",
@@ -1295,10 +1385,11 @@ mod tests {
     #[test]
     fn error_code_catalog_covers_all_defined_codes() {
         let codes = [
-            "H001", "H002", "H003", "H004", "H005", "H006", "H007", "H010", "H011", "H012", "H013",
-            "H014", "H020", "H021", "H022", "H023", "H024", "H025", "H030", "H031", "H032", "H033",
-            "H034", "H035", "H036", "H037", "H040", "H041", "H042", "H043", "H044", "H045", "H046",
-            "H050", "H051", "H052", "H053", "H054", "H055", "H060", "H061", "H062", "H063", "H064",
+            "H001", "H002", "H003", "H004", "H005", "H006", "H007", "H008", "H010", "H011", "H012",
+            "H013", "H014", "H020", "H021", "H022", "H023", "H024", "H025", "H030", "H031", "H032",
+            "H033", "H034", "H035", "H036", "H037", "H040", "H041", "H042", "H043", "H044", "H045",
+            "H046", "H050", "H051", "H052", "H053", "H054", "H055", "H060", "H061", "H062", "H063",
+            "H064",
         ];
         for code in &codes {
             assert!(
@@ -1312,10 +1403,11 @@ mod tests {
     #[test]
     fn error_code_no_duplicates() {
         let codes = [
-            "H001", "H002", "H003", "H004", "H005", "H006", "H007", "H010", "H011", "H012", "H013",
-            "H014", "H020", "H021", "H022", "H023", "H024", "H025", "H030", "H031", "H032", "H033",
-            "H034", "H035", "H036", "H037", "H040", "H041", "H042", "H043", "H044", "H045", "H046",
-            "H050", "H051", "H052", "H053", "H054", "H055", "H060", "H061", "H062", "H063", "H064",
+            "H001", "H002", "H003", "H004", "H005", "H006", "H007", "H008", "H010", "H011", "H012",
+            "H013", "H014", "H020", "H021", "H022", "H023", "H024", "H025", "H030", "H031", "H032",
+            "H033", "H034", "H035", "H036", "H037", "H040", "H041", "H042", "H043", "H044", "H045",
+            "H046", "H050", "H051", "H052", "H053", "H054", "H055", "H060", "H061", "H062", "H063",
+            "H064",
         ];
         let mut slugs: Vec<&str> = codes
             .iter()
@@ -1734,6 +1826,113 @@ mod tests {
         // Distance 0 should be filtered out (exact match = not a typo)
         // Use a name that has no other close neighbors
         assert_eq!(fuzzy_match("crossbeam", COMMON_CRATES, 2), None);
+    }
+
+    // ── First-party crates (PATH-2) ──────────────────────────────────────
+    //
+    // `no matching package named `horus_core` found` used to produce
+    //
+    //     horus hint [cargo] H001
+    //     Crate 'horus_core' not found on crates.io. Check the name or add it with:
+    //       horus add horus_core
+    //
+    // Every clause of which is wrong: the name is correct, HORUS's crates have
+    // never been on crates.io, and `horus add` writes a registry dependency
+    // that cannot resolve. The real cause is that HORUS could not supply its
+    // own source tree to the generated Cargo.toml.
+
+    #[test]
+    fn a_horus_crate_is_not_reported_as_missing_from_crates_io() {
+        for name in ["horus", "horus_core", "horus_macros", "horus_types"] {
+            let stderr = format!("error: no matching package named `{name}` found");
+            let diags = cargo_error_hint(&stderr);
+            assert_eq!(diags.len(), 1, "{name}");
+            assert_eq!(
+                diags[0].code, "H008",
+                "{name} is HORUS's own crate — H001 says crates.io does not have it, \
+                 which is true of every HORUS crate and tells the user nothing"
+            );
+            assert!(
+                !diags[0].hint.contains(&format!("horus add {name}")),
+                "{name}: `horus add` writes a crates.io dependency for a crate that \
+                 is not on crates.io — following this advice cannot work"
+            );
+            match &diags[0].fix {
+                Some(Fix::Command { command }) => assert!(
+                    !command.starts_with("horus add"),
+                    "{name}: the offered auto-fix must not be `horus add`, got {command:?}"
+                ),
+                other => panic!("{name}: expected a runnable fix, got {other:?}"),
+            }
+        }
+    }
+
+    /// The hint has to name the real cause, or it is only a quieter dead end.
+    #[test]
+    fn the_first_party_hint_names_the_source_tree_and_a_command_that_exists() {
+        let diags = cargo_error_hint("error: no matching package named `horus_core` found");
+        let hint = &diags[0].hint;
+        assert!(
+            hint.contains("source tree"),
+            "the cause is that HORUS could not supply its own source tree: {hint}"
+        );
+        assert!(
+            hint.contains("horus doctor") && hint.contains("HORUS_SOURCE"),
+            "the remedies are the ones find_horus_source_dir() actually consults: {hint}"
+        );
+    }
+
+    /// A real crates.io miss must still get the ordinary advice.
+    #[test]
+    fn a_third_party_crate_still_gets_the_crates_io_hint() {
+        let diags = cargo_error_hint("error: no matching package named `tokoi-util` found");
+        assert_eq!(diags[0].code, "H001");
+        assert!(diags[0].hint.contains("horus add tokoi-util"));
+    }
+
+    /// E0433 is the same wrong advice by another route.
+    #[test]
+    fn an_undeclared_horus_crate_is_not_answered_with_horus_add() {
+        let stderr =
+            "error[E0433]: failed to resolve: use of undeclared crate or module `horus_core`";
+        let diags = cargo_error_hint(stderr);
+        assert!(
+            diags.iter().all(|d| d.code != "H030"),
+            "H030's fix is `horus add horus_core`, which cannot install a path dependency"
+        );
+        assert!(diags.iter().any(|d| d.code == "H008"));
+        assert!(!diags
+            .iter()
+            .any(|d| d.hint.contains("horus add horus_core")));
+    }
+
+    #[test]
+    fn an_undeclared_third_party_crate_still_gets_h030() {
+        let stderr = "error[E0433]: failed to resolve: use of undeclared crate or module `tokio`";
+        let diags = cargo_error_hint(stderr);
+        assert!(diags.iter().any(|d| d.code == "H030"));
+    }
+
+    /// The suggester feeds a `horus add <suggestion>` fix, so a HORUS crate in
+    /// the candidate table would swap one dead end for another.
+    #[test]
+    fn no_first_party_crate_is_offered_as_a_crates_io_suggestion() {
+        for candidate in COMMON_CRATES {
+            assert!(
+                !is_first_party_crate(candidate),
+                "{candidate} is shipped by HORUS, not installable from crates.io — \
+                 it must not be reachable as a \"Did you mean?\" suggestion whose \
+                 fix is `horus add {candidate}`"
+            );
+        }
+    }
+
+    /// The name of the thing on PyPI is `horus-robotics`; `horus-py` is a
+    /// directory in this repository and nothing at all on PyPI.
+    #[test]
+    fn the_python_suggestion_table_uses_the_pypi_name() {
+        assert!(COMMON_PYTHON_PACKAGES.contains(&"horus-robotics"));
+        assert!(!COMMON_PYTHON_PACKAGES.contains(&"horus-py"));
     }
 
     #[test]

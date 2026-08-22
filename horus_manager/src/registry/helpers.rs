@@ -1031,6 +1031,21 @@ fn cargo_toml_has_horus_deps(package_dir: &Path) -> bool {
         || deps.contains_key("horus_macros")
 }
 
+/// The command HORUS prints when it cannot find its own source tree — the "I
+/// cannot build this, how do I install horus?" moment.
+///
+/// The branch in this URL is load-bearing. `install.sh` clones `BRANCH`
+/// (`HORUS_INSTALL_BRANCH`, default `main`), and origin has never had a
+/// long-lived `release` branch: `git ls-remote --heads` lists main, dev and
+/// topic branches only. This string nevertheless said `raw/release` from the
+/// GitLab-to-GitHub rename onwards, so the single place the binary tells a
+/// stuck user how to install HORUS handed them a 404 — while every README, the
+/// installer header and the docs had already been corrected to `raw/main`.
+/// `install_url_contract.rs` now pins every such URL in the tree, source
+/// strings included, to install.sh's own default.
+const INSTALL_FROM_SOURCE_COMMAND: &str =
+    "curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash";
+
 /// Inject a temporary `.cargo/config.toml` with `[patch.crates-io]` overrides
 /// pointing horus crates to the local HORUS source directory.
 ///
@@ -1062,9 +1077,10 @@ fn inject_horus_path_overrides(package_dir: &Path) -> Result<()> {
                 .unwrap_or("this package");
             return Err(anyhow!(
                 "Cannot find horus source installation. Building {} from source requires horus source code.\n\
-                 Install horus from source: curl -fsSL https://github.com/softmata/horus/raw/release/install.sh | bash\n\
+                 Install horus from source: {}\n\
                  Or install a pre-built binary: horus install {}",
                 pkg_name,
+                INSTALL_FROM_SOURCE_COMMAND,
                 pkg_name
             ));
         }

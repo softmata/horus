@@ -522,3 +522,187 @@ fn check_json_carries_warnings_not_only_errors() {
         "a project with no license produces a warning in the human output:\n{json}"
     );
 }
+
+// ─── The single-file path (`horus check <file>`) — CFG-3 ────────────────────
+//
+// The library produced a correctly classified error all along; the *directory*
+// path printed it and the *single-file* path re-wrapped it:
+//
+//   1. Failed to parse manifest: horus.toml:1:1: missing field `name` ...
+//      The file is valid TOML — a required key is absent.
+//
+// A sentence announcing a parse error over a message whose own next line says
+// the file parsed. Both classes carried the identical label, so on that path
+// they still read the same — the defect the finding is about, on the sibling
+// path nobody re-ran.
+
+/// The exact string that made the two classes indistinguishable.
+#[test]
+fn checking_a_file_does_not_call_a_missing_key_a_parse_failure() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    project(tmp.path(), "[package]\nversion = \"0.1.0\"\n");
+
+    let out = Command::new(horus())
+        .args(["check", "horus.toml"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("horus check must run");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        !text.contains("Failed to parse manifest"),
+        "the file parsed; only a key is absent:\n{text}"
+    );
+    assert!(
+        text.contains("missing field `name`"),
+        "the field name must survive:\n{text}"
+    );
+    assert!(
+        text.contains("horus.toml:1:1"),
+        "and so must the position:\n{text}"
+    );
+    assert!(
+        text.contains("The file is valid TOML"),
+        "the explanation that distinguishes the class must be there:\n{text}"
+    );
+}
+
+/// The other half of "distinct": the syntax case must not read like the
+/// missing-key case on this path either.
+#[test]
+fn the_two_failure_classes_read_differently_on_the_file_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("missing.toml"),
+        "[package]\nversion = \"0.1.0\"\n",
+    )
+    .expect("write");
+    std::fs::write(tmp.path().join("broken.toml"), "[package\nname = \"x\"\n").expect("write");
+
+    let read = |file: &str| {
+        let out = Command::new(horus())
+            .args(["check", file])
+            .current_dir(tmp.path())
+            .output()
+            .expect("horus check must run");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let missing = read("missing.toml");
+    let broken = read("broken.toml");
+
+    assert!(
+        missing.contains("The file is valid TOML"),
+        "missing-key case:\n{missing}"
+    );
+    assert!(
+        !broken.contains("The file is valid TOML"),
+        "the file is *not* valid TOML here:\n{broken}"
+    );
+    assert!(
+        broken.contains("broken.toml:1:9"),
+        "a syntax error carries the column of the mistake:\n{broken}"
+    );
+}
+
+/// `horus check main.cpp` was parsed as a manifest, so a C++ file came back
+/// with a TOML diagnostic about itself.
+#[test]
+fn a_source_file_is_not_parsed_as_a_manifest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("main.cpp"), "int main( {\n").expect("write");
+
+    let out = Command::new(horus())
+        .args(["check", "main.cpp"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("horus check must run");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        !text.contains("parse manifest") && !text.contains("expected `=`"),
+        "a C++ file must not be reported as broken TOML:\n{text}"
+    );
+    assert!(
+        text.contains("cannot check main.cpp"),
+        "it must say plainly that it does not check this file:\n{text}"
+    );
+    assert!(
+        text.contains("horus build") || text.contains("horus check <directory>"),
+        "and name what does check it:\n{text}"
+    );
+    assert!(
+        !out.status.success(),
+        "the requested check did not happen, so it must not exit 0:\n{text}"
+    );
+}
+
+/// A manifest with no `[package]` at all never reaches the typed error — it
+/// deserializes with defaults and is caught by hand-written validation, which
+/// reported the problem with no file, no line and no column.
+#[test]
+fn a_manifest_with_no_package_table_is_still_reported_with_a_position() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    project(tmp.path(), "[dependencies]\nhorus = \"*\"\n");
+
+    let out = Command::new(horus())
+        .args(["check", "horus.toml"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("horus check must run");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        text.contains("Missing [package]"),
+        "the problem must still be named:\n{text}"
+    );
+    assert!(
+        text.contains("horus.toml:1:1"),
+        "with the file and a position, like every other manifest failure:\n{text}"
+    );
+
+    let json = check_json(tmp.path(), &["check", "horus.toml", "--json"]);
+    let entry = json["diagnostics"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find(|d| {
+                d["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Missing [package]")
+            })
+        })
+        .unwrap_or_else(|| panic!("--json must carry it too:\n{json:#}"));
+    assert_eq!(entry["file"], "horus.toml", "{entry:#}");
+    assert_eq!(entry["line"], 1, "{entry:#}");
+    assert_eq!(entry["column"], 1, "{entry:#}");
+}
+
+/// `Cargo.toml` is valid TOML, so it parsed — and then every key in it came
+/// back as unknown, because `check` was reading another tool's manifest as if
+/// it were a horus.toml.
+#[test]
+fn another_tools_manifest_is_named_rather_than_linted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    )
+    .expect("write");
+
+    let out = Command::new(horus())
+        .args(["check", "Cargo.toml"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("horus check must run");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        text.contains("is a Cargo manifest"),
+        "the file must be named for what it is:\n{text}"
+    );
+    assert!(
+        !text.contains("unknown key"),
+        "and not linted key by key against a schema it was never written to:\n{text}"
+    );
+}

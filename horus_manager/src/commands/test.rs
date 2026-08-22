@@ -17,6 +17,18 @@ use crate::commands::run;
 use crate::config::CARGO_TOML;
 use crate::manifest::{self, Language, HORUS_TOML};
 
+/// The cmake build tree, shared with `run_cpp`.
+const CPP_BUILD_DIR: &str = ".horus/cpp-build";
+
+/// Where a user is sent to learn how to write these tests.
+///
+/// These are printed at the one moment the user has no tests and wants some, so
+/// they have to resolve. `https://docs.horusrobotics.dev/python/testing` did
+/// not: horus-docs has no `content/docs/python/testing.mdx`, so the link 404ed.
+/// Pinned against the docs checkout by `the_testing_links_point_at_pages_that_exist`.
+const PYTHON_TESTING_DOCS: &str = "https://docs.horusrobotics.dev/python/api/python-bindings";
+const CPP_TESTING_DOCS: &str = "https://docs.horusrobotics.dev/cpp/testing";
+
 /// Check if Cargo.toml needs regeneration
 fn needs_rebuild(horus_dir: &Path) -> bool {
     let cargo_toml = horus_dir.join(CARGO_TOML);
@@ -407,10 +419,10 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
         println!("{}", "Python tests passed!".green().bold());
     } else if status.code() == Some(PYTEST_NO_TESTS_COLLECTED) {
         println!(
-            "{} No Python tests found. Add one under {} — see \
-             https://docs.horusrobotics.dev/python/testing",
+            "{} No Python tests found. Add one under {} — see {}",
             "i".cyan(),
-            "tests/".cyan()
+            "tests/".cyan(),
+            PYTHON_TESTING_DOCS
         );
     } else {
         anyhow::bail!(
@@ -426,22 +438,79 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
 fn run_cpp_tests(cfg: &TestConfig) -> Result<()> {
     println!("{}\n", "Running C++ tests...".cyan().bold());
 
-    let build_dir = PathBuf::from(".horus/cpp-build");
+    let project_dir = std::env::current_dir()?;
+    let build_dir = project_dir.join(CPP_BUILD_DIR);
 
-    // Build first if build dir doesn't exist
-    if !build_dir.exists() {
-        println!("  Building C++ project first...");
-        let build_status = std::process::Command::new("cmake")
-            .args(["--build", ".horus/cpp-build"])
-            .status();
-        match build_status {
-            Ok(s) if s.success() => {}
-            _ => anyhow::bail!("C++ build failed. Run `horus build` first."),
+    // Configure and build when there is no build tree yet.
+    //
+    // The old code ran `cmake --build .horus/cpp-build` in precisely the case
+    // cmake refuses — a directory that does not exist — so `horus test` on a
+    // freshly generated C++ project died with
+    //
+    //     Error: <proj>/.horus/cpp-build is not a directory
+    //     Error: C++ build failed. Run `horus build` first.
+    //
+    // before it could report that a new project has no tests, while Python and
+    // Rust both said "no tests" and exited 0. `cmake --build` needs a
+    // *configured* tree; configuring is what `build_cpp` does, and it is the
+    // same function `horus build` and `horus run` call — so the test path
+    // cannot drift from the build path again.
+    //
+    // The condition is CMakeCache.txt rather than the directory: a half-built
+    // or cleaned tree can leave the directory behind with no cache in it, and
+    // `cmake --build` fails on that too.
+    match cpp_build_action(&build_dir, cfg.no_build) {
+        CppBuildAction::Ready => {}
+        CppBuildAction::RefuseNoBuild => anyhow::bail!(
+            "C++ project is not configured — {} has no CMakeCache.txt, and \
+             --no-build was given.\n  Run `horus build` first, or drop --no-build.",
+            CPP_BUILD_DIR
+        ),
+        CppBuildAction::Configure => {
+            println!("  Building C++ project first...");
+            run::run_cpp::build_cpp(&project_dir, cfg.release, None)
+                .context("C++ build failed. Run `horus build` to see the full output.")?;
         }
     }
 
+    // Nothing to run is not a pass.
+    //
+    // `ctest` prints "No tests were found!!!" and exits 0, so the success arm
+    // below reported "* C++ tests passed" for a project that has never had a
+    // test — the same false success the Python path used to print, and the
+    // reason `horus test` looked like it worked on a fresh C++ project once the
+    // build was fixed.
+    if let Some(0) = ctest_test_count(&build_dir, cfg) {
+        if cfg.filter.is_some() || cfg.integration {
+            println!(
+                "{} No C++ tests matched. {} tests are selected with {} and {}.",
+                "i".cyan(),
+                "ctest".cyan(),
+                "-R <regex>".cyan(),
+                "-L <label>".cyan()
+            );
+        } else {
+            println!(
+                "{} No C++ tests found. Register one with {} in CMakeLists.txt — see {}",
+                "i".cyan(),
+                "add_test()".cyan(),
+                CPP_TESTING_DOCS
+            );
+        }
+        return Ok(());
+    }
+
     let mut cmd = std::process::Command::new("ctest");
-    cmd.args(["--test-dir", ".horus/cpp-build", "--output-on-failure"]);
+    cmd.arg("--test-dir").arg(&build_dir);
+    cmd.arg("--output-on-failure");
+
+    if cfg.simulation {
+        // The Rust and Python runners both set this; the C++ runner did not,
+        // so `horus test --sim` ran the C++ suite against the REAL drivers.
+        // See the note in run_python_tests: on a bench with actuators attached
+        // that is the difference between a test and a motion command.
+        cmd.env("HORUS_SIM_MODE", "1");
+    }
 
     if let Some(ref filter) = cfg.filter {
         cmd.args(["-R", filter]); // ctest regex filter
@@ -468,6 +537,64 @@ fn run_cpp_tests(cfg: &TestConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// What has to happen to the C++ build tree before `ctest` can run.
+#[derive(Debug, PartialEq, Eq)]
+enum CppBuildAction {
+    /// The tree is configured; ctest can run against it.
+    Ready,
+    /// Configure and build it first.
+    Configure,
+    /// It is not usable and the user asked for no build.
+    RefuseNoBuild,
+}
+
+/// Decide from the build tree alone.
+///
+/// CMakeCache.txt, not the directory: `cmake --build` (and `ctest --test-dir`)
+/// need a *configured* tree, and both a missing directory and a directory
+/// without a cache — which a failed configure or `horus clean` leaves behind —
+/// fail it. Testing `build_dir.exists()` was what made a brand-new project run
+/// `cmake --build` on a path that did not exist.
+fn cpp_build_action(build_dir: &Path, no_build: bool) -> CppBuildAction {
+    if build_dir.join("CMakeCache.txt").is_file() {
+        CppBuildAction::Ready
+    } else if no_build {
+        CppBuildAction::RefuseNoBuild
+    } else {
+        CppBuildAction::Configure
+    }
+}
+
+/// How many tests the configured build tree has, as `ctest` counts them.
+///
+/// `ctest -N` lists without running and ends with `Total Tests: N`. Returns
+/// `None` when the question cannot be answered (no ctest, unconfigured tree),
+/// in which case the caller runs ctest for real and lets it speak for itself.
+fn ctest_test_count(build_dir: &Path, cfg: &TestConfig) -> Option<usize> {
+    let mut cmd = Command::new("ctest");
+    cmd.arg("--test-dir").arg(build_dir).arg("-N");
+    if let Some(ref filter) = cfg.filter {
+        cmd.args(["-R", filter]);
+    }
+    if cfg.integration {
+        cmd.args(["-L", "integration"]);
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_ctest_total(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Pull `N` out of `ctest -N`'s trailing `Total Tests: N` line.
+fn parse_ctest_total(stdout: &str) -> Option<usize> {
+    stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("Total Tests:"))
+        .and_then(|n| n.trim().parse().ok())
 }
 
 /// Generate `.horus/Cargo.toml` via `cargo_gen` with `include_dev = true`.
@@ -511,6 +638,164 @@ mod tests {
     //
     // So the first thing `horus test` said on a brand-new project was a
     // failure, about a missing tool, for a suite that does not exist.
+
+    // ── A brand-new C++ project (PATH-6) ─────────────────────────────────
+    //
+    // The Python and Rust branches were fixed; the C++ branch still shelled
+    // `cmake --build .horus/cpp-build` when that directory did not exist —
+    // exactly the case cmake refuses — so `horus test` on a freshly generated
+    // C++ project died with
+    //
+    //     Error: <proj>/.horus/cpp-build is not a directory
+    //     Error: C++ build failed. Run `horus build` first.
+    //
+    // before it could report that a new project has no tests.
+
+    #[test]
+    fn a_brand_new_cpp_project_is_configured_rather_than_built_over() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let build_dir = tmp.path().join(".horus/cpp-build");
+        assert_eq!(
+            super::cpp_build_action(&build_dir, false),
+            super::CppBuildAction::Configure,
+            "a project that has never been built has no build tree; `cmake --build` \
+             on a path that does not exist is not a build, it is an error"
+        );
+    }
+
+    /// A directory is not a configured tree. `horus clean` and a failed
+    /// configure both leave one behind with no cache in it, and `cmake --build`
+    /// fails on that too.
+    #[test]
+    fn a_build_directory_without_a_cache_is_not_configured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let build_dir = tmp.path().join(".horus/cpp-build");
+        std::fs::create_dir_all(&build_dir).expect("mkdir");
+        assert_eq!(
+            super::cpp_build_action(&build_dir, false),
+            super::CppBuildAction::Configure,
+            "an empty directory answers exists() with true and cmake with an error"
+        );
+
+        std::fs::write(build_dir.join("CMakeCache.txt"), "").expect("write");
+        assert_eq!(
+            super::cpp_build_action(&build_dir, false),
+            super::CppBuildAction::Ready,
+            "a configured tree must not be reconfigured on every `horus test`"
+        );
+    }
+
+    /// `--no-build` means do not build, not build anyway.
+    #[test]
+    fn no_build_refuses_instead_of_configuring() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let build_dir = tmp.path().join(".horus/cpp-build");
+        assert_eq!(
+            super::cpp_build_action(&build_dir, true),
+            super::CppBuildAction::RefuseNoBuild
+        );
+        std::fs::create_dir_all(&build_dir).expect("mkdir");
+        std::fs::write(build_dir.join("CMakeCache.txt"), "").expect("write");
+        assert_eq!(
+            super::cpp_build_action(&build_dir, true),
+            super::CppBuildAction::Ready,
+            "--no-build on an already-configured tree still runs the tests"
+        );
+    }
+
+    /// The build path and the test path have to be the same code, or they
+    /// drift again: `horus build` configures, and this used to skip straight
+    /// to `cmake --build`.
+    #[test]
+    fn the_cpp_test_path_builds_through_the_same_function_as_horus_build() {
+        let full = include_str!("test.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        let at = src
+            .find("fn run_cpp_tests")
+            .expect("run_cpp_tests must exist");
+        let body = &src[at..];
+        let body = &body[..body.find("\nfn ").unwrap_or(body.len())];
+        assert!(
+            body.contains("run::run_cpp::build_cpp("),
+            "configuring is what build_cpp does — reimplementing it here is how \
+             the two paths diverged in the first place"
+        );
+        assert!(
+            !body.contains(r#"args(["--build", ".horus/cpp-build"])"#),
+            "`cmake --build` on an unconfigured tree is the defect"
+        );
+        assert!(
+            body.contains("ctest_test_count("),
+            "ctest exits 0 over \"No tests were found!!!\", so its exit status cannot \
+             tell an empty suite from a passing one — the count has to be asked for"
+        );
+    }
+
+    /// "No tests were found!!!" exits 0, so the success arm reported
+    /// "C++ tests passed" for a project that has never had a test.
+    #[test]
+    fn zero_tests_is_counted_not_called_a_pass() {
+        let listing = "Test project /tmp/p/.horus/cpp-build\n\nTotal Tests: 0\n";
+        assert_eq!(super::parse_ctest_total(listing), Some(0));
+    }
+
+    #[test]
+    fn the_test_count_is_read_from_the_ctest_listing() {
+        let listing = "Test project /tmp/p\n  Test #1: smoke\n  Test #2: slow\n\nTotal Tests: 2\n";
+        assert_eq!(super::parse_ctest_total(listing), Some(2));
+    }
+
+    /// An unrecognisable listing must not be read as "no tests" — that would
+    /// silently skip a real suite.
+    #[test]
+    fn an_unreadable_listing_is_not_zero_tests() {
+        assert_eq!(
+            super::parse_ctest_total("ctest: command not understood"),
+            None
+        );
+        assert_eq!(super::parse_ctest_total(""), None);
+    }
+
+    /// The links are printed at the one moment the user wants to write a test,
+    /// so they have to resolve. `https://docs.horusrobotics.dev/python/testing`
+    /// did not: there is no content/docs/python/testing.mdx in horus-docs.
+    #[test]
+    fn the_testing_links_point_at_pages_that_exist() {
+        let Some(docs) = docs_root() else {
+            eprintln!("SKIP: horus-docs is not checked out beside horus");
+            return;
+        };
+        for url in [super::PYTHON_TESTING_DOCS, super::CPP_TESTING_DOCS] {
+            let slug = url
+                .strip_prefix("https://docs.horusrobotics.dev/")
+                .unwrap_or_else(|| panic!("{url} is not a docs.horusrobotics.dev URL"));
+            let slug = slug.split('#').next().unwrap_or(slug);
+            let page = docs.join(format!("content/docs/{slug}.mdx"));
+            let index = docs.join(format!("content/docs/{slug}/index.mdx"));
+            assert!(
+                page.is_file() || index.is_file(),
+                "{url} resolves to no page: neither {} nor {} exists",
+                page.display(),
+                index.display()
+            );
+        }
+    }
+
+    /// The docs are a separate repository; skip when it is not checked out,
+    /// the same way `tests/docs_contract.rs` does.
+    fn docs_root() -> Option<std::path::PathBuf> {
+        if let Ok(dir) = std::env::var("HORUS_DOCS_DIR") {
+            let p = std::path::PathBuf::from(dir);
+            if p.join("content/docs").is_dir() {
+                return Some(p);
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()? // horus/
+            .parent()? // softmata/
+            .join("horus-docs");
+        root.join("content/docs").is_dir().then_some(root)
+    }
 
     #[test]
     fn a_project_with_no_tests_has_no_test_files() {

@@ -21,20 +21,31 @@
 //!
 //! # Why not `deny_unknown_fields`
 //!
-//! Because it would turn every such manifest into a hard error on upgrade —
-//! including HORUS's own — and there is no changelog for a user to discover
-//! why. This module reports unknown keys as *warnings* with a did-you-mean, so
-//! 0.2.x tells the truth without breaking anyone. Promotion to a hard error is
-//! a 0.3.0 decision, and [`UnknownKey::deprecation_notice`] carries that
-//! message so the warning states it up front.
+//! Because serde's own error aborts the whole load: one stray key and `horus
+//! run` cannot read the manifest at all, with no line, no suggestion and no way
+//! to see the other nine keys that were also wrong. This module reads the keys
+//! back off the source text instead, so every unknown key in the file is
+//! reported at once, with its line and a did-you-mean.
+//!
+//! What changed in 0.3.0 is the *severity*, which is what the 0.2.x warning
+//! announced: `horus check` now counts an unknown key as an error and exits
+//! non-zero, because a validation gate that says "valid" about a file whose
+//! settings do nothing is the defect, not the fix. Every other command — `run`,
+//! `build`, `test`, `add` — still only warns (see
+//! [`crate::manifest::HorusManifest::load_from`]), so a typo tells you the
+//! truth without stopping work mid-session.
 //!
 //! # Keeping the key lists honest
 //!
 //! The lists below are hand-written, which is precisely the kind of second copy
-//! that drifts. `manifest_lint_covers_all_manifest_fields` in the test module
-//! round-trips a fully-populated manifest through TOML and asserts every key it
-//! emits is listed here, so adding a field to `HorusManifest` without updating
-//! this module fails the build rather than silently narrowing validation.
+//! that drifts. Two tests hold them to the structs:
+//! `manifest_lint_covers_all_manifest_fields` round-trips a fully-populated
+//! manifest through TOML and asserts every key it emits is listed here, and
+//! `json_schema_and_lint_agree_on_every_closed_table` compares each list
+//! against the JSON Schema generated from the structs themselves — including
+//! the nested tables, which is where the first version of this module went
+//! blind: `[network]`, `[robot]`, `[workspace]` and `[ignore]` are closed
+//! structs whose misspelled keys were dropped in silence.
 
 use std::collections::BTreeSet;
 
@@ -107,6 +118,58 @@ pub const KNOWN_HOOKS: &[&str] = &[
     "post_test",
 ];
 
+/// Keys accepted inside `[workspace]`.
+///
+/// Mirrors the fields of [`crate::manifest::WorkspaceConfig`].
+pub const KNOWN_WORKSPACE: &[&str] = &["members", "exclude", "dependencies"];
+
+/// Keys accepted inside `[robot]`.
+///
+/// Mirrors the fields of [`crate::manifest::RobotConfig`].
+pub const KNOWN_ROBOT: &[&str] = &["name", "description", "simulator"];
+
+/// Keys accepted inside `[network]`.
+///
+/// Mirrors the fields of [`crate::manifest::NetworkConfig`]. A misspelled key
+/// here is the most expensive kind in the file: `sekret` instead of `secret`
+/// leaves a fleet unauthenticated while the manifest looks configured.
+pub const KNOWN_NETWORK: &[&str] = &[
+    "enabled",
+    "import",
+    "deny_export",
+    "secret",
+    "optimize",
+    "safety",
+];
+
+/// Keys accepted inside `[ignore]`.
+///
+/// Mirrors the fields of [`crate::manifest::IgnoreConfig`].
+pub const KNOWN_IGNORE: &[&str] = &["files", "directories", "packages"];
+
+/// Keys accepted inside `[network.safety]`.
+///
+/// Mirrors the fields of [`crate::manifest::NetworkSafetyConfig`].
+pub const KNOWN_NETWORK_SAFETY: &[&str] = &["heartbeat_ms", "missed_threshold", "on_link_lost"];
+
+/// Every table in `horus.toml` with a fixed set of keys, by dotted path.
+///
+/// The open-ended maps are deliberately absent: `[dependencies]`,
+/// `[hardware]`, `[drivers]`, `[sim-drivers]`, `[sim-dependencies]`,
+/// `[dev-dependencies]`, `[scripts]` and the `[rust]` sub-tables are
+/// user-namespaced, and flagging their contents would make the check useless.
+pub const CLOSED_TABLES: &[(&str, &[&str])] = &[
+    ("package", KNOWN_PACKAGE),
+    ("workspace", KNOWN_WORKSPACE),
+    ("robot", KNOWN_ROBOT),
+    ("cpp", KNOWN_CPP),
+    ("rust", KNOWN_RUST),
+    ("hooks", KNOWN_HOOKS),
+    ("ignore", KNOWN_IGNORE),
+    ("network", KNOWN_NETWORK),
+    ("network.safety", KNOWN_NETWORK_SAFETY),
+];
+
 /// Keys developers reasonably expect to exist but which HORUS deliberately
 /// does not have, mapped to the reason.
 ///
@@ -168,39 +231,49 @@ pub struct UnknownKey {
 }
 
 impl UnknownKey {
-    /// The warning line shown by `horus check`.
+    /// The finding as `horus check` states it.
     ///
-    /// Names the location, says plainly that the key has no effect (the part
-    /// users most need and are least likely to infer), and offers the
-    /// correction when there is a plausible one.
+    /// Says plainly that the key has no effect (the part users most need and
+    /// are least likely to infer), and offers the correction when there is a
+    /// plausible one. The *position* is deliberately not in here: every caller
+    /// renders it as `file:line:col:` alongside every other finding, so one
+    /// location format serves the whole tool instead of this one message
+    /// carrying its own.
     pub fn message(&self) -> String {
-        let where_ = if self.line > 0 {
-            format!("line {}: ", self.line)
-        } else {
-            String::new()
-        };
         // A tailored explanation beats a fuzzy guess, so it wins when present.
         if let Some(why) = self.known_non_field {
-            return format!(
-                "{where_}unknown key `{}` — {why}. It has no effect.",
-                self.path
-            );
+            return format!("unknown key `{}` — {why}. It has no effect.", self.path);
         }
         match &self.suggestion {
             Some(s) => format!(
-                "{where_}unknown key `{}` — did you mean `{}`? This key has no effect.",
+                "unknown key `{}` — did you mean `{}`? This key has no effect.",
                 self.path, s
             ),
             None => format!(
-                "{where_}unknown key `{}` — HORUS ignores it, so it has no effect.",
+                "unknown key `{}` — HORUS ignores it, so it has no effect.",
                 self.path
             ),
         }
     }
 
-    /// Notice appended once to a batch of warnings, stating the upgrade path.
-    pub fn deprecation_notice() -> &'static str {
-        "Unknown keys become an error in HORUS 0.3.0. Remove them or correct the spelling."
+    /// `file:line: message`, for callers with nowhere better to put the
+    /// position.
+    pub fn at(&self, file: &std::path::Path) -> String {
+        if self.line > 0 {
+            format!("{}:{}: {}", file.display(), self.line, self.message())
+        } else {
+            format!("{}: {}", file.display(), self.message())
+        }
+    }
+
+    /// Notice appended once to a batch of findings, stating what it costs.
+    ///
+    /// 0.2.x said "becomes an error in HORUS 0.3.0". 0.3.0 is here, so the
+    /// notice states the behaviour rather than promising it again.
+    pub fn severity_notice() -> &'static str {
+        "Unknown keys are an error as of HORUS 0.3.0: `horus check` fails while \
+         they are present, and every other command warns. Remove them or correct \
+         the spelling."
     }
 }
 
@@ -222,41 +295,68 @@ pub fn find_unknown_keys(content: &str) -> Vec<UnknownKey> {
 
     for key in table.keys() {
         if !KNOWN_TOP_LEVEL.contains(&key.as_str()) {
-            found.push(UnknownKey {
-                path: key.clone(),
-                line: locate(content, key, None),
-                suggestion: suggest(key, KNOWN_TOP_LEVEL),
-                known_non_field: known_non_field(key),
-            });
+            found.push(describe(content, None, key, KNOWN_TOP_LEVEL));
         }
     }
 
-    // Nested tables with a closed key set. Open-ended maps — [dependencies],
-    // [hardware], [scripts] and friends — are user-namespaced by design and
-    // are deliberately not checked.
-    for (section, known) in [
-        ("package", KNOWN_PACKAGE),
-        ("cpp", KNOWN_CPP),
-        ("rust", KNOWN_RUST),
-        ("hooks", KNOWN_HOOKS),
-    ] {
-        let Some(sub) = table.get(section).and_then(|v| v.as_table()) else {
+    // Every nested table with a closed key set, including the ones reached
+    // through a parent (`[network.safety]`). Open-ended maps —
+    // [dependencies], [hardware], [scripts] and friends — are user-namespaced
+    // by design and are deliberately not checked; see CLOSED_TABLES.
+    for (path, known) in CLOSED_TABLES {
+        let Some(sub) = descend(&table, path) else {
             continue;
         };
         for key in sub.keys() {
             if !known.contains(&key.as_str()) {
-                found.push(UnknownKey {
-                    path: format!("{section}.{key}"),
-                    line: locate(content, key, Some(section)),
-                    suggestion: suggest(key, known),
-                    known_non_field: known_non_field(key),
-                });
+                found.push(describe(content, Some(path), key, known));
             }
         }
     }
 
     found.sort_by_key(|u| (u.line, u.path.clone()));
     found
+}
+
+/// Walk a dotted path down to the table it names.
+///
+/// `[network.safety]` and `network = { safety = { .. } }` are the same table in
+/// TOML, and both have to be reached the same way — off the parsed document,
+/// not by matching a header in the text.
+fn descend<'t>(table: &'t toml::Table, path: &str) -> Option<&'t toml::Table> {
+    let mut current = table;
+    for segment in path.split('.') {
+        current = current.get(segment)?.as_table()?;
+    }
+    Some(current)
+}
+
+/// Build the finding for one unrecognised key.
+fn describe(content: &str, section: Option<&str>, key: &str, known: &[&str]) -> UnknownKey {
+    let suggestion = suggest(key, known);
+    UnknownKey {
+        path: match section {
+            Some(s) => format!("{s}.{key}"),
+            None => key.to_string(),
+        },
+        line: locate(content, key, section),
+        known_non_field: known_non_field(key, suggestion.is_some()),
+        suggestion,
+    }
+}
+
+/// The 1-based line a dotted manifest key sits on, or 0 when it cannot be
+/// found.
+///
+/// `package.version` resolves to the line of `version` inside `[package]`;
+/// a bare `package` resolves to the `[package]` header itself. Exposed so
+/// `horus check` can attach a position to a *validation* failure — "version is
+/// not valid semver" knew which key it was about and printed no line at all.
+pub fn locate_key(content: &str, dotted: &str) -> usize {
+    match dotted.rsplit_once('.') {
+        Some((section, key)) => locate(content, key, Some(section)),
+        None => locate(content, dotted, None),
+    }
 }
 
 /// Locate the 1-based line where `key` is assigned.
@@ -296,14 +396,49 @@ fn locate(content: &str, key: &str, section: Option<&str>) -> usize {
             }
         }
     }
+
+    // The section may have been written as an inline table
+    // (`network = { sekret = "x" }`), which has no header line to scan from.
+    // Falling back to the line the table itself is on beats reporting none.
+    section.map(|s| locate_inline(content, s, key)).unwrap_or(0)
+}
+
+/// Line of an inline table that contains `key`, or 0.
+fn locate_inline(content: &str, section: &str, key: &str) -> usize {
+    let Some(last) = section.rsplit('.').next() else {
+        return 0;
+    };
+    for (idx, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if let Some((lhs, rhs)) = line.split_once('=') {
+            if lhs.trim().trim_matches('"') == last && rhs.contains(key) {
+                return idx + 1;
+            }
+        }
+    }
     0
 }
 
 /// Look up a key that developers commonly assume exists.
-fn known_non_field(key: &str) -> Option<&'static str> {
+///
+/// `has_suggestion` decides the tie: a key close to a *real* field is a typo of
+/// that field and gets the did-you-mean. Only when nothing real is close does a
+/// near miss on an assumed key count — `langauge` is a misspelling of
+/// `language`, which does not exist either, and the tailored explanation is the
+/// answer the user needs. Without this, the most common mistake in the file got
+/// the least useful message: "HORUS ignores it".
+fn known_non_field(key: &str, has_suggestion: bool) -> Option<&'static str> {
+    if let Some((_, why)) = KNOWN_NON_FIELDS.iter().find(|(k, _)| *k == key) {
+        return Some(why);
+    }
+    if has_suggestion {
+        return None;
+    }
+    let names: Vec<&str> = KNOWN_NON_FIELDS.iter().map(|(k, _)| *k).collect();
+    let near = suggest(key, &names)?;
     KNOWN_NON_FIELDS
         .iter()
-        .find(|(k, _)| *k == key)
+        .find(|(k, _)| *k == near)
         .map(|(_, why)| *why)
 }
 
@@ -360,10 +495,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 pub fn all_known_keys() -> BTreeSet<String> {
     KNOWN_TOP_LEVEL
         .iter()
-        .chain(KNOWN_PACKAGE)
-        .chain(KNOWN_CPP)
-        .chain(KNOWN_RUST)
-        .chain(KNOWN_HOOKS)
+        .chain(CLOSED_TABLES.iter().flat_map(|(_, keys)| keys.iter()))
         .map(|s| s.to_string())
         .collect()
 }
@@ -413,6 +545,7 @@ foo = 1
             .expect("versoin finding");
         assert_eq!(versoin.suggestion.as_deref(), Some("version"));
         assert!(versoin.message().contains("did you mean `version`"));
+        assert_eq!(versoin.line, 4, "the line travels on the finding");
     }
 
     /// `language` is not a typo — it is a key people assume exists, and HORUS's
@@ -479,12 +612,18 @@ foo = 1
             known_non_field: None,
         };
         let m = u.message();
-        assert!(m.contains("line 4"), "{m}");
         assert!(m.contains("langauge"), "{m}");
         assert!(m.contains("language"), "{m}");
         assert!(
             m.contains("no effect"),
             "the consequence is the part users cannot infer: {m}"
+        );
+        // The position travels with the finding, not inside its prose.
+        assert_eq!(u.line, 4);
+        assert!(
+            u.at(std::path::Path::new("horus.toml"))
+                .starts_with("horus.toml:4: "),
+            "a caller with nowhere to put the line must still be able to say it"
         );
     }
 
@@ -644,6 +783,123 @@ bogus = 1
                  describe it — an editor would flag a key `horus check` allows."
             );
         }
+    }
+
+    /// The same cross-check, one level down.
+    ///
+    /// The top-level version of this test passed for years while `[network]`,
+    /// `[robot]`, `[workspace]` and `[ignore]` were not linted at all: their
+    /// *tables* were known, so nothing was missing from `KNOWN_TOP_LEVEL`, and
+    /// the keys inside them were dropped in silence. This is the guard that
+    /// would have caught it — every closed table's key list against the schema
+    /// generated from the struct itself.
+    #[test]
+    #[cfg(feature = "schema")]
+    fn json_schema_and_lint_agree_on_every_closed_table() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&crate::manifest::generate_manifest_schema())
+                .expect("generate_manifest_schema must emit valid JSON");
+        let defs = schema
+            .get("$defs")
+            .and_then(|d| d.as_object())
+            .expect("the schema must define the nested tables");
+
+        // Walk the schema instead of a hand-written list of structs: the
+        // original defect was a table nobody had thought to write down, so a
+        // test that starts from what this module already knows about could not
+        // have found it. Anything the schema describes as a table with fixed
+        // properties *is* a closed table, whether or not CLOSED_TABLES says so.
+        let root = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("the schema must describe the top level");
+
+        /// `#/$defs/NetworkConfig` -> `NetworkConfig`, through `anyOf` when the
+        /// field is optional.
+        fn referenced(property: &serde_json::Value) -> Option<String> {
+            if let Some(r) = property.get("$ref").and_then(|r| r.as_str()) {
+                return r.strip_prefix("#/$defs/").map(str::to_string);
+            }
+            property
+                .get("anyOf")?
+                .as_array()?
+                .iter()
+                .find_map(|v| v.get("$ref").and_then(|r| r.as_str()))
+                .and_then(|r| r.strip_prefix("#/$defs/"))
+                .map(str::to_string)
+        }
+
+        let mut queue: Vec<(String, &serde_json::Map<String, serde_json::Value>)> =
+            vec![(String::new(), root)];
+        let mut tables: Vec<String> = Vec::new();
+        let mut seen_types: Vec<String> = Vec::new();
+
+        while let Some((prefix, props)) = queue.pop() {
+            for (name, property) in props {
+                let Some(type_name) = referenced(property) else {
+                    continue;
+                };
+                let Some(fields) = defs
+                    .get(&type_name)
+                    .and_then(|d| d.get("properties"))
+                    .and_then(|p| p.as_object())
+                else {
+                    // Not a table with fixed keys (an enum, a map value type).
+                    continue;
+                };
+                let table = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+
+                let keys = CLOSED_TABLES
+                    .iter()
+                    .find(|(t, _)| *t == table)
+                    .map(|(_, k)| *k)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "[{table}] is a {type_name} — a struct with a fixed set of \
+                             fields — but it is not in CLOSED_TABLES, so a misspelled \
+                             key inside it is dropped in silence. That is exactly how \
+                             [network], [robot], [workspace] and [ignore] went \
+                             unchecked."
+                        )
+                    });
+
+                for key in fields.keys() {
+                    assert!(
+                        keys.contains(&key.as_str()),
+                        "the JSON Schema exposes `{table}.{key}` but manifest_lint would \
+                         warn that it is unknown — an editor would accept what \
+                         `horus check` rejects."
+                    );
+                }
+                for known in keys {
+                    assert!(
+                        fields.contains_key(*known),
+                        "manifest_lint accepts `{table}.{known}` but {type_name} has no \
+                         such field — `horus check` would allow a key that does nothing."
+                    );
+                }
+
+                tables.push(table.clone());
+                if !seen_types.contains(&type_name) {
+                    seen_types.push(type_name);
+                    queue.push((table, fields));
+                }
+            }
+        }
+
+        tables.sort();
+        let mut declared: Vec<String> = CLOSED_TABLES.iter().map(|(t, _)| t.to_string()).collect();
+        declared.sort();
+        assert_eq!(
+            tables, declared,
+            "the schema and CLOSED_TABLES must describe the same set of closed \
+             tables — a table in one and not the other is either an unchecked \
+             struct or a list entry nothing backs"
+        );
     }
 
     /// Serializing a fully-populated manifest must not produce a key this

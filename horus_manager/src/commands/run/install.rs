@@ -45,10 +45,14 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
             let local_link = local_packages.join(&pkg.name);
 
-            // Skip if already handled
-            if local_link.exists() || local_link.read_link().is_ok() {
+            // Skip only if what is already there still works. `read_link()`
+            // answers Ok for a dangling symlink for as long as the link file
+            // exists, so this gate used to call a link into a deleted cache
+            // "already handled" and move on.
+            if python_link_is_usable(&local_link) {
                 continue;
             }
+            clear_broken_link(&local_link);
 
             // Prompt user for choice
             match prompt_system_package_choice_run(&pkg.name, &system_version)? {
@@ -85,14 +89,30 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
         let local_link = local_packages.join(&pkg.name);
 
-        // If already symlinked, skip
-        if local_link.exists() || local_link.read_link().is_ok() {
+        // A link is a cache hit only if it still resolves to a usable package.
+        //
+        // `local_link.exists()` follows the symlink and so answers false once
+        // the cache directory is gone — but `read_link()` answers Ok for as
+        // long as the link file itself is there, so the old `||` accepted a
+        // dangling link forever. HORUS printed the green tick and
+        // "(already linked)" over a link to nothing, wrote horus.lock, and the
+        // node then died at `import`. Deleting a cache directory is the remedy
+        // this very function prints a few lines below, so this is a state users
+        // are actively told to create.
+        if python_link_is_usable(&local_link) {
             println!(
                 "  {} {} (already linked)",
                 cli_output::ICON_SUCCESS.green(),
                 pkg.name
             );
             continue;
+        }
+        if clear_broken_link(&local_link) {
+            println!(
+                "  {} {} was linked to a package that is no longer there — reinstalling",
+                cli_output::ICON_WARN.yellow(),
+                pkg.name
+            );
         }
 
         // If not usably cached, install to the global cache.
@@ -211,10 +231,11 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
         if let Ok(Some(system_version)) = detect_system_cargo_binary(&pkg.name) {
             let local_link = local_bin.join(&pkg.name);
 
-            // Skip if already handled
-            if local_link.exists() || local_link.read_link().is_ok() {
+            // Same gate as the pypi path: a dangling link is not a hit.
+            if cargo_link_is_usable(&local_link) {
                 continue;
             }
+            clear_broken_link(&local_link);
 
             // Prompt user for choice
             match prompt_system_cargo_choice_run(&pkg.name, &system_version)? {
@@ -241,14 +262,22 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
         let pkg_cache_dir = global_cache.join(format!("cratesio_{}@{}", pkg.name, version_str));
         let local_link = local_bin.join(&pkg.name);
 
-        // If already linked, skip
-        if local_link.exists() || local_link.read_link().is_ok() {
+        // A link is a hit only if the binary it points at is still there;
+        // `read_link()` says Ok about a link into a deleted cache too.
+        if cargo_link_is_usable(&local_link) {
             println!(
                 "  {} {} (already linked)",
                 cli_output::ICON_SUCCESS.green(),
                 pkg.name
             );
             continue;
+        }
+        if clear_broken_link(&local_link) {
+            println!(
+                "  {} {} was linked to a binary that is no longer there — reinstalling",
+                cli_output::ICON_WARN.yellow(),
+                pkg.name
+            );
         }
 
         // If not usably cached, install to the global cache.
@@ -354,25 +383,65 @@ pub(crate) fn resolve_dependencies_with_context(
         Some(hash_config(&hash_input))
     };
 
+    // Split dependencies into HORUS packages, pip packages, and cargo packages.
+    // This happens before the lockfile check because the lockfile's answer is
+    // only trustworthy if the packages it stands for are still installed, and
+    // knowing which those are means splitting first. The split is pure and
+    // local — no network, no filesystem.
+    let (horus_packages, pip_packages, cargo_packages) =
+        split_dependencies_with_context(dependencies.clone(), context_language);
+
     if lock_path.exists() {
         if let Ok(existing_lock) = HorusLockfile::load_from(lock_path) {
             if let Some(ref hash) = config_hash {
                 if !existing_lock.is_stale(hash) {
-                    log::info!("Lockfile is up-to-date, using pinned versions");
-                    eprintln!(
-                        "  {} Dependencies locked (horus.lock is up-to-date)",
-                        cli_output::ICON_SUCCESS.green()
+                    // A matching config hash says the *inputs* have not
+                    // changed. horus.lock pins no packages and records no
+                    // paths, so it says nothing whatever about whether the
+                    // outputs are still on disk. Returning here on the hash
+                    // alone meant that deleting a cache directory — the remedy
+                    // install_pip_packages itself prints — produced
+                    //
+                    //     * Dependencies locked (horus.lock is up-to-date)
+                    //     Node execution failed: No module named 'cowsay'
+                    //
+                    // with the code that would have reinstalled it never
+                    // reached. The lock may skip work; it may not skip
+                    // reality.
+                    let missing = unmaterialized_dependencies(
+                        Path::new("."),
+                        &horus_packages,
+                        &pip_packages,
+                        &cargo_packages,
+                        context_language,
                     );
-                    return Ok(());
+                    if missing.is_empty() {
+                        log::info!("Lockfile is up-to-date, using pinned versions");
+                        eprintln!(
+                            "  {} Dependencies locked (horus.lock is up-to-date)",
+                            cli_output::ICON_SUCCESS.green()
+                        );
+                        return Ok(());
+                    }
+                    log::info!(
+                        "Lockfile is up-to-date but {} dependency/ies are not installed",
+                        missing.len()
+                    );
+                    eprintln!(
+                        "  {} horus.lock is up-to-date, but {} not installed — re-resolving",
+                        cli_output::ICON_WARN.yellow(),
+                        if missing.len() == 1 {
+                            format!("{} is", missing[0])
+                        } else {
+                            format!("{} are", missing.join(", "))
+                        }
+                    );
+                } else {
+                    log::info!("Lockfile is stale, re-resolving dependencies");
                 }
-                log::info!("Lockfile is stale, re-resolving dependencies");
             }
         }
     }
-
-    // Split dependencies into HORUS packages, pip packages, and cargo packages
-    let (horus_packages, pip_packages, cargo_packages) =
-        split_dependencies_with_context(dependencies.clone(), context_language);
 
     // Resolve HORUS packages (existing logic)
     if !horus_packages.is_empty() {
@@ -410,8 +479,10 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
     for package in &dependencies {
         let local_link = local_packages.join(package);
 
-        // Skip if already linked
-        if local_link.exists() {
+        // Skip only if the link still resolves to something. The pypi and
+        // crates.io paths had the same gate and the same defect: a link whose
+        // target has been deleted was reported as a success.
+        if horus_link_is_usable(&local_link) {
             println!(
                 "  {} {} (already linked)",
                 cli_output::ICON_SUCCESS.green(),
@@ -419,9 +490,22 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
             );
             continue;
         }
+        if clear_broken_link(&local_link) {
+            println!(
+                "  {} {} was linked to a package that is no longer there — re-resolving",
+                cli_output::ICON_WARN.yellow(),
+                package
+            );
+        }
 
-        // Check global cache
-        let cached_versions = find_cached_versions(&global_cache, package)?;
+        // Check global cache. A cache entry that exists but holds nothing is
+        // not a hit: `find_cached_versions` matches on the directory *name*,
+        // so a failed or interrupted install answers it just as well as a
+        // finished one.
+        let cached_versions: Vec<PathBuf> = find_cached_versions(&global_cache, package)?
+            .into_iter()
+            .filter(|dir| horus_cache_is_usable(dir))
+            .collect();
 
         if let Some(cached) = cached_versions.first() {
             // Check if we're using a different version than requested
@@ -436,8 +520,9 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                     // Create symlink named "horus" pointing to lib/horus
                     let horus_link = local_packages.join("horus");
 
-                    // Check if symlink already exists
-                    if horus_link.exists() {
+                    // Check if the symlink already resolves (a dangling one
+                    // does not count — see above).
+                    if horus_link_is_usable(&horus_link) {
                         println!(
                             "  {} {} (already linked)",
                             cli_output::ICON_SUCCESS.green(),
@@ -445,6 +530,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                         );
                         continue;
                     }
+                    clear_broken_link(&horus_link);
 
                     if version_mismatch {
                         println!(
@@ -485,6 +571,14 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                 );
             }
             symlink(cached, &local_link).context(format!("Failed to symlink {}", package))?;
+            // Say what arrived, not just that something did — the pypi path
+            // reports its modules for the same reason.
+            println!(
+                "  {} Linked {} ({})",
+                cli_output::ICON_SUCCESS.green(),
+                package,
+                cached_name
+            );
         } else {
             // Package not found locally
             missing_packages.push(package.clone());
@@ -1022,6 +1116,290 @@ mod tests {
         assert_eq!(got, vec!["helper".to_string(), "horus".to_string()]);
     }
 
+    // ── Links and the lockfile fast path (PATH-3, second round) ──────────
+    //
+    // The cache gate above was fixed, and then two gates in front of it kept
+    // the defect alive: `link.exists() || link.read_link().is_ok()` accepted a
+    // dangling symlink as "(already linked)", and the lockfile returned
+    // "Dependencies locked" on a config hash alone, before any of this code
+    // was reached. Deleting a cache directory — the remedy this module itself
+    // prints — reproduced the original failure verbatim: a green tick, then
+    // "No module named 'cowsay'".
+
+    /// A link whose target is gone is the trap: `exists()` is false (it
+    /// follows the link) but `read_link()` is still Ok, so the old
+    /// `exists() || read_link().is_ok()` gate was true forever.
+    #[test]
+    fn a_link_into_a_deleted_cache_is_not_a_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("pypi_cowsay@latest");
+        std::fs::create_dir_all(cache.join("cowsay")).expect("mkdir");
+        std::fs::write(cache.join("cowsay/__init__.py"), "").expect("write");
+        std::fs::write(cache.join("metadata.json"), "{}").expect("write");
+
+        let packages = tmp.path().join("packages");
+        std::fs::create_dir_all(&packages).expect("mkdir");
+        let link = packages.join("cowsay");
+        super::symlink(&cache, &link).expect("symlink");
+        assert!(
+            super::python_link_is_usable(&link),
+            "a link to a real package is a hit"
+        );
+
+        std::fs::remove_dir_all(&cache).expect("rm");
+        assert!(
+            link.read_link().is_ok(),
+            "the link file itself survives its target — this is what the old gate saw"
+        );
+        assert!(
+            !super::python_link_is_usable(&link),
+            "a link to a deleted cache directory must not read as installed"
+        );
+    }
+
+    /// Deleting the *contents* is the same failure with the directory left
+    /// behind, and an `import` probe cannot tell the difference: an empty
+    /// directory on sys.path imports fine as a PEP 420 namespace package.
+    #[test]
+    fn a_link_into_an_emptied_cache_is_not_a_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("pypi_cowsay@latest");
+        std::fs::create_dir_all(&cache).expect("mkdir");
+        let packages = tmp.path().join("packages");
+        std::fs::create_dir_all(&packages).expect("mkdir");
+        let link = packages.join("cowsay");
+        super::symlink(&cache, &link).expect("symlink");
+        assert!(
+            !super::python_link_is_usable(&link),
+            "an empty directory provides nothing, whether reached directly or through a link"
+        );
+    }
+
+    /// A crates.io link points at the binary itself, so a dangling one means
+    /// the binary is gone.
+    #[test]
+    fn a_link_to_a_deleted_binary_is_not_a_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = tmp.path().join("cache/bin/thing");
+        std::fs::create_dir_all(bin.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&bin, "").expect("write");
+        let local = tmp.path().join("bin");
+        std::fs::create_dir_all(&local).expect("mkdir");
+        let link = local.join("thing");
+        super::symlink(&bin, &link).expect("symlink");
+        assert!(super::cargo_link_is_usable(&link));
+
+        std::fs::remove_file(&bin).expect("rm");
+        assert!(link.read_link().is_ok(), "the link file is still there");
+        assert!(
+            !super::cargo_link_is_usable(&link),
+            "a link to a deleted binary must not read as installed"
+        );
+    }
+
+    /// The stale link has to go, or re-creating the symlink fails with
+    /// "File exists" and the repair turns into a different error.
+    #[test]
+    fn a_broken_link_is_removed_so_the_reinstall_can_relink() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("gone");
+        let link = tmp.path().join("link");
+        super::symlink(&target, &link).expect("symlink");
+        assert!(super::clear_broken_link(&link), "it was there to remove");
+        assert!(
+            super::symlink(&target, &link).is_ok(),
+            "the path must be free for the reinstall to link into"
+        );
+        std::fs::remove_file(&link).ok();
+        assert!(
+            !super::clear_broken_link(&link),
+            "nothing to remove is not a removal"
+        );
+    }
+
+    /// Repairing a link must never delete something that is not a link.
+    #[test]
+    fn a_real_directory_is_never_deleted_to_repair_a_link() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("vendored");
+        std::fs::create_dir_all(dir.join("thing")).expect("mkdir");
+        std::fs::write(dir.join("thing/__init__.py"), "").expect("write");
+
+        assert!(
+            super::python_link_is_usable(&dir),
+            "a real directory that provides a module works, marker file or not"
+        );
+        assert!(
+            !super::clear_broken_link(&dir),
+            "a non-empty directory that is not a symlink is not ours to remove"
+        );
+        assert!(dir.join("thing/__init__.py").is_file(), "still there");
+    }
+
+    /// ...and it is not re-resolved on every run either.
+    #[test]
+    fn a_vendored_directory_counts_as_installed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let vendored = root.join(".horus/packages/thing");
+        std::fs::create_dir_all(vendored.join("thing")).expect("mkdir");
+        std::fs::write(vendored.join("thing/__init__.py"), "").expect("write");
+        let pip = vec![super::PipPackage {
+            name: "thing".to_string(),
+            version: None,
+        }];
+        assert!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty(),
+            "a directory that provides the module is installed, marker file or not"
+        );
+    }
+
+    /// horus.lock pins no packages and records no paths, so a matching config
+    /// hash is evidence about the inputs only. This is the question the fast
+    /// path has to ask about the outputs.
+    #[test]
+    fn a_current_lockfile_does_not_mean_the_packages_are_still_installed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache/pypi_cowsay@latest");
+        std::fs::create_dir_all(cache.join("cowsay")).expect("mkdir");
+        std::fs::write(cache.join("cowsay/__init__.py"), "").expect("write");
+        std::fs::write(cache.join("metadata.json"), "{}").expect("write");
+        std::fs::create_dir_all(root.join(".horus/packages")).expect("mkdir");
+        super::symlink(&cache, &root.join(".horus/packages/cowsay")).expect("symlink");
+
+        let pip = vec![super::PipPackage {
+            name: "cowsay".to_string(),
+            version: None,
+        }];
+
+        assert!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty(),
+            "everything is on disk — the lockfile fast path is legitimate here"
+        );
+
+        std::fs::remove_dir_all(&cache).expect("rm");
+        assert_eq!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")),
+            vec!["cowsay".to_string()],
+            "the cache is gone, so the lockfile must not be allowed to skip the reinstall"
+        );
+    }
+
+    /// The lockfile gate must not send a finished install back through pip.
+    ///
+    /// A distribution that ships only scripts installs fine and provides no
+    /// importable top-level module. Judging it "not installed" would re-resolve
+    /// — and re-download — it on every `horus run`, turning a fix for a silent
+    /// failure into a network round trip per run.
+    #[test]
+    fn a_finished_install_is_not_re_resolved_just_because_it_has_no_module() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache/pypi_scripts-only@latest");
+        std::fs::create_dir_all(cache.join("scripts_only-1.0.dist-info")).expect("mkdir");
+        std::fs::write(cache.join("metadata.json"), "{}").expect("write");
+        std::fs::create_dir_all(root.join(".horus/packages")).expect("mkdir");
+        super::symlink(&cache, &root.join(".horus/packages/scripts-only")).expect("symlink");
+
+        let pip = vec![super::PipPackage {
+            name: "scripts-only".to_string(),
+            version: None,
+        }];
+        assert!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty(),
+            "metadata.json is written only after pip reports success — that install \
+             happened, and re-running it every time is not a fix"
+        );
+
+        std::fs::remove_dir_all(&cache).expect("rm");
+        assert_eq!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")),
+            vec!["scripts-only".to_string()],
+            "once the cache is gone the link is dangling and the install is not there"
+        );
+    }
+
+    /// A package resolved to the system copy leaves a marker instead of a
+    /// link; requiring a link would re-resolve it on every single run.
+    #[test]
+    fn a_system_reference_counts_as_installed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".horus/packages")).expect("mkdir");
+        std::fs::write(
+            root.join(".horus/packages/horus-robotics.system.json"),
+            "{}",
+        )
+        .expect("write");
+        let pip = vec![super::PipPackage {
+            name: "horus-robotics".to_string(),
+            version: None,
+        }];
+        assert!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty()
+        );
+    }
+
+    /// The resolver skips cargo packages entirely in a Python project, so
+    /// demanding them here would make the fast path unreachable forever.
+    #[test]
+    fn a_python_project_is_not_held_to_cargo_packages_it_never_installs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cargo = vec![super::CargoPackage {
+            name: "ripgrep".to_string(),
+            version: None,
+        }];
+        assert!(
+            super::unmaterialized_dependencies(root, &[], &[], &cargo, Some("python")).is_empty(),
+            "install_cargo_packages is not called for python — see resolve_dependencies_with_context"
+        );
+        assert_eq!(
+            super::unmaterialized_dependencies(root, &[], &[], &cargo, Some("rust")),
+            vec!["ripgrep".to_string()],
+            "in a Rust project the same binary is genuinely missing"
+        );
+    }
+
+    /// The helpers are only worth having if the three gates ask them.
+    #[test]
+    fn every_link_gate_asks_whether_the_link_still_resolves() {
+        let full = include_str!("install.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        assert!(
+            !src.contains("local_link.exists() || local_link.read_link().is_ok()"),
+            "`read_link().is_ok()` is true for a dangling link, which is exactly \
+             the state that must not count as installed"
+        );
+        for gate in [
+            "if python_link_is_usable(&local_link)",
+            "if cargo_link_is_usable(&local_link)",
+            "if horus_link_is_usable(&local_link)",
+        ] {
+            assert!(
+                src.contains(gate),
+                "every install path needs the same gate, or the next one keeps the defect: {gate}"
+            );
+        }
+    }
+
+    /// ...and the lockfile has to reach them at all.
+    #[test]
+    fn the_lockfile_fast_path_checks_the_packages_are_still_installed() {
+        let full = include_str!("install.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        let at = src
+            .find("{} Dependencies locked (horus.lock is up-to-date)")
+            .expect("the lockfile fast path must still announce itself");
+        let before = &src[at.saturating_sub(1500)..at];
+        assert!(
+            before.contains("unmaterialized_dependencies("),
+            "returning on the config hash alone skips every cache and link check \
+             in this file — the lockfile may skip work, not reality"
+        );
+    }
+
     /// A compiled extension counts: pyo3 wheels ship `_horus.cpython-*.so`.
     #[test]
     fn a_compiled_extension_counts_as_a_module() {
@@ -1250,4 +1628,165 @@ fn top_level_modules(dir: &Path) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+// ── Link and materialization checks (PATH-3) ───────────────────────────────
+//
+// Three gates in this file used to ask `link.exists() || link.read_link().is_ok()`.
+// The second half of that disjunction is true for a *dangling* symlink for as
+// long as the link file exists, so once a cache directory went away — deleted
+// by the user, by a cleanup script, or on the advice this module itself prints
+// — every later run reported "(already linked)" with a green tick and skipped
+// the install that would have repaired it.
+
+/// Remove a link/entry that is present but no longer usable.
+///
+/// Returns whether anything was removed, so callers can say so. Without this
+/// the reinstall would fail on "File exists" when it tried to re-create the
+/// symlink.
+///
+/// Only ever removes a symlink (never its target) or an empty directory. A
+/// non-empty real directory at this path was put there by something other than
+/// this code, and deleting it to "repair" a link would be a far worse bug than
+/// the one being repaired.
+fn clear_broken_link(path: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
+        // remove_file on a symlink unlinks the link itself, not the target.
+        return fs::remove_file(path).is_ok();
+    }
+    if meta.is_dir() {
+        let empty = fs::read_dir(path)
+            .map(|mut e| e.next().is_none())
+            .unwrap_or(false);
+        if empty {
+            return fs::remove_dir(path).is_ok();
+        }
+        log::warn!(
+            "{} is a directory, not a HORUS link — leaving it alone",
+            path.display()
+        );
+        return false;
+    }
+    fs::remove_file(path).is_ok()
+}
+
+/// Whether `.horus/packages/<name>` still resolves to an importable package.
+///
+/// The same predicate the install path uses to decide whether the cache is a
+/// hit, applied through the link: a link into an emptied cache directory is no
+/// more useful than a link into a deleted one.
+fn python_link_is_usable(link: &Path) -> bool {
+    if !link.exists() {
+        return false;
+    }
+    match fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() => cache_is_usable(link),
+        // Not a link into the cache: something else owns this path — an older
+        // HORUS, a copy, a vendored package. It is not this code's to replace,
+        // and it works if it provides a module.
+        _ => !top_level_modules(link).is_empty(),
+    }
+}
+
+/// Whether `.horus/packages/<name>` still resolves to an install HORUS finished.
+///
+/// Deliberately weaker than `python_link_is_usable`, and used only to decide
+/// whether the lockfile may skip resolution. `metadata.json` is written after
+/// pip reports success and is therefore the record that an install completed;
+/// requiring an importable module here as well would send the handful of
+/// distributions that ship only scripts back through pip on every single run,
+/// which is a worse bargain than the case it would catch (a cache directory
+/// emptied by hand but with the marker left in place — `rm -rf` takes the
+/// marker with it, and so does a partial install, because the marker is
+/// written last).
+fn python_link_records_a_finished_install(link: &Path) -> bool {
+    if !link.exists() {
+        return false;
+    }
+    // Either HORUS's own record of a finished install, or a path something
+    // else manages that provides a module anyway.
+    link.join("metadata.json").is_file() || python_link_is_usable(link)
+}
+
+/// Whether `.horus/bin/<name>` still resolves to a binary.
+fn cargo_link_is_usable(link: &Path) -> bool {
+    link.exists()
+}
+
+/// Whether a HORUS registry cache directory holds anything at all.
+///
+/// Registry packages have no metadata.json of our making, so "usable" here can
+/// only mean non-empty — but non-empty is precisely what a failed install is
+/// not.
+fn horus_cache_is_usable(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|mut e| e.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Whether a link created by `resolve_horus_packages` still resolves.
+fn horus_link_is_usable(link: &Path) -> bool {
+    link.exists() && (link.is_file() || horus_cache_is_usable(link))
+}
+
+/// The dependencies horus.lock stands for that are not actually installed.
+///
+/// horus.lock records a config hash and nothing else — no package set, no
+/// versions, no paths. "The hash still matches" therefore says only that the
+/// *inputs* are unchanged; it is not evidence that the outputs survived. This
+/// asks the disk instead, so the lockfile fast path can be taken when it is
+/// true and skipped when it is not.
+///
+/// `root` is the project directory (`.` in normal operation, a tempdir under
+/// test).
+fn unmaterialized_dependencies(
+    root: &Path,
+    horus_packages: &[String],
+    pip_packages: &[PipPackage],
+    cargo_packages: &[CargoPackage],
+    context_language: Option<&str>,
+) -> Vec<String> {
+    let packages_dir = root.join(".horus/packages");
+    let bin_dir = root.join(".horus/bin");
+
+    // A package resolved to the system copy leaves a marker instead of a link.
+    let has_system_reference =
+        |name: &str| packages_dir.join(format!("{}.system.json", name)).is_file();
+
+    let mut missing = Vec::new();
+
+    for package in horus_packages {
+        // horus_py is linked under the name it is imported by.
+        let link = if package == "horus_py" || package.starts_with("horus_py@") {
+            packages_dir.join("horus")
+        } else {
+            packages_dir.join(package)
+        };
+        if !horus_link_is_usable(&link) && !has_system_reference(package) {
+            missing.push(package.clone());
+        }
+    }
+
+    for pkg in pip_packages {
+        if !python_link_records_a_finished_install(&packages_dir.join(&pkg.name))
+            && !has_system_reference(&pkg.name)
+        {
+            missing.push(pkg.name.clone());
+        }
+    }
+
+    // Mirror the resolver: cargo packages are not installed at all in a Python
+    // project, so their absence is not a missing dependency there.
+    if context_language != Some("python") {
+        for pkg in cargo_packages {
+            if !cargo_link_is_usable(&bin_dir.join(&pkg.name)) && !has_system_reference(&pkg.name) {
+                missing.push(pkg.name.clone());
+            }
+        }
+    }
+
+    missing
 }

@@ -1,0 +1,174 @@
+# Build the images this repository ships, and use them.
+#
+# The root Dockerfile and .devcontainer/devcontainer.json were added, tested by
+# a set of substring assertions over their text, and declared "CI-tested". They
+# were not. `docker-distro-tests.yml` is the only workflow in the repo that runs
+# `docker build`, and it builds `tests/docker/Dockerfile.<distro>` — a different
+# file, a test harness, not these. Nothing had ever built the root Dockerfile or
+# the devcontainer, which is how devcontainer.json came to name the wrong stage
+# and run `sudo apt-get` in an image with no sudo: a text check cannot see it.
+#
+# So this builds all three stages and then asks each image to do the job its
+# documentation claims it can do.
+
+name: Container Images
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.devcontainer/**'
+      - '.github/workflows/container-images.yml'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.devcontainer/**'
+      - '.github/workflows/container-images.yml'
+  schedule:
+    # Weekly, so base-image drift (apt packages disappearing, a rust: tag being
+    # retagged) is caught even when nobody touches these files.
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: Dockerfile + devcontainer
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # ── The stage devcontainer.json names must be a stage that exists ──────
+      #
+      # Checked before the builds so a typo fails in seconds rather than after
+      # a full release compile. `"target": "builder"` was a *valid* stage name
+      # and still the wrong one, which is why the build+smoke-test below is the
+      # real check and this is only the fast one.
+      - name: devcontainer.json names a real Dockerfile stage
+        run: |
+          set -euo pipefail
+          target=$(sed 's|^[[:space:]]*//.*||' .devcontainer/devcontainer.json | jq -r '.build.target')
+          echo "devcontainer.json target: ${target}"
+          if ! grep -qE "^FROM .* AS ${target}\$" Dockerfile; then
+            echo "::error::devcontainer.json builds stage '${target}', which the Dockerfile does not define"
+            grep -E '^FROM ' Dockerfile
+            exit 1
+          fi
+          dockerfile=$(sed 's|^[[:space:]]*//.*||' .devcontainer/devcontainer.json | jq -r '.build.dockerfile')
+          test -f ".devcontainer/${dockerfile}" || {
+            echo "::error::devcontainer.json points at .devcontainer/${dockerfile}, which does not exist"
+            exit 1
+          }
+
+      # ── horus:cli — the default target ────────────────────────────────────
+      - name: Build the default target
+        run: docker build -t horus:cli .
+
+      - name: horus:cli starts and carries its own docs
+        run: |
+          set -euo pipefail
+          docker run --rm horus:cli --version
+          docker run --rm horus:cli --help
+          # The image installs a man page and a bash completion at build time,
+          # from the same clap tree the binary is built from. An empty file
+          # means the generator broke, not the packaging.
+          docker run --rm --entrypoint /bin/sh horus:cli -c \
+            'test -s /usr/local/share/man/man1/horus.1'
+          docker run --rm --entrypoint /bin/sh horus:cli -c \
+            'test -s /usr/share/bash-completion/completions/horus'
+
+      # ── horus:dev — build and run ─────────────────────────────────────────
+      - name: Build the dev target
+        run: docker build --target dev -t horus:dev .
+
+      - name: horus:dev has every toolchain the header claims
+        run: |
+          set -euo pipefail
+          for tool in cargo python3 cmake g++ clang-format clang-tidy; do
+            docker run --rm --entrypoint /bin/sh horus:dev -c "command -v ${tool}" \
+              || { echo "::error::horus:dev is missing ${tool}"; exit 1; }
+          done
+          # The three C++ system libraries the C++ workflows install. Without
+          # them the C++ examples do not link and five cmake_gen tests skip.
+          docker run --rm --entrypoint /bin/sh horus:dev -c \
+            'test -d /usr/include/eigen3 && test -f /usr/include/fmt/format.h && test -d /usr/src/googletest' \
+            || { echo "::error::horus:dev is missing the C++ system libraries"; exit 1; }
+
+      - name: horus:dev can scaffold and check a project
+        run: |
+          set -euo pipefail
+          docker run --rm --shm-size=1g -v "${RUNNER_TEMP}:/work" -w /work \
+            --entrypoint /bin/sh horus:dev -c '
+              set -e
+              rm -rf ci_robot
+              horus new ci_robot -r
+              cd ci_robot
+              horus check
+            '
+
+      # The header's headline claim for the slim image, run verbatim against a
+      # real project rather than against this repository's own 11-crate
+      # workspace, which takes minutes to check and is not what the header
+      # advertises.
+      - name: horus:cli check works on a project
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${RUNNER_TEMP}/ci_robot:/work" -w /work horus:cli check
+
+      # ── The devcontainer ─────────────────────────────────────────────────
+      - name: Build the stage devcontainer.json builds
+        run: |
+          set -euo pipefail
+          target=$(sed 's|^[[:space:]]*//.*||' .devcontainer/devcontainer.json | jq -r '.build.target')
+          docker build --target "${target}" -t horus:devcontainer .
+
+      - name: The devcontainer comes up usable
+        run: |
+          set -euo pipefail
+          # A devcontainer is a place to work in: the editor execs into it, so
+          # it must not inherit `ENTRYPOINT ["horus"]`, or every command becomes
+          # an argument to horus.
+          entrypoint=$(docker image inspect -f '{{json .Config.Entrypoint}}' horus:devcontainer)
+          echo "entrypoint: ${entrypoint}"
+          if [ "${entrypoint}" != "null" ] && [ "${entrypoint}" != "[]" ]; then
+            echo "::error::the devcontainer stage keeps ENTRYPOINT ${entrypoint}"
+            exit 1
+          fi
+          # Whatever devcontainer.json still installs at create time has to work
+          # in *this* image. It used to be `sudo apt-get ...` in an image with
+          # no sudo, run as root, and it failed on every create.
+          post=$(sed 's|^[[:space:]]*//.*||' .devcontainer/devcontainer.json | jq -r '.postCreateCommand // ""')
+          if [ -n "${post}" ]; then
+            echo "postCreateCommand: ${post}"
+            docker run --rm --entrypoint /bin/sh horus:devcontainer -c "${post}"
+          fi
+          # rust-analyzer is configured for clippy, and `horus fmt` shells out
+          # to rustfmt.
+          for tool in cargo rustfmt cargo-clippy python3 cmake g++ clang-format; do
+            docker run --rm --entrypoint /bin/sh horus:devcontainer -c "command -v ${tool}" \
+              || { echo "::error::the devcontainer is missing ${tool}"; exit 1; }
+          done
+          # The default command must keep the container alive; a container that
+          # exits immediately is one the editor cannot attach to.
+          id=$(docker run -d horus:devcontainer)
+          sleep 10
+          state=$(docker inspect -f '{{.State.Running}}' "${id}")
+          docker rm -f "${id}" >/dev/null
+          if [ "${state}" != "true" ]; then
+            echo "::error::the devcontainer image exits instead of staying up"
+            exit 1
+          fi

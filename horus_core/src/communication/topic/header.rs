@@ -916,7 +916,16 @@ fn read_slot_inner(
 
     Some(TopicSlotRead {
         payload,
-        write_idx,
+        // The ordinal this slot actually is — NOT the live head. They differ
+        // only when an explicit `ordinal` was requested, and that difference is
+        // the whole point: `read_slots_since` hands these to a caller whose
+        // resume cursor is `last_write_idx.max(slot.write_idx)`. Reporting the
+        // head here made the first slot of a batch advance that cursor to the
+        // newest message, so every remaining message in the batch was skipped
+        // on the next poll — the silent sampling `read_slots_since` exists to
+        // end. `target == write_idx` whenever `ordinal` is None, so the
+        // freshness contract of `read_latest_slot_bytes` is unchanged.
+        write_idx: target,
         is_pod,
         type_name,
         messages_total,
@@ -2191,6 +2200,89 @@ mod echo_freshness_tests {
     /// messages until the ring wrapped and then nothing — on a topic
     /// `horus topic list` simultaneously reported as active with a rising
     /// count, because that command reads `messages_total`.
+    /// A batch of pending messages must all be delivered, and the caller's
+    /// resume cursor must land on the last one it actually got.
+    ///
+    /// `horus topic echo` advances its cursor with
+    /// `last_write_idx = last_write_idx.max(slot.write_idx)`. Every
+    /// `TopicSlotRead` used to carry the *live head* rather than its own
+    /// ordinal, so the first slot of a batch pushed the cursor straight to the
+    /// newest message and the rest of the batch was skipped on the next poll —
+    /// the exact silent sampling `read_slots_since` was added to end.
+    ///
+    /// The original test for that fix polled a 10 Hz publisher, where a batch
+    /// is almost always one message and head == ordinal, so it passed against
+    /// the broken code. This one leaves several messages pending before it
+    /// reads, which is when the two diverge.
+    #[test]
+    fn a_pending_batch_is_delivered_without_gaps() {
+        let name = format!("echo_batch_test_{}", std::process::id());
+        let topic: Topic<u64> = match Topic::new(&name) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // Establish the cursor the way `echo` does on its first poll.
+        topic.send(0);
+        let first = super::read_latest_slot_bytes(&path, 0)
+            .expect("a freshly written topic must yield a slot");
+        let mut cursor = first.write_idx;
+
+        // Let a batch accumulate before reading — this is the case that broke.
+        const BATCH: u64 = 12;
+        for i in 1..=BATCH {
+            topic.send(i);
+        }
+
+        let (slots, lapped) = super::read_slots_since(&path, cursor, 4096);
+        assert_eq!(lapped, 0, "a 12-message batch cannot lap a 512-slot ring");
+        assert_eq!(
+            slots.len() as u64,
+            BATCH,
+            "expected every pending message, got {}",
+            slots.len()
+        );
+
+        // Each slot must report its own ordinal, consecutively.
+        for (n, slot) in slots.iter().enumerate() {
+            let expected = cursor + 1 + n as u64;
+            assert_eq!(
+                slot.write_idx,
+                expected,
+                "slot {n} reported ordinal {} but is message {expected}; a \
+                 caller resuming from this skips {} message(s)",
+                slot.write_idx,
+                slot.write_idx.saturating_sub(expected)
+            );
+        }
+
+        // Advance exactly as echo_topic does, then confirm nothing was skipped.
+        for slot in &slots {
+            cursor = cursor.max(slot.write_idx);
+        }
+        assert_eq!(
+            cursor,
+            first.write_idx + BATCH,
+            "the resume cursor overshot the last delivered message"
+        );
+
+        topic.send(9_999);
+        let (tail, _) = super::read_slots_since(&path, cursor, 4096);
+        assert_eq!(
+            tail.len(),
+            1,
+            "after a correct resume the next poll sees exactly the one new \
+             message, not a re-read or a hole"
+        );
+    }
+
     #[test]
     fn slot_reader_still_sees_new_messages_after_the_ring_wraps() {
         let name = format!("echo_wrap_test_{}", std::process::id());

@@ -5686,3 +5686,168 @@ mod rt_reality_check {
         assert_eq!(should_warn(false, true), (false, false));
     }
 }
+
+/// The shutdown TIMING REPORT's "Misses" column.
+///
+/// `print_timing_report` filled it with `ring_stats.total_ticks` — the line
+/// carried the comment "reuse total_ticks" — so the column reported how many
+/// times a node had *run*, under a header that says how many deadlines it
+/// *missed*. Live: an RT node logged "Shutting down after 249 ticks" and the
+/// report's Misses column read exactly 249; a Python RT node that logged
+/// exactly one "Deadline miss in 'py_ctrl'" reported 211.
+mod timing_report_columns {
+    use super::*;
+    use crate::scheduling::profiler::NodeStats;
+    use crate::scheduling::safety_monitor::{NodeTimingReport, TimingStats};
+
+    fn stats() -> NodeStats {
+        let mut stats = NodeStats::default();
+        stats.avg_us = 100.0;
+        stats.max_us = 200.0;
+        stats.stddev_us = 5.0;
+        stats.count = 249;
+        stats
+    }
+
+    fn timing(total_ticks: u64, deadline_misses: u64) -> NodeTimingReport {
+        NodeTimingReport {
+            name: "ci_test_node".to_string(),
+            stats: TimingStats {
+                min_us: 90,
+                max_us: 200,
+                avg_us: 100,
+                p99_us: 150,
+                total_ticks,
+            },
+            budget: Some(Duration::from_micros(10_000)),
+            overruns: 0,
+            deadline_misses,
+        }
+    }
+
+    /// Columns of a rendered row, in header order:
+    /// Node Avg P99 Max Stddev Budget Overruns Ticks Misses
+    fn columns(row: &str) -> Vec<String> {
+        row.split_whitespace().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn misses_reports_deadline_misses_not_the_tick_count() {
+        let node = timing(249, 1);
+        let row = format_timing_report_row("ci_test_node", &stats(), Some(&node));
+        let cols = columns(&row);
+        assert_eq!(cols.len(), 9, "unexpected column count in {row:?}");
+        assert_eq!(cols[7], "249", "Ticks column: {row:?}");
+        assert_eq!(
+            cols[8], "1",
+            "Misses must be the node's deadline-miss count, not its tick \
+             count: {row:?}"
+        );
+    }
+
+    /// A node that met every deadline must report zero misses, however long it
+    /// ran. This is the case the live reproduction hit: 249 ticks, no misses,
+    /// "Misses 249".
+    #[test]
+    fn a_node_that_missed_nothing_reports_zero_misses() {
+        let node = timing(249, 0);
+        let row = format_timing_report_row("ci_test_node", &stats(), Some(&node));
+        let cols = columns(&row);
+        assert_eq!(
+            cols[8], "0",
+            "a node that missed no deadline must report 0: {row:?}"
+        );
+    }
+
+    /// The miss count must come from the monitor's per-node counter, so it
+    /// tracks recorded misses independently of the tick count.
+    #[test]
+    fn the_miss_count_tracks_recorded_misses() {
+        let monitor = crate::scheduling::safety_monitor::SafetyMonitor::new(1_000_000);
+        monitor.set_tick_budget("motor".to_string(), Duration::from_millis(10));
+        for _ in 0..50 {
+            let _ = monitor.check_tick_budget("motor", Duration::from_micros(100));
+        }
+        monitor.record_deadline_miss("motor");
+        monitor.record_deadline_miss("motor");
+
+        let rows = monitor.all_node_timing();
+        let motor = rows.iter().find(|r| r.name == "motor").expect("motor row");
+        assert_eq!(motor.stats.total_ticks, 50);
+        assert_eq!(
+            motor.deadline_misses, 2,
+            "the monitor recorded 2 misses over 50 ticks"
+        );
+
+        let row = format_timing_report_row("motor", &stats(), Some(motor));
+        let cols = columns(&row);
+        assert_eq!(cols[7], "50", "Ticks: {row:?}");
+        assert_eq!(cols[8], "2", "Misses: {row:?}");
+    }
+}
+
+/// End to end under a real scheduler: the reproduction from the report.
+///
+/// A node builds a `Topic<Image>` and a `Topic<u64>` in its **constructor**
+/// (where a camera node builds them) and publishes on both from `tick()`.
+/// Before the fix the POD topic named the node and the image topic reported no
+/// publisher at all, because the zero-copy `Topic<Image>::send` read the
+/// constructor-captured owner — which is empty, since constructors run before
+/// the scheduler exists — and latched the failed attempt so it could never be
+/// retried from inside a tick.
+#[test]
+fn a_zero_copy_publisher_is_attributed_under_a_real_scheduler() {
+    use crate::communication::topic::topic_node_registry;
+    use crate::communication::Topic;
+    use crate::memory::Image;
+    use crate::types::ImageEncoding;
+
+    let _guard = lock_scheduler();
+
+    let tag = format!("{}_{}", std::process::id(), 1);
+    let pod_topic = format!("live_pod_{tag}");
+    let img_topic = format!("live_img_{tag}");
+
+    struct CameraCtor {
+        name: String,
+        pod: Topic<u64>,
+        img: Topic<Image>,
+    }
+
+    impl Node for CameraCtor {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {
+            self.pod.send(1);
+            if let Ok(frame) = Image::new(4, 4, ImageEncoding::Rgb8) {
+                self.img.send(frame);
+            }
+        }
+    }
+
+    // Constructed outside any tick, exactly like a real node's `new()`.
+    let node = CameraCtor {
+        name: "camera_ctor".to_string(),
+        pod: Topic::<u64>::new(&pod_topic).expect("pod topic"),
+        img: Topic::<Image>::new(&img_topic).expect("image topic"),
+    };
+
+    let mut scheduler = Scheduler::new();
+    scheduler.add(node).order(0).build();
+    let _ = scheduler.run_for(300_u64.ms());
+
+    let registry = topic_node_registry();
+    assert_eq!(
+        registry.publishers_of_topic(&pod_topic),
+        vec!["camera_ctor".to_string()],
+        "the POD path already worked"
+    );
+    assert_eq!(
+        registry.publishers_of_topic(&img_topic),
+        vec!["camera_ctor".to_string()],
+        "`horus topic info` must name the publisher of a zero-copy image \
+         topic too — this is the camera node that reported \"Publishers: \
+         (none)\""
+    );
+}

@@ -1011,6 +1011,34 @@ pub enum ManifestErrorKind {
     Syntax,
 }
 
+/// One validation finding, and the manifest key it is about.
+///
+/// The key is what lets a caller turn "Version 'x' is not valid semver" into
+/// `horus.toml:3:1: ...` — it is looked up with
+/// [`crate::manifest_lint::locate_key`]. Dotted, as the user would search for
+/// it: `package.version`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestIssue {
+    pub message: String,
+    pub key: Option<String>,
+}
+
+impl ManifestIssue {
+    /// A finding about `key`.
+    pub fn about(key: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            key: Some(key.into()),
+        }
+    }
+}
+
+impl std::fmt::Display for ManifestIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// A manifest that could not be loaded, with the position of the problem.
 ///
 /// Carried through `anyhow` rather than stringified at the throw site, so a
@@ -1109,14 +1137,100 @@ fn table_header(content: &str, span: &std::ops::Range<usize>) -> Option<String> 
     Some(first[..end].to_string())
 }
 
+/// Where the generated `horus.toml` schema is published.
+///
+/// `horus schema` printed a schema no URL served, so every project had to
+/// vendor its own copy and each one went stale on its own schedule. The
+/// documentation site deploys from `horus-docs`, so a file committed under its
+/// `public/` directory is live at this address on the next merge, and
+/// `published_schema_is_current` in `tests/docs_manifest.rs` fails the build if
+/// the committed copy stops matching what the structs generate.
+pub const MANIFEST_SCHEMA_URL: &str =
+    "https://docs.horus-registry.dev/schema/horus.toml.schema.json";
+
+// ─── Unknown-key warning on load ────────────────────────────────────────────
+
+thread_local! {
+    /// Manifests already warned about in this process.
+    ///
+    /// A single command loads the same `horus.toml` several times (feature
+    /// resolution, dependency sync, the run itself); repeating the warning once
+    /// per load would bury it.
+    static LINTED: std::cell::RefCell<std::collections::HashSet<PathBuf>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+
+    /// Depth of active [`ManifestLintSilence`] guards.
+    static LINT_SILENCED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Suppresses the automatic unknown-key warning while it is alive.
+///
+/// `horus check` reports unknown keys itself — with every line, a
+/// did-you-mean, and an exit code — so the terse stderr version would be a
+/// second, worse copy printed beside it.
+pub struct ManifestLintSilence(());
+
+impl ManifestLintSilence {
+    /// Silence the load-time warning until the returned guard is dropped.
+    pub fn new() -> Self {
+        LINT_SILENCED.with(|c| c.set(c.get() + 1));
+        Self(())
+    }
+}
+
+impl Default for ManifestLintSilence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ManifestLintSilence {
+    fn drop(&mut self) {
+        LINT_SILENCED.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+/// Print unknown keys in `content` to stderr, once per `path` per process.
+fn warn_unknown_keys_once(path: &Path, content: &str) {
+    if LINT_SILENCED.with(|c| c.get()) > 0 {
+        return;
+    }
+    let first_time = LINTED.with(|seen| seen.borrow_mut().insert(path.to_path_buf()));
+    if !first_time {
+        return;
+    }
+    let unknown = crate::manifest_lint::find_unknown_keys(content);
+    if unknown.is_empty() {
+        return;
+    }
+    eprintln!(
+        "warning: {} has {} key(s) HORUS does not understand",
+        path.display(),
+        unknown.len()
+    );
+    for key in &unknown {
+        eprintln!("  {}", key.at(path));
+    }
+    eprintln!("  {}", crate::manifest_lint::UnknownKey::severity_notice());
+}
+
 // ─── HorusManifest: loading ─────────────────────────────────────────────────
 
 impl HorusManifest {
     /// Load manifest from a TOML file path.
+    ///
+    /// Warns on stderr about keys HORUS does not understand, once per file per
+    /// process. Every command reaches a manifest through here, which is the
+    /// point: `horus run` and `horus build` used to read a manifest with a
+    /// misspelled key and say nothing at all, so the setting did nothing and
+    /// the only command that would tell you was `horus check` — the one you had
+    /// no reason to run, because everything appeared to work.
     pub fn load_from(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
-        Self::parse_str(&content, path)
+        let manifest = Self::parse_str(&content, path)?;
+        warn_unknown_keys_once(path, &content);
+        Ok(manifest)
     }
 
     /// Parse manifest text, attributing failures to `path`.
@@ -1228,40 +1342,77 @@ impl HorusManifest {
     // ── Validation ──────────────────────────────────────────────────────
 
     /// Validate the manifest and return warnings (errors are returned as Err).
+    ///
+    /// Kept as it was for the callers that only want a yes/no and a message.
+    /// Anything that reports *findings* — `horus check` and its `--json` — uses
+    /// [`Self::validate_issues`] instead, so each problem keeps the key it is
+    /// about and can be printed against the line it is on.
     pub fn validate(&self) -> Result<Vec<String>> {
+        let (errors, warnings) = self.validate_issues();
+        if !errors.is_empty() {
+            let msg = errors
+                .iter()
+                .enumerate()
+                .map(|(i, e)| format!("  {}. {}", i + 1, e.message))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(anyhow!("Manifest validation failed:\n{}", msg));
+        }
+        Ok(warnings.into_iter().map(|w| w.message).collect())
+    }
+
+    /// Validation findings as `(errors, warnings)`, one entry per problem.
+    ///
+    /// Each finding names the key it is about. `validate()` joined every error
+    /// into one string, which is why `horus check --json` reported a single
+    /// diagnostic with no line for a manifest with three separate mistakes —
+    /// the position was never lost, it was never computed.
+    pub fn validate_issues(&self) -> (Vec<ManifestIssue>, Vec<ManifestIssue>) {
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
+
+        // `[sim-drivers]` parses and is then read by nothing. Saying so here
+        // means every path that validates a manifest says it, rather than the
+        // user discovering it when a real motor moves under `--sim`.
+        if !self.sim_drivers.is_empty() {
+            warnings.push(ManifestIssue::about(
+                "sim-drivers",
+                "[sim-drivers] is no longer consulted by any code path — move each \
+                 override onto its [hardware] entry as `sim = true`, or `--sim` will \
+                 run the real driver",
+            ));
+        }
 
         // Virtual workspace: skip package validation, validate workspace config
         if self.is_virtual_workspace() {
             let ws = self.workspace.as_ref().unwrap();
             if ws.members.is_empty() {
-                errors.push("Workspace has no members".to_string());
+                errors.push(ManifestIssue::about(
+                    "workspace.members",
+                    "Workspace has no members",
+                ));
             }
-            if !errors.is_empty() {
-                let msg = errors
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| format!("  {}. {}", i + 1, e))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                return Err(anyhow!("Manifest validation failed:\n{}", msg));
-            }
-            return Ok(warnings);
+            return (errors, warnings);
         }
 
         // No workspace and no package name → invalid
         if self.package.name.is_empty() && self.workspace.is_none() {
-            errors.push("Missing [package] section with a name".to_string());
+            errors.push(ManifestIssue::about(
+                "package",
+                "Missing [package] section with a name",
+            ));
         }
 
         // Name validation
         if !self.package.name.is_empty()
             && (self.package.name.len() < 2 || self.package.name.len() > 64)
         {
-            errors.push(format!(
-                "Package name '{}' must be 2-64 characters",
-                self.package.name
+            errors.push(ManifestIssue::about(
+                "package.name",
+                format!(
+                    "Package name '{}' must be 2-64 characters",
+                    self.package.name
+                ),
             ));
         }
 
@@ -1274,9 +1425,12 @@ impl HorusManifest {
                 || c == '@'
                 || c == '/'
         }) {
-            errors.push(format!(
-                "Package name '{}' must contain only lowercase letters, digits, hyphens, underscores, '@', and '/'",
-                self.package.name
+            errors.push(ManifestIssue::about(
+                "package.name",
+                format!(
+                    "Package name '{}' must contain only lowercase letters, digits, hyphens, underscores, '@', and '/'",
+                    self.package.name
+                ),
             ));
         }
 
@@ -1286,38 +1440,82 @@ impl HorusManifest {
             "internal", "config", "setup", "install",
         ];
         if reserved.contains(&self.package.name.as_str()) {
-            errors.push(format!("Package name '{}' is reserved", self.package.name));
+            errors.push(ManifestIssue::about(
+                "package.name",
+                format!("Package name '{}' is reserved", self.package.name),
+            ));
         }
 
         // Version validation
         if semver::Version::parse(&self.package.version).is_err() {
-            errors.push(format!(
-                "Version '{}' is not valid semver (expected e.g., '0.1.0')",
-                self.package.version
+            errors.push(ManifestIssue::about(
+                "package.version",
+                format!(
+                    "Version '{}' is not valid semver (expected e.g., '0.1.0')",
+                    self.package.version
+                ),
             ));
+        }
+
+        // Version strings that reach a native build file verbatim.
+        //
+        // `horus add pkg@latest` accepts "latest", the registry resolves it,
+        // and nothing rejected it in a manifest — but `.horus/Cargo.toml` is
+        // generated by copying the string across, so a crates.io dependency
+        // written `version = "latest"` produces `serde = "latest"` and cargo
+        // answers `failed to parse the version requirement`. The manifest was
+        // accepted, `horus check` said "All checks passed!", and the build
+        // broke somewhere else entirely.
+        for (name, dep) in self
+            .dependencies
+            .iter()
+            .chain(self.dev_dependencies.iter())
+            .chain(self.sim_dependencies.iter())
+        {
+            let Some(version) = dep.version() else {
+                continue;
+            };
+            if version == "*" || semver::VersionReq::parse(version).is_ok() {
+                continue;
+            }
+            let advice = if version == "latest" {
+                "write `\"*\"` instead — it means the same thing to the registry and is \
+                 the only spelling cargo and pip also accept"
+            } else {
+                "expected a semver requirement such as `\"1.2\"`, `\"^1.2\"` or `\"*\"`"
+            };
+            let issue = ManifestIssue::about(
+                format!("dependencies.{name}"),
+                format!(
+                    "Dependency '{name}' has version \"{version}\", which is not a version \
+                     requirement: {advice}"
+                ),
+            );
+            // For crates.io and PyPI the string is copied into the generated
+            // build file, where cargo and pip reject it outright — that is a
+            // broken build, not a style note. The registry resolves "latest"
+            // itself, so there it is only non-portable.
+            match dep.effective_source() {
+                DepSource::CratesIo | DepSource::PyPI => errors.push(issue),
+                DepSource::Registry => warnings.push(issue),
+                _ => {}
+            }
         }
 
         // Edition validation
         let known_editions = ["1"];
         if !known_editions.contains(&self.package.edition.as_str()) {
-            warnings.push(format!(
-                "Unknown edition '{}'. Known editions: {}",
-                self.package.edition,
-                known_editions.join(", ")
+            warnings.push(ManifestIssue::about(
+                "package.edition",
+                format!(
+                    "Unknown edition '{}'. Known editions: {}",
+                    self.package.edition,
+                    known_editions.join(", ")
+                ),
             ));
         }
 
-        if !errors.is_empty() {
-            let msg = errors
-                .iter()
-                .enumerate()
-                .map(|(i, e)| format!("  {}. {}", i + 1, e))
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(anyhow!("Manifest validation failed:\n{}", msg));
-        }
-
-        Ok(warnings)
+        (errors, warnings)
     }
 
     // ── Workspace helpers ──────────────────────────────────────────────────
@@ -1597,7 +1795,16 @@ pub fn remove_manifest_entry(path: &Path, tables: &[&str], key: &str) -> Result<
 /// Requires the `schema` feature to be enabled.
 #[cfg(feature = "schema")]
 pub fn generate_manifest_schema() -> String {
-    let schema = schemars::schema_for!(HorusManifest);
+    let mut schema = schemars::schema_for!(HorusManifest);
+    // The identity of the schema, not a decoration: an editor that has fetched
+    // it once can tell the file it has is this schema, and a reader who finds a
+    // vendored copy can tell where the current one lives. The URL is served
+    // from the documentation site, which deploys on every merge — see
+    // MANIFEST_SCHEMA_URL.
+    schema.insert(
+        "$id".to_string(),
+        serde_json::Value::String(MANIFEST_SCHEMA_URL.to_string()),
+    );
     serde_json::to_string_pretty(&schema).expect("Failed to serialize JSON Schema")
 }
 

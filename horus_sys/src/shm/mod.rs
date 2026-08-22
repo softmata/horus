@@ -828,6 +828,14 @@ pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
 }
 
 /// Check whether a session (by session leader PID) is still alive.
+///
+/// Uses the same definition of "alive" as [`crate::process::ProcessHandle`]:
+/// a pid that still answers `kill(pid, 0)` but belongs to a process that has
+/// exited and not yet been reaped is dead. Without the zombie test a session
+/// leader killed under a parent that never waits kept its whole SHM namespace
+/// marked `alive`, so [`list_namespaces`] reported it as live and
+/// [`cleanup_stale_namespaces`] refused to reclaim it — the same defect the
+/// node list had.
 #[cfg(unix)]
 pub fn session_alive(sid: i32) -> bool {
     if sid <= 0 {
@@ -835,11 +843,15 @@ pub fn session_alive(sid: i32) -> bool {
     }
     // SAFETY: kill with signal 0 checks existence without sending a signal
     let ret = unsafe { libc::kill(sid, 0) };
-    if ret == 0 {
-        return true;
-    }
-    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    errno == libc::EPERM
+    let exists = if ret == 0 {
+        true
+    } else {
+        // EPERM means the process exists but is another user's — existence,
+        // not absence.
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        errno == libc::EPERM
+    };
+    exists && !crate::process::is_zombie(sid as u32)
 }
 
 #[cfg(not(unix))]
@@ -1087,6 +1099,49 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LIVE-12: namespace liveness is a second liveness check, and it used to
+    /// have its own raw `kill(sid, 0)` with no zombie test — so a session
+    /// leader killed under a parent that never reaps kept its SHM namespace
+    /// reported alive by `list_namespaces` and skipped by
+    /// `cleanup_stale_namespaces` forever.
+    #[test]
+    #[cfg(unix)]
+    fn a_zombie_session_leader_is_not_alive() {
+        let Some((_child, pid)) = crate::process::spawn_unreaped_zombie() else {
+            panic!("could not produce an unreaped zombie child");
+        };
+
+        // Precondition: the pid still answers kill(pid, 0), which is exactly
+        // what session_alive used to accept as proof of life.
+        // SAFETY: signal 0 only probes for existence.
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            0,
+            "the child was reaped: this test needs a pid that still answers kill(pid, 0)"
+        );
+
+        assert!(
+            !session_alive(pid as i32),
+            "session leader {pid} exited and was never reaped — its namespace is stale"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_alive_still_recognises_live_and_impossible_pids() {
+        // The zombie test must not turn session_alive into "always false".
+        assert!(
+            session_alive(std::process::id() as i32),
+            "this very process is alive"
+        );
+        assert!(
+            !session_alive(0),
+            "pid 0 means 'process group', never a leader"
+        );
+        assert!(!session_alive(-1), "pid -1 means 'every process'");
+        assert!(!session_alive(99_999_999));
+    }
 
     #[test]
     fn test_shm_paths_are_valid() {

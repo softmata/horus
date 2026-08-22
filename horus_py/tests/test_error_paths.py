@@ -72,30 +72,46 @@ class TestSendErrorPaths:
         assert sent_ok[0], "send to undeclared topic should not crash"
 
     def test_send_none_doesnt_crash(self, unique_test_prefix):
-        """send(topic, None) should not crash on an *untyped* topic.
+        """send(topic, None) should not raise on an *untyped* topic.
 
-        The topic name has to be unique. Topics are global and their type lives
-        in shared memory, so a bare name like "test_topic" was whatever an
-        earlier test in the session had made it — and once something had opened
-        it typed, sending None raised, exactly as
+        Two separate defects made this test measure something other than
+        send(). The topic name has to be unique: topics are global and their
+        type lives in shared memory, so a bare name like "test_topic" was
+        whatever an earlier test in the session had made it — and once
+        something had opened it typed, sending None raised, exactly as
         `test_send_none_to_typed_topic_raises_typeerror` requires it to. The
         test passed or failed on collection order.
+
+        The timing budget was the other. At rate=10 the tick period is 100ms
+        and duration was 0.1s — exactly one period — so the scheduler
+        routinely hit its time limit having ticked zero times, and the
+        assertion failed with `send(None) should not crash` while send() had
+        never been called at all. Measured directly: TICKS: 0.
+
+        The node now gets enough periods that ticking is not in question, and
+        the failure message distinguishes "never ran" from "raised".
         """
-        sent_ok = [False]
+        ticks = [0]
+        sends = [0]
+        error = [None]
         topic = f"{unique_test_prefix}_none_topic"
 
         def tick(node):
-            node.send(topic, None)
-            sent_ok[0] = True
+            ticks[0] += 1
+            try:
+                node.send(topic, None)
+                sends[0] += 1
+            except Exception as e:  # noqa: BLE001 - the point is to report it
+                error[0] = f"{type(e).__name__}: {e}"
 
-        node = horus.Node(name="send_none", tick=tick, rate=10, pubs=[topic])
-        # 1s, not 0.1s. At 10Hz a 0.1s run is a single tick, and it only happens
-        # if the scheduler finishes starting first — under the rest of the suite
-        # it often does not, and the assertion below then reports "send(None)
-        # should not crash" for a send that never ran.
-        horus.run(node, duration=1.0)
+        node = horus.Node(name="send_none", tick=tick, rate=100, pubs=[topic])
+        horus.run(node, duration=0.5)
 
-        assert sent_ok[0], "send(None) should not crash"
+        assert ticks[0] > 0, "node never ticked, so send(None) was never exercised"
+        assert error[0] is None, f"send(None) raised: {error[0]}"
+        assert sends[0] == ticks[0], (
+            f"send(None) completed {sends[0]} of {ticks[0]} ticks"
+        )
 
 
 class TestTickExceptionHandling:

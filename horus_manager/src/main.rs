@@ -32,7 +32,7 @@ Project:
   launch, l         Launch multiple nodes from a YAML file
 
 Introspection:
-  topic, t          Topic interaction (list, echo, publish, bw)
+  topic, t          Topic interaction (list, echo, info, hz, pub, bw)
   node, n           Node management (list, info, kill)
   service, srv      Service interaction (list, call, info, find)
   action, a         Action interaction (list, info, send-goal, cancel-goal)
@@ -61,7 +61,7 @@ Packages:
   info              Show detailed info about a package or plugin
 
 Plugins:
-  plugin, plugins   Manage plugins (enable, disable, verify, trust)
+  plugin, plugins   Manage plugins (enable, disable, verify, trust, untrust, trusted)
 
 Development:
   fmt               Format code (Rust + Python)
@@ -90,15 +90,16 @@ Publishing & Deploy:
   auth              Authentication (login, api-key, signing-key, trust-publisher)
 
 Native Tools:
-  env               Set up shell integration (cargo/pip/cmake proxy)
+  env               Shell integration: proxy cargo/pip/pip3/cmake/conan/vcpkg
   completion        Generate a shell completion script (bash/zsh/fish)
+  man               Write the man page to stdout (horus man > horus.1)
 
 Options:
 {options}
 {after-help}")]
 #[command(after_help = "\
 Quick Start:
-  horus new my_robot -r           Create a new Rust project
+  horus new my_robot --rust       Create a new Rust project
   cd my_robot && horus run        Build and run it
   horus topic list                See active topics
 
@@ -140,14 +141,21 @@ enum Commands {
         /// Output directory (optional, defaults to current directory)
         #[arg(short = 'o', long = "output")]
         path: Option<PathBuf>,
-        /// Use Python
-        #[arg(short = 'p', long = "python", conflicts_with_all = ["rust", "cpp"])]
+        /// Use Python (`-p` is deprecated here: it means --package elsewhere)
+        ///
+        /// `-p`, `-r` and `-c` still work and are still accepted, but they are
+        /// no longer advertised: on `horus build`, `horus run` and `horus test`
+        /// — the commands typed minutes later in the same project — the same
+        /// three letters mean `--package`, `--release` and `--clean`. Nothing
+        /// errors when the habit crosses over, it just builds something else.
+        /// They stop being accepted in HORUS 0.4.0; use the long form.
+        #[arg(long = "python", short_alias = 'p', conflicts_with_all = ["rust", "cpp"])]
         python: bool,
-        /// Use Rust
-        #[arg(short = 'r', long = "rust", conflicts_with_all = ["python", "cpp"])]
+        /// Use Rust (`-r` is deprecated here: it means --release elsewhere)
+        #[arg(long = "rust", short_alias = 'r', conflicts_with_all = ["python", "cpp"])]
         rust: bool,
-        /// Use C++
-        #[arg(short = 'c', long = "cpp", conflicts_with_all = ["python", "rust"])]
+        /// Use C++ (`-c` is deprecated here: it means --clean elsewhere)
+        #[arg(long = "cpp", short_alias = 'c', conflicts_with_all = ["python", "rust"])]
         cpp: bool,
         /// Use Rust with macros
         #[arg(short = 'm', long = "macro", conflicts_with_all = ["python", "cpp"])]
@@ -427,7 +435,7 @@ enum Commands {
     },
 
     // ── Introspection ────────────────────────────────────────────────────
-    /// Topic interaction (list, echo, publish)
+    /// Topic interaction (list, echo, info, hz, pub, bw)
     #[command(visible_alias = "t")]
     Topic {
         #[command(subcommand)]
@@ -557,6 +565,12 @@ enum Commands {
 
     // ── Dependencies ────────────────────────────────────────────────────
     /// Add a dependency to horus.toml (crates.io, PyPI, system, registry, git, path)
+    ///
+    /// `add` edits the horus.toml you are standing in: the dependency belongs
+    /// to this project and is resolved the next time it builds. `horus install`
+    /// puts a standalone package or plugin on the machine and writes no
+    /// manifest entry. Undo `add` with `horus remove`, `install` with
+    /// `horus uninstall`.
     Add {
         /// Dependency name (supports name@version syntax, e.g. serde@1.0)
         name: String,
@@ -581,6 +595,9 @@ enum Commands {
     },
 
     /// Remove a dependency from horus.toml
+    ///
+    /// The undo of `horus add` — it edits this project's manifest. To take an
+    /// installed package or plugin off the machine, use `horus uninstall`.
     Remove {
         /// Dependency name
         name: String,
@@ -591,6 +608,11 @@ enum Commands {
 
     // ── Packages ─────────────────────────────────────────────────────────
     /// Install a standalone package or plugin from the registry
+    ///
+    /// Installs onto the machine — global by default, `-t <workspace>` targets
+    /// a registered workspace — and writes nothing to horus.toml. To declare a
+    /// dependency of *this* project instead, use `horus add`. Undo with
+    /// `horus uninstall`.
     #[command(visible_alias = "i")]
     Install {
         /// Package name (supports name@version syntax, e.g. rplidar@1.2.0)
@@ -610,6 +632,9 @@ enum Commands {
     },
 
     /// Uninstall a standalone package or plugin
+    ///
+    /// The undo of `horus install`. It does not touch horus.toml — to drop a
+    /// dependency this project declares, use `horus remove`.
     Uninstall {
         /// Package or plugin name
         name: String,
@@ -632,6 +657,12 @@ enum Commands {
     },
 
     /// List installed packages and plugins
+    ///
+    /// Lists what `horus install` has put on this machine. This is not the
+    /// runtime `list`: `horus topic list`, `horus node list`, `horus param
+    /// list`, `horus service list`, `horus action list`, `horus frame list`
+    /// and `horus msg list` ask a running system what it has right now, and
+    /// come back empty when nothing is running.
     List {
         /// List global scope packages only
         #[arg(short = 'g', long = "global")]
@@ -666,7 +697,7 @@ enum Commands {
     },
 
     // ── Plugins ──────────────────────────────────────────────────────────
-    /// Plugin management (enable, disable, verify)
+    /// Plugin management (enable, disable, verify, trust, untrust, trusted)
     #[command(visible_alias = "plugins")]
     Plugin {
         #[command(subcommand)]
@@ -869,7 +900,16 @@ enum Commands {
     },
 
     // ── Publishing & Deploy ──────────────────────────────────────────────
-    /// Publish package to registry
+    /// Publish this package to the registry
+    ///
+    /// Packages the current project and uploads it. Unrelated to the
+    /// `publish()` call in the Rust, C++ and Python APIs, which sends one
+    /// message on a topic — the CLI equivalent of that is `horus topic pub`.
+    ///
+    /// The name stays `publish` rather than moving to `horus registry publish`:
+    /// `unpublish`, `yank`, `unyank`, `deprecate`, `undeprecate` and `owner`
+    /// are all top-level registry verbs, and renaming one of seven would trade
+    /// a documented ambiguity for an undocumented inconsistency.
     Publish {
         /// Validate package without actually publishing
         #[arg(short = 'n', long = "dry-run")]
@@ -1075,7 +1115,7 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Manage shell integration for native tool support (cargo, pip, cmake)
+    /// Manage shell integration for native tools (cargo, pip, pip3, cmake, conan, vcpkg)
     Env {
         /// Write shell integration files and add to shell RC
         #[arg(long)]
@@ -1920,6 +1960,112 @@ enum ConfigCommands {
     List,
 }
 
+/// The command tree a completion script should offer.
+///
+/// `clap_complete` walks `Command::get_subcommands()`, which yields hidden
+/// subcommands as well as visible ones, so the generated script offered every
+/// internal as a top-level candidate for `horus <TAB>`: the five native-tool
+/// proxies (`cargo`, `pip`, `cmake`, `conan`, `vcpkg` — reachable only through
+/// the shell functions `horus env --init` writes, never meant to be typed) and
+/// `_is-project`, which exists purely as an exit code for those functions.
+/// Installing completions therefore undid the `hide = true` that keeps them out
+/// of `--help`.
+///
+/// clap has no API for removing a subcommand, so the visible half of the tree
+/// is rebuilt onto a fresh `Command`. Only the pieces a completion script reads
+/// are copied: the top-level arguments and the visible subcommands (each
+/// cloned whole, so their own arguments and nested subcommands come with them).
+fn completion_tree() -> clap::Command {
+    let full = Cli::command();
+    debug_assert_eq!(full.get_name(), "horus", "completion bin name drifted");
+    // The root settings a completion script can observe: no `help`
+    // subcommand, and `-V`/`--version` on every subcommand. `--help` and
+    // `--version` themselves are left for clap to generate, exactly as it does
+    // for the real tree — copying them from `full` would drop them, since the
+    // derive only materialises them at build() time.
+    let mut tree = clap::Command::new("horus")
+        .version(env!("CARGO_PKG_VERSION"))
+        .disable_help_subcommand(true)
+        .propagate_version(true);
+    for arg in full.get_arguments() {
+        tree = tree.arg(arg.clone());
+    }
+    for sub in full.get_subcommands() {
+        if !sub.is_hide_set() {
+            tree = tree.subcommand(sub.clone());
+        }
+    }
+    tree
+}
+
+/// Short flags on `horus new` that mean something else on the commands the
+/// same user types next, as `(short, long form, what it means elsewhere)`.
+///
+/// `horus new x -r` selects Rust; `horus build -r` and `horus run -r` select
+/// release. Nothing errors when the habit crosses over — the wrong thing is
+/// built, quietly. Same for `-p` (Python here, `--package` there) and `-c`
+/// (C++ here, `--clean` there).
+///
+/// They are `short_alias` rather than `short` on the `New` variant, so
+/// `horus new --help` no longer teaches them, and this notice tells anyone
+/// still typing them what to switch to and when they stop working. Removing
+/// them outright would break every script, README and CI job that uses them,
+/// which is what a deprecation cycle is for.
+const DEPRECATED_NEW_SHORT_FLAGS: [(char, &str, &str); 3] = [
+    (
+        'r',
+        "--rust",
+        "`--release` on `horus build`, `horus run` and `horus test`",
+    ),
+    (
+        'p',
+        "--python",
+        "`--package` on `horus build` and `horus run`",
+    ),
+    ('c', "--cpp", "`--clean` on `horus build` and `horus run`"),
+];
+
+/// The release in which the short forms above stop being accepted.
+const NEW_SHORT_FLAG_REMOVAL: &str = "0.4.0";
+
+/// Tell anyone still using `horus new -r` what it will mean tomorrow.
+///
+/// clap does not report which spelling matched an argument, so the raw
+/// command line is re-read. Only the tokens of the `new` invocation itself are
+/// considered, and only single-dash ones, so a project literally named `-r`
+/// after a `--` is not mistaken for a flag.
+fn warn_about_deprecated_new_short_flags() {
+    let mut args = std::env::args().skip(1).skip_while(|a| a != "new");
+    if args.next().is_none() {
+        return; // not a `new` invocation
+    }
+
+    let mut seen: Vec<char> = Vec::new();
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if !arg.starts_with('-') || arg.starts_with("--") {
+            continue;
+        }
+        for (short, _, _) in DEPRECATED_NEW_SHORT_FLAGS {
+            if arg[1..].contains(short) && !seen.contains(&short) {
+                seen.push(short);
+            }
+        }
+    }
+
+    for short in seen {
+        let (_, long, elsewhere) = DEPRECATED_NEW_SHORT_FLAGS
+            .iter()
+            .find(|(c, _, _)| *c == short)
+            .expect("only chars from the table are collected");
+        horus_manager::cli_output::warn(&format!(
+            "`-{short}` on `horus new` means `{long}`, but `-{short}` means {elsewhere}.\n  Write `{long}`: `-{short}` here is deprecated and stops being accepted in HORUS {NEW_SHORT_FLAG_REMOVAL}."
+        ));
+    }
+}
+
 /// Parse override argument in format "node.output=value"
 fn parse_override(s: &str) -> Result<(String, String, String), String> {
     let parts: Vec<&str> = s.splitn(2, '=').collect();
@@ -2124,6 +2270,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             lib,
             yes,
         } => {
+            warn_about_deprecated_new_short_flags();
             // `--yes` reuses the same signal the non-TTY path uses, so a
             // scripted run and an interactive `--yes` take identical defaults.
             if yes {
@@ -3232,10 +3379,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Completion { shell } => {
-            // Hidden command used by install.sh for automatic completion setup
-            let mut cmd = Cli::command();
-            let bin_name = cmd.get_name().to_string();
-            generate(shell, &mut cmd, bin_name, &mut io::stdout());
+            // install.sh calls this to set completions up automatically.
+            // `completion_tree()` rather than `Cli::command()`: the hidden
+            // proxies and `_is-project` must not be offered by `horus <TAB>`.
+            let mut cmd = completion_tree();
+            generate(shell, &mut cmd, "horus", &mut io::stdout());
             Ok(())
         }
 

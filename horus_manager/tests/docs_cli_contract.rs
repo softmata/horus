@@ -356,3 +356,216 @@ fn every_documented_flag_is_accepted() {
             .join("\n  ")
     );
 }
+
+// ── The other direction: CLI → docs ─────────────────────────────────────
+//
+// Everything above asks whether the documentation describes a CLI that exists.
+// Nothing asked the reverse, and the reverse is where the reference rotted:
+// `horus add`, `horus lock`, `horus list`, `horus info`, `horus search`,
+// `horus update`, `horus publish`, `horus unpublish`, `horus scripts`,
+// `horus self update` and `horus man` all worked, and none of them had a
+// section in cli-reference.mdx — `grep -rn "horus self" content/` returned
+// nothing across the entire corpus. A command with no section is a command
+// nobody finds, and `horus --help` is one screen, not a reference.
+
+/// The reference page, if the docs are available.
+fn cli_reference() -> Option<String> {
+    let path = docs_root()?.join("development/cli-reference.mdx");
+    std::fs::read_to_string(path).ok()
+}
+
+/// Top-level command names clap offers, read out of the generated bash
+/// completion script — the only machine-readable view of the command tree an
+/// integration test has. Hidden commands are already excluded from it, so this
+/// is exactly the set a user can discover.
+fn visible_command_names() -> Vec<String> {
+    let out = Command::new(horus())
+        .args(["completion", "bash"])
+        .output()
+        .expect("horus completion bash must run");
+    let script = String::from_utf8_lossy(&out.stdout);
+
+    let mut lines = script.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != "horus)" {
+            continue;
+        }
+        let Some(opts) = lines.next() else { break };
+        let Some((_, rest)) = opts.split_once("opts=\"") else {
+            break;
+        };
+        let Some((inner, _)) = rest.split_once('"') else {
+            break;
+        };
+        return inner
+            .split_whitespace()
+            .filter(|t| !t.starts_with('-'))
+            .map(|t| t.to_string())
+            .collect();
+    }
+    Vec::new()
+}
+
+/// The canonical name of a command, resolved by clap itself: `horus t --help`
+/// renders `Usage: horus topic ...`, so an alias reports the command it is an
+/// alias of.
+fn canonical_name(name: &str) -> Option<String> {
+    let (ok, text) = help_for(&[name]);
+    if !ok {
+        return None;
+    }
+    text.lines()
+        .find_map(|l| l.strip_prefix("Usage: horus "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|s| s.to_string())
+}
+
+/// The heading and body of the section documenting `horus <name>`, if any.
+///
+/// A section is a heading whose title contains `` `horus <name>` `` — either a
+/// page-level `##` or a `###` inside a grouping section, since the registry
+/// lifecycle commands are documented as subsections of one page section.
+fn section_for<'a>(doc: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    let needle_end = format!("`horus {name}`");
+    let needle_more = format!("`horus {name} ");
+    let lines: Vec<&str> = doc.lines().collect();
+    let start = lines.iter().position(|l| {
+        l.starts_with('#') && (l.contains(needle_end.as_str()) || l.contains(needle_more.as_str()))
+    })?;
+    let depth = lines[start].chars().take_while(|c| *c == '#').count();
+    let mut end = lines.len();
+    // Shell comments inside a fenced block start with `#` too, and reading one
+    // as a heading truncates the section at its first example.
+    let mut fenced = false;
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let d = line.chars().take_while(|c| *c == '#').count();
+        if d > 0 && d <= depth && line.chars().nth(d) == Some(' ') {
+            end = i;
+            break;
+        }
+    }
+    Some(lines[start..end].to_vec())
+}
+
+/// Every command that exists must have a section in the CLI reference.
+#[test]
+fn every_visible_command_has_a_section_in_the_cli_reference() {
+    let Some(doc) = cli_reference() else {
+        eprintln!("SKIP: horus-docs is not checked out and HORUS_DOCS_DIR is unset");
+        return;
+    };
+    let names = visible_command_names();
+    assert!(
+        names.len() > 40,
+        "read only {} command names out of the completion script — the \
+         generator's output format changed and this test is checking nothing: \
+         {names:?}",
+        names.len()
+    );
+
+    let mut undocumented = Vec::new();
+    for name in &names {
+        let Some(canonical) = canonical_name(name) else {
+            continue; // reported by every_documented_command_resolves
+        };
+        if &canonical != name {
+            continue; // an alias; checked below
+        }
+        if section_for(&doc, name).is_none() {
+            undocumented.push(name.clone());
+        }
+    }
+
+    assert!(
+        undocumented.is_empty(),
+        "these commands work but have no section in \
+         content/docs/development/cli-reference.mdx, so the only place they are \
+         described is one line of `horus --help`: {undocumented:?}\n\
+         Add a `## `horus <name>`` section, or a `### `horus <name>`` \
+         subsection under the group it belongs to."
+    );
+}
+
+/// Every alias must be named in the section of the command it aliases.
+///
+/// `tf`, `srv` and `plugins` appeared nowhere in the reference. `tf` is the
+/// word a ROS 2 migrant types first, and `horus plugins` is what the plugin
+/// pages themselves use — an alias documented nowhere reads as a typo when a
+/// colleague uses it.
+#[test]
+fn every_alias_is_named_in_its_commands_section() {
+    let Some(doc) = cli_reference() else {
+        eprintln!("SKIP: horus-docs is not checked out and HORUS_DOCS_DIR is unset");
+        return;
+    };
+    let names = visible_command_names();
+    assert!(names.len() > 40, "completion script not parsed: {names:?}");
+
+    let mut aliases = 0usize;
+    let mut missing = Vec::new();
+    for name in &names {
+        let Some(canonical) = canonical_name(name) else {
+            continue;
+        };
+        if &canonical == name {
+            continue;
+        }
+        aliases += 1;
+        let Some(section) = section_for(&doc, &canonical) else {
+            continue; // reported by the test above
+        };
+        let mention = format!("horus {name}`");
+        if !section.iter().any(|l| l.contains(mention.as_str())) {
+            missing.push(format!("{name} (alias of {canonical})"));
+        }
+    }
+
+    assert!(
+        aliases >= 10,
+        "found only {aliases} aliases — the resolution through the Usage line \
+         is broken and this test is checking nothing"
+    );
+    assert!(
+        missing.is_empty(),
+        "these aliases work but the section of the command they alias never \
+         mentions them: {missing:?}\n\
+         Add `**Alias**: `horus <alias>`` under that command's heading in \
+         content/docs/development/cli-reference.mdx."
+    );
+}
+
+/// The CLI reference must not re-teach the "alias for horus doctor" framing.
+///
+/// `--health` was described in the CLI as "alias for horus doctor" and nowhere
+/// said what either command covers, which is how three entry points to
+/// overlapping validation came to have no stated distinction. The CLI help was
+/// fixed and guarded (`check_and_doctor_state_what_each_covers` in
+/// help_contract.rs); the reference page still carried a pasted copy of the old
+/// help text, so the sentence the fix removed was still the one users read.
+#[test]
+fn the_reference_explains_check_versus_doctor() {
+    let Some(doc) = cli_reference() else {
+        eprintln!("SKIP: horus-docs is not checked out and HORUS_DOCS_DIR is unset");
+        return;
+    };
+    assert!(
+        !doc.contains("alias for horus doctor"),
+        "content/docs/development/cli-reference.mdx still describes --health as \
+         an alias, the framing that left the check/doctor distinction unstated"
+    );
+
+    let section = section_for(&doc, "check").expect("`horus check` must have a section");
+    let text = section.join("\n");
+    assert!(
+        text.contains("horus doctor") && text.contains("machine"),
+        "the `horus check` section must say what `horus doctor` covers \
+         instead:\n{text}"
+    );
+}

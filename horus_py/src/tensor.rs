@@ -968,7 +968,10 @@ impl PyTensorHandle {
         //
         //     pyo3_runtime.PanicException: Already borrowed: PyBorrowMutError
         //
-        // so `astype` and its four `to_*` shorthands failed on every call.
+        // so `astype` and its four `to_*` shorthands — each a one-line call to
+        // it — failed on every conversion that changed the dtype. The same-dtype
+        // path returns before reaching `numpy`, so a conversion that changed
+        // nothing worked and the API looked healthy in casual use.
         {
             let inner = slf.borrow();
             let handle = inner

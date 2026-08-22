@@ -216,23 +216,56 @@ case "$INSTALL_PROFILE" in
         ;;
 esac
 
-# Shell completion paths
+# >>> uninstall.sh: artifact paths >>>
+# Shell completion paths.
+#
+# The first entry of each list is where install.sh's install_completions()
+# actually writes today; the rest are older/system locations kept so an upgrade
+# from an earlier layout still cleans up. These two lists drifted apart once
+# already: install.sh moved to ~/.zfunc and XDG bash-completion, and this file
+# was never updated, so two of the three files the installer writes survived a
+# full uninstall.
 BASH_COMPLETION_PATHS=(
+    "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/horus"
+    "$HOME/.local/share/bash-completion/completions/horus"
     "$HOME/.bash_completion.d/horus"
     "/etc/bash_completion.d/horus"
+    "/usr/share/bash-completion/completions/horus"
     "$HORUS_DIR/completions/horus.bash"
 )
 ZSH_COMPLETION_PATHS=(
+    "$HOME/.zfunc/_horus"
     "$HOME/.zsh/completions/_horus"
     "/usr/share/zsh/site-functions/_horus"
     "$HORUS_DIR/completions/_horus"
     "$HORUS_DIR/completions/horus.zsh"
 )
 FISH_COMPLETION_PATHS=(
+    "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/horus.fish"
     "$HOME/.config/fish/completions/horus.fish"
     "/usr/share/fish/completions/horus.fish"
     "$HORUS_DIR/completions/horus.fish"
 )
+
+# Man page paths — install.sh's install_man_page() writes the first as a normal
+# user and the third when run as root. None of them was ever removed here.
+MAN_PAGE_PATHS=(
+    "${XDG_DATA_HOME:-$HOME/.local/share}/man/man1/horus.1"
+    "$HOME/.local/share/man/man1/horus.1"
+    "/usr/local/share/man/man1/horus.1"
+    "/usr/share/man/man1/horus.1"
+)
+
+# With XDG_DATA_HOME/XDG_CONFIG_HOME unset the XDG entry and the plain $HOME one
+# above expand to the same string; collapse them so nothing is listed or counted
+# twice.
+for _list in BASH_COMPLETION_PATHS ZSH_COMPLETION_PATHS FISH_COMPLETION_PATHS MAN_PAGE_PATHS; do
+    eval "_tmp=(\"\${${_list}[@]}\")"
+    mapfile -t _uniq < <(printf '%s\n' "${_tmp[@]}" | awk '!seen[$0]++')
+    eval "${_list}=(\"\${_uniq[@]}\")"
+done
+unset _list _tmp _uniq
+# <<< uninstall.sh: artifact paths <<<
 
 echo ""
 echo -e "${BLUE}============================================${NC}"
@@ -342,6 +375,18 @@ for path in "${BASH_COMPLETION_PATHS[@]}" "${ZSH_COMPLETION_PATHS[@]}" "${FISH_C
 done
 [ $COMP_COUNT -eq 0 ] && echo -e "    ${YELLOW}(no completions found)${NC}"
 
+# Man page
+echo ""
+echo -e "  ${CYAN}Man Page:${NC}"
+MAN_COUNT=0
+for path in "${MAN_PAGE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+        echo -e "    [x] $path"
+        MAN_COUNT=$((MAN_COUNT + 1))
+    fi
+done
+[ $MAN_COUNT -eq 0 ] && echo -e "    ${YELLOW}(no man page found)${NC}"
+
 # Estimate total
 TOTAL_KB=$(calculate_sizes)
 if [ $TOTAL_KB -gt 1024 ]; then
@@ -401,18 +446,48 @@ done
 update_uninstall_progress "Removing completions"
 echo ""
 
-for path in "${BASH_COMPLETION_PATHS[@]}" "${ZSH_COMPLETION_PATHS[@]}" "${FISH_COMPLETION_PATHS[@]}"; do
-    if [ -f "$path" ]; then
-        rm -f "$path" 2>/dev/null || true
-        echo -e "  ${GREEN}[+]${NC} Removed $(basename $path)"
-        REMOVED=$((REMOVED + 1))
-    fi
-done
+# >>> uninstall.sh: completion + man removal >>>
+# Kept in a function with these markers so the regression test can run this
+# exact code against a throw-away $HOME without also running the shared-memory,
+# sudo and pip steps further down. install.sh and this list have already drifted
+# apart once; the test now installs with install.sh and uninstalls with this.
+remove_completions_and_man_page() {
+    local path
 
-# Remove completions directory if empty
-if [ -d "$HORUS_DIR/completions" ]; then
-    rmdir "$HORUS_DIR/completions" 2>/dev/null || true
-fi
+    for path in "${BASH_COMPLETION_PATHS[@]}" "${ZSH_COMPLETION_PATHS[@]}" "${FISH_COMPLETION_PATHS[@]}"; do
+        if [ -f "$path" ]; then
+            rm -f "$path" 2>/dev/null || true
+            echo -e "  ${GREEN}[+]${NC} Removed $(basename $path)"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
+
+    # Remove completions directory if empty
+    if [ -d "$HORUS_DIR/completions" ]; then
+        rmdir "$HORUS_DIR/completions" 2>/dev/null || true
+    fi
+    # ~/.zfunc is created by install.sh purely to hold _horus. Only remove it if
+    # nothing else moved in.
+    if [ -d "$HOME/.zfunc" ]; then
+        rmdir "$HOME/.zfunc" 2>/dev/null || true
+    fi
+
+    # The man page install.sh writes with install_man_page(). This step used to
+    # remove completions only, so `man horus` still worked after an uninstall.
+    for path in "${MAN_PAGE_PATHS[@]}"; do
+        if [ -f "$path" ]; then
+            if rm -f "$path" 2>/dev/null; then
+                echo -e "  ${GREEN}[+]${NC} Removed man page $path"
+                REMOVED=$((REMOVED + 1))
+            else
+                echo -e "  ${YELLOW}[!]${NC} Could not remove $path (try sudo)"
+                SKIPPED=$((SKIPPED + 1))
+            fi
+        fi
+    done
+}
+# <<< uninstall.sh: completion + man removal <<<
+remove_completions_and_man_page
 
 #=====================================
 # 3. Remove shared memory
@@ -563,37 +638,57 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
     fi
 fi
 
-# Shell profiles: remove horus completion eval lines and shell integration
-for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
-    if [ -f "$profile" ] && grep -q "horus completion" "$profile" 2>/dev/null; then
-        # Create backup before modifying
-        cp "$profile" "${profile}.horus-backup" 2>/dev/null
-        # Remove lines containing horus completion
-        sed -i.bak '/horus completion/d' "$profile" 2>/dev/null || \
-            sed -i '' '/horus completion/d' "$profile" 2>/dev/null  # macOS sed
-        rm -f "${profile}.bak" 2>/dev/null
-        echo -e "  ${GREEN}[+]${NC} Cleaned horus completion from $(basename $profile)"
-        REMOVED=$((REMOVED + 1))
-    fi
-    # Remove shell integration (cargo/pip/cmake proxy)
-    if [ -f "$profile" ] && grep -q ".horus/env.sh" "$profile" 2>/dev/null; then
-        cp "$profile" "${profile}.horus-backup" 2>/dev/null
-        sed -i.bak '/\.horus\/env\.sh/d' "$profile" 2>/dev/null || \
-            sed -i '' '/\.horus\/env\.sh/d' "$profile" 2>/dev/null
-        sed -i.bak '/# Horus shell integration/d' "$profile" 2>/dev/null || \
-            sed -i '' '/# Horus shell integration/d' "$profile" 2>/dev/null
-        rm -f "${profile}.bak" 2>/dev/null
-        echo -e "  ${GREEN}[+]${NC} Cleaned horus shell integration from $(basename $profile)"
-        REMOVED=$((REMOVED + 1))
-    fi
-done
+# >>> uninstall.sh: shell profile cleanup >>>
+# In a function, with markers, for the same reason as the completion
+# removal above: the regression test runs this exact text.
+clean_shell_profiles() {
+    local profile
+    # Shell profiles: remove horus completion eval lines and shell integration
+    for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
+        # The block install.sh's add_zsh_fpath_block() writes. It is delimited by
+        # markers precisely so this can delete exactly what was added; matching on
+        # the string "horus completion" (below) never caught it, because the line it
+        # writes is `fpath=(~/.zfunc $fpath)` and contains no "horus" at all.
+        if [ -f "$profile" ] && grep -qF "# >>> horus completions >>>" "$profile" 2>/dev/null; then
+            cp "$profile" "${profile}.horus-backup" 2>/dev/null
+            sed -i.bak '/^# >>> horus completions >>>$/,/^# <<< horus completions <<<$/d' "$profile" 2>/dev/null || \
+                sed -i '' '/^# >>> horus completions >>>$/,/^# <<< horus completions <<<$/d' "$profile" 2>/dev/null
+            rm -f "${profile}.bak" 2>/dev/null
+            echo -e "  ${GREEN}[+]${NC} Cleaned horus completion fpath block from $(basename $profile)"
+            REMOVED=$((REMOVED + 1))
+        fi
+        if [ -f "$profile" ] && grep -q "horus completion" "$profile" 2>/dev/null; then
+            # Create backup before modifying
+            cp "$profile" "${profile}.horus-backup" 2>/dev/null
+            # Remove lines containing horus completion
+            sed -i.bak '/horus completion/d' "$profile" 2>/dev/null || \
+                sed -i '' '/horus completion/d' "$profile" 2>/dev/null  # macOS sed
+            rm -f "${profile}.bak" 2>/dev/null
+            echo -e "  ${GREEN}[+]${NC} Cleaned horus completion from $(basename $profile)"
+            REMOVED=$((REMOVED + 1))
+        fi
+        # Remove shell integration (cargo/pip/cmake proxy)
+        if [ -f "$profile" ] && grep -q ".horus/env.sh" "$profile" 2>/dev/null; then
+            cp "$profile" "${profile}.horus-backup" 2>/dev/null
+            sed -i.bak '/\.horus\/env\.sh/d' "$profile" 2>/dev/null || \
+                sed -i '' '/\.horus\/env\.sh/d' "$profile" 2>/dev/null
+            sed -i.bak '/# Horus shell integration/d' "$profile" 2>/dev/null || \
+                sed -i '' '/# Horus shell integration/d' "$profile" 2>/dev/null
+            rm -f "${profile}.bak" 2>/dev/null
+            echo -e "  ${GREEN}[+]${NC} Cleaned horus shell integration from $(basename $profile)"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
 
-# Remove fish shell integration
-if [ -f "$HOME/.config/fish/conf.d/horus.fish" ]; then
-    rm -f "$HOME/.config/fish/conf.d/horus.fish"
-    echo -e "  ${GREEN}[+]${NC} Removed fish shell integration"
-    REMOVED=$((REMOVED + 1))
-fi
+    # Remove fish shell integration
+    if [ -f "$HOME/.config/fish/conf.d/horus.fish" ]; then
+        rm -f "$HOME/.config/fish/conf.d/horus.fish"
+        echo -e "  ${GREEN}[+]${NC} Removed fish shell integration"
+        REMOVED=$((REMOVED + 1))
+    fi
+}
+# <<< uninstall.sh: shell profile cleanup <<<
+clean_shell_profiles
 
 # Remove env.sh/env.fish files
 for envfile in "$HORUS_DIR/env.sh" "$HORUS_DIR/env.fish"; do

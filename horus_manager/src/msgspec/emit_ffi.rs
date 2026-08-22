@@ -38,7 +38,13 @@ fn snake(name: &str) -> String {
     out
 }
 
-fn symbol(pkg: &Package, m: &MsgDef) -> String {
+/// The C symbol prefix for one type's entry points.
+///
+/// Public because the Python emitter binds the same symbols with `ctypes`.
+/// Deriving them separately there would be two spellings of one ABI, and the
+/// disagreement would surface as a `AttributeError` at the user's first
+/// `publish`, not here.
+pub fn symbol(pkg: &Package, m: &MsgDef) -> String {
     format!(
         "horus_gen_{}_{}",
         pkg.name.replace('-', "_"),
@@ -67,8 +73,11 @@ pub fn cargo_toml(pkg: &Package, horus_src: &std::path::Path, version: &str) -> 
          [lib]\n\
          path = \"src/lib.rs\"\n\
          # staticlib so the C++ link is self-contained, rlib so `cargo check`\n\
-         # over the project still sees it as an ordinary dependency.\n\
-         crate-type = [\"staticlib\", \"rlib\"]\n\
+         # over the project still sees it as an ordinary dependency, cdylib so\n\
+         # Python can open the same entry points with `ctypes.CDLL` — a static\n\
+         # archive is not loadable at runtime, and without this the generated\n\
+         # Python module would have types it cannot publish.\n\
+         crate-type = [\"staticlib\", \"rlib\", \"cdylib\"]\n\
          \n\
          [dependencies]\n\
          horus_core = {{ path = \"{h}/horus_core\" }}\n\
@@ -107,6 +116,24 @@ pub fn lib_rs(pkg: &Package) -> String {
          }\n\n",
     );
 
+    // A null return is the only thing the C ABI can say, and "the topic did
+    // not open" and "your build disagrees with the publisher about this
+    // message's field layout" are very different problems. The layout-mismatch
+    // error carries both hashes and the fix; throwing it away would leave a C++
+    // or Python caller with a `valid() == false` and nothing to go on.
+    out.push_str(
+        "/// Report why a topic could not be opened, then return null.\n\
+         ///\n\
+         /// The C ABI can only signal failure as a null handle. The error\n\
+         /// behind it — in particular the layout-mismatch one, which names both\n\
+         /// hashes and says to rebuild both sides — is worth more than the\n\
+         /// null, so it goes to stderr on the way out.\n\
+         fn open_failed<T>(what: &str, topic: &str, e: horus_core::error::HorusError) -> *mut T {\n\
+         \x20   eprintln!(\"horus: {what} for topic '{topic}' could not be opened: {e}\");\n\
+         \x20   std::ptr::null_mut()\n\
+         }\n\n",
+    );
+
     for m in &pkg.messages {
         let sym = symbol(pkg, m);
         let ty = format!("{crate_name}::{}", m.name);
@@ -130,11 +157,16 @@ pub fn lib_rs(pkg: &Package) -> String {
              \x20   let Some(name) = as_str(topic) else {{\n\
              \x20       return std::ptr::null_mut();\n\
              \x20   }};\n\
-             \x20   match Topic::<{ty}>::new(name) {{\n\
+             \x20   // `{tyname}::topic`, not `Topic::<{tyname}>::new`: the checked\n\
+             \x20   // opener binds LAYOUT_HASH to the topic. Every C++ and Python\n\
+             \x20   // caller reaches shared memory through here, and this is the\n\
+             \x20   // one place a cross-language layout disagreement can be caught.\n\
+             \x20   match <{ty}>::topic(name) {{\n\
              \x20       Ok(t) => Box::into_raw(Box::new(t)),\n\
-             \x20       Err(_) => std::ptr::null_mut(),\n\
+             \x20       Err(e) => open_failed(\"publisher\", name, e),\n\
              \x20   }}\n\
-             }}\n\n"
+             }}\n\n",
+            tyname = m.name
         ));
 
         out.push_str(&format!(
@@ -185,9 +217,12 @@ pub fn lib_rs(pkg: &Package) -> String {
              \x20   let Some(name) = as_str(topic) else {{\n\
              \x20       return std::ptr::null_mut();\n\
              \x20   }};\n\
-             \x20   match Topic::<{ty}>::new(name) {{\n\
+             \x20   // Checked, for the same reason the publisher is: a subscriber\n\
+             \x20   // that disagrees about field layout reads the right number of\n\
+             \x20   // bytes and the wrong values out of them.\n\
+             \x20   match <{ty}>::topic(name) {{\n\
              \x20       Ok(t) => Box::into_raw(Box::new(t)),\n\
-             \x20       Err(_) => std::ptr::null_mut(),\n\
+             \x20       Err(e) => open_failed(\"subscriber\", name, e),\n\
              \x20   }}\n\
              }}\n\n"
         ));

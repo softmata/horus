@@ -51,6 +51,60 @@ fn truncate_name(name: &str, max_len: usize) -> String {
     }
 }
 
+/// Render one node's row of the shutdown TIMING REPORT.
+///
+/// Split out of `print_timing_report` so the column contents are assertable
+/// without capturing stderr — the Misses column was filled with
+/// `stats.total_ticks` (literally commented "reuse total_ticks"), so the report
+/// accused every node of missing one deadline per tick it executed, and no test
+/// could see it.
+fn format_timing_report_row(
+    name: &str,
+    stats: &super::profiler::NodeStats,
+    timing: Option<&super::safety_monitor::NodeTimingReport>,
+) -> String {
+    let (p99_str, budget_str, overruns_str, ticks_str, misses_str) = match timing {
+        Some(row) => (
+            format!("{}", row.stats.p99_us),
+            row.budget
+                .map(|b| format!("{}", b.as_micros()))
+                .unwrap_or_else(|| "-".to_string()),
+            format!("{}", row.overruns),
+            format!("{}", row.stats.total_ticks),
+            // Deadline misses, not tick count.
+            format!("{}", row.deadline_misses),
+        ),
+        None => (
+            "-".to_string(),
+            "-".to_string(),
+            "0".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+        ),
+    };
+
+    // Status indicator
+    let status = if timing.is_some_and(|row| row.overruns > 0) {
+        "!"
+    } else {
+        ""
+    };
+
+    format!(
+        "{:<20} {:>8.0} {:>8} {:>8.0} {:>8.1} {:>10} {:>8} {:>8} {:>7}{}",
+        truncate_name(name, 20),
+        stats.avg_us,
+        p99_str,
+        stats.max_us,
+        stats.stddev_us,
+        budget_str,
+        overruns_str,
+        ticks_str,
+        misses_str,
+        status,
+    )
+}
+
 // Record/Replay imports
 use super::record_replay::{NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording};
 
@@ -3803,27 +3857,37 @@ impl Scheduler {
         }
 
         // Gather safety monitor data (if available)
-        let safety_data: HashMap<
-            String,
-            (super::safety_monitor::TimingStats, Option<Duration>, u64),
-        > = if let Some(ref monitor) = self.monitor.safety {
-            monitor
-                .all_node_timing()
-                .into_iter()
-                .map(|(name, stats, budget, overruns)| (name, (stats, budget, overruns)))
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let safety_data: HashMap<String, super::safety_monitor::NodeTimingReport> =
+            if let Some(ref monitor) = self.monitor.safety {
+                monitor
+                    .all_node_timing()
+                    .into_iter()
+                    .map(|row| (row.name.clone(), row))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
 
-        let sep = "=".repeat(90);
-        let thin_sep = "-".repeat(90);
+        let sep = "=".repeat(99);
+        let thin_sep = "-".repeat(99);
         crate::terminal::eprint_line(&format!("\n{}", sep));
         crate::terminal::eprint_line("TIMING REPORT (per-node)");
         crate::terminal::eprint_line(&sep);
+        // "Ticks" is its own column now. The tick count used to be printed
+        // *under the Misses header*, so the report claimed a deadline miss for
+        // every tick the node ever executed; splitting them keeps the number
+        // and gives it the right name.
         crate::terminal::eprint_line(&format!(
-            "{:<20} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8}",
-            "Node", "Avg(us)", "P99(us)", "Max(us)", "Stddev", "Budget(us)", "Overruns", "Misses"
+            "{:<20} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8} {:>8} {:>8}",
+            "Node",
+            "Avg(us)",
+            "P99(us)",
+            "Max(us)",
+            "Stddev",
+            "Budget(us)",
+            "Overruns",
+            "Ticks",
+            "Misses"
         ));
         crate::terminal::eprint_line(&thin_sep);
 
@@ -3839,60 +3903,25 @@ impl Scheduler {
                 continue;
             }
 
-            let (p99_str, budget_str, overruns_str, misses_str) =
-                if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
-                    let p99 = format!("{}", ring_stats.p99_us);
-                    let budget_s = budget
-                        .map(|b| format!("{}", b.as_micros()))
-                        .unwrap_or_else(|| "-".to_string());
-                    let overruns_s = format!("{}", overruns);
-                    let misses_s = format!("{}", ring_stats.total_ticks); // reuse total_ticks
-                    (p99, budget_s, overruns_s, misses_s)
-                } else {
-                    (
-                        "-".to_string(),
-                        "-".to_string(),
-                        "0".to_string(),
-                        "-".to_string(),
-                    )
-                };
-
-            // Status indicator
-            let status = if let Some((_, _, overruns)) = safety_data.get(*name) {
-                if *overruns > 0 {
-                    "!"
-                } else {
-                    ""
-                }
-            } else {
-                ""
-            };
-
-            crate::terminal::eprint_line(&format!(
-                "{:<20} {:>8.0} {:>8} {:>8.0} {:>8.1} {:>10} {:>8} {:>7}{}",
-                truncate_name(name, 20),
-                stats.avg_us,
-                p99_str,
-                stats.max_us,
-                stats.stddev_us,
-                budget_str,
-                overruns_str,
-                misses_str,
-                status,
+            crate::terminal::eprint_line(&format_timing_report_row(
+                name,
+                stats,
+                safety_data.get(*name),
             ));
 
             // Generate suggestions
-            if let Some((ref ring_stats, budget, overruns)) = safety_data.get(*name) {
-                if budget.is_none() && ring_stats.p99_us > 0 {
+            if let Some(row) = safety_data.get(*name) {
+                let ring_stats = &row.stats;
+                if row.budget.is_none() && ring_stats.p99_us > 0 {
                     suggestions.push(format!(
                         "  {} — no budget set (min={}us avg={}us p99={}us max={}us). Use .rate() to auto-derive budget",
                         name, ring_stats.min_us, ring_stats.avg_us, ring_stats.p99_us, ring_stats.max_us
                     ));
                 }
-                if *overruns > 10 {
+                if row.overruns > 10 {
                     suggestions.push(format!(
                         "  {} — {} overruns. Consider increasing budget or reducing tick complexity",
-                        name, overruns
+                        name, row.overruns
                     ));
                 }
             }

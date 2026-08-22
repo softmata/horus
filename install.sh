@@ -361,21 +361,56 @@ else
     exit 1
 fi
 
+# --- Which rc file does this shell read? ---
+#
+# Detected once, up front, because three separate blocks below need it: the PATH
+# block, the completion installer (zsh needs an fpath line to load the script at
+# all) and the closing "restart your shell" hint.
+#
+# This used to live *inside* the else-branch of the PATH check below, which made
+# it dead for the common case. Anyone re-installing, upgrading, or simply
+# already carrying ~/.cargo/bin on PATH — i.e. everyone, since install.sh
+# requires a Rust toolchain — takes the "PATH already configured" branch and
+# never assigned SHELL_RC. install.sh runs `set -e` but not `set -u`, so the
+# later `[ -n "$SHELL_RC" ]` guard silently did nothing and the zsh fpath line
+# was never written, while the installer still printed "Shell completions
+# installed (zsh)". A completion script in a directory zsh never scans, plus a
+# success message saying otherwise.
+SHELL_RC=""
+case "${SHELL:-/bin/bash}" in
+    */zsh)  SHELL_RC="$HOME/.zshrc" ;;
+    */bash) SHELL_RC="$HOME/.bashrc" ;;
+    */fish) SHELL_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+esac
+
 # --- Configure PATH ---
 if echo "$PATH" | grep -q "$INSTALL_DIR"; then
     ok "PATH already configured"
 else
-    SHELL_RC=""
-    case "${SHELL:-/bin/bash}" in
-        */zsh)  SHELL_RC="$HOME/.zshrc" ;;
-        */bash) SHELL_RC="$HOME/.bashrc" ;;
-        */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
-    esac
-
     if [ -n "$SHELL_RC" ]; then
-        if ! grep -q "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
-            echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
-        fi
+        mkdir -p "$(dirname "$SHELL_RC")" 2>/dev/null || true
+        case "$SHELL_RC" in
+            */config.fish)
+                # fish has no `export` builtin: `export PATH=...` is a syntax
+                # error there and config.fish stops loading at it. Earlier
+                # installers wrote exactly that line, and the old
+                # `grep -q "$INSTALL_DIR"` guard then *found* the broken line
+                # and skipped writing a working one — so a config.fish poisoned
+                # once stayed poisoned through every upgrade. Remove it first.
+                if grep -q "^export PATH=.*${INSTALL_DIR}" "$SHELL_RC" 2>/dev/null; then
+                    sed -i.horusbak "\\|^export PATH=.*${INSTALL_DIR}|d" "$SHELL_RC" 2>/dev/null || \
+                        sed -i '' "\\|^export PATH=.*${INSTALL_DIR}|d" "$SHELL_RC" 2>/dev/null
+                    rm -f "${SHELL_RC}.horusbak" 2>/dev/null
+                    warn "Removed a POSIX 'export PATH' line fish cannot parse from ${SHELL_RC}"
+                fi
+                grep -qF "fish_add_path ${INSTALL_DIR}" "$SHELL_RC" 2>/dev/null || \
+                    echo "fish_add_path ${INSTALL_DIR}" >> "$SHELL_RC"
+                ;;
+            *)
+                grep -q "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null || \
+                    echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
+                ;;
+        esac
     fi
     export PATH="${INSTALL_DIR}:$PATH"
     ok "Added to PATH"
@@ -413,26 +448,70 @@ fi
 # received a completion script. For a CLI with ~40 commands, dozens of
 # subcommands and single-letter aliases (t n p a m s i l srv bb mon rec tf),
 # that is the difference between discoverable and not.
+#
+# Writing the file is only half the job. bash and fish rescan their completion
+# directories on every start, but zsh only reads `fpath`, and only at compinit
+# time — so a `_horus` no fpath line mentions, or an fpath line appended to the
+# *end* of .zshrc after the user's compinit has already run (oh-my-zsh, prezto
+# and every other framework call compinit from the file .zshrc sources), is a
+# file zsh never loads. That is why rustup's own instructions put the fpath line
+# before compinit, and it is what these markers are for: uninstall.sh deletes
+# the block between them verbatim.
+HORUS_COMP_BEGIN="# >>> horus completions >>>"
+HORUS_COMP_END="# <<< horus completions <<<"
+
+add_zsh_fpath_block() {
+    rc="$1"
+    fpath_line="$2"
+
+    [ -n "$rc" ] || return 0
+    if [ -f "$rc" ] && grep -qF "$HORUS_COMP_BEGIN" "$rc" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$rc")" 2>/dev/null || return 0
+    [ -f "$rc" ] || : > "$rc" 2>/dev/null || return 0
+
+    # First line that brings zsh's completion system up, if any.
+    anchor=$(grep -nE 'compinit|oh-my-zsh\.sh|prezto/init\.zsh' "$rc" 2>/dev/null | head -n 1 | cut -d: -f1)
+    tmp="${rc}.horus.$$"
+
+    if [ -n "$anchor" ]; then
+        if awk -v n="$anchor" -v b="$HORUS_COMP_BEGIN" -v f="$fpath_line" -v e="$HORUS_COMP_END" \
+               'NR == n { print b; print f; print e } { print }' "$rc" > "$tmp" 2>/dev/null &&
+           [ -s "$tmp" ]; then
+            # cat rather than mv: keeps the rc file's inode, mode and any
+            # symlink the user pointed it at.
+            cat "$tmp" > "$rc"
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+    else
+        # Nothing initialises completions, so an fpath line on its own would
+        # still load nothing. Turn compinit on too.
+        printf '\n%s\n%s\nautoload -Uz compinit && compinit\n%s\n' \
+            "$HORUS_COMP_BEGIN" "$fpath_line" "$HORUS_COMP_END" >> "$rc"
+    fi
+    return 0
+}
+
 install_completions() {
     case "${SHELL:-/bin/bash}" in
         */zsh)
             COMP_DIR="${HOME}/.zfunc"
             COMP_FILE="${COMP_DIR}/_horus"
             COMP_SHELL="zsh"
-            # zsh needs the directory on fpath before compinit.
-            COMP_HINT="fpath=(${COMP_DIR} \$fpath)"
             ;;
         */fish)
-            COMP_DIR="${HOME}/.config/fish/completions"
+            COMP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions"
             COMP_FILE="${COMP_DIR}/horus.fish"
             COMP_SHELL="fish"
-            COMP_HINT=""
             ;;
         */bash)
-            COMP_DIR="${HOME}/.local/share/bash-completion/completions"
+            # Same XDG rule install_man_page() below already follows. This used
+            # to hardcode ~/.local/share, so a user with XDG_DATA_HOME set got a
+            # file bash-completion does not look at.
+            COMP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
             COMP_FILE="${COMP_DIR}/horus"
             COMP_SHELL="bash"
-            COMP_HINT=""
             ;;
         *)
             return 0
@@ -443,11 +522,10 @@ install_completions() {
     if horus completion "$COMP_SHELL" > "${COMP_FILE}.tmp" 2>/dev/null &&
        [ -s "${COMP_FILE}.tmp" ]; then
         mv "${COMP_FILE}.tmp" "$COMP_FILE"
-        ok "Shell completions installed (${COMP_SHELL})"
-        if [ -n "$COMP_HINT" ] && [ -n "$SHELL_RC" ] &&
-           ! grep -qF "$COMP_HINT" "$SHELL_RC" 2>/dev/null; then
-            echo "$COMP_HINT" >> "$SHELL_RC"
+        if [ "$COMP_SHELL" = "zsh" ]; then
+            add_zsh_fpath_block "$SHELL_RC" "fpath=(${COMP_DIR} \$fpath)"
         fi
+        ok "Shell completions installed (${COMP_SHELL}): ${COMP_FILE}"
     else
         # Never fail the install over completions.
         rm -f "${COMP_FILE}.tmp" 2>/dev/null
@@ -496,6 +574,13 @@ echo -e "  Docs: ${CYAN}https://docs.horusrobotics.dev${NC}"
 echo ""
 
 if ! command -v horus &>/dev/null; then
-    warn "Restart your terminal or run: ${CYAN}source ~/${SHELL_RC##*/}${NC}"
+    # ${SHELL_RC##*/} used to be printed as `source ~/<basename>`, which is the
+    # wrong path for fish (~/.config/fish/config.fish) and, when SHELL_RC was
+    # still scoped to the PATH branch, degenerated to a bare `source ~/`.
+    if [ -n "$SHELL_RC" ]; then
+        warn "Restart your terminal or run: ${CYAN}source ${SHELL_RC}${NC}"
+    else
+        warn "Restart your terminal to pick up ${INSTALL_DIR} on PATH"
+    fi
     echo ""
 fi

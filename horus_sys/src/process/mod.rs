@@ -48,8 +48,11 @@ impl ProcessHandle {
 
     /// Check if the process is still running.
     ///
-    /// - Unix: `kill(pid, 0) == 0`
-    /// - Windows: `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` succeeds
+    /// A process that has exited but not yet been reaped is *not* alive, on
+    /// either platform:
+    ///
+    /// - Unix: `kill(pid, 0) == 0` and the process is not a zombie
+    /// - Windows: the process opens *and* has not signalled its exit
     pub fn is_alive(&self) -> bool {
         #[cfg(unix)]
         {
@@ -76,18 +79,45 @@ impl ProcessHandle {
         }
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE, WAIT_TIMEOUT};
             use windows_sys::Win32::System::Threading::{
-                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                GetExitCodeProcess, OpenProcess, WaitForSingleObject,
+                PROCESS_QUERY_LIMITED_INFORMATION,
             };
+
+            // The right to wait on a handle. Declared here rather than
+            // imported from Win32::Storage::FileSystem, which is the only
+            // place windows-sys spells it, and where it reads as a file right.
+            const SYNCHRONIZE: u32 = 0x0010_0000;
+
+            // Windows' analogue of a Unix zombie: a terminated process keeps
+            // its pid — and answers OpenProcess — for as long as anybody still
+            // holds a handle to it. Opening the process therefore proves the
+            // pid is *known*, not that it is *running*, exactly the way
+            // kill(pid, 0) does on Unix. Ask for the exit status too.
             unsafe {
-                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, self.pid);
+                // Prefer a handle we can wait on: WaitForSingleObject is exact,
+                // whereas GetExitCodeProcess cannot tell a live process from
+                // one that exited with code 259 (STILL_ACTIVE).
+                let mut waitable = true;
+                let mut handle =
+                    OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, self.pid);
                 if handle.is_null() {
-                    false
-                } else {
-                    CloseHandle(handle);
-                    true
+                    waitable = false;
+                    handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, self.pid);
                 }
+                if handle.is_null() {
+                    return false;
+                }
+                let alive = if waitable {
+                    // Signalled means "has exited"; timing out means running.
+                    WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+                } else {
+                    let mut code: u32 = 0;
+                    GetExitCodeProcess(handle, &mut code) != 0 && code == STILL_ACTIVE as u32
+                };
+                CloseHandle(handle);
+                alive
             }
         }
         #[cfg(not(any(unix, windows)))]
@@ -259,10 +289,15 @@ pub fn pid_start_time(pid: u32) -> u64 {
 
 /// Whether the process has exited but not yet been reaped.
 ///
+/// The one definition of "the pid still answers but the process is gone",
+/// shared by [`ProcessHandle::is_alive`] and [`crate::shm::session_alive`] —
+/// two liveness checks that used to disagree, so a zombie session leader kept
+/// a dead namespace marked alive and unreclaimed.
+///
 /// Fails open: if the state cannot be read, the caller keeps whatever
 /// `kill(pid, 0)` said, matching the existing convention in presence.rs.
 #[cfg(unix)]
-fn is_zombie(pid: u32) -> bool {
+pub fn is_zombie(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
         let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) else {
@@ -434,6 +469,60 @@ pub fn on_terminate(handler: extern "C" fn(i32)) {
 #[cfg(windows)]
 static TERMINATE_HANDLER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// A child that has been SIGKILLed and deliberately never reaped — a zombie.
+///
+/// Shared by the `process` and `shm` tests, which both have a liveness check
+/// that has to survive one. The [`std::process::Child`] is returned and must
+/// be kept alive by the caller: dropping it is harmless (Rust never reaps on
+/// drop), but reaping it elsewhere would dissolve the zombie.
+#[cfg(all(test, unix))]
+pub(crate) fn spawn_unreaped_zombie() -> Option<(std::process::Child, u32)> {
+    let child = std::process::Command::new("sleep").arg("60").spawn().ok()?;
+    let pid = child.id();
+    // SAFETY: pid comes straight from a child we just spawned.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+
+    // The kill is asynchronous; give the kernel time to turn the child into a
+    // zombie. Poll on `kill(pid, 0)` rather than on our own liveness check, so
+    // a broken liveness check cannot make this helper quietly give up and turn
+    // its callers into no-ops.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        // On Linux the state character says so outright. Elsewhere, the pid
+        // answering kill(pid, 0) after a SIGKILL *is* the zombie condition:
+        // nothing has reaped it, so the entry cannot have been recycled.
+        #[cfg(target_os = "linux")]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).unwrap_or_default();
+            let state = stat
+                .rfind(')')
+                .and_then(|i| stat[i + 1..].split_whitespace().next().map(str::to_string));
+            if state.as_deref() == Some("Z") {
+                return Some((child, pid));
+            }
+            continue;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // No /proc: ask ps, which is nobody's implementation but the
+            // system's. Returning as soon as kill(pid, 0) succeeds would be
+            // wrong — SIGKILL is asynchronous, so that is also true of a child
+            // that is still running.
+            let state = std::process::Command::new("ps")
+                .args(["-o", "state=", "-p", &pid.to_string()])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if state.starts_with('Z') {
+                return Some((child, pid));
+            }
+        }
+    }
+    None
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -444,6 +533,55 @@ mod tests {
     fn current_process_is_alive() {
         let handle = ProcessHandle::from_pid(std::process::id());
         assert!(handle.is_alive(), "current process should be alive");
+    }
+
+    /// LIVE-12: `kill(pid, 0)` succeeds for a process that has exited but not
+    /// been reaped, so a SIGKILLed node stayed "Running" forever under a parent
+    /// that never waits. Liveness must mean *running*, not *known to the
+    /// kernel*.
+    #[test]
+    #[cfg(unix)]
+    fn a_killed_but_unreaped_child_is_not_alive() {
+        let Some((_child, pid)) = spawn_unreaped_zombie() else {
+            panic!("could not produce an unreaped zombie child");
+        };
+        let handle = ProcessHandle::from_pid(pid);
+
+        // Precondition — without it the assertion below could pass merely
+        // because the process was fully gone, which proves nothing.
+        // SAFETY: signal 0 only probes for existence.
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            0,
+            "the child was reaped: this test needs a pid that still answers kill(pid, 0)"
+        );
+        assert!(
+            is_zombie(pid),
+            "the child should be a zombie, not a running process"
+        );
+
+        assert!(
+            !handle.is_alive(),
+            "pid {pid} was SIGKILLed and never reaped — it must not be reported alive"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_running_child_is_alive_and_not_a_zombie() {
+        // The other side of the same test: the zombie check must not report
+        // every child as dead.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep should be spawnable");
+        let pid = child.id();
+        let handle = ProcessHandle::from_pid(pid);
+        assert!(!is_zombie(pid), "a running child is not a zombie");
+        assert!(handle.is_alive(), "a running child must be reported alive");
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

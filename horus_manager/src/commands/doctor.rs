@@ -246,32 +246,262 @@ fn print_json(results: &[CheckResult]) {
 
 // ─── Individual checks ───────────────────────────────────────────────────────
 
+/// One requirement inside a language toolchain.
+///
+/// `alternatives` is a set rather than a single binary because the thing a
+/// build actually needs is "a C++ compiler", not "g++". `cmake --build` is
+/// equally happy with clang or MSVC, so naming one implementation would report
+/// a working clang-only machine as broken — the same false verdict as the one
+/// this check exists to prevent, just pointing the other way.
+struct Tool {
+    /// Executables that satisfy this requirement. Any one present is enough;
+    /// the order is only the order they are probed in.
+    alternatives: &'static [&'static str],
+    /// What the requirement is called when none of the alternatives are found.
+    label: &'static str,
+    /// What it is for.
+    purpose: &'static str,
+    /// How to get it. Naming a missing tool without naming the command that
+    /// installs it just moves the user's search one line further down.
+    install: Install,
+}
+
+/// Where a missing tool comes from.
+///
+/// Resolved at print time rather than baked into the table, because the answer
+/// depends on the distro underfoot.
+enum Install {
+    /// A package from the platform's own package manager.
+    Package(&'static str),
+    /// The compiler + make bundle: build-essential, base-devel, Xcode CLT, …
+    BuildTools,
+    /// A command that reads the same on every platform.
+    Same(&'static str),
+}
+
+impl Install {
+    fn command(&self) -> String {
+        match self {
+            Self::Package(pkg) => horus_sys::platform::suggest_install(pkg),
+            Self::BuildTools => horus_sys::platform::suggest_build_tools(),
+            Self::Same(cmd) => (*cmd).to_string(),
+        }
+    }
+}
+
+impl Tool {
+    /// The `-v` line for a tool that is not installed.
+    ///
+    /// Carries the install command, because "clang-format: not found" leaves
+    /// the reader exactly where they started.
+    fn missing_detail(&self) -> String {
+        format!(
+            "{}: not found ({}) - install: {}",
+            self.label,
+            self.purpose,
+            self.install.command()
+        )
+    }
+}
+
 /// A language toolchain and the tools it needs.
 struct Toolchain {
     language: &'static str,
     /// Without these, the language cannot build at all.
-    required: &'static [(&'static str, &'static str)],
+    required: &'static [Tool],
     /// Without these, specific commands (`horus lint`, `horus test`) fail.
-    optional: &'static [(&'static str, &'static str)],
+    optional: &'static [Tool],
 }
+
+const RUSTUP: Install = Install::Same("curl https://sh.rustup.rs -sSf | sh");
 
 const TOOLCHAINS: &[Toolchain] = &[
     Toolchain {
         language: "Rust",
-        required: &[("cargo", "build tool"), ("rustc", "compiler")],
-        optional: &[],
+        required: &[
+            Tool {
+                alternatives: &["cargo"],
+                label: "cargo",
+                purpose: "build tool",
+                install: RUSTUP,
+            },
+            Tool {
+                alternatives: &["rustc"],
+                label: "rustc",
+                purpose: "compiler",
+                install: RUSTUP,
+            },
+        ],
+        // Rust's optional list used to be empty, so "Rust ready" was printed on
+        // machines where `horus lint` died with "no such command: `clippy`".
+        // `horus lint` on Rust is `cargo clippy -- -D warnings` and `horus fmt`
+        // is `cargo fmt` (dispatch::detect_rust_tools); neither component ships
+        // with a minimal-profile rustup or with most distro rust packages, which
+        // is exactly the population this check is for.
+        optional: &[
+            Tool {
+                alternatives: &["cargo-clippy"],
+                label: "clippy",
+                purpose: "linter, used by horus lint",
+                install: Install::Same("rustup component add clippy"),
+            },
+            Tool {
+                alternatives: &["rustfmt"],
+                label: "rustfmt",
+                purpose: "formatter, used by horus fmt",
+                install: Install::Same("rustup component add rustfmt"),
+            },
+        ],
     },
     Toolchain {
         language: "Python",
-        required: &[("python3", "interpreter")],
-        optional: &[("ruff", "linter/formatter"), ("pytest", "test runner")],
+        // `python` is accepted as well as `python3` because that is the order
+        // dispatch::find_python resolves in — reporting "Python needs python3"
+        // on a machine HORUS would happily run on is the same disagreement
+        // between report and executor as the C++ compiler gap below.
+        required: &[Tool {
+            alternatives: &["python3", "python"],
+            label: "python3",
+            purpose: "interpreter",
+            install: Install::Package("python3"),
+        }],
+        optional: &[
+            Tool {
+                alternatives: &["ruff"],
+                label: "ruff",
+                purpose: "linter/formatter, used by horus lint",
+                install: Install::Same("pip install ruff"),
+            },
+            Tool {
+                alternatives: &["pytest"],
+                label: "pytest",
+                purpose: "test runner, used by horus test",
+                install: Install::Same("pip install pytest"),
+            },
+        ],
     },
     Toolchain {
         language: "C++",
-        required: &[("cmake", "build system")],
-        optional: &[("clang-format", "formatter"), ("clang-tidy", "linter")],
+        // cmake on its own is not a C++ toolchain, and listing only cmake here
+        // reproduced the original false green one tool further along: on a PATH
+        // with cmake but no compiler and no make, doctor printed "C++ ready" and
+        // `horus new --cpp && horus build` then died during configure with
+        // "CMAKE_MAKE_PROGRAM is not set" / "CMAKE_CXX_COMPILER not set".
+        // horus_sys::sync::cpp already probes the compiler for `doctor --fix`;
+        // the report has to agree with the fixer.
+        required: &[
+            Tool {
+                alternatives: &["cmake"],
+                label: "cmake",
+                purpose: "build system",
+                install: Install::Package("cmake"),
+            },
+            Tool {
+                alternatives: &["g++", "clang++", "c++", "cl"],
+                label: "a C++ compiler",
+                purpose: "g++, clang++ or MSVC — cmake picks one",
+                install: Install::BuildTools,
+            },
+            Tool {
+                alternatives: &["make", "gmake", "ninja", "msbuild"],
+                label: "make or ninja",
+                purpose: "the build program cmake --build drives",
+                install: Install::BuildTools,
+            },
+        ],
+        optional: &[
+            Tool {
+                alternatives: &["clang-format"],
+                label: "clang-format",
+                purpose: "formatter, used by horus fmt",
+                install: Install::Package("clang-format"),
+            },
+            Tool {
+                alternatives: &["clang-tidy"],
+                label: "clang-tidy",
+                purpose: "linter, used by horus lint",
+                install: Install::Package("clang-tidy"),
+            },
+        ],
     },
 ];
+
+/// Executables that cannot answer `--version` and can only be detected by
+/// presence: MSVC's `cl` treats the flag as a filename and exits non-zero, and
+/// `msbuild` spells it `-version`. Calling an installed compiler "not found" is
+/// the same wrong verdict this check exists to stop, just pointing the other
+/// way — but the list is kept as short as possible, because presence is the
+/// weaker signal (see `probe`).
+const PRESENCE_ONLY: &[&str] = &["cl", "msbuild"];
+
+/// Detect `bin` and return something to print for it.
+///
+/// A tool counts as installed when it *runs*, not when a file with its name
+/// exists. rustup puts a proxy in `~/.cargo/bin` for every component whether or
+/// not the component is installed, so `cargo-clippy` and `rustfmt` are on PATH
+/// on every rustup machine:
+///
+/// ```text
+/// $ cargo-miri --version          # miri is not installed
+/// error: the 'miri' component which provides the command 'cargo-miri' is not
+/// available for the 'stable-x86_64-unknown-linux-gnu' toolchain
+/// $ echo $?
+/// 1
+/// ```
+///
+/// Grading on presence would print "Rust ready" for precisely the machines this
+/// check exists to catch — the ones where `horus lint` then dies with
+/// "no such command: `clippy`".
+fn probe(bin: &str) -> Option<String> {
+    if let Some(version) = dispatch::tool_version(bin) {
+        return Some(version);
+    }
+    if PRESENCE_ONLY.contains(&bin) && on_path(bin) {
+        return Some("installed".to_string());
+    }
+    None
+}
+
+/// Is `name` an executable on `PATH`?
+fn on_path(name: &str) -> bool {
+    if name.contains(std::path::MAIN_SEPARATOR) {
+        return is_executable(Path::new(name));
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .map(|v| {
+            v.split(';')
+                .filter(|e| !e.is_empty())
+                .map(|e| e.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    std::env::split_paths(&path).any(|dir| {
+        if dir.as_os_str().is_empty() {
+            return false;
+        }
+        is_executable(&dir.join(name))
+            || exts
+                .iter()
+                .any(|ext| is_executable(&dir.join(format!("{name}{ext}"))))
+    })
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
 
 /// Report toolchain readiness per language.
 ///
@@ -286,16 +516,20 @@ const TOOLCHAINS: &[Toolchain] = &[
 /// missing, which is the part a user can act on.
 fn check_toolchains() -> CheckResult {
     let mut details = Vec::new();
-    let mut found = std::collections::HashSet::new();
+    let mut found: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
 
     for tc in TOOLCHAINS {
-        for (tool, desc) in tc.required.iter().chain(tc.optional.iter()) {
-            match dispatch::tool_version(tool) {
-                Some(version) => {
-                    details.push(format!("{tool}: {version} ({desc})"));
-                    found.insert(*tool);
+        for tool in tc.required.iter().chain(tc.optional.iter()) {
+            match tool
+                .alternatives
+                .iter()
+                .find_map(|bin| Some((*bin, probe(bin)?)))
+            {
+                Some((bin, version)) => {
+                    details.push(format!("{bin}: {version} ({})", tool.purpose));
+                    found.insert(bin);
                 }
-                None => details.push(format!("{tool}: not found ({desc})")),
+                None => details.push(tool.missing_detail()),
             }
         }
     }
@@ -372,18 +606,24 @@ fn grade_toolchains(present: &dyn Fn(&str) -> bool) -> (Health, String) {
     let mut blocked = Vec::new();
     let mut degraded = Vec::new();
 
+    // `present` answers "is this executable on PATH". A requirement is met by
+    // any one of its alternatives, so the fan-out lives here rather than in the
+    // caller — that keeps the same rule in front of the live probe and the
+    // tests, instead of one table being graded two different ways.
+    let satisfied = |tool: &Tool| tool.alternatives.iter().any(|bin| present(bin));
+
     for tc in TOOLCHAINS {
         let missing_required: Vec<&str> = tc
             .required
             .iter()
-            .filter(|(t, _)| !present(t))
-            .map(|(t, _)| *t)
+            .filter(|t| !satisfied(t))
+            .map(|t| t.label)
             .collect();
         let missing_optional: Vec<&str> = tc
             .optional
             .iter()
-            .filter(|(t, _)| !present(t))
-            .map(|(t, _)| *t)
+            .filter(|t| !satisfied(t))
+            .map(|t| t.label)
             .collect();
 
         if !missing_required.is_empty() {
@@ -2138,6 +2378,33 @@ mod toolchain_grading_tests {
         move |t: &str| tools.contains(&t)
     }
 
+    /// Everything a fully equipped Linux machine has on PATH. Written out once
+    /// so that adding a requirement to TOOLCHAINS without adding it here turns
+    /// `a_complete_toolchain_is_ok` red instead of silently narrowing what
+    /// "complete" means.
+    const FULL: &[&str] = &[
+        "cargo",
+        "rustc",
+        "cargo-clippy",
+        "rustfmt",
+        "python3",
+        "ruff",
+        "pytest",
+        "cmake",
+        "g++",
+        "make",
+        "clang-format",
+        "clang-tidy",
+    ];
+
+    /// `FULL` minus `drop` — a machine with one thing missing.
+    fn without(drop: &[&str]) -> Vec<&'static str> {
+        FULL.iter()
+            .filter(|t| !drop.contains(*t))
+            .copied()
+            .collect()
+    }
+
     /// The exact case that used to be reported as success: cargo, rustc and
     /// python3 present, everything else missing. It rendered as
     /// `* Toolchains — 3/8 tools found` and was counted among "7 ok", on a
@@ -2146,9 +2413,11 @@ mod toolchain_grading_tests {
     fn three_of_eight_is_not_success() {
         let (health, summary) = grade_toolchains(&only(&["cargo", "rustc", "python3"]));
         assert_eq!(health, Health::Warn, "got {summary}");
-        assert!(summary.contains("Rust ready"), "{summary}");
         assert!(summary.contains("C++ needs cmake"), "{summary}");
         assert!(summary.contains("Python missing"), "{summary}");
+        // Rust builds, but `horus lint` and `horus fmt` do not: cargo and rustc
+        // alone are not the whole Rust toolchain HORUS drives.
+        assert!(summary.contains("Rust missing clippy"), "{summary}");
     }
 
     /// Grading must be monotonic. The old rule keyed on cargo/rustc alone, so
@@ -2156,20 +2425,12 @@ mod toolchain_grading_tests {
     /// them — better coverage, worse verdict.
     #[test]
     fn more_tools_never_grades_worse() {
-        let sets: [&[&str]; 4] = [
-            &[],
-            &["cargo", "rustc"],
-            &["cargo", "rustc", "python3", "ruff", "pytest"],
-            &[
-                "cargo",
-                "rustc",
-                "python3",
-                "ruff",
-                "pytest",
-                "cmake",
-                "clang-format",
-                "clang-tidy",
-            ],
+        let sets: [Vec<&str>; 5] = [
+            vec![],
+            vec!["cargo", "rustc"],
+            vec!["cargo", "rustc", "python3", "ruff", "pytest"],
+            without(&["cargo-clippy", "rustfmt"]),
+            FULL.to_vec(),
         ];
         let rank = |h: &Health| match h {
             Health::Fail => 0,
@@ -2179,7 +2440,7 @@ mod toolchain_grading_tests {
 
         let mut previous = 0;
         for set in sets {
-            let (health, summary) = grade_toolchains(&only(set));
+            let (health, summary) = grade_toolchains(&only(&set));
             let r = rank(&health);
             assert!(
                 r >= previous,
@@ -2191,17 +2452,8 @@ mod toolchain_grading_tests {
 
     #[test]
     fn a_complete_toolchain_is_ok() {
-        let (health, summary) = grade_toolchains(&only(&[
-            "cargo",
-            "rustc",
-            "python3",
-            "ruff",
-            "pytest",
-            "cmake",
-            "clang-format",
-            "clang-tidy",
-        ]));
-        assert_eq!(health, Health::Ok);
+        let (health, summary) = grade_toolchains(&only(FULL));
+        assert_eq!(health, Health::Ok, "got {summary}");
         assert_eq!(summary, "Rust, Python, C++ ready");
     }
 
@@ -2211,7 +2463,7 @@ mod toolchain_grading_tests {
     fn an_empty_machine_fails_and_says_why() {
         let (health, summary) = grade_toolchains(&only(&[]));
         assert_eq!(health, Health::Fail);
-        for needle in ["cargo", "python3", "cmake"] {
+        for needle in ["cargo", "python3", "cmake", "compiler"] {
             assert!(summary.contains(needle), "{summary} should name {needle}");
         }
     }
@@ -2220,10 +2472,217 @@ mod toolchain_grading_tests {
     /// `horus build` works, `horus lint` does not.
     #[test]
     fn optional_tools_degrade_rather_than_block() {
-        let (health, summary) = grade_toolchains(&only(&["cargo", "rustc", "python3", "cmake"]));
-        assert_eq!(health, Health::Warn);
+        let (health, summary) = grade_toolchains(&only(&without(&[
+            "ruff",
+            "pytest",
+            "clang-format",
+            "clang-tidy",
+        ])));
+        assert_eq!(health, Health::Warn, "got {summary}");
         assert!(summary.contains("Rust ready"), "{summary}");
         assert!(summary.contains("Python missing ruff, pytest"), "{summary}");
-        assert!(summary.contains("C++ missing"), "{summary}");
+        assert!(
+            summary.contains("C++ missing clang-format, clang-tidy"),
+            "{summary}"
+        );
+        // Degraded, not blocked: nothing may claim the language "needs" a tool
+        // it can still build without.
+        assert!(!summary.contains("needs"), "{summary}");
+    }
+
+    // ── The table itself, not just the rules over it ────────────────────
+    //
+    // Per-language grading was already correct; the table it graded was not.
+    // cmake was the whole of C++ and Rust had no optional tools at all, so the
+    // original false green reproduced verbatim one tool further along.
+
+    /// cmake configures a build, it does not perform one. On a PATH with cmake
+    /// but no compiler and no make, `horus doctor` printed
+    /// `* Toolchains — Rust, Python, C++ ready` and `horus build` inside a
+    /// freshly created `horus new --cpp` project then died during configure:
+    ///
+    /// ```text
+    /// CMake Error: CMAKE_MAKE_PROGRAM is not set.
+    /// CMake Error: CMAKE_CXX_COMPILER not set, after EnableLanguage
+    /// ```
+    #[test]
+    fn cmake_alone_is_not_a_cpp_toolchain() {
+        let (health, summary) = grade_toolchains(&only(&without(&["g++", "make"])));
+        assert_ne!(
+            health,
+            Health::Ok,
+            "cmake with no compiler and no make graded as ready: {summary}"
+        );
+        assert!(
+            !summary.contains("C++ ready"),
+            "C++ cannot be ready without a compiler: {summary}"
+        );
+        assert!(summary.contains("C++ needs"), "{summary}");
+        assert!(summary.contains("compiler"), "{summary}");
+        assert!(
+            summary.contains("make") || summary.contains("ninja"),
+            "{summary}"
+        );
+    }
+
+    /// Each half of the C++ requirement has to bite on its own, or a machine
+    /// with a compiler but no make still grades green.
+    #[test]
+    fn a_missing_make_program_blocks_cpp_on_its_own() {
+        let (health, summary) = grade_toolchains(&only(&without(&["make"])));
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(summary.contains("C++ needs make or ninja"), "{summary}");
+    }
+
+    #[test]
+    fn a_missing_compiler_blocks_cpp_on_its_own() {
+        let (health, summary) = grade_toolchains(&only(&without(&["g++"])));
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(summary.contains("C++ needs a C++ compiler"), "{summary}");
+    }
+
+    /// The requirement is "a C++ compiler", not "g++": clang and ninja are a
+    /// complete toolchain and must not be reported as a gap. A fix that hard-
+    /// coded g++/make would trade one false verdict for its mirror image.
+    #[test]
+    fn clang_and_ninja_are_a_complete_cpp_toolchain() {
+        let mut set = without(&["g++", "make"]);
+        set.push("clang++");
+        set.push("ninja");
+        let (health, summary) = grade_toolchains(&only(&set));
+        assert_eq!(health, Health::Ok, "got {summary}");
+        assert!(summary.contains("C++ ready"), "{summary}");
+    }
+
+    /// `horus lint` on Rust is `cargo clippy -- -D warnings` and `horus fmt` is
+    /// `cargo fmt` (dispatch::detect_rust_tools). Neither component is in a
+    /// minimal-profile rustup or in most distro rust packages, and doctor used
+    /// to print "Rust ready" on those machines — green tick, then
+    /// `error: no such command: `clippy``.
+    #[test]
+    fn rust_without_clippy_or_rustfmt_is_not_ready() {
+        let (health, summary) = grade_toolchains(&only(&without(&["cargo-clippy", "rustfmt"])));
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(!summary.contains("Rust ready"), "{summary}");
+        assert!(
+            summary.contains("Rust missing clippy, rustfmt"),
+            "{summary}"
+        );
+        // Still buildable — a missing linter must not read as "needs".
+        assert!(!summary.contains("Rust needs"), "{summary}");
+    }
+
+    /// `horus doctor --fix` runs horus_sys::sync::sync_environment, which calls
+    /// `cpp::ensure_compiler()` and probes g++/clang++/c++. The report has to
+    /// probe the same set: when the fixer and the report disagree, one half of
+    /// one command tells the user the machine is fine while the other installs
+    /// a compiler.
+    #[test]
+    fn the_report_probes_the_same_compilers_as_doctor_fix() {
+        let cpp = TOOLCHAINS
+            .iter()
+            .find(|tc| tc.language == "C++")
+            .expect("C++ toolchain");
+        for bin in ["g++", "clang++", "c++"] {
+            assert!(
+                cpp.required.iter().any(|t| t.alternatives.contains(&bin)),
+                "horus_sys::sync::cpp::detect_cpp_compiler accepts {bin}, doctor does not"
+            );
+        }
+    }
+
+    /// Naming the missing tool is half an answer. Every entry has to be able to
+    /// say how to get it, on whatever platform the check is running on.
+    #[test]
+    fn every_tool_says_how_to_install_it() {
+        for tc in TOOLCHAINS {
+            for tool in tc.required.iter().chain(tc.optional.iter()) {
+                let line = tool.missing_detail();
+                assert!(
+                    line.contains("install: "),
+                    "{} has no install command: {line}",
+                    tool.label
+                );
+                let cmd = line.split("install: ").nth(1).unwrap().trim();
+                assert!(
+                    cmd.split_whitespace().count() >= 2,
+                    "{}'s install hint is not a command: {cmd:?}",
+                    tool.label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn on_path_finds_real_executables_only() {
+        assert!(on_path("cargo"), "cargo runs these tests, it is on PATH");
+        assert!(!on_path("horus_definitely_not_a_tool_xyz"));
+    }
+
+    /// A file on PATH is not an installed tool. rustup ships a proxy in
+    /// `~/.cargo/bin` for every component it *could* install, so `cargo-clippy`
+    /// and `rustfmt` exist on every rustup machine and exit 1 with
+    /// "the 'x' component ... is not available" until the component is added.
+    /// Grading Rust on presence would print "Rust ready" for exactly the
+    /// machines where `horus lint` dies with "no such command: `clippy`".
+    #[test]
+    #[cfg(unix)]
+    fn a_proxy_that_cannot_run_is_not_an_installed_tool() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+
+        let proxy = dir.path().join("cargo-clippy");
+        std::fs::write(
+            &proxy,
+            "#!/bin/sh\necho \"error: not installed for this toolchain\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let proxy = proxy.to_str().unwrap();
+        assert!(on_path(proxy), "the stub is an executable file");
+        assert_eq!(
+            probe(proxy),
+            None,
+            "a proxy that cannot run must not count as installed"
+        );
+
+        let real = dir.path().join("clang-format");
+        std::fs::write(&real, "#!/bin/sh\necho 'clang-format version 21.1.8'\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            probe(real.to_str().unwrap()).as_deref(),
+            Some("clang-format version 21.1.8")
+        );
+    }
+
+    /// Presence is the weaker signal, so only tools that genuinely cannot
+    /// answer `--version` may use it. Nothing rustup proxies belongs here.
+    #[test]
+    fn only_msvc_tools_are_detected_by_presence() {
+        assert_eq!(PRESENCE_ONLY, &["cl", "msbuild"]);
+        for proxied in ["cargo-clippy", "rustfmt", "cargo", "rustc"] {
+            assert!(
+                !PRESENCE_ONLY.contains(&proxied),
+                "{proxied} has a rustup proxy on PATH even when uninstalled"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_executable_file_is_not_a_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pretend-compiler");
+        std::fs::write(&file, "not a program").unwrap();
+        assert!(!is_executable(&file), "a 0644 file is not an executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(is_executable(&file));
+        }
+        assert!(
+            !is_executable(dir.path()),
+            "a directory is not an executable"
+        );
     }
 }

@@ -21,10 +21,9 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
         anyhow::bail!("No source files detected. Nothing to lint.");
     }
 
-    let toolchain = dispatch::detect_toolchain(&ctx);
-    let tools = toolchain.tools_for(Operation::Lint);
+    let commands = build_lint_commands(&ctx, fix, types, extra_args);
 
-    if tools.is_empty() {
+    if commands.is_empty() {
         eprintln!(
             "{} No linting tools found. Install {} or {}.",
             "warn:".yellow(),
@@ -32,6 +31,31 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
             "ruff".cyan()
         );
         return Ok(());
+    }
+
+    let results = run_with_prefix::run_prefixed(commands);
+    run_with_prefix::print_summary(&results);
+
+    if !run_with_prefix::all_succeeded(&results) {
+        std::process::exit(run_with_prefix::worst_exit_code(&results));
+    }
+
+    Ok(())
+}
+
+/// Build the exact commands `horus lint` runs, so tests can execute the same
+/// thing the CLI does instead of re-deriving the arguments by hand.
+pub(crate) fn build_lint_commands(
+    ctx: &ProjectContext,
+    fix: bool,
+    types: bool,
+    extra_args: Vec<String>,
+) -> Vec<PrefixedCommand> {
+    let toolchain = dispatch::detect_toolchain(ctx);
+    let tools = toolchain.tools_for(Operation::Lint);
+
+    if tools.is_empty() {
+        return Vec::new();
     }
 
     // For horus projects (horus.toml without root Cargo.toml), point cargo at .horus/Cargo.toml
@@ -97,6 +121,10 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
                 }
                 args.extend(sources.iter().map(|p| p.to_string_lossy().to_string()));
             }
+            // Same style the formatter uses, from the same single source of
+            // truth — a linter that disagreed with `horus fmt` about the line
+            // length would fail files `horus fmt` had just written.
+            args.extend(crate::commands::fmt::python_style_args(&tool.bin, ctx));
             args.extend(extra_args.clone());
 
             PrefixedCommand {
@@ -111,19 +139,12 @@ pub fn run_lint(fix: bool, types: bool, extra_args: Vec<String>) -> Result<()> {
 
     // Add type checking if requested
     if types && ctx.has_python() {
-        if let Some(type_cmd) = detect_type_checker(&ctx) {
+        if let Some(type_cmd) = detect_type_checker(ctx) {
             commands.push(type_cmd);
         }
     }
 
-    let results = run_with_prefix::run_prefixed(commands);
-    run_with_prefix::print_summary(&results);
-
-    if !run_with_prefix::all_succeeded(&results) {
-        std::process::exit(run_with_prefix::worst_exit_code(&results));
-    }
-
-    Ok(())
+    commands
 }
 
 /// Detect Python type checker: mypy > pyright > skip.
@@ -160,6 +181,111 @@ fn detect_type_checker(ctx: &ProjectContext) -> Option<PrefixedCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── LIVE-2: `horus lint` must obey the project's own ruff config ─────
+    //
+    // The config horus generates lives in `.horus/pyproject.toml`, which ruff
+    // never discovers on its own. A linter that ignores it enforces ruff's
+    // defaults instead of the project's — and would disagree with `horus fmt`
+    // about the line length, failing files `horus fmt` had just written.
+
+    #[test]
+    fn lint_applies_the_rules_the_generated_config_selects() {
+        if !crate::commands::fmt::tool_or_skip("ruff", "python") {
+            return;
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("horus.toml"),
+            "[package]\nname = \"lintbot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".horus")).unwrap();
+        // E501 is not in ruff's default rule set, so it fires only if the
+        // generated config was actually read — and the column it fires at
+        // proves which line-length was used.
+        std::fs::write(
+            root.join(".horus").join("pyproject.toml"),
+            "[tool.ruff]\nline-length = 100\n\n[tool.ruff.lint]\nselect = [\"E501\"]\n",
+        )
+        .unwrap();
+        let ok_line = format!("ok = \"{}\"\n", "x".repeat(90));
+        let bad_line = format!("bad = \"{}\"\n", "y".repeat(120));
+        std::fs::write(root.join("ok_line.py"), &ok_line).unwrap();
+        std::fs::write(root.join("bad_line.py"), &bad_line).unwrap();
+        assert_eq!(
+            ok_line.trim_end().len(),
+            97,
+            "between ruff's 88 and horus's 100"
+        );
+
+        let ctx = dispatch::detect_context(root);
+        let commands = build_lint_commands(&ctx, false, false, Vec::new());
+        let ruff = commands
+            .iter()
+            .find(|c| c.bin == "ruff")
+            .expect("ruff is installed, so horus lint must dispatch to it");
+
+        let out = std::process::Command::new(&ruff.bin)
+            .args(&ruff.args)
+            .current_dir(ruff.working_dir.as_deref().unwrap())
+            .output()
+            .expect("running ruff");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        assert!(
+            text.contains("E501") && text.contains("bad_line.py"),
+            "horus lint ignored the rules the project's own config selects:\n{text}"
+        );
+        assert!(
+            !text.contains("ok_line.py"),
+            "a 97-column line is legal at line-length = 100; horus lint used \
+             ruff's own default instead:\n{text}"
+        );
+    }
+
+    #[test]
+    fn lint_and_fmt_share_one_python_style() {
+        // Same helper, same answer — the linter and the formatter cannot drift.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("horus.toml"),
+            "[package]\nname = \"lintbot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("main.py"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        std::fs::write(
+            tmp.path().join(".horus").join("pyproject.toml"),
+            "[tool.ruff]\nline-length = 100\n",
+        )
+        .unwrap();
+
+        let ctx = dispatch::detect_context(tmp.path());
+        let style = crate::commands::fmt::python_style_args("ruff", &ctx);
+        assert!(!style.is_empty());
+
+        if crate::commands::fmt::tool_on_path("ruff") {
+            for cmd in build_lint_commands(&ctx, false, false, Vec::new())
+                .iter()
+                .chain(crate::commands::fmt::build_fmt_commands(&ctx, true, Vec::new()).iter())
+                .filter(|c| c.bin == "ruff")
+            {
+                assert!(
+                    cmd.args.windows(style.len()).any(|w| w == style.as_slice()),
+                    "{:?} does not carry the project's style {:?}",
+                    cmd.args,
+                    style
+                );
+            }
+        }
+    }
 
     #[test]
     fn lint_no_source_files() {

@@ -2676,6 +2676,103 @@ fn release_keepalive_tuple(ka: (Arc<TensorPool>, Tensor, Option<Tensor>)) {
 }
 
 impl<T: TopicMessage> Topic<T> {
+    /// Which node owns this handle, resolved as late as possible.
+    ///
+    /// The name used to be captured in `Topic::new` and never revisited. Node
+    /// constructors are where topics are created — and they run before the
+    /// scheduler starts, outside any tick — so `current_node_name()` returned
+    /// "unknown" and the handle recorded no owner at all. Nothing ever
+    /// registered it, and `horus topic info` answered "Publishers: (none)"
+    /// about a topic being published at 40 Hz.
+    ///
+    /// Resolving here instead means the first `send()` — which happens inside
+    /// `tick()`, where the context *is* set — finds the name. The constructor's
+    /// value still wins when it had one, which covers a topic created inside
+    /// `init()` and used from a helper thread.
+    ///
+    /// This lives on the fully generic impl because every transport shares it.
+    /// It used to sit on the `Wire = T` impl, so the zero-copy specialisations
+    /// (`Topic<Image>`, `Topic<PointCloud>`, `Topic<DepthImage>`,
+    /// `Topic<Tensor>`) still read the constructor-captured `owner_node` — the
+    /// value this fix exists because it is empty — and a camera or lidar node,
+    /// the central robotics case, went on reporting "Publishers: (none)".
+    #[inline]
+    fn resolve_owner(&self) -> Option<String> {
+        if let Some(ref node) = self.owner_node {
+            return Some(node.clone());
+        }
+        // A topic that belongs to no node — created by a test, a CLI tool, or a
+        // helper thread — would otherwise pay this check on every single send
+        // forever, because the "registered" flag only latches on success. Give
+        // up after a bounded number of attempts so the steady-state cost on the
+        // real-time path is exactly zero.
+        //
+        // The bound is generous on purpose: a node's topic resolves on its
+        // first send inside `tick()`, so only genuinely ownerless topics ever
+        // count past one.
+        const MAX_ATTEMPTS: u16 = 256;
+        if self.owner_attempts.get() >= MAX_ATTEMPTS {
+            return None;
+        }
+        // Checked without allocating; `current_node_name` builds a String and
+        // is only reached once the context is known to exist.
+        if crate::core::hlog::in_node_context() {
+            let name = crate::core::hlog::current_node_name();
+            if name != "unknown" {
+                return Some(name);
+            }
+        }
+        self.owner_attempts.set(self.owner_attempts.get() + 1);
+        None
+    }
+
+    /// Record this handle as a publisher of its topic, at most once.
+    ///
+    /// The latch is set **only** when an owner was actually resolved. The
+    /// zero-copy specialisations set it outside the `if let`, so the single
+    /// attempt they made — in the constructor, before any node context exists —
+    /// latched failure permanently and could never be retried from inside a
+    /// tick.
+    #[inline]
+    fn register_pub(&self, type_name: &str) {
+        if self.registered_pub.get() {
+            return;
+        }
+        if let Some(node) = self.resolve_owner() {
+            topic_node_registry().register_with_type(
+                self.ring.name(),
+                &node,
+                NodeTopicRole::Publisher,
+                type_name,
+            );
+            self.registered_pub.set(true);
+        }
+    }
+
+    /// Record this handle as a subscriber of its topic, at most once.
+    #[inline]
+    fn register_sub(&self, type_name: &str) {
+        if self.registered_sub.get() {
+            return;
+        }
+        if let Some(node) = self.resolve_owner() {
+            topic_node_registry().register_with_type(
+                self.ring.name(),
+                &node,
+                NodeTopicRole::Subscriber,
+                type_name,
+            );
+            self.registered_sub.set(true);
+        }
+    }
+
+    /// The short type name this handle's messages are registered under.
+    #[inline]
+    fn registered_type_name() -> &'static str {
+        let type_name = std::any::type_name::<T>();
+        type_name.rsplit("::").next().unwrap_or(type_name)
+    }
+
     /// The pool a pool-backed keep-alive is retained on for `self.pool`-based
     /// topics (Image/PointCloud/DepthImage): `self.pool`, or the global pool.
     #[inline]
@@ -3036,66 +3133,11 @@ impl<T> Topic<T>
 where
     T: TopicMessage<Wire = T> + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
-    /// Which node owns this handle, resolved as late as possible.
-    ///
-    /// The name used to be captured in `Topic::new` and never revisited. Node
-    /// constructors are where topics are created — and they run before the
-    /// scheduler starts, outside any tick — so `current_node_name()` returned
-    /// "unknown" and the handle recorded no owner at all. Nothing ever
-    /// registered it, and `horus topic info` answered "Publishers: (none)"
-    /// about a topic being published at 40 Hz.
-    ///
-    /// Resolving here instead means the first `send()` — which happens inside
-    /// `tick()`, where the context *is* set — finds the name. The constructor's
-    /// value still wins when it had one, which covers a topic created inside
-    /// `init()` and used from a helper thread.
-    #[inline]
-    fn resolve_owner(&self) -> Option<String> {
-        if let Some(ref node) = self.owner_node {
-            return Some(node.clone());
-        }
-        // A topic that belongs to no node — created by a test, a CLI tool, or a
-        // helper thread — would otherwise pay this check on every single send
-        // forever, because the "registered" flag only latches on success. Give
-        // up after a bounded number of attempts so the steady-state cost on the
-        // real-time path is exactly zero.
-        //
-        // The bound is generous on purpose: a node's topic resolves on its
-        // first send inside `tick()`, so only genuinely ownerless topics ever
-        // count past one.
-        const MAX_ATTEMPTS: u16 = 256;
-        if self.owner_attempts.get() >= MAX_ATTEMPTS {
-            return None;
-        }
-        // Checked without allocating; `current_node_name` builds a String and
-        // is only reached once the context is known to exist.
-        if crate::core::hlog::in_node_context() {
-            let name = crate::core::hlog::current_node_name();
-            if name != "unknown" {
-                return Some(name);
-            }
-        }
-        self.owner_attempts.set(self.owner_attempts.get() + 1);
-        None
-    }
-
     /// Send a message (fire-and-forget with bounded retry).
     #[inline(always)]
     pub fn send(&self, msg: T) {
         // Lazy registration: first send() registers as Publisher.
-        if !self.registered_pub.get() {
-            if let Some(node) = self.resolve_owner() {
-                let type_name = std::any::type_name::<T>();
-                let short = type_name.rsplit("::").next().unwrap_or(type_name);
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    &node,
-                    NodeTopicRole::Publisher,
-                    short,
-                );
-                self.registered_pub.set(true);
-            }
-        }
+        self.register_pub(Self::registered_type_name());
         self.ring.send(msg)
     }
 
@@ -3103,19 +3145,7 @@ where
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         // Lazy registration: first recv() registers as Subscriber.
-        if !self.registered_sub.get() {
-            if let Some(node) = self.resolve_owner() {
-                let type_name = std::any::type_name::<T>();
-                let short = type_name.rsplit("::").next().unwrap_or(type_name);
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    &node,
-                    NodeTopicRole::Subscriber,
-                    short,
-                );
-                self.registered_sub.set(true);
-            }
-        }
+        self.register_sub(Self::registered_type_name());
         self.ring.recv()
     }
 
@@ -3124,12 +3154,19 @@ where
     where
         T: Copy,
     {
+        // A `read_latest()` consumer is a subscriber. This carried no
+        // registration at all, so a node that only ever peeks at the newest
+        // sample was invisible to `horus topic info`.
+        self.register_sub(Self::registered_type_name());
         self.ring.read_latest()
     }
 
     /// Try to send a message, returning it on failure (for explicit retry).
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
+        // A backpressure-aware publisher is still a publisher; this had no
+        // registration block, so `try_send`-only nodes were unattributed.
+        self.register_pub(Self::registered_type_name());
         self.ring.try_send(msg)
     }
 
@@ -3146,6 +3183,7 @@ where
         msg: T,
         timeout: std::time::Duration,
     ) -> Result<(), SendBlockingError> {
+        self.register_pub(Self::registered_type_name());
         self.ring.send_blocking(msg, timeout)
     }
 
@@ -3156,6 +3194,7 @@ where
     #[doc(hidden)]
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
+        self.register_sub(Self::registered_type_name());
         self.ring.try_recv()
     }
 }
@@ -3191,17 +3230,7 @@ impl Topic<Image> {
     /// Retains the tensor so it stays alive for receivers, then sends the
     /// descriptor through the ring buffer.
     pub fn send(&self, img: impl Borrow<Image>) {
-        if !self.registered_pub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Publisher,
-                    "Image",
-                );
-            }
-            self.registered_pub.set(true);
-        }
+        self.register_pub("Image");
         let wire = img.borrow().to_wire(&self.pool);
         self.publish_keepalive(*wire.tensor(), None);
         self.ring.send(wire);
@@ -3209,6 +3238,7 @@ impl Topic<Image> {
 
     /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
     pub fn try_send(&self, img: Image) -> Result<(), Image> {
+        self.register_pub("Image");
         let wire = img.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -3221,17 +3251,7 @@ impl Topic<Image> {
 
     /// Receive the next image.
     pub fn recv(&self) -> Option<Image> {
-        if !self.registered_sub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Subscriber,
-                    "Image",
-                );
-            }
-            self.registered_sub.set(true);
-        }
+        self.register_sub("Image");
         let wire = self.ring.recv()?;
         Image::try_from_wire(wire, &self.pool)
     }
@@ -3246,17 +3266,7 @@ impl Topic<PointCloud> {
     ///
     /// Accepts both owned and borrowed: `topic.send(pc)` or `topic.send(&pc)`.
     pub fn send(&self, pc: impl Borrow<PointCloud>) {
-        if !self.registered_pub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Publisher,
-                    "PointCloud",
-                );
-            }
-            self.registered_pub.set(true);
-        }
+        self.register_pub("PointCloud");
         let wire = pc.borrow().to_wire(&self.pool);
         self.publish_keepalive(*wire.tensor(), None);
         self.ring.send(wire);
@@ -3264,6 +3274,7 @@ impl Topic<PointCloud> {
 
     /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
     pub fn try_send(&self, pc: PointCloud) -> Result<(), PointCloud> {
+        self.register_pub("PointCloud");
         let wire = pc.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -3276,17 +3287,7 @@ impl Topic<PointCloud> {
 
     /// Receive the next point cloud.
     pub fn recv(&self) -> Option<PointCloud> {
-        if !self.registered_sub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Subscriber,
-                    "PointCloud",
-                );
-            }
-            self.registered_sub.set(true);
-        }
+        self.register_sub("PointCloud");
         let wire = self.ring.recv()?;
         PointCloud::try_from_wire(wire, &self.pool)
     }
@@ -3301,17 +3302,7 @@ impl Topic<DepthImage> {
     ///
     /// Accepts both owned and borrowed: `topic.send(depth)` or `topic.send(&depth)`.
     pub fn send(&self, depth: impl Borrow<DepthImage>) {
-        if !self.registered_pub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Publisher,
-                    "DepthImage",
-                );
-            }
-            self.registered_pub.set(true);
-        }
+        self.register_pub("DepthImage");
         let wire = depth.borrow().to_wire(&self.pool);
         self.publish_keepalive(*wire.tensor(), None);
         self.ring.send(wire);
@@ -3319,6 +3310,7 @@ impl Topic<DepthImage> {
 
     /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
     pub fn try_send(&self, depth: DepthImage) -> Result<(), DepthImage> {
+        self.register_pub("DepthImage");
         let wire = depth.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -3331,17 +3323,7 @@ impl Topic<DepthImage> {
 
     /// Receive the next depth image.
     pub fn recv(&self) -> Option<DepthImage> {
-        if !self.registered_sub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Subscriber,
-                    "DepthImage",
-                );
-            }
-            self.registered_sub.set(true);
-        }
+        self.register_sub("DepthImage");
         let wire = self.ring.recv()?;
         DepthImage::try_from_wire(wire, &self.pool)
     }
@@ -3373,17 +3355,7 @@ impl Topic<Tensor> {
     /// Send a tensor handle through this topic (zero-copy).
     #[doc(hidden)]
     pub fn send_handle(&self, handle: &crate::memory::TensorHandle) {
-        if !self.registered_pub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Publisher,
-                    "Tensor",
-                );
-            }
-            self.registered_pub.set(true);
-        }
+        self.register_pub("Tensor");
         handle.pool().retain(handle.tensor());
         self.publish_keepalive_on(handle.pool().clone(), *handle.tensor(), None);
         self.ring.send(*handle.tensor());
@@ -3392,17 +3364,7 @@ impl Topic<Tensor> {
     /// Receive a tensor and wrap it in a `TensorHandle`.
     #[doc(hidden)]
     pub fn recv_handle(&self) -> Option<crate::memory::TensorHandle> {
-        if !self.registered_sub.get() {
-            if let Some(ref node) = self.owner_node {
-                topic_node_registry().register_with_type(
-                    self.ring.name(),
-                    node,
-                    NodeTopicRole::Subscriber,
-                    "Tensor",
-                );
-            }
-            self.registered_sub.set(true);
-        }
+        self.register_sub("Tensor");
         let tensor = self.ring.recv()?;
         let pool = self.pool();
         // Take a generation-guarded reference so each subscriber owns its own: a
