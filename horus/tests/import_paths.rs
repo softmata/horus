@@ -124,3 +124,35 @@ mod macro_support_paths {
     pub use horus::serde_yaml;
     pub use horus::topics;
 }
+
+/// The coordinate-frame tree must be reachable from `horus::prelude`.
+///
+/// `horus_py` and `horus_cpp` both depend on `horus-tf`, so Python and C++
+/// users got the frame tree out of the box — C++ reaches `horus::TransformFrame`
+/// straight from `<horus/horus.hpp>`, and tutorial 3 uses it there. The Rust
+/// umbrella crate did not depend on it. `horus::prelude` therefore offered
+/// `TransformStamped` — the message describing a transform — but not the tree
+/// that produces one, so the language HORUS is written in was the only one of
+/// the three that could not do this without hand-adding a pinned git
+/// dependency.
+///
+/// Compile-time: if these stop being reachable from the prelude, this file
+/// fails to build.
+#[test]
+fn transform_frame_is_reachable_from_the_prelude() {
+    use horus::prelude::*;
+
+    let tf = TransformFrame::new();
+    let world = tf.register_frame("world", None).expect("register world");
+    let base = tf
+        .register_frame("base_link", Some("world"))
+        .expect("register base_link under world");
+    assert_ne!(world, base, "each frame gets its own id");
+
+    // The value type travels with the tree, not just the stamped message.
+    let _identity: Transform = Transform::default();
+    let _config: TransformFrameConfig = TransformFrameConfig::default();
+
+    // The message type was always reachable; keep it that way.
+    let _stamped: Option<TransformStamped> = None;
+}

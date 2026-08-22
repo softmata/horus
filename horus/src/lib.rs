@@ -465,6 +465,15 @@ pub mod prelude {
     // === Runtime parameters ===
     pub use horus_core::params::RuntimeParams;
 
+    // === Coordinate transforms ===
+    // C++ gets `horus::TransformFrame` straight from <horus/horus.hpp> and
+    // horus_py exposes the same tree, because both crates depend on horus-tf.
+    // The Rust umbrella crate did not, so `horus::prelude` offered
+    // `TransformStamped` — the message — but not the frame tree that produces
+    // it, and a Rust user had to add a pinned git dependency by hand to do
+    // what the other two languages do out of the box.
+    pub use horus_tf::{FrameBuilder, Transform, TransformFrame, TransformFrameConfig};
+
     // === Memory (domain types) ===
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
