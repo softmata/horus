@@ -18,7 +18,38 @@ count is stated so the omission is visible instead of implied.
 
 From `Unreleased` onward, entries are written by hand.
 
+## Release cadence
+
+A release is cut whenever either is true:
+
+- a user-visible fix has been on `main` for two weeks, or
+- `git rev-list --count <last-tag>..HEAD` passes 50.
+
+Whichever comes first. The point is that the distance between "fixed" and
+"shipped" stays small enough to be uninteresting. It was 244 commits before
+0.3.0 and 158 when that gap was first written down, which is how a user came to
+install a binary missing a fix that had been in the tree for months, with
+nothing to tell them so.
+
+Every entry from `Unreleased` moves under the new version heading at cut time,
+and `Unreleased` is left empty rather than deleted.
+
 ## Unreleased
+
+## [0.3.0] — 2026-08-21
+
+Cuts the first release since 0.2.2 (2026-07-19), which the tree was 244 commits
+ahead of. Users installed a binary that stale and had no way to tell — the gap
+this release exists to close, along with the cadence note below.
+
+Version numbers move 0.2.2 -> 0.3.0 across `horus`, `horus_core`,
+`horus_manager`, `horus_types`, `horus_py`, `horus_macros` and `benchmarks`.
+`horus_sys`, `horus_net` and `horus_cpp` stay at 0.1.0; they are versioned
+independently and nothing in this release changes their public surface.
+
+Minor rather than patch: there are new features and several behaviour changes
+(listed below). Pre-1.0, so behaviour changes ride in the minor slot.
+
 
 ### Added
 
@@ -53,7 +84,46 @@ From `Unreleased` onward, entries are written by hand.
 - **python** — PEP 561 `py.typed` marker, so the shipped `_horus.pyi` stubs are
   actually used. Type checkers previously skipped the package entirely.
 
+### Changed
+
+- **python** — `Topic.name` now reports the endpoint the topic was actually
+  created under. It previously returned the name derived from the message type,
+  so `Topic(Imu, endpoint="imu.data")` reported `imu` while its data lived at
+  `/dev/shm/<ns>/topics/imu.data`. The property is also what `log_ipc_event`
+  records, so verbose IPC logs named a topic that did not exist. `Topic(Imu)`
+  with no endpoint is unaffected.
+- **rust** — `horus::prelude` re-exports `TransformFrame`, `Transform`,
+  `FrameBuilder` and `TransformFrameConfig`. `horus_py` and `horus_cpp` both
+  depend on `horus-tf`, so Python and C++ reached the coordinate-frame tree out
+  of the box while Rust — which had only `TransformStamped`, the message —
+  required hand-adding a pinned git dependency.
+- **manager** — `horus new` names a project's node after the project
+  (`my_robot_controller`) in all three languages. Every generated project was
+  previously named `controller`, so two HORUS projects on one machine collided
+  by default and triggered the runtime's own duplicate-node-name warning. The
+  `node!` template had no name at all and was named after its struct.
+
 ### Fixed
+
+- **discovery** — a node that was SIGKILLed and restarted in the same namespace
+  became invisible to introspection: `horus topic list` reported "No active
+  topics found" and `horus topic echo` hung, while `horus node list` showed the
+  same node Running and Healthy and its log said it was publishing. The `.meta`
+  sidecar records the creating process's PID and is not rewritten when a later
+  process attaches, so the restarted node inherited its own dead PID — and
+  `horus_manager` acts on a dead PID by unlinking the backing file, so the
+  command meant to observe the system deleted a live node's topic. Liveness now
+  comes from the `flock` every holder of the region already takes, which the
+  kernel releases even under SIGKILL.
+- **python** — `Miss.SAFE_MODE` never called a Python node's
+  `enter_safe_state()`. The adapter implemented only `init`/`tick`/`shutdown`,
+  so the hook fell through to the no-op default while the scheduler correctly
+  reported the deadline misses and degradations that were supposed to trigger
+  it. Rust and C++ nodes were unaffected.
+- **python** — `Tensor.astype()` panicked with `PyBorrowMutError` for any
+  conversion that actually changed dtype, taking `to_float32()`, `to_float16()`,
+  `to_int32()` and `to_uint8()` with it. A same-dtype conversion returned early
+  and so appeared to work.
 
 - **core** — `Miss::SafeMode` called `enter_safe_state()` on every deadline miss
   rather than on entry into safe mode. A node sleeping 5 ms against a 1 ms

@@ -12,7 +12,7 @@
 **Real-time distributed middleware for Rust, Python, and C++. Sub-200ns IPC.**
 
 [![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions)
-[![Version](https://img.shields.io/badge/v0.2.2-blue.svg)](https://github.com/softmata/horus/releases)
+[![Version](https://img.shields.io/badge/v0.3.0-blue.svg)](https://github.com/softmata/horus/releases)
 [![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](https://isocpp.org/)
