@@ -544,6 +544,10 @@ use horus_macros::node;
 
 node! {
     Controller {
+        // Without this the node is named after the struct, so every project
+        // scaffolded by `horus new` would register as "Controller".
+        name: "__NODE_NAME__",
+
         pub {
             cmd_vel: Twist -> "motors.cmd_vel",
         }
@@ -604,7 +608,7 @@ impl Controller {
 
 impl Node for Controller {
     fn name(&self) -> &str {
-        "controller"
+        "__NODE_NAME__"
     }
 
     fn tick(&mut self) {
@@ -632,6 +636,8 @@ fn main() -> Result<()> {
 }
 "#
     };
+
+    let content = content.replace("__NODE_NAME__", &default_node_name(project_path));
 
     let src_dir = project_path.join("src");
     fs::create_dir_all(&src_dir)?;
@@ -698,12 +704,27 @@ fn validate_project_name(name: &str) -> Result<()> {
 /// ```
 ///
 /// `horus new` guaranteed the condition its own runtime warns about.
-pub(crate) fn create_main_py(project_path: &Path) -> Result<()> {
-    let node_name = project_path
+/// The node name a generated project gets, derived from the project directory.
+///
+/// Shared by all three templates so they agree. Only the Python template used
+/// to do this; the Rust and C++ templates still hard-coded "controller", so the
+/// duplicate-name warning the runtime prints was still guaranteed for two of
+/// the three languages `horus new` can scaffold.
+///
+/// The value only ever reaches a string literal — `fn name()`'s return, the C++
+/// `Node(...)` argument, and `node!`'s `name:` section all take a string — so a
+/// project whose directory is not a valid identifier (`2fast`, `my-robot`)
+/// needs no sanitising beyond the hyphen swap that keeps it readable.
+pub(crate) fn default_node_name(project_path: &Path) -> String {
+    project_path
         .file_name()
         .and_then(|n| n.to_str())
         .map(|n| format!("{}_controller", n.replace('-', "_")))
-        .unwrap_or_else(|| "controller".to_string());
+        .unwrap_or_else(|| "controller".to_string())
+}
+
+pub(crate) fn create_main_py(project_path: &Path) -> Result<()> {
+    let node_name = default_node_name(project_path);
 
     let content = r#"# Mobile robot controller
 
@@ -767,6 +788,7 @@ fn create_cpp_project(project_path: &Path, name: &str) -> Result<()> {
     // cmake_gen::generate() now emits the include/link wiring from horus.toml.
 
     // Create src/main.cpp
+    let node_name = default_node_name(project_path);
     let cpp_content = format!(
         r#"// {name} — HORUS C++ robot controller
 //
@@ -779,7 +801,7 @@ using namespace horus::literals;
 // Define a node with built-in pub/sub (like Rust's impl Node)
 class Controller : public horus::Node {{
 public:
-    Controller() : Node("controller") {{
+    Controller() : Node("{node_name}") {{
         cmd_ = advertise<horus::msg::CmdVel>("cmd_vel");
     }}
 
@@ -789,7 +811,7 @@ public:
         cmd.angular = 0.0f;  // turning velocity (rad/s)
         cmd_->send(cmd);
 
-        horus::log::info("controller", "Published cmd_vel");
+        horus::log::info("{node_name}", "Published cmd_vel");
     }}
 
     void enter_safe_state() override {{
@@ -2071,6 +2093,68 @@ mod tests {
             content.contains("def controller(node)"),
             "main.py should have controller function"
         );
+    }
+
+    /// No template may hard-code the node name, in any language.
+    ///
+    /// Every generated project used to name its node "controller", so two
+    /// HORUS projects on one machine collided by default and the runtime
+    /// printed its own duplicate-name warning:
+    ///
+    /// ```text
+    /// [horus] WARNING: node 'controller' already registered by PID 497819
+    /// (this is PID 498342). Overwriting presence file — duplicate node names
+    /// cause unreliable discovery.
+    /// ```
+    ///
+    /// Python was fixed first; Rust and C++ kept the literal, so two of the
+    /// three languages `horus new` scaffolds still guaranteed the collision.
+    #[test]
+    fn no_template_hard_codes_the_node_name() {
+        for use_macro in [false, true] {
+            let dir = tempfile::tempdir().unwrap().keep();
+            let project = dir.join("my-robot");
+            fs::create_dir_all(project.join("src")).unwrap();
+            create_main_rs(&project, use_macro).unwrap();
+            let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+            assert!(
+                content.contains("my_robot_controller"),
+                "rust template (use_macro={use_macro}) must name the node after \
+                 the project, got:\n{content}"
+            );
+            assert!(
+                !content.contains("\"controller\""),
+                "rust template (use_macro={use_macro}) still hard-codes \"controller\""
+            );
+            assert!(
+                !content.contains("__NODE_NAME__"),
+                "placeholder was left unsubstituted"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        let dir = tempfile::tempdir().unwrap().keep();
+        let project = dir.join("arm2");
+        fs::create_dir_all(&project).unwrap();
+        create_main_py(&project).unwrap();
+        let content = fs::read_to_string(project.join("main.py")).unwrap();
+        assert!(content.contains("arm2_controller"), "python template");
+        assert!(!content.contains("__NODE_NAME__"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A hyphen is legal in a project directory but not in a node name we want
+    /// to read back cleanly, so it becomes an underscore — and the derivation
+    /// is shared, so all three languages agree on the result.
+    #[test]
+    fn node_name_is_derived_from_the_project_directory() {
+        assert_eq!(
+            default_node_name(Path::new("/tmp/my-robot")),
+            "my_robot_controller"
+        );
+        assert_eq!(default_node_name(Path::new("/tmp/arm2")), "arm2_controller");
+        // A path with no final component falls back rather than panicking.
+        assert_eq!(default_node_name(Path::new("/")), "controller");
     }
 
     // ── Main.rs: detailed content verification ──────────────────────
