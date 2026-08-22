@@ -27,7 +27,7 @@ Project:
   lock              Generate or verify horus.lock (pin dependency versions)
   scripts, script   Run a script defined in horus.toml [scripts]
   test              Run tests for the HORUS project
-  check             Validate horus.toml, source files, or workspace
+  check             Validate this project (manifest, sources, workspace)
   clean             Clean build artifacts and shared memory
   launch, l         Launch multiple nodes from a YAML file
 
@@ -71,7 +71,7 @@ Development:
   deps              Dependency insight (tree, why, outdated, audit)
 
 Maintenance:
-  doctor            Comprehensive ecosystem health check
+  doctor            Check this machine (toolchains, RT, shared memory)
   self update       Update the horus CLI to latest version
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
@@ -341,7 +341,12 @@ enum Commands {
         no_hooks: bool,
     },
 
-    /// Validate horus.toml, source files, or entire workspace
+    /// Validate this project: horus.toml, source files, or the whole workspace
+    ///
+    /// Checks what is in the repository. `horus doctor` checks the machine it
+    /// is on — toolchains, real-time capability, shared memory — and the two do
+    /// not overlap: a project can be valid on a machine that cannot build it,
+    /// and a healthy machine says nothing about whether the manifest parses.
     Check {
         /// Path to file, directory, or workspace (default: current directory)
         #[arg(value_name = "PATH")]
@@ -355,7 +360,10 @@ enum Commands {
         #[arg(long = "full")]
         full: bool,
 
-        /// Run health check (alias for horus doctor)
+        /// Check the machine instead of the project — same as `horus doctor`
+        ///
+        /// Exists so that `horus check --full` has a switch for the half it
+        /// runs. On its own it is `horus doctor` and nothing more.
         #[arg(long = "health")]
         health: bool,
     },
@@ -640,7 +648,7 @@ enum Commands {
         #[arg(short = 'g', long = "global")]
         global: bool,
         /// Show what would be updated without making changes
-        #[arg(long = "dry-run")]
+        #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
     },
 
@@ -769,7 +777,10 @@ enum Commands {
     },
 
     // ── Maintenance ─────────────────────────────────────────────────────
-    /// Comprehensive ecosystem health check
+    /// Check this machine: toolchains, real-time capability, shared memory
+    ///
+    /// Checks the environment. `horus check` checks the repository, and neither
+    /// substitutes for the other.
     Doctor {
         /// Show detailed output for each check
         #[arg(short = 'v', long = "verbose")]
@@ -857,7 +868,7 @@ enum Commands {
     /// Publish package to registry
     Publish {
         /// Validate package without actually publishing
-        #[arg(long = "dry-run")]
+        #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
     },
 

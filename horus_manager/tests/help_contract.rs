@@ -293,3 +293,116 @@ fn native_tool_proxies_do_not_intercept_version_or_help() {
         missing.join("\n  ")
     );
 }
+
+/// `check` and `doctor` must each say what they cover.
+///
+/// Three entry points led to overlapping validation — `horus check`,
+/// `horus check --health` (described only as "alias for horus doctor"), and
+/// `horus doctor` — with nothing stating the distinction. It is not a
+/// preference: one reads the repository and the other reads the machine, and a
+/// user picking the wrong one gets a clean result about something they were not
+/// asking about.
+#[test]
+fn check_and_doctor_state_what_each_covers() {
+    let check = String::from_utf8(
+        std::process::Command::new(env!("CARGO_BIN_EXE_horus"))
+            .args(["check", "--help"])
+            .output()
+            .expect("horus check --help")
+            .stdout,
+    )
+    .expect("utf-8");
+    let doctor = String::from_utf8(
+        std::process::Command::new(env!("CARGO_BIN_EXE_horus"))
+            .args(["doctor", "--help"])
+            .output()
+            .expect("horus doctor --help")
+            .stdout,
+    )
+    .expect("utf-8");
+
+    assert!(
+        check.contains("doctor"),
+        "`horus check --help` should say what the other one does:\n{check}"
+    );
+    assert!(
+        doctor.contains("check"),
+        "`horus doctor --help` should say what the other one does:\n{doctor}"
+    );
+    assert!(
+        !check.contains("alias for horus doctor"),
+        "describing --health only as an alias is what left the distinction \
+         unstated:\n{check}"
+    );
+}
+
+/// `-n` must mean `--dry-run` wherever a dry run exists.
+///
+/// Short flags carry different meanings across subcommands — twelve of them do,
+/// which is ordinary in a CLI of this size (`git commit -a` and `git branch -a`
+/// differ too). What is not ordinary is a *safety* flag that works in four
+/// commands and silently does not exist in two others: `--dry-run` had no `-n`
+/// on `publish` (which uploads) or `update` (which rewrites dependencies), so
+/// the habit formed on `clean`/`deploy`/`launch`/`migrate` failed exactly where
+/// the stakes were highest.
+///
+/// This does not assert the other eleven collisions away. Renaming them is a
+/// breaking change to anyone's scripts and needs a deprecation cycle, not a
+/// test.
+#[test]
+fn dry_run_is_always_available_as_n() {
+    let horus = env!("CARGO_BIN_EXE_horus");
+    let top = String::from_utf8(
+        std::process::Command::new(horus)
+            .arg("--help")
+            .output()
+            .expect("horus --help")
+            .stdout,
+    )
+    .expect("utf-8");
+
+    let mut commands: Vec<String> = Vec::new();
+    for line in top.lines() {
+        let Some(rest) = line.strip_prefix("  ") else {
+            continue;
+        };
+        if rest.starts_with(' ') || rest.starts_with('-') {
+            continue;
+        }
+        let Some(first) = rest.split_whitespace().next() else {
+            continue;
+        };
+        let name = first.trim_end_matches(',');
+        if name.chars().all(|c| c.is_ascii_lowercase() || c == '-') && !name.is_empty() {
+            commands.push(name.to_string());
+        }
+    }
+    assert!(commands.len() > 20, "parsed too few commands: {commands:?}");
+
+    let mut missing = Vec::new();
+    let mut checked = 0usize;
+    for cmd in &commands {
+        let out = std::process::Command::new(horus)
+            .args([cmd, "--help"])
+            .output()
+            .expect("subcommand help must run");
+        let help = String::from_utf8_lossy(&out.stdout);
+        if !help.contains("--dry-run") {
+            continue;
+        }
+        checked += 1;
+        if !help.contains("-n, --dry-run") {
+            missing.push(cmd.clone());
+        }
+    }
+
+    assert!(
+        checked >= 4,
+        "found only {checked} commands with --dry-run — the scan is broken"
+    );
+    assert!(
+        missing.is_empty(),
+        "these accept --dry-run but not -n, so the habit formed elsewhere fails \
+         here: {missing:?}"
+    );
+}

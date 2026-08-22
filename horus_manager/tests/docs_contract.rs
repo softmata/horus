@@ -325,6 +325,94 @@ fn every_docs_page_is_reachable_from_the_navigation() {
 /// gates executing code from outside the repository. A knob nobody can find is
 /// a knob nobody can audit.
 #[test]
+/// Every environment variable must appear in the reference page, not merely
+/// somewhere in the corpus.
+///
+/// The looser check — "mentioned in any .mdx" — passed while five variables
+/// were absent from the reference. `HORUS_RT_CORES` was one: it appears in a
+/// deployment guide as a parenthetical beside `.cores(&[..])`, which tells a
+/// reader who already knows it exists that it exists. Someone looking up what
+/// they can set finds the reference page, and it was not there.
+#[test]
+fn every_environment_variable_is_in_the_reference_page() {
+    let Some(root) = docs_root() else {
+        eprintln!("SKIP: horus-docs is not checked out beside horus");
+        return;
+    };
+    let page = root.join("content/docs/development/environment-variables.mdx");
+    let Ok(text) = std::fs::read_to_string(&page) else {
+        panic!("the environment variable reference must exist at {}", page.display());
+    };
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("horus_manager must have a parent")
+        .to_path_buf();
+
+    // Only what is actually read from the environment. Scanning for the bare
+    // token also finds CMake `-D` variables, filename constants and test
+    // fixtures, none of which a user can set.
+    let mut names = std::collections::BTreeSet::new();
+    let mut stack = vec![repo.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if name != "target" && name != ".git" && !name.starts_with('.') {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || !path.to_string_lossy().contains("/src/")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for part in body.split("env::var").skip(1) {
+                // `env::var` is a prefix of `env::vars`, and the plural takes no
+                // argument — so splitting on it picks up whatever string comes
+                // next in the file. That matched a `strip_prefix("HORUS_PARAM_")`
+                // twelve lines below an `env::vars()` call.
+                if part.starts_with('s') {
+                    continue;
+                }
+                let Some(rest) = part.split('"').nth(1) else {
+                    continue;
+                };
+                if rest.starts_with("HORUS_")
+                    && rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                {
+                    names.insert(rest.to_string());
+                }
+            }
+        }
+    }
+
+    assert!(
+        names.len() > 20,
+        "found only {} environment variables — the scan is broken and this test \
+         is vacuous",
+        names.len()
+    );
+
+    let missing: Vec<&String> = names.iter().filter(|n| !text.contains(n.as_str())).collect();
+    assert!(
+        missing.is_empty(),
+        "these are read from the environment but absent from the reference page:\n  {}",
+        missing
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
+
 fn every_environment_variable_is_documented() {
     let Some(root) = docs_root() else {
         eprintln!("SKIP: horus-docs is not checked out beside horus");
