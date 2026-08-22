@@ -300,7 +300,7 @@ fn execute_workspace(
     // If a specific package was requested, run it
     if let Some(ref member) = package {
         let profile = if release { "release" } else { "debug" };
-        let binary = project_dir.join(".horus/target").join(profile).join(member);
+        let binary = crate::build_dirs::binary_path(&project_dir, profile, member);
         if binary.exists() {
             cli_output::success(&format!("Running {}", member));
             let status = std::process::Command::new(&binary).args(&args).status()?;

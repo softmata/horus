@@ -172,6 +172,7 @@ pub fn execute_build_only(
 
                     let mut cmd = std::process::Command::new("cargo");
                     cmd.arg("build").arg("--manifest-path").arg(&cargo_path);
+                    crate::build_dirs::apply(&mut cmd, &project_dir);
                     if release {
                         cmd.arg("--release");
                     }
@@ -244,7 +245,7 @@ pub fn execute_build_only(
                 let spinner = progress::build_spinner("Building with cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
-                cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
@@ -335,6 +336,7 @@ pub fn execute_build_only(
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.current_dir(".horus");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
@@ -452,6 +454,7 @@ pub(super) fn execute_from_cargo_toml(
                 progress::build_spinner(&format!("Building Cargo project ({} mode)...", build_dir));
             let mut cmd = Command::new("cargo");
             cmd.arg("build");
+            crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             cmd.envs(child_env.iter().cloned());
@@ -589,12 +592,14 @@ pub(super) fn build_rust_files_batch(
     if clean {
         let mut clean_cmd = Command::new("cargo");
         clean_cmd.arg("clean").current_dir(".horus");
+        crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
         clean_cmd.status().ok();
     }
 
     // Build all binaries with a single cargo build command
     let mut cmd = Command::new("cargo");
     cmd.arg("build").current_dir(".horus");
+    crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
     if release {
         cmd.arg("--release");
     }
@@ -620,7 +625,9 @@ pub(super) fn build_rust_files_batch(
 
     let child_env = super::build_child_env()?;
     for name in binary_names {
-        let binary_path = format!(".horus/target/{}/{}", profile, name);
+        let binary_path = crate::build_dirs::binary_path(&std::env::current_dir()?, profile, &name)
+            .display()
+            .to_string();
         executables.push(ExecutableInfo {
             name,
             command: binary_path,
@@ -671,12 +678,14 @@ pub(super) fn build_file_for_concurrent_execution(
             if clean {
                 let mut clean_cmd = Command::new("cargo");
                 clean_cmd.arg("clean").current_dir(".horus");
+                crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
                 clean_cmd.status().ok();
             }
 
             // Build with Cargo
             let mut cmd = Command::new("cargo");
             cmd.arg("build").current_dir(".horus");
+            crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
             if release {
                 cmd.arg("--release");
             }
@@ -689,7 +698,10 @@ pub(super) fn build_file_for_concurrent_execution(
             }
 
             let profile = if release { "release" } else { "debug" };
-            let binary_path = format!(".horus/target/{}/{}", profile, bin_name);
+            let binary_path =
+                crate::build_dirs::binary_path(&std::env::current_dir()?, profile, &bin_name)
+                    .display()
+                    .to_string();
 
             Ok(ExecutableInfo {
                 name,
@@ -750,7 +762,7 @@ pub(super) fn execute_with_scheduler(
                     cli_output::info("Cleaning build artifacts...");
                     let mut clean_cmd = Command::new("cargo");
                     clean_cmd.arg("clean");
-                    clean_cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                    crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
                     clean_cmd.envs(child_env.iter().cloned());
                     let status = clean_cmd.status()?;
                     if !status.success() {
@@ -761,7 +773,7 @@ pub(super) fn execute_with_scheduler(
                 cli_output::info("Building with Cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
-                cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.envs(child_env.iter().cloned());
                 if release {
                     cmd.arg("--release");
@@ -789,7 +801,13 @@ pub(super) fn execute_with_scheduler(
 
                 let profile = if release { "release" } else { "debug" };
                 let project_name = get_project_name()?;
-                let binary_path = format!(".horus/target/{}/{}", profile, project_name);
+                let binary_path = crate::build_dirs::binary_path(
+                    &std::env::current_dir()?,
+                    profile,
+                    &project_name,
+                )
+                .display()
+                .to_string();
 
                 // Execute the binary
                 cli_output::info("Executing...\n");
@@ -846,6 +864,7 @@ pub(super) fn execute_with_scheduler(
                     let mut clean_cmd = Command::new("cargo");
                     clean_cmd.arg("clean");
                     clean_cmd.current_dir(".horus");
+                    crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
                     let status = clean_cmd.status()?;
                     if !status.success() {
                         log::warn!("cargo clean failed");
@@ -856,6 +875,7 @@ pub(super) fn execute_with_scheduler(
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.current_dir(".horus");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.envs(child_env.iter().cloned());
                 if release {
                     cmd.arg("--release");
@@ -882,7 +902,13 @@ pub(super) fn execute_with_scheduler(
                 }
 
                 let profile = if release { "release" } else { "debug" };
-                let binary_path = format!(".horus/target/{}/{}", profile, binary_name);
+                let binary_path = crate::build_dirs::binary_path(
+                    &std::env::current_dir()?,
+                    profile,
+                    &binary_name,
+                )
+                .display()
+                .to_string();
 
                 // Execute the binary
                 cli_output::info("Executing...\n");
