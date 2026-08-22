@@ -959,17 +959,34 @@ impl PyTensorHandle {
 
     /// Convert dtype: t.astype("float16")
     fn astype<'py>(slf: &Bound<'py, Self>, py: Python<'py>, dtype: &str) -> PyResult<Self> {
-        let inner = slf.borrow();
-        let handle = inner
-            .handle
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
         let new_dtype = parse_dtype(dtype)?;
-        if handle.dtype() == new_dtype {
-            return Ok(Self {
-                handle: Some(handle.clone()),
-                view_keepalive: None,
-            });
+        // Scope the borrow exactly as `numpy()` below does, and for the same
+        // reason: `numpy()` ends in `numpy.asarray(slf)`, which reads
+        // `slf.__array_interface__` and takes `slf.borrow_mut()` to record its
+        // view_keepalive. Holding this immutable borrow across that call
+        // panicked with `PyBorrowMutError: Already borrowed`, so every
+        // `astype()` to a *different* dtype aborted — including the
+        // `to_float32()` / `to_int32()` / `to_uint8()` / `to_float16()`
+        // convenience wrappers, which are nothing but calls to it. The
+        // same-dtype path returned early before reaching `numpy()` and so
+        // always worked, which is why this looked healthy in casual use.
+        let same_dtype = {
+            let inner = slf.borrow();
+            let handle = inner
+                .handle
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("Tensor has been released"))?;
+            if handle.dtype() == new_dtype {
+                Some(Self {
+                    handle: Some(handle.clone()),
+                    view_keepalive: None,
+                })
+            } else {
+                None
+            }
+        };
+        if let Some(unchanged) = same_dtype {
+            return Ok(unchanged);
         }
         let np = py.import("numpy")?;
         let np_dtype = np.call_method1("dtype", (dtype,))?;

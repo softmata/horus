@@ -72,17 +72,37 @@ class TestSendErrorPaths:
         assert sent_ok[0], "send to undeclared topic should not crash"
 
     def test_send_none_doesnt_crash(self):
-        """send(topic, None) should not crash."""
-        sent_ok = [False]
+        """send(topic, None) should not raise.
+
+        The timing budget used to make this test measure something else. At
+        rate=10 the tick period is 100ms and duration was 0.1s — exactly one
+        period — so the scheduler routinely hit its time limit having ticked
+        zero times, and the assertion failed with `send(None) should not crash`
+        while send() had never been called at all. Measured directly: TICKS: 0.
+
+        The node now gets enough periods that ticking is not in question, and
+        the failure message distinguishes "never ran" from "raised".
+        """
+        ticks = [0]
+        sends = [0]
+        error = [None]
 
         def tick(node):
-            node.send("test_topic", None)
-            sent_ok[0] = True
+            ticks[0] += 1
+            try:
+                node.send("test_topic", None)
+                sends[0] += 1
+            except Exception as e:  # noqa: BLE001 - the point is to report it
+                error[0] = f"{type(e).__name__}: {e}"
 
-        node = horus.Node(name="send_none", tick=tick, rate=10, pubs=["test_topic"])
-        horus.run(node, duration=0.1)
+        node = horus.Node(name="send_none", tick=tick, rate=100, pubs=["test_topic"])
+        horus.run(node, duration=0.5)
 
-        assert sent_ok[0], "send(None) should not crash"
+        assert ticks[0] > 0, "node never ticked, so send(None) was never exercised"
+        assert error[0] is None, f"send(None) raised: {error[0]}"
+        assert sends[0] == ticks[0], (
+            f"send(None) completed {sends[0]} of {ticks[0]} ticks"
+        )
 
 
 class TestTickExceptionHandling:
