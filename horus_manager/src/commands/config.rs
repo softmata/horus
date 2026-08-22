@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use colored::*;
 use std::fs;
+use std::path::Path;
 
 use crate::manifest::HORUS_TOML;
 
@@ -26,12 +27,36 @@ pub fn run_config(action: ConfigAction) -> Result<()> {
     }
 }
 
-fn config_get(key: &str) -> Result<()> {
+/// Read and parse `horus.toml` at the syntax level, keeping the position of a
+/// failure.
+///
+/// `toml_edit::TomlError` carries a span and a message; `.context("Failed to
+/// parse horus.toml")` replaced both with that sentence, so all three config
+/// subcommands reported an unclosed string and a missing field with the same
+/// eight words and no line number.
+///
+/// Deliberately *syntax*-level: `config set package.name my-robot` is the
+/// documented way to repair a manifest that fails typed validation, so this
+/// must keep working on a manifest `HorusManifest::parse_str` would reject.
+fn load_document() -> Result<toml_edit::DocumentMut> {
     let content = fs::read_to_string(HORUS_TOML)
         .with_context(|| format!("No {} in current directory", HORUS_TOML))?;
-    let doc = content
-        .parse::<toml_edit::DocumentMut>()
-        .context("Failed to parse horus.toml")?;
+    content.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        let position = match e.span() {
+            Some(span) => {
+                let before = &content[..span.start.min(content.len())];
+                let line = before.matches('\n').count() + 1;
+                let col = before.rfind('\n').map(|nl| span.start - nl).unwrap_or(span.start + 1);
+                format!("{HORUS_TOML}:{line}:{col}")
+            }
+            None => HORUS_TOML.to_string(),
+        };
+        anyhow::anyhow!("{position}: {}", e.message())
+    })
+}
+
+fn config_get(key: &str) -> Result<()> {
+    let doc = load_document()?;
 
     let value = navigate_toml(&doc, key);
     match value {
@@ -49,11 +74,7 @@ fn config_get(key: &str) -> Result<()> {
 }
 
 fn config_set(key: &str, value: &str) -> Result<()> {
-    let content = fs::read_to_string(HORUS_TOML)
-        .with_context(|| format!("No {} in current directory", HORUS_TOML))?;
-    let mut doc = content
-        .parse::<toml_edit::DocumentMut>()
-        .context("Failed to parse horus.toml")?;
+    let mut doc = load_document()?;
 
     set_toml_value(&mut doc, key, value)?;
 
@@ -63,13 +84,18 @@ fn config_set(key: &str, value: &str) -> Result<()> {
 }
 
 fn config_list() -> Result<()> {
-    let content = fs::read_to_string(HORUS_TOML)
-        .with_context(|| format!("No {} in current directory", HORUS_TOML))?;
-    let doc = content
-        .parse::<toml_edit::DocumentMut>()
-        .context("Failed to parse horus.toml")?;
+    let doc = load_document()?;
 
     print_toml_flat(&doc, "");
+
+    // Syntactically fine is not the same as usable. Listing a manifest that
+    // `horus build` will reject, and exiting 0, tells the user nothing is
+    // wrong. Warn — do not fail: `config set` is how the manifest gets fixed.
+    if let Ok(content) = fs::read_to_string(HORUS_TOML) {
+        if let Err(e) = crate::manifest::HorusManifest::parse_str(&content, Path::new(HORUS_TOML)) {
+            eprintln!("\n{} {}", "warning:".yellow().bold(), e);
+        }
+    }
     Ok(())
 }
 

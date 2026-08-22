@@ -187,7 +187,7 @@ impl Node for BalanceMonitor {
 
             // Alert on excessive tilt
             if roll.abs() > 0.3 || pitch.abs() > 0.3 {
-                hlog!("BALANCE WARNING: roll={:.2} pitch={:.2}", roll, pitch);
+                hlog!(warn, "BALANCE WARNING: roll={:.2} pitch={:.2}", roll, pitch);
             }
 
             self.state_pub.send(state);
@@ -195,7 +195,7 @@ impl Node for BalanceMonitor {
 
         // Log joint commands periodically
         if let Some(joints) = self.joint_sub.recv() {
-            hlog_every!(100,
+            hlog_every!(100, info,
                 "FL({:.2},{:.2},{:.2}) FR({:.2},{:.2},{:.2})",
                 joints.fl_hip, joints.fl_upper, joints.fl_lower,
                 joints.fr_hip, joints.fr_upper, joints.fr_lower

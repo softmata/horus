@@ -25,8 +25,9 @@ Project:
   run               Run a HORUS project or file(s)
   build             Build the HORUS project without running
   lock              Generate or verify horus.lock (pin dependency versions)
+  scripts, script   Run a script defined in horus.toml [scripts]
   test              Run tests for the HORUS project
-  check             Validate horus.toml, source files, or workspace
+  check             Validate this project (manifest, sources, workspace)
   clean             Clean build artifacts and shared memory
   launch, l         Launch multiple nodes from a YAML file
 
@@ -36,7 +37,7 @@ Introspection:
   service, srv      Service interaction (list, call, info, find)
   action, a         Action interaction (list, info, send-goal, cancel-goal)
   param, p          Parameter management (get, set, list, delete)
-  frame, frames     Coordinate frame operations (list, echo, tree)
+  frame, tf         Coordinate frame operations (list, echo, tree)
   msg, m            Message type introspection
 
 
@@ -60,7 +61,7 @@ Packages:
   info              Show detailed info about a package or plugin
 
 Plugins:
-  plugin            Manage plugins (enable, disable, verify, trust)
+  plugin, plugins   Manage plugins (enable, disable, verify, trust)
 
 Development:
   fmt               Format code (Rust + Python)
@@ -70,10 +71,12 @@ Development:
   deps              Dependency insight (tree, why, outdated, audit)
 
 Maintenance:
-  doctor            Comprehensive ecosystem health check
+  doctor            Check this machine (toolchains, RT, shared memory)
   self update       Update the horus CLI to latest version
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
+  schema            Print the horus.toml JSON Schema (for editor validation)
+  setup-rt          Configure the real-time kernel and system settings
 
 Publishing & Deploy:
   publish           Publish package to registry
@@ -88,7 +91,9 @@ Publishing & Deploy:
 
 Native Tools:
   env               Set up shell integration (cargo/pip/cmake proxy)
+  completion        Generate a shell completion script (bash/zsh/fish)
 
+Options:
 {options}
 {after-help}")]
 #[command(after_help = "\
@@ -153,6 +158,13 @@ enum Commands {
         /// Create as a library crate (instead of binary)
         #[arg(short = 'l', long = "lib")]
         lib: bool,
+
+        /// Accept defaults without prompting (for scripts, Dockerfiles and CI)
+        ///
+        /// The README's `horus new my_robot` opened two prompts that the README
+        /// never mentions, so the documented one-liner could not be scripted.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Run a HORUS project or file(s)
@@ -329,7 +341,12 @@ enum Commands {
         no_hooks: bool,
     },
 
-    /// Validate horus.toml, source files, or entire workspace
+    /// Validate this project: horus.toml, source files, or the whole workspace
+    ///
+    /// Checks what is in the repository. `horus doctor` checks the machine it
+    /// is on — toolchains, real-time capability, shared memory — and the two do
+    /// not overlap: a project can be valid on a machine that cannot build it,
+    /// and a healthy machine says nothing about whether the manifest parses.
     Check {
         /// Path to file, directory, or workspace (default: current directory)
         #[arg(value_name = "PATH")]
@@ -343,7 +360,10 @@ enum Commands {
         #[arg(long = "full")]
         full: bool,
 
-        /// Run health check (alias for horus doctor)
+        /// Check the machine instead of the project — same as `horus doctor`
+        ///
+        /// Exists so that `horus check --full` has a switch for the half it
+        /// runs. On its own it is `horus doctor` and nothing more.
         #[arg(long = "health")]
         health: bool,
     },
@@ -628,7 +648,7 @@ enum Commands {
         #[arg(short = 'g', long = "global")]
         global: bool,
         /// Show what would be updated without making changes
-        #[arg(long = "dry-run")]
+        #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
     },
 
@@ -757,7 +777,10 @@ enum Commands {
     },
 
     // ── Maintenance ─────────────────────────────────────────────────────
-    /// Comprehensive ecosystem health check
+    /// Check this machine: toolchains, real-time capability, shared memory
+    ///
+    /// Checks the environment. `horus check` checks the repository, and neither
+    /// substitutes for the other.
     Doctor {
         /// Show detailed output for each check
         #[arg(short = 'v', long = "verbose")]
@@ -801,6 +824,24 @@ enum Commands {
         command: ConfigCommands,
     },
 
+    /// Print the JSON Schema for horus.toml (for editor validation)
+    ///
+    /// Point your editor at the output for autocomplete, hover docs and inline
+    /// errors on horus.toml:
+    ///
+    ///   horus schema > horus-schema.json
+    ///
+    /// then in VS Code (Even Better TOML) or any taplo-based setup:
+    ///
+    ///   [[schema]]
+    ///   path = "horus-schema.json"
+    ///   include = ["**/horus.toml"]
+    Schema {
+        /// Write to a file instead of stdout
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+    },
+
     /// Migrate project to unified horus.toml format
     Migrate {
         /// Show what would change without modifying
@@ -827,7 +868,7 @@ enum Commands {
     /// Publish package to registry
     Publish {
         /// Validate package without actually publishing
-        #[arg(long = "dry-run")]
+        #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
     },
 
@@ -945,16 +986,33 @@ enum Commands {
     },
 
     /// Generate shell completion scripts
-    #[command(hide = true)]
     Completion {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
 
+    /// Write the man page to stdout (`horus man > horus.1`)
+    ///
+    /// Rendered from the same clap tree the CLI is built from, so it cannot
+    /// describe a command the binary does not have. HORUS shipped no man page
+    /// at all — `man horus` found nothing, on a tool whose install script
+    /// already places a completion script.
+    Man,
+
     // ── Native Tool Proxies ─────────────────────────────────────────────
+    // A proxy must not answer for the tool it proxies. clap claimed --help/-h
+    // and --version/-V before the arguments reached the real binary, so inside
+    // a horus project (where the shell function delegates) `cargo --version`
+    // printed "horus-cargo 0.2.2" instead of "cargo 1.97.1" — a lie that any
+    // script parsing that output acts on.
     /// Transparent cargo proxy — delegates to real cargo with horus.toml sync
-    #[command(name = "cargo", hide = true)]
+    #[command(
+        name = "cargo",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Cargo {
         /// Arguments passed to cargo
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -962,7 +1020,12 @@ enum Commands {
     },
 
     /// Transparent pip proxy — delegates to real pip with horus.toml sync
-    #[command(name = "pip", hide = true)]
+    #[command(
+        name = "pip",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Pip {
         /// Arguments passed to pip
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -970,7 +1033,12 @@ enum Commands {
     },
 
     /// Transparent cmake proxy — delegates to real cmake with horus.toml sync
-    #[command(name = "cmake", hide = true)]
+    #[command(
+        name = "cmake",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Cmake {
         /// Arguments passed to cmake
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -978,7 +1046,12 @@ enum Commands {
     },
 
     /// Transparent conan proxy — delegates to real conan with horus.toml sync
-    #[command(name = "conan", hide = true)]
+    #[command(
+        name = "conan",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Conan {
         /// Arguments passed to conan
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -986,7 +1059,12 @@ enum Commands {
     },
 
     /// Transparent vcpkg proxy — delegates to real vcpkg with horus.toml sync
-    #[command(name = "vcpkg", hide = true)]
+    #[command(
+        name = "vcpkg",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     Vcpkg {
         /// Arguments passed to vcpkg
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -1771,6 +1849,16 @@ enum MsgCommands {
         #[arg(long = "json")]
         json: bool,
     },
+
+    /// Generate Rust, C++ and Python types from msgs/*.hmsg
+    Gen {
+        /// Verify the generated files are up to date without rewriting them
+        #[arg(long = "check")]
+        check: bool,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2030,7 +2118,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
             use_macro,
             workspace,
             lib,
+            yes,
         } => {
+            // `--yes` reuses the same signal the non-TTY path uses, so a
+            // scripted run and an interactive `--yes` take identical defaults.
+            if yes {
+                std::env::set_var("HORUS_ASSUME_YES", "1");
+            }
             let language = if python {
                 "python"
             } else if cpp {
@@ -2159,10 +2253,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
                                 _sim_child = Some(child);
                             }
                             Err(e) => {
-                                log::warn!(
-                                    "Failed to auto-launch '{}': {}. Install with: horus install horus-{}",
-                                    simulator_name, e, simulator_name
-                                );
+                                // The inner error already names the plugin and the
+                                // install command — every variant out of
+                                // spawn_background does. Wrapping it produced:
+                                //
+                                //   Failed to auto-launch 'sim3d': Plugin 'sim3d' not
+                                //   found. Install it with: horus install horus-sim3d.
+                                //   Install with: horus install horus-sim3d
+                                //
+                                // the remediation twice and the plugin name four times.
+                                log::warn!("Simulator unavailable: {}", e);
                             }
                         }
                     }
@@ -2192,7 +2292,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 let _ = child.wait();
             }
 
-            result.map_err(HorusError::from)
+            let result: Result<(), HorusError> = result.map_err(HorusError::from);
+            if no_hooks {
+                return result;
+            }
+            match horus_manager::manifest::HorusManifest::load_from(std::path::Path::new(
+                "horus.toml",
+            )) {
+                Ok(manifest) => commands::hooks::run_teardown_hooks("post_run", &manifest, result),
+                Err(_) => result,
+            }
         }
 
         Commands::Build {
@@ -2250,9 +2359,19 @@ fn run_command(command: Commands) -> HorusResult<()> {
                         );
                     }
                 }
-                result.map_err(HorusError::from)
-            } else {
-                result.map_err(HorusError::from)
+            }
+
+            let result: Result<(), HorusError> = result.map_err(HorusError::from);
+            if no_hooks {
+                return result;
+            }
+            match horus_manager::manifest::HorusManifest::load_from(std::path::Path::new(
+                "horus.toml",
+            )) {
+                Ok(manifest) => {
+                    commands::hooks::run_teardown_hooks("post_build", &manifest, result)
+                }
+                Err(_) => result,
             }
         }
 
@@ -2602,6 +2721,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             } => commands::msg::list_messages(verbose, filter.as_deref(), json),
             MsgCommands::Info { name, json } => commands::msg::show_message(&name, json),
             MsgCommands::Hash { name, json } => commands::msg::message_hash(&name, json),
+            MsgCommands::Gen { check, json } => commands::msg::generate_messages(check, json),
         },
 
         Commands::Log {
@@ -3061,11 +3181,50 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         },
 
+        // The generator lives behind the `schema` feature. That feature is on by
+        // default and the shipped binary is meant to have it — but a build that
+        // turns it off must still compile, and for a while it did not: adding
+        // this arm broke `cargo build -p horus_manager --no-default-features`,
+        // which is the exact command `install.sh` runs.
+        #[cfg(feature = "schema")]
+        Commands::Schema { output } => {
+            let schema = horus_manager::manifest::generate_manifest_schema();
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &schema).map_err(|e| {
+                        HorusError::Config(ConfigError::Other(format!(
+                            "Failed to write {}: {e}",
+                            path.display()
+                        )))
+                    })?;
+                    println!("Wrote horus.toml JSON Schema to {}", path.display());
+                }
+                None => println!("{schema}"),
+            }
+            Ok(())
+        }
+
+        #[cfg(not(feature = "schema"))]
+        Commands::Schema { .. } => Err(HorusError::Config(ConfigError::Other(
+            "This binary was built without the `schema` feature, so it cannot \
+             emit the horus.toml JSON Schema. Rebuild with \
+             `cargo build -p horus_manager` (the feature is on by default)."
+                .to_string(),
+        ))),
+
         Commands::Migrate { dry_run, force } => {
             commands::migrate::run_migrate(dry_run, force).map_err(HorusError::from)
         }
 
         Commands::Scripts { name, args } => commands::scripts::run_scripts(name, args),
+
+        Commands::Man => {
+            let cmd = Cli::command();
+            clap_mangen::Man::new(cmd)
+                .render(&mut io::stdout())
+                .map_err(|e| HorusError::from(anyhow::anyhow!("rendering man page: {e}")))?;
+            Ok(())
+        }
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

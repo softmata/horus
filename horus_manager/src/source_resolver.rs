@@ -1278,7 +1278,20 @@ mod tests {
         }
     }
 
-    // ── Version auto-fetch (network tests — ignored by default) ─────────
+    // ── Version auto-fetch ───────────────────────────────────────────────
+    //
+    // The tests below reach crates.io and PyPI. They carry `#[ignore]` so that
+    // `cargo test` does not depend on an external service — this comment
+    // already claimed they were "ignored by default" while none of them were,
+    // and crates.io rate-limiting (HTTP 403) failed the suite on a machine
+    // where nothing was wrong with the code.
+    //
+    // Run them deliberately:
+    //
+    //     cargo test -p horus_manager --lib source_resolver -- --ignored
+    //
+    // A contributor without network access should get a green suite, and a
+    // failure here should mean the resolver is wrong, not that the network is.
 
     #[test]
     fn fetch_version_unknown_source_returns_none() {
@@ -1289,6 +1302,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn fetch_crates_io_version_serde() {
         let v = fetch_latest_version("serde", &DepSource::CratesIo);
         assert!(v.is_some(), "should fetch serde version from crates.io");
@@ -1297,6 +1311,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn fetch_pypi_version_numpy() {
         let v = fetch_latest_version("numpy", &DepSource::PyPI);
         assert!(v.is_some(), "should fetch numpy version from PyPI");
@@ -1305,6 +1320,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn fetch_crates_io_nonexistent_returns_none() {
         let v = fetch_latest_version(
             "this-crate-definitely-does-not-exist-xyz",
@@ -1314,6 +1330,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn fetch_pypi_nonexistent_returns_none() {
         let v = fetch_latest_version(
             "this-package-definitely-does-not-exist-xyz",
@@ -1344,6 +1361,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn resolve_with_network_confirms_obscure_crate() {
         // fakeit is a real crate on crates.io but NOT in our well-known list
         let resolver = PackageSourceResolver::without_context();
@@ -1364,6 +1382,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn resolve_with_network_confirms_obscure_pypi_package() {
         // codetiming is a real PyPI package but NOT in our well-known list,
         // and has no heuristic-triggering prefix/suffix
@@ -1383,6 +1402,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "network: reaches crates.io/PyPI; run with --ignored"]
     fn resolve_with_network_nonexistent_stays_low() {
         let resolver = PackageSourceResolver::without_context();
         let result = resolver.resolve_with_network("zzz-this-pkg-does-not-exist-anywhere-xyz");

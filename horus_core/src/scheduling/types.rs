@@ -141,6 +141,7 @@ mod execution_class_tests {
             is_stopped: false,
             health_probe_counter: 0,
             is_paused: false,
+            in_safe_mode: false,
             rt_stats: None,
             miss_policy: Miss::Warn,
             execution_class: class,
@@ -395,6 +396,20 @@ pub(crate) struct RegisteredNode {
     /// `NodeDegradationState::recovery_counter` documents recovery as intended.
     pub(crate) health_probe_counter: u64,
     pub(crate) is_paused: bool,
+    /// Whether `Miss::SafeMode` has already safed this node.
+    ///
+    /// `enter_safe_state()` is a state *transition* hook, but the SafeMode
+    /// branch called it on every deadline miss with nothing recording that the
+    /// node was already safed. Measured on a node sleeping 5 ms against a 1 ms
+    /// deadline: 17 ticks, 18 `enter_safe_state()` calls — the node re-entered
+    /// its safe state every single cycle.
+    ///
+    /// For the policy's own documented example ("Motor controller: enter safe
+    /// mode on deadline miss") that means the motor is commanded by `tick()`
+    /// and re-safed, alternating, for as long as the overload lasts. The hook
+    /// now fires once on the way in, and the latch clears when the node starts
+    /// meeting its deadline again.
+    pub(crate) in_safe_mode: bool,
     /// Per-node real-time statistics (populated for RT nodes)
     pub(crate) rt_stats: Option<RtStats>,
     /// What to do when this node misses its deadline.

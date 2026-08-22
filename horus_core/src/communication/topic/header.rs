@@ -239,8 +239,32 @@ pub(crate) struct TopicHeader {
     /// Set once at topic creation via `std::any::type_name::<T>()`.
     /// External tools read this directly from the mmap'd header.
     pub(crate) type_name: [u8; 32],
+    /// Layout hash of the message type, or 0 when unknown.
+    ///
+    /// The open path validates the type *name* (short name only) and, for POD
+    /// types, `type_size`. Neither says anything about field layout, so two
+    /// revisions of the same message that keep the name and size but reorder
+    /// fields both pass:
+    ///
+    /// ```text
+    /// v1::Pose { x: f32, y: f32 }   sent (x=1, y=2)
+    /// v2::Pose { y: f32, x: f32 }   received Pose { y: 1.0, x: 2.0 }
+    /// ```
+    ///
+    /// Same short name "Pose", same 8 bytes — opened without complaint, and the
+    /// coordinates arrived swapped with no error anywhere. That is the ordinary
+    /// consequence of two nodes built against different revisions of a message
+    /// crate, which is exactly what a fleet looks like mid-rollout.
+    ///
+    /// Carved out of what was reserved padding, so the header stays 640 bytes
+    /// and every existing offset is unchanged. Zero means "not supplied":
+    /// headers written before this field existed read as 0, and so do topics
+    /// opened through `Topic::new`, which cannot know `T`'s layout. Validation
+    /// only fires when both sides supply a hash, so an old peer is never
+    /// rejected — it is simply not protected.
+    pub(crate) layout_hash: AtomicU32,
     /// Reserved for future use
-    pub(crate) _pad_counters: [u8; 8],
+    pub(crate) _pad_counters: [u8; 4],
 
     // === Cache lines 5-10 (bytes 256-639): Participant tracking (384 bytes = 16 * 24) ===
     /// Participant entries for lease management
@@ -284,7 +308,8 @@ impl TopicHeader {
             lease_timeout_ms: 0,
             last_topology_change_ms: AtomicU64::new(0),
             type_name: [0; 32],
-            _pad_counters: [0; 8],
+            layout_hash: AtomicU32::new(0),
+            _pad_counters: [0; 4],
             participants: std::array::from_fn(|_| ParticipantEntry {
                 pid: AtomicU32::new(0),
                 thread_id_hash: AtomicU32::new(0),
@@ -646,6 +671,7 @@ pub unsafe fn set_topic_verbose(shm_ptr: *mut u8, enabled: bool) {
 pub const TOPIC_HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
 
 /// Result returned by `read_latest_slot_bytes`.
+#[derive(Clone)]
 pub struct TopicSlotRead {
     /// Raw payload bytes of the most-recently-written message slot.
     /// For POD types this is the raw struct bytes.  For non-POD types this
@@ -688,6 +714,20 @@ pub fn read_latest_slot_bytes(
     path: &std::path::Path,
     last_write_idx: u64,
 ) -> Option<TopicSlotRead> {
+    read_slot_inner(path, last_write_idx, None)
+}
+
+/// Shared body of [`read_latest_slot_bytes`] and [`read_slots_since`].
+///
+/// `ordinal` selects a specific message by its `messages_total` count; `None`
+/// means the newest. Every validation below applies either way — these files
+/// are read across namespaces and are not trusted input, so there is one
+/// validated path rather than two.
+fn read_slot_inner(
+    path: &std::path::Path,
+    last_write_idx: u64,
+    ordinal: Option<u64>,
+) -> Option<TopicSlotRead> {
     use memmap2::MmapOptions;
     use std::fs::File;
 
@@ -727,8 +767,30 @@ pub fn read_latest_slot_bytes(
     let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, is_pod))) };
     // SAFETY: base is a valid mmap pointer; offset 64 is within the validated header region;
     // read_unaligned handles any alignment for the u64 seq/head field.
+    // Freshness and slot position both come from `messages_total`, not
+    // `sequence_or_head`.
+    //
+    // `sequence_or_head` is a slot cursor for some backends: it stops
+    // advancing once the ring wraps. Measured on a live 20 Hz topic with a
+    // 128-slot ring:
+    //
+    //     sample   messages_total(56)   sequence_or_head(64)
+    //       0             116                   116
+    //       1             135                   128     <- frozen at capacity
+    //       4             194                   128
+    //
+    // The caller's freshness test is `write_idx == last_write_idx`, so once
+    // the cursor froze this function returned None forever. `horus topic echo`
+    // — the most-used introspection command in robotics — printed one message
+    // and then nothing, on a topic publishing at 20 Hz, while
+    // `horus topic list` reported that same topic active with a rising count
+    // (it reads offset 56).
+    //
+    // `messages_total` is atomically incremented on every send() regardless of
+    // backend, and equals `sequence_or_head` before any wrap, so it is a strict
+    // improvement as both the freshness signal and the slot index.
     let write_idx = unsafe {
-        std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, sequence_or_head)) as *const u64)
+        std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, messages_total)) as *const u64)
     };
     // SAFETY: base is a valid mmap pointer; offset 72 is within the validated header region;
     // read_unaligned handles any alignment for the u32 capacity field.
@@ -775,8 +837,17 @@ pub fn read_latest_slot_bytes(
         return None;
     }
 
-    // Index of the last-written slot (write_idx was incremented *after* the write)
-    let last_written = ((write_idx.wrapping_sub(1)) as usize) & cap_mask;
+    // Which slot to read. `write_idx` counts messages and is incremented *after*
+    // the write, so message N lives at `(N - 1) & mask`.
+    let target = ordinal.unwrap_or(write_idx);
+    if target == 0 || target > write_idx {
+        return None;
+    }
+    // Already lapped: the producer has written a full ring since this message.
+    if write_idx.saturating_sub(target) >= capacity as u64 {
+        return None;
+    }
+    let last_written = ((target.wrapping_sub(1)) as usize) & cap_mask;
 
     // ── 5. Extract payload bytes ──────────────────────────────────────────────
     let payload = if is_pod {
@@ -2025,7 +2096,12 @@ mod untrusted_header_tests {
         buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
         buf[12..16].copy_from_slice(&type_size.to_ne_bytes());
         buf[20] = POD_YES;
-        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // write_idx = 1
+        // Both counters, as a real file has them before the ring wraps.
+        // `read_latest_slot_bytes` keys on messages_total (offset 56);
+        // sequence_or_head (offset 64) is kept in sync here so the fixture
+        // stays faithful.
+        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
+        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
         buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
         buf[76..80].copy_from_slice(&cap_mask.to_ne_bytes());
         buf[80..84].copy_from_slice(&type_size.to_ne_bytes());
@@ -2071,4 +2147,153 @@ mod untrusted_header_tests {
         );
         let _ = std::fs::remove_file(&path);
     }
+}
+
+#[cfg(test)]
+mod echo_freshness_tests {
+    use crate::communication::Topic;
+    use crate::core::DurationExt;
+
+    /// Reading fresh data must keep working after the ring wraps.
+    ///
+    /// `read_latest_slot_bytes` used to take its freshness signal from
+    /// `sequence_or_head`, which is a slot cursor for some backends: it stops
+    /// advancing once the ring is full. Measured on a live 20 Hz topic with a
+    /// 128-slot ring, `messages_total` climbed 116 -> 194 while
+    /// `sequence_or_head` froze at 128.
+    ///
+    /// Because the caller's test is `write_idx == last_write_idx`, the reader
+    /// returned None forever after that point. `horus topic echo` printed
+    /// messages until the ring wrapped and then nothing — on a topic
+    /// `horus topic list` simultaneously reported as active with a rising
+    /// count, because that command reads `messages_total`.
+    #[test]
+    fn slot_reader_still_sees_new_messages_after_the_ring_wraps() {
+        let name = format!("echo_wrap_test_{}", std::process::id());
+        let topic: Topic<f64> = match Topic::new(&name) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // Fill well past any plausible ring capacity so the cursor has wrapped
+        // several times over.
+        for i in 0..1024 {
+            topic.send(i as f64);
+        }
+
+        let mut last = super::read_latest_slot_bytes(&path, 0)
+            .expect("a freshly written topic must yield a slot")
+            .write_idx;
+
+        // Every further send must be observable.
+        let mut observed = 0;
+        for i in 0..64 {
+            topic.send(10_000.0 + i as f64);
+            if let Some(slot) = super::read_latest_slot_bytes(&path, last) {
+                assert!(
+                    slot.write_idx > last,
+                    "the freshness counter must advance monotonically past the \
+                     ring capacity; got {} after {last}",
+                    slot.write_idx
+                );
+                last = slot.write_idx;
+                observed += 1;
+            }
+        }
+
+        assert!(
+            observed > 32,
+            "after wrapping, only {observed}/64 sends were visible — the reader \
+             is keying on a counter that stops at the ring capacity"
+        );
+
+        let _ = 1_u64.ms();
+    }
+}
+
+/// Every message still in the ring since `last_write_idx`, oldest first.
+///
+/// `read_latest_slot_bytes` returns only the newest slot, so a caller polling a
+/// topic sees whatever happened to be there at each poll and nothing in
+/// between. That is a sampler, and `horus topic echo` was built on it: on a
+/// 40 Hz topic it printed one message in twelve seconds, because "is the newest
+/// slot different from the one I last saw" is a question that skips everything
+/// published while the caller was asleep.
+///
+/// Messages are addressed by `messages_total`, which is incremented on every
+/// `send()` regardless of backend, so message N lives at slot `(N - 1) & mask`
+/// until the ring laps it. This returns what is still recoverable and tells the
+/// caller what is not: `missed` is the number of messages that were overwritten
+/// before it got to them, which is real information on a slow reader rather
+/// than a silent gap.
+///
+/// `max` bounds the work per call. Anything beyond it is not lost — it is
+/// simply returned by the next call, because this resumes from
+/// `last_write_idx` rather than from the head.
+///
+/// The returned count is messages the ring overwrote before this reader got to
+/// them. That is real information on a slow reader; a silent hole in the
+/// numbering is not.
+pub fn read_slots_since(
+    path: &std::path::Path,
+    last_write_idx: u64,
+    max: usize,
+) -> (Vec<TopicSlotRead>, u64) {
+    // The head first, from a single cheap read, so the loop below knows the
+    // range before it starts opening slots.
+    let Some(head) = read_latest_slot_bytes(path, last_write_idx) else {
+        return (Vec::new(), 0);
+    };
+    let write_idx = head.write_idx;
+
+    // First call: hand back just the newest, rather than replaying a full ring
+    // of history the caller never asked for.
+    if last_write_idx == 0 {
+        return (vec![head], 0);
+    }
+
+    let available = write_idx.saturating_sub(last_write_idx);
+    if available == 0 {
+        return (Vec::new(), 0);
+    }
+
+    // Resume from where the caller left off, oldest first — not the newest
+    // `max`. Those differ: with `--count 20` and 28 messages waiting, taking
+    // the newest twenty delivers a run with an eight-message hole in the
+    // middle, when what was asked for was twenty consecutive messages. Taking
+    // the oldest twenty gives exactly that, and the rest arrive on the next
+    // call.
+    let want = available.min(max as u64);
+
+    let mut out = Vec::with_capacity(want as usize);
+    let mut lapped = 0u64;
+    for n in (last_write_idx + 1)..=(last_write_idx + want) {
+        if n == write_idx {
+            out.push(head.clone());
+        } else if let Some(slot) = read_one_slot(path, n) {
+            out.push(slot);
+        } else {
+            // The producer overwrote this slot before we reached it. Count it
+            // rather than leaving a hole in the caller's numbering.
+            lapped += 1;
+        }
+    }
+    (out, lapped)
+}
+
+/// One message by its `messages_total` ordinal, if it is still in the ring.
+///
+/// Shares every validation `read_latest_slot_bytes` performs — the magic check,
+/// the power-of-two capacity and mask agreement, and the mapping-length checks —
+/// because these files are read across namespaces and are not trusted input.
+fn read_one_slot(path: &std::path::Path, ordinal: u64) -> Option<TopicSlotRead> {
+    read_slot_inner(path, 0, Some(ordinal))
 }

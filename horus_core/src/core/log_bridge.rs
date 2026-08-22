@@ -74,26 +74,13 @@ impl Log for HorusLogBridge {
         });
 
         // ── 2. Mirror to stderr for console visibility ────────────────────────
-        use std::io::Write;
-        let line = match log_type {
-            LogType::Error => format!(
-                "\x1b[31m[ERROR]\x1b[0m \x1b[33m[{}]\x1b[0m {}\n",
-                node_name, message
-            ),
-            LogType::Warning => format!(
-                "\x1b[33m[WARN]\x1b[0m \x1b[33m[{}]\x1b[0m {}\n",
-                node_name, message
-            ),
-            LogType::Info => format!(
-                "\x1b[34m[INFO]\x1b[0m \x1b[33m[{}]\x1b[0m {}\n",
-                node_name, message
-            ),
-            _ => format!(
-                "\x1b[90m[DEBUG]\x1b[0m \x1b[33m[{}]\x1b[0m {}\n",
-                node_name, message
-            ),
-        };
-        let _ = std::io::stderr().write_all(line.as_bytes());
+        //
+        // Shares `hlog::emit_console` rather than carrying a second copy of the
+        // same ANSI formatter. Two differences follow from that, both
+        // deliberate: lines now respect raw mode like every other log line, and
+        // each is flushed as it is written instead of only at `flush()`, so a
+        // bridged message appears when it happens.
+        crate::core::hlog::emit_console(&log_type, &node_name, &message);
     }
 
     fn flush(&self) {

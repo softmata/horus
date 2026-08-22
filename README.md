@@ -9,7 +9,7 @@
   <a href="README.de.md">Deutsch</a>
 </p>
 
-**Real-time distributed middleware for Rust, Python, and C++. 575x faster than ROS2.**
+**Real-time distributed middleware for Rust, Python, and C++. Sub-200ns IPC.**
 
 [![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions)
 [![Version](https://img.shields.io/badge/v0.2.2-blue.svg)](https://github.com/softmata/horus/releases)
@@ -30,7 +30,7 @@
 ## Get Started
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/release/install.sh | bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
@@ -39,6 +39,9 @@ Or install manually:
 ```bash
 git clone https://github.com/softmata/horus.git && cd horus && ./install.sh
 ```
+
+**Requires Rust 1.90 or newer** (`rustup update stable`). Python 3.9+ for the
+Python API; CMake 3.16+ and a C++17 compiler for the C++ API.
 
 Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#include <horus/horus.hpp>`
 
@@ -74,37 +77,60 @@ message! {
     MotorCommand  { voltage: f64 }
 }
 
-node! {
-    Sensor {
-        pub { reading: SensorReading -> "sensor.data" }
-        data { pos: f64 = 0.0 }
-        tick {
-            self.pos += 0.01;
-            self.reading.send(SensorReading { position: self.pos, velocity: 0.5 });
-        }
+struct Sensor {
+    reading: Topic<SensorReading>,
+    pos: f64,
+}
+
+impl Sensor {
+    fn new() -> Result<Self> {
+        Ok(Self { reading: Topic::new("sensor.data")?, pos: 0.0 })
     }
 }
 
-node! {
-    Controller {
-        sub { sensor: SensorReading -> "sensor.data" }
-        pub { cmd: MotorCommand -> "motor.cmd" }
-        data { target: f64 = 1.0 }
-        tick {
-            if let Some(s) = self.sensor.recv() {
-                self.cmd.send(MotorCommand { voltage: (self.target - s.position) * 0.5 });
-            }
+impl Node for Sensor {
+    fn name(&self) -> &str { "sensor" }
+    fn tick(&mut self) {
+        self.pos += 0.01;
+        self.reading.send(SensorReading { position: self.pos, velocity: 0.5 });
+    }
+}
+
+struct Controller {
+    sensor: Topic<SensorReading>,
+    cmd: Topic<MotorCommand>,
+    target: f64,
+}
+
+impl Controller {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            sensor: Topic::new("sensor.data")?,
+            cmd: Topic::new("motor.cmd")?,
+            target: 1.0,
+        })
+    }
+}
+
+impl Node for Controller {
+    fn name(&self) -> &str { "controller" }
+    fn tick(&mut self) {
+        if let Some(s) = self.sensor.recv() {
+            self.cmd.send(MotorCommand { voltage: (self.target - s.position) * 0.5 });
         }
     }
 }
 
 fn main() -> Result<()> {
-    let mut sched = Scheduler::new().tick_rate(1000.hz());
+    let mut sched = Scheduler::new().tick_rate(1000_u64.hz());
     sched.add(Sensor::new()?).order(0).build()?;
-    sched.add(Controller::new()?).order(1).rate(1000.hz()).on_miss(Miss::SafeMode).build()?;
+    sched.add(Controller::new()?).order(1).rate(1000_u64.hz()).on_miss(Miss::SafeMode).build()?;
     sched.run()
 }
 ```
+
+Prefer less boilerplate? `horus new --macro` scaffolds the same node with
+the `node!` macro, which generates the `struct` and `impl Node` above.
 
 **Python** — same robot, 8 lines:
 
@@ -278,17 +304,35 @@ horus doctor                    # ecosystem health check
 
 Measured with RDTSC cycle counting, Tukey IQR outlier filtering, bootstrap 95% CIs on Intel i9-14900K. [Full methodology →](benchmarks/)
 
-| Topology             | HORUS      | ROS2 (DDS)         |
+| Topology             | HORUS      | Measurement        |
 |----------------------|------------|--------------------|
-| Same-process pub/sub | **91 ns**  | ~50 µs (**550x**)  |
-| Cross-process        | **171 ns** | ~100 µs (**585x**) |
-| 1 pub → 3 subs       | **80 ns**  | ~70 µs (**875x**)  |
+| Same-process pub/sub | **91 ns**  | producer-side `send()` |
+| Cross-process        | **171 ns** | end-to-end, one-way    |
+| 1 pub → 3 subs       | **80 ns**  | producer-side `send()` |
+
+Reproduce with `cargo run --release --bin all_paths_latency`, which prints the
+full percentile distribution, the backend selected for each topology, and the
+measured hardware floor it subtracts.
+
+**Against ROS 2.** The nearest published figure is ROS 2's REP 2014 reference for
+default DDS, ~5 µs median for a 64-byte same-process message. Compared to HORUS's
+end-to-end cross-process 171 ns — the harder case for HORUS, and therefore the
+conservative comparison — that is roughly **30x**. HORUS does not measure ROS 2
+itself: `dds_comparison_benchmark` quotes published values unless built with
+`-F dds` and a DDS implementation installed, and results carry a `provenance`
+field marking them `literature` rather than `measured` so the two are never
+confused. Any number here that matters to your decision is worth measuring on
+your own hardware and message sizes.
 
 | vs iceoryx2   | HORUS      | iceoryx2   | Speedup  |
 |---------------|------------|------------|----------|
 | Same-thread   | 11 ns      | 69 ns      | **6.3x** |
 | Cross-process | 170 ns     | 361 ns     | **2.1x** |
 | Throughput    | 95 M msg/s | 22 M msg/s | **4.3x** |
+
+Unlike the ROS 2 row above, this one is measured on both sides: reproduce with
+`cargo run --release --bin iceoryx2_comparison --features iceoryx2`, which links
+iceoryx2 and times it in the same harness.
 
 Scales near-linearly to 100 nodes (14% degradation) and O(1) to 1,000 topics.
 

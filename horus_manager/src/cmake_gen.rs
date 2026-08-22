@@ -313,6 +313,17 @@ pub fn generate(
         "  target_include_directories({} PRIVATE ${{CMAKE_SOURCE_DIR}}/../include)",
         target_name
     )?;
+    // Types written by `horus msg gen`. CMAKE_SOURCE_DIR is `.horus`, so this
+    // is `.horus/generated/include` — the same tree the Rust crate and the
+    // Python module are generated into. Always added, whether or not anything
+    // has been generated yet: an include path that does not exist is harmless,
+    // and adding it conditionally would mean the first `horus msg gen` had to
+    // be followed by a CMake reconfigure to take effect.
+    writeln!(
+        cmake,
+        "  target_include_directories({} PRIVATE ${{CMAKE_SOURCE_DIR}}/generated/include)",
+        target_name
+    )?;
 
     // HORUS C++ bindings. run_cpp::build_cpp resolves the horus source tree and
     // passes these in with -D, so the generated file stays free of host paths.
@@ -334,6 +345,53 @@ pub fn generate(
         target_name
     )?;
     writeln!(cmake, "  endif()")?;
+
+    // Entry points for types written by `horus msg gen`.
+    //
+    // The built-in message types get theirs from libhorus_cpp.a; a generated
+    // type cannot, because adding symbols to that archive would mean editing
+    // and rebuilding the HORUS source tree. `run_cpp::build_cpp` builds the
+    // generated staticlib and passes it in with -D, so this file stays free of
+    // host paths — the same arrangement as HORUS_CPP_LIB above.
+    writeln!(cmake, "  if(HORUS_GEN_MSGS_LIB)")?;
+    writeln!(
+        cmake,
+        "    target_link_libraries({} PRIVATE ${{HORUS_GEN_MSGS_LIB}})",
+        target_name
+    )?;
+    writeln!(cmake, "  endif()")?;
+
+    // Drop the sections nothing references, and strip in Release.
+    //
+    // A hello-world C++ node — one publisher, one tick() — linked to a 101 MB
+    // debug executable, because the whole Rust runtime comes in as a static
+    // archive and the linker keeps every section of it by default. That is
+    // survivable on a workstation and not survivable on a target with limited
+    // flash, which is exactly what `horus deploy --arch aarch64` is for.
+    //
+    // Measured on the generated template (release): 17,557,904 bytes plain,
+    // 6,707,696 with --gc-sections, 2,074,176 with --gc-sections and -s. Both
+    // are needed for the 88% figure; --gc-sections alone gives 62%.
+    //
+    // -s is Release-only on purpose. Stripping unconditionally would take gdb
+    // away from the whole debug workflow to save space in the build nobody
+    // ships.
+    writeln!(
+        cmake,
+        "  target_link_options({} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wl,--gc-sections>)",
+        target_name
+    )?;
+    writeln!(
+        cmake,
+        "  target_link_options({} PRIVATE $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-s>)",
+        target_name
+    )?;
+    // --gc-sections can only drop a section that is separate to begin with.
+    writeln!(
+        cmake,
+        "  target_compile_options({} PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-ffunction-sections;-fdata-sections>)",
+        target_name
+    )?;
 
     // Link libraries
     if !cpp_deps.is_empty() {
@@ -514,6 +572,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         }
@@ -1565,6 +1624,87 @@ mod tests {
             .unwrap_or(false)
     }
 
+    /// Whether `find_package(<name>)` resolves on this machine.
+    ///
+    /// Five integration tests below compile against real system libraries —
+    /// fmt, Eigen3, GTest. Without them, `cmake` failed with
+    ///
+    /// ```text
+    /// By not providing "Findfmt.cmake" in CMAKE_MODULE_PATH this project has
+    /// asked CMake to find a package configuration file provided by "fmt" ...
+    /// ```
+    ///
+    /// and the test reported FAILED. A contributor who had just cloned the
+    /// repository saw five red tests on a clean checkout, with a message that
+    /// reads like the generator is broken rather than like a missing apt
+    /// package. Red tests you are told to ignore are how a suite stops being
+    /// believed, so these now skip with a reason instead.
+    ///
+    /// The probe is a real `find_package` in a throwaway project, because that
+    /// is exactly the question being asked — checking for a header path or a
+    /// pkg-config entry would answer a different one.
+    fn cmake_package_available(name: &str) -> bool {
+        let Ok(dir) = tempfile::tempdir() else {
+            return false;
+        };
+        if fs::write(
+            dir.path().join("CMakeLists.txt"),
+            format!(
+                "cmake_minimum_required(VERSION 3.16)\n\
+                 project(probe)\n\
+                 find_package({name} REQUIRED)\n"
+            ),
+        )
+        .is_err()
+        {
+            return false;
+        }
+
+        std::process::Command::new("cmake")
+            .arg("-S")
+            .arg(dir.path())
+            .arg("-B")
+            .arg(dir.path().join("build"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Skip the calling test unless every named package is installed.
+    ///
+    /// Returns `false` and prints why, so a skip is visible in the output
+    /// rather than being indistinguishable from a pass.
+    fn require_cmake_packages(test: &str, packages: &[&str]) -> bool {
+        let missing: Vec<&str> = packages
+            .iter()
+            .copied()
+            .filter(|p| !cmake_package_available(p))
+            .collect();
+
+        if missing.is_empty() {
+            return true;
+        }
+
+        eprintln!(
+            "SKIP {test}: needs {} installed for find_package to resolve. \
+             On Debian/Ubuntu: sudo apt install {}",
+            missing.join(", "),
+            missing
+                .iter()
+                .map(|p| match *p {
+                    "fmt" => "libfmt-dev",
+                    "Eigen3" => "libeigen3-dev",
+                    "GTest" => "libgtest-dev",
+                    other => other,
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        false
+    }
+
     /// Helper: run cmake configure on a generated CMakeLists.txt
     fn cmake_configure(project_dir: &std::path::Path) -> std::process::Output {
         let build_dir = project_dir.join(".horus/cpp-build");
@@ -1752,6 +1892,9 @@ int main() {
 
     #[test]
     fn real_cmake_find_package_eigen() {
+        if !require_cmake_packages("real_cmake_find_package_eigen", &["Eigen3"]) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
 
         // Write source that uses Eigen
@@ -1813,6 +1956,9 @@ int main() {
 
     #[test]
     fn real_cmake_find_package_fmt() {
+        if !require_cmake_packages("real_cmake_find_package_fmt", &["fmt"]) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
 
         let src_dir = dir.path().join("src");
@@ -1856,6 +2002,9 @@ int main() {
 
     #[test]
     fn real_cmake_multiple_deps_together() {
+        if !require_cmake_packages("real_cmake_multiple_deps_together", &["fmt", "Eigen3"]) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
 
         let src_dir = dir.path().join("src");
@@ -1904,6 +2053,9 @@ int main() {
 
     #[test]
     fn real_cmake_gtest_with_tests_dir() {
+        if !require_cmake_packages("real_cmake_gtest_with_tests_dir", &["GTest"]) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
 
         // Main source
@@ -2253,6 +2405,9 @@ TEST(BasicTest, OnePlusOne) {
 
     #[test]
     fn real_cmake_non_cpp_deps_excluded() {
+        if !require_cmake_packages("real_cmake_non_cpp_deps_excluded", &["fmt"]) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
 
         let mut deps = BTreeMap::new();

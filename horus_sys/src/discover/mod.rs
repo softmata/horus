@@ -127,6 +127,10 @@ pub struct NodeInfo {
     pub subscribers: Vec<TopicRef>,
     pub priority: u32,
     pub rate_hz: Option<f64>,
+    /// Ticks per second the node is actually achieving, measured by the
+    /// scheduler. `None` until it has two samples. `rate_hz` above is what was
+    /// configured, which is not the same question.
+    pub achieved_rate_hz: Option<f64>,
     pub health: String,
     pub tick_count: u64,
     pub error_count: u32,
@@ -159,6 +163,8 @@ struct PresenceFile {
     #[serde(default)]
     rate_hz: Option<f64>,
     #[serde(default)]
+    achieved_rate_hz: Option<f64>,
+    #[serde(default)]
     pid_start_time: u64,
     #[serde(default)]
     health_status: Option<String>,
@@ -187,7 +193,7 @@ pub fn find_nodes() -> Vec<NodeInfo> {
     let mut nodes = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "json") {
+        if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
         let content = match std::fs::read_to_string(&path) {
@@ -224,6 +230,7 @@ pub fn find_nodes() -> Vec<NodeInfo> {
             subscribers: pf.subscribers,
             priority: pf.priority,
             rate_hz: pf.rate_hz,
+            achieved_rate_hz: pf.achieved_rate_hz,
             health: pf.health_status.unwrap_or_else(|| "unknown".into()),
             tick_count: pf.tick_count,
             error_count: pf.error_count,

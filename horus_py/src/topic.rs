@@ -431,7 +431,14 @@ impl PyTopic {
 
         Ok(Self {
             topic_type,
-            name: topic_name,
+            // The effective endpoint, not the type-derived `topic_name`, is the
+            // key the shared-memory topic was actually created under above.
+            // Storing the type name here made `topic.name` report `imu` for a
+            // `Topic(Imu, endpoint="imu.data")` — contradicting its own
+            // documentation ("the topic name string") and misattributing every
+            // `log_ipc_event` below to a topic that does not exist. The two are
+            // identical when no `endpoint=` is passed.
+            name: effective_endpoint,
             endpoint,
             is_network,
         })

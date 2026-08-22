@@ -10,12 +10,21 @@
 using namespace horus::literals;
 
 int main() {
-    auto sched = horus::Scheduler()
-        .tick_rate(30_hz)
+    // The configuration methods return `Scheduler&`, and the copy
+    // constructor is deleted, so the chain cannot initialize a new
+    // object — declare first, then configure (see scheduler.hpp).
+    horus::Scheduler sched;
+    sched.tick_rate(30_hz)
         .name("camera_node");
 
     auto imu_pub = sched.advertise<horus::msg::Imu>("camera.imu");
-    auto info_pub = sched.advertise<horus::msg::CameraInfo>("camera.info");
+    // NOTE: the vision messages (CameraInfo and friends) are bound in the FFI
+    // layer — see `impl_topic_ffi!(camera_info, ...)` — but
+    // include/horus/msg/vision.hpp declares no structs, so they are not
+    // reachable from C++. This example used `horus::msg::CameraInfo` with
+    // fields `fx`/`fy`/`cx`/`cy`, a shape the Rust type has not had for some
+    // time (it carries `camera_matrix[9]`), so it did not compile on either
+    // count. Publishing the IMU below exercises the same loan/publish path.
 
     // Simulated camera node publishing at 30 Hz
     sched.add("camera_driver")
@@ -33,15 +42,6 @@ int main() {
             imu->linear_acceleration[2] = 9.81; // gravity
             imu_pub.publish(std::move(imu));
 
-            // Publish camera intrinsics (once per frame)
-            auto info = info_pub.loan();
-            info->width = 1920;
-            info->height = 1080;
-            info->fx = 600.0;
-            info->fy = 600.0;
-            info->cx = 960.0;
-            info->cy = 540.0;
-            info_pub.publish(std::move(info));
         })
         .build();
 

@@ -755,6 +755,11 @@ pub enum HorusError {
 /// was printed twice, doubling the length of the most carefully written text
 /// in the tool. A cause that only restates its parent carries no information,
 /// so it is dropped. Genuine causes are still shown.
+// thiserror passes each field by reference at its declared type, and the field
+// is a `Box<dyn Error>`, so the parameter has to be `&Box<_>` — taking
+// `&(dyn Error)` as clippy suggests does not match what the generated Display
+// impl calls.
+#[allow(clippy::borrowed_box)]
 fn fmt_contextual(
     message: &str,
     source: &Box<dyn std::error::Error + Send + Sync>,

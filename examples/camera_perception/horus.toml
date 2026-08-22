@@ -2,10 +2,8 @@
 name = "camera_perception"
 version = "0.1.0"
 description = "Camera perception pipeline — image capture, object detection, tracking"
-author = "softmata"
+authors = ["softmata"]
 license = "Apache-2.0"
-language = "rust"
 
 [dependencies]
 horus = "*"
-horus_library = "*"

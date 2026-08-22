@@ -215,6 +215,41 @@ impl CoreNode for PyNodeAdapter {
         });
     }
 
+    /// Bridge `Miss::SafeMode` (and the watchdog/critical-node paths) through
+    /// to the Python object.
+    ///
+    /// `Miss.SAFE_MODE` is documented as "calls `enter_safe_state()` on the
+    /// node", but this adapter previously implemented only init/tick/shutdown,
+    /// so a Python node fell through to the default no-op in
+    /// `horus_core::core::Node`. The scheduler detected the miss and degraded —
+    /// `safety_stats()` reported the deadline misses and the degrade
+    /// activations — while the node-specific hook that stops the motors was
+    /// unreachable from Python. Rust and C++ nodes both got it.
+    ///
+    /// Called with no arguments, matching the Rust signature, so the override
+    /// is `def enter_safe_state(self):`. A node that does not define one is
+    /// left alone rather than being handed a `None` callback, which keeps the
+    /// cost at one `hasattr` for nodes that never opt in.
+    ///
+    /// Errors are logged, never propagated: the trait method cannot fail, and
+    /// this runs on a path the caller has already wrapped in `catch_unwind`
+    /// precisely because it must not take the executor down.
+    fn enter_safe_state(&mut self) {
+        Python::attach(|py| {
+            let bound = self.py_object.bind(py);
+            if !bound.hasattr("enter_safe_state").unwrap_or(false) {
+                return;
+            }
+            if let Err(e) = self.py_object.call_method0(py, "enter_safe_state") {
+                e.print_and_set_sys_last_vars(py);
+                eprintln!(
+                    "[horus] node '{}' raised in enter_safe_state; the node may not be safe",
+                    self.node_name
+                );
+            }
+        });
+    }
+
     fn shutdown(&mut self) -> horus_core::error::HorusResult<()> {
         Python::attach(|py| {
             let py_info = if let Some(ref cached) = self.cached_info {
@@ -263,10 +298,20 @@ impl CoreNode for PyNodeAdapter {
 
 /// Deadline miss policy for a node.
 ///
-/// Set via `.on_miss()` on the node builder.
+/// Set with the `on_miss=` argument to `horus.Node`. The example here used to
+/// read `scheduler.node(motor).order(0)...`, a builder chain that `horus.Node`
+/// users cannot reach: `horus.Scheduler` is the Python wrapper in
+/// `horus/__init__.py` and exposes `add()`, not `node()`. Copying it raised
+/// `AttributeError: 'Scheduler' object has no attribute 'node'`.
 ///
 /// Example:
-///     scheduler.node(motor).order(0).rate(1000).on_miss(Miss.SAFE_MODE).build()
+///     motor = horus.Node(tick=motor_fn, rate=1000, order=0,
+///                        budget=300e-6, deadline=900e-6,
+///                        on_miss=Miss.SAFE_MODE)
+///     scheduler.add(motor)
+///
+/// `SAFE_MODE` calls `enter_safe_state()` on the node; define it on a
+/// class-based node to stop actuators.
 #[pyclass(from_py_object, name = "Miss", module = "horus._horus")]
 #[derive(Debug, Clone, Copy)]
 pub struct PyMiss;

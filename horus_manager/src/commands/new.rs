@@ -140,6 +140,18 @@ pub fn create_new_project(
         }
     }
 
+    // Generate .horus/Cargo.toml now, so an editor works on first open.
+    //
+    // Without this the project has no cargo manifest until someone runs
+    // `horus build` or `horus run`, and rust-analyzer reports "failed to find
+    // any projects" with no IDE services at all. Best-effort: a project that
+    // scaffolded fine must not fail because the HORUS source tree could not be
+    // located for the IDE's benefit. See cargo_gen::ensure.
+    let ide_ready = crate::cargo_gen::ensure(&project_path);
+    if let crate::cargo_gen::Ensured::Failed(ref why) = ide_ready {
+        log::debug!("could not pre-generate .horus/Cargo.toml: {why}");
+    }
+
     // Register workspace in ~/.horus/workspaces.json
     // This makes it visible in monitors (horus monitor / horus monitor -t)
     if let Ok(mut registry) = crate::workspace::WorkspaceRegistry::load() {
@@ -159,10 +171,50 @@ pub fn create_new_project(
     println!("  {} {}", "cd".cyan(), name);
     println!("  {} (auto-installs dependencies)", "horus run".cyan());
 
+    // Only claim the IDE is wired up when it actually is. On a machine where
+    // find_horus_source_dir() misses, the manifest was not written and saying
+    // otherwise would send the user looking for a problem in their editor.
+    if ide_ready == crate::cargo_gen::Ensured::Generated {
+        println!(
+            "\n{} rust-analyzer is ready — open the project and it will work.",
+            cli_output::ICON_SUCCESS.green()
+        );
+    }
+
     Ok(())
 }
 
+/// Whether prompting a human is possible and wanted.
+///
+/// The README's headline command is `horus new my_robot && cd my_robot &&
+/// horus run`, and `horus new` with no language flag opened two prompts that
+/// appear nowhere in the README or the quick start. There is no `--yes`, so
+/// the documented one-liner could not go in a script, a Dockerfile or CI —
+/// it just blocked, or silently took whatever a closed stdin produced.
+///
+/// Non-interactive runs now take the documented defaults instead of asking.
+fn can_prompt() -> bool {
+    use std::io::IsTerminal;
+    if std::env::var("HORUS_ASSUME_YES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    io::stdin().is_terminal()
+}
+
 fn prompt_language() -> Result<String> {
+    if !can_prompt() {
+        // Rust is the prompt's own default, so scripted and interactive runs
+        // agree.
+        println!(
+            "{} No language flag and not a terminal — defaulting to Rust. \
+             Pass --rust/--python/--cpp to choose.",
+            "i".cyan()
+        );
+        return Ok("rust".to_string());
+    }
     println!("\n{} Select language:", "?".yellow().bold());
     println!("  {} Python", "1.".cyan());
     println!("  {} Rust", "2.".cyan());
@@ -191,8 +243,12 @@ fn prompt_language() -> Result<String> {
 }
 
 fn prompt_use_macro() -> Result<bool> {
+    if !can_prompt() {
+        return Ok(false);
+    }
     print!(
-        "\n{} Use HORUS macros for simpler syntax? [y/N]: ",
+        "\n{} Use the node! macro? Shorter code, but IDE go-to-definition \
+         inside node bodies is limited. [y/N]: ",
         "?".yellow().bold()
     );
     io::stdout().flush()?;
@@ -295,6 +351,39 @@ compile_commands.json
 
     fs::write(project_path.join(".gitignore"), gitignore_content)?;
 
+    if language == "cpp" {
+        create_clang_format(project_path)?;
+    }
+
+    Ok(())
+}
+
+/// The formatting rules `horus fmt` enforces for C++.
+///
+/// `clang-format --style=file` falls back to LLVM style when no config exists,
+/// and LLVM style does not match the template this same command generates: it
+/// collapses the constructor onto one line and re-spaces the trailing comments.
+/// So the first thing `horus fmt` did to a brand-new project was reformat code
+/// the user had not written yet, and `horus fmt --check` failed on a pristine
+/// scaffold.
+///
+/// These values are derived from the template rather than chosen: with this
+/// file in place, `clang-format --style=file --dry-run --Werror src/main.cpp`
+/// reports zero violations on a freshly generated project. A test pins that,
+/// so changing either the template or this config without the other fails.
+fn create_clang_format(project_path: &Path) -> Result<()> {
+    let config = "\
+# Matches the style of the generated template. `horus fmt` uses this.
+BasedOnStyle: LLVM
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 2
+AllowShortFunctionsOnASingleLine: Empty
+PointerAlignment: Left
+";
+    fs::write(project_path.join(".clang-format"), config)?;
     Ok(())
 }
 
@@ -331,6 +420,7 @@ fn create_horus_toml(
         ignore: Default::default(),
         enable: Vec::new(),
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: None,
@@ -375,6 +465,7 @@ fn create_horus_toml_with_target(
         ignore: Default::default(),
         enable: Vec::new(),
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: None,
@@ -419,6 +510,7 @@ fn create_workspace_horus_toml(project_path: &Path, name: &str) -> Result<()> {
         ignore: Default::default(),
         enable: Vec::new(),
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: Some(WorkspaceConfig {
@@ -467,28 +559,46 @@ node! {
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new();
+    // tick_rate sets the scheduler's clock; .rate() overrides it per node.
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
-    // Add the controller node with priority 0 (highest)
-    scheduler.add(Controller::new()).order(0).build();
+    // `node!` generates `Controller::new() -> Self`, so there is no `?` here —
+    // unlike the trait version, whose constructor is fallible.
+    scheduler
+        .add(Controller::new())
+        .order(0)
+        .rate(100_u64.hz())
+        .on_miss(Miss::Warn)
+        .build()?;
 
     // Run the scheduler (Ctrl+C to stop)
     scheduler.run()
 }
 "#
     } else {
-        // Non-macro version
+        // The default, and the shape every documented path reaches. Kept in
+        // step with the README's Quick Start: a reader who copies that snippet
+        // and a reader who runs `horus new` must meet the same language.
+        //
+        // The previous version wrapped the topic in `Option` and built it in
+        // `init()`, a triad that appears nowhere in the docs or in examples/,
+        // and forced `if let Some(ref topic)` around every send. A fallible
+        // constructor says the same thing without the ceremony — and a `Topic`
+        // built in the constructor is the case that used to lose its owner, so
+        // this is also the shape introspection is now tested against.
         r#"// Mobile robot controller
 
 use horus::prelude::*;
 
 struct Controller {
-    cmd_vel: Option<Topic<Twist>>,
+    cmd_vel: Topic<Twist>,
 }
 
 impl Controller {
-    fn new() -> Self {
-        Self { cmd_vel: None }
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_vel: Topic::new("motors.cmd_vel")?,
+        })
     }
 }
 
@@ -497,27 +607,25 @@ impl Node for Controller {
         "controller"
     }
 
-    fn init(&mut self) -> Result<()> {
-        self.cmd_vel = Some(Topic::new("motors.cmd_vel")?);
-        hlog!(info, "Controller initialized");
-        Ok(())
-    }
-
     fn tick(&mut self) {
         // Your control logic here
         // Twist::new_2d(forward_m_s, yaw_rad_s) — drive straight at 1 m/s
-        let msg = Twist::new_2d(1.0, 0.0);
-        if let Some(ref topic) = self.cmd_vel {
-            topic.send(msg);
-        }
+        self.cmd_vel.send(Twist::new_2d(1.0, 0.0));
     }
 }
 
 fn main() -> Result<()> {
-    let mut scheduler = Scheduler::new();
+    // tick_rate sets the scheduler's clock; .rate() overrides it per node.
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
 
-    // Add the controller node with priority 0 (highest)
-    scheduler.add(Controller::new()).order(0).build()?;
+    // .order() is execution order within a tick; .on_miss() says what to do
+    // when a node overruns its slot.
+    scheduler
+        .add(Controller::new()?)
+        .order(0)
+        .rate(100_u64.hz())
+        .on_miss(Miss::Warn)
+        .build()?;
 
     // Run the scheduler (Ctrl+C to stop)
     scheduler.run()
@@ -578,42 +686,70 @@ fn validate_project_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Write the Python entry point.
+///
+/// The node is named after the project. Every template used to hard-code
+/// "controller", so two HORUS projects on one machine collided:
+///
+/// ```text
+/// [horus] WARNING: node 'controller' already registered by PID 497819
+/// (this is PID 498342). Overwriting presence file — duplicate node names
+/// cause unreliable discovery.
+/// ```
+///
+/// `horus new` guaranteed the condition its own runtime warns about.
 pub(crate) fn create_main_py(project_path: &Path) -> Result<()> {
+    let node_name = project_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| format!("{}_controller", n.replace('-', "_")))
+        .unwrap_or_else(|| "controller".to_string());
+
     let content = r#"# Mobile robot controller
 
 import horus
 
+
 def controller(node):
     """Main control logic - called repeatedly at the specified rate."""
-    # Your control logic here
-    # Check for incoming messages
+    # Drive forward by default.
+    linear = 1.0
+
+    # Slow down if a sensor reading is waiting for us.
     if node.has_msg("sensors.data"):
         sensor_data = node.recv("sensors.data")
-        # Process sensor data...
+        linear = min(linear, sensor_data.get("safe_speed", linear))
 
-    # Send control commands
-    cmd_vel = {"linear": 1.0, "angular": 0.0}
-    node.send("motors.cmd_vel", cmd_vel)
+    node.send("motors.cmd_vel", {"linear": linear, "angular": 0.0})
+
 
 # Create the node
 node = horus.Node(
-    name="controller",
-    pubs="motors.cmd_vel",    # Topics to publish to
-    subs="sensors.data",      # Topics to subscribe from
-    tick=controller,          # Function to call repeatedly
-    rate=30                   # Hz (30 times per second)
+    name="__NODE_NAME__",
+    pubs="motors.cmd_vel",  # Topics to publish to
+    subs="sensors.data",  # Topics to subscribe from
+    tick=controller,  # Function to call repeatedly
+    rate=30,  # Hz (30 times per second)
 )
 
 if __name__ == "__main__":
     # Run the node
     horus.run(node)
 "#;
-    // src/main.py, matching the Rust (`src/main.rs`) and C++ (`src/main.cpp`)
-    // scaffolds and the 35 doc sites that tell readers to open `src/main.py`.
-    // The dispatcher already detects it (see dispatch.rs), so `horus build` and
-    // `horus run` work unchanged.
-    fs::create_dir_all(project_path.join("src"))?;
-    fs::write(project_path.join("src/main.py"), content)?;
+    // `main.py` at the project root, not `src/main.py`.
+    //
+    // Matching the Rust (`src/main.rs`) and C++ (`src/main.cpp`) scaffolds is
+    // tempting, but Rust only puts it there because Cargo requires it, and
+    // Python's own convention for a single-entry-point application is the
+    // repository root — `src/` in Python normally means `src/<package>/` with
+    // an `__init__.py`, which this is not. Generating a Rust-shaped tree for a
+    // Python user is the framework's implementation language leaking into
+    // their project.
+    //
+    // The dispatcher detects both locations (see dispatch.rs), so this is a
+    // choice about what a Python developer opens to, not about what works.
+    let content = content.replace("__NODE_NAME__", &node_name);
+    fs::write(project_path.join("main.py"), content)?;
     Ok(())
 }
 
@@ -849,7 +985,7 @@ mod tests {
     fn main_py_created() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
         assert!(content.contains("import horus"));
         assert!(content.contains("horus.run(node)"));
     }
@@ -891,7 +1027,7 @@ mod tests {
 
         let project = dir.path().join("py_bot");
         assert!(project.join(HORUS_TOML).exists());
-        assert!(project.join("src/main.py").exists());
+        assert!(project.join("main.py").exists());
         assert!(project.join(".horus").is_dir());
     }
 
@@ -1024,7 +1160,7 @@ mod tests {
         assert_eq!(manifest.package.name, "py_bot");
 
         // main.py has horus.run()
-        let content = fs::read_to_string(project.join("src/main.py")).unwrap();
+        let content = fs::read_to_string(project.join("main.py")).unwrap();
         assert!(content.contains("import horus"));
         assert!(content.contains("horus.run(node)"));
         assert!(content.contains("horus.Node("));
@@ -1510,7 +1646,7 @@ mod tests {
         let project = dir.path().join("rs_only");
         assert!(project.join("src/main.rs").exists(), "must have main.rs");
         assert!(
-            !project.join("src/main.py").exists(),
+            !project.join("main.py").exists(),
             "rust project should not have main.py"
         );
         assert!(
@@ -1538,7 +1674,7 @@ mod tests {
         .unwrap();
 
         let project = dir.path().join("py_only");
-        assert!(project.join("src/main.py").exists(), "must have main.py");
+        assert!(project.join("main.py").exists(), "must have main.py");
         assert!(
             !project.join("src/main.rs").exists(),
             "python project should not have main.rs"
@@ -1825,11 +1961,11 @@ mod tests {
         .unwrap();
 
         let project = dir.path().join("py_macro_test");
-        assert!(project.join("src/main.py").exists());
+        assert!(project.join("main.py").exists());
         assert!(!project.join("src/main.rs").exists());
 
         // main.py should be the standard Python template (no macros)
-        let content = fs::read_to_string(project.join("src/main.py")).unwrap();
+        let content = fs::read_to_string(project.join("main.py")).unwrap();
         assert!(content.contains("import horus"));
         assert!(content.contains("horus.run(node)"));
     }
@@ -1905,7 +2041,7 @@ mod tests {
     fn main_py_has_node_constructor_params() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
 
         // Verify Node constructor includes all documented parameters
         assert!(content.contains("name="), "main.py missing name= param");
@@ -1919,7 +2055,7 @@ mod tests {
     fn main_py_has_name_guard() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
         assert!(
             content.contains("if __name__ == \"__main__\":"),
             "main.py should have __name__ guard"
@@ -1930,7 +2066,7 @@ mod tests {
     fn main_py_has_controller_function() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
         assert!(
             content.contains("def controller(node)"),
             "main.py should have controller function"
@@ -2015,7 +2151,7 @@ mod tests {
     fn main_py_uses_recv_not_get() {
         let dir = tempfile::tempdir().unwrap();
         create_main_py(dir.path()).unwrap();
-        let content = fs::read_to_string(dir.path().join("src/main.py")).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
 
         assert!(
             content.contains("node.recv("),
@@ -2129,7 +2265,7 @@ mod tests {
         // Language-specific files are separate
         assert!(alpha.join("src/main.rs").exists());
         assert!(!alpha.join("src/main.py").exists());
-        assert!(beta.join("src/main.py").exists());
+        assert!(beta.join("main.py").exists());
         assert!(!beta.join("main.rs").exists());
     }
 
@@ -2211,7 +2347,7 @@ mod tests {
 
         // Python file should exist; Rust file is stale but still present
         // (create_new_project does not clean up old language files)
-        assert!(project.join("src/main.py").exists());
+        assert!(project.join("main.py").exists());
 
         // Gitignore should now have python patterns
         let gitignore = fs::read_to_string(project.join(".gitignore")).unwrap();
@@ -2696,7 +2832,7 @@ mod tests {
 
         assert!(p.is_dir(), "project directory");
         assert!(p.join(HORUS_TOML).is_file(), "horus.toml");
-        assert!(p.join("src/main.py").is_file(), "src/main.py");
+        assert!(p.join("main.py").is_file(), "main.py");
         assert!(p.join(".horus").is_dir(), ".horus/");
         assert!(p.join(".gitignore").is_file(), ".gitignore");
 
@@ -2708,7 +2844,7 @@ mod tests {
 
         for entry in &top_entries {
             assert!(
-                ["horus.toml", "src", ".horus", ".gitignore"].contains(&entry.as_str()),
+                ["horus.toml", "main.py", ".horus", ".gitignore"].contains(&entry.as_str()),
                 "unexpected file in python project root: '{}'",
                 entry
             );

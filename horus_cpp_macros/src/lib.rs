@@ -1,5 +1,18 @@
 //! # HORUS C++ Macros
 //!
+//! **Status: unwired prototype. Nothing in HORUS applies `#[horus_api]`.**
+//!
+//! `grep -rn horus_api --include=*.rs .` finds hits only inside this crate's own
+//! trybuild fixtures. `horus_cpp` did depend on it but never used it; that edge
+//! has been removed. The counterpart never arrived either — `horus_cpp/src/lib.rs`
+//! records that there is no `#[cxx::bridge]` and that the `cxx`/`cxx-build`
+//! dependencies are placeholders for a future migration.
+//!
+//! This note exists because the crate reads like the message-codegen path and is
+//! not it. If you are looking for how HORUS generates C++ artifacts today, see
+//! `horus_cpp/src/layout_contract.rs`: render from Rust ground truth, commit the
+//! artifact, fail the build on drift.
+//!
 //! Procedural macros for generating C++ bindings from annotated Rust code.
 //!
 //! ## `#[horus_api]`

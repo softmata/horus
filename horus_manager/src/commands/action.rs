@@ -1276,13 +1276,32 @@ mod tests {
         horus_core::communication::Topic::new(name).expect("create SHM topic")
     }
 
-    /// Wait for the discovery cache to expire so fresh SHM scans happen.
-    fn wait_cache_expire() {
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    /// Serializes the SHM discovery tests against each other.
+    ///
+    /// They share one process-global discovery cache and one `/dev/shm` tree,
+    /// so two of them running at once interleave: test B refreshes the cache
+    /// before test A's topics exist, and A then reads B's snapshot and reports
+    /// its own topics missing.
+    static SHM_DISCOVERY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take the lock and drop the stale cache, so the next scan sees the
+    /// topics this test just created.
+    ///
+    /// This replaces a `sleep(300ms)` that waited out the cache TTL. Sleeping
+    /// was both slower and incorrect: the TTL elapsing does not stop a
+    /// concurrent test from refilling the cache during the sleep, which is why
+    /// these tests failed only under `--test-threads` > 1 and passed on retry.
+    fn fresh_discovery() -> std::sync::MutexGuard<'static, ()> {
+        let guard = SHM_DISCOVERY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::discovery::invalidate_cache();
+        guard
     }
 
     #[test]
     fn discover_actions_finds_action_from_shm_topics() {
+        let _serialized = fresh_discovery();
         // Create SHM topics mimicking an action server
         let _goal = create_shm_topic("test_discover_nav.goal");
         let _result = create_shm_topic("test_discover_nav.result");
@@ -1290,7 +1309,7 @@ mod tests {
         let _status = create_shm_topic("test_discover_nav.status");
         let _cancel = create_shm_topic("test_discover_nav.cancel");
 
-        wait_cache_expire();
+        crate::discovery::invalidate_cache();
         let actions = discover_actions().unwrap_or_default();
         let found = actions
             .iter()
@@ -1313,9 +1332,10 @@ mod tests {
 
     #[test]
     fn discover_actions_partial_only_goal() {
+        let _serialized = fresh_discovery();
         let _goal = create_shm_topic("test_partial_act.goal");
 
-        wait_cache_expire();
+        crate::discovery::invalidate_cache();
         let actions = discover_actions().unwrap_or_default();
         let found = actions.iter().find(|a| a.name.contains("test_partial_act"));
 
@@ -1331,13 +1351,14 @@ mod tests {
 
     #[test]
     fn discover_actions_excludes_service_topics() {
+        let _serialized = fresh_discovery();
         // Create topics that look like BOTH an action and a service
         let _goal = create_shm_topic("test_svc_excl.goal");
         let _result = create_shm_topic("test_svc_excl.result");
         let _request = create_shm_topic("test_svc_excl.request");
         let _response = create_shm_topic("test_svc_excl.response");
 
-        wait_cache_expire();
+        crate::discovery::invalidate_cache();
         let actions = discover_actions().unwrap_or_default();
         let found = actions.iter().find(|a| a.name.contains("test_svc_excl"));
 
@@ -1356,12 +1377,13 @@ mod tests {
 
     #[test]
     fn discover_actions_multiple_actions() {
+        let _serialized = fresh_discovery();
         let _g1 = create_shm_topic("test_multi_a.goal");
         let _r1 = create_shm_topic("test_multi_a.result");
         let _g2 = create_shm_topic("test_multi_b.goal");
         let _r2 = create_shm_topic("test_multi_b.result");
 
-        wait_cache_expire();
+        crate::discovery::invalidate_cache();
         let actions = discover_actions().unwrap_or_default();
         let found_a = actions.iter().any(|a| a.name.contains("test_multi_a"));
         let found_b = actions.iter().any(|a| a.name.contains("test_multi_b"));

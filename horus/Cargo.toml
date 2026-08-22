@@ -2,6 +2,7 @@
 name = "horus"
 version = "0.2.2"
 edition = "2021"
+rust-version.workspace = true
 authors = ["HORUS Team"]
 description = "HORUS - Hybrid Optimized Robotics Unified System framework for Rust. 575x faster than ROS2 with sub-microsecond IPC, deterministic scheduling, and zero-copy shared memory."
 license = "Apache-2.0"
@@ -18,6 +19,10 @@ horus_macros = { path = "../horus_macros", optional = true }
 horus_types = { path = "../horus_types" }
 horus_net = { path = "../horus_net", optional = true }
 horus-robotics = { workspace = true }
+# Coordinate-frame tree. horus_py and horus_cpp already depend on this, so
+# Python and C++ users get TransformFrame while a Rust project depending only
+# on `horus` could reach TransformStamped but not the tree that produces it.
+horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c" }
 # Re-export commonly used dependencies
 serde = { workspace = true }
 rand = { workspace = true, features = ["small_rng"] }

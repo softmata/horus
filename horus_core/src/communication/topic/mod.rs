@@ -379,6 +379,21 @@ impl TopicNodeRegistry {
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
+/// FNV-1a over a byte string, usable in a `const` context.
+///
+/// `message!` needs the hash at compile time so it can be an associated const,
+/// and the runtime helper below cannot be called from one.
+pub const fn const_fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 2166136261;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(16777619);
+        i += 1;
+    }
+    hash
+}
+
 /// FNV-1a hash (32-bit) for type names. Same algorithm as horus_net::wire::fnv1a_hash.
 pub(crate) fn fnv1a_type_hash(s: &str) -> u32 {
     let mut hash: u32 = 2166136261;
@@ -404,7 +419,7 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use header::{
-    read_latest_slot_bytes, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
+    read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total, read_topic_sequence,
     set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;
@@ -628,6 +643,48 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     pub fn new(name: impl Into<String>) -> HorusResult<Self> {
         let name = name.into();
         Self::with_capacity_and_kind(&name, auto_capacity::<T>(), None, TopicKind::Data as u8)
+    }
+
+    /// Publish this handle's layout hash, or fail if it contradicts one already
+    /// recorded for the topic.
+    ///
+    /// First writer wins: the hash is installed with a compare-exchange from 0,
+    /// so whichever handle arrives first records it and every later handle is
+    /// checked against it.
+    pub(crate) fn bind_layout_hash(&self, layout_hash: u32) -> HorusResult<()> {
+        if layout_hash == 0 {
+            return Ok(());
+        }
+        let header = self.header();
+        match header.layout_hash.compare_exchange(
+            0,
+            layout_hash,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            // We installed it, or it was already ours.
+            Ok(_) => Ok(()),
+            Err(existing) if existing == layout_hash => Ok(()),
+            Err(existing) => Err(HorusError::Communication(
+                crate::error::CommunicationError::TopicCreationFailed {
+                    topic: self.name.clone(),
+                    reason: format!(
+                        "message layout mismatch. This build's \
+                     '{}' hashes to {:#010x}, but the topic was opened with \
+                     {:#010x}.\n\
+                     The type name and size match, so only the field layout \
+                     differs — two builds of the same message that reordered, \
+                     renamed or retyped a field. Reading it would silently \
+                     reinterpret the bytes rather than fail.\n\
+                     Fix: rebuild both sides against the same message \
+                     definition.",
+                        std::any::type_name::<T>(),
+                        layout_hash,
+                        existing
+                    ),
+                },
+            )),
+        }
     }
 
     /// Create a new topic with a specific kind (Data, ServiceRequest, etc.).
@@ -874,25 +931,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             && !type_name_str.is_empty()
             && !existing_type.eq_ignore_ascii_case(type_name_str)
         {
+            // Was wrapped in a bare String, which renders through the
+            // `From<String>` impl as "Communication serialization failed:" —
+            // so a type mismatch was reported as a serialization failure,
+            // behind two stacked prefixes.
             return Err(HorusError::Communication(
-                format!(
-                    "Type mismatch on topic '{}': existing type '{}', attempted '{}'.\n\
-                     Two processes opened the same topic with different message types.\n\
-                     Fix: use distinct topic names for different message types.",
-                    name, existing_type, type_name_str
-                )
-                .into(),
+                crate::error::CommunicationError::TopicCreationFailed {
+                    topic: name.to_string(),
+                    reason: format!(
+                        "type mismatch. Existing type '{existing_type}', attempted \
+                         '{type_name_str}'.\n\
+                         Two processes opened the same topic with different message \
+                         types.\n\
+                         Fix: use distinct topic names for different message types."
+                    ),
+                },
             ));
         }
 
         // Size validation — skip for GenericMessage (variable-size serde container)
         if !is_generic && is_pod && header.type_size != type_size {
             return Err(HorusError::Communication(
-                format!(
-                    "Type size mismatch: {} (expected {})",
-                    header.type_size, type_size
-                )
-                .into(),
+                crate::error::CommunicationError::TopicCreationFailed {
+                    topic: name.to_string(),
+                    reason: format!(
+                        "type size mismatch — the topic holds {} byte messages, this \
+                         build's '{type_name_str}' is {} bytes",
+                        header.type_size, type_size
+                    ),
+                },
             ));
         }
         Ok(header.slot_size as usize)
@@ -2315,6 +2382,9 @@ pub struct Topic<T: TopicMessage> {
     registered_sub: std::cell::Cell<bool>,
     /// Node name captured at creation time (for lazy registration).
     owner_node: Option<String>,
+    /// How many times `resolve_owner` has looked for a node context and not
+    /// found one. Bounds the per-send cost for a topic that has no owner.
+    owner_attempts: std::cell::Cell<u16>,
     /// Keep-alive reference(s) to the last pool-backed message sent, released on
     /// the next send (or on Drop) so the producer's transport reference does not
     /// leak. `(pool, primary, secondary)` — the exact pool the retain was taken
@@ -2560,8 +2630,43 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            owner_attempts: std::cell::Cell::new(0),
             last_sent_keepalive: std::cell::Cell::new(None),
         })
+    }
+
+    /// Open a topic and refuse to share it with a differently-shaped message.
+    ///
+    /// [`Topic::new`] validates the message type's short name and, for POD
+    /// types, its size. Neither describes field layout, so two revisions of the
+    /// same message that keep the name and size but reorder fields both open
+    /// the topic and silently reinterpret each other's bytes:
+    ///
+    /// ```text
+    /// v1::Pose { x: f32, y: f32 }   sent (x=1, y=2)
+    /// v2::Pose { y: f32, x: f32 }   received Pose { y: 1.0, x: 2.0 }
+    /// ```
+    ///
+    /// No error, no warning — the coordinates simply arrive swapped. That is
+    /// what a fleet looks like halfway through a rollout.
+    ///
+    /// Types declared with [`message!`](crate::message) carry a `LAYOUT_HASH`
+    /// and a generated helper that supplies it:
+    ///
+    /// ```rust,ignore
+    /// message! { Pose { x: f32, y: f32 } }
+    ///
+    /// let tx = Pose::topic("robot.pose")?;          // checked
+    /// let tx = Topic::<Pose>::new("robot.pose")?;   // unchecked, as before
+    /// ```
+    ///
+    /// A hash of 0 disables the check. That is what [`Topic::new`] passes and
+    /// what headers written before this field existed contain, so an older or
+    /// unchecked peer is never rejected — it is simply not protected.
+    pub fn new_checked(name: impl Into<String>, layout_hash: u32) -> HorusResult<Self> {
+        let topic = Self::new(name)?;
+        topic.ring.bind_layout_hash(layout_hash)?;
+        Ok(topic)
     }
 
     /// Create a new topic with a specific kind (ServiceRequest, ActionGoal, etc.).
@@ -2587,6 +2692,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            owner_attempts: std::cell::Cell::new(0),
             last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
@@ -2616,6 +2722,7 @@ where
             registered_pub: std::cell::Cell::new(false),
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
+            owner_attempts: std::cell::Cell::new(0),
             last_sent_keepalive: std::cell::Cell::new(None),
         })
     }
@@ -2631,22 +2738,65 @@ impl<T> Topic<T>
 where
     T: TopicMessage<Wire = T> + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
+    /// Which node owns this handle, resolved as late as possible.
+    ///
+    /// The name used to be captured in `Topic::new` and never revisited. Node
+    /// constructors are where topics are created — and they run before the
+    /// scheduler starts, outside any tick — so `current_node_name()` returned
+    /// "unknown" and the handle recorded no owner at all. Nothing ever
+    /// registered it, and `horus topic info` answered "Publishers: (none)"
+    /// about a topic being published at 40 Hz.
+    ///
+    /// Resolving here instead means the first `send()` — which happens inside
+    /// `tick()`, where the context *is* set — finds the name. The constructor's
+    /// value still wins when it had one, which covers a topic created inside
+    /// `init()` and used from a helper thread.
+    #[inline]
+    fn resolve_owner(&self) -> Option<String> {
+        if let Some(ref node) = self.owner_node {
+            return Some(node.clone());
+        }
+        // A topic that belongs to no node — created by a test, a CLI tool, or a
+        // helper thread — would otherwise pay this check on every single send
+        // forever, because the "registered" flag only latches on success. Give
+        // up after a bounded number of attempts so the steady-state cost on the
+        // real-time path is exactly zero.
+        //
+        // The bound is generous on purpose: a node's topic resolves on its
+        // first send inside `tick()`, so only genuinely ownerless topics ever
+        // count past one.
+        const MAX_ATTEMPTS: u16 = 256;
+        if self.owner_attempts.get() >= MAX_ATTEMPTS {
+            return None;
+        }
+        // Checked without allocating; `current_node_name` builds a String and
+        // is only reached once the context is known to exist.
+        if crate::core::hlog::in_node_context() {
+            let name = crate::core::hlog::current_node_name();
+            if name != "unknown" {
+                return Some(name);
+            }
+        }
+        self.owner_attempts.set(self.owner_attempts.get() + 1);
+        None
+    }
+
     /// Send a message (fire-and-forget with bounded retry).
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        // Lazy registration: first send() registers as Publisher
+        // Lazy registration: first send() registers as Publisher.
         if !self.registered_pub.get() {
-            if let Some(ref node) = self.owner_node {
+            if let Some(node) = self.resolve_owner() {
                 let type_name = std::any::type_name::<T>();
                 let short = type_name.rsplit("::").next().unwrap_or(type_name);
                 topic_node_registry().register_with_type(
                     self.ring.name(),
-                    node,
+                    &node,
                     NodeTopicRole::Publisher,
                     short,
                 );
+                self.registered_pub.set(true);
             }
-            self.registered_pub.set(true);
         }
         self.ring.send(msg)
     }
@@ -2654,19 +2804,19 @@ where
     /// Receive a message.
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
-        // Lazy registration: first recv() registers as Subscriber
+        // Lazy registration: first recv() registers as Subscriber.
         if !self.registered_sub.get() {
-            if let Some(ref node) = self.owner_node {
+            if let Some(node) = self.resolve_owner() {
                 let type_name = std::any::type_name::<T>();
                 let short = type_name.rsplit("::").next().unwrap_or(type_name);
                 topic_node_registry().register_with_type(
                     self.ring.name(),
-                    node,
+                    &node,
                     NodeTopicRole::Subscriber,
                     short,
                 );
+                self.registered_sub.set(true);
             }
-            self.registered_sub.set(true);
         }
         self.ring.recv()
     }
@@ -2724,6 +2874,7 @@ where
             registered_pub: self.registered_pub.clone(),
             registered_sub: self.registered_sub.clone(),
             owner_node: self.owner_node.clone(),
+            owner_attempts: self.owner_attempts.clone(),
             // A fresh clone has sent nothing yet; each handle tracks and releases
             // only its own last-sent keep-alive, so clones never double-release.
             last_sent_keepalive: std::cell::Cell::new(None),

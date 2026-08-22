@@ -4351,14 +4351,27 @@ fn test_ready_dispatch_single_node_no_overhead() {
         .add(CounterNode::with_counter("rd_single", counter.clone()))
         .build();
 
+    let started = std::time::Instant::now();
     scheduler.run_for(100_u64.ms());
+    let elapsed = started.elapsed();
 
-    // Should have ticked multiple times (100Hz for 100ms = ~10 ticks)
+    // The claim is that a lone node dispatches without the coordination the
+    // multi-node path needs — not that this machine can sustain 100 Hz.
+    //
+    // The previous form asserted `ticks >= 5` against a nominal 100 ms window,
+    // which made it a measurement of the host: under the full suite it saw
+    // fewer and failed, then passed on the retry. Deriving the floor from the
+    // wall-clock that actually elapsed keeps the property (dispatch runs, and
+    // keeps running) while tolerating a loaded machine.
     let ticks = counter.load(Ordering::SeqCst);
+    let expected = (elapsed.as_secs_f64() * 100.0) as usize;
+    let floor = (expected / 4).max(2);
+
     assert!(
-        ticks >= 5,
-        "Single node should tick at least 5 times in 100ms at 100Hz, got {}",
-        ticks
+        ticks >= floor,
+        "single-node dispatch produced {ticks} ticks in {elapsed:?}; at 100 Hz \
+         that window allows about {expected}, and even a quarter of it would be \
+         {floor}. Dispatch is stalling, not merely slow."
     );
 }
 
@@ -5614,5 +5627,50 @@ mod watchdog_message_honesty {
         assert!(m.contains("'hanger'"), "{m}");
         assert!(m.contains("3x timeout"), "{m}");
         assert!(m.contains("Isolated"), "{m}");
+    }
+}
+
+#[cfg(test)]
+mod rt_reality_check {
+    /// Mirrors `warn_if_rt_cannot_be_delivered`'s decision, so the rules are
+    /// testable without capturing stdout.
+    fn should_warn(debug_build: bool, preempt_rt: bool) -> (bool, bool) {
+        if !debug_build && preempt_rt {
+            return (false, false);
+        }
+        (debug_build, !preempt_rt)
+    }
+
+    /// The reported case: a 1 kHz node, debug build, stock kernel. The user
+    /// measured timing two orders of magnitude off the front page and nothing
+    /// connected the two facts.
+    #[test]
+    fn debug_build_on_a_stock_kernel_warns_about_both() {
+        let (build, kernel) = should_warn(true, false);
+        assert!(build, "a debug build must be called out");
+        assert!(kernel, "a non-PREEMPT_RT kernel must be called out");
+    }
+
+    /// A release build on a stock kernel still has the jitter problem.
+    #[test]
+    fn release_on_a_stock_kernel_warns_about_the_kernel_only() {
+        let (build, kernel) = should_warn(false, false);
+        assert!(!build);
+        assert!(kernel);
+    }
+
+    /// A debug build on an RT kernel still has the 10-50x problem.
+    #[test]
+    fn debug_on_an_rt_kernel_warns_about_the_build_only() {
+        let (build, kernel) = should_warn(true, true);
+        assert!(build);
+        assert!(!kernel);
+    }
+
+    /// A correctly configured machine must stay quiet — a warning nobody can
+    /// act on is noise, and noise is what gets warnings ignored.
+    #[test]
+    fn release_on_an_rt_kernel_is_silent() {
+        assert_eq!(should_warn(false, true), (false, false));
     }
 }

@@ -743,67 +743,51 @@ fn build_for_target_rust(config: &DeployConfig) -> HorusResult<()> {
     Ok(())
 }
 
-/// Build a C++ project using cmake
+/// Build a C++ project for deployment.
+///
+/// Delegates to the same builder `horus run` and `horus build` use. The
+/// re-implementation that used to live here was wrong in three ways at once,
+/// and every one of them shipped:
+///
+/// * It configured with `-S .`, but `horus new --cpp` writes the generated
+///   `CMakeLists.txt` into `.horus/`. Deploying a freshly generated project
+///   therefore failed outright with "does not appear to contain
+///   CMakeLists.txt".
+/// * It skipped `cmake configure` whenever `CMakeCache.txt` already existed.
+///   `CMAKE_BUILD_TYPE` is a configure-time variable and `--config` is inert
+///   for single-config generators, so after the documented `horus new && horus
+///   run` — which leaves the cache configured Debug — `horus deploy` produced a
+///   **Debug** binary while printing "(Release)", and rsync shipped all 101 MB
+///   of it to the robot.
+/// * It passed neither `HORUS_CPP_INCLUDE` nor `HORUS_CPP_LIB`, so the
+///   generated `CMakeLists.txt` could not find the bindings it consumes.
+///
+/// `build_cpp` configures unconditionally, resolves the bindings, and takes the
+/// target architecture, which this path also needs for `--arch`.
 fn build_for_target_cpp(config: &DeployConfig) -> HorusResult<()> {
-    let build_dir = ".horus/cpp-build";
-    let build_type = if config.release { "Release" } else { "Debug" };
-
-    // Ensure the build directory exists (run cmake configure if needed)
-    if !Path::new(build_dir).join("CMakeCache.txt").exists() {
-        println!(
-            "  {} Configuring cmake build...",
-            cli_output::ICON_INFO.cyan()
-        );
-
-        let mut configure_cmd = Command::new("cmake");
-        configure_cmd.args([
-            "-S",
-            ".",
-            "-B",
-            build_dir,
-            &format!("-DCMAKE_BUILD_TYPE={}", build_type),
-        ]);
-        configure_cmd.stdout(Stdio::inherit());
-        configure_cmd.stderr(Stdio::inherit());
-
-        let status = configure_cmd.status().map_err(|e| {
-            HorusError::Config(ConfigError::Other(format!(
-                "Failed to run cmake configure: {}",
-                e
-            )))
-        })?;
-
-        if !status.success() {
-            return Err(HorusError::Config(ConfigError::Other(
-                "cmake configure failed".to_string(),
-            )));
-        }
-    }
-
-    print!("  {} Building C++ project", cli_output::ICON_INFO.cyan());
-    println!(" ({})...", build_type);
-
-    let mut cmd = Command::new("cmake");
-    cmd.args(["--build", build_dir, "--config", build_type]);
-
-    cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
-
-    let status = cmd.status().map_err(|e| {
+    let project_dir = std::env::current_dir().map_err(|e| {
         HorusError::Config(ConfigError::Other(format!(
-            "Failed to run cmake build: {}",
-            e
+            "Failed to resolve project directory: {e}"
         )))
     })?;
 
-    if !status.success() {
-        return Err(HorusError::Config(ConfigError::Other(
-            "C++ build failed".to_string(),
-        )));
-    }
-
-    println!("  {} Build complete", cli_output::ICON_SUCCESS.green());
-    Ok(())
+    // `build_cpp` takes the short name the `[cpp].toolchain` table is keyed by;
+    // a native build passes None so it falls back to that table.
+    let arch = match config.arch {
+        TargetArch::Aarch64 => Some("aarch64"),
+        TargetArch::Armv7 => Some("armv7"),
+        TargetArch::X86_64 => Some("x86_64"),
+        TargetArch::Native => None,
+    };
+    crate::commands::run::run_cpp::build_cpp(&project_dir, config.release, arch)
+        .map(|binary| {
+            println!(
+                "  {} Build complete ({})",
+                cli_output::ICON_SUCCESS.green(),
+                binary.display()
+            );
+        })
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("C++ build failed: {e:#}"))))
 }
 
 /// Sync files to target using rsync

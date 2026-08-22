@@ -18,7 +18,7 @@
 ## Comece agora
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/release/install.sh | bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 

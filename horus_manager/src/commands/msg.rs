@@ -269,9 +269,125 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
 }
 
 /// Discover all message types from source files
-fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
-    let mut messages = Vec::new();
+/// Message directories belonging to `horus-robotics`.
+///
+/// The standard robotics messages (CmdVel, Imu, LaserScan, Odometry,
+/// JointState, ...) live in a separate git dependency, so they are not under
+/// the HORUS source tree. Cargo checks them out under
+/// `~/.cargo/git/checkouts/horus-robotics-<hash>/<rev>/`, and a local
+/// development checkout may sit beside the horus tree.
+///
+/// Returns every match; a missing directory is simply skipped, so this never
+/// turns an available message set into an error.
+fn robotics_message_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
 
+    // An explicit HORUS_SOURCE_DIR is an override: honour it exactly rather
+    // than blending in whatever else happens to be on the machine.
+    if std::env::var_os("HORUS_SOURCE_DIR").is_some() {
+        return dirs;
+    }
+
+    // Cargo's git checkout cache.
+    if let Some(home) = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs_next_home().map(|h| h.join(".cargo")))
+    {
+        let checkouts = home.join("git").join("checkouts");
+        if let Ok(entries) = fs::read_dir(&checkouts) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("horus-robotics-") {
+                    continue;
+                }
+                // Each checkout holds one directory per revision.
+                if let Ok(revs) = fs::read_dir(entry.path()) {
+                    for rev in revs.flatten() {
+                        let candidate = rev.path().join("src").join("messages");
+                        if candidate.is_dir() {
+                            dirs.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A sibling checkout, for anyone developing the two repos together.
+    if let Ok(source_root) = crate::commands::run::find_horus_source_dir() {
+        if let Some(parent) = source_root.parent() {
+            let candidate = parent.join("horus-robotics").join("src").join("messages");
+            if candidate.is_dir() {
+                dirs.push(candidate);
+            }
+        }
+    }
+
+    dirs
+}
+
+/// Home directory, without pulling in a dependency for one lookup.
+fn dirs_next_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+
+/// Messages declared in this project's `msgs/*.hmsg`, if we are in a project.
+///
+/// Silent when there is no project or no `msgs/` directory — `horus msg list`
+/// is used outside projects and must keep working. Parse failures are silent
+/// here too, because this is the *listing* path; `horus msg gen` is where a
+/// broken definition gets a diagnostic, and reporting it twice from two
+/// commands with different wording helps nobody.
+fn local_hmsg_messages() -> Vec<MessageInfo> {
+    let Ok((manifest, root)) = crate::manifest::HorusManifest::find_and_load() else {
+        return Vec::new();
+    };
+    let msgs_dir = root.join("msgs");
+    if !msgs_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&msgs_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "hmsg"))
+        .collect();
+    files.sort();
+
+    let mut out = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(defs) = crate::msgspec::parse::parse_file(&text, &file) else {
+            continue;
+        };
+        for d in defs {
+            out.push(MessageInfo {
+                name: d.name.clone(),
+                module: manifest.package.name.clone(),
+                fields: d
+                    .fields
+                    .iter()
+                    .map(|f| FieldInfo {
+                        name: f.name.clone(),
+                        field_type: crate::msgspec::canonical::render_rust(&f.ty),
+                        doc: f.doc.join(" "),
+                    })
+                    .collect(),
+                doc: d.doc.join(" "),
+                source_file: d.src.display().to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     // Find the message type definitions.
     //
     // These used to live in `horus_library/messages`, but horus_library was
@@ -307,48 +423,72 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
         }
     }
 
-    let mut messages_dir = None;
-    for path in &search_paths {
-        if path.exists() && path.is_dir() {
-            messages_dir = Some(path.clone());
-            break;
-        }
-    }
+    // The universal types are only half the picture. Every standard robotics
+    // message — CmdVel, Imu, LaserScan, Odometry — lives in `horus-robotics`,
+    // a separate git dependency, and this scan never looked there. So while a
+    // live topic reported its type correctly:
+    //
+    //     $ horus topic info cmd_vel      ->  Message Type: CmdVel
+    //     $ horus msg info CmdVel         ->  Message type 'CmdVel' not found
+    //
+    // the introspection command could not describe the very types users
+    // publish. Collect every message source rather than stopping at the first.
+    // `search_paths` are alternative locations for the *same* directory
+    // (horus_types/src), so they stay first-match-wins — an explicit
+    // HORUS_SOURCE_DIR must not be blended with whatever else is on the
+    // machine. The robotics directories are a genuinely different source and
+    // are additive.
+    // The project's own messages, when there are any.
+    //
+    // Parsed from `msgs/*.hmsg` with the strict parser rather than scraped out
+    // of the generated Rust: the `.hmsg` file is the definition, and going
+    // through the same parser means `horus msg hash` and the generated
+    // artifacts cannot compute the value two different ways.
+    let mut messages: Vec<MessageInfo> = local_hmsg_messages();
 
-    let messages_dir = messages_dir.ok_or_else(|| {
-        HorusError::Config(ConfigError::Other(
+    let mut message_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(found) = search_paths.iter().find(|p| p.is_dir()) {
+        message_dirs.push(found.clone());
+    }
+    message_dirs.extend(robotics_message_dirs());
+    message_dirs.dedup();
+
+    if message_dirs.is_empty() {
+        return Err(HorusError::Config(ConfigError::Other(
             "Could not find the HORUS message definitions (horus_types/src).\n  \
              Re-run the installer, or point HORUS_SOURCE at your HORUS source tree,\n  \
              e.g.: export HORUS_SOURCE=/path/to/horus"
                 .to_string(),
-        ))
-    })?;
+        )));
+    }
 
-    // Parse each .rs file in the messages directory
-    for entry in fs::read_dir(&messages_dir).map_err(HorusError::Io)? {
-        let entry = entry.map_err(HorusError::Io)?;
-        let path = entry.path();
+    for messages_dir in &message_dirs {
+        // Parse each .rs file in the messages directory
+        for entry in fs::read_dir(messages_dir).map_err(HorusError::Io)? {
+            let entry = entry.map_err(HorusError::Io)?;
+            let path = entry.path();
 
-        if path.extension().map(|e| e == "rs").unwrap_or(false) {
-            let filename = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+            if path.extension().map(|e| e == "rs").unwrap_or(false) {
+                let filename = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
 
-            // Skip mod.rs
-            if filename == "mod" {
-                continue;
-            }
+                // Skip mod.rs
+                if filename == "mod" {
+                    continue;
+                }
 
-            // Parse the file for struct definitions
-            if let Ok(content) = fs::read_to_string(&path) {
-                let file_messages = parse_messages_from_source(
-                    &content,
-                    &filename,
-                    path.to_string_lossy().to_string(),
-                );
-                messages.extend(file_messages);
+                // Parse the file for struct definitions
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let file_messages = parse_messages_from_source(
+                        &content,
+                        &filename,
+                        path.to_string_lossy().to_string(),
+                    );
+                    messages.extend(file_messages);
+                }
             }
         }
     }
@@ -358,6 +498,9 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
         std::cmp::Ordering::Equal => a.name.cmp(&b.name),
         other => other,
     });
+    // A type can appear in more than one source tree (a local checkout and the
+    // cargo git cache, say); report it once.
+    messages.dedup_by(|a, b| a.module == b.module && a.name == b.name);
 
     Ok(messages)
 }
@@ -515,7 +658,26 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     }
 
     let name = parts[0].trim().to_string();
-    let field_type = parts[1].trim().trim_end_matches(',').trim().to_string();
+    // Cut a trailing line comment before the comma. Without this,
+    //
+    //     pub linear: f32,  // m/s forward velocity
+    //
+    // yielded the *type* "f32,  // m/s forward velocity", which then went into
+    // the layout hash — so `horus msg hash CmdVel` printed 0xe9574bd4 while the
+    // runtime computes 0x3836b786 over `CmdVel|timestamp_ns:u64|linear:f32|angular:f32`.
+    // The command exists to be compared against a layout-mismatch error, and for
+    // every commented message type it printed a number that error never shows.
+    //
+    // A `//` cannot appear inside a real Rust field type, so splitting on it is
+    // safe here.
+    let field_type = parts[1]
+        .split("//")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .to_string();
 
     // Skip if it looks like a method signature
     if field_type.contains("->") || field_type.contains("fn(") {
@@ -530,26 +692,62 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     Some((name, field_type))
 }
 
+/// Canonical string a message's layout hash is computed over.
+///
+/// Must stay byte-identical to what the `message!` macro concatenates for
+/// `LAYOUT_HASH`, or the two hashes describe the same type and disagree.
+///
+/// Shape: `Name|field:Type|field:Type`
+fn canonical_message_form(name: &str, fields: &[(String, String)]) -> String {
+    let mut canonical = String::from(name);
+    for (field_name, field_type) in fields {
+        canonical.push('|');
+        canonical.push_str(field_name);
+        canonical.push(':');
+        canonical.push_str(field_type);
+    }
+    canonical
+}
+
+/// FNV-1a, matching `horus_core::communication::topic::const_fnv1a`.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 2166136261;
+    for &byte in bytes {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    hash
+}
+
 /// Compute a definition hash for a message type.
 ///
-/// Uses SipHash (via `DefaultHasher`) on the canonical representation
-/// of the message (module::name + field names/types). This detects
-/// when a message definition changes across versions.
+/// Two things were wrong with the previous implementation.
+///
+/// It used `DefaultHasher`, whose output std explicitly does not guarantee
+/// between Rust releases: "the internal algorithm is not specified, and so it
+/// and its hashes should not be relied upon over releases." A definition hash
+/// that changes when you upgrade your toolchain reports every message as
+/// modified, which is the one thing it exists to detect.
+///
+/// And it hashed a different canonical form from the one the runtime uses, so
+/// `horus msg hash Pose` and the layout-mismatch error raised by
+/// `Topic::new_checked` printed different numbers for the same type — actively
+/// misleading for the one task the command is for.
+///
+/// Now: FNV-1a over `Name|field:Type|…`, byte-identical to the `LAYOUT_HASH`
+/// the `message!` macro emits, so the number the CLI prints is the number the
+/// runtime compares.
 fn compute_message_definition_hash(msg: &MessageInfo) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    let fields: Vec<(String, String)> = msg
+        .fields
+        .iter()
+        .map(|f| (f.name.clone(), f.field_type.clone()))
+        .collect();
 
-    // Create a canonical string representation
-    let mut canonical = format!("{}::{}\n", msg.module, msg.name);
-    for field in &msg.fields {
-        canonical.push_str(&format!("  {}: {}\n", field.name, field.field_type));
-    }
-
-    let mut hasher = DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{:016x}", hash)
+    format!(
+        "{:#010x}",
+        fnv1a(canonical_message_form(&msg.name, &fields).as_bytes())
+    )
 }
 
 #[cfg(test)]
@@ -704,7 +902,7 @@ pub struct B {
         let h1 = compute_message_definition_hash(&msg);
         let h2 = compute_message_definition_hash(&msg);
         assert_eq!(h1, h2, "hash must be deterministic");
-        assert_eq!(h1.len(), 16, "hash should be 16 hex chars");
+        assert_eq!(h1.len(), 10, "hash should be 0x + 8 hex chars");
     }
 
     #[test]
@@ -1170,9 +1368,12 @@ pub struct WithGap {
             source_file: String::new(),
         };
         let hash = compute_message_definition_hash(&msg);
-        assert_eq!(hash.len(), 16);
-        // Should be valid hex
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // "0x" + 8 hex digits: a 32-bit FNV-1a, the same width and encoding the
+        // runtime prints in a layout-mismatch error, so the two can be compared
+        // by eye.
+        assert_eq!(hash.len(), 10, "expected 0x + 8 hex digits, got {hash}");
+        assert!(hash.starts_with("0x"));
+        assert!(hash[2..].chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1188,10 +1389,17 @@ pub struct WithGap {
             doc: String::new(),
             source_file: String::new(),
         };
-        assert_ne!(
+        // The module deliberately does NOT participate. This is a *layout*
+        // hash: it must equal the `LAYOUT_HASH` the `message!` macro emits,
+        // which is built from `stringify!($name)` and the fields, and it is
+        // compared against the value in the SHM header. Two identically shaped
+        // messages are layout-compatible wherever they are declared, and a
+        // same-short-name collision between different types is caught
+        // separately by the type-name check in the topic open path.
+        assert_eq!(
             compute_message_definition_hash(&make("alpha")),
             compute_message_definition_hash(&make("beta")),
-            "different modules should produce different hashes"
+            "the module is not part of the layout"
         );
     }
 
@@ -1322,10 +1530,10 @@ pub struct WithGap {
             source_file: String::new(),
         };
         let hash = compute_message_definition_hash(&msg);
-        assert_eq!(hash.len(), 16, "hash should be exactly 16 hex chars");
+        assert_eq!(hash.len(), 10, "hash should be exactly 0x + 8 hex chars");
         assert!(
-            hash.chars().all(|c| c.is_ascii_hexdigit()),
-            "hash should be valid lowercase hex: {}",
+            hash.starts_with("0x") && hash[2..].chars().all(|c| c.is_ascii_hexdigit()),
+            "hash should be 0x followed by lowercase hex: {}",
             hash
         );
     }
@@ -1927,7 +2135,7 @@ pub struct Cmd {
         let hash1 = compute_message_definition_hash(&msgs[0]);
         let hash2 = compute_message_definition_hash(&msgs[0]);
         assert_eq!(hash1, hash2, "hash should be deterministic across calls");
-        assert_eq!(hash1.len(), 16);
+        assert_eq!(hash1.len(), 10);
     }
 
     #[test]
@@ -2131,4 +2339,339 @@ pub struct JsonTest {
         result.unwrap();
         drop(tmp);
     }
+}
+
+#[cfg(test)]
+mod robotics_message_discovery_tests {
+    use super::*;
+
+    /// `horus msg` scanned only `horus_types/src`, so it could describe the 25
+    /// universal types and none of the standard robotics messages — which are
+    /// the ones users actually publish. A live topic reported its type
+    /// correctly while the introspection command denied the type existed:
+    ///
+    ///     $ horus topic info cmd_vel   ->  Message Type: CmdVel
+    ///     $ horus msg info CmdVel      ->  Message type 'CmdVel' not found
+    #[test]
+    fn standard_robotics_messages_are_discoverable() {
+        let dirs = robotics_message_dirs();
+        if dirs.is_empty() {
+            eprintln!("skipping: no horus-robotics checkout on this machine");
+            return;
+        }
+
+        let messages = discover_messages().expect("discovery must succeed");
+        let names: Vec<&str> = messages.iter().map(|m| m.name.as_str()).collect();
+
+        for expected in ["CmdVel", "Imu", "LaserScan"] {
+            assert!(
+                names.contains(&expected),
+                "`{expected}` is a standard robotics message and must be \
+                 describable by `horus msg info`; found {} types",
+                names.len()
+            );
+        }
+    }
+
+    /// The universal types must not be lost by adding the second source.
+    #[test]
+    fn universal_types_are_still_present() {
+        let messages = discover_messages().expect("discovery must succeed");
+        let names: Vec<&str> = messages.iter().map(|m| m.name.as_str()).collect();
+        for expected in ["Twist", "Pose2D"] {
+            assert!(names.contains(&expected), "lost `{expected}`: {names:?}");
+        }
+    }
+
+    /// A type present in two source trees (a local checkout and the cargo git
+    /// cache) must be listed once.
+    #[test]
+    fn types_are_not_duplicated_across_source_trees() {
+        let messages = discover_messages().expect("discovery must succeed");
+        let mut seen = std::collections::HashSet::new();
+        for m in &messages {
+            assert!(
+                seen.insert((m.module.clone(), m.name.clone())),
+                "`{}::{}` reported more than once",
+                m.module,
+                m.name
+            );
+        }
+    }
+
+    /// Discovery must never fail because an optional source is absent.
+    #[test]
+    fn missing_robotics_checkout_is_not_an_error() {
+        // robotics_message_dirs only returns directories that exist, so an
+        // absent checkout contributes nothing rather than erroring.
+        for dir in robotics_message_dirs() {
+            assert!(
+                dir.is_dir(),
+                "{} was returned but does not exist",
+                dir.display()
+            );
+        }
+    }
+}
+
+// ─── horus msg gen ───────────────────────────────────────────────────────────
+
+/// Generate Rust, C++ and Python artifacts from `msgs/*.hmsg`.
+///
+/// A message type usable from all three languages currently has to be written
+/// into six places, each with its own syntax. They do not stay in sync: the
+/// registries hold 91, 75, 75, 68, 62, 61 and 60 entries, and `horus_cpp`'s
+/// layout contract exists because the Rust and C++ definitions of
+/// `JointCommand` once drifted to 928 bytes against 88 — an 840-byte overrun on
+/// every receive.
+///
+/// This produces all of them from one definition, with one layout hash.
+pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
+    use crate::msgspec::{canonical, emit_cpp, emit_ffi, emit_python, emit_rust, layout, parse, Package};
+
+    let (manifest, root) = crate::manifest::HorusManifest::find_and_load()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e}"))))?;
+
+    let msgs_dir = root.join("msgs");
+    if !msgs_dir.is_dir() {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "No msgs/ directory in {}.\n\n\
+             Message definitions live in `msgs/*.hmsg`. Create one:\n\n  \
+             mkdir msgs && cat > msgs/{}.hmsg <<'EOF'\n  \
+             #[topic = \"sensor.data\"]\n  \
+             SensorReading {{\n      \
+             timestamp_ns: u64,\n      \
+             value: f32,\n  \
+             }}\n  EOF",
+            root.display(),
+            manifest.package.name.replace('-', "_")
+        ))));
+    }
+
+    // Sorted, so the generated output does not depend on directory order.
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&msgs_dir)
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("reading msgs/: {e}"))))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "hmsg"))
+        .collect();
+    files.sort();
+
+    if files.is_empty() {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "{} contains no .hmsg files",
+            msgs_dir.display()
+        ))));
+    }
+
+    let mut messages = Vec::new();
+    let mut diags = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file)
+            .map_err(|e| HorusError::Config(ConfigError::Other(format!("{}: {e}", file.display()))))?;
+        match parse::parse_file(&text, file) {
+            Ok(mut m) => messages.append(&mut m),
+            Err(mut d) => diags.append(&mut d),
+        }
+    }
+
+    if !diags.is_empty() {
+        let body = diags
+            .iter()
+            .map(|d| format!("  {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "{} problem(s) in message definitions:\n{body}",
+            diags.len()
+        ))));
+    }
+
+    // Duplicate names across files would produce two types with one name.
+    let mut seen: std::collections::HashMap<&str, &std::path::Path> =
+        std::collections::HashMap::new();
+    for m in &messages {
+        if let Some(prev) = seen.insert(&m.name, &m.src) {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "message `{}` is declared twice: {} and {}",
+                m.name,
+                prev.display(),
+                m.src.display()
+            ))));
+        }
+    }
+
+    let pkg = Package {
+        name: manifest.package.name.clone(),
+        messages,
+    };
+
+    // References this generator cannot size exactly are rejected rather than
+    // guessed. A wrong size produces a header whose static_assert passes
+    // against the wrong number, which is the failure the layout contract exists
+    // to catch.
+    let unresolved = emit_rust::unresolved_refs(&pkg);
+    if !unresolved.is_empty() {
+        let body = unresolved
+            .iter()
+            .map(|(m, r)| format!("  {m} references `{r}`"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "message definitions can reference primitives, arrays, and other \
+             messages in msgs/ — nothing else:\n{body}\n\n\
+             Write the fields out. A built-in like Vector3 is three f64s; \
+             inlining them keeps the layout exact and checkable."
+        ))));
+    }
+
+    // Layouts, in declaration order, so a message may reference one declared
+    // above it.
+    let mut env = layout::builtin_layouts();
+    for m in &pkg.messages {
+        match layout::compute(m, &env) {
+            Ok(l) => {
+                env.insert(m.name.clone(), (l.size, l.align));
+            }
+            Err(missing) => {
+                return Err(HorusError::Config(ConfigError::Other(format!(
+                    "{}: `{}` is used before it is declared — declare it above `{}`",
+                    m.src.display(),
+                    missing,
+                    m.name
+                ))));
+            }
+        }
+    }
+
+    let horus_src = crate::commands::run::run_rust::find_horus_source_dir()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e:#}"))))?;
+
+    let gen_root = root.join(".horus/generated");
+    let artifacts: Vec<(std::path::PathBuf, String)> = vec![
+        (
+            gen_root.join("msgs/Cargo.toml"),
+            emit_rust::cargo_toml(&pkg, &horus_src, &manifest.package.version),
+        ),
+        (
+            gen_root.join("msgs/src/lib.rs"),
+            emit_rust::lib_rs(&pkg, &env),
+        ),
+        (
+            gen_root.join("msgs_ffi/Cargo.toml"),
+            emit_ffi::cargo_toml(&pkg, &horus_src, &manifest.package.version),
+        ),
+        (
+            gen_root.join("msgs_ffi/src/lib.rs"),
+            emit_ffi::lib_rs(&pkg),
+        ),
+        (
+            gen_root
+                .join("include")
+                .join(pkg.name.replace('-', "_"))
+                .join("msgs.hpp"),
+            emit_cpp::header(&pkg, &env),
+        ),
+        (
+            gen_root.join("python").join("msgs.py"),
+            emit_python::module(&pkg, &env),
+        ),
+    ];
+
+    if check {
+        let mut stale = Vec::new();
+        for (path, want) in &artifacts {
+            let have = std::fs::read_to_string(path).unwrap_or_default();
+            if &have != want {
+                stale.push(path.clone());
+            }
+        }
+        if !stale.is_empty() {
+            let body = stale
+                .iter()
+                .map(|p| format!("  {}", p.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "generated message artifacts are out of date:\n{body}\n\n\
+                 Run `horus msg gen`."
+            ))));
+        }
+        if !json {
+            println!(
+                "{} {} message(s) up to date",
+                cli_output::ICON_SUCCESS.green(),
+                pkg.messages.len()
+            );
+        }
+        return Ok(());
+    }
+
+    for (path, contents) in &artifacts {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                HorusError::Config(ConfigError::Other(format!("{}: {e}", parent.display())))
+            })?;
+        }
+        std::fs::write(path, contents).map_err(|e| {
+            HorusError::Config(ConfigError::Other(format!("{}: {e}", path.display())))
+        })?;
+    }
+
+    if json {
+        let entries: Vec<String> = pkg
+            .messages
+            .iter()
+            .map(|m| {
+                let l = layout::compute(m, &env).ok();
+                format!(
+                    "{{\"name\":\"{}\",\"hash\":\"0x{:08x}\",\"canonical\":{:?},\"size\":{},\"fields\":{}}}",
+                    m.name,
+                    canonical::layout_hash(m),
+                    canonical::canonical_form(m),
+                    l.as_ref().map(|l| l.size).unwrap_or(0),
+                    m.fields.len()
+                )
+            })
+            .collect();
+        println!(
+            "{{\"messages\":[{}],\"artifacts\":[{}]}}",
+            entries.join(","),
+            artifacts
+                .iter()
+                .map(|(p, _)| format!("{:?}", p.display().to_string()))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{} Generated {} message(s) from {} file(s)",
+        cli_output::ICON_SUCCESS.green(),
+        pkg.messages.len(),
+        files.len()
+    );
+    for m in &pkg.messages {
+        let l = layout::compute(m, &env).ok();
+        let size = l.as_ref().map(|l| l.size).unwrap_or(0);
+        let pad = l.as_ref().map(|l| l.padding).unwrap_or(0);
+        println!(
+            "    {:<24} 0x{:08x}  {} bytes{}",
+            m.name,
+            canonical::layout_hash(m),
+            size,
+            if pad > 0 {
+                format!(" ({pad} padding)")
+            } else {
+                String::new()
+            }
+        );
+    }
+    println!();
+    for (path, _) in &artifacts {
+        let rel = path.strip_prefix(&root).unwrap_or(path);
+        println!("    {}", rel.display().to_string().dimmed());
+    }
+    Ok(())
 }

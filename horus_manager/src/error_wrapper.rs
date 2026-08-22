@@ -283,7 +283,7 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
                 format!(
                     "Feature '{}' does not exist in the crate. Check available features with:\n  {}",
                     feature.cyan(),
-                    "cargo doc --open".green()
+                    "horus doc --open".green()
                 ),
             ));
         }
@@ -364,9 +364,14 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
     }
 
     // E0433: undeclared crate or module
+    //
+    // rustc has used two wordings for this. Matching only the older one meant a
+    // current toolchain fell through to rustc's own `cargo add` suggestion,
+    // which is wrong advice in a HORUS project — dependencies go in horus.toml,
+    // and .horus/Cargo.toml is regenerated on every build.
     if let Some(name) = extract_pattern(
         stderr,
-        r"error\[E0433\]: failed to resolve: use of undeclared crate or module `([^`]+)`",
+        r"error\[E0433\]: (?:failed to resolve: use of undeclared crate or module|cannot find module or crate) `([^`]+)`",
     ) {
         diagnostics.push(
             Diagnostic::new(
@@ -396,7 +401,7 @@ pub fn cargo_error_hint(stderr: &str) -> Vec<Diagnostic> {
             format!(
                 "Method '{}' not found. Check the type's API with:\n  {}\n  or add a {} import for the trait that provides it",
                 method.cyan(),
-                "cargo doc --open".green(),
+                "horus doc --open".green(),
                 "use".cyan()
             ),
         ));

@@ -43,6 +43,27 @@ struct Block {
     doc_file: String,
     line: usize,
     code: String,
+    /// How this snippet has to be surrounded to become compilable Rust.
+    ///
+    /// A method body printed without its `impl`, or a few loose statements meant
+    /// to be pasted into a `tick()`, is not standalone — but it is not
+    /// unverifiable either. Supplying the context the prose implies is enough to
+    /// put the horus calls inside it in front of the compiler, which is the
+    /// whole point. Names the reader owns still fail to resolve, and those land
+    /// in the advisory bucket exactly as they do for any other block.
+    ctx: Ctx,
+}
+
+/// The scaffolding a block needs before it will compile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum Ctx {
+    /// Self-contained: items at the top level, or statements in a function.
+    #[default]
+    Standalone,
+    /// Loose statements — wrap in a function body.
+    Statements,
+    /// A bare method — wrap in `impl` on a synthetic type.
+    Method,
 }
 
 /// Why a block is not compiled. Reported so coverage stays auditable — a filter
@@ -71,6 +92,94 @@ enum Skip {
     /// `pub fn send_goal_and_wait(&self, …) -> Result<A::Result, ActionError>`.
     /// It is not a program and cannot compile on its own.
     SignatureNotation,
+    /// Brackets do not balance — an excerpt cut mid-block, e.g. an `impl` shown
+    /// with its opening brace and no closing one. No wrapper can rescue this:
+    /// it does not parse, and rustc reports only the *first* unclosed delimiter
+    /// per crate before giving up, so leaving one in a batch hides every other
+    /// diagnostic behind it.
+    Unbalanced,
+}
+
+/// Whether `(`/`[`/`{` pair up across the whole snippet.
+///
+/// Strings, chars and comments are skipped, because a brace inside `"{}"` or a
+/// commented-out line is not structure. Lifetimes (`&'a`) and the char literal
+/// `\'` are the two places a naive quote scanner goes wrong, so both are
+/// handled explicitly.
+fn delimiters_balance(code: &str) -> bool {
+    let b: Vec<char> = code.chars().collect();
+    let mut stack: Vec<char> = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            '/' if i + 1 < b.len() && b[i + 1] == '/' => {
+                while i < b.len() && b[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < b.len() && b[i + 1] == '*' => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            '"' => {
+                // Raw strings (r"…", r#"…"#) are rare in these snippets and a
+                // plain scan handles the common `r"…"` correctly anyway.
+                i += 1;
+                while i < b.len() {
+                    if b[i] == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == '"' {
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            '\'' => {
+                // A lifetime, not a char literal, if what follows is an
+                // identifier that is not immediately closed by another quote.
+                let is_char_lit = i + 2 < b.len()
+                    && ((b[i + 1] == '\\' ) || b[i + 2] == '\'');
+                if is_char_lit {
+                    i += 1;
+                    while i < b.len() {
+                        if b[i] == '\\' {
+                            i += 2;
+                            continue;
+                        }
+                        if b[i] == '\'' {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                i += 1;
+            }
+            '(' | '[' | '{' => {
+                stack.push(c);
+                i += 1;
+            }
+            ')' | ']' | '}' => {
+                let want = match c {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                if stack.pop() != Some(want) {
+                    return false;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    stack.is_empty()
 }
 
 // ─── Locating things ────────────────────────────────────────────────────────
@@ -107,6 +216,7 @@ fn rust_blocks(text: &str, rel: &str) -> Vec<(Block, Option<Skip>)> {
                         doc_file: rel.to_string(),
                         line: start,
                         code,
+                        ctx: Ctx::Standalone,
                     };
                     let skip = if is_ignore {
                         Some(Skip::RustdocIgnore)
@@ -141,6 +251,93 @@ fn rust_blocks(text: &str, rel: &str) -> Vec<(Block, Option<Skip>)> {
     out
 }
 
+/// The block with string/char-literal bodies and comment bodies blanked out.
+///
+/// `classify` tested `code.contains("...")` over the raw block to spot an
+/// outline. A `...` inside a string is prose, not an omission:
+/// `tutorials/02-motor-controller-rust.mdx` logs
+/// `"Waiting for encoder feedback..."`, and that single string skipped the
+/// tutorial's entire main example — three nodes, the PID loop and the
+/// safe-state hook — as an outline. A deliberate typo introduced into it still
+/// passed the suite.
+///
+/// Comment bodies are blanked for the same reason in reverse: `// ...` marks an
+/// omission in prose but does not stop the block compiling, so such a block can
+/// and should be held to the guarantee.
+fn strip_strings_and_comments(code: &str) -> String {
+    let b: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            '/' if i + 1 < b.len() && b[i + 1] == '/' => {
+                while i < b.len() && b[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < b.len() && b[i + 1] == '*' => {
+                out.push_str("  ");
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                    out.push(if b[i] == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+                out.push_str("  ");
+                i += 2;
+            }
+            '"' => {
+                out.push('"');
+                i += 1;
+                while i < b.len() {
+                    if b[i] == '\\' {
+                        out.push_str("  ");
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == '"' {
+                        break;
+                    }
+                    out.push(' ');
+                    i += 1;
+                }
+                out.push('"');
+                i += 1;
+            }
+            '\'' => {
+                // A lifetime, not a char literal, if what follows is an
+                // identifier that is not immediately closed by another quote.
+                let is_char_lit =
+                    i + 2 < b.len() && ((b[i + 1] == '\\') || b[i + 2] == '\'');
+                out.push('\'');
+                if is_char_lit {
+                    i += 1;
+                    while i < b.len() {
+                        if b[i] == '\\' {
+                            out.push_str("  ");
+                            i += 2;
+                            continue;
+                        }
+                        if b[i] == '\'' {
+                            break;
+                        }
+                        out.push(' ');
+                        i += 1;
+                    }
+                    out.push('\'');
+                }
+                i += 1;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// Decide whether a block can be held to a compile guarantee.
 ///
 /// Deliberately does **not** honour the docs' `// simplified` marker — see the
@@ -149,7 +346,9 @@ fn classify(code: &str) -> Option<Skip> {
     let t = code.trim();
     // Specific reasons first: a block containing `...` is an outline whatever
     // its length, and reporting it as `Trivial` would misattribute the skip.
-    if t.contains("...") {
+    // Only code counts — see strip_strings_and_comments.
+    let bare = strip_strings_and_comments(t);
+    if bare.contains("...") {
         return Some(Skip::Ellipsis);
     }
     let lower = t.to_ascii_lowercase();
@@ -337,9 +536,30 @@ fn collect(docs: &Path, filter: Option<&str>) -> (Vec<Block>, BTreeMap<Skip, usi
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        for (b, skip) in rust_blocks(&text, &rel) {
+        for (mut b, skip) in rust_blocks(&text, &rel) {
             match skip {
+                // These two were skipped for being non-standalone, which is
+                // true and beside the point: the prose says what surrounds
+                // them, so supply it and compile them anyway. Counted in both
+                // places so the coverage report stays honest about what needed
+                // help to build.
+                Some(s @ (Skip::MethodFragment | Skip::Fragment)) => {
+                    *skipped.entry(s).or_default() += 1;
+                    if delimiters_balance(&b.code) {
+                        b.ctx = if s == Skip::MethodFragment {
+                            Ctx::Method
+                        } else {
+                            Ctx::Statements
+                        };
+                        keep.push(b);
+                    } else {
+                        *skipped.entry(Skip::Unbalanced).or_default() += 1;
+                    }
+                }
                 Some(s) => *skipped.entry(s).or_default() += 1,
+                None if !delimiters_balance(&b.code) => {
+                    *skipped.entry(Skip::Unbalanced).or_default() += 1;
+                }
                 None => keep.push(b),
             }
         }
@@ -526,6 +746,30 @@ fn missing_dependencies(code: &str) -> Vec<String> {
 /// whole programs still type-check without becoming entry points.
 fn wrap(idx: usize, b: &Block) -> String {
     let name = format!("docblock_{idx}");
+    // A bare method needs an `impl` to sit in. The receiver decides the shape:
+    // `&mut self` / `&self` need a type, an associated function does not care.
+    // `_DocSelf` carries the fields a doc method is likely to touch only in the
+    // sense that it carries none — an unresolved `self.foo` is a
+    // reader-owned-name failure, which the advisory split already handles.
+    if b.ctx == Ctx::Method {
+        return format!(
+            "// {}:{}\n#[allow(dead_code, unused_imports, unused_variables, unused_mut)]\nmod {name} {{\n    use horus::prelude::*;\n    struct _DocSelf;\n    impl _DocSelf {{\n{}\n    }}\n}}\n",
+            b.doc_file, b.line, b.code
+        );
+    }
+    if b.ctx == Ctx::Statements {
+        // The closure returns horus's own `Result`, not `Box<dyn Error>`. These
+        // fragments are lifted out of horus functions, so they contain bare
+        // `return Err(Error::node(..))` as often as they contain `?`, and a
+        // boxed error type accepts the second while rejecting the first — which
+        // reported correct documentation as a contradiction. `?` still works on
+        // anything horus has a `From` impl for, which is what the surrounding
+        // function would have offered anyway.
+        return format!(
+            "// {}:{}\n#[allow(dead_code, unused_imports, unused_variables, unused_mut)]\nmod {name} {{\n    use horus::prelude::*;\n    fn _snippet() {{\n        let _f = || -> horus::error::Result<()> {{\n{}\n            Ok(())\n        }};\n    }}\n}}\n",
+            b.doc_file, b.line, b.code
+        );
+    }
     if is_item_level(&b.code) {
         format!(
             "// {}:{}\n#[allow(dead_code, unused_imports, unused_variables, unused_mut)]\nmod {name} {{\n{}{}\n}}\n",
@@ -671,6 +915,15 @@ const API_MISMATCH_CODES: &[&str] = &[
 ];
 
 fn is_api_mismatch(error: &str) -> bool {
+    // `_DocSelf` is the synthetic receiver supplied to a bare method fragment.
+    // It has no fields by design, so every `self.whatever` in such a block
+    // produces E0609 "no field … on type … _DocSelf". That is a name the
+    // reader's own struct owns — the same class as an undefined local type —
+    // not a wrong field on a horus struct, and gating on it would fail dozens
+    // of blocks that document perfectly good code.
+    if error.contains("_DocSelf") {
+        return false;
+    }
     API_MISMATCH_CODES.iter().any(|c| error.contains(c))
 }
 
@@ -714,6 +967,32 @@ fn undefined_names(errors: &[String]) -> Vec<String> {
 /// A "no field X on type T" / "T has no field named X" error where the page
 /// defines its own `T`, so the prelude's same-named type was picked only because
 /// the block was compiled alone.
+/// True when `page_source` declares `<keyword> <name>` as a whole word.
+///
+/// A plain `contains` was the original test, and it silently excused real
+/// defects. A page that declares `struct ImuSensor` contains the substring
+/// `struct Imu`, so every wrong-field error against the standard `Imu` message
+/// was absolved as "the page defines its own Imu" — the block never compiled
+/// and the suite still passed. The same shadowing holds for `Pose`/`PoseStamped`
+/// and `Twist`/`TwistWithCovariance`. The declared name must end where the
+/// searched-for name ends.
+fn declares(page_source: &str, keyword: &str, name: &str) -> bool {
+    let needle = format!("{keyword} {name}");
+    let bytes = page_source.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = page_source[from..].find(&needle) {
+        let end = from + pos + needle.len();
+        if !bytes
+            .get(end)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
 fn is_shadowed_field_error(error: &str, page_source: &str) -> bool {
     if !error.contains("E0560") && !error.contains("E0609") {
         return false;
@@ -726,7 +1005,7 @@ fn is_shadowed_field_error(error: &str, page_source: &str) -> bool {
         .filter_map(|s| s.rsplit("::").next())
         .find(|s| s.chars().next().is_some_and(char::is_uppercase));
     let Some(ty) = ty else { return false };
-    page_source.contains(&format!("struct {ty}")) || page_source.contains(&format!("enum {ty}"))
+    declares(page_source, "struct", ty) || declares(page_source, "enum", ty)
 }
 
 /// True when every failure is an identifier the *same page* defines elsewhere.
@@ -761,20 +1040,13 @@ fn is_page_local_name_error(error: &str, page_source: &str) -> bool {
     }
     names.iter().all(|n| {
         [
-            format!("struct {n}"),
-            format!("enum {n}"),
-            format!("trait {n}"),
-            format!("type {n}"),
-            format!("fn {n}"),
-            format!("mod {n}"),
+            "struct", "enum", "trait", "type", "fn", "mod",
             // A page may only ever `impl Node for MotorController`, treating the
             // type as one the reader already has in their project.
-            format!("impl {n}"),
-            format!("for {n} "),
-            format!("for {n}\n"),
+            "impl", "for",
         ]
         .iter()
-        .any(|d| page_source.contains(d.as_str()))
+        .any(|kw| declares(page_source, kw, n))
     })
 }
 
@@ -839,37 +1111,70 @@ fn documented_rust_examples_compile() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let indexed: Vec<(usize, &Block)> = blocks.iter().enumerate().collect();
 
-    // Batching keeps `cargo check` invocations down; on failure the batch is
-    // re-run per block so one bad snippet cannot mask the rest of its batch.
+    // Batching keeps `cargo check` invocations down, but a batch is one crate,
+    // and rustc stops after name resolution if resolution failed anywhere in
+    // it. One block naming a type the reader owns therefore suppresses every
+    // type error in the other thirty-nine — and which block that is depends on
+    // the batch boundary, so the same docs reported a different set of API
+    // contradictions run to run. That is a flaky gate, which is worse than no
+    // gate.
+    //
+    // So: compile in rounds. Each round batches whatever is still unexplained,
+    // records every block that produced a diagnostic, and drops those from the
+    // next round. Round one clears out the resolution failures; round two type
+    // checks the survivors that they were hiding. It converges when a round
+    // finds nothing new, which is also the proof that nothing is still masked.
+    // Two or three rounds in practice, and the batch count shrinks each time.
     const BATCH: usize = 40;
+    const MAX_ROUNDS: usize = 8;
     let mut failures: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for (n, chunk) in indexed.chunks(BATCH).enumerate() {
-        let dir = tmp.path().join(format!("batch{n}"));
-        let (ok, stderr, spans) = check_batch(&dir, chunk);
-        if ok {
-            continue;
-        }
-        let attributed = attribute(&stderr, chunk, &spans);
-        if attributed.is_empty() {
-            // A crate-level failure (not attributable to a line) — bisect.
-            for one in chunk {
-                let d = tmp.path().join(format!("batch{n}_{}", one.0));
-                let (ok1, err1, sp1) = check_batch(&d, std::slice::from_ref(one));
-                if !ok1 {
-                    let a = attribute(&err1, std::slice::from_ref(one), &sp1);
-                    failures.entry(one.0).or_default().extend(
-                        a.get(&one.0).cloned().unwrap_or_else(|| {
-                            vec![err1.lines().take(3).collect::<Vec<_>>().join(" | ")]
-                        }),
-                    );
+    let mut pending: Vec<(usize, &Block)> = indexed.clone();
+
+    for round in 0..MAX_ROUNDS {
+        let mut newly_failed: Vec<usize> = Vec::new();
+        for (n, chunk) in pending.chunks(BATCH).enumerate() {
+            let dir = tmp.path().join(format!("r{round}b{n}"));
+            let (ok, stderr, spans) = check_batch(&dir, chunk);
+            if ok {
+                continue;
+            }
+            let attributed = attribute(&stderr, chunk, &spans);
+            if attributed.is_empty() {
+                // A crate-level failure (not attributable to a line) — bisect.
+                for one in chunk {
+                    let d = tmp.path().join(format!("r{round}b{n}_{}", one.0));
+                    let (ok1, err1, sp1) = check_batch(&d, std::slice::from_ref(one));
+                    if !ok1 {
+                        let a = attribute(&err1, std::slice::from_ref(one), &sp1);
+                        failures.entry(one.0).or_default().extend(
+                            a.get(&one.0).cloned().unwrap_or_else(|| {
+                                vec![err1.lines().take(3).collect::<Vec<_>>().join(" | ")]
+                            }),
+                        );
+                        newly_failed.push(one.0);
+                    }
+                }
+            } else {
+                for (idx, errs) in attributed {
+                    failures.entry(idx).or_default().extend(errs);
+                    newly_failed.push(idx);
                 }
             }
-        } else {
-            for (idx, errs) in attributed {
-                failures.entry(idx).or_default().extend(errs);
-            }
         }
-        eprintln!("batch {n}: {} block(s) failing so far", failures.len());
+        eprintln!(
+            "round {round}: checked {} block(s), {} newly failing, {} total",
+            pending.len(),
+            newly_failed.len(),
+            failures.len()
+        );
+        if newly_failed.is_empty() {
+            break;
+        }
+        assert!(
+            round + 1 < MAX_ROUNDS,
+            "still finding new failures after {MAX_ROUNDS} rounds — masking has not              converged, so the report below would be incomplete"
+        );
+        pending.retain(|(idx, _)| !newly_failed.contains(idx));
     }
 
     // Drop blocks whose only complaint is a name the rest of their page defines.
@@ -1013,6 +1318,80 @@ mod extractor {
     }
 
     #[test]
+    fn an_ellipsis_in_prose_does_not_skip_the_block() {
+        // Regression: tutorials/02-motor-controller-rust.mdx logs
+        // "Waiting for encoder feedback...". classify() tested the raw block
+        // for "...", so that one string skipped the tutorial's entire main
+        // example as an outline — a deliberate typo in it still passed.
+        let in_string = "fn main() {\n    println!(\"Waiting...\");\n}";
+        assert_eq!(classify(in_string), None, "a `...` inside a string is prose");
+
+        let in_comment = "fn main() {\n    // more setup ...\n    let x = 1;\n}";
+        assert_eq!(
+            classify(in_comment),
+            None,
+            "a `...` in a comment does not stop the block compiling"
+        );
+
+        // A real outline is still skipped.
+        let outline = "fn main() {\n    let cfg = ...;\n    run(cfg);\n}";
+        assert_eq!(classify(outline), Some(Skip::Ellipsis));
+    }
+
+    #[test]
+    fn strip_strings_and_comments_blanks_only_prose() {
+        let stripped = strip_strings_and_comments("let s = \"a...b\"; let n = 1;");
+        assert!(!stripped.contains("..."), "string body must be blanked");
+        assert!(stripped.contains("let n = 1;"), "code must survive: {stripped}");
+
+        let stripped = strip_strings_and_comments("let n = 1; // trailing ...\nlet m = 2;");
+        assert!(!stripped.contains("..."));
+        assert!(stripped.contains("let m = 2;"));
+
+        // Bare code is untouched.
+        assert!(strip_strings_and_comments("let x = ...;").contains("..."));
+        // A lifetime is not a char literal, so what follows it must survive.
+        let lt = strip_strings_and_comments("fn f<'a>(x: &'a str) -> &'a str { x }");
+        assert!(lt.contains("str"), "lifetime scan ate the code: {lt}");
+    }
+
+    #[test]
+    fn a_longer_type_name_does_not_excuse_a_field_error() {
+        // Regression: tutorials/01-sensor-node-rust.mdx defines `struct ImuSensor`
+        // and uses the prelude's `Imu`. A `contains("struct Imu")` test matched
+        // `struct ImuSensor`, so a genuinely wrong field on `Imu` was reported as
+        // "referenced types defined elsewhere on their page" and the suite passed
+        // with an example that did not compile.
+        let e = "src/lib.rs:12:9: error[E0609]: no field `linear_accel` on type `Imu`";
+        assert!(
+            !is_shadowed_field_error(e, "struct ImuSensor {\n    imu: Topic<Imu>,\n}"),
+            "a struct whose name merely starts with the message name must not absolve it"
+        );
+        // The page really defining the type still absolves it.
+        assert!(is_shadowed_field_error(e, "struct Imu {\n    linear_accel: f64,\n}"));
+        // And the boundary check holds for the name-resolution path too.
+        let missing = "src/lib.rs:3:5: error[E0433]: cannot find struct `Imu` in this scope";
+        assert!(!is_page_local_name_error(missing, "struct ImuSensor {}"));
+        assert!(is_page_local_name_error(missing, "struct Imu {}"));
+    }
+
+    #[test]
+    fn declares_requires_a_word_boundary() {
+        assert!(declares("struct Imu {}", "struct", "Imu"));
+        assert!(declares("struct Imu<T> {}", "struct", "Imu"));
+        assert!(declares("impl Node for Robot {}", "for", "Robot"));
+        assert!(!declares("struct ImuSensor {}", "struct", "Imu"));
+        assert!(!declares("struct Imu_Raw {}", "struct", "Imu"));
+        assert!(!declares("struct Imu2 {}", "struct", "Imu"));
+        // A later, genuine declaration is still found after a near-miss.
+        assert!(declares(
+            "struct ImuSensor {}\nstruct Imu {}",
+            "struct",
+            "Imu"
+        ));
+    }
+
+    #[test]
     fn missing_dependency_detection() {
         // The confirmed blocker: concepts/what-is-horus.mdx and tutorials/02
         // both open with this, but no generated project depends on it.
@@ -1145,11 +1524,32 @@ mod extractor {
     }
 
     #[test]
+    fn balance_ignores_braces_inside_strings_and_comments() {
+        assert!(delimiters_balance("fn a() { println!(\"{}\", 1); }"));
+        assert!(delimiters_balance("// } stray\nfn a() {}"));
+        assert!(delimiters_balance("/* { */ fn a() {}"));
+        assert!(delimiters_balance("let c = '}';"));
+        assert!(delimiters_balance("fn a<'x>(v: &'x str) {}"));
+        assert!(delimiters_balance("let s = \"a\\\"}\";"));
+    }
+
+    /// The case that made this necessary: rustc reports only the first unclosed
+    /// delimiter in a crate and then stops, so one truncated excerpt in a batch
+    /// suppressed every other diagnostic in it.
+    #[test]
+    fn unbalanced_excerpts_are_rejected() {
+        assert!(!delimiters_balance("impl Node for A {\n    fn tick(&mut self) {"));
+        assert!(!delimiters_balance("let x = foo(1, 2;"));
+        assert!(!delimiters_balance("}"));
+    }
+
+    #[test]
     fn wraps_statements_in_a_function() {
         let b = Block {
             doc_file: "p.mdx".into(),
             line: 1,
             code: "let x = 1;\nlet y = 2;".into(),
+            ctx: Ctx::Standalone,
         };
         let w = wrap(0, &b);
         assert!(w.contains("fn _snippet()"), "{w}");
@@ -1161,6 +1561,7 @@ mod extractor {
             doc_file: "p.mdx".into(),
             line: 1,
             code: "use horus::prelude::*;\nstruct A;".into(),
+            ctx: Ctx::Standalone,
         };
         let w = wrap(0, &b);
         assert!(!w.contains("fn _snippet()"), "{w}");

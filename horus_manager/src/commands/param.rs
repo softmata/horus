@@ -86,11 +86,47 @@ pub fn list_params(verbose: bool, json: bool) -> HorusResult<()> {
     println!();
     println!("  {} {} parameter(s)", "Total:".dimmed(), all_params.len());
     println!();
-    println!(
-        "  {} Stored in: {}",
-        "Location:".dimmed(),
-        ".horus/config/params.yaml".cyan()
-    );
+
+    // Say where these values actually came from.
+    //
+    // This line used to name `.horus/config/params.yaml` unconditionally. Run
+    // in a directory with no project it still said so, over thirteen values
+    // that came from the built-in defaults — a file that does not exist,
+    // credited for values it does not contain. Someone editing that path to
+    // change what they just saw would create a file HORUS then layers *over*
+    // the defaults, which happens to work, and would be right by accident.
+    let params_file = std::path::Path::new(".horus/config/params.yaml");
+    if params_file.exists() {
+        println!(
+            "  {} Stored in: {}",
+            "Location:".dimmed(),
+            ".horus/config/params.yaml".cyan()
+        );
+    } else {
+        println!(
+            "  {} Built-in defaults — no {} in this directory.",
+            "Location:".dimmed(),
+            ".horus/config/params.yaml".cyan()
+        );
+        println!(
+            "  {} `horus param set <key> <value>` creates it.",
+            "Tip:".dimmed()
+        );
+    }
+
+    // The highest-precedence layer, and the one most likely to surprise: an
+    // exported variable silently beats both the file and the defaults.
+    let overrides: Vec<String> = std::env::vars()
+        .filter_map(|(k, _)| k.strip_prefix("HORUS_PARAM_").map(str::to_lowercase))
+        .collect();
+    if !overrides.is_empty() {
+        println!(
+            "  {} {} overridden by HORUS_PARAM_* in this environment: {}",
+            "Note:".yellow(),
+            overrides.len(),
+            overrides.join(", ").cyan()
+        );
+    }
 
     Ok(())
 }

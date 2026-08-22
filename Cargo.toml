@@ -21,7 +21,11 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.92"
+# The oldest toolchain the workspace is verified to build on. Every member
+# inherits it with `rust-version.workspace = true` — nine of them declared
+# nothing at all, which meant they had no floor, and horus_sys declared 1.75,
+# which contradicted this line. One number, one place.
+rust-version = "1.90"
 
 [workspace.dependencies]
 # HORUS dependencies

@@ -1,0 +1,56 @@
+{
+  "name": "HORUS",
+
+  // Reuses the repository Dockerfile so the dependency list lives in one place.
+  // The builder stage has the Rust toolchain and every -dev package a full
+  // build needs.
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "target": "builder"
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  // The C++ bindings and their examples need cmake and the three system
+  // libraries CI installs; without them five cmake_gen tests skip and the C++
+  // examples cannot link.
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake libeigen3-dev libfmt-dev libgtest-dev && rustup component add rustfmt clippy",
+
+  // HORUS nodes talk over shared memory. The default 64 MB /dev/shm is too
+  // small for image or point-cloud topics, and --ipc=host lets nodes in the
+  // container reach nodes on the host.
+  "runArgs": ["--shm-size=1g", "--ipc=host"],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml",
+        "ms-python.python"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+
+        // Keep rust-analyzer's `cargo check` out of the shared target/ dir so
+        // flycheck and manual `cargo build` stop blocking each other on the
+        // cargo package-cache lock.
+        "rust-analyzer.cargo.targetDir": true,
+
+        // `net` is the only non-default feature on the `horus` facade crate.
+        // Without it the entire `pub mod net` block in horus/src/lib.rs is
+        // cfg'd out and gets no hover, goto or completion. horus_net is a path
+        // dependency, so this adds no download and no native build.
+        //
+        // Do NOT widen this to "all": --all-features pulls in iceoryx2 and
+        // zstd, which need a network fetch plus libclang and a native C build
+        // on every reload, for ~0.4% more analysed code.
+        "rust-analyzer.cargo.features": ["horus/net"]
+      }
+    }
+  },
+
+  "remoteUser": "root"
+}

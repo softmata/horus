@@ -95,7 +95,6 @@ jobs:
       # contract tests still pass while checking nothing.
       - name: Extractor unit tests
         run: |
-          cargo test -p horus_manager --test docs_contract extractor
           cargo test -p horus_manager --test docs_examples extractor
           cargo test -p horus_manager --test docs_examples_cpp extractor
           cargo test -p horus_manager --test docs_examples_python extractor
@@ -105,7 +104,11 @@ jobs:
       - name: C++ headers are self-contained
         run: cargo test -p horus_manager --test docs_examples_cpp public_headers_are_self_contained
 
-      - name: CLI contract against the committed snapshot
+      # `docs_contract` asserts manifest tables and hook phases; `docs_cli_contract`
+      # is the one that checks the CLI reference. Both steps here used to run
+      # `docs_contract` under a "CLI contract" name, so the CLI reference was
+      # advertised as covered while nothing checked it.
+      - name: Manifest and hook contract
         run: cargo test -p horus_manager --test docs_contract
 
       # `horus new` must produce the tree the quick-starts tell readers to open.
@@ -159,10 +162,17 @@ jobs:
           key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-docs-
 
-      - name: CLI contract against live docs
+      - name: Manifest and hook contract against live docs
         env:
           HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
         run: cargo test -p horus_manager --test docs_contract
+
+      # Every `horus ...` invocation in the docs, resolved against the real clap
+      # tree. Cheap: one `--help` per distinct command, not one per invocation.
+      - name: CLI contract against live docs
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: cargo test -p horus_manager --test docs_cli_contract
 
       # C++ type-checking needs only g++ and the headers — no cmake, no linking —
       # so unlike the Rust sweep it is cheap enough to gate every PR. Nothing
@@ -189,35 +199,14 @@ jobs:
 
       # A snapshot that has drifted from the pinned docs means tier 1 is
       # checking a stale contract. Not fatal, but it should be visible.
-      - name: Warn if the committed snapshot is stale
-        if: always()
-        env:
-          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
-          # The regenerate task refuses to run without this, so a plain
-          # `--include-ignored` cannot rewrite committed state by accident.
-          # Here the rewrite is the point: the file is compared, reported, then
-          # restored below.
-          HORUS_DOCS_REGENERATE: '1'
-        run: |
-          before=$(sha256sum horus_manager/tests/fixtures/docs-cli-contract.json | cut -d' ' -f1)
-          cargo test -p horus_manager --test docs_contract -- \
-            --ignored regenerate_docs_cli_contract >/dev/null 2>&1 || true
-          after=$(sha256sum horus_manager/tests/fixtures/docs-cli-contract.json | cut -d' ' -f1)
-          if [ "$before" != "$after" ]; then
-            {
-              echo "### Docs snapshot is stale"
-              echo
-              echo "\`horus_manager/tests/fixtures/docs-cli-contract.json\` no longer matches"
-              echo "horus-docs@\`${DOCS_PINNED_REF}\`. The hermetic PR job is gating on an"
-              echo "outdated contract. Refresh it with:"
-              echo
-              echo '```bash'
-              echo 'HORUS_DOCS_DIR=../horus-docs cargo test -p horus_manager \'
-              echo '    --test docs_contract -- --ignored regenerate_docs_cli_contract'
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-          git checkout -- horus_manager/tests/fixtures/docs-cli-contract.json || true
+      # A step here used to regenerate tests/fixtures/docs-cli-contract.json and
+      # warn when it drifted. It invoked `--test docs_contract -- --ignored
+      # regenerate_docs_cli_contract`, a test that does not exist, with `|| true`
+      # swallowing the failure — so the hash never changed and the warning never
+      # fired. The fixture it guarded is gone: `docs_cli_contract` now extracts
+      # invocations from the docs checkout directly, so there is no snapshot to
+      # keep in step.
+
 
   # ── Tier 3 ────────────────────────────────────────────────────────────────
   # Compiles the documented Rust examples against the real horus crate. Minutes,
@@ -227,6 +216,43 @@ jobs:
   # a wrong field, a wrong signature, an unsatisfied bound. Examples that merely
   # reference a name the reader supplies are reported as advisory, because an
   # undefined name is not by itself evidence the docs are wrong.
+  # The ten projects under examples/ are what a reader clones and runs first.
+  # Nothing built them: `examples-compile` below compiles snippets *extracted
+  # from the docs*, which is a different set, and the `every_example_builds`
+  # test guards itself behind HORUS_TEST_BUILD_EXAMPLES, which was set nowhere.
+  # Fifteen of the sixteen shipped examples were broken and CI was green.
+  #
+  # Scheduled rather than per-PR: it is ten full cargo builds against the whole
+  # HORUS tree. The cheap static half of examples_contract does run on every PR
+  # as part of the normal horus_manager test job.
+  shipped-examples-build:
+    name: Shipped examples build
+    if: github.event_name == 'schedule' || inputs.run_compile_sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-examples-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-examples-
+
+      - name: Build every shipped example
+        env:
+          HORUS_TEST_BUILD_EXAMPLES: "1"
+        run: cargo test -p horus_manager --test examples_contract -- --nocapture
+
   examples-compile:
     name: Rust examples compile
     if: github.event_name == 'schedule' || inputs.run_compile_sweep

@@ -2,13 +2,11 @@
 name = "driver_integration"
 version = "0.1.0"
 description = "Hardware driver integration — loading drivers from config, simulated and real"
-author = "softmata"
+authors = ["softmata"]
 license = "Apache-2.0"
-language = "rust"
 
 [dependencies]
 horus = "*"
-horus_library = "*"
 
 [drivers]
 # Motor controller via serial (Terra driver)

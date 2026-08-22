@@ -24,7 +24,7 @@ use horus::prelude::Topic;
 use horus_benchmarks::{
     coefficient_of_variation, detect_platform, set_cpu_affinity, timing::PrecisionTimer,
     write_json_report, BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics,
-    Statistics, ThroughputMetrics,
+    Provenance, Statistics, ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use horus_robotics::CmdVel;
@@ -664,6 +664,7 @@ fn build_result(
     };
 
     BenchmarkResult {
+        provenance: Provenance::Measured,
         name: name.to_string(),
         subject: "HORUS Topic".to_string(),
         message_size,

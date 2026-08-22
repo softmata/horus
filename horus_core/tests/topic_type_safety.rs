@@ -17,7 +17,7 @@ fn unique_topic(suffix: &str) -> String {
 /// Test: Opening a topic with mismatched POD type sizes produces an error.
 ///
 /// Create Topic<u32> then try Topic<u64> on the same name.
-/// The second open should fail with "Type size mismatch".
+/// The second open should fail, reporting the size difference.
 #[test]
 fn test_pod_type_size_mismatch_detected() {
     let _shm_guard = common::cleanup_stale_shm();

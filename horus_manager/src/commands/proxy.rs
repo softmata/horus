@@ -590,6 +590,24 @@ fn parse_pip_spec(spec: &str) -> (String, Option<String>, Vec<String>) {
 // ── CMake proxy ────────────────────────────────────────────────────────────
 
 /// Transparent cmake proxy: `horus cmake <args>`.
+/// Whether these arguments select one of cmake's non-configure modes.
+///
+/// Mirrors `is_cargo_global_command`: the proxy's rewriting only makes sense
+/// for a configure run, and applying it to `cmake -E`, `cmake -P` or
+/// `cmake --build` appends a `-B <dir>` those modes do not accept.
+fn is_cmake_mode_invocation(args: &[String]) -> bool {
+    const MODES: &[&str] = &[
+        "-E",
+        "-P",
+        "--build",
+        "--install",
+        "--open",
+        "--find-package",
+        "--system-information",
+    ];
+    args.first().is_some_and(|a| MODES.contains(&a.as_str()))
+}
+
 pub fn run_cmake_proxy(args: Vec<String>) -> Result<i32> {
     let cwd = env::current_dir()?;
     let Some(project_dir) = find_project_root(&cwd) else {
@@ -600,6 +618,19 @@ pub fn run_cmake_proxy(args: Vec<String>) -> Result<i32> {
 
     let real_cmake = find_real_tool("cmake")?;
     let mut cmd = Command::new(&real_cmake);
+
+    // Only a *configure* invocation takes a source and build directory. cmake's
+    // other modes take neither, and rewriting their arguments corrupts them:
+    //
+    //   $ horus cmake -E echo hi
+    //   hi -B /path/.horus/cpp-build
+    //
+    // `-E` runs a command, `-P` runs a script, `--build`/`--install`/`--open`
+    // act on an existing build tree. Pass all of them through untouched.
+    if is_cmake_mode_invocation(&args) {
+        cmd.args(&args);
+        return run_with_sync(&project_dir, NativeFileType::Cmake, "cmake", cmd);
+    }
 
     // Rewrite source dir `.` → `.horus/` and ensure build dir
     let mut rewritten_args = args.clone();

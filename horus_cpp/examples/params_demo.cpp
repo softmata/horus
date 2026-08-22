@@ -12,8 +12,11 @@ using namespace horus::literals;
 #include <cstdio>
 
 int main() {
-    auto sched = horus::Scheduler()
-        .tick_rate(10_hz)
+    // The configuration methods return `Scheduler&` and the copy
+    // constructor is deleted, so the chain cannot initialize a new
+    // object — declare first, then configure (see scheduler.hpp).
+    horus::Scheduler sched;
+    sched.tick_rate(10_hz)
         .name("params_demo");
 
     auto cmd_pub = sched.advertise<horus::msg::CmdVel>("cmd_vel");

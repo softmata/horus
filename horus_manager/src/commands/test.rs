@@ -7,7 +7,7 @@
 //! - Default single-threaded (Rust): Prevents shared memory conflicts
 //! - Integration test mode: Runs ignored tests (Rust) or marked tests (Python)
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use colored::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -252,6 +252,35 @@ fn run_rust_tests(cfg: &TestConfig) -> Result<()> {
     Ok(())
 }
 
+
+/// Python files that look like tests, by pytest's own default discovery rules.
+///
+/// Used to tell "no tests" from "tests that cannot run": a generated project
+/// has none, and reporting a missing tool for a suite that does not exist is
+/// the wrong answer to `horus test`.
+fn python_test_files() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(".")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                    stack.push(path);
+                }
+            } else if name.ends_with(".py")
+                && (name.starts_with("test_") || name.ends_with("_test.py"))
+            {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
 /// Run Python tests via `pytest` (or `python -m pytest` fallback).
 fn run_python_tests(cfg: &TestConfig) -> Result<()> {
     let python_cmd = run::run_python::detect_python_interpreter()?;
@@ -265,8 +294,53 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
         }
     }
 
-    // Try pytest directly, fall back to python -m pytest
-    let (test_cmd, test_args) = if Command::new("pytest").arg("--version").output().is_ok() {
+    // Try pytest directly, fall back to python -m pytest.
+    //
+    // `output().is_ok()` only says the process spawned, so this falls through to
+    // `python -m pytest` whenever the `pytest` binary is absent — including when
+    // pytest is not installed at all, which then surfaces the interpreter's
+    // error as a test failure:
+    //
+    //     /usr/bin/python3: No module named pytest
+    //     Error: Python tests failed with exit code 1
+    //
+    // A generated project contains no tests, so that is the first thing
+    // `horus test` says on a brand-new project: a failure, about a missing
+    // tool, for a suite that does not exist.
+    let have_pytest = Command::new("pytest")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+        || Command::new(&python_cmd)
+            .args(["-m", "pytest", "--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+    if !have_pytest {
+        // Nothing to run is not a failure; a missing tool is only a problem if
+        // there is something for it to do.
+        if python_test_files().is_empty() {
+            println!(
+                "  {} No Python tests found, and pytest is not installed — nothing to run.",
+                crate::cli_output::ICON_INFO.cyan()
+            );
+            return Ok(());
+        }
+        bail!(
+            "pytest is not installed, and this project has Python tests.\n  \
+             Install it with: {} -m pip install pytest",
+            python_cmd
+        );
+    }
+
+    let (test_cmd, test_args) = if Command::new("pytest")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
         ("pytest".to_string(), vec![])
     } else {
         (
@@ -318,8 +392,27 @@ fn run_python_tests(cfg: &TestConfig) -> Result<()> {
 
     let status = cmd.status().context("Failed to execute pytest")?;
 
+    // pytest exit code 5 is "no tests collected", which is not a failure.
+    // Reporting it as one meant a freshly generated project failed its own test
+    // command in every configuration — with pytest missing *and* with pytest
+    // installed:
+    //
+    //     collected 0 items
+    //     ============ no tests ran in 0.05s ============
+    //     Error: Python tests failed with exit code 5
+    //
+    // A user's first `horus test` on a brand-new project should not be red.
+    const PYTEST_NO_TESTS_COLLECTED: i32 = 5;
+
     if status.success() {
         println!("{}", "Python tests passed!".green().bold());
+    } else if status.code() == Some(PYTEST_NO_TESTS_COLLECTED) {
+        println!(
+            "{} No Python tests found. Add one under {} — see \
+             https://docs.horusrobotics.dev/python/testing",
+            "i".cyan(),
+            "tests/".cyan()
+        );
     } else {
         anyhow::bail!(
             "Python tests failed with exit code {}",
@@ -408,6 +501,88 @@ fn generate_test_cargo_toml(verbose: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    // ── "no tests" is not "the tool is missing" (PATH-6) ───────────────────
+    //
+    // A generated project contains no tests. `horus test` shelled out to pytest
+    // anyway and surfaced the interpreter's error as a test failure:
+    //
+    //     /usr/bin/python3: No module named pytest
+    //     Error: Python tests failed with exit code 1
+    //
+    // So the first thing `horus test` said on a brand-new project was a
+    // failure, about a missing tool, for a suite that does not exist.
+
+    #[test]
+    fn a_project_with_no_tests_has_no_test_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cwd = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("chdir");
+
+        std::fs::create_dir_all("src").expect("mkdir");
+        std::fs::write("main.py", "print('hi')\n").expect("write");
+        let found = super::python_test_files();
+
+        std::env::set_current_dir(&original).expect("restore");
+        drop(cwd);
+        assert!(
+            found.is_empty(),
+            "a generated project has no tests; found {found:?}"
+        );
+    }
+
+    /// pytest's own discovery rules: `test_*.py` and `*_test.py`.
+    #[test]
+    fn test_files_are_found_by_pytest_naming() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cwd = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("chdir");
+
+        std::fs::create_dir_all("tests").expect("mkdir");
+        std::fs::write("tests/test_motor.py", "def test_x(): pass\n").expect("write");
+        std::fs::write("tests/motor_test.py", "def test_y(): pass\n").expect("write");
+        std::fs::write("tests/helper.py", "x = 1\n").expect("write");
+        let mut found: Vec<String> = super::python_test_files()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        found.sort();
+
+        std::env::set_current_dir(&original).expect("restore");
+        drop(cwd);
+        assert_eq!(
+            found,
+            vec!["motor_test.py".to_string(), "test_motor.py".to_string()],
+            "helper.py is not a test file by pytest's rules"
+        );
+    }
+
+    /// With pytest absent, the two cases must be told apart: nothing to run is
+    /// success, tests that cannot run is a failure that names the fix.
+    #[test]
+    fn a_missing_pytest_is_only_an_error_when_there_are_tests() {
+        let full = include_str!("test.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        let at = src
+            .find("if !have_pytest {")
+            .expect("the missing-pytest branch must exist");
+        let body: String = src[at..].lines().take(20).collect::<Vec<_>>().join("\n");
+
+        assert!(
+            body.contains("python_test_files().is_empty()"),
+            "the branch must ask whether there is anything to run:\n{body}"
+        );
+        assert!(
+            body.contains("return Ok(())"),
+            "no tests and no pytest is not a failure:\n{body}"
+        );
+        assert!(
+            body.contains("pip install pytest"),
+            "when there ARE tests, the error must name the fix:\n{body}"
+        );
+    }
     use super::*;
     use std::time::Duration;
 

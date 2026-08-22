@@ -60,7 +60,7 @@ pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
         check_disk(),
         check_languages(&ctx),
         check_dep_sources(&ctx),
-        check_drivers(),
+        check_drivers(&ctx),
     ];
 
     // ── 9. System dependencies (Python, C++, system libs) ────────────────
@@ -246,48 +246,177 @@ fn print_json(results: &[CheckResult]) {
 
 // ─── Individual checks ───────────────────────────────────────────────────────
 
+/// A language toolchain and the tools it needs.
+struct Toolchain {
+    language: &'static str,
+    /// Without these, the language cannot build at all.
+    required: &'static [(&'static str, &'static str)],
+    /// Without these, specific commands (`horus lint`, `horus test`) fail.
+    optional: &'static [(&'static str, &'static str)],
+}
+
+const TOOLCHAINS: &[Toolchain] = &[
+    Toolchain {
+        language: "Rust",
+        required: &[("cargo", "build tool"), ("rustc", "compiler")],
+        optional: &[],
+    },
+    Toolchain {
+        language: "Python",
+        required: &[("python3", "interpreter")],
+        optional: &[("ruff", "linter/formatter"), ("pytest", "test runner")],
+    },
+    Toolchain {
+        language: "C++",
+        required: &[("cmake", "build system")],
+        optional: &[("clang-format", "formatter"), ("clang-tidy", "linter")],
+    },
+];
+
+/// Report toolchain readiness per language.
+///
+/// The previous check reported a bare fraction and graded it on whether cargo
+/// and rustc happened to be present. That made "3/8 tools found" a *success*
+/// — rendered with the tick and counted among "7 ok" — for a machine that
+/// then failed `horus new --cpp && horus build` on missing cmake. It was also
+/// non-monotonic: with cargo and rustc absent but six other tools present,
+/// the same check reported "6/8" as a failure. Better coverage graded worse.
+///
+/// Grading per language makes the verdict mean something and names what is
+/// missing, which is the part a user can act on.
 fn check_toolchains() -> CheckResult {
     let mut details = Vec::new();
-    let mut missing = Vec::new();
+    let mut found = std::collections::HashSet::new();
 
-    let tools = [
-        ("cargo", "Rust build tool"),
-        ("rustc", "Rust compiler"),
-        ("python3", "Python interpreter"),
-        ("ruff", "Python linter/formatter"),
-        ("pytest", "Python test runner"),
-        ("cmake", "C++ build system"),
-        ("clang-format", "C++ formatter"),
-        ("clang-tidy", "C++ linter"),
-    ];
-
-    for (tool, desc) in &tools {
-        match dispatch::tool_version(tool) {
-            Some(version) => {
-                details.push(format!("{}: {} ({})", tool, version, desc));
-            }
-            None => {
-                details.push(format!("{}: not found ({})", tool, desc));
-                if *tool == "cargo" || *tool == "rustc" {
-                    missing.push(*tool);
+    for tc in TOOLCHAINS {
+        for (tool, desc) in tc.required.iter().chain(tc.optional.iter()) {
+            match dispatch::tool_version(tool) {
+                Some(version) => {
+                    details.push(format!("{tool}: {version} ({desc})"));
+                    found.insert(*tool);
                 }
+                None => details.push(format!("{tool}: not found ({desc})")),
             }
         }
     }
 
-    let health = if !missing.is_empty() {
-        Health::Fail
-    } else {
-        Health::Ok
-    };
+    let (mut health, mut summary) = grade_toolchains(&|tool| found.contains(tool));
 
-    let found = tools.len() - details.iter().filter(|d| d.contains("not found")).count();
+    // Present is not the same as adequate. `horus doctor` reported "Rust,
+    // Python, C++ ready" on a toolchain too old to build HORUS; the user found
+    // out minutes into a build, from a cargo error about a package they had
+    // never heard of.
+    if let Some(found_version) = dispatch::tool_version("rustc").as_deref().and_then(parse_semver) {
+        if let Some(required) = MINIMUM_RUSTC.and_then(parse_semver) {
+            if found_version < required {
+                health = Health::Warn;
+                summary = format!(
+                    "Rust {}.{}.{} is older than the required {}",
+                    found_version.0,
+                    found_version.1,
+                    found_version.2,
+                    MINIMUM_RUSTC.unwrap_or("?")
+                );
+                details.push(format!(
+                    "rustc: {}.{}.{} is below the minimum {} — run `rustup update stable`",
+                    found_version.0,
+                    found_version.1,
+                    found_version.2,
+                    MINIMUM_RUSTC.unwrap_or("?")
+                ));
+            }
+        }
+    }
+
     CheckResult {
         category: "Toolchains".to_string(),
         health,
-        summary: format!("{}/{} tools found", found, tools.len()),
+        summary,
         details,
     }
+}
+
+/// The workspace's declared minimum Rust version.
+///
+/// Taken from cargo rather than written here, so it cannot drift from
+/// `[workspace.package] rust-version`.
+const MINIMUM_RUSTC: Option<&str> = option_env!("CARGO_PKG_RUST_VERSION");
+
+/// `(major, minor, patch)` from the first version-looking token in `text`.
+///
+/// Compares numerically, not as a string: 1.100 is newer than 1.9, and a string
+/// comparison says the opposite.
+fn parse_semver(text: &str) -> Option<(u32, u32, u32)> {
+    let token = text
+        .split_whitespace()
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.'))?;
+    let token = token.split('-').next()?;
+    let mut parts = token.split('.').map(|p| p.parse::<u32>().ok());
+    Some((
+        parts.next().flatten()?,
+        parts.next().flatten().unwrap_or(0),
+        parts.next().flatten().unwrap_or(0),
+    ))
+}
+
+/// Decide the toolchain verdict from which tools are present.
+///
+/// Split from the probing so the grading rules are testable without touching
+/// the machine — the previous version could only be checked by manipulating
+/// PATH, which is why its non-monotonicity went unnoticed.
+fn grade_toolchains(present: &dyn Fn(&str) -> bool) -> (Health, String) {
+    let mut ready = Vec::new();
+    let mut blocked = Vec::new();
+    let mut degraded = Vec::new();
+
+    for tc in TOOLCHAINS {
+        let missing_required: Vec<&str> = tc
+            .required
+            .iter()
+            .filter(|(t, _)| !present(t))
+            .map(|(t, _)| *t)
+            .collect();
+        let missing_optional: Vec<&str> = tc
+            .optional
+            .iter()
+            .filter(|(t, _)| !present(t))
+            .map(|(t, _)| *t)
+            .collect();
+
+        if !missing_required.is_empty() {
+            blocked.push(format!(
+                "{} needs {}",
+                tc.language,
+                missing_required.join(", ")
+            ));
+        } else if !missing_optional.is_empty() {
+            degraded.push(format!(
+                "{} missing {}",
+                tc.language,
+                missing_optional.join(", ")
+            ));
+        } else {
+            ready.push(tc.language);
+        }
+    }
+
+    // Fail only when nothing can be built; warn while any language is
+    // incomplete. A machine that builds Rust but not C++ is not "ok".
+    let health = if ready.is_empty() && degraded.is_empty() {
+        Health::Fail
+    } else if blocked.is_empty() && degraded.is_empty() {
+        Health::Ok
+    } else {
+        Health::Warn
+    };
+
+    let mut parts = Vec::new();
+    if !ready.is_empty() {
+        parts.push(format!("{} ready", ready.join(", ")));
+    }
+    parts.extend(degraded);
+    parts.extend(blocked);
+    (health, parts.join(" · "))
 }
 
 fn check_manifest(ctx: &dispatch::ProjectContext) -> CheckResult {
@@ -328,11 +457,25 @@ fn check_manifest(ctx: &dispatch::ProjectContext) -> CheckResult {
                 details: vec![e.to_string()],
             },
         },
-        None => CheckResult {
-            category: "Manifest".to_string(),
-            health: Health::Fail,
-            summary: "Failed to parse horus.toml".to_string(),
-            details: vec![],
+        // A manifest was found and rejected. `ctx.manifest_error` carries the
+        // field, table, line and column that `parse_str` worked out; printing
+        // "Failed to parse horus.toml" instead threw all of it away, and said
+        // "parse" for a file that had parsed fine.
+        None => match &ctx.manifest_error {
+            Some(err) => CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Fail,
+                summary: err.headline().to_string(),
+                details: err.to_string().lines().map(str::to_string).collect(),
+            },
+            // Unreachable in practice: `has_horus_toml` is true, so a manifest
+            // was found. Say what is known rather than inventing a cause.
+            None => CheckResult {
+                category: "Manifest".to_string(),
+                health: Health::Fail,
+                summary: "horus.toml could not be read".to_string(),
+                details: vec![],
+            },
         },
     }
 }
@@ -500,10 +643,18 @@ fn check_dep_sources(ctx: &dispatch::ProjectContext) -> CheckResult {
     let manifest = match &ctx.manifest {
         Some(m) => m,
         None => {
+            // "No manifest" is only true when there is no manifest. When one
+            // exists and is broken, saying it was skipped for absence sends the
+            // reader looking for a missing file instead of at the error the
+            // Manifest check just printed.
+            let (summary, health) = match &ctx.manifest_error {
+                Some(_) => ("Manifest unreadable — skipped", Health::Warn),
+                None => ("No manifest — skipped", Health::Ok),
+            };
             return CheckResult {
                 category: "Dependencies".to_string(),
-                health: Health::Ok,
-                summary: "No manifest — skipped".to_string(),
+                health,
+                summary: summary.to_string(),
                 details: vec![],
             };
         }
@@ -660,16 +811,24 @@ use crate::fs_utils::{dir_size, format_bytes};
 
 // ── Driver device reachability ─────────────────────────────────────────────
 
-fn check_drivers() -> CheckResult {
-    // Read manifest directly for device checks (port, bus, address)
-    let manifest_path = std::path::Path::new("horus.toml");
-    let manifest = match crate::manifest::HorusManifest::load_from(manifest_path) {
-        Ok(m) => m,
-        Err(_) => {
+fn check_drivers(ctx: &dispatch::ProjectContext) -> CheckResult {
+    // Uses the manifest the context already found. Loading `./horus.toml`
+    // directly meant this check looked in the working directory rather than the
+    // project root, so it reported "No horus.toml found" from any subdirectory
+    // of a project — and said the same thing when the file was present and
+    // simply failed to parse.
+    let manifest = match &ctx.manifest {
+        Some(m) => m,
+        None => {
+            let summary = match (&ctx.manifest_error, ctx.has_horus_toml) {
+                (Some(_), _) => "Manifest unreadable — skipped",
+                (None, true) => "horus.toml unreadable — skipped",
+                (None, false) => "No horus.toml found",
+            };
             return CheckResult {
                 category: "Hardware".into(),
                 health: Health::Ok,
-                summary: "No horus.toml found".into(),
+                summary: summary.into(),
                 details: vec![],
             };
         }
@@ -951,6 +1110,7 @@ mod tests {
             ignore: Default::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         }
@@ -1128,12 +1288,69 @@ mod tests {
     // ── check_toolchains ────────────────────────────────────────────────
 
     #[test]
+    fn semver_is_compared_numerically_not_lexically() {
+        // "1.100" < "1.9" as strings. The whole point of parsing.
+        assert!(super::parse_semver("rustc 1.100.0").unwrap() > super::parse_semver("rustc 1.9.0").unwrap());
+        assert!(super::parse_semver("rustc 1.90.0").unwrap() < super::parse_semver("rustc 1.92.0").unwrap());
+        assert_eq!(super::parse_semver("rustc 1.97.1 (8bab26f4f 2026-07-14)"), Some((1, 97, 1)));
+        assert_eq!(super::parse_semver("cmake version 4.2.3"), Some((4, 2, 3)));
+        assert_eq!(super::parse_semver("Python 3.14"), Some((3, 14, 0)));
+    }
+
+    /// A pre-release suffix must not defeat the parse.
+    #[test]
+    fn semver_ignores_a_prerelease_suffix() {
+        assert_eq!(super::parse_semver("rustc 1.98.0-nightly"), Some((1, 98, 0)));
+    }
+
+    #[test]
+    fn semver_returns_none_when_there_is_no_version() {
+        assert_eq!(super::parse_semver("not found"), None);
+        assert_eq!(super::parse_semver(""), None);
+    }
+
+    /// The floor doctor grades against must come from cargo, so it cannot
+    /// drift from `[workspace.package] rust-version`.
+    #[test]
+    fn the_minimum_rustc_is_the_declared_workspace_msrv() {
+        let declared = super::MINIMUM_RUSTC.expect("horus_manager must declare rust-version");
+        let root = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("Cargo.toml"),
+        )
+        .expect("read workspace manifest");
+        let want = root
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("rust-version = "))
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .expect("workspace must declare rust-version");
+        assert_eq!(
+            declared, want,
+            "horus_manager's rust-version must be inherited from the workspace"
+        );
+    }
+
+    #[test]
     fn check_toolchains_returns_result() {
         let result = check_toolchains();
         assert_eq!(result.category, "Toolchains");
+
+        // The summary used to be a bare fraction ("3/8 tools found"), which is
+        // what let a machine missing five tools render as a success. It now
+        // names languages and what each is missing, so assert on that shape
+        // instead — see `toolchain_grading_tests` for the rules themselves.
         assert!(
-            result.summary.contains("tools found"),
-            "summary should mention tools found: {}",
+            ["Rust", "Python", "C++"]
+                .iter()
+                .any(|l| result.summary.contains(l)),
+            "summary should name languages, got: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("tools found"),
+            "the bare fraction is what made 3/8 look like success: {}",
             result.summary
         );
         assert!(!result.details.is_empty());
@@ -1157,6 +1374,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         assert_eq!(result.category, "Manifest");
@@ -1164,17 +1382,62 @@ mod tests {
         assert!(result.summary.contains("No horus.toml"));
     }
 
+    /// A manifest that exists but did not load must report *why*, and the
+    /// reason must survive into `details`. Previously every cause produced the
+    /// same "Failed to parse horus.toml" with `details: vec![]` — including a
+    /// file that had parsed fine and merely omitted a key.
     #[test]
-    fn check_manifest_has_toml_but_no_manifest() {
+    fn check_manifest_reports_the_reason_a_manifest_failed_to_load() {
+        let err = crate::manifest::ManifestError {
+            kind: crate::manifest::ManifestErrorKind::MissingField {
+                field: "name".into(),
+                table: Some("[package]".into()),
+            },
+            file: PathBuf::from("/tmp/fake/horus.toml"),
+            line: Some(1),
+            col: Some(1),
+            detail: "missing field `name`".into(),
+        };
         let ctx = dispatch::ProjectContext {
             root: PathBuf::from("/tmp/fake"),
             languages: vec![],
             has_horus_toml: true,
             manifest: None,
+            manifest_error: Some(err),
         };
         let result = check_manifest(&ctx);
         assert_eq!(result.health, Health::Fail);
-        assert!(result.summary.contains("Failed to parse"));
+        assert!(
+            !result.summary.contains("Failed to parse"),
+            "the file parsed; only a key is absent: {}",
+            result.summary
+        );
+        assert!(result.summary.contains("missing a required field"));
+        assert!(
+            result.details.iter().any(|d| d.contains("`name`")),
+            "the field name must reach the user: {:?}",
+            result.details
+        );
+        assert!(
+            result.details.iter().any(|d| d.contains("1:1")),
+            "the position must reach the user: {:?}",
+            result.details
+        );
+    }
+
+    /// The same check with no recorded cause — it must not invent one.
+    #[test]
+    fn check_manifest_without_a_recorded_error_does_not_guess() {
+        let ctx = dispatch::ProjectContext {
+            root: PathBuf::from("/tmp/fake"),
+            languages: vec![],
+            has_horus_toml: true,
+            manifest: None,
+            manifest_error: None,
+        };
+        let result = check_manifest(&ctx);
+        assert_eq!(result.health, Health::Fail);
+        assert!(!result.summary.contains("parse"), "{}", result.summary);
     }
 
     #[test]
@@ -1185,6 +1448,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         assert_eq!(result.category, "Manifest");
@@ -1199,6 +1463,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         let details = result.details.join("\n");
@@ -1277,6 +1542,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.category, "Languages");
@@ -1291,6 +1557,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Rust],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1303,6 +1570,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Python],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1318,6 +1586,7 @@ mod tests {
             ],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1499,6 +1768,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         let details = result.details.join("\n");
@@ -1544,6 +1814,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Cpp],
             has_horus_toml: false,
             manifest: None,
+            manifest_error: None,
         };
         let result = check_languages(&ctx);
         assert_eq!(result.health, Health::Ok);
@@ -1558,6 +1829,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         // Validation should catch the short name
@@ -1582,6 +1854,7 @@ mod tests {
             languages: vec![crate::manifest::Language::Rust],
             has_horus_toml: true,
             manifest: Some(manifest),
+            manifest_error: None,
         };
         let result = check_manifest(&ctx);
         // Should parse fine
@@ -1618,6 +1891,7 @@ mod tests {
                 languages: vec![*lang],
                 has_horus_toml: false,
                 manifest: None,
+                manifest_error: None,
             };
             let result = check_languages(&ctx);
             assert_eq!(result.health, Health::Ok);
@@ -1817,6 +2091,7 @@ mod tests {
             languages: vec![],
             has_horus_toml: true,
             manifest: Some(manifest.clone()),
+            manifest_error: None,
         };
         // run_fix should not error on a project with zero system deps
         let result = run_fix(&manifest, &ctx);
@@ -1832,5 +2107,103 @@ mod tests {
             "fix mode should create/update {}",
             HORUS_LOCK
         );
+    }
+}
+
+#[cfg(test)]
+mod toolchain_grading_tests {
+    use super::*;
+
+    fn only<'a>(tools: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
+        move |t: &str| tools.contains(&t)
+    }
+
+    /// The exact case that used to be reported as success: cargo, rustc and
+    /// python3 present, everything else missing. It rendered as
+    /// `* Toolchains — 3/8 tools found` and was counted among "7 ok", on a
+    /// machine that then failed `horus new --cpp && horus build`.
+    #[test]
+    fn three_of_eight_is_not_success() {
+        let (health, summary) = grade_toolchains(&only(&["cargo", "rustc", "python3"]));
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(summary.contains("Rust ready"), "{summary}");
+        assert!(summary.contains("C++ needs cmake"), "{summary}");
+        assert!(summary.contains("Python missing"), "{summary}");
+    }
+
+    /// Grading must be monotonic. The old rule keyed on cargo/rustc alone, so
+    /// six tools present without them graded *worse* than three tools with
+    /// them — better coverage, worse verdict.
+    #[test]
+    fn more_tools_never_grades_worse() {
+        let sets: [&[&str]; 4] = [
+            &[],
+            &["cargo", "rustc"],
+            &["cargo", "rustc", "python3", "ruff", "pytest"],
+            &[
+                "cargo",
+                "rustc",
+                "python3",
+                "ruff",
+                "pytest",
+                "cmake",
+                "clang-format",
+                "clang-tidy",
+            ],
+        ];
+        let rank = |h: &Health| match h {
+            Health::Fail => 0,
+            Health::Warn => 1,
+            Health::Ok => 2,
+        };
+
+        let mut previous = 0;
+        for set in sets {
+            let (health, summary) = grade_toolchains(&only(set));
+            let r = rank(&health);
+            assert!(
+                r >= previous,
+                "adding tools made the verdict worse ({previous} -> {r}) for {set:?}: {summary}"
+            );
+            previous = r;
+        }
+    }
+
+    #[test]
+    fn a_complete_toolchain_is_ok() {
+        let (health, summary) = grade_toolchains(&only(&[
+            "cargo",
+            "rustc",
+            "python3",
+            "ruff",
+            "pytest",
+            "cmake",
+            "clang-format",
+            "clang-tidy",
+        ]));
+        assert_eq!(health, Health::Ok);
+        assert_eq!(summary, "Rust, Python, C++ ready");
+    }
+
+    /// Nothing installed must fail, and must name what is missing rather than
+    /// printing a fraction.
+    #[test]
+    fn an_empty_machine_fails_and_says_why() {
+        let (health, summary) = grade_toolchains(&only(&[]));
+        assert_eq!(health, Health::Fail);
+        for needle in ["cargo", "python3", "cmake"] {
+            assert!(summary.contains(needle), "{summary} should name {needle}");
+        }
+    }
+
+    /// A missing optional tool degrades that language without blocking it —
+    /// `horus build` works, `horus lint` does not.
+    #[test]
+    fn optional_tools_degrade_rather_than_block() {
+        let (health, summary) = grade_toolchains(&only(&["cargo", "rustc", "python3", "cmake"]));
+        assert_eq!(health, Health::Warn);
+        assert!(summary.contains("Rust ready"), "{summary}");
+        assert!(summary.contains("Python missing ruff, pytest"), "{summary}");
+        assert!(summary.contains("C++ missing"), "{summary}");
     }
 }

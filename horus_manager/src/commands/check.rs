@@ -66,10 +66,13 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
 
         let valid = result.is_ok();
         let error_msg = result.as_ref().err().map(|e| e.to_string());
+        let diagnostics = take_diagnostics();
         let output = serde_json::json!({
             "path": target_path.display().to_string(),
             "valid": valid,
             "error": error_msg,
+            // The findings themselves, not just how many there were.
+            "diagnostics": diagnostics,
         });
         println!(
             "{}",
@@ -85,6 +88,61 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
     }
 }
 
+/// A single finding from `horus check`, in machine-readable form.
+///
+/// `--json` used to emit only a count:
+///
+/// ```json
+/// { "error": "Configuration error: 1 error(s) found", "valid": false }
+/// ```
+///
+/// while the human output named the actual problem — so the machine-readable
+/// mode was strictly *less* informative than the terminal one, which defeats
+/// the reason it exists. CI and editor integrations got a boolean.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckDiagnostic {
+    /// "error" or "warning".
+    pub severity: &'static str,
+    /// File the finding is in, relative to the scanned root.
+    pub file: String,
+    /// 1-based line, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+thread_local! {
+    /// Findings recorded during the current `horus check` run.
+    ///
+    /// A thread-local rather than a threaded-through parameter: `check` is one
+    /// pass over the workspace on one thread, and the alternative is changing
+    /// the signature of every helper that prints.
+    static DIAGNOSTICS: std::cell::RefCell<Vec<CheckDiagnostic>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a finding so `--json` can report it.
+pub(crate) fn record_diagnostic(
+    severity: &'static str,
+    file: impl Into<String>,
+    line: Option<usize>,
+    message: impl Into<String>,
+) {
+    DIAGNOSTICS.with(|d| {
+        d.borrow_mut().push(CheckDiagnostic {
+            severity,
+            file: file.into(),
+            line,
+            message: message.into(),
+        })
+    });
+}
+
+/// Take everything recorded so far, clearing the buffer.
+fn take_diagnostics() -> Vec<CheckDiagnostic> {
+    DIAGNOSTICS.with(|d| std::mem::take(&mut *d.borrow_mut()))
+}
+
 /// Scan an entire workspace directory
 fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
     if !quiet {
@@ -96,6 +154,40 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                 .unwrap_or(target_path.to_path_buf())
                 .display()
         );
+    }
+
+    // Restore the IDE manifest if it is missing OR stale.
+    //
+    // `.horus/Cargo.toml` is gitignored, so a fresh clone of a HORUS project
+    // has no cargo manifest and rust-analyzer cannot load anything. `horus
+    // check` is the natural command to run on a project that "isn't working",
+    // so it is the right place to repair this. Only when absent or stale,
+    // though: rewriting it on every check would churn its mtime and make
+    // rust-analyzer reload the whole workspace each time.
+    //
+    // Stale matters as much as missing. The manifest bakes an absolute path to
+    // the HORUS source tree, and `horus upgrade` moves it (the installer cache
+    // is keyed `horus@<version>`), so an upgrade breaks every project at once.
+    // See cargo_gen::is_stale.
+    //
+    // Strictly advisory: this must never change run_check's exit code. A
+    // project is not invalid because its IDE scaffolding is missing.
+    let missing = !target_path.join(".horus/Cargo.toml").exists();
+    let stale = !missing && crate::cargo_gen::is_stale(target_path);
+    if missing || stale {
+        if let crate::cargo_gen::Ensured::Generated = crate::cargo_gen::ensure(target_path) {
+            if !quiet {
+                let why = if stale {
+                    "it pointed at a HORUS source tree that is no longer there"
+                } else {
+                    "rust-analyzer needs it; it is gitignored"
+                };
+                println!(
+                    "{} Regenerated .horus/Cargo.toml ({why})\n",
+                    cli_output::ICON_INFO.cyan()
+                );
+            }
+        }
     }
 
     let mut total_errors = 0;
@@ -191,6 +283,12 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                         Ok(warnings) => {
                             for w in &warnings {
                                 println!("      {} {}", "!".yellow(), w);
+                                record_diagnostic(
+                                    "warning",
+                                    rel_path.display().to_string(),
+                                    None,
+                                    w,
+                                );
                             }
                         }
                         Err(e) => {
@@ -208,6 +306,12 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     if !unknown.is_empty() {
                         for key in &unknown {
                             println!("      {} {}", "!".yellow(), key.message());
+                            record_diagnostic(
+                                "warning",
+                                rel_path.display().to_string(),
+                                (key.line > 0).then_some(key.line),
+                                key.message(),
+                            );
                             total_warnings += 1;
                         }
                         println!(
@@ -249,16 +353,36 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     } else {
                         for err in &file_errors {
                             println!("      {} {}", cli_output::ICON_ERROR.red(), err);
+                            record_diagnostic("error", rel_path.display().to_string(), None, err);
                         }
                         total_errors += file_errors.len();
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "      {} TOML parse error: {}",
-                        cli_output::ICON_ERROR.red(),
-                        e
-                    );
+                    // No hardcoded "TOML parse error" prefix: the error says
+                    // for itself whether the file failed to parse or parsed
+                    // and lacked a required key, and the two used to be
+                    // announced identically — including the one whose own
+                    // body then said "The file is valid TOML".
+                    let text = e.to_string();
+                    let mut lines = text.lines();
+                    if let Some(first) = lines.next() {
+                        println!("      {} {}", cli_output::ICON_ERROR.red(), first);
+                    }
+                    for rest in lines {
+                        if rest.is_empty() {
+                            println!();
+                        } else {
+                            println!("        {rest}");
+                        }
+                    }
+                    // `--json` reported "diagnostics": [] for every manifest
+                    // failure, so the machine-readable surface carried none of
+                    // the position the human one had just computed.
+                    let line = e
+                        .downcast_ref::<crate::manifest::ManifestError>()
+                        .and_then(|m| m.line);
+                    record_diagnostic("error", rel_path.display().to_string(), line, text);
                     total_errors += 1;
                 }
             }
@@ -308,12 +432,26 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                     for line in stderr.lines().take(5) {
                         if line.contains("error") {
                             println!("      {} {}", cli_output::ICON_ERROR.red(), line.trim());
+                            // The human output names the error; --json used to
+                            // report `"diagnostics": []` beside it.
+                            record_diagnostic(
+                                "error",
+                                rel_path.display().to_string(),
+                                None,
+                                line.trim(),
+                            );
                         }
                     }
                     total_errors += 1;
                 }
                 Err(e) => {
                     println!("{} cargo error: {}", cli_output::ICON_WARN.yellow(), e);
+                    record_diagnostic(
+                        "warning",
+                        rel_path.display().to_string(),
+                        None,
+                        format!("cargo could not be run: {e}"),
+                    );
                     total_warnings += 1;
                 }
             }
@@ -418,13 +556,28 @@ except ImportError as e:
                 Ok(result) => {
                     println!("{}", cli_output::ICON_ERROR.red());
                     let error = String::from_utf8_lossy(&result.stderr);
+                    let first = error.lines().next().unwrap_or("").trim().to_string();
                     if !error.is_empty() {
-                        println!(
-                            "      {} {}",
-                            cli_output::ICON_ERROR.red(),
-                            error.lines().next().unwrap_or("").trim()
-                        );
+                        println!("      {} {}", cli_output::ICON_ERROR.red(), first);
                     }
+                    record_diagnostic(
+                        "error",
+                        py_path                            .strip_prefix(target_path)
+                            .unwrap_or(py_path)
+                            .display()
+                            .to_string(),
+                        // Python reports `File "x.py", line N`; carry the number
+                        // when it is there rather than dropping it.
+                        first
+                            .split("line ")
+                            .nth(1)
+                            .and_then(|r| r.trim_end_matches([',', ')']).trim().parse().ok()),
+                        if first.is_empty() {
+                            "syntax check failed".to_string()
+                        } else {
+                            first.clone()
+                        },
+                    );
                     total_errors += 1;
                 }
                 Err(_) => {
@@ -1067,6 +1220,17 @@ fn check_manifest_file(manifest_path: &Path, quiet: bool) -> HorusResult<()> {
             }
         }
         println!();
+    }
+
+    // Everything the human output is about to print, recorded so `--json` says
+    // it too. This path used to emit `"diagnostics": []` while the terminal
+    // listed the errors by name.
+    let file = manifest_path.display().to_string();
+    for warn in &warn_msgs {
+        record_diagnostic("warning", file.clone(), None, warn.clone());
+    }
+    for err in &errors {
+        record_diagnostic("error", file.clone(), None, err.clone());
     }
 
     if errors.is_empty() {

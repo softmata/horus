@@ -1911,13 +1911,24 @@ pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message:
         timestamp: String::new(), // filled by log_buffer if empty
         tick_number: 0,
         node_name: node.to_string(),
-        log_type,
+        log_type: log_type.clone(),
         topic: None,
         message: msg.to_string(),
         tick_us: 0,
         ipc_ns: 0,
     };
     horus_core::core::log_buffer::publish_log(entry);
+
+    // The buffer alone is not visibility. A C++ node's `horus::log::info(...)`
+    // reached `horus log` and nothing else, so the first log statement a C++
+    // user writes produced no output in the terminal they were watching, with
+    // nothing to suggest where it had gone. Rust and Python nodes have always
+    // printed here.
+    //
+    // `node` rather than the thread-local: the C++ caller supplies the name,
+    // and these calls routinely happen outside a tick, where the thread-local
+    // would yield "unknown".
+    horus_core::core::hlog::emit_console(&log_type, node, msg);
 }
 
 #[cfg(test)]

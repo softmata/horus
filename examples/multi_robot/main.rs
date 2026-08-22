@@ -145,7 +145,7 @@ impl Node for FormationCoordinator {
         // Log received poses
         while let Some(pose) = self.pose_sub.recv() {
             if self.tick_count % 20 == 0 {
-                hlog!(
+                hlog!(info, 
                     "Scout {} at ({:.2}, {:.2})",
                     pose.robot_id, pose.x, pose.z
                 );

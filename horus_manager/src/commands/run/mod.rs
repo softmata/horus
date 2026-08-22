@@ -300,7 +300,7 @@ fn execute_workspace(
     // If a specific package was requested, run it
     if let Some(ref member) = package {
         let profile = if release { "release" } else { "debug" };
-        let binary = project_dir.join(".horus/target").join(profile).join(member);
+        let binary = crate::build_dirs::binary_path(&project_dir, profile, member);
         if binary.exists() {
             cli_output::success(&format!("Running {}", member));
             let status = std::process::Command::new(&binary).args(&args).status()?;
@@ -397,8 +397,10 @@ fn execute_single_file(
     // Build environment for child processes (no env::set_var)
     let child_env = build_child_env()?;
 
-    // Execute
-    cli_output::info("Executing...\n");
+    // "Executing..." is printed by the language branches in run_rust.rs, after
+    // their build step. Printing it here as well announced execution before a
+    // cargo build that can take 20+ seconds, and then again when the binary
+    // actually started — twice per run, the first time untruthfully.
     run_rust::execute_with_scheduler(file_path, language, args, release, clean, &child_env)?;
 
     Ok(())

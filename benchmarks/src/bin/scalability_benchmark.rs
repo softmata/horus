@@ -21,7 +21,7 @@
 use horus::prelude::Topic;
 use horus_benchmarks::{
     detect_platform, set_cpu_affinity, write_json_report, BenchmarkConfig, BenchmarkReport,
-    BenchmarkResult, DeterminismMetrics, Statistics, ThroughputMetrics,
+    BenchmarkResult, DeterminismMetrics, Provenance, Statistics, ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
@@ -380,6 +380,7 @@ fn run_scalability_test(
     };
 
     BenchmarkResult {
+        provenance: Provenance::Measured,
         name: format!("scalability_p{}_c{}", num_producers, num_consumers),
         subject: "HORUS MpmcShm".to_string(),
         message_size: std::mem::size_of::<ScalabilityMsg>(),

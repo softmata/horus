@@ -2,6 +2,7 @@
 name = "horus_types"
 version = "0.2.2"
 edition = "2021"
+rust-version.workspace = true
 authors = ["HORUS Contributors"]
 description = "Universal IPC message types for HORUS — math primitives, diagnostics, time sync, and generic messages. Used by all horus verticals."
 license = "Apache-2.0"

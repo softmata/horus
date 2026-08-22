@@ -94,7 +94,7 @@ jobs:
           shared-key: release-${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p horus_manager --no-default-features
+        run: cargo build --release --target ${{ matrix.target }} -p horus_manager
 
       - name: Strip binary (Unix)
         if: runner.os != 'Windows'

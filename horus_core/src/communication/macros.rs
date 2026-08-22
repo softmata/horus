@@ -195,6 +195,47 @@ macro_rules! message {
                 s
             }
         }
+
+        // `dead_code` because most messages never call `topic()` and nothing
+        // reads `LAYOUT_HASH` directly — without this, declaring a message and
+        // using it the ordinary way emits a warning in the user's own crate for
+        // code they did not write.
+        #[allow(dead_code)]
+        impl $name {
+            /// Hash of this message's field layout, for [`Topic::new_checked`].
+            ///
+            /// Covers the type name and every field's name and written type, so
+            /// reordering, renaming or retyping a field changes it. Adding or
+            /// removing a field changes it too.
+            ///
+            /// This exists because the topic open path checks only the type's
+            /// short name and its size, and neither describes layout: two
+            /// builds of `Pose { x, y }` and `Pose { y, x }` share a name and 8
+            /// bytes, open the same topic without complaint, and swap the
+            /// coordinates on the way through.
+            ///
+            /// It is a hash of the *source text* of the field types, so
+            /// `u32` and `std::primitive::u32` hash differently even though
+            /// they are the same type. That direction is safe — it rejects a
+            /// compatible pair rather than accepting an incompatible one — and
+            /// in practice both sides are the same source file.
+            pub const LAYOUT_HASH: u32 = $crate::communication::topic::const_fnv1a(
+                concat!(
+                    stringify!($name),
+                    $( "|", stringify!($field), ":", stringify!($ty), )*
+                ).as_bytes()
+            );
+
+            /// Open a topic for this message with layout checking enabled.
+            ///
+            /// Equivalent to `Topic::new_checked(name, Self::LAYOUT_HASH)`.
+            /// Prefer this over `Topic::<Self>::new(name)`: it costs nothing at
+            /// runtime and turns a silently-misread message into an error.
+            pub fn topic(name: &str) -> $crate::error::HorusResult<$crate::communication::Topic<Self>> {
+                $crate::communication::Topic::new_checked(name, Self::LAYOUT_HASH)
+            }
+        }
+
     };
 
     // Internal: fixed message (zero-copy — Copy fields only, repr(C))
@@ -233,6 +274,47 @@ macro_rules! message {
                 s
             }
         }
+
+        // `dead_code` because most messages never call `topic()` and nothing
+        // reads `LAYOUT_HASH` directly — without this, declaring a message and
+        // using it the ordinary way emits a warning in the user's own crate for
+        // code they did not write.
+        #[allow(dead_code)]
+        impl $name {
+            /// Hash of this message's field layout, for [`Topic::new_checked`].
+            ///
+            /// Covers the type name and every field's name and written type, so
+            /// reordering, renaming or retyping a field changes it. Adding or
+            /// removing a field changes it too.
+            ///
+            /// This exists because the topic open path checks only the type's
+            /// short name and its size, and neither describes layout: two
+            /// builds of `Pose { x, y }` and `Pose { y, x }` share a name and 8
+            /// bytes, open the same topic without complaint, and swap the
+            /// coordinates on the way through.
+            ///
+            /// It is a hash of the *source text* of the field types, so
+            /// `u32` and `std::primitive::u32` hash differently even though
+            /// they are the same type. That direction is safe — it rejects a
+            /// compatible pair rather than accepting an incompatible one — and
+            /// in practice both sides are the same source file.
+            pub const LAYOUT_HASH: u32 = $crate::communication::topic::const_fnv1a(
+                concat!(
+                    stringify!($name),
+                    $( "|", stringify!($field), ":", stringify!($ty), )*
+                ).as_bytes()
+            );
+
+            /// Open a topic for this message with layout checking enabled.
+            ///
+            /// Equivalent to `Topic::new_checked(name, Self::LAYOUT_HASH)`.
+            /// Prefer this over `Topic::<Self>::new(name)`: it costs nothing at
+            /// runtime and turns a silently-misread message into an error.
+            pub fn topic(name: &str) -> $crate::error::HorusResult<$crate::communication::Topic<Self>> {
+                $crate::communication::Topic::new_checked(name, Self::LAYOUT_HASH)
+            }
+        }
+
     };
 
     // Entry point: start token-tree munching

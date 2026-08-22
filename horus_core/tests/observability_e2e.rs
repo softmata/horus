@@ -417,7 +417,7 @@ fn test_remote_presence_file_format_readable() {
         r#"{{"host_id":"test_e2e","is_remote":true,"last_seen_ns":{},"namespace":"default","nodes":[{{"name":"e2e_sensor","rate_hz":100.0}},{{"name":"e2e_planner","rate_hz":50.0}}]}}"#,
         now_ns
     );
-    let path = nodes_dir.join("remote_test_e2e.json");
+    let path = nodes_dir.join(unique_presence_file("remote_test_e2e"));
     std::fs::write(&path, &json).unwrap();
 
     // Verify file is valid JSON and has expected structure
@@ -435,6 +435,23 @@ fn test_remote_presence_file_format_readable() {
 // 10: Bridged presence file format
 // ============================================================================
 
+/// A presence-file name unique to this process and call site.
+///
+/// `shm_nodes_dir()` is one directory shared by every test in the suite and by
+/// any HORUS process on the machine. Two tests that both wrote
+/// `bridged_zenoh_fleet.json` — or one test writing while another swept the
+/// directory — raced, and `test_bridged_presence_file_format_readable` failed
+/// under the parallel harness while passing in isolation.
+fn unique_presence_file(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{prefix}_{}_{}.json",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 #[test]
 fn test_bridged_presence_file_format_readable() {
     let nodes_dir = horus_sys::shm::shm_nodes_dir();
@@ -449,7 +466,7 @@ fn test_bridged_presence_file_format_readable() {
         r#"{{"host_id":"zenoh_peer_1","is_remote":true,"is_bridged":true,"bridge_protocol":"zenoh","last_seen_ns":{},"namespace":"default","nodes":[{{"name":"fleet_manager","rate_hz":10.0}}]}}"#,
         now_ns
     );
-    let path = nodes_dir.join("bridged_zenoh_fleet.json");
+    let path = nodes_dir.join(unique_presence_file("bridged_zenoh_fleet"));
     std::fs::write(&path, &json).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();

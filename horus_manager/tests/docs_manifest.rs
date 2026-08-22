@@ -324,7 +324,22 @@ fn documented_env_vars_are_read() {
         };
         let r = rel(&docs, &f);
         let lines: Vec<&str> = text.lines().collect();
+        // A page may list the variables HORUS sets for itself, or that its own
+        // test suite reads, precisely so a reader who meets one can recognise
+        // it. `consumer_sources` deliberately skips `tests/` so this suite
+        // cannot satisfy its own assertions, which means a genuinely test-only
+        // variable looks unread. Naming a section "internal" or "test-only" is
+        // the page saying "do not set these" — take it at its word rather than
+        // demanding the runtime implement them.
+        let mut in_internal_section = false;
         for (i, line) in lines.iter().enumerate() {
+            if let Some(h) = line.strip_prefix('#') {
+                let h = h.trim_start_matches('#').trim().to_ascii_lowercase();
+                in_internal_section = h.contains("internal") || h.contains("test-only");
+            }
+            if in_internal_section {
+                continue;
+            }
             let prev = if i > 0 { lines[i - 1] } else { "" };
             for name in documented_env_names(prev, line) {
                 if ci_secrets.contains(&name) {

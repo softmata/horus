@@ -55,6 +55,7 @@ pub const KNOWN_TOP_LEVEL: &[&str] = &[
     "ignore",
     "enable",
     "cpp",
+    "rust",
     "hooks",
     "network",
 ];
@@ -80,8 +81,31 @@ pub const KNOWN_PACKAGE: &[&str] = &[
 /// Keys accepted inside `[cpp]`.
 pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain"];
 
+/// Keys accepted inside `[rust]`.
+///
+/// These are spliced verbatim into the generated `.horus/Cargo.toml`, so the
+/// list is exactly the set of Cargo sections HORUS does not write itself.
+/// `dependencies` is absent on purpose: `horus.toml` already has one, and a
+/// second channel would let the same crate be declared twice.
+pub const KNOWN_RUST: &[&str] = &[
+    "edition",
+    "features",
+    "profile",
+    "patch",
+    "build-dependencies",
+    "lints",
+    "target",
+];
+
 /// Keys accepted inside `[hooks]`.
-pub const KNOWN_HOOKS: &[&str] = &["pre_run", "pre_build", "pre_test", "post_test"];
+pub const KNOWN_HOOKS: &[&str] = &[
+    "pre_run",
+    "post_run",
+    "pre_build",
+    "post_build",
+    "pre_test",
+    "post_test",
+];
 
 /// Keys developers reasonably expect to exist but which HORUS deliberately
 /// does not have, mapped to the reason.
@@ -213,6 +237,7 @@ pub fn find_unknown_keys(content: &str) -> Vec<UnknownKey> {
     for (section, known) in [
         ("package", KNOWN_PACKAGE),
         ("cpp", KNOWN_CPP),
+        ("rust", KNOWN_RUST),
         ("hooks", KNOWN_HOOKS),
     ] {
         let Some(sub) = table.get(section).and_then(|v| v.as_table()) else {
@@ -337,6 +362,7 @@ pub fn all_known_keys() -> BTreeSet<String> {
         .iter()
         .chain(KNOWN_PACKAGE)
         .chain(KNOWN_CPP)
+        .chain(KNOWN_RUST)
         .chain(KNOWN_HOOKS)
         .map(|s| s.to_string())
         .collect()
@@ -581,6 +607,44 @@ bogus = 1
     }
 
     // ── Contract: the key lists must not drift from the structs ─────────────
+
+    /// The published JSON Schema and this module's key lists must agree.
+    ///
+    /// Both are derived from `HorusManifest`, and both are consumed by users —
+    /// the schema by their editor, these lists by `horus check`. If they
+    /// disagree, one of them is telling the user something false: either the
+    /// editor accepts a key `check` rejects, or `check` accepts a key the
+    /// editor flags. This is the cross-check that keeps two second copies
+    /// honest.
+    #[test]
+    #[cfg(feature = "schema")]
+    fn json_schema_and_lint_agree_on_top_level_keys() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&crate::manifest::generate_manifest_schema())
+                .expect("generate_manifest_schema must emit valid JSON");
+
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("schema must describe top-level properties");
+
+        for key in props.keys() {
+            assert!(
+                KNOWN_TOP_LEVEL.contains(&key.as_str()),
+                "the JSON Schema exposes `{key}` but manifest_lint would warn \
+                 that it is unknown — an editor would accept what `horus check` \
+                 rejects. Add it to KNOWN_TOP_LEVEL."
+            );
+        }
+
+        for known in KNOWN_TOP_LEVEL {
+            assert!(
+                props.contains_key(*known),
+                "manifest_lint accepts `{known}` but the JSON Schema does not \
+                 describe it — an editor would flag a key `horus check` allows."
+            );
+        }
+    }
 
     /// Serializing a fully-populated manifest must not produce a key this
     /// module would flag as unknown.

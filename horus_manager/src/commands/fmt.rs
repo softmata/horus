@@ -60,6 +60,17 @@ pub fn run_fmt(check: bool, extra_args: Vec<String>) -> Result<()> {
                     _ => {}
                 }
             }
+            // clang-format has no file arguments of its own and cannot be
+            // given any at detection time. Without them it reads stdin: `-i`
+            // fails outright, and `--dry-run --Werror` sees EOF and exits 0,
+            // so `horus fmt --check` passed while checking nothing.
+            if tool.bin == "clang-format" {
+                args.extend(
+                    dispatch::cpp_source_files(&ctx.root)
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string()),
+                );
+            }
             args.extend(extra_args.clone());
 
             PrefixedCommand {

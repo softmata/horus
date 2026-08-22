@@ -47,6 +47,7 @@ fn make_manifest(
         ignore: IgnoreConfig::default(),
         enable: vec![],
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
     }

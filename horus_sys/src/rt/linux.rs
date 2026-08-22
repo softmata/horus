@@ -303,6 +303,14 @@ pub(super) fn move_irqs_off_cpus(cpus: &[usize]) -> anyhow::Result<usize> {
 }
 
 /// Get the RLIMIT_MEMLOCK soft limit.
+//
+// `clippy::useless_conversion` fires on the `u64::from(rlim.rlim_cur)` below,
+// but only when checked for a 64-bit target. `rlim_t` is `u32` on
+// armv7-unknown-linux-gnueabihf, which `horus deploy --arch armv7` targets and
+// which is an installed rust-std here; dropping the conversion there fails with
+// `error[E0308]: expected u64, found u32`. The conversion is width-portable and
+// must stay.
+#[allow(clippy::useless_conversion)]
 pub(super) fn get_memlock_limit() -> u64 {
     // SAFETY: getrlimit is a safe libc call
     unsafe {

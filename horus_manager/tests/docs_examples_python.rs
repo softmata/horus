@@ -636,7 +636,20 @@ results = []
 for c in json.load(sys.stdin):
     kind = c["kind"]
     if kind == "attr":
+        # `hasattr` alone is not the question. A submodule such as
+        # `horus.perception` is real and importable, but importing `horus`
+        # does not bind it, so `hasattr(horus, "perception")` is False until
+        # someone imports it. Prose that names one without a trailing
+        # attribute access ("the `horus.perception` submodule") arrives here
+        # as an attr claim, and rejecting it would flag a page for correctly
+        # describing an API that exists.
         ok = hasattr(horus, c["name"])
+        if not ok:
+            try:
+                __import__("horus." + c["name"])
+                ok = True
+            except Exception:
+                pass
         detail = "" if ok else "horus.%s does not exist" % c["name"]
     elif kind == "submodule":
         try:

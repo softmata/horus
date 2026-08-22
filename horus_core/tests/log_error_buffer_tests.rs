@@ -13,6 +13,28 @@ fn uid(suffix: &str) -> String {
     format!("errbuf_{}_{}", std::process::id(), suffix)
 }
 
+/// Serializes tests that read process-global buffer state.
+///
+/// `GLOBAL_LOG_BUFFER` and `GLOBAL_ERROR_BUFFER` are process-wide, and every
+/// test in this file writes to them. Three tests here also *read* aggregate
+/// state — a write index, a survivor count, a timing ratio — which any
+/// concurrent test invalidates. They failed under the default parallel harness
+/// and passed under `--test-threads=1`, so a developer saw red on a full run
+/// and green on the retry, which teaches people to rerun instead of read.
+///
+/// One test even documented the race in its own assertion message ("parallel
+/// tests may add a few") and picked a fudge factor of 5, which the suite then
+/// exceeded anyway. A tolerance wide enough to absorb the race is also wide
+/// enough to absorb the bug it is meant to catch; serializing is what makes the
+/// assertion mean something.
+static GLOBAL_BUFFER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    GLOBAL_BUFFER_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn make_entry(node: &str, log_type: LogType, message: &str) -> LogEntry {
     LogEntry {
         timestamp: "12:00:00.000".to_string(),
@@ -133,6 +155,7 @@ fn publish_log_debug_only_in_main_buffer() {
 
 #[test]
 fn errors_survive_pub_sub_flood_in_error_buffer() {
+    let _exclusive = exclusive();
     let node = uid("flood_survival");
 
     // Push 50 error entries via publish_log (dual-write)
@@ -191,6 +214,7 @@ fn errors_survive_pub_sub_flood_in_error_buffer() {
 
 #[test]
 fn error_buffer_write_idx_tracks_independently() {
+    let _exclusive = exclusive();
     let node = uid("idx_independent");
 
     let main_before = GLOBAL_LOG_BUFFER.write_idx();
@@ -208,9 +232,12 @@ fn error_buffer_write_idx_tracks_independently() {
     );
     // In parallel tests, other threads may push errors between our snapshots.
     // We verify the main buffer advanced but error buffer didn't advance MORE than expected.
-    assert!(
-        error_after_info <= error_before + 5,
-        "error write_idx should not advance significantly after Info push (parallel tests may add a few)"
+    // Exact, now that nothing else can write concurrently. An Info entry must
+    // not touch the error buffer at all — that is the whole claim of dual-write
+    // routing, and "within 5" was not testing it.
+    assert_eq!(
+        error_after_info, error_before,
+        "an Info entry must not advance the error buffer's write index"
     );
 
     // Push Error (both)
@@ -308,29 +335,48 @@ fn concurrent_dual_write_no_corruption() {
 
 #[test]
 fn dual_write_overhead_acceptable() {
+    let _exclusive = exclusive();
     let node = uid("overhead_bench");
 
-    // Measure Info (single write) — small count to avoid flooding shared error buffer
-    let info_start = std::time::Instant::now();
-    for i in 0..200 {
-        publish_log(make_entry(&node, LogType::Info, &format!("info_{}", i)));
-    }
-    let info_elapsed = info_start.elapsed();
+    // A single 200-iteration sample of a sub-microsecond operation is mostly
+    // noise: one scheduler preemption or allocator slow path lands entirely in
+    // whichever half it interrupts. This measured 97.89x on a loaded machine,
+    // reporting a 30x regression that did not exist.
+    //
+    // So: warm up, then take the *minimum* over several rounds. Minimum is the
+    // right estimator here because interference can only ever make a sample
+    // slower — the fastest round is the one that came closest to running
+    // undisturbed. Both halves are measured within each round so a machine that
+    // slows down mid-test slows both.
+    const ROUNDS: usize = 7;
+    const ITERS: usize = 200;
 
-    // Measure Error (dual write)
-    let error_start = std::time::Instant::now();
-    for i in 0..200 {
-        publish_log(make_entry(&node, LogType::Error, &format!("error_{}", i)));
-    }
-    let error_elapsed = error_start.elapsed();
+    let bench = |log_type: LogType, tag: &str| -> std::time::Duration {
+        let start = std::time::Instant::now();
+        for i in 0..ITERS {
+            publish_log(make_entry(&node, log_type.clone(), &format!("{tag}_{i}")));
+        }
+        start.elapsed()
+    };
 
+    // Warm up: first-touch page faults and lazy statics belong to neither half.
+    bench(LogType::Info, "warmup_info");
+    bench(LogType::Error, "warmup_error");
+
+    let mut best_info = std::time::Duration::MAX;
+    let mut best_error = std::time::Duration::MAX;
+    for _ in 0..ROUNDS {
+        best_info = best_info.min(bench(LogType::Info, "info"));
+        best_error = best_error.min(bench(LogType::Error, "error"));
+    }
+
+    let info_elapsed = best_info;
+    let error_elapsed = best_error;
     let overhead_ratio = error_elapsed.as_nanos() as f64 / info_elapsed.as_nanos().max(1) as f64;
 
     println!(
-        "DUAL-WRITE OVERHEAD: Info={}ms, Error={}ms, ratio={:.2}x",
-        info_elapsed.as_millis(),
-        error_elapsed.as_millis(),
-        overhead_ratio
+        "DUAL-WRITE OVERHEAD (best of {ROUNDS}): Info={:?}, Error={:?}, ratio={overhead_ratio:.2}x",
+        info_elapsed, error_elapsed,
     );
 
     // Error should be < 3x Info (clone + second push)

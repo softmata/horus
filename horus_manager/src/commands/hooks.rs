@@ -13,6 +13,8 @@ pub fn run_hooks(phase: &str, manifest: &HorusManifest) -> Result<()> {
         "pre_build" => &manifest.hooks.pre_build,
         "pre_test" => &manifest.hooks.pre_test,
         "post_test" => &manifest.hooks.post_test,
+        "post_run" => &manifest.hooks.post_run,
+        "post_build" => &manifest.hooks.post_build,
         _ => return Ok(()),
     };
     if hooks.is_empty() {
@@ -41,6 +43,41 @@ pub fn run_hooks(phase: &str, manifest: &HorusManifest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Run a teardown hook after a command finished, whatever the outcome.
+///
+/// Teardown is the reason `post_run` exists: releasing a CAN bus, parking an
+/// arm, powering down a driver. Skipping it when the run failed would skip it
+/// in exactly the case where the hardware was most likely left live, so this
+/// runs on both paths.
+///
+/// The command's own result stays authoritative. If the command failed, a
+/// failing hook is reported but does not replace the real error — otherwise
+/// the cause of a crashed run would be swapped for "hook failed" and the user
+/// would debug the wrong thing.
+pub fn run_teardown_hooks<E>(
+    phase: &str,
+    manifest: &HorusManifest,
+    result: Result<(), E>,
+) -> Result<(), E>
+where
+    E: From<anyhow::Error>,
+{
+    match (run_hooks(phase, manifest), result) {
+        (Ok(()), result) => result,
+        (Err(hook_err), Ok(())) => {
+            eprintln!("Hook failed: {hook_err}");
+            Err(E::from(hook_err))
+        }
+        (Err(hook_err), Err(original)) => {
+            eprintln!(
+                "Warning: {phase} hook also failed: {hook_err}\n\
+                 Reporting the original failure below instead."
+            );
+            Err(original)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -77,6 +114,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: HooksConfig::default(),
             network: None,
         }

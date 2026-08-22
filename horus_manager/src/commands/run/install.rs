@@ -95,8 +95,21 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
             continue;
         }
 
-        // If not cached, install to global cache
-        if !pkg_cache_dir.exists() {
+        // If not usably cached, install to the global cache.
+        //
+        // `exists()` is not the question. `create_dir_all` below runs *before*
+        // pip, so a pip failure — or a kill, or a full disk — leaves the
+        // directory behind with nothing in it. On every later run that empty
+        // directory answered `exists()` with true, so HORUS reported
+        //
+        //     ↗ horus-robotics -> global cache
+        //     * Linked horus-robotics
+        //
+        // and linked an empty directory. The node then died with "No module
+        // named 'horus'", pointing at the import rather than at the install
+        // that never happened. Poisoned once, poisoned until someone deletes
+        // ~/.horus/cache by hand.
+        if !cache_is_usable(&pkg_cache_dir) {
             println!(
                 "  {} Installing {} to global cache...",
                 cli_output::ICON_INFO.cyan(),
@@ -120,6 +133,9 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                // Take the empty directory with us. Leaving it is what turned a
+                // failed install into a permanent silent one.
+                let _ = fs::remove_dir_all(&pkg_cache_dir);
                 crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::pip_error_hint(
                     &stderr,
                 ));
@@ -143,7 +159,28 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
         // Symlink from local packages to global cache
         symlink(&pkg_cache_dir, &local_link)
             .context(format!("Failed to symlink {} from global cache", pkg.name))?;
-        println!("  {} Linked {}", cli_output::ICON_SUCCESS.green(), pkg.name);
+
+        // Say what was linked, not just that something was. "Linked" printed
+        // over an empty directory is the message that made this defect invisible.
+        match top_level_modules(&pkg_cache_dir) {
+            names if names.is_empty() => {
+                println!(
+                    "  {} Linked {} — but it provides no importable module. \
+                     Delete {} and re-run to reinstall.",
+                    cli_output::ICON_WARN.yellow(),
+                    pkg.name,
+                    pkg_cache_dir.display()
+                );
+            }
+            names => {
+                println!(
+                    "  {} Linked {} ({})",
+                    cli_output::ICON_SUCCESS.green(),
+                    pkg.name,
+                    names.join(", ")
+                );
+            }
+        }
     }
 
     Ok(())
@@ -214,8 +251,12 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
             continue;
         }
 
-        // If not cached, install to global cache
-        if !pkg_cache_dir.exists() {
+        // If not usably cached, install to the global cache.
+        //
+        // Same reasoning as the pypi path below: `create_dir_all` runs before
+        // `cargo install`, so a failure leaves an empty directory that
+        // `exists()` reads as a cache hit on every later run.
+        if !cargo_cache_is_usable(&pkg_cache_dir) {
             println!(
                 "  {} Installing {} to global cache...",
                 cli_output::ICON_INFO.cyan(),
@@ -240,6 +281,8 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                // Do not leave the empty directory: it would be read as a hit.
+                let _ = fs::remove_dir_all(&pkg_cache_dir);
                 crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::cargo_error_hint(
                     &stderr,
                 ));
@@ -846,6 +889,148 @@ pub(crate) fn create_system_reference_python_run(
 
 #[cfg(test)]
 mod tests {
+
+    // ── Cache completeness (PATH-3) ────────────────────────────────────────
+    //
+    // `create_dir_all` runs before pip, so a failed install leaves the cache
+    // directory behind empty. The gate used to be `!pkg_cache_dir.exists()`,
+    // which read that empty directory as a hit and linked it — the node then
+    // died with "No module named 'horus'", pointing at the import rather than
+    // at the install that never happened, and stayed poisoned until someone
+    // deleted ~/.horus/cache by hand.
+
+    /// The helper is only worth having if the install path consults it.
+    ///
+    /// The first version of these tests exercised `cache_is_usable` directly
+    /// and passed with the call site reverted to `!pkg_cache_dir.exists()` —
+    /// verifying the answer while the question went unasked.
+    #[test]
+    fn the_install_path_gates_on_cache_usability_not_existence() {
+        // Only the code, not this module: an assertion that searches for a
+        // string it also contains matches itself and always fails.
+        let full = include_str!("install.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        assert!(
+            src.contains("if !cache_is_usable(&pkg_cache_dir)"),
+            "the pypi install path must decide on whether the cache holds a \
+             package, not on whether the directory exists — an empty directory \
+             is exactly what a failed pip install leaves behind"
+        );
+        assert!(
+            src.contains("if !cargo_cache_is_usable(&pkg_cache_dir)"),
+            "the crates.io install path has the same defect and needs the same \
+             gate — `cargo install --root` leaves an empty directory too"
+        );
+        assert!(
+            !src.contains("if !pkg_cache_dir.exists() {"),
+            "the existence check is the defect, in either install path"
+        );
+    }
+
+    /// A failed install must not leave the directory behind, or the next run
+    /// finds it and treats it as a hit.
+    #[test]
+    fn a_failed_install_removes_the_directory_it_created() {
+        let full = include_str!("install.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        for marker in ["pip install failed for", "cargo install failed for"] {
+            let at = src
+                .find(marker)
+                .unwrap_or_else(|| panic!("the failure path for {marker:?} must exist"));
+            let before = &src[at.saturating_sub(400)..at];
+            assert!(
+                before.contains("remove_dir_all(&pkg_cache_dir)"),
+                "leaving the empty directory is what turned one failed install \
+                 into a permanent silent one ({marker})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cargo_cache_without_binaries_is_not_a_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("cratesio_thing@latest");
+        std::fs::create_dir_all(dir.join("bin")).expect("mkdir");
+        std::fs::write(dir.join("metadata.json"), "{}").expect("write");
+        assert!(
+            !super::cargo_cache_is_usable(&dir),
+            "an empty bin/ means cargo install produced nothing"
+        );
+        std::fs::write(dir.join("bin/thing"), "").expect("write");
+        assert!(super::cargo_cache_is_usable(&dir));
+    }
+
+    #[test]
+    fn an_empty_cache_directory_is_not_a_cache_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("pypi_thing@latest");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        assert!(
+            !super::cache_is_usable(&dir),
+            "an empty directory is what a failed pip install leaves behind"
+        );
+    }
+
+    /// An interrupted run can leave the marker with nothing beside it.
+    #[test]
+    fn metadata_alone_is_not_a_package() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("pypi_thing@latest");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("metadata.json"), "{}").expect("write");
+        assert!(!super::cache_is_usable(&dir));
+    }
+
+    /// pip's own bookkeeping is not an importable module either.
+    #[test]
+    fn dist_info_alone_is_not_a_package() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("pypi_thing@latest");
+        std::fs::create_dir_all(dir.join("thing-1.0.dist-info")).expect("mkdir");
+        std::fs::write(dir.join("metadata.json"), "{}").expect("write");
+        assert!(
+            !super::cache_is_usable(&dir),
+            "a .dist-info directory records an install; it does not provide one"
+        );
+    }
+
+    #[test]
+    fn a_real_package_is_a_cache_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("pypi_horus-robotics@latest");
+        std::fs::create_dir_all(dir.join("horus")).expect("mkdir");
+        std::fs::write(dir.join("horus/__init__.py"), "").expect("write");
+        std::fs::write(dir.join("metadata.json"), "{}").expect("write");
+        assert!(super::cache_is_usable(&dir));
+    }
+
+    /// The reported name is what is importable, not the package name — they
+    /// differ routinely, and `horus-robotics` installing `horus` is the case
+    /// that matters here.
+    #[test]
+    fn the_importable_modules_are_reported_not_the_package_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("pypi_horus-robotics@latest");
+        std::fs::create_dir_all(dir.join("horus")).expect("mkdir");
+        std::fs::write(dir.join("horus/__init__.py"), "").expect("write");
+        std::fs::create_dir_all(dir.join("horus_robotics-0.2.2.dist-info")).expect("mkdir");
+        std::fs::write(dir.join("metadata.json"), "{}").expect("write");
+        std::fs::write(dir.join("helper.py"), "").expect("write");
+
+        let mut got = super::top_level_modules(&dir);
+        got.sort();
+        assert_eq!(got, vec!["helper".to_string(), "horus".to_string()]);
+    }
+
+    /// A compiled extension counts: pyo3 wheels ship `_horus.cpython-*.so`.
+    #[test]
+    fn a_compiled_extension_counts_as_a_module() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("pypi_thing@latest");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("_horus.cpython-314-x86_64-linux-gnu.so"), "").expect("write");
+        assert_eq!(super::top_level_modules(&dir), vec!["_horus".to_string()]);
+    }
     use super::*;
     use tempfile::TempDir;
 
@@ -1001,4 +1186,68 @@ mod tests {
         assert_ne!(debug_use, debug_cancel);
         assert_ne!(debug_install, debug_cancel);
     }
+}
+
+/// Whether a crates.io cache directory actually holds an installed binary.
+///
+/// `cargo install --root DIR` puts executables in `DIR/bin/`, so that is what
+/// "installed" means here — unlike the pypi cache, where it means an importable
+/// module.
+fn cargo_cache_is_usable(dir: &Path) -> bool {
+    if !dir.join("metadata.json").is_file() {
+        return false;
+    }
+    fs::read_dir(dir.join("bin"))
+        .map(|mut e| e.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Whether a cache directory actually holds an installed package.
+///
+/// `metadata.json` is written only after pip reports success, so its absence
+/// means the install did not finish. Its presence is necessary and not
+/// sufficient: a metadata file next to nothing is not a package, and an
+/// interrupted run can leave exactly that.
+fn cache_is_usable(dir: &Path) -> bool {
+    if !dir.join("metadata.json").is_file() {
+        return false;
+    }
+    !top_level_modules(dir).is_empty()
+}
+
+/// The importable names a pip `--target` directory provides.
+///
+/// Package name and module name are routinely different — `horus-robotics`
+/// installs `horus` — so this reports what is actually there rather than
+/// guessing an import to try. Directories with an `__init__.py`, bare `.py`
+/// modules, and compiled extensions all count; pip's own bookkeeping
+/// (`*.dist-info`, `*.egg-info`, `__pycache__`, `bin`) does not.
+fn top_level_modules(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".dist-info")
+            || name.ends_with(".egg-info")
+            || name == "__pycache__"
+            || name == "bin"
+            || name == "metadata.json"
+        {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() && path.join("__init__.py").is_file() {
+            out.push(name);
+        } else if name.ends_with(".py") {
+            out.push(name.trim_end_matches(".py").to_string());
+        } else if name.ends_with(".so") || name.ends_with(".pyd") {
+            // e.g. `_horus.cpython-314-x86_64-linux-gnu.so`
+            out.push(name.split('.').next().unwrap_or(&name).to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }

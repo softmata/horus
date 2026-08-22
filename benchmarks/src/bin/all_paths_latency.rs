@@ -48,7 +48,9 @@ use horus_benchmarks::platform::{detect_platform, has_constant_tsc, PlatformInfo
 use horus_benchmarks::set_cpu_affinity;
 use horus_benchmarks::stats::Statistics;
 use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer, RdtscCalibration};
-use horus_benchmarks::{BenchmarkConfig, BenchmarkResult, DeterminismMetrics, ThroughputMetrics};
+use horus_benchmarks::{
+    BenchmarkConfig, BenchmarkResult, DeterminismMetrics, Provenance, ThroughputMetrics,
+};
 use horus_core::core::DurationExt;
 use horus_robotics::CmdVel;
 use std::hint::spin_loop;
@@ -2022,6 +2024,7 @@ fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioRes
         };
 
         let result = BenchmarkResult {
+            provenance: Provenance::Measured,
             name: format!("all_paths_latency/{}", r.name),
             subject: format!("{} ({})", r.backend_short(), r.measurement),
             message_size: std::mem::size_of::<CmdVel>(),

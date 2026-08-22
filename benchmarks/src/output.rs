@@ -292,12 +292,13 @@ pub fn format_bytes(bytes: f64) -> String {
 mod tests {
     use super::*;
     use crate::{
-        detect_platform, BenchmarkConfig, BenchmarkResult, DeterminismMetrics, Statistics,
-        ThroughputMetrics,
+        detect_platform, BenchmarkConfig, BenchmarkResult, DeterminismMetrics, Provenance,
+        Statistics, ThroughputMetrics,
     };
 
     fn make_test_result(name: &str, median: f64) -> BenchmarkResult {
         BenchmarkResult {
+            provenance: Provenance::Measured,
             name: name.to_string(),
             subject: "test".to_string(),
             message_size: 64,

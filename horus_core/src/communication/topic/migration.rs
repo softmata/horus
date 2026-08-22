@@ -140,30 +140,64 @@ impl<'a> BackendMigrator<'a> {
     /// Returns `false` if the drain timeout is exceeded, indicating that
     /// migration should be retried rather than proceeding unsafely.
     fn drain_in_flight(&self) -> bool {
+        // Give any in-flight send/recv time to finish. They complete in under
+        // 200 ns, so a bounded spin plus a few yields is the whole mechanism.
+        //
+        // There is no wall-clock abort here, and there used to be: 25 ms, with a
+        // comment saying it existed to bound "GENUINELY-stuck producers (e.g. a
+        // thread suspended by a debugger)".
+        //
+        // It could not do that. Nothing in `TopicHeader` counts in-flight
+        // operations — there is no such field — so this function has never had
+        // anything to observe. A wedged producer and an idle topic run the same
+        // number of iterations and both return `true`. The deadline could
+        // therefore only fire when *this loop* was preempted, which made the
+        // single observable effect of the timeout "abort migrations when the
+        // machine is busy":
+        //
+        //     assertion `left == right` failed
+        //       left: Failed
+        //      right: Success { new_epoch: 3 }
+        //
+        // Full parallel runs failed migration tests that way, never the same one
+        // twice. Removing the abort removes a failure mode and no protection,
+        // because the protection was never there.
+        //
+        // How much it helps is not established. A first comparison looked
+        // decisive — 5 of 8 runs with migration failures before, 0 of 8 after —
+        // but those batches ran hours apart under different machine load. Re-run
+        // back-to-back, the baseline showed 1 of 8 and the fix 0 of 8, which
+        // decides nothing. The argument for this change is the code, not the
+        // measurement: a function with no in-flight counter cannot detect an
+        // in-flight operation, so a deadline on its own spin loop can only
+        // report on the scheduler.
+        //
+        // Restoring a real bound means counting in-flight operations, which is
+        // an increment and a decrement on the send and recv hot paths of a
+        // real-time framework. That is a deliberate design decision with a
+        // measurable cost, not something to reintroduce by leaving a deadline
+        // here that only looks like it does the job.
+        // The deadline is still here, and still bounds how long this spins —
+        // that part was always legitimate, and removing it made
+        // `send_blocking` block measurably longer under load (a test asserting
+        // an immediate return went from failing 2 runs in 8 to 7 in 8). What is
+        // gone is the `return false` it used to trigger: stopping early is
+        // right, reporting failure because of it is not.
         let start = std::time::Instant::now();
-        // In-flight send/recv ops complete in <200ns, but this budget must bound
-        // GENUINELY-stuck producers (e.g. a thread suspended by a debugger), not
-        // the drain's own cost: the spin loop below runs DEFAULT_SPIN_COUNT (1000)
-        // SeqCst fences + clock reads, which alone costs ~100us and, under CPU
-        // load or a single preemption, can exceed a tight budget — spuriously
-        // aborting a migration that had nothing to drain. 25ms tolerates that
-        // scheduling jitter while still catching a truly wedged producer (which
-        // never completes, so the migration is safely deferred and retried).
-        let timeout = std::time::Duration::from_millis(25);
+        let budget = std::time::Duration::from_millis(25);
 
-        // Spin to let sub-microsecond operations complete
         for _ in 0..self.spin_count {
             std::sync::atomic::fence(Ordering::SeqCst);
             std::hint::spin_loop();
-            if start.elapsed() > timeout {
-                return false;
+            if start.elapsed() > budget {
+                return true;
             }
         }
-        // Yield to let preempted producer threads complete
+        // Yield to let preempted producer threads complete.
         for _ in 0..3 {
             std::thread::yield_now();
-            if start.elapsed() > timeout {
-                return false;
+            if start.elapsed() > budget {
+                return true;
             }
         }
         true

@@ -14,14 +14,18 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
     if json {
         let mut items = Vec::new();
         if !shm || all {
-            let target_dir = std::path::Path::new("target");
-            if target_dir.exists() {
-                items.push(serde_json::json!({
-                    "type": "build_cache",
-                    "path": "target/",
-                    "size": get_dir_size(target_dir),
-                    "exists": true,
-                }));
+            // Both build caches — see clean_build_cache for why `.horus/target`
+            // is the one that actually holds the bytes for template projects.
+            for rel in ["target", ".horus/target"] {
+                let target_dir = std::path::Path::new(rel);
+                if target_dir.exists() {
+                    items.push(serde_json::json!({
+                        "type": "build_cache",
+                        "path": format!("{rel}/"),
+                        "size": get_dir_size(target_dir),
+                        "exists": true,
+                    }));
+                }
             }
             let cpp_build_dir = std::path::Path::new(".horus/cpp-build");
             if cpp_build_dir.exists() {
@@ -141,33 +145,61 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -
     Ok(())
 }
 
-/// Clean build cache (target directory)
+/// Clean build cache (target directories).
+///
+/// TWO directories, not one. A project with a root `Cargo.toml` builds into
+/// `target/`, but a template project (`horus new`) has no root manifest — HORUS
+/// generates `.horus/Cargo.toml`, and cargo's default target dir for it is
+/// `.horus/target/`. Only `target/` was checked here, so `horus clean` reported
+/// "No target/ directory found" while sitting on the entire build cache. It is
+/// not a rounding error: this repository's own `examples/` holds ~12 GB, every
+/// byte under `examples/*/.horus/target`, and `ls -d examples/*/target` matches
+/// nothing. `horus doctor`'s `check_disk` already measures `.horus/` correctly,
+/// so the tool would report bytes its own cleaner could not remove.
 fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
-    let target_dir = Path::new("target");
+    let mut cleaned = false;
 
-    if target_dir.exists() {
+    for rel in ["target", ".horus/target"] {
+        let target_dir = Path::new(rel);
+        if !target_dir.exists() {
+            continue;
+        }
+
+        // Refuse to delete a tree cargo is actively writing. Removing
+        // `.fingerprint/` and half-written rlibs under a running build leaves a
+        // corrupt cache that only a second clean fixes.
+        if crate::build_dirs::is_locked(target_dir) {
+            cli_output::warn(&format!(
+                "Skipping {} — a build is in progress (lock held)",
+                format!("{rel}/").white()
+            ));
+            continue;
+        }
+
         let size = get_dir_size(target_dir);
-
+        let label = format!("{rel}/");
         if dry_run {
             cli_output::info(&format!(
                 "Would remove {} ({})",
-                "target/".white(),
+                label.white(),
                 format_size(size)
             ));
         } else {
             cli_output::info(&format!(
                 "Removing {} ({})",
-                "target/".white(),
+                label.white(),
                 format_size(size)
             ));
             std::fs::remove_dir_all(target_dir).map_err(HorusError::Io)?;
         }
-        return Ok(true);
-    } else {
-        cli_output::info("No target/ directory found");
+        cleaned = true;
     }
 
-    Ok(false)
+    if !cleaned {
+        cli_output::info("No build cache found (target/ or .horus/target/)");
+    }
+
+    Ok(cleaned)
 }
 
 /// Clean shared memory — scans ALL horus_* namespace directories

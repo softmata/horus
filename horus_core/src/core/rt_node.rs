@@ -23,9 +23,17 @@ pub enum Miss {
     Warn,
     /// Skip this tick, resume next cycle.
     Skip,
-    /// Call `enter_safe_state()` on the node, then keep ticking. Fired on every
-    /// deadline miss; the node is not isolated and the scheduler does not poll
-    /// `is_safe_state()` for automatic recovery.
+    /// Call `enter_safe_state()` on the node once, then keep ticking.
+    ///
+    /// The hook fires on the *transition* into safe mode, not on every miss, so
+    /// a node under sustained overload is safed once rather than re-safed every
+    /// cycle. The latch clears as soon as the node meets its deadline again,
+    /// which is what lets a later degradation be caught — so a flapping node
+    /// produces one entry per episode.
+    ///
+    /// The node is not isolated and keeps ticking, so it can hold its safe
+    /// outputs (a zeroed velocity command still has to be published). The
+    /// scheduler does not poll `is_safe_state()`.
     SafeMode,
     /// Stop the entire scheduler (last resort).
     Stop,

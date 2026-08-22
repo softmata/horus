@@ -45,11 +45,6 @@ pub(super) fn get_color_for_index(index: usize) -> &'static str {
     colors[index % colors.len()]
 }
 
-/// Load `horus.toml` or create a default manifest for standalone files.
-///
-/// Merges any auto-detected hardware feature names into the manifest's
-/// `[drivers]` section so that `cargo_gen` picks them up as Cargo features.
-
 /// Surface cargo's warnings from a build that *succeeded*.
 ///
 /// Every cargo invocation here captures stderr with `Stdio::piped()` and every
@@ -90,6 +85,10 @@ fn print_cargo_warnings(stderr: &[u8]) {
     }
 }
 
+/// Load `horus.toml` or create a default manifest for standalone files.
+///
+/// Merges any auto-detected hardware feature names into the manifest's
+/// `[drivers]` section so that `cargo_gen` picks them up as Cargo features.
 pub(crate) fn load_or_default_manifest(extra_drivers: &[String]) -> Result<HorusManifest> {
     let mut manifest = if Path::new(HORUS_TOML).exists() {
         HorusManifest::load_from(Path::new(HORUS_TOML)).unwrap_or_else(|_| default_manifest())
@@ -134,6 +133,7 @@ fn default_manifest() -> HorusManifest {
         ignore: IgnoreConfig::default(),
         enable: vec![],
         cpp: None,
+        rust: None,
         hooks: Default::default(),
         network: None,
         workspace: None,
@@ -172,6 +172,7 @@ pub fn execute_build_only(
 
                     let mut cmd = std::process::Command::new("cargo");
                     cmd.arg("build").arg("--manifest-path").arg(&cargo_path);
+                    crate::build_dirs::apply(&mut cmd, &project_dir);
                     if release {
                         cmd.arg("--release");
                     }
@@ -238,12 +239,13 @@ pub fn execute_build_only(
             // with CARGO_TARGET_DIR=.horus/target. Dependencies live in Cargo.toml.
             if Path::new(CARGO_TOML).exists() {
                 cli_output::info("Building from root Cargo.toml...");
+                warn_if_rust_section_is_ignored();
 
                 let build_start = std::time::Instant::now();
                 let spinner = progress::build_spinner("Building with cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
-                cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
@@ -334,6 +336,7 @@ pub fn execute_build_only(
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.current_dir(".horus");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
@@ -451,6 +454,7 @@ pub(super) fn execute_from_cargo_toml(
                 progress::build_spinner(&format!("Building Cargo project ({} mode)...", build_dir));
             let mut cmd = Command::new("cargo");
             cmd.arg("build");
+            crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             cmd.envs(child_env.iter().cloned());
@@ -588,12 +592,14 @@ pub(super) fn build_rust_files_batch(
     if clean {
         let mut clean_cmd = Command::new("cargo");
         clean_cmd.arg("clean").current_dir(".horus");
+        crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
         clean_cmd.status().ok();
     }
 
     // Build all binaries with a single cargo build command
     let mut cmd = Command::new("cargo");
     cmd.arg("build").current_dir(".horus");
+    crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
     if release {
         cmd.arg("--release");
     }
@@ -619,7 +625,9 @@ pub(super) fn build_rust_files_batch(
 
     let child_env = super::build_child_env()?;
     for name in binary_names {
-        let binary_path = format!(".horus/target/{}/{}", profile, name);
+        let binary_path = crate::build_dirs::binary_path(&std::env::current_dir()?, profile, &name)
+            .display()
+            .to_string();
         executables.push(ExecutableInfo {
             name,
             command: binary_path,
@@ -670,12 +678,14 @@ pub(super) fn build_file_for_concurrent_execution(
             if clean {
                 let mut clean_cmd = Command::new("cargo");
                 clean_cmd.arg("clean").current_dir(".horus");
+                crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
                 clean_cmd.status().ok();
             }
 
             // Build with Cargo
             let mut cmd = Command::new("cargo");
             cmd.arg("build").current_dir(".horus");
+            crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
             if release {
                 cmd.arg("--release");
             }
@@ -688,7 +698,10 @@ pub(super) fn build_file_for_concurrent_execution(
             }
 
             let profile = if release { "release" } else { "debug" };
-            let binary_path = format!(".horus/target/{}/{}", profile, bin_name);
+            let binary_path =
+                crate::build_dirs::binary_path(&std::env::current_dir()?, profile, &bin_name)
+                    .display()
+                    .to_string();
 
             Ok(ExecutableInfo {
                 name,
@@ -749,7 +762,7 @@ pub(super) fn execute_with_scheduler(
                     cli_output::info("Cleaning build artifacts...");
                     let mut clean_cmd = Command::new("cargo");
                     clean_cmd.arg("clean");
-                    clean_cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                    crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
                     clean_cmd.envs(child_env.iter().cloned());
                     let status = clean_cmd.status()?;
                     if !status.success() {
@@ -760,7 +773,7 @@ pub(super) fn execute_with_scheduler(
                 cli_output::info("Building with Cargo...");
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
-                cmd.env("CARGO_TARGET_DIR", ".horus/target");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.envs(child_env.iter().cloned());
                 if release {
                     cmd.arg("--release");
@@ -788,7 +801,13 @@ pub(super) fn execute_with_scheduler(
 
                 let profile = if release { "release" } else { "debug" };
                 let project_name = get_project_name()?;
-                let binary_path = format!(".horus/target/{}/{}", profile, project_name);
+                let binary_path = crate::build_dirs::binary_path(
+                    &std::env::current_dir()?,
+                    profile,
+                    &project_name,
+                )
+                .display()
+                .to_string();
 
                 // Execute the binary
                 cli_output::info("Executing...\n");
@@ -845,6 +864,7 @@ pub(super) fn execute_with_scheduler(
                     let mut clean_cmd = Command::new("cargo");
                     clean_cmd.arg("clean");
                     clean_cmd.current_dir(".horus");
+                    crate::build_dirs::apply(&mut clean_cmd, &std::env::current_dir()?);
                     let status = clean_cmd.status()?;
                     if !status.success() {
                         log::warn!("cargo clean failed");
@@ -855,6 +875,7 @@ pub(super) fn execute_with_scheduler(
                 let mut cmd = Command::new("cargo");
                 cmd.arg("build");
                 cmd.current_dir(".horus");
+                crate::build_dirs::apply(&mut cmd, &std::env::current_dir()?);
                 cmd.envs(child_env.iter().cloned());
                 if release {
                     cmd.arg("--release");
@@ -881,7 +902,13 @@ pub(super) fn execute_with_scheduler(
                 }
 
                 let profile = if release { "release" } else { "debug" };
-                let binary_path = format!(".horus/target/{}/{}", profile, binary_name);
+                let binary_path = crate::build_dirs::binary_path(
+                    &std::env::current_dir()?,
+                    profile,
+                    &binary_name,
+                )
+                .display()
+                .to_string();
 
                 // Execute the binary
                 cli_output::info("Executing...\n");
@@ -901,11 +928,13 @@ pub(super) fn execute_with_scheduler(
             }
         }
         "python" => {
+            cli_output::info("Executing...\n");
             super::run_python::execute_python_node(file, args, release)?;
         }
         "cpp" => {
             let project_dir = std::env::current_dir()?;
             let binary = super::run_cpp::build_cpp(&project_dir, release, None)?;
+            cli_output::info("Executing...\n");
             let str_args: Vec<String> = args;
             super::run_cpp::execute_cpp_binary(&binary, &str_args)?;
         }
@@ -1063,6 +1092,32 @@ pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
          2. Set HORUS_SOURCE environment variable to your HORUS source directory\n\
          3. Clone HORUS to ~/softmata/horus or ~/horus"
     )
+}
+
+/// Say so when `[rust]` cannot take effect.
+///
+/// With a root `Cargo.toml` present, HORUS builds from it directly and never
+/// generates `.horus/Cargo.toml` — so a `[rust]` section is parsed, accepted by
+/// `horus check`, and then silently ignored. That is the exact failure this
+/// feature exists to remove, so it must not be reintroduced by it.
+fn warn_if_rust_section_is_ignored() {
+    let Ok(text) = std::fs::read_to_string(crate::manifest::HORUS_TOML) else {
+        return;
+    };
+    let Ok(manifest) =
+        crate::manifest::HorusManifest::parse_str(&text, Path::new(crate::manifest::HORUS_TOML))
+    else {
+        return;
+    };
+    if manifest.rust.as_ref().is_some_and(|r| !r.is_empty()) {
+        eprintln!(
+            "{} horus.toml has a [rust] section, but this project has its own \
+             Cargo.toml, so HORUS builds from that and the section has no \
+             effect. Move those settings into Cargo.toml, or delete Cargo.toml \
+             to let HORUS generate one.",
+            "warning:".yellow().bold()
+        );
+    }
 }
 
 #[cfg(test)]

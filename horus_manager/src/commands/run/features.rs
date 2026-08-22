@@ -393,6 +393,7 @@ mod tests {
             ignore: IgnoreConfig::default(),
             enable: vec![],
             cpp: None,
+        rust: None,
             hooks: Default::default(),
             network: None,
         }
@@ -661,13 +662,11 @@ mod tests {
 
     // ── enable_to_features ──────────────────────────────────────────────────
 
-    #[test]
     /// `horus run --net` set HORUS_NET=1 and nothing else. That variable is
     /// read only by `horus doctor`, the `net` Cargo feature is not in
     /// `default`, and nothing else added it — so the flag never reached the
-    /// build. The generated manifest had no `features = ["net"]`, the binary
-    /// contained no horus_net symbols, and the user saw a normal run with zero
-    /// networking output.
+    /// build.
+    ///
     /// `net` must NOT become a `--features` flag on the user's crate: cargo
     /// rejects it with "the package 'x' does not contain this feature: net".
     /// It is applied to the `horus` dependency in the generated manifest
@@ -678,6 +677,7 @@ mod tests {
         assert!(enable_to_features("network").is_empty());
     }
 
+    #[test]
     fn enable_to_features_cuda() {
         assert_eq!(enable_to_features("cuda"), vec!["cuda"]);
     }

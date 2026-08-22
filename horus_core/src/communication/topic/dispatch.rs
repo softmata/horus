@@ -1391,6 +1391,84 @@ pub(super) fn recv_shm_pod_broadcast<
     if v1 < tail.wrapping_add(1) {
         return None; // nothing published here yet
     }
+    // The slot holds a message NEWER than the one `tail` names: the producer
+    // lapped us. Returning it would deliver a newer message under an older
+    // sequence, and the next call would then return the genuinely-older message
+    // from the following slot — an inversion of exactly `capacity - 1`, which is
+    // what was observed (-511 on a 512-slot ring, three times). The same read
+    // also duplicates: after handing back `T+C` we set tail to `T+1`, so when
+    // tail later reaches `T+C` that value is delivered a second time.
+    //
+    // The `behind > capacity` guard above cannot catch this. It is a *sampled*
+    // check: `local_head` is only reloaded when the cached head is drained, and
+    // between reloads `behind` counts down while the true lag can grow past
+    // capacity. Lapping that starts inside a drain window is invisible to it.
+    // Reloading the head on every call would not help either — the producer can
+    // lap us between the head load and the ready-flag load — and it would put a
+    // shared-cacheline atomic on the hot path for nothing.
+    //
+    // `v1` is already loaded, so this costs one comparison. With it, the accept
+    // condition is exactly `v1 == tail + 1`, the same condition the SpscShm and
+    // MpscShm readers on this ring already use (dispatch.rs:1241, 1511).
+    //
+    // The compare is an absolute u64 compare, matching the `v1 <` compare above.
+    // That is sound only under the "sequences never reach 2^63" assumption
+    // documented at shm_layout.rs:110-112 — the same assumption that makes bit
+    // 63 available as SLOT_WRITING. Do not switch either compare to a wrapping
+    // form without revisiting both.
+    if v1 > tail.wrapping_add(1) {
+        // Resume from a still-valid slot. Land half a lap back from the head
+        // rather than exactly `head - capacity`: that boundary is the slot the
+        // producer overwrites *next*, so it re-laps immediately. Measured over
+        // 3M sends to 32 consumers: landing on the boundary delivered 2.23M
+        // messages and burned 7.16M calls re-detecting laps, while half a lap of
+        // slack delivered 16.98M with 47.9k lap detections, zero inversions and
+        // zero duplicates.
+        //
+        // `head` here is freshly loaded, and reaching this branch implies
+        // `head >= tail + capacity + 1 > capacity`, so the subtraction cannot
+        // wrap. Keep this computation below the `v1 > tail + 1` test — hoisting
+        // it above would let it wrap to ~2^64 and hand back a garbage tail.
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        let cap = local.cached_capacity;
+        if head > cap {
+            let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+            // Never move the tail backward.
+            //
+            // The argument that `resume > tail` always holds relies on
+            // `cached_capacity` being the ring's current capacity. It is a
+            // cached value, and a topology change re-sizes the ring — so a
+            // capacity larger than the live one computes a resume point behind
+            // where this consumer already is, and the next accepted slot then
+            // delivers a message older than the last one returned. That is a
+            // reordering the caller cannot distinguish from a ring defect, and
+            // it survives the rejection above precisely because the rejection
+            // is what installs this value.
+            //
+            // Skipping the update loses nothing: the slot is rejected either
+            // way, and the next call re-derives a resume point from a fresher
+            // head.
+            //
+            // This closes one identified route to a backward tail. It is not
+            // measured to reduce the residual reordering seen under a saturated
+            // parallel run — 4 inversions in 1.23M messages before, 1 in 441k
+            // after, which is the same rate within noise.
+            //
+            // Where that residual comes from is still unknown, and one earlier
+            // guess is now ruled out: `Topic::sync_shm_state` adopts
+            // `header.tail` unconditionally when the data plane changes, which
+            // would regress a consumer — but instrumenting it showed the branch
+            // is never taken during this test. 26 syncs, every one same-plane,
+            // none regressing. The producer-side `local_tail` resets in this
+            // file are backpressure bookkeeping on the *sending* handle and
+            // cannot reorder a consumer either.
+            if resume > local.local_tail {
+                local.local_tail = resume;
+                local.local_head = head;
+            }
+        }
+        return None;
+    }
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // The Acquire load above establishes happens-before with the producer's

@@ -68,7 +68,7 @@ impl Node for SquareDriver {
         // Log odometry every 50 ticks
         if self.phase_ticks % 50 == 0 {
             if let Some(odom) = self.odom_sub.recv() {
-                hlog!(
+                hlog!(info, 
                     "pos=({:.2}, {:.2}), theta={:.2}, phase={}",
                     odom.x,
                     odom.y,
@@ -103,7 +103,7 @@ impl Node for SafetyNode {
     fn tick(&mut self) {
         if let Some(cmd) = self.cmd_sub.recv() {
             if cmd.linear.abs() > self.max_speed || cmd.angular.abs() > 3.0 {
-                hlog!("SAFETY: velocity exceeds limits! lin={:.2} ang={:.2}",
+                hlog!(warn, "SAFETY: velocity exceeds limits! lin={:.2} ang={:.2}",
                     cmd.linear, cmd.angular);
             }
         }

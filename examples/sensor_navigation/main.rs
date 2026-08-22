@@ -7,6 +7,7 @@
 
 use horus::prelude::*;
 use horus::DurationExt;
+use horus_tf::{timestamp_now, Transform, TransformFrame};
 
 message! {
     /// Detected obstacle bearing and distance
@@ -107,7 +108,7 @@ impl Node for Navigator {
         if let Some(alert) = self.alert_sub.recv() {
             self.obstacle_detected = true;
             self.turn_ticks = 40; // Turn for ~2 seconds at 20Hz
-            hlog!(
+            hlog!(warn, 
                 "Obstacle at {:.2}m, angle={:.1}deg — turning",
                 alert.distance_m,
                 alert.angle_rad.to_degrees()
@@ -130,7 +131,7 @@ impl Node for Navigator {
 
         // Read IMU for heading (logging only)
         if let Some(imu) = self.imu_sub.recv() {
-            hlog_every!(50, "heading gyro_z={:.3}", imu.angular_velocity[2]);
+            hlog_every!(50, info, "heading gyro_z={:.3}", imu.angular_velocity[2]);
         }
     }
 }
@@ -173,7 +174,7 @@ impl Node for TelemetryLogger {
                 i.linear_acceleration[2]))
             .unwrap_or_else(|| "no imu".to_string());
 
-        hlog!("[T{}] {} | {}", self.tick_count, cmd_info, imu_info);
+        hlog!(info, "[T{}] {} | {}", self.tick_count, cmd_info, imu_info);
     }
 }
 

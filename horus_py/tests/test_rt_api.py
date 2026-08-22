@@ -245,3 +245,85 @@ class TestNodeSchedulingKwargs:
         from horus import Node
         n = Node(name="test", tick=lambda n: None, failure_policy="restart")
         assert n.failure_policy == "restart"
+
+
+# ============================================================================
+# Safe-state hook (Miss.SAFE_MODE)
+# ============================================================================
+
+class TestSafeStateHook:
+    """`on_miss="safe_mode"` must reach a Python node's enter_safe_state()."""
+
+    def test_enter_safe_state_is_called_on_deadline_miss(self):
+        """Miss.SAFE_MODE is documented as "calls enter_safe_state() on the node".
+
+        Regression: PyNodeAdapter implemented only init/tick/shutdown, so a
+        Python node fell through to the no-op default in horus_core. The
+        scheduler detected the misses and degraded — safety_stats() showed
+        deadline_misses and degrade_activations — while the hook that stops
+        the motors was never invoked. Rust and C++ nodes both got it, so this
+        was a three-language parity gap on a safety path.
+        """
+        import time
+        import horus
+
+        called = []
+
+        class Overrunner(horus.Node):
+            def __init__(self):
+                super().__init__(
+                    name="test_safe_state_overrunner",
+                    rate=100,
+                    budget=0.001,
+                    deadline=0.002,
+                    on_miss="safe_mode",
+                )
+                self.ticks = 0
+
+            def tick(self, info=None):
+                self.ticks += 1
+                time.sleep(0.005)  # 5 ms against a 2 ms deadline
+
+            def enter_safe_state(self):
+                called.append(self.ticks)
+
+        node = Overrunner()
+        sched = horus.Scheduler()
+        sched.add(node)
+        sched.run(duration=0.5)
+
+        stats = sched.safety_stats()
+        assert stats["deadline_misses"] > 0, (
+            f"test premise broken: no deadline was missed ({stats})"
+        )
+        assert called, (
+            "enter_safe_state() was never called despite "
+            f"{stats['deadline_misses']} deadline misses and "
+            f"{stats['degrade_activations']} degrade activations"
+        )
+
+    def test_node_without_the_hook_still_runs(self):
+        """Not defining enter_safe_state must stay harmless."""
+        import time
+        import horus
+
+        class Plain(horus.Node):
+            def __init__(self):
+                super().__init__(
+                    name="test_safe_state_plain",
+                    rate=100,
+                    budget=0.001,
+                    deadline=0.002,
+                    on_miss="safe_mode",
+                )
+                self.ticks = 0
+
+            def tick(self, info=None):
+                self.ticks += 1
+                time.sleep(0.005)
+
+        node = Plain()
+        sched = horus.Scheduler()
+        sched.add(node)
+        sched.run(duration=0.3)
+        assert node.ticks > 0

@@ -216,6 +216,30 @@ else
     HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
 fi
 
+# Refuse early on a toolchain that cannot build HORUS.
+#
+# The floor was previously discovered by the user only after install.sh had run
+# and cargo had started compiling — several minutes in, as a cargo error about
+# a package they had never heard of. It is read from the workspace manifest
+# rather than hardcoded here, so there is one number and it lives in one place.
+check_rust_version() {
+    local required found
+    required=$(grep -m1 '^rust-version' "$HORUS_SRC_DIR/Cargo.toml" 2>/dev/null \
+        | sed 's/.*"\(.*\)".*/\1/')
+    [ -n "$required" ] || return 0
+
+    found=$(rustc --version 2>/dev/null | awk '{print $2}' | cut -d- -f1)
+    [ -n "$found" ] || return 0
+
+    # Compare as version numbers, not as strings: 1.100 is newer than 1.9.
+    if [ "$(printf '%s\n%s\n' "$required" "$found" | sort -V | head -n1)" != "$required" ]; then
+        fail "Rust $required or newer is required; found $found."
+        echo "  Run: rustup update stable"
+        exit 1
+    fi
+    ok "Rust $found (>= $required required)"
+}
+
 if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
     # --- Fast path: pre-built binary, skip the compile ---
 
@@ -283,6 +307,7 @@ else
             exit 1
         fi
     fi
+    check_rust_version
     if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then
         install_build_deps
     fi
@@ -297,12 +322,12 @@ else
     # Force stable toolchain — nightly may have compiler bugs
     # First try with LTO (smaller binary). If LLVM crashes (SIGILL — known
     # bug on some CPUs), retry without LTO.
-    if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
+    if ! cargo +stable build --release -p horus_manager 2>&1; then
         echo ""
         warn "Release build failed (possible LLVM/LTO bug), retrying without LTO..."
         echo ""
         export CARGO_PROFILE_RELEASE_LTO=off
-        if ! cargo +stable build --release -p horus_manager --no-default-features 2>&1; then
+        if ! cargo +stable build --release -p horus_manager 2>&1; then
             echo ""
             fail "Build failed"
             echo "    Report issues: https://github.com/${REPO}/issues"
@@ -356,8 +381,106 @@ else
     ok "Added to PATH"
 fi
 
-# Shell integration
-horus env --init 2>/dev/null || true
+# --- Shell integration ---
+#
+# `horus env --init` writes ~/.horus/env.sh and appends a source line to
+# .bashrc, .zshrc and fish's conf.d. That file defines shell functions shadowing
+# cargo, pip, pip3, cmake, conan and vcpkg — inside a horus project they
+# delegate to `horus <tool>`, outside they pass straight through.
+#
+# That is a reasonable default and `horus env --uninstall` reverses it cleanly,
+# but editing someone's shell rc files is not something to do silently. The
+# output used to go to /dev/null, so the user was never told. Now they are told,
+# and they can decline:
+#
+#   HORUS_NO_SHELL_INTEGRATION=1 curl ... | bash
+if [ -n "${HORUS_NO_SHELL_INTEGRATION:-}" ]; then
+    info "Skipping shell integration (HORUS_NO_SHELL_INTEGRATION is set)"
+    echo "  Run 'horus env --init' later to enable the cargo/pip/cmake proxies."
+else
+    if horus env --init; then
+        echo "  Shadows cargo, pip, pip3, cmake, conan and vcpkg inside horus"
+        echo "  projects only. Undo with: horus env --uninstall"
+        echo "  Skip next time with: HORUS_NO_SHELL_INTEGRATION=1"
+    fi
+fi
+
+# --- Shell completions ---
+#
+# `horus completion <shell>` has worked since the CLI shipped, and the code
+# comment on it claims "Hidden command used by install.sh for automatic
+# completion setup" — but install.sh never mentioned it, so nobody has ever
+# received a completion script. For a CLI with ~40 commands, dozens of
+# subcommands and single-letter aliases (t n p a m s i l srv bb mon rec tf),
+# that is the difference between discoverable and not.
+install_completions() {
+    case "${SHELL:-/bin/bash}" in
+        */zsh)
+            COMP_DIR="${HOME}/.zfunc"
+            COMP_FILE="${COMP_DIR}/_horus"
+            COMP_SHELL="zsh"
+            # zsh needs the directory on fpath before compinit.
+            COMP_HINT="fpath=(${COMP_DIR} \$fpath)"
+            ;;
+        */fish)
+            COMP_DIR="${HOME}/.config/fish/completions"
+            COMP_FILE="${COMP_DIR}/horus.fish"
+            COMP_SHELL="fish"
+            COMP_HINT=""
+            ;;
+        */bash)
+            COMP_DIR="${HOME}/.local/share/bash-completion/completions"
+            COMP_FILE="${COMP_DIR}/horus"
+            COMP_SHELL="bash"
+            COMP_HINT=""
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    mkdir -p "$COMP_DIR" 2>/dev/null || return 0
+    if horus completion "$COMP_SHELL" > "${COMP_FILE}.tmp" 2>/dev/null &&
+       [ -s "${COMP_FILE}.tmp" ]; then
+        mv "${COMP_FILE}.tmp" "$COMP_FILE"
+        ok "Shell completions installed (${COMP_SHELL})"
+        if [ -n "$COMP_HINT" ] && [ -n "$SHELL_RC" ] &&
+           ! grep -qF "$COMP_HINT" "$SHELL_RC" 2>/dev/null; then
+            echo "$COMP_HINT" >> "$SHELL_RC"
+        fi
+    else
+        # Never fail the install over completions.
+        rm -f "${COMP_FILE}.tmp" 2>/dev/null
+    fi
+}
+install_completions
+
+# --- Man page ---
+#
+# HORUS shipped no man page at all: `man horus` found nothing, on a tool that
+# already installed a completion script. `horus man` renders it from the same
+# clap tree the binary is built from, so it cannot describe a command that does
+# not exist.
+install_man_page() {
+    # Prefer the user-local location so this needs no root; fall back to the
+    # system one only if we are already root.
+    if [ "$(id -u)" = "0" ]; then
+        MAN_DIR="/usr/local/share/man/man1"
+    else
+        MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man/man1"
+    fi
+
+    mkdir -p "$MAN_DIR" 2>/dev/null || return 0
+    if horus man > "${MAN_DIR}/horus.1.tmp" 2>/dev/null &&
+       [ -s "${MAN_DIR}/horus.1.tmp" ]; then
+        mv "${MAN_DIR}/horus.1.tmp" "${MAN_DIR}/horus.1"
+        ok "Man page installed (man horus)"
+    else
+        # Never fail the install over a man page.
+        rm -f "${MAN_DIR}/horus.1.tmp" 2>/dev/null
+    fi
+}
+install_man_page
 
 # --- Done ---
 elapsed_total=$(($(date +%s) - INSTALL_START))

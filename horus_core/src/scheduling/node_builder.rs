@@ -1195,7 +1195,6 @@ mod tests {
 
     // ── .rate() auto-derives budget & deadline ──
 
-    #[test]
     /// `.rate()` alone switches on real-time *enforcement*: the derived
     /// deadline drives the degradation ladder, whose terminal actions are
     /// ReduceRate, Isolate and Kill. A plain 30 Hz node doing 50 ms of work was
@@ -1244,6 +1243,7 @@ mod tests {
         assert!(!reg.deadline_auto);
     }
 
+    #[test]
     fn test_rate_auto_derives_budget_and_deadline() {
         let mut reg = NodeRegistration::new(stub("n")).rate(100_u64.hz());
         reg.finalize();
