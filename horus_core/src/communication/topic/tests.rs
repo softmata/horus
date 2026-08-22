@@ -6026,7 +6026,11 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
                           // core, missed the warm-up inside 5s and failed as "sub2 never
                           // observed the producer warm-up message" — a scheduling shortfall
                           // wearing the costume of a delivery bug.
-            let warmup_deadline = Instant::now() + Duration::from_secs(20);
+                          // Match the producer's 60s resend bound below. A subscriber that
+                          // gives up while the producer is still sending reports a timeout
+                          // for a warm-up that was still on its way; the two bounds have to
+                          // agree, and both are hang guards rather than timing assertions.
+            let warmup_deadline = Instant::now() + Duration::from_secs(60);
             let mut warmed_up = false;
             loop {
                 sub.check_migration_now();

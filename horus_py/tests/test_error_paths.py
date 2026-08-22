@@ -71,16 +71,29 @@ class TestSendErrorPaths:
 
         assert sent_ok[0], "send to undeclared topic should not crash"
 
-    def test_send_none_doesnt_crash(self):
-        """send(topic, None) should not crash."""
+    def test_send_none_doesnt_crash(self, unique_test_prefix):
+        """send(topic, None) should not crash on an *untyped* topic.
+
+        The topic name has to be unique. Topics are global and their type lives
+        in shared memory, so a bare name like "test_topic" was whatever an
+        earlier test in the session had made it — and once something had opened
+        it typed, sending None raised, exactly as
+        `test_send_none_to_typed_topic_raises_typeerror` requires it to. The
+        test passed or failed on collection order.
+        """
         sent_ok = [False]
+        topic = f"{unique_test_prefix}_none_topic"
 
         def tick(node):
-            node.send("test_topic", None)
+            node.send(topic, None)
             sent_ok[0] = True
 
-        node = horus.Node(name="send_none", tick=tick, rate=10, pubs=["test_topic"])
-        horus.run(node, duration=0.1)
+        node = horus.Node(name="send_none", tick=tick, rate=10, pubs=[topic])
+        # 1s, not 0.1s. At 10Hz a 0.1s run is a single tick, and it only happens
+        # if the scheduler finishes starting first — under the rest of the suite
+        # it often does not, and the assertion below then reports "send(None)
+        # should not crash" for a send that never ran.
+        horus.run(node, duration=1.0)
 
         assert sent_ok[0], "send(None) should not crash"
 

@@ -154,7 +154,11 @@ fn test_freshness_stop_kills_node() {
         .build()
         .unwrap();
 
-    sched.run_for(1_u64.secs()).unwrap();
+    // 2s at 100Hz. The assertion below wants "well over 50 ticks", and a 1s
+    // window at 100Hz lands right on that boundary once startup is subtracted —
+    // it failed with exactly 50. Doubling the window puts the check clear of
+    // the edge instead of moving the threshold, so it still means what it says.
+    sched.run_for(2_u64.secs()).unwrap();
 
     let stopped_ticks = count.load(Ordering::SeqCst);
     let healthy_ticks = healthy_count.load(Ordering::SeqCst);

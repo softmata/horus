@@ -2506,6 +2506,11 @@ impl Scheduler {
 
         rt.block_on(async {
             let start_time = Instant::now();
+            // Where the run began on the scheduler's own clock. `elapsed()` is
+            // measured from clock construction — which for a WallClock is when
+            // the Scheduler was built, possibly long before this call — so the
+            // duration check has to be relative to here.
+            let clock_start = self.clock.elapsed();
 
             // `finalize_and_init()` above (run_with_filter) already ran both of
             // these. Running them again printed "Safety monitor configured for
@@ -2827,7 +2832,7 @@ impl Scheduler {
 
             // Main tick loop
             while self.is_running() {
-                if self.should_stop_loop(start_time, duration) {
+                if self.should_stop_loop(clock_start, duration) {
                     break;
                 }
                 self.process_control_commands();
@@ -3090,14 +3095,27 @@ impl Scheduler {
     }
 
     /// Check if the main loop should stop (duration limit, replay stop tick, or SIGTERM).
-    fn should_stop_loop(&self, start_time: Instant, duration: Option<Duration>) -> bool {
+    fn should_stop_loop(&self, clock_start: Duration, duration: Option<Duration>) -> bool {
         // Ctrl+C handler sets self.running = false
         if !self.running.load(Ordering::SeqCst) {
             return true;
         }
 
         if let Some(max_duration) = duration {
-            if start_time.elapsed() >= max_duration {
+            // Measure against the scheduler's own clock, not the wall.
+            //
+            // In deterministic mode `self.clock` is a `SimClock` that advances
+            // by exactly one tick period per tick, and the point of the mode is
+            // that a run does not depend on how fast the machine is. This read
+            // `start_time.elapsed()` — real time — so the tick count varied with
+            // load: `duration=0.2s` at 100Hz produced 18, 18, 18, 18, 18, 19
+            // ticks across six runs of the same program, and
+            // `test_deterministic_produces_same_output` was reporting exactly
+            // that.
+            //
+            // `WallClock::elapsed` is real time, so nothing changes for an
+            // ordinary run.
+            if self.clock.elapsed().saturating_sub(clock_start) >= max_duration {
                 print_line(&format!(
                     "Scheduler reached time limit of {:?}",
                     max_duration

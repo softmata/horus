@@ -1870,7 +1870,11 @@ fn test_tick_hz_very_large() {
         .add(CounterNode::with_counter("fast", counter.clone()))
         .build()
         .unwrap();
-    let result = scheduler.run_for(10_u64.ms());
+    // 500ms, not 10ms. The assertion is that a 1MHz tick rate produces at
+    // least one tick, and a 10ms window only does when the scheduler finishes
+    // starting inside it — on a machine running the rest of the suite it often
+    // does not, and the failure reads as "a 1MHz scheduler never ticked".
+    let result = scheduler.run_for(500_u64.ms());
     result.unwrap();
     assert!(counter.load(Ordering::SeqCst) > 0);
 }

@@ -106,14 +106,18 @@ fn test_scheduler_topics_nodes_full_pipeline() {
         .unwrap();
 
     // Run for 200ms — at 200Hz that is ~40 ticks
-    scheduler.run_for(200_u64.ms()).unwrap();
+    // 1s, not 200ms. The window has to cover scheduler startup plus five
+    // producer/consumer exchanges on a machine running the rest of the suite on
+    // every core; at 200ms a loaded box delivered three, and the failure read as
+    // a broken pipeline rather than a short window.
+    scheduler.run_for(1000_u64.ms()).unwrap();
 
     let values = received_values.lock().unwrap();
 
     // Consumer must have received multiple Twist messages
     assert!(
         values.len() >= 5,
-        "Consumer should have received at least 5 Twist messages from 200ms run, got {}",
+        "Consumer should have received at least 5 Twist messages from a 1s run, got {}",
         values.len()
     );
 
@@ -215,8 +219,13 @@ fn test_node_error_does_not_crash_other_nodes() {
         .build()
         .unwrap();
 
-    // Run for 200ms — panicker dies at tick 5, but healthy nodes keep going
-    let _ = scheduler.run_for(200_u64.ms());
+    // Run for 1s — panicker dies at tick 5, but healthy nodes keep going.
+    //
+    // The window has to cover scheduler startup plus at least five ticks on a
+    // machine running the rest of the suite on every core. At 200ms a loaded
+    // box managed four, and the failure read as "the panicker did not reach its
+    // crash point" rather than "the scheduler did not get enough timeslices".
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let a_count = healthy_a_ticks.load(Ordering::SeqCst);
     let b_count = healthy_b_ticks.load(Ordering::SeqCst);
