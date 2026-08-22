@@ -10244,3 +10244,241 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
             .join("\n  ")
     );
 }
+
+// ============================================================================
+// Publisher/subscriber attribution — every transport, every send/recv path
+// ============================================================================
+
+/// `horus topic info` reported "Publishers: (none)" for a topic being actively
+/// published, because `Topic::new` captured the owning node's name from a
+/// thread-local that is only set inside a scheduler-managed tick — and node
+/// constructors run before the scheduler starts.
+///
+/// The lazy `resolve_owner()` that fixed it was wired only into the *generic*
+/// `Topic<T>::send`/`recv`. Every zero-copy specialisation — `Topic<Image>`,
+/// `Topic<PointCloud>`, `Topic<DepthImage>`, `Topic<Tensor>` — still read the
+/// constructor-captured value, and set the "registered" latch *outside* the
+/// `if let`, so the one attempt they made (before any node context existed)
+/// latched failure forever. A camera or lidar node, the central robotics case,
+/// went on reporting no publisher. Four generic paths (`try_send`,
+/// `send_blocking`, `try_recv`, `read_latest`) carried no registration at all.
+///
+/// These tests drive the exact sequence a node goes through: build the handle
+/// with no node context (the constructor), then use it inside one (the tick).
+mod owner_attribution {
+    use super::*;
+    use crate::core::hlog;
+    use crate::memory::{DepthImage, Image, PointCloud};
+    use crate::types::ImageEncoding;
+    use crate::types::TensorDtype;
+
+    /// Unique topic name per assertion — the registry is a process singleton.
+    fn topic_name(tag: &str) -> String {
+        static N: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "attr_{tag}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// Build a handle the way a node constructor does: outside any tick.
+    fn in_constructor<T, F: FnOnce() -> T>(f: F) -> T {
+        hlog::clear_node_context();
+        assert!(
+            !hlog::in_node_context(),
+            "the constructor must run outside a tick for this test to mean anything"
+        );
+        f()
+    }
+
+    /// Run `f` the way the scheduler runs `tick()`: inside a node context.
+    fn in_tick<T, F: FnOnce() -> T>(node: &str, f: F) -> T {
+        hlog::set_node_context(node, 1);
+        let out = f();
+        hlog::clear_node_context();
+        out
+    }
+
+    fn publishers(topic: &str) -> Vec<String> {
+        topic_node_registry().publishers_of_topic(topic)
+    }
+
+    fn subscribers(topic: &str) -> Vec<String> {
+        topic_node_registry().subscribers_of_topic(topic)
+    }
+
+    /// The witness from the report: a node holding a `Topic<Image>` and a
+    /// `Topic<u64>` built in the same constructor attributed only the POD one.
+    #[test]
+    fn a_zero_copy_image_topic_built_in_a_constructor_names_its_publisher() {
+        let pod_name = topic_name("pod");
+        let img_name = topic_name("img");
+
+        let (pod, img) = in_constructor(|| {
+            (
+                Topic::<u64>::new(&pod_name).expect("pod topic"),
+                Topic::<Image>::new(&img_name).expect("image topic"),
+            )
+        });
+
+        in_tick("camera_ctor", || {
+            pod.send(1u64);
+            img.send(Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc"));
+        });
+
+        assert_eq!(
+            publishers(&pod_name),
+            vec!["camera_ctor".to_string()],
+            "the POD path already worked"
+        );
+        assert_eq!(
+            publishers(&img_name),
+            vec!["camera_ctor".to_string()],
+            "a Topic<Image> publisher must be attributed too — this is the \
+             camera node that reported \"Publishers: (none)\""
+        );
+    }
+
+    #[test]
+    fn a_zero_copy_image_topic_names_its_subscriber() {
+        let name = topic_name("imgsub");
+        let sub = in_constructor(|| Topic::<Image>::new(&name).expect("image topic"));
+        in_tick("vision_ctor", || {
+            let _ = sub.recv();
+        });
+        assert_eq!(subscribers(&name), vec!["vision_ctor".to_string()]);
+    }
+
+    #[test]
+    fn a_point_cloud_topic_built_in_a_constructor_names_its_publisher() {
+        let name = topic_name("pc");
+        let pc_topic = in_constructor(|| Topic::<PointCloud>::new(&name).expect("pc topic"));
+        in_tick("lidar_ctor", || {
+            pc_topic.send(PointCloud::new(8, 3, TensorDtype::F32).expect("alloc"));
+        });
+        assert_eq!(publishers(&name), vec!["lidar_ctor".to_string()]);
+    }
+
+    #[test]
+    fn a_point_cloud_topic_names_its_subscriber() {
+        let name = topic_name("pcsub");
+        let sub = in_constructor(|| Topic::<PointCloud>::new(&name).expect("pc topic"));
+        in_tick("mapper_ctor", || {
+            let _ = sub.recv();
+        });
+        assert_eq!(subscribers(&name), vec!["mapper_ctor".to_string()]);
+    }
+
+    #[test]
+    fn a_depth_image_topic_built_in_a_constructor_names_its_publisher() {
+        let name = topic_name("depth");
+        let depth = in_constructor(|| Topic::<DepthImage>::new(&name).expect("depth topic"));
+        in_tick("depth_ctor", || {
+            depth.send(DepthImage::new(4, 4, TensorDtype::U16).expect("alloc"));
+        });
+        assert_eq!(publishers(&name), vec!["depth_ctor".to_string()]);
+    }
+
+    #[test]
+    fn a_depth_image_topic_names_its_subscriber() {
+        let name = topic_name("depthsub");
+        let sub = in_constructor(|| Topic::<DepthImage>::new(&name).expect("depth topic"));
+        in_tick("depth_sub_ctor", || {
+            let _ = sub.recv();
+        });
+        assert_eq!(subscribers(&name), vec!["depth_sub_ctor".to_string()]);
+    }
+
+    #[test]
+    fn a_tensor_handle_topic_built_in_a_constructor_names_its_publisher() {
+        let name = topic_name("tensor");
+        let tensor = in_constructor(|| Topic::<Tensor>::new(&name).expect("tensor topic"));
+        in_tick("infer_ctor", || {
+            let handle = tensor
+                .alloc_tensor(&[4], TensorDtype::F32, crate::types::Device::cpu())
+                .expect("alloc");
+            tensor.send_handle(&handle);
+        });
+        assert_eq!(publishers(&name), vec!["infer_ctor".to_string()]);
+    }
+
+    #[test]
+    fn a_tensor_handle_topic_names_its_subscriber() {
+        let name = topic_name("tensorsub");
+        let sub = in_constructor(|| Topic::<Tensor>::new(&name).expect("tensor topic"));
+        in_tick("infer_sub_ctor", || {
+            let _ = sub.recv_handle();
+        });
+        assert_eq!(subscribers(&name), vec!["infer_sub_ctor".to_string()]);
+    }
+
+    /// A backpressure-aware publisher is still a publisher.
+    #[test]
+    fn try_send_registers_a_publisher() {
+        let name = topic_name("trysend");
+        let t = in_constructor(|| Topic::<u64>::new(&name).expect("topic"));
+        in_tick("backpressure_ctor", || {
+            let _ = t.try_send(7u64);
+        });
+        assert_eq!(publishers(&name), vec!["backpressure_ctor".to_string()]);
+    }
+
+    #[test]
+    fn send_blocking_registers_a_publisher() {
+        let name = topic_name("blocking");
+        let t = in_constructor(|| Topic::<u64>::new(&name).expect("topic"));
+        in_tick("critical_ctor", || {
+            let _ = t.send_blocking(7u64, Duration::from_millis(50));
+        });
+        assert_eq!(publishers(&name), vec!["critical_ctor".to_string()]);
+    }
+
+    /// A `read_latest()` consumer is a subscriber.
+    #[test]
+    fn read_latest_registers_a_subscriber() {
+        let name = topic_name("readlatest");
+        let t = in_constructor(|| Topic::<u64>::new(&name).expect("topic"));
+        in_tick("peek_ctor", || {
+            let _ = t.read_latest();
+        });
+        assert_eq!(subscribers(&name), vec!["peek_ctor".to_string()]);
+    }
+
+    #[test]
+    fn try_recv_registers_a_subscriber() {
+        let name = topic_name("tryrecv");
+        let t = in_constructor(|| Topic::<u64>::new(&name).expect("topic"));
+        in_tick("poll_ctor", || {
+            let _ = t.try_recv();
+        });
+        assert_eq!(subscribers(&name), vec!["poll_ctor".to_string()]);
+    }
+
+    /// A specialised `try_send` is the zero-copy backpressure path; it had no
+    /// registration block at all.
+    #[test]
+    fn a_zero_copy_try_send_registers_a_publisher() {
+        let name = topic_name("imgtry");
+        let t = in_constructor(|| Topic::<Image>::new(&name).expect("image topic"));
+        in_tick("camera_try_ctor", || {
+            let _ = t.try_send(Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc"));
+        });
+        assert_eq!(publishers(&name), vec!["camera_try_ctor".to_string()]);
+    }
+
+    /// A handle that belongs to no node must stay unattributed rather than
+    /// pick up whichever node happens to be ticking later.
+    #[test]
+    fn a_topic_used_outside_any_tick_has_no_publisher() {
+        let name = topic_name("ownerless");
+        let t = in_constructor(|| Topic::<Image>::new(&name).expect("image topic"));
+        hlog::clear_node_context();
+        t.send(Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc"));
+        assert!(
+            publishers(&name).is_empty(),
+            "no node context, so no attribution: {:?}",
+            publishers(&name)
+        );
+    }
+}

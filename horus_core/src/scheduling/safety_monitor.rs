@@ -351,6 +351,27 @@ pub struct TimingStats {
     pub total_ticks: u64,
 }
 
+/// One node's row in the scheduler's shutdown timing report.
+///
+/// `deadline_misses` is carried here because it was tracked per node
+/// (`NodeTimingState::total_deadline_misses`) but never exposed, so the report
+/// printed `stats.total_ticks` under its "Misses" header — a node that shut
+/// down after 249 ticks having missed nothing reported 249 misses, and a node
+/// that missed exactly one deadline reported 211.
+#[derive(Debug, Clone)]
+pub(crate) struct NodeTimingReport {
+    /// Node name.
+    pub(crate) name: String,
+    /// Tick-duration statistics from the node's ring buffer.
+    pub(crate) stats: TimingStats,
+    /// Configured tick budget, if any.
+    pub(crate) budget: Option<Duration>,
+    /// Ticks that exceeded the budget.
+    pub(crate) overruns: u64,
+    /// Deadline misses recorded for this node.
+    pub(crate) deadline_misses: u64,
+}
+
 /// Per-node timing and overrun tracking.
 #[derive(Debug)]
 pub(crate) struct NodeTimingState {
@@ -590,16 +611,15 @@ impl BudgetEnforcer {
     }
 
     /// Get all node timing states (for timing report).
-    pub(crate) fn all_node_stats(&self) -> Vec<(String, TimingStats, Option<Duration>, u64)> {
+    pub(crate) fn all_node_stats(&self) -> Vec<NodeTimingReport> {
         self.node_timing
             .iter()
-            .map(|(name, state)| {
-                (
-                    name.clone(),
-                    state.ring.stats(),
-                    state.budget,
-                    state.overrun_count,
-                )
+            .map(|(name, state)| NodeTimingReport {
+                name: name.clone(),
+                stats: state.ring.stats(),
+                budget: state.budget,
+                overruns: state.overrun_count,
+                deadline_misses: state.total_deadline_misses,
             })
             .collect()
     }
@@ -980,7 +1000,7 @@ impl SafetyMonitor {
     }
 
     /// Get per-node timing stats (for timing report).
-    pub(crate) fn all_node_timing(&self) -> Vec<(String, TimingStats, Option<Duration>, u64)> {
+    pub(crate) fn all_node_timing(&self) -> Vec<NodeTimingReport> {
         self.budget_enforcer.lock().all_node_stats()
     }
 
@@ -2319,10 +2339,20 @@ mod tests {
         // Verify per-node stats are independent
         let all_stats = monitor.all_node_timing();
         assert_eq!(all_stats.len(), node_count as usize);
-        for (name, stats, budget, overruns) in &all_stats {
-            assert_eq!(stats.total_ticks, 50, "{} should have 50 ticks", name);
-            assert!(budget.is_some(), "{} should have a budget set", name);
-            assert_eq!(*overruns, 0, "{} should have 0 overruns", name);
+        for row in &all_stats {
+            assert_eq!(
+                row.stats.total_ticks, 50,
+                "{} should have 50 ticks",
+                row.name
+            );
+            assert!(row.budget.is_some(), "{} should have a budget set", row.name);
+            assert_eq!(row.overruns, 0, "{} should have 0 overruns", row.name);
+            assert_eq!(
+                row.deadline_misses, 0,
+                "{} met every deadline, so its miss count must be 0 — not its \
+                 tick count",
+                row.name
+            );
         }
     }
 
@@ -2913,12 +2943,13 @@ mod tests {
 
         // But timing data should still be recorded
         let all = monitor.all_node_timing();
-        let unbounded = all.iter().find(|(n, _, _, _)| n == "unbounded");
+        let unbounded = all.iter().find(|r| r.name == "unbounded");
         assert!(unbounded.is_some());
-        let (_, stats, budget, overruns) = unbounded.unwrap();
-        assert_eq!(stats.total_ticks, 10);
-        assert!(budget.is_none());
-        assert_eq!(*overruns, 0);
+        let row = unbounded.unwrap();
+        assert_eq!(row.stats.total_ticks, 10);
+        assert!(row.budget.is_none());
+        assert_eq!(row.overruns, 0);
+        assert_eq!(row.deadline_misses, 0);
     }
 
     /// Critical node budget violation triggers emergency stop via check_tick_budget.

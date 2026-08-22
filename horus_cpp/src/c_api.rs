@@ -1873,22 +1873,34 @@ pub unsafe extern "C" fn horus_blackbox_record(category: *const c_char, message:
         CStr::from_ptr(message).to_str().unwrap_or("")
     };
     // Record as a Warning-level log entry with category as node name
+    let text = format!("[blackbox] {}", msg);
+    let log_type = horus_core::core::log_buffer::LogType::Warning;
     let entry = horus_core::core::log_buffer::LogEntry {
         timestamp: String::new(),
         tick_number: 0,
         node_name: cat.to_string(),
-        log_type: horus_core::core::log_buffer::LogType::Warning,
+        log_type: log_type.clone(),
         topic: None,
-        message: format!("[blackbox] {}", msg),
+        message: text.clone(),
         tick_us: 0,
         ipc_ns: 0,
     };
     horus_core::core::log_buffer::publish_log(entry);
+
+    // Same reason as `horus_log` below: the buffer alone is not visibility.
+    // This is the *other* C++ entry point into the log buffer, and it produces
+    // an ordinary Warning entry — the very thing a Rust node's `hlog!(warn,
+    // ...)` prints. Emitting one and not the other meant an emergency stop
+    // recorded from C++ was silent in the terminal while the identical Rust
+    // call was not. The console text is the same string that goes into the
+    // buffer, so `horus log` and the terminal never disagree.
+    horus_core::core::hlog::emit_console(&log_type, cat, &text);
 }
 
 // ─── Logging C API ───────────────────────────────────────────────────────────
 
-/// Log a message. level: 0=Info, 1=Warning, 2=Error. node_name and message are C strings.
+/// Log a message. level: 0=Info, 1=Warning, 2=Error, 3=Debug. node_name and
+/// message are C strings. Unknown levels fall back to Info.
 #[no_mangle]
 pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message: *const c_char) {
     let node = if node_name.is_null() {
@@ -1905,6 +1917,10 @@ pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message:
         0 => horus_core::core::log_buffer::LogType::Info,
         1 => horus_core::core::log_buffer::LogType::Warning,
         2 => horus_core::core::log_buffer::LogType::Error,
+        // Rust (`hlog!(debug, ...)`) and Python (`node.log_debug`) both have
+        // four levels; the C ABI stopped at three, so a C++ node had no way to
+        // say "debug" at all and anything it passed came out as Info.
+        3 => horus_core::core::log_buffer::LogType::Debug,
         _ => horus_core::core::log_buffer::LogType::Info,
     };
     let entry = horus_core::core::log_buffer::LogEntry {
@@ -1935,6 +1951,106 @@ pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message:
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    // ── LIVE-11: what a C++ node logs must reach the terminal ────────────
+    //
+    // `emit_console` writes straight to fd 2, which libtest cannot capture
+    // in-process, and "did the user see it?" is a question about a real
+    // process's stderr anyway. So these tests re-run this very test binary as
+    // a child, with `HORUS_CPP_FFI_EMIT_CHILD` set: in the child the test
+    // makes the FFI call and returns, in the parent it inspects what the child
+    // printed.
+
+    fn in_emit_child() -> bool {
+        std::env::var_os("HORUS_CPP_FFI_EMIT_CHILD").is_some()
+    }
+
+    /// Re-run `test_name` in a child process and hand back its stderr.
+    fn child_stderr(test_name: &str) -> String {
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args(["--exact", test_name, "--nocapture", "--test-threads", "1"])
+            .env("HORUS_CPP_FFI_EMIT_CHILD", "1")
+            .output()
+            .expect("re-running the test binary should work");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test — is {test_name} still the right name?\n{stdout}"
+        );
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
+    #[test]
+    fn blackbox_record_reaches_the_terminal() {
+        let cat = CString::new("safety").unwrap();
+        let msg = CString::new("Emergency stop triggered by obstacle").unwrap();
+        if in_emit_child() {
+            // SAFETY: both pointers are valid, NUL-terminated, and outlive the call.
+            unsafe { horus_blackbox_record(cat.as_ptr(), msg.as_ptr()) };
+            return;
+        }
+
+        let err = child_stderr("c_api::tests::blackbox_record_reaches_the_terminal");
+        assert!(
+            err.contains("[blackbox] Emergency stop triggered by obstacle"),
+            "horus::blackbox::record() reached the log buffer and nothing else; \
+             a Rust node's identical hlog!(warn, ...) prints. stderr was:\n{err}"
+        );
+        assert!(
+            err.contains("[WARN]"),
+            "the console line should carry the same Warning level the buffer \
+             entry does, stderr was:\n{err}"
+        );
+        assert!(
+            err.contains("[safety]"),
+            "the category is the node name on the console line too, stderr was:\n{err}"
+        );
+    }
+
+    #[test]
+    fn horus_log_reaches_the_terminal() {
+        // The sibling entry point, pinned in the same way — the two must not
+        // drift apart again.
+        let node = CString::new("controller").unwrap();
+        let msg = CString::new("Published cmd_vel").unwrap();
+        if in_emit_child() {
+            // SAFETY: both pointers are valid, NUL-terminated, and outlive the call.
+            unsafe { horus_log(0, node.as_ptr(), msg.as_ptr()) };
+            return;
+        }
+
+        let err = child_stderr("c_api::tests::horus_log_reaches_the_terminal");
+        assert!(
+            err.contains("[INFO]")
+                && err.contains("[controller]")
+                && err.contains("Published cmd_vel"),
+            "horus::log::info() must print to the terminal, stderr was:\n{err}"
+        );
+    }
+
+    #[test]
+    fn horus_log_has_the_same_four_levels_as_rust_and_python() {
+        let node = CString::new("controller").unwrap();
+        let msg = CString::new("level probe").unwrap();
+        if in_emit_child() {
+            for level in 0u8..4 {
+                // SAFETY: both pointers are valid, NUL-terminated, and outlive the call.
+                unsafe { horus_log(level, node.as_ptr(), msg.as_ptr()) };
+            }
+            return;
+        }
+
+        let err =
+            child_stderr("c_api::tests::horus_log_has_the_same_four_levels_as_rust_and_python");
+        for tag in ["[INFO]", "[WARN]", "[ERROR]", "[DEBUG]"] {
+            assert!(
+                err.contains(tag),
+                "level {tag} never made it to the console — the C ABI stopped \
+                 at three levels while Rust and Python have four. stderr was:\n{err}"
+            );
+        }
+    }
 
     #[test]
     fn c_api_scheduler_lifecycle() {
