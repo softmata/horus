@@ -99,6 +99,11 @@ RUN cargo build --release -p horus_manager --locked
 # are already there — a fresh `rustup` install here would download it twice.
 FROM builder AS dev
 
+# One list, and it is this one. libeigen3-dev/libfmt-dev/libgtest-dev are what
+# the C++ workflows install (coverage.yml, safety.yml, integration-tests.yml);
+# without them five cmake_gen tests skip and the C++ examples do not link. They
+# used to be re-installed by .devcontainer's postCreateCommand instead, which
+# meant two lists that could disagree — and did.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -107,6 +112,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         g++ \
         clang-format \
         clang-tidy \
+        libeigen3-dev \
+        libfmt-dev \
+        libgtest-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/target/release/horus /usr/local/bin/horus
@@ -123,6 +131,26 @@ RUN mkdir -p /usr/local/share/man/man1 \
 WORKDIR /work
 ENTRYPOINT ["horus"]
 CMD ["--help"]
+
+# ── Devcontainer ────────────────────────────────────────────────
+# What .devcontainer/devcontainer.json builds. Identical to dev except that a
+# devcontainer is a place to work in, not a CLI to invoke: `ENTRYPOINT ["horus"]`
+# would make every `docker exec`-style command an argument to horus.
+#
+# It also has to exist as its own stage so CI can build the thing the editor
+# builds. devcontainer.json used to point at `builder`, which skipped this
+# entire stage — no python3, no cmake, no g++ — and made up the difference with
+# `sudo apt-get` in postCreateCommand. rust:1.90-slim-bookworm ships no sudo, so
+# that command failed and the container came up without any of it.
+FROM dev AS devcontainer
+
+# rustfmt and clippy: `horus fmt`/`horus lint` shell out to them, and
+# rust-analyzer is configured for clippy in devcontainer.json.
+RUN rustup component add rustfmt clippy
+
+WORKDIR /work
+ENTRYPOINT []
+CMD ["sleep", "infinity"]
 
 # ── Runtime ────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime

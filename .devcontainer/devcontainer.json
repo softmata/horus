@@ -1,22 +1,28 @@
 {
   "name": "HORUS",
 
-  // Reuses the repository Dockerfile so the dependency list lives in one place.
-  // The builder stage has the Rust toolchain and every -dev package a full
-  // build needs.
+  // Builds the repository Dockerfile's `devcontainer` stage, which is the `dev`
+  // stage plus rustfmt/clippy and without `ENTRYPOINT ["horus"]`.
+  //
+  // This used to say `"target": "builder"`, which skipped the `dev` stage
+  // entirely — no python3, no cmake, no g++, no clang-format — and made up the
+  // difference by re-installing a *different* package list from
+  // postCreateCommand with `sudo apt-get`. rust:1.90-slim-bookworm ships no
+  // sudo and remoteUser here is root, so that command failed and the container
+  // came up with none of it. Nothing built this file, so nothing noticed.
+  // .github/workflows/container-images.yml now does.
   "build": {
     "dockerfile": "../Dockerfile",
-    "target": "builder"
+    "target": "devcontainer"
   },
 
   "features": {
     "ghcr.io/devcontainers/features/git:1": {}
   },
 
-  // The C++ bindings and their examples need cmake and the three system
-  // libraries CI installs; without them five cmake_gen tests skip and the C++
-  // examples cannot link.
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake libeigen3-dev libfmt-dev libgtest-dev && rustup component add rustfmt clippy",
+  // No postCreateCommand: every package this container needs is installed by
+  // the Dockerfile stage above, so there is one dependency list rather than two
+  // that can disagree.
 
   // HORUS nodes talk over shared memory. The default 64 MB /dev/shm is too
   // small for image or point-cloud topics, and --ipc=host lets nodes in the
@@ -52,5 +58,9 @@
     }
   },
 
+  // The image runs as root (rust:1.90-slim-bookworm has no other user and no
+  // sudo). Anything the container writes into the bind-mounted workspace is
+  // therefore root-owned on the host — the same trade the Dockerfile header
+  // documents for `docker run`.
   "remoteUser": "root"
 }
