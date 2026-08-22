@@ -251,6 +251,93 @@ fn rust_blocks(text: &str, rel: &str) -> Vec<(Block, Option<Skip>)> {
     out
 }
 
+/// The block with string/char-literal bodies and comment bodies blanked out.
+///
+/// `classify` tested `code.contains("...")` over the raw block to spot an
+/// outline. A `...` inside a string is prose, not an omission:
+/// `tutorials/02-motor-controller-rust.mdx` logs
+/// `"Waiting for encoder feedback..."`, and that single string skipped the
+/// tutorial's entire main example — three nodes, the PID loop and the
+/// safe-state hook — as an outline. A deliberate typo introduced into it still
+/// passed the suite.
+///
+/// Comment bodies are blanked for the same reason in reverse: `// ...` marks an
+/// omission in prose but does not stop the block compiling, so such a block can
+/// and should be held to the guarantee.
+fn strip_strings_and_comments(code: &str) -> String {
+    let b: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            '/' if i + 1 < b.len() && b[i + 1] == '/' => {
+                while i < b.len() && b[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < b.len() && b[i + 1] == '*' => {
+                out.push_str("  ");
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                    out.push(if b[i] == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+                out.push_str("  ");
+                i += 2;
+            }
+            '"' => {
+                out.push('"');
+                i += 1;
+                while i < b.len() {
+                    if b[i] == '\\' {
+                        out.push_str("  ");
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == '"' {
+                        break;
+                    }
+                    out.push(' ');
+                    i += 1;
+                }
+                out.push('"');
+                i += 1;
+            }
+            '\'' => {
+                // A lifetime, not a char literal, if what follows is an
+                // identifier that is not immediately closed by another quote.
+                let is_char_lit =
+                    i + 2 < b.len() && ((b[i + 1] == '\\') || b[i + 2] == '\'');
+                out.push('\'');
+                if is_char_lit {
+                    i += 1;
+                    while i < b.len() {
+                        if b[i] == '\\' {
+                            out.push_str("  ");
+                            i += 2;
+                            continue;
+                        }
+                        if b[i] == '\'' {
+                            break;
+                        }
+                        out.push(' ');
+                        i += 1;
+                    }
+                    out.push('\'');
+                }
+                i += 1;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// Decide whether a block can be held to a compile guarantee.
 ///
 /// Deliberately does **not** honour the docs' `// simplified` marker — see the
@@ -259,7 +346,9 @@ fn classify(code: &str) -> Option<Skip> {
     let t = code.trim();
     // Specific reasons first: a block containing `...` is an outline whatever
     // its length, and reporting it as `Trivial` would misattribute the skip.
-    if t.contains("...") {
+    // Only code counts — see strip_strings_and_comments.
+    let bare = strip_strings_and_comments(t);
+    if bare.contains("...") {
         return Some(Skip::Ellipsis);
     }
     let lower = t.to_ascii_lowercase();
@@ -1226,6 +1315,44 @@ mod extractor {
         );
         // A type the page does NOT define stays a real finding.
         assert!(!is_shadowed_field_error(e, "no definitions here"));
+    }
+
+    #[test]
+    fn an_ellipsis_in_prose_does_not_skip_the_block() {
+        // Regression: tutorials/02-motor-controller-rust.mdx logs
+        // "Waiting for encoder feedback...". classify() tested the raw block
+        // for "...", so that one string skipped the tutorial's entire main
+        // example as an outline — a deliberate typo in it still passed.
+        let in_string = "fn main() {\n    println!(\"Waiting...\");\n}";
+        assert_eq!(classify(in_string), None, "a `...` inside a string is prose");
+
+        let in_comment = "fn main() {\n    // more setup ...\n    let x = 1;\n}";
+        assert_eq!(
+            classify(in_comment),
+            None,
+            "a `...` in a comment does not stop the block compiling"
+        );
+
+        // A real outline is still skipped.
+        let outline = "fn main() {\n    let cfg = ...;\n    run(cfg);\n}";
+        assert_eq!(classify(outline), Some(Skip::Ellipsis));
+    }
+
+    #[test]
+    fn strip_strings_and_comments_blanks_only_prose() {
+        let stripped = strip_strings_and_comments("let s = \"a...b\"; let n = 1;");
+        assert!(!stripped.contains("..."), "string body must be blanked");
+        assert!(stripped.contains("let n = 1;"), "code must survive: {stripped}");
+
+        let stripped = strip_strings_and_comments("let n = 1; // trailing ...\nlet m = 2;");
+        assert!(!stripped.contains("..."));
+        assert!(stripped.contains("let m = 2;"));
+
+        // Bare code is untouched.
+        assert!(strip_strings_and_comments("let x = ...;").contains("..."));
+        // A lifetime is not a char literal, so what follows it must survive.
+        let lt = strip_strings_and_comments("fn f<'a>(x: &'a str) -> &'a str { x }");
+        assert!(lt.contains("str"), "lifetime scan ate the code: {lt}");
     }
 
     #[test]
