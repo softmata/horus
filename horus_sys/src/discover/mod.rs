@@ -60,6 +60,32 @@ pub fn process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
     }
 }
 
+/// Liveness for a topic described by a `.meta` sidecar.
+///
+/// The sidecar records the PID of whichever process *created* the region, and
+/// it is written only on creation — never when a later process attaches to an
+/// existing one. A node that is SIGKILLed and restarted therefore inherits its
+/// own dead PID, and a PID-based check calls the live topic dead.
+///
+/// That was not merely cosmetic: `horus_manager`'s discovery acts on
+/// `is_alive == false` by unlinking the backing file, so `horus topic list`
+/// deleted the topic of a running node and then reported "No active topics
+/// found", while `horus node list` showed the same node Healthy and ticking
+/// and `horus topic echo` hung forever. Recovery — deleting the namespace by
+/// hand — was not discoverable from any message.
+///
+/// The region already carries the signal that answers this correctly: every
+/// process with it open holds `LOCK_SH`, and the kernel releases that even
+/// under SIGKILL. The PID is used only when there is no backing file to test —
+/// non-Linux discovery, or a sidecar that outlived its region.
+fn meta_topic_is_alive(region_path: &std::path::Path, creator_pid: u32) -> bool {
+    if region_path.is_file() {
+        !crate::shm::is_shm_file_stale(region_path)
+    } else {
+        is_process_alive(creator_pid)
+    }
+}
+
 /// Check if a process is alive (delegates to [`crate::process::ProcessHandle`]).
 pub fn is_process_alive(pid: u32) -> bool {
     crate::process::ProcessHandle::from_pid(pid).is_alive()
@@ -324,7 +350,10 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
                         if crate::shm::validate_region_name(&meta.name).is_err() {
                             continue;
                         }
-                        let alive = is_process_alive(meta.creator_pid);
+                        let alive = meta_topic_is_alive(
+                            &topics_dir.join(&meta.name),
+                            meta.creator_pid,
+                        );
                         topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                             name: meta.name,
                             size: meta.size,
@@ -378,7 +407,8 @@ pub fn find_topics() -> Vec<DiscoveredTopic> {
                             if crate::shm::validate_region_name(&meta.name).is_err() {
                                 continue;
                             }
-                            let alive = is_process_alive(meta.creator_pid);
+                            let alive =
+                                meta_topic_is_alive(&subdir.join(&meta.name), meta.creator_pid);
                             topics.entry(meta.name.clone()).or_insert(DiscoveredTopic {
                                 name: meta.name,
                                 size: meta.size,
@@ -630,6 +660,69 @@ mod tests {
                 .any(|t| t.name == "lidar_scan" && t.size == 8192),
             "should discover topic from .meta file"
         );
+
+        let _ = std::fs::remove_dir_all(crate::shm::shm_base_dir());
+        std::env::remove_var("HORUS_NAMESPACE");
+    }
+
+    /// A restarted node must not be reported dead because the sidecar still
+    /// names the PID of the process that crashed.
+    ///
+    /// `write_topic_meta` runs only when a process *creates* a region. A node
+    /// that is SIGKILLed and restarted reopens the same backing file, so the
+    /// sidecar keeps the dead PID. Discovery used to believe it, and
+    /// horus_manager acts on `is_alive == false` by unlinking the file — so
+    /// `horus topic list` deleted a running node's topic and then printed "No
+    /// active topics found" while `horus node list` showed it Healthy.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_holder_outranks_a_dead_creator_pid() {
+        use std::os::unix::io::AsRawFd;
+
+        let _guard = crate::shm::env_lock();
+        let ns = format!("test_topics_restart_{}", std::process::id());
+        std::env::set_var("HORUS_NAMESPACE", &ns);
+        let dir = crate::shm::shm_topics_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The backing region, held open exactly as a live publisher holds it.
+        let region = dir.join("restarted_topic");
+        std::fs::write(&region, vec![0u8; 1024]).unwrap();
+        let held = std::fs::File::open(&region).unwrap();
+        // SAFETY: fd is a valid open descriptor; LOCK_SH|LOCK_NB is a valid op.
+        let rc = unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "test must be able to take the shared lock");
+
+        // The sidecar left behind by the process that crashed.
+        let meta = crate::shm::TopicMeta {
+            name: "restarted_topic".into(),
+            size: 1024,
+            creator_pid: 99999999,
+            created_at: 0,
+        };
+        std::fs::write(
+            dir.join("restarted_topic.meta"),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
+
+        let topics = find_topics();
+        let topic = topics
+            .iter()
+            .find(|t| t.name == "restarted_topic")
+            .expect("topic with a live holder must be discovered");
+        assert!(
+            topic.is_alive,
+            "a region someone holds open is alive even though the sidecar's \
+             creator_pid is dead — otherwise discovery unlinks a live topic"
+        );
+
+        drop(held);
+        // With no holder left it is genuinely stale again.
+        let topics = find_topics();
+        if let Some(t) = topics.iter().find(|t| t.name == "restarted_topic") {
+            assert!(!t.is_alive, "no holder and a dead creator means dead");
+        }
 
         let _ = std::fs::remove_dir_all(crate::shm::shm_base_dir());
         std::env::remove_var("HORUS_NAMESPACE");
