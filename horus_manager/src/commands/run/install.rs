@@ -34,6 +34,13 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
     // Use system Python's pip directly
     let python_cmd = super::detect_python_interpreter()?;
 
+    // What the interpreter has to be able to import once this function has
+    // finished. Every branch that leaves a link behind records here, including
+    // the "(already linked)" fast paths: a link made by a previous run is
+    // exactly as unimportable as one made by this one if the path is wrong,
+    // and it is the second run onwards that users spend their time in.
+    let mut linked: Vec<(String, Vec<String>)> = Vec::new();
+
     for pkg in &packages {
         // Check if package exists in system first
         if let Ok(Some(system_version)) = detect_system_python_package(&pkg.name) {
@@ -50,6 +57,7 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
             // exists, so this gate used to call a link into a deleted cache
             // "already handled" and move on.
             if python_link_is_usable(&local_link) {
+                linked.push((pkg.name.clone(), top_level_modules(&local_link)));
                 continue;
             }
             clear_broken_link(&local_link);
@@ -105,6 +113,7 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
                 cli_output::ICON_SUCCESS.green(),
                 pkg.name
             );
+            linked.push((pkg.name.clone(), top_level_modules(&local_link)));
             continue;
         }
         if clear_broken_link(&local_link) {
@@ -182,28 +191,177 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
         // Say what was linked, not just that something was. "Linked" printed
         // over an empty directory is the message that made this defect invisible.
-        match top_level_modules(&pkg_cache_dir) {
-            names if names.is_empty() => {
-                println!(
-                    "  {} Linked {} — but it provides no importable module. \
-                     Delete {} and re-run to reinstall.",
-                    cli_output::ICON_WARN.yellow(),
-                    pkg.name,
-                    pkg_cache_dir.display()
-                );
-            }
-            names => {
-                println!(
-                    "  {} Linked {} ({})",
-                    cli_output::ICON_SUCCESS.green(),
-                    pkg.name,
-                    names.join(", ")
-                );
-            }
+        let modules = top_level_modules(&pkg_cache_dir);
+        if modules.is_empty() {
+            println!(
+                "  {} Linked {} — but it provides no importable module. \
+                 Delete {} and re-run to reinstall.",
+                cli_output::ICON_WARN.yellow(),
+                pkg.name,
+                pkg_cache_dir.display()
+            );
+        } else {
+            println!(
+                "  {} Linked {} ({})",
+                cli_output::ICON_SUCCESS.green(),
+                pkg.name,
+                modules.join(", ")
+            );
+            linked.push((pkg.name.clone(), modules));
         }
     }
 
+    verify_linked_packages_import(&python_cmd, &linked)?;
+
     Ok(())
+}
+
+/// Ask the interpreter that will run the node whether it can import what was
+/// just linked, and fail here if it cannot.
+///
+/// Reporting success four times over — `↗ global cache`, `Linked`,
+/// `Updated horus.lock`, `Dependencies locked` — was the whole shape of this
+/// defect: every one of those lines described a step this code had taken, and
+/// not one of them asked Python whether the result was usable. It was not.
+/// PYTHONPATH was assembled from a different cache root than the one pip had
+/// written to, so `horus run` printed four green lines and then died on
+/// `import horus`, pointing the user at their own source file.
+///
+/// This is the one check a path bug cannot walk past, because it runs the real
+/// import through the real PYTHONPATH. It is deliberately placed at the link
+/// step: an install that cannot be imported has not succeeded, and saying so
+/// here names the package and the interpreter instead of leaving a
+/// `ModuleNotFoundError` to be read as the user's mistake.
+///
+/// All packages are probed in one child interpreter so that verifying on every
+/// run — including the runs that only re-use existing links — costs one process
+/// start rather than one per dependency.
+fn verify_linked_packages_import(python_cmd: &str, linked: &[(String, Vec<String>)]) -> Result<()> {
+    let modules: Vec<String> = linked
+        .iter()
+        .flat_map(|(_, modules)| modules.iter().cloned())
+        .collect();
+    if modules.is_empty() {
+        // Nothing importable was linked. A distribution of pure scripts has
+        // nothing to check, and the empty-cache case is already reported above.
+        return Ok(());
+    }
+
+    let python_path = super::run_python::build_python_path()?;
+    let (interpreter, failures) = probe_imports(python_cmd, &python_path, &modules)?;
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    for (package, modules) in linked {
+        let failed: Vec<&(String, String)> = failures
+            .iter()
+            .filter(|(module, _)| modules.contains(module))
+            .collect();
+        if failed.is_empty() {
+            continue;
+        }
+
+        if failed.len() < modules.len() {
+            // At least one of this distribution's modules imported, so the path
+            // is wired up. Distributions ship top-level names that need extras
+            // HORUS was never asked for; that is the package's business, not a
+            // broken install.
+            for (module, reason) in failed {
+                println!(
+                    "  {} {} did not import: {}",
+                    cli_output::ICON_WARN.yellow(),
+                    module,
+                    reason
+                );
+            }
+            continue;
+        }
+
+        let (module, reason) = failed[0];
+        let install = format!("{} -m pip install {}", python_cmd, package);
+        // H041 (`import-error`) is the catalogued code for a Python import that
+        // failed; what is specific here is the fix, which names the distribution
+        // and the interpreter rather than the module the node happened to write.
+        crate::error_wrapper::emit_diagnostics(&[crate::error_wrapper::Diagnostic::new(
+            "python",
+            "H041",
+            "Linked package is not importable",
+            format!(
+                "Linked distribution {}, but `import {}` failed in {}: {}\n\
+                 Install it into that interpreter with:\n  {}",
+                package,
+                module,
+                interpreter,
+                reason,
+                install.green()
+            ),
+        )
+        .with_fix(crate::error_wrapper::Fix::Command {
+            command: install.clone(),
+        })]);
+        bail!(
+            "Linked distribution {}, but `import {}` failed in {}. Install it with `{}`.",
+            package,
+            module,
+            interpreter,
+            install
+        );
+    }
+
+    Ok(())
+}
+
+/// Try to import each module in a child interpreter.
+///
+/// Returns the interpreter's own `sys.executable` — so the error can name the
+/// Python that actually failed rather than the `python3` we spelled on the
+/// command line — together with the modules that did not import and why.
+///
+/// The module names travel in `argv`, never interpolated into the source
+/// string, for the same reason `create_python_wrapper` passes the node path
+/// through the environment: a name that reached this from a manifest must not
+/// be able to become code.
+fn probe_imports(
+    python_cmd: &str,
+    python_path: &str,
+    modules: &[String],
+) -> Result<(String, Vec<(String, String)>)> {
+    const PROBE: &str = r#"import importlib, sys
+print(sys.executable)
+for name in sys.argv[1:]:
+    try:
+        importlib.import_module(name)
+    except BaseException as exc:
+        print("%s	%s: %s" % (name, type(exc).__name__, exc))
+"#;
+
+    let output = Command::new(python_cmd)
+        .arg("-c")
+        .arg(PROBE)
+        .args(modules)
+        .env("PYTHONPATH", python_path)
+        .output()
+        .context("Failed to run the post-install import check")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let interpreter = lines.next().unwrap_or(python_cmd).trim().to_string();
+
+    let mut failures = Vec::new();
+    for line in lines {
+        let (module, reason) = line.split_once('\t').unwrap_or((line, "import failed"));
+        failures.push((module.to_string(), reason.to_string()));
+    }
+
+    // A probe that could not run at all tells us nothing about the package.
+    // Reporting every module as failed on, say, a killed interpreter would
+    // turn a working install into a hard error, so treat it as no evidence.
+    if !output.status.success() && failures.is_empty() {
+        return Ok((interpreter, Vec::new()));
+    }
+
+    Ok((interpreter, failures))
 }
 
 pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> {
@@ -915,10 +1073,15 @@ pub(crate) fn prompt_system_package_choice_run(
     }
 }
 
-/// Write a lockfile recording the current config hash.
+/// Write a lockfile recording the current config hash and the packages that
+/// resolution actually put on disk.
 ///
-/// Dependencies are tracked by native lockfiles (Cargo.lock, etc.).
-/// The horus lockfile only records whether the config has changed.
+/// Dependencies are also tracked by native lockfiles (Cargo.lock, etc.), but
+/// the horus lockfile used to record *only* whether the config had changed:
+/// `[[package]]` was always absent, so a file that answered "up to date" had
+/// never named a single version, and a second machine reading it learned
+/// nothing about what to install. A config hash is a staleness check, not a
+/// reproducibility record.
 fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let lock_path = Path::new(HORUS_LOCK);
 
@@ -932,6 +1095,10 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let mut lockfile = HorusLockfile::load_from(lock_path).unwrap_or_default();
     lockfile.config_hash = config_hash.clone();
 
+    for (name, version, source) in resolved_package_pins(Path::new(".")) {
+        lockfile.pin(&name, &version, &source, None);
+    }
+
     lockfile
         .save_to(lock_path)
         .context("Failed to write horus.lock")?;
@@ -944,6 +1111,137 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// The packages `.horus/` says are installed, as `(name, version, source)`.
+///
+/// Read back off disk rather than collected as the installers run, so the
+/// lockfile records what is linked into this project — including packages a
+/// previous run resolved and this one skipped as already-linked — rather than
+/// what this particular invocation happened to do. That is the set a second
+/// machine has to reproduce.
+///
+/// Anything whose version cannot be established is left out: a pin that says
+/// `version = "latest"` is not a pin, and writing one would make the lockfile
+/// look authoritative while promising nothing.
+fn resolved_package_pins(project_dir: &Path) -> Vec<(String, String, String)> {
+    let mut pins = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(project_dir.join(".horus/packages")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            // A reference to a package already installed in the system
+            // interpreter — no cache directory, the version is in the marker.
+            if let Some(name) = file_name.strip_suffix(".system.json") {
+                if let Some(version) = system_reference_version(&path) {
+                    pins.push((name.to_string(), version, "pypi".to_string()));
+                }
+                continue;
+            }
+
+            // Everything else is a link into the global cache, whose directory
+            // name carries both the distribution and the version.
+            let Some(target) = link_target_name(&path) else {
+                continue;
+            };
+            if let Some((name, version)) = target.strip_prefix("pypi_").and_then(split_name_version)
+            {
+                // pip is asked for `latest` when the manifest names no version,
+                // so the directory name cannot answer this one — the installed
+                // dist-info can.
+                let version = if version == "latest" {
+                    match dist_info_version(&path) {
+                        Some(v) => v,
+                        None => continue,
+                    }
+                } else {
+                    version.to_string()
+                };
+                pins.push((name.to_string(), version, "pypi".to_string()));
+            } else if let Some((name, version)) = split_name_version(target.as_str()) {
+                pins.push((
+                    name.to_string(),
+                    version.to_string(),
+                    "registry".to_string(),
+                ));
+            }
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir(project_dir.join(".horus/bin")) {
+        for entry in entries.flatten() {
+            // `.horus/bin/<name>` links to `<cache>/cratesio_<name>@<ver>/bin/<name>`,
+            // so the version lives two levels up from the link target.
+            let Ok(target) = fs::read_link(entry.path()) else {
+                continue;
+            };
+            let Some(pkg_dir) = target.parent().and_then(|bin| bin.parent()) else {
+                continue;
+            };
+            let dir_name = pkg_dir.file_name().unwrap_or_default().to_string_lossy();
+            if let Some((name, version)) = dir_name
+                .strip_prefix("cratesio_")
+                .and_then(split_name_version)
+                .filter(|(_, version)| *version != "latest")
+            {
+                pins.push((
+                    name.to_string(),
+                    version.to_string(),
+                    "crates.io".to_string(),
+                ));
+            }
+        }
+    }
+
+    pins.sort();
+    pins.dedup();
+    pins
+}
+
+/// Split a cache directory's `name@version` suffix.
+fn split_name_version(dir_name: &str) -> Option<(&str, &str)> {
+    dir_name
+        .rsplit_once('@')
+        .filter(|(name, _)| !name.is_empty())
+}
+
+/// The cache directory a `.horus/packages` entry links to, by name.
+fn link_target_name(link: &Path) -> Option<String> {
+    let target = fs::read_link(link).ok()?;
+    Some(target.file_name()?.to_string_lossy().to_string())
+}
+
+/// The version recorded in a `<name>.system.json` reference marker.
+fn system_reference_version(marker: &Path) -> Option<String> {
+    let content = fs::read_to_string(marker).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty() && *v != "unknown")
+        .map(|v| v.to_string())
+}
+
+/// The version pip actually installed, from the `*.dist-info` it leaves behind.
+///
+/// Wheel metadata directories are named `{distribution}-{version}.dist-info`,
+/// which is the only place the resolved version is written down when the
+/// manifest asked for no particular one.
+fn dist_info_version(pkg_dir: &Path) -> Option<String> {
+    let entries = fs::read_dir(pkg_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(stem) = name.strip_suffix(".dist-info") {
+            if let Some((_, version)) = stem.rsplit_once('-') {
+                if !version.is_empty() {
+                    return Some(version.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn create_system_reference_python_run(
@@ -1564,6 +1862,266 @@ mod tests {
         assert_ne!(debug_use, debug_cancel);
         assert_ne!(debug_install, debug_cancel);
     }
+
+    // ── The interpreter gets the last word (PATH-3) ────────────────────────
+    //
+    // Every "success" this file printed described a step it had itself taken.
+    // None of them asked Python. The install could therefore be reported as
+    // done four times over and still leave `import horus` failing, because
+    // PYTHONPATH was assembled from a different cache root than pip wrote to.
+
+    /// The probe has to find a module that is genuinely only on PYTHONPATH —
+    /// otherwise it would pass on a machine where the module happens to be
+    /// installed anyway, which is precisely the machine the original defect
+    /// hid on.
+    #[test]
+    fn the_import_probe_finds_a_module_that_is_only_on_pythonpath() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pkg = tmp.path().join("horus_probe_fixture");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "value = 1\n").unwrap();
+
+        let modules = vec!["horus_probe_fixture".to_string()];
+        let on_path = tmp.path().to_string_lossy().to_string();
+
+        let (interpreter, failures) = super::probe_imports("python3", &on_path, &modules).unwrap();
+        assert!(
+            failures.is_empty(),
+            "the module is on PYTHONPATH and must import: {failures:?}"
+        );
+        assert!(
+            interpreter.contains("python"),
+            "the probe reports sys.executable so the error can name the real \
+             interpreter, got: {interpreter}"
+        );
+
+        let (_, failures) = super::probe_imports("python3", "", &modules).unwrap();
+        assert_eq!(failures.len(), 1, "off PYTHONPATH it must not import");
+        assert_eq!(failures[0].0, "horus_probe_fixture");
+        assert!(
+            failures[0].1.contains("ModuleNotFoundError"),
+            "the reason is reported, not just the failure: {:?}",
+            failures[0].1
+        );
+    }
+
+    /// A link whose module does not import is a failed install, and has to be
+    /// reported as one — at the link step, naming the distribution and the
+    /// interpreter. The old code linked, printed a green tick, wrote
+    /// horus.lock, and left the user to read `No module named 'horus'` as a
+    /// mistake in their own source file.
+    #[test]
+    fn a_link_whose_module_does_not_import_fails_at_the_link_step() {
+        let linked = vec![(
+            "ghost-robotics".to_string(),
+            vec!["horus_module_that_is_not_installed".to_string()],
+        )];
+        let err = super::verify_linked_packages_import("python3", &linked)
+            .expect_err("a module nothing can import must not be reported as linked");
+        let message = err.to_string();
+        assert!(
+            message.contains("ghost-robotics"),
+            "the distribution has to be named: {message}"
+        );
+        assert!(
+            message.contains("horus_module_that_is_not_installed"),
+            "the import that failed has to be named: {message}"
+        );
+        assert!(
+            message.contains("pip install"),
+            "the message has to say how to repair it: {message}"
+        );
+    }
+
+    /// Distributions ship top-level names that need extras HORUS was never
+    /// asked for. If any of them imports, the path is wired up and the rest is
+    /// the package's business — failing the install there would be a new
+    /// defect, not a fix for this one.
+    #[test]
+    fn a_distribution_whose_other_module_imports_is_not_a_failed_install() {
+        let linked = vec![(
+            "half-there".to_string(),
+            vec![
+                "os".to_string(),
+                "horus_module_that_is_not_installed".to_string(),
+            ],
+        )];
+        super::verify_linked_packages_import("python3", &linked)
+            .expect("one working module means the link resolves");
+    }
+
+    /// The check has to cover every branch that leaves a link behind, not just
+    /// the branch that creates one. Users spend their time on the second run
+    /// onwards, which takes the "(already linked)" fast path — a link made by
+    /// an earlier run is exactly as unimportable as a fresh one if the path is
+    /// wrong.
+    #[test]
+    fn every_branch_that_links_is_verified_before_the_resolver_returns() {
+        let full = include_str!("install.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        let start = src
+            .find("pub(crate) fn install_pip_packages")
+            .expect("the pypi resolver must still be here");
+        let end = src
+            .find("pub(crate) fn install_cargo_packages")
+            .expect("the cargo resolver follows it");
+        let body = &src[start..end];
+        assert!(
+            body.contains("verify_linked_packages_import("),
+            "linking and then reporting success without asking the interpreter \
+             is the whole defect"
+        );
+        assert_eq!(
+            body.matches("linked.push((").count(),
+            3,
+            "each of the two already-linked fast paths and the fresh-link path \
+             has to record what it linked, or the check silently skips it"
+        );
+    }
+
+    // ── The lockfile names what it locked (PATH-3) ─────────────────────────
+    //
+    // horus.lock recorded a config hash and nothing else: `[[package]]` was
+    // always absent, so a file that answered "up-to-date" had never named a
+    // single version.
+
+    /// A cache directory carries the resolved version in its name; a
+    /// `--target` install that asked for "latest" carries it in the dist-info.
+    #[test]
+    fn resolved_packages_are_read_back_off_disk_with_real_versions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache");
+        let packages = root.join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+
+        // A pypi package whose version the manifest pinned.
+        let pinned = cache.join("pypi_cowsay@6.1");
+        fs::create_dir_all(&pinned).unwrap();
+        symlink(&pinned, &packages.join("cowsay")).unwrap();
+
+        // A pypi package installed as "latest" — the dist-info is the only
+        // place the resolved version is written down.
+        let latest = cache.join("pypi_horus-robotics@latest");
+        fs::create_dir_all(latest.join("horus_robotics-0.1.9.dist-info")).unwrap();
+        symlink(&latest, &packages.join("horus-robotics")).unwrap();
+
+        // A registry package.
+        let registry = cache.join("horus_py@0.3.0");
+        fs::create_dir_all(&registry).unwrap();
+        symlink(&registry, &packages.join("horus_py")).unwrap();
+
+        // A reference to a package already in the system interpreter.
+        fs::write(
+            packages.join("numpy.system.json"),
+            r#"{"name":"numpy","version":"1.26.4","source":"System","package_type":"PyPI"}"#,
+        )
+        .unwrap();
+
+        // A cargo binary, linked from `.horus/bin`.
+        let bin_cache = cache.join("cratesio_ripgrep@14.1.0/bin");
+        fs::create_dir_all(&bin_cache).unwrap();
+        fs::write(bin_cache.join("ripgrep"), "").unwrap();
+        fs::create_dir_all(root.join(".horus/bin")).unwrap();
+        symlink(&bin_cache.join("ripgrep"), &root.join(".horus/bin/ripgrep")).unwrap();
+
+        let pins = super::resolved_package_pins(root);
+        assert!(
+            pins.contains(&("cowsay".to_string(), "6.1".to_string(), "pypi".to_string())),
+            "got: {pins:?}"
+        );
+        assert!(
+            pins.contains(&(
+                "horus-robotics".to_string(),
+                "0.1.9".to_string(),
+                "pypi".to_string()
+            )),
+            "an @latest install must be pinned to the version pip actually \
+             resolved, not to the word \"latest\": {pins:?}"
+        );
+        assert!(
+            pins.contains(&(
+                "horus_py".to_string(),
+                "0.3.0".to_string(),
+                "registry".to_string()
+            )),
+            "got: {pins:?}"
+        );
+        assert!(
+            pins.contains(&(
+                "numpy".to_string(),
+                "1.26.4".to_string(),
+                "pypi".to_string()
+            )),
+            "a system reference is still a resolved version: {pins:?}"
+        );
+        assert!(
+            pins.contains(&(
+                "ripgrep".to_string(),
+                "14.1.0".to_string(),
+                "crates.io".to_string()
+            )),
+            "got: {pins:?}"
+        );
+    }
+
+    /// A pin that cannot name a version is not a pin. Writing one would make
+    /// the lockfile look authoritative while promising nothing.
+    #[test]
+    fn a_package_whose_version_is_unknown_is_not_pinned() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache");
+        let packages = root.join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+
+        // "latest" with nothing installed under it — no dist-info to consult.
+        let latest = cache.join("pypi_mystery@latest");
+        fs::create_dir_all(&latest).unwrap();
+        symlink(&latest, &packages.join("mystery")).unwrap();
+
+        // A system reference pip could not report a version for.
+        fs::write(
+            packages.join("vague.system.json"),
+            r#"{"name":"vague","version":"unknown","source":"System"}"#,
+        )
+        .unwrap();
+
+        assert!(
+            super::resolved_package_pins(root).is_empty(),
+            "neither of these can be reproduced from what the lockfile would say"
+        );
+    }
+
+    /// The end of the story: the file `horus run` leaves behind names the
+    /// packages it installed. It used to contain a version number and a hash.
+    #[test]
+    fn the_written_lockfile_names_the_packages_it_locked() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache");
+        let packages = root.join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+        let pinned = cache.join("pypi_cowsay@6.1");
+        fs::create_dir_all(&pinned).unwrap();
+        symlink(&pinned, &packages.join("cowsay")).unwrap();
+
+        let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(root).unwrap();
+        let result = super::write_lockfile(&Some("deadbeef".to_string()));
+        std::env::set_current_dir(&prev).unwrap();
+        result.unwrap();
+
+        let written = fs::read_to_string(root.join(HORUS_LOCK)).unwrap();
+        assert!(
+            written.contains("[[package]]"),
+            "the lockfile has to record a package set, not just a hash:\n{written}"
+        );
+        assert!(written.contains("cowsay"), "{written}");
+        assert!(written.contains("6.1"), "{written}");
+        assert!(written.contains("pypi"), "{written}");
+    }
 }
 
 /// Whether a crates.io cache directory actually holds an installed binary.
@@ -1600,7 +2158,13 @@ fn cache_is_usable(dir: &Path) -> bool {
 /// guessing an import to try. Directories with an `__init__.py`, bare `.py`
 /// modules, and compiled extensions all count; pip's own bookkeeping
 /// (`*.dist-info`, `*.egg-info`, `__pycache__`, `bin`) does not.
-fn top_level_modules(dir: &Path) -> Vec<String> {
+///
+/// `run_python::push_importable_dirs` asks the same question of the same
+/// directories when it builds PYTHONPATH, which is why this is `pub(super)`:
+/// the set of directories HORUS calls importable and the set it puts on
+/// sys.path have to be the same set, or the install reports a module the
+/// interpreter cannot then find.
+pub(super) fn top_level_modules(dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };

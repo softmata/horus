@@ -64,8 +64,8 @@ Plugins:
   plugin, plugins   Manage plugins (enable, disable, verify, trust, untrust, trusted)
 
 Development:
-  fmt               Format code (Rust + Python)
-  lint              Lint code (clippy + ruff/pylint)
+  fmt               Format code (rustfmt + ruff/black + clang-format)
+  lint              Lint code (clippy + ruff/pylint + clang-tidy)
   doc               Generate documentation
   bench             Run benchmarks
   deps              Dependency insight (tree, why, outdated, audit)
@@ -109,6 +109,11 @@ More examples:
   horus install rplidar@1.2.0    Install a standalone package
   horus bb --anomalies            Show crash anomalies
   horus deploy robot@192.168.1.5  Deploy to a remote robot
+
+Scripting:
+  horus check --json              Most reporting commands accept --json
+  horus topic list --json         Ask any command with `<command> --help`;
+                                  a command without JSON output says so
 
 Docs: https://docs.horusrobotics.dev")]
 struct Cli {
@@ -226,8 +231,12 @@ enum Commands {
 
         /// Run in simulation mode using horus-sim3d.
         ///
-        /// Without arguments: simulates ALL drivers that have [sim-drivers] overrides.
-        /// With arguments: simulates only the named drivers (mixed mode).
+        /// Without arguments: simulates every [hardware] entry marked `sim = true`.
+        /// With arguments: simulates only the named drivers (mixed mode) — the
+        /// list narrows the simulated set, it does not create it.
+        ///
+        /// `[sim-drivers]` is the legacy spelling and is still read, but
+        /// `sim = true` under [hardware] is what the manifest documents.
         ///
         /// Examples:
         ///   horus run --sim              # all drivers simulated
@@ -546,7 +555,12 @@ enum Commands {
         #[arg(short = 'l', long = "last")]
         last: Option<usize>,
 
-        /// Custom blackbox directory (default: .horus/blackbox/)
+        /// Custom blackbox directory.
+        ///
+        /// Defaults to this project's .horus/blackbox/ when one exists with
+        /// recordings in it, and otherwise to the machine-wide
+        /// ~/.local/share/horus/blackbox — so outside a project, or before the
+        /// first recording, this reads every project's events on the machine.
         #[arg(short = 'p', long = "path")]
         path: Option<PathBuf>,
 
@@ -705,7 +719,7 @@ enum Commands {
     },
 
     // ── Development ──────────────────────────────────────────────────────
-    /// Format code (Rust + Python)
+    /// Format code (rustfmt + ruff/black + clang-format)
     Fmt {
         /// Check formatting without modifying files
         #[arg(long = "check")]
@@ -716,7 +730,7 @@ enum Commands {
         extra_args: Vec<String>,
     },
 
-    /// Lint code (clippy + ruff/pylint)
+    /// Lint code (clippy + ruff/pylint + clang-tidy)
     Lint {
         /// Auto-fix lint issues where possible
         #[arg(long = "fix")]
@@ -2133,6 +2147,90 @@ fn split_name_version(input: String, fallback: Option<String>) -> (String, Optio
     }
 }
 
+/// `horus run --sim` could not start its simulator, so refuse to run.
+///
+/// This used to be a `log::warn!` that fell through to `execute_run`, which
+/// builds and runs the node against whatever is actually attached. The flag was
+/// asked for explicitly, and the whole point of asking for it is that the code
+/// about to run should not reach the hardware — on a bench with actuators
+/// powered, the difference between a simulation and a motion command is the
+/// difference this warning was quietly deciding. A warning scrolls past in a
+/// build log; a non-zero exit does not.
+///
+/// The message carries the plugin's own error through unchanged: every variant
+/// out of `spawn_background` already names the plugin and the install command,
+/// and re-wrapping it printed the remediation twice.
+fn sim_unavailable(simulator: &str, cause: &str) -> HorusError {
+    HorusError::Config(ConfigError::Other(format!(
+        "--sim was requested but the '{simulator}' simulator could not be started, \
+         so nothing would be simulated: {cause}\n\n\
+         Refusing to run: without the simulator the nodes would drive the real \
+         hardware. Re-run without --sim if that is what you want."
+    )))
+}
+
+/// The commands that can emit JSON, derived from the clap tree rather than
+/// written down — a hand-kept list is exactly what drifted in the first place.
+fn json_capable_commands() -> Vec<String> {
+    fn walk(cmd: &clap::Command, path: &str, out: &mut Vec<String>) {
+        let here = if path.is_empty() {
+            cmd.get_name().to_string()
+        } else {
+            format!("{path} {}", cmd.get_name())
+        };
+        if cmd.get_arguments().any(|a| a.get_long() == Some("json")) {
+            out.push(here.clone());
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, &here, out);
+        }
+    }
+    let cmd = Cli::command();
+    let mut out = Vec::new();
+    for sub in cmd.get_subcommands() {
+        walk(sub, "", &mut out);
+    }
+    out.sort();
+    out
+}
+
+/// Answer `--json` on a command that has none, instead of letting clap suggest
+/// passing it through to the user's program.
+///
+/// Returns `None` for every other parse error so clap keeps its own reporting —
+/// this is a targeted replacement, not a general error handler.
+fn json_unsupported_message(args: &[String], e: &clap::Error) -> Option<String> {
+    if e.kind() != clap::error::ErrorKind::UnknownArgument {
+        return None;
+    }
+    if !args.iter().any(|a| a == "--json") {
+        return None;
+    }
+    let invoked: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .take_while(|a| !a.starts_with('-'))
+        .map(|s| s.as_str())
+        .collect();
+    let name = invoked.join(" ");
+    let capable = json_capable_commands();
+    // A 31-line dump is not an error message. Name a few of the ones a reader
+    // is most likely to have meant and say how to check the rest.
+    let examples = ["check", "build", "topic list", "node list", "doctor"]
+        .iter()
+        .filter(|c| capable.iter().any(|k| k == *c))
+        .map(|c| format!("`horus {c} --json`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "`horus {name}` has no JSON output, so --json is not accepted here.\n\n\
+         {} other commands do — {examples} among them. `horus <command> --help` \
+         says whether one accepts it.\n\n\
+         To pass --json through to your own program, put it after `--`.",
+        capable.len()
+    ))
+}
+
 fn main() {
     // First, try to handle as a plugin command before clap parsing
     // This allows plugins to be invoked as: `horus <plugin-name> [args...]`
@@ -2179,8 +2277,27 @@ fn main() {
         }
     }
 
-    // Normal clap parsing
-    let cli = Cli::parse();
+    // Normal clap parsing.
+    //
+    // `--json` is declared per-command rather than globally, so a command that
+    // has no JSON output rejects it through clap's generic unknown-argument
+    // path. That path ends in
+    //
+    //     tip: to pass '--json' as a value, use '-- --json'
+    //
+    // which is actively misleading: following it passes the literal string
+    // `--json` to the user's program. Scripting the CLI is the one job the flag
+    // exists for, so the failure is worth answering properly.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            if let Some(msg) = json_unsupported_message(&args, &e) {
+                eprintln!("{} {}", "Error:".red().bold(), msg);
+                std::process::exit(2);
+            }
+            e.exit()
+        }
+    };
 
     // Initialize the HORUS log bridge.
     //
@@ -2356,7 +2473,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let mut _sim_child: Option<std::process::Child> = None;
             if let Some(ref sim_targets) = sim {
                 if sim_targets.is_empty() {
-                    log::info!("Simulation mode: all drivers with [sim-drivers] overrides will be simulated");
+                    log::info!(
+                        "Simulation mode: every [hardware] entry with `sim = true` will be simulated"
+                    );
                 } else {
                     log::info!(
                         "Simulation mode (selective): simulating [{}]",
@@ -2413,12 +2532,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
                                 //   Install with: horus install horus-sim3d
                                 //
                                 // the remediation twice and the plugin name four times.
-                                log::warn!("Simulator unavailable: {}", e);
+                                return Err(sim_unavailable(&simulator_name, &e.to_string()));
                             }
                         }
                     }
                     Err(e) => {
-                        log::warn!("Plugin system unavailable: {}. Run sim3d manually.", e);
+                        return Err(sim_unavailable(&simulator_name, &e.to_string()));
                     }
                 }
             }

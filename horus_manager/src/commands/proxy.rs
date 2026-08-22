@@ -10,6 +10,7 @@
 use anyhow::{bail, Context, Result};
 use colored::*;
 use std::env;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -38,6 +39,105 @@ pub fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
 pub fn run_is_project() -> bool {
     let cwd = env::current_dir().unwrap_or_default();
     find_project_root(&cwd).is_some()
+}
+
+// ── First-use notice ───────────────────────────────────────────────────────
+
+/// Environment variable that silences [`announce_proxy`].
+const NOTICE_OPT_OUT: &str = "HORUS_NO_PROXY_NOTICE";
+
+/// The line [`announce_proxy`] prints.
+///
+/// Split out from the printing so the wording is testable: what matters is that
+/// it names the tool, says horus is in the path, and carries the way out.
+fn proxy_notice_line(tool: &str) -> String {
+    format!(
+        "`{tool}` here runs through horus shell integration (horus {tool}). \
+         Undo: horus env --uninstall  ·  silence: {NOTICE_OPT_OUT}=1"
+    )
+}
+
+/// Identify the shell session this proxy was invoked from.
+///
+/// `horus env --init` installs a shell *function* named `cargo`, which runs
+/// `command horus cargo "$@"` — so our parent process is the interactive shell
+/// itself, which is as good a handle on "this terminal session" as we can get
+/// for free. Pids are recycled, so a new shell can inherit a marker left by a
+/// dead one and miss its notice; the marker lives in a directory the OS clears
+/// between logins, which bounds how long that can happen. Returns `None` where
+/// there is no such notion, in which case no notice is printed at all.
+fn shell_session_key() -> Option<String> {
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid()/getppid() take no arguments, touch no memory and cannot fail.
+        Some(format!("{}-{}", unsafe { libc::getuid() }, unsafe {
+            libc::getppid()
+        }))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Where the once-per-session markers live.
+///
+/// `$XDG_RUNTIME_DIR` is wiped when the user's last session ends, which is
+/// exactly the lifetime wanted here. Where there is none, the temp dir is at
+/// least cleared on reboot.
+fn notice_marker_dir() -> PathBuf {
+    dirs::runtime_dir()
+        .unwrap_or_else(env::temp_dir)
+        .join("horus")
+}
+
+/// Create `marker`, reporting whether this call was the one that created it.
+///
+/// `create_new` is the atomic test-and-set — two proxies racing inside one
+/// session still produce exactly one notice. Any I/O failure counts as "already
+/// claimed": a notice is a nicety and must never be the reason a build fails.
+fn claim_session_notice(marker: &Path) -> bool {
+    if let Some(parent) = marker.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)
+        .is_ok()
+}
+
+/// Tell the user, at most once per shell session, that this tool is proxied.
+///
+/// `horus env --init` shadows `cargo`, `pip`, `pip3`, `cmake`, `conan` and
+/// `vcpkg` with shell functions, so months later a plain `cargo build` inside a
+/// horus project is quietly a `horus cargo build`. When that behaves in a way
+/// plain cargo would not, nothing in the output mentions horus and there is no
+/// thread to pull. Disclosing it at install time does not help someone who has
+/// forgotten; the indirection has to announce itself where it applies.
+///
+/// Once per session rather than per invocation, because a build loop would
+/// otherwise repeat it every few seconds. Each proxy run is a separate process,
+/// so this cannot be a `std::sync::Once` — the state is a marker file.
+pub fn announce_proxy(tool: &str) {
+    if env::var_os(NOTICE_OPT_OUT).is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    // Only worth saying to a human at a terminal: in a script or in CI the
+    // extra stderr line is noise, and can break whatever is reading stderr.
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    let Some(session) = shell_session_key() else {
+        return;
+    };
+    let marker = notice_marker_dir().join(format!("proxy-notice-{session}-{tool}"));
+    if !claim_session_notice(&marker) {
+        return;
+    }
+    crate::cli_output::info(&proxy_notice_line(tool));
 }
 
 /// Cargo subcommands that should NOT get `--manifest-path` (global commands).
@@ -223,6 +323,8 @@ pub fn run_cargo_proxy(args: Vec<String>) -> Result<i32> {
         return Ok(status.code().unwrap_or(1));
     };
 
+    announce_proxy("cargo");
+
     let real_cargo = find_real_tool("cargo")?;
     let manifest_arg = project_dir
         .join(".horus/Cargo.toml")
@@ -296,6 +398,8 @@ pub fn run_pip_proxy(args: Vec<String>) -> Result<i32> {
         let status = Command::new(&real).args(&args).status()?;
         return Ok(status.code().unwrap_or(1));
     };
+
+    announce_proxy("pip");
 
     let real_pip = find_real_tool("pip")?;
     let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
@@ -616,6 +720,8 @@ pub fn run_cmake_proxy(args: Vec<String>) -> Result<i32> {
         return Ok(status.code().unwrap_or(1));
     };
 
+    announce_proxy("cmake");
+
     let real_cmake = find_real_tool("cmake")?;
     let mut cmd = Command::new(&real_cmake);
 
@@ -678,6 +784,8 @@ pub fn run_conan_proxy(args: Vec<String>) -> Result<i32> {
         let status = Command::new(&real).args(&args).status()?;
         return Ok(status.code().unwrap_or(1));
     };
+
+    announce_proxy("conan");
 
     let real_conan = find_real_tool("conan")?;
     let mut cmd = Command::new(&real_conan);
@@ -748,6 +856,8 @@ pub fn run_vcpkg_proxy(args: Vec<String>) -> Result<i32> {
         let status = Command::new(&real).args(&args).status()?;
         return Ok(status.code().unwrap_or(1));
     };
+
+    announce_proxy("vcpkg");
 
     let real_vcpkg = find_real_tool("vcpkg")?;
     let mut cmd = Command::new(&real_vcpkg);
@@ -914,6 +1024,43 @@ mod tests {
         let (name, ver) = parse_conan_ref("boost/1.82.0@user/stable").unwrap();
         assert_eq!(name, "boost");
         assert_eq!(ver, "1.82.0");
+    }
+
+    /// The notice exists so a `cargo` that is not cargo has something in its
+    /// output pointing back at horus. Losing the undo command loses the point.
+    #[test]
+    fn proxy_notice_names_the_tool_and_the_way_out() {
+        let line = proxy_notice_line("cargo");
+        assert!(line.contains("cargo"));
+        assert!(line.contains("horus env --uninstall"));
+        assert!(line.contains(NOTICE_OPT_OUT));
+    }
+
+    #[test]
+    fn session_notice_is_claimed_exactly_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("session/proxy-notice-1-2-cargo");
+
+        assert!(claim_session_notice(&marker), "first use must announce");
+        assert!(
+            !claim_session_notice(&marker),
+            "a second build in the same session must stay silent"
+        );
+    }
+
+    #[test]
+    fn each_tool_announces_itself_in_a_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(claim_session_notice(
+            &tmp.path().join("proxy-notice-1-2-cargo")
+        ));
+        assert!(claim_session_notice(
+            &tmp.path().join("proxy-notice-1-2-pip")
+        ));
+        // ...but a different session starts over.
+        assert!(claim_session_notice(
+            &tmp.path().join("proxy-notice-1-3-cargo")
+        ));
     }
 
     #[test]

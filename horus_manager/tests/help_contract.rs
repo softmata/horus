@@ -1092,3 +1092,59 @@ fn env_help_names_every_tool_the_shell_integration_shadows() {
          `horus env --help` never names them: {unmentioned:?}\n{help}"
     );
 }
+
+/// A command that has no JSON output must say so, not hand the user clap's
+/// pass-through tip.
+///
+/// `--json` is declared per-command, so `horus fmt --json` fell through to
+/// clap's generic unknown-argument path, which ends in
+///
+///     tip: to pass '--json' as a value, use '-- --json'
+///
+/// Following that tip passes the literal string `--json` to the user's own
+/// program — the CLI answering "how do I script this?" with a suggestion that
+/// silently does something else. Scripting is the only reason the flag exists.
+#[test]
+fn a_command_without_json_says_so_instead_of_suggesting_passthrough() {
+    // Commands that genuinely have no --json, picked from three different
+    // groups so this is not pinned to one command's accident.
+    for cmd in ["fmt", "lint", "bench"] {
+        let out = Command::new(horus())
+            .args([cmd, "--json"])
+            .output()
+            .unwrap_or_else(|e| panic!("horus {cmd} --json must run: {e}"));
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        assert!(
+            !text.contains("to pass '--json' as a value"),
+            "`horus {cmd} --json` still gives clap's pass-through tip:\n{text}"
+        );
+        assert!(
+            text.contains("has no JSON output"),
+            "`horus {cmd} --json` must say the command has no JSON output:\n{text}"
+        );
+        assert!(
+            !out.status.success(),
+            "`horus {cmd} --json` must fail rather than silently ignore the flag"
+        );
+    }
+}
+
+/// The root help must say the CLI is scriptable somewhere.
+///
+/// `--json` being per-command meant it appeared in no top-level listing, so
+/// there was no single place that told a reader the tool can be scripted at
+/// all — they had to guess, command by command.
+#[test]
+fn the_root_help_says_the_cli_is_scriptable() {
+    let help = help_text();
+    assert!(
+        help.contains("--json"),
+        "`horus --help` never mentions --json, so nothing tells a reader the \
+         CLI is scriptable:\n{help}"
+    );
+}

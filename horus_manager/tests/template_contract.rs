@@ -198,3 +198,101 @@ fn horus_test_on_a_new_project_is_not_a_failure() {
         "the message should say what to do next:\n{text}"
     );
 }
+
+/// Where the README's Python example lives, relative to this crate.
+///
+/// The test resolves it rather than hard-coding the shape it expects, because
+/// the point is not "lists are correct" — both forms work — but that the two
+/// places a new user reads first do not disagree.
+fn readme() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../README.md")
+}
+
+/// The README's fenced Python examples, with the prose stripped out.
+///
+/// The prose now says both spellings work and shows one of each, so scanning
+/// the whole file would find whichever sentence happened to come first. The
+/// fenced example is the code a reader copies, and that is what the template
+/// has to match.
+fn readme_python(doc: &str) -> String {
+    let mut code = String::new();
+    let mut inside = false;
+    for line in doc.lines() {
+        if line.starts_with("```") {
+            inside = line.trim_start_matches('`').trim() == "python";
+        } else if inside {
+            code.push_str(line);
+            code.push('\n');
+        }
+    }
+    code
+}
+
+/// Is `arg=` handed a list or a bare string at its first *call site*?
+///
+/// Prose mentions the argument by name too (``pubs=`` in a sentence, the
+/// README's own note that both spellings work), so occurrences that are not
+/// followed by a value are skipped rather than counted as the answer.
+fn arg_form(src: &str, arg: &str) -> Option<&'static str> {
+    let needle = format!("{arg}=");
+    src.match_indices(&needle)
+        .filter_map(|(at, _)| src[at + needle.len()..].chars().next())
+        .find_map(|c| match c {
+            '[' => Some("a list"),
+            '"' | '\'' => Some("a bare string"),
+            _ => None,
+        })
+}
+
+/// GEN-2: the template and the README must spell `pubs=`/`subs=` the same way.
+///
+/// `horus new --python` wrote `pubs="motors.cmd_vel"` while the README's Python
+/// example writes `pubs=["sensor.data"]`. The binding takes either — `pubs` is
+/// typed `Optional[Union[List[str], str, Dict[str, Dict]]]` — but neither place
+/// said so, so a reader who copied the README and a reader who ran the
+/// generator saw two spellings of one argument with no way to tell whether both
+/// were legal short of reading the binding source. Both halves were fixed: the
+/// README now states that either form builds the same node, and the template
+/// shows the same form the example does.
+#[test]
+fn generated_python_and_the_readme_agree_on_pubs_and_subs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = generate(tmp.path(), "shapebot", "--python");
+    let src = std::fs::read_to_string(proj.join("main.py")).expect("main.py must exist");
+
+    assert_eq!(
+        arg_form(&src, "pubs"),
+        Some("a list"),
+        "the template should pass topics the way the README's example does:\n{src}"
+    );
+    assert_eq!(
+        arg_form(&src, "subs"),
+        Some("a list"),
+        "the template should pass topics the way the README's example does:\n{src}"
+    );
+
+    // Read the README back, so this fails whichever side of the pair drifts.
+    let Ok(doc) = std::fs::read_to_string(readme()) else {
+        eprintln!(
+            "skipping the README half: {} not readable",
+            readme().display()
+        );
+        return;
+    };
+    let example = readme_python(&doc);
+    assert!(
+        !example.is_empty(),
+        "no fenced ```python block in {}",
+        readme().display()
+    );
+    for arg in ["pubs", "subs"] {
+        assert_eq!(
+            arg_form(&example, arg),
+            arg_form(&src, arg),
+            "README.md passes {arg}= {:?} and `horus new --python` passes it {:?} — \
+             a new user reads both and cannot tell which is right",
+            arg_form(&example, arg),
+            arg_form(&src, arg)
+        );
+    }
+}

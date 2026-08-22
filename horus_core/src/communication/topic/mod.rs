@@ -2143,6 +2143,44 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             Err(returned) => msg = returned,
         }
 
+        // A ring nobody reads must not hold the newest data hostage.
+        //
+        // Backpressure exists to stop a producer overwriting a message some
+        // consumer has not taken yet. With no registered consumer there is
+        // nothing to protect and `tail` never moves, so one ring-full after the
+        // first send every further `send` fails here — permanently. The shared
+        // region then keeps the FIRST `capacity` messages for the life of the
+        // process while `messages_total` (bumped on every call, delivered or
+        // not) keeps climbing, so `topic list` and `topic hz` report the topic
+        // as live at its real rate while `topic echo` — which reads the ring —
+        // replays minutes-old payloads. Measured on a 100 Hz publisher with no
+        // subscriber: 14,474 sends, ring content frozen at message 128.
+        //
+        // `send` is the lossy publish, so the answer on a full ring with no
+        // reader is keep-last-N: retire the oldest slot and take it. Nothing
+        // changes for a topic that does have a subscriber — `sub_count()` is
+        // non-zero there and the spin/yield retry below runs exactly as before,
+        // because then the backpressure is protecting real unread messages.
+        // `try_send` and `send_blocking` are deliberately left alone: their
+        // contracts are "tell me the ring is full", not "drop something".
+        let header = self.header();
+        if header.sub_count() == 0 {
+            let capacity = self.local().cached_capacity;
+            if capacity > 0 {
+                let head = header.sequence_or_head.load(Ordering::Acquire);
+                // Free exactly one slot; the ring stays as full of recent
+                // history as it can be.
+                header
+                    .tail
+                    .fetch_max(head.saturating_sub(capacity - 1), Ordering::Release);
+                self.local().local_tail = header.tail.load(Ordering::Acquire);
+                match self.try_send(msg) {
+                    Ok(()) => return,
+                    Err(returned) => msg = returned,
+                }
+            }
+        }
+
         // If the second attempt also failed, spin briefly. For oversized
         // messages this is wasteful (~50μs), but the warning log in the serde
         // path fires on every attempt so the user sees it.

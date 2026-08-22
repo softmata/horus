@@ -1,6 +1,7 @@
 use crate::cli_output;
 use anyhow::{bail, Result};
 use colored::*;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -110,41 +111,124 @@ pub(crate) fn detect_python_interpreter() -> Result<String> {
     bail!("No Python interpreter found. Install Python 3.7+ and ensure it's in PATH.");
 }
 
+/// The separator PYTHONPATH entries are joined with.
+pub(crate) const PYTHON_PATH_SEP: &str = if cfg!(windows) { ";" } else { ":" };
+
 /// Build PYTHONPATH for child processes without calling `env::set_var`.
 ///
 /// Returns the combined PYTHONPATH string to pass via `Command::env()`.
 pub(crate) fn build_python_path() -> Result<String> {
     let current_dir = env::current_dir()?;
-    let horus_packages = current_dir.join(".horus/packages");
-
-    let global_cache = crate::paths::cache_dir()?;
-
-    let mut python_paths = Vec::new();
-
-    // Collect all global cache Python package lib directories
-    if global_cache.exists() {
-        if let Ok(entries) = fs::read_dir(&global_cache) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let lib_dir = path.join("lib");
-                    if lib_dir.exists() {
-                        python_paths.push(lib_dir.display().to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // Add local packages
-    python_paths.push(horus_packages.display().to_string());
+    let mut python_paths = collect_python_path_entries(&current_dir, &python_cache_roots());
 
     // Add existing PYTHONPATH
     if let Ok(current_path) = env::var("PYTHONPATH") {
         python_paths.push(current_path);
     }
 
-    Ok(python_paths.join(if cfg!(windows) { ";" } else { ":" }))
+    Ok(python_paths.join(PYTHON_PATH_SEP))
+}
+
+/// Every cache root that may hold pip-installed packages.
+///
+/// Two roots, because the codebase has historically used both and the two
+/// halves of the Python path disagreed about which one was authoritative:
+/// `install::install_pip_packages` writes `pypi_*` under `$HOME/.horus/cache`
+/// (the root `install.sh` and `horus clean` also manage), while this function
+/// used to read `crate::paths::cache_dir()` alone — the XDG root,
+/// `$XDG_CACHE_HOME/horus` or `~/.cache/horus`. On Linux those are different
+/// directories, so PYTHONPATH never contained the package pip had just
+/// unpacked: `horus run` printed "Cached horus-robotics / Linked
+/// horus-robotics (horus) / Updated horus.lock" and then died on
+/// `import horus`. `find_horus_source_dir` in run_rust.rs searches both roots
+/// for exactly the same reason.
+pub(crate) fn python_cache_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(xdg_cache) = crate::paths::cache_dir() {
+        roots.push(xdg_cache);
+    }
+    let legacy_cache = super::install::home_dir().join(".horus/cache");
+    if !roots.contains(&legacy_cache) {
+        roots.push(legacy_cache);
+    }
+    roots
+}
+
+/// The sys.path entries a project needs, in priority order.
+///
+/// Split out from `build_python_path` so it can be exercised against a
+/// throw-away project and cache instead of the developer's real home
+/// directory.
+fn collect_python_path_entries(project_dir: &Path, cache_roots: &[PathBuf]) -> Vec<String> {
+    let horus_packages = project_dir.join(".horus/packages");
+
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Project-scoped entries first: `.horus/packages/<dist>` is a symlink into
+    // the cache, so the link path itself is a usable sys.path entry and one
+    // that names the packages *this* project resolved.
+    push_importable_dirs(&horus_packages, &mut entries, &mut seen);
+
+    for root in cache_roots {
+        push_importable_dirs(root, &mut entries, &mut seen);
+    }
+
+    // `.horus/packages` itself stays on the path for anything that drops a
+    // module straight into it rather than linking one. On its own it is not
+    // enough: its children are named after the *distribution*
+    // (`horus-robotics`), never after the module it provides (`horus`).
+    push_entry(horus_packages, &mut entries, &mut seen);
+
+    entries
+}
+
+/// Add every directory under `root` that a Python import could use.
+///
+/// `pip install --target DIR` unpacks the distribution straight into DIR — it
+/// never creates a `lib/` subdirectory. Probing only for `<pkg>/lib`, which is
+/// what this used to do, therefore matched nothing on any cache pip had
+/// written, and left `.horus/packages` as the only entry on PYTHONPATH. The
+/// `lib/` probe is kept because HORUS registry packages are laid out that way.
+///
+/// A directory is only added if it actually provides an importable name.
+/// Skipping the rest is not tidiness: the cache also holds *source* trees such
+/// as `horus@0.3.0`, whose `horus/` subdirectory has a `Cargo.toml` and no
+/// `__init__.py`. Putting one on sys.path would make `import horus` resolve to
+/// an empty namespace package that shadows the real one.
+fn push_importable_dirs(root: &Path, entries: &mut Vec<String>, seen: &mut HashSet<PathBuf>) {
+    let Ok(read) = fs::read_dir(root) else {
+        return;
+    };
+    let mut dirs: Vec<PathBuf> = read
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    // read_dir order is arbitrary; sort so PYTHONPATH is stable between runs.
+    dirs.sort();
+
+    for dir in dirs {
+        let lib_dir = dir.join("lib");
+        if lib_dir.is_dir() {
+            push_entry(lib_dir, entries, seen);
+        }
+        if !super::install::top_level_modules(&dir).is_empty() {
+            push_entry(dir, entries, seen);
+        }
+    }
+}
+
+/// Append a path unless the same directory is already on the list.
+///
+/// Deduplication is by canonical path, because the same cache directory is
+/// reachable both through `.horus/packages/<dist>` and directly under the
+/// cache root.
+fn push_entry(path: PathBuf, entries: &mut Vec<String>, seen: &mut HashSet<PathBuf>) {
+    let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+    if seen.insert(key) {
+        entries.push(path.display().to_string());
+    }
 }
 
 fn detect_horus_usage_python(file: &Path) -> Result<bool> {
@@ -345,6 +429,111 @@ mod tests {
             "Should be python3 or python, got: {}",
             cmd
         );
+    }
+
+    // ── PYTHONPATH has to point at the cache pip wrote to (PATH-3) ───────
+    //
+    // The two halves of the Python path disagreed about which cache root was
+    // authoritative — install.rs wrote `$HOME/.horus/cache`, this file read
+    // the XDG root — and the entry that survived, `.horus/packages`, holds
+    // symlinks named after the *distribution*, never after the module. So
+    // `horus run` printed "Cached horus-robotics / Linked horus-robotics
+    // (horus) / Updated horus.lock" and then died on `import horus`.
+
+    /// Build the cache pip would build, and check the interpreter can reach
+    /// it. Asserting on the string alone would pass on a machine where the
+    /// module is pip-installed anyway — which is exactly the machine the
+    /// original defect hid on — so this runs the real import.
+    #[test]
+    fn battle_python_path_makes_a_cached_distribution_importable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = tmp.path().join("cache");
+        let project = tmp.path().join("project");
+
+        // pip install --target unpacks straight into the package directory.
+        // There is no `lib/` — that is what the old probe looked for.
+        let pkg_dir = cache.join("pypi_horus-fixture@latest");
+        fs::create_dir_all(pkg_dir.join("horus_path_fixture")).unwrap();
+        fs::write(
+            pkg_dir.join("horus_path_fixture/__init__.py"),
+            "value = 1\n",
+        )
+        .unwrap();
+        fs::create_dir_all(project.join(".horus/packages")).unwrap();
+        horus_sys::fs::symlink(&pkg_dir, &project.join(".horus/packages/horus-fixture")).unwrap();
+
+        let entries = collect_python_path_entries(&project, &[cache.clone()]);
+        let python_path = entries.join(PYTHON_PATH_SEP);
+
+        let output = Command::new("python3")
+            .arg("-c")
+            .arg("import horus_path_fixture")
+            .env("PYTHONPATH", &python_path)
+            .output()
+            .expect("python3 must run");
+        assert!(
+            output.status.success(),
+            "a linked distribution has to be importable through the PYTHONPATH \
+             HORUS builds.\nPYTHONPATH={python_path}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// The cache also holds *source* trees — `horus@0.3.0` has a `horus/`
+    /// subdirectory with a Cargo.toml and no `__init__.py`. Putting one on
+    /// sys.path would make `import horus` resolve to an empty namespace
+    /// package that shadows the real one, which is a worse failure than the
+    /// one being fixed because it fails at first use rather than at import.
+    #[test]
+    fn battle_python_path_skips_source_trees_that_would_shadow_a_module() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = tmp.path().join("cache");
+        let source_tree = cache.join("horus@0.3.0");
+        fs::create_dir_all(source_tree.join("horus/src")).unwrap();
+        fs::write(source_tree.join("horus/Cargo.toml"), "[package]\n").unwrap();
+
+        let entries = collect_python_path_entries(tmp.path(), &[cache]);
+        assert!(
+            !entries.iter().any(|e| e.contains("horus@0.3.0")),
+            "a Rust source tree provides no importable module: {entries:?}"
+        );
+    }
+
+    /// Both roots, or the fix only works for whichever one this machine
+    /// happens to use. `find_horus_source_dir` searches both for the same
+    /// reason, and its comment names the same history.
+    #[test]
+    fn battle_python_cache_roots_include_the_root_the_installer_writes() {
+        let roots = python_cache_roots();
+        assert!(
+            roots.iter().any(|r| r.ends_with(".horus/cache")),
+            "install_pip_packages writes $HOME/.horus/cache — reading only the \
+             XDG root is how PYTHONPATH came to miss every package: {roots:?}"
+        );
+    }
+
+    /// The same directory is reachable both through `.horus/packages/<dist>`
+    /// and directly under the cache root; PYTHONPATH should say it once.
+    #[test]
+    fn battle_python_path_does_not_repeat_the_same_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = tmp.path().join("cache");
+        let project = tmp.path().join("project");
+        let pkg_dir = cache.join("pypi_dup@1.0");
+        fs::create_dir_all(pkg_dir.join("dupmod")).unwrap();
+        fs::write(pkg_dir.join("dupmod/__init__.py"), "").unwrap();
+        fs::create_dir_all(project.join(".horus/packages")).unwrap();
+        horus_sys::fs::symlink(&pkg_dir, &project.join(".horus/packages/dup")).unwrap();
+
+        let entries = collect_python_path_entries(&project, &[cache]);
+        let mut canonical: Vec<PathBuf> = entries
+            .iter()
+            .filter_map(|e| Path::new(e).canonicalize().ok())
+            .collect();
+        let before = canonical.len();
+        canonical.sort();
+        canonical.dedup();
+        assert_eq!(before, canonical.len(), "duplicate entries: {entries:?}");
     }
 
     // ── Battle-testing: PYTHONPATH building ──────────────────────────────

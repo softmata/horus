@@ -231,6 +231,15 @@ pub fn config_dir() -> PathBuf {
 /// - Linux: `$XDG_CACHE_HOME/horus` or `~/.cache/horus`
 /// - macOS: `~/Library/Caches/horus`
 /// - Windows: `%LOCALAPPDATA%\horus\cache`
+///
+/// **This is not the only cache root HORUS uses.** `install.sh` and the
+/// package resolver in `horus_manager` write to `$HOME/.horus/cache` on every
+/// platform, and on Linux that is a different directory from the one returned
+/// here. Code that *reads* the cache must therefore search both roots or it
+/// will miss whatever the installer and the resolver put there — see
+/// `run_python::python_cache_roots` and `run_rust::find_horus_source_dir`,
+/// both of which exist because assuming a single root produced a `horus run`
+/// that linked a package and then failed to import it.
 pub fn cache_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
         return PathBuf::from(xdg).join("horus");

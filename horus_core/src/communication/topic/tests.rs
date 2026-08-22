@@ -8663,15 +8663,27 @@ fn send_blocking_serde_type_timeout() {
     assert_eq!(result, Err(SendBlockingError::Timeout));
 }
 
-/// send() (fire-and-forget) on full ring drops message without blocking.
+/// send() (fire-and-forget) on a full ring with no reader keeps the newest
+/// message, and never blocks.
+///
+/// This used to assert the opposite — that the FIRST message survived and every
+/// later one was thrown away. That is drop-newest, and on a ring nobody is
+/// subscribed to it is permanent: `tail` never moves, so the very first
+/// ring-full of messages stays in shared memory for the life of the process
+/// while every subsequent `send` is discarded. It is what made `horus topic
+/// echo` replay minutes-old payloads on a topic `horus topic list` showed live
+/// at 100 Hz. For a lossy publish with no consumer to protect, keep-last-N is
+/// the only defensible choice, so `send_lossy_retry` now retires the oldest
+/// slot instead of the newest message. A topic that *has* a subscriber is
+/// unaffected: the backpressure there is protecting real unread data.
 #[test]
-fn send_fire_and_forget_drops_on_full() {
+fn send_fire_and_forget_keeps_the_newest_on_a_full_unread_ring() {
     let name = unique("send_drop");
     let t: Topic<u64> = Topic::with_capacity(&name, 1, None).unwrap();
     t.send(1u64); // fill
 
     let start = Instant::now();
-    t.send(2u64); // should be dropped, not block
+    t.send(2u64); // must not block — it retires slot 0 and takes it
     let elapsed = start.elapsed();
 
     assert!(
@@ -8680,8 +8692,8 @@ fn send_fire_and_forget_drops_on_full() {
         elapsed
     );
 
-    // Only the first message should be retrievable
-    assert_eq!(t.recv(), Some(1u64));
+    // The newest message is the one that survived.
+    assert_eq!(t.recv(), Some(2u64));
 }
 
 /// send_blocking cross-thread: producer blocks, consumer thread unblocks it.

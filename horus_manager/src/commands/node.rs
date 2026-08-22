@@ -19,8 +19,45 @@ use horus_sys::process::{ProcessHandle, Signal};
 /// 200 reported 1000.
 fn format_rate(configured: f64, achieved: Option<f64>) -> String {
     match achieved {
-        Some(hz) => format!("{configured} Hz (achieving {hz:.1} Hz)"),
+        Some(hz) => format!(
+            "{configured} Hz (achieving {})",
+            paint_rate_shortfall(format!("{hz:.1} Hz"), configured, hz)
+        ),
         None => format!("{configured} Hz"),
+    }
+}
+
+/// Paint a rendered achieved-rate cell by how far it has fallen behind target.
+///
+/// Both views printed the measured rate as plain text, so a node configured at
+/// 100 Hz and managing 15.9 rendered exactly like one managing 99.8 — beside a
+/// HEALTH column reading "Healthy", because a node with no configured budget
+/// has no deadline to miss. The two columns exist to answer "is my robot
+/// keeping up?", and without a signal the operator has to do the division on
+/// every row to find the one that is not.
+///
+/// The bands are deliberately loose. The rate is measured between presence
+/// refreshes roughly a second apart, so a node that is keeping up still wanders
+/// a few percent either side of its target; a shortfall only becomes a finding
+/// well outside that. Below 60% the node is doing less than two thirds of the
+/// work it was asked for.
+///
+/// The text is expected to arrive already padded to its column width: `colored`
+/// ignores a format width once escape codes are in the string, so padding has
+/// to happen before the colour, not after.
+fn paint_rate_shortfall(text: String, configured: f64, achieved: f64) -> ColoredString {
+    // Nothing to be behind. A node with no configured rate is event- or
+    // dependency-driven, and its measured rate is information, not a verdict.
+    if configured <= 0.0 {
+        return text.normal();
+    }
+    let attained = achieved / configured;
+    if attained >= 0.9 {
+        text.green()
+    } else if attained >= 0.6 {
+        text.yellow()
+    } else {
+        text.red()
     }
 }
 
@@ -229,12 +266,19 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
             // "—" rather than 0: no measurement yet is not a measurement of
             // zero, and printing 0 Hz for a node that is running would be a
             // worse lie than the one this column exists to fix.
+            //
+            // Padded here rather than in the `println!` below, because the
+            // colour has to go on last (see `paint_rate_shortfall`).
             let actual = match node.achieved_rate_hz {
-                Some(hz) => format!("{hz:.1} Hz"),
-                None => "—".to_string(),
+                Some(hz) => paint_rate_shortfall(
+                    format!("{:>9}", format!("{hz:.1} Hz")),
+                    node.configured_rate_hz,
+                    hz,
+                ),
+                None => format!("{:>9}", "—").normal(),
             };
             println!(
-                "  {:<22} {:>8} {:>9} {:>9} {:>6} Hz {:>9} {:>8} {:>8}",
+                "  {:<22} {:>8} {:>9} {:>9} {:>6} Hz {} {:>8} {:>8}",
                 truncate_name(&node.name, 22),
                 status,
                 health,
@@ -633,6 +677,87 @@ fn truncate_name(name: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The measured rate must carry a visible verdict ───────────────────
+
+    /// A node achieving a fraction of its configured rate used to render
+    /// exactly like one keeping up: ACTUAL was a plain string, and HEALTH read
+    /// "Healthy" beside it because a node with no configured budget has no
+    /// deadline to miss. Reproduced live with a Python node given a 1 ms budget
+    /// and a 5 ms tick — `100 Hz   0.0 Hz` — in the same ink as every other row.
+    #[test]
+    fn a_rate_far_below_target_is_painted_red() {
+        assert_eq!(
+            paint_rate_shortfall("15.9 Hz".to_string(), 100.0, 15.9).fgcolor(),
+            Some(Color::Red),
+            "16% of the configured rate is the case the column exists for"
+        );
+        assert_eq!(
+            paint_rate_shortfall("0.0 Hz".to_string(), 100.0, 0.0).fgcolor(),
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn a_rate_that_is_keeping_up_is_painted_green() {
+        assert_eq!(
+            paint_rate_shortfall("99.8 Hz".to_string(), 100.0, 99.8).fgcolor(),
+            Some(Color::Green),
+            "the sampling window is about a second, so a couple of percent of \
+             wander is not a finding"
+        );
+        assert_eq!(
+            paint_rate_shortfall("30.0 Hz".to_string(), 30.0, 30.0).fgcolor(),
+            Some(Color::Green)
+        );
+    }
+
+    #[test]
+    fn a_partial_shortfall_is_painted_amber() {
+        assert_eq!(
+            paint_rate_shortfall("75.0 Hz".to_string(), 100.0, 75.0).fgcolor(),
+            Some(Color::Yellow)
+        );
+    }
+
+    /// An event- or dependency-driven node has no target to fall short of, so
+    /// its measured rate is information rather than a verdict.
+    #[test]
+    fn a_node_with_no_configured_rate_gets_no_verdict() {
+        assert_eq!(
+            paint_rate_shortfall("12.0 Hz".to_string(), 0.0, 12.0).fgcolor(),
+            None
+        );
+    }
+
+    /// `colored` ignores a format width once escape codes are in the string, so
+    /// the padding has to be applied before the colour or the whole table
+    /// shifts by the length of an escape sequence on exactly the rows an
+    /// operator is trying to read.
+    #[test]
+    fn the_painted_cell_keeps_its_column_width() {
+        let cell = paint_rate_shortfall(format!("{:>9}", "15.9 Hz"), 100.0, 15.9);
+        assert_eq!(
+            cell.input.chars().count(),
+            9,
+            "the padding must be inside the painted text: {:?}",
+            cell.input
+        );
+    }
+
+    /// `node info` renders the same verdict inline, and must not lose the
+    /// numbers while doing it.
+    #[test]
+    fn node_info_still_states_both_rates() {
+        let line = format_rate(100.0, Some(15.9));
+        assert!(line.contains("100 Hz (achieving"), "got {line:?}");
+        assert!(line.contains("15.9 Hz"), "got {line:?}");
+        assert_eq!(
+            format_rate(100.0, None),
+            "100 Hz",
+            "nothing measured yet means no verdict at all"
+        );
+    }
 
     #[test]
     fn truncate_name_short_unchanged() {

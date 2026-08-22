@@ -933,7 +933,6 @@ pub(crate) fn build_child_env() -> Result<Vec<(String, String)>> {
     let current_dir = env::current_dir()?;
     let horus_bin = current_dir.join(".horus/bin");
     let horus_lib = current_dir.join(".horus/lib");
-    let horus_packages = current_dir.join(".horus/packages");
 
     let mut env_vars: Vec<(String, String)> = Vec::new();
 
@@ -974,12 +973,15 @@ pub(crate) fn build_child_env() -> Result<Vec<(String, String)>> {
     env_vars.push(("LD_LIBRARY_PATH".to_string(), ld_library_path));
 
     // PYTHONPATH
-    let python_path = if let Ok(py_path) = env::var("PYTHONPATH") {
-        format!("{}:{}", horus_packages.display(), py_path)
-    } else {
-        horus_packages.display().to_string()
-    };
-    env_vars.push(("PYTHONPATH".to_string(), python_path));
+    //
+    // Delegated rather than rebuilt. This used to assemble its own path out of
+    // `.horus/packages` alone, which is not enough to import anything: the
+    // entries under it are named after the *distribution* (`horus-robotics`),
+    // never after the module it provides (`horus`). run_rust.rs then had to
+    // push a second PYTHONPATH over the top of this one for Python
+    // executables, and any caller that forgot to would hand a child the path
+    // that does not work. One builder, one answer.
+    env_vars.push(("PYTHONPATH".to_string(), run_python::build_python_path()?));
 
     Ok(env_vars)
 }
@@ -1719,6 +1721,47 @@ mod tests {
             pypath_val.1.contains(".horus/packages"),
             "PYTHONPATH should include .horus/packages, got: {}",
             pypath_val.1
+        );
+    }
+
+    /// `.horus/packages` on its own imports nothing: its entries are named
+    /// after the distribution (`horus-robotics`), never after the module
+    /// (`horus`). This env is what every child process starts from, so it has
+    /// to carry a path a real interpreter can import through — the same one
+    /// `run_python::build_python_path` builds, not a second, weaker copy that
+    /// run_rust.rs then has to push over the top.
+    #[test]
+    fn build_child_env_pythonpath_can_actually_import_a_linked_package() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let packages = tmp.path().join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+
+        // A cache directory laid out the way `pip install --target` leaves it,
+        // linked in under the distribution name.
+        let dist = tmp.path().join("cache/pypi_child-env-fixture@1.0");
+        fs::create_dir_all(dist.join("child_env_fixture")).unwrap();
+        fs::write(dist.join("child_env_fixture/__init__.py"), "value = 1\n").unwrap();
+        horus_sys::fs::symlink(&dist, &packages.join("child-env-fixture")).unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let result = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        let env_vars = result.unwrap();
+        let pypath = &env_vars.iter().find(|(k, _)| k == "PYTHONPATH").unwrap().1;
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("import child_env_fixture")
+            .env("PYTHONPATH", pypath)
+            .output()
+            .expect("python3 must run");
+        assert!(
+            output.status.success(),
+            "a child process must be able to import what HORUS linked.\nPYTHONPATH={pypath}\n{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

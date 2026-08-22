@@ -172,6 +172,11 @@
 //! …) live in the `horus_robotics` crate but are re-exported through
 //! `horus::prelude` too, so `use horus::prelude::*;` is all you need.
 //!
+//! When you want to name a message rather than glob one in, every one of them
+//! is also at [`msg`] — `horus::msg::CmdVel`, the same path C++ writes. Which
+//! crate a message is filed under is a packaging detail; it should not decide
+//! what your import lines look like.
+//!
 //! Do not write `use horus_robotics::prelude::*;` in a project created by
 //! `horus new`: the generated manifest depends on `horus` only, so that path
 //! fails with `E0433: use of unresolved module or unlinked crate`.
@@ -432,6 +437,49 @@ pub mod types {
     pub use horus_types::*;
 }
 
+/// Standard message types, under one path — the same `horus::msg::` spelling
+/// C++ uses.
+///
+/// ```rust
+/// use horus::msg::{CmdVel, Imu, Pose2D};
+/// ```
+///
+/// The cross-language compatibility table used to give the same seven wire
+/// types three unrelated Rust paths — `horus_robotics::CmdVel`,
+/// `horus_robotics::messages::sensor::Imu`, `horus_types::Pose2D` — while C++
+/// wrote `horus::msg::X` for all of them and Python wrote `horus.X`. Which
+/// crate a message happens to live in is a packaging decision (`horus_robotics`
+/// and `horus_tf` are separate git repositories), and it was leaking into every
+/// user's import lines: moving between the three languages meant re-learning
+/// the location of every type.
+///
+/// [`prelude`] already pulls them all in, but a glob is not a path. It cannot
+/// be written in a type position, and it tells a reader nothing about where
+/// `Imu` came from. [`types`] was the near miss that made the guess worse: it
+/// exists and it sounds canonical, but it holds only the geometry half, so
+/// `horus::types::CmdVel` fails with `E0425` instead of pointing anywhere
+/// useful.
+///
+/// Every name C++ declares across `<horus/msg/*.hpp>` resolves here — the
+/// `msg_covers_the_whole_cpp_namespace` test below is that header list, so the
+/// two namespaces cannot drift apart silently. Nothing moved: these are
+/// re-exports, so every path that worked before still works. This only makes
+/// one of them canonical, and picks the one the other bindings already use.
+pub mod msg {
+    /// Robotics wire types — sensor, control, navigation, detection, vision,
+    /// force, input, perception and simulation. Rust ships a few that have no
+    /// C++ counterpart yet — the simulation service messages, and the vision
+    /// types `<horus/msg/vision.hpp>` deliberately declines to publish.
+    pub use horus_robotics::messages::*;
+
+    /// Math, diagnostics, time and generic messages. This is `horus_types`'
+    /// curated prelude rather than its crate root, because the root also
+    /// re-exports the crate's own module names (`math`, `time`, …) and those
+    /// are an implementation detail of where the types are filed, which is
+    /// exactly what this module exists to stop leaking.
+    pub use horus_types::prelude::*;
+}
+
 /// The HORUS prelude — everything you need for building robotics applications.
 ///
 /// ```rust
@@ -530,4 +578,116 @@ pub mod prelude {
     pub use horus_core::standard_action;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    /// Naming a type is enough to prove the path resolves; nothing is
+    /// constructed, so this stays honest for types without a `Default`.
+    fn reachable<T>() {}
+
+    /// Every row of the cross-language compatibility table has to resolve under
+    /// the single `horus::msg::` path. Before this module existed the Rust
+    /// column sent readers to `horus_robotics::CmdVel`,
+    /// `horus_robotics::messages::sensor::Imu` and `horus_types::Pose2D` — three
+    /// crates at three depths for one table.
+    #[test]
+    fn msg_covers_the_cross_language_table() {
+        reachable::<crate::msg::CmdVel>();
+        reachable::<crate::msg::Imu>();
+        reachable::<crate::msg::Pose2D>();
+        reachable::<crate::msg::Odometry>();
+        reachable::<crate::msg::LaserScan>();
+        reachable::<crate::msg::Twist>();
+        reachable::<crate::msg::NavGoal>();
+    }
+
+    /// The other 60 names C++ declares across `<horus/msg/*.hpp>`. This list is
+    /// the C++ headers' own contents, so it fails the moment the two languages
+    /// drift. A partial re-export would just recreate the `horus::types` trap —
+    /// a path that exists and resolves for half the types a reader tries.
+    #[test]
+    fn msg_covers_the_whole_cpp_namespace() {
+        reachable::<crate::msg::Accel>();
+        reachable::<crate::msg::AccelStamped>();
+        reachable::<crate::msg::AudioEncoding>();
+        reachable::<crate::msg::AudioFrame>();
+        reachable::<crate::msg::BatteryState>();
+        reachable::<crate::msg::BoundingBox2D>();
+        reachable::<crate::msg::BoundingBox3D>();
+        reachable::<crate::msg::Clock>();
+        reachable::<crate::msg::ContactInfo>();
+        reachable::<crate::msg::Detection>();
+        reachable::<crate::msg::Detection3D>();
+        reachable::<crate::msg::DiagnosticReport>();
+        reachable::<crate::msg::DiagnosticStatus>();
+        reachable::<crate::msg::DiagnosticValue>();
+        reachable::<crate::msg::DifferentialDriveCommand>();
+        reachable::<crate::msg::EmergencyStop>();
+        reachable::<crate::msg::FluidPressure>();
+        reachable::<crate::msg::ForceCommand>();
+        reachable::<crate::msg::GoalResult>();
+        reachable::<crate::msg::HapticFeedback>();
+        reachable::<crate::msg::Heartbeat>();
+        reachable::<crate::msg::Illuminance>();
+        reachable::<crate::msg::ImpedanceParameters>();
+        reachable::<crate::msg::JointCommand>();
+        reachable::<crate::msg::JointState>();
+        reachable::<crate::msg::JoystickInput>();
+        reachable::<crate::msg::KeyboardInput>();
+        reachable::<crate::msg::Landmark>();
+        reachable::<crate::msg::Landmark3D>();
+        reachable::<crate::msg::LandmarkArray>();
+        reachable::<crate::msg::MagneticField>();
+        reachable::<crate::msg::MotorCommand>();
+        reachable::<crate::msg::NavPath>();
+        reachable::<crate::msg::NavSatFix>();
+        reachable::<crate::msg::NodeHeartbeat>();
+        reachable::<crate::msg::PathPlan>();
+        reachable::<crate::msg::PidConfig>();
+        reachable::<crate::msg::Point3>();
+        reachable::<crate::msg::Pose3D>();
+        reachable::<crate::msg::PoseStamped>();
+        reachable::<crate::msg::PoseWithCovariance>();
+        reachable::<crate::msg::Quaternion>();
+        reachable::<crate::msg::RangeSensor>();
+        reachable::<crate::msg::RateRequest>();
+        reachable::<crate::msg::ResourceUsage>();
+        reachable::<crate::msg::SafetyStatus>();
+        reachable::<crate::msg::SegmentationMask>();
+        reachable::<crate::msg::ServoCommand>();
+        reachable::<crate::msg::SimSync>();
+        reachable::<crate::msg::Temperature>();
+        reachable::<crate::msg::TimeReference>();
+        reachable::<crate::msg::TrackedObject>();
+        reachable::<crate::msg::TrackingHeader>();
+        reachable::<crate::msg::TrajectoryPoint>();
+        reachable::<crate::msg::TransformStamped>();
+        reachable::<crate::msg::TwistWithCovariance>();
+        reachable::<crate::msg::Vector3>();
+        reachable::<crate::msg::VelocityObstacle>();
+        reachable::<crate::msg::Waypoint>();
+        reachable::<crate::msg::WrenchStamped>();
+    }
+
+    /// The pre-existing paths are re-exports, not moves: whatever a user wrote
+    /// before still names the same type. `horus::msg` is additive.
+    #[test]
+    fn msg_is_the_same_type_as_the_old_paths() {
+        fn same<T>(_: &T, _: &T) {}
+
+        let a = crate::msg::CmdVel::default();
+        let b = horus_robotics::CmdVel::default();
+        same(&a, &b);
+
+        let c = crate::msg::Pose2D::default();
+        let d = horus_types::Pose2D::default();
+        same(&c, &d);
+
+        let e = crate::msg::Imu::default();
+        let f = horus_robotics::messages::sensor::Imu::default();
+        same(&e, &f);
+    }
 }

@@ -94,10 +94,15 @@ pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain"];
 
 /// Keys accepted inside `[rust]`.
 ///
-/// These are spliced verbatim into the generated `.horus/Cargo.toml`, so the
-/// list is exactly the set of Cargo sections HORUS does not write itself.
-/// `dependencies` is absent on purpose: `horus.toml` already has one, and a
-/// second channel would let the same crate be declared twice.
+/// All but one of these are spliced verbatim into the generated
+/// `.horus/Cargo.toml`, so the list is the set of Cargo sections HORUS does not
+/// write itself. `dependencies` is absent on purpose: `horus.toml` already has
+/// one, and a second channel would let the same crate be declared twice.
+///
+/// `rustflags` is the exception — it has no Cargo.toml section, and is emitted
+/// to a generated `.horus/.cargo/config.toml`. It is listed here because a key
+/// this module rejects is a key `horus check` fails on, and rejecting a setting
+/// that does work would be the same lie as accepting one that does not.
 pub const KNOWN_RUST: &[&str] = &[
     "edition",
     "features",
@@ -106,6 +111,7 @@ pub const KNOWN_RUST: &[&str] = &[
     "build-dependencies",
     "lints",
     "target",
+    "rustflags",
 ];
 
 /// Keys accepted inside `[hooks]`.
@@ -188,7 +194,17 @@ const KNOWN_NON_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "build",
-        "build settings live in `[cpp]` for C++; Rust build settings are not yet configurable",
+        "build settings live in `[cpp]` for C++ and `[rust]` for Rust",
+    ),
+    (
+        // The key people reach for once they find `[rust]` and want one more
+        // cargo flag. Nothing forwards extra arguments to the cargo spawn, so
+        // the useful answer is the two routes that do work — "unknown key"
+        // leaves them where they started.
+        "cargo_args",
+        "HORUS does not forward extra cargo arguments; run `horus cargo <args>` \
+         for a raw cargo invocation on the generated manifest, or set \
+         `[rust].rustflags` for flags rustc should always get",
     ),
     (
         "main",
@@ -934,5 +950,45 @@ bogus = 1
              Add them to KNOWN_TOP_LEVEL / KNOWN_PACKAGE in manifest_lint.rs.\n\
              --- serialized manifest ---\n{serialized}"
         );
+    }
+
+    /// `rustflags` is the one `[rust]` key with no Cargo.toml section behind
+    /// it, so it was the one most likely to be left off this module's list —
+    /// and a key `find_unknown_keys` reports is a key `horus check` fails on,
+    /// which would make a working setting look like a typo.
+    #[test]
+    fn rustflags_is_accepted_inside_the_rust_section() {
+        let manifest = "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n\
+                        [rust]\nrustflags = [\"-C\", \"target-cpu=native\"]\n";
+        assert!(
+            find_unknown_keys(manifest).is_empty(),
+            "{:?}",
+            find_unknown_keys(manifest)
+        );
+    }
+
+    /// `[rust]` covers the Cargo.toml sections, so the next thing a user
+    /// wants is an extra cargo flag — and nothing forwards one. Saying only
+    /// "unknown key" leaves them exactly where they started.
+    #[test]
+    fn cargo_args_is_answered_with_the_routes_that_do_work() {
+        let manifest = "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n\
+                        [rust]\ncargo_args = [\"--offline\"]\n";
+        let unknown = find_unknown_keys(manifest);
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        let message = unknown[0].message();
+        assert!(message.contains("horus cargo"), "{message}");
+        assert!(message.contains("rustflags"), "{message}");
+    }
+
+    /// And a near miss must still be caught, or the list above is doing
+    /// nothing.
+    #[test]
+    fn a_misspelled_rustflags_is_still_reported() {
+        let manifest = "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n\
+                        [rust]\nrustflag = [\"-C\"]\n";
+        let unknown = find_unknown_keys(manifest);
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        assert_eq!(unknown[0].suggestion.as_deref(), Some("rustflags"));
     }
 }

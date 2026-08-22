@@ -33,6 +33,13 @@
 //! The docs went further and called it "550-875x faster than ROS2 (DDS) in
 //! measured pub/sub benchmarks" — asserting a measurement that did not exist.
 //!
+//! Removing it from the README was not the whole retraction. `package.description`
+//! in `horus/Cargo.toml` carried the same sentence, and that string is what
+//! crates.io renders on the crate page and what `cargo search` prints. It is the
+//! one marketing surface here that cannot be edited after the fact: the metadata
+//! of a published version is frozen, so a wrong description outlives the release
+//! that shipped it.
+//!
 //! These tests do not check whether any particular number is *right*. They
 //! check that the claims stay traceable: that a competitor figure carries its
 //! provenance, and that the front page does not reintroduce a ratio the
@@ -51,6 +58,36 @@ fn repo_root() -> PathBuf {
 
 fn read(rel: &str) -> Option<String> {
     std::fs::read_to_string(repo_root().join(rel)).ok()
+}
+
+/// The ratios the repository has no measurement behind. See the module comment:
+/// the only ROS 2 figure here is REP 2014's ~5,000 ns.
+const UNSUPPORTED_RATIOS: &[&str] = &["575x", "550x", "585x", "875x", "550-875x"];
+
+/// Every `Cargo.toml` in the workspace, `target/` excluded.
+fn workspace_manifests() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![repo_root()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if path.is_dir() {
+                // `target/` holds vendored manifests for every transitive
+                // dependency; none of them are ours to hold to this standard.
+                if name != "target" && name != ".git" && name != "node_modules" {
+                    stack.push(path);
+                }
+            } else if name == "Cargo.toml" {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// The benchmark result schema must be able to say where a number came from.
@@ -95,7 +132,7 @@ fn quoted_competitor_figures_are_tagged_as_literature() {
 fn the_readme_does_not_claim_an_unsupported_ratio() {
     let readme = read("README.md").expect("README.md must exist");
 
-    for claim in ["575x", "550x", "585x", "875x", "550-875x"] {
+    for claim in UNSUPPORTED_RATIOS {
         assert!(
             !readme.contains(claim),
             "README.md claims `{claim}` against ROS 2. The only ROS 2 figure in \
@@ -105,6 +142,41 @@ fn the_readme_does_not_claim_an_unsupported_ratio() {
              alone is not evidence."
         );
     }
+}
+
+/// The claim shipped from two places, and only one of them was a README. The
+/// crate description goes to crates.io with every publish and cannot be edited
+/// afterwards, so it is the copy that would have outlived the retraction.
+#[test]
+fn no_crate_description_claims_an_unsupported_ratio() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for manifest in workspace_manifests() {
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            if !line.trim_start().starts_with("description") {
+                continue;
+            }
+            for claim in UNSUPPORTED_RATIOS {
+                if line.contains(claim) {
+                    let rel = manifest.strip_prefix(&root).unwrap_or(&manifest);
+                    offenders.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a crate description claims a ROS 2 ratio the repository cannot support. \
+         `package.description` is rendered on crates.io and printed by `cargo \
+         search`, and the metadata of a published version is frozen — this text \
+         has to be right before the publish, not after:\n  {}",
+        offenders.join("\n  ")
+    );
 }
 
 /// A comparison table has to say what was measured. Comparing send-side latency

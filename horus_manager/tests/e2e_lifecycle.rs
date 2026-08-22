@@ -317,17 +317,27 @@ fn test_clean_removes_build_artifacts() {
         .assert()
         .success();
 
-    // .horus/ should be gone (or emptied)
+    // .horus/ should be gone, or hold nothing that `clean` promises to remove.
+    //
+    // This used to assert `entries.len() <= 2`. A count is not what the command
+    // promises, and the threshold went stale the moment generation started
+    // writing a `.gitignore` next to the manifest — a file `clean` is right to
+    // keep, since it is project hygiene rather than a build artifact. Naming
+    // the artifacts means the test fails when `clean` stops cleaning, and stays
+    // quiet when generation grows another bookkeeping file.
     if horus_dir.exists() {
-        // If dir exists, it should be mostly empty (clean may keep some files)
-        let entries: Vec<_> = fs::read_dir(&horus_dir)
-            .map(|rd| rd.filter_map(|e| e.ok()).collect())
+        const BUILD_ARTIFACTS: &[&str] = &["target", "packages", "lib", "bin", "cache"];
+        let leftover: Vec<String> = fs::read_dir(&horus_dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| BUILD_ARTIFACTS.contains(&n.as_str()))
+                    .collect()
+            })
             .unwrap_or_default();
-        // Acceptable: dir exists but is empty or has only minimal files
         assert!(
-            entries.len() <= 2,
-            ".horus/ should be mostly empty after clean, found {} entries",
-            entries.len()
+            leftover.is_empty(),
+            "`horus clean` left build artifacts in .horus/: {leftover:?}"
         );
     }
 }

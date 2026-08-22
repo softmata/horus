@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 pub fn create_new_project(
@@ -204,6 +204,37 @@ fn can_prompt() -> bool {
     io::stdin().is_terminal()
 }
 
+/// Ask one question, read one answer, and leave the cursor at the start of a
+/// fresh line.
+///
+/// Nothing in this process used to write the newline that ends a prompt:
+/// `print!("… [y/N]: ")` + `read_line` leaves the cursor mid-line, and the line
+/// only appeared to close because the terminal echoes the Enter the user
+/// pressed. That echo is not ours to rely on. When the answer is already
+/// buffered before the prompt is printed — type-ahead, a pasted block, an
+/// expect-style harness, `printf '2\nn\n' | script -qec "horus new demo"` — the
+/// echo lands in the stream *ahead* of the prompt, the prompt line never ends,
+/// and the next line of progress output is printed onto it:
+///
+/// ```text
+/// ? Use the node! macro? … [y/N]:   * Registered workspace in registry
+/// ```
+///
+/// So a prompt now writes its own terminator. The prompts used to open with a
+/// leading `\n`, which is what closed the *previous* prompt's line by accident;
+/// that newline moves here, to the end of the prompt that owns it, and an
+/// interactive session sees the same layout it always did.
+fn ask<R: BufRead, W: Write>(input: &mut R, out: &mut W, question: &str) -> Result<String> {
+    write!(out, "{question}")?;
+    out.flush()?;
+
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+
+    writeln!(out)?;
+    Ok(answer.trim().to_string())
+}
+
 fn prompt_language() -> Result<String> {
     if !can_prompt() {
         // Rust is the prompt's own default, so scripted and interactive runs
@@ -215,26 +246,35 @@ fn prompt_language() -> Result<String> {
         );
         return Ok("rust".to_string());
     }
-    println!("\n{} Select language:", "?".yellow().bold());
-    println!("  {} Python", "1.".cyan());
-    println!("  {} Rust", "2.".cyan());
-    println!("  {} C++", "3.".cyan());
 
-    print!("{} [1-3] (default: 2): ", ">".cyan().bold());
-    io::stdout().flush()?;
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    ask_language(&mut stdin.lock(), &mut stdout.lock())
+}
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim();
+/// The language question, over any reader/writer pair so the transcript it
+/// produces can be asserted on.
+fn ask_language<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<String> {
+    writeln!(out, "\n{} Select language:", "?".yellow().bold())?;
+    writeln!(out, "  {} Python", "1.".cyan())?;
+    writeln!(out, "  {} Rust", "2.".cyan())?;
+    writeln!(out, "  {} C++", "3.".cyan())?;
 
-    let choice = if input.is_empty() { "2" } else { input };
+    let question = format!("{} [1-3] (default: 2): ", ">".cyan().bold());
+    let answer = ask(input, out, &question)?;
+
+    let choice = if answer.is_empty() {
+        "2"
+    } else {
+        answer.as_str()
+    };
 
     let language = match choice {
         "1" => "python",
         "2" => "rust",
         "3" => "cpp",
         _ => {
-            println!("Invalid choice, defaulting to Rust");
+            writeln!(out, "Invalid choice, defaulting to Rust")?;
             "rust"
         }
     };
@@ -246,18 +286,22 @@ fn prompt_use_macro() -> Result<bool> {
     if !can_prompt() {
         return Ok(false);
     }
-    print!(
-        "\n{} Use the node! macro? Shorter code, but IDE go-to-definition \
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    ask_use_macro(&mut stdin.lock(), &mut stdout.lock())
+}
+
+/// The macro question, over any reader/writer pair — see `ask_language`.
+fn ask_use_macro<R: BufRead, W: Write>(input: &mut R, out: &mut W) -> Result<bool> {
+    let question = format!(
+        "{} Use the node! macro? Shorter code, but IDE go-to-definition \
          inside node bodies is limited. [y/N]: ",
         "?".yellow().bold()
     );
-    io::stdout().flush()?;
+    let answer = ask(input, out, &question)?.to_lowercase();
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_lowercase();
-
-    Ok(input == "y" || input == "yes")
+    Ok(answer == "y" || answer == "yes")
 }
 
 fn get_author() -> Result<String> {
@@ -723,6 +767,17 @@ pub(crate) fn default_node_name(project_path: &Path) -> String {
         .unwrap_or_else(|| "controller".to_string())
 }
 
+/// The Python starter node.
+///
+/// `pubs=`/`subs=` are spelled as lists here, not as bare strings. Both forms
+/// are accepted by the binding (`Optional[Union[List[str], str, Dict[str,
+/// Dict]]]`), but this template wrote `pubs="motors.cmd_vel"` while the
+/// README's Python example writes `pubs=["sensor.data"]` — so the first two
+/// places a new user looks disagreed about the type of the same argument, and
+/// nothing in either place said both were legal. The list form is the one the
+/// README, the great majority of the docs site and the `Node` docstring's own
+/// "Accepts" list already show, so the template moved to it rather than the
+/// other way round. `tests/template_contract.rs` pins the two together.
 pub(crate) fn create_main_py(project_path: &Path) -> Result<()> {
     let node_name = default_node_name(project_path);
 
@@ -747,8 +802,8 @@ def controller(node):
 # Create the node
 node = horus.Node(
     name="__NODE_NAME__",
-    pubs="motors.cmd_vel",  # Topics to publish to
-    subs="sensors.data",  # Topics to subscribe from
+    pubs=["motors.cmd_vel"],  # Topics to publish to
+    subs=["sensors.data"],  # Topics to subscribe from
     tick=controller,  # Function to call repeatedly
     rate=30,  # Hz (30 times per second)
 )
@@ -3165,5 +3220,125 @@ mod tests {
     fn name_mixed_hyphens_underscores_accepted() {
         validate_project_name("my-robot_v2").unwrap();
         validate_project_name("a_b-c_d-e").unwrap();
+    }
+
+    // ── Prompts: the prompt owns its line ───────────────────────────
+
+    /// A prompt has to close its own line.
+    ///
+    /// `print!("… [y/N]: ")` + `read_line` wrote no newline and leaned on the
+    /// terminal echoing the Enter the user pressed. When the answer is already
+    /// buffered before the question is drawn — type-ahead, a pasted block, an
+    /// expect-style harness — that echo arrives *ahead* of the prompt, so the
+    /// prompt line never ends and the next line of progress output is printed
+    /// onto it:
+    ///
+    /// ```text
+    /// ? Use the node! macro? … [y/N]:   * Registered workspace in registry
+    /// ```
+    ///
+    /// A reader that already holds the answer, writing to a buffer that never
+    /// echoes, is exactly that case.
+    #[test]
+    fn a_prompt_leaves_the_cursor_at_the_start_of_a_line() {
+        let mut out = Vec::new();
+        ask_language(&mut &b"1\n"[..], &mut out).unwrap();
+        let transcript = String::from_utf8(out).unwrap();
+        assert!(
+            transcript.ends_with('\n'),
+            "the language prompt left the cursor mid-line: {transcript:?}"
+        );
+
+        let mut out = Vec::new();
+        ask_use_macro(&mut &b"y\n"[..], &mut out).unwrap();
+        let transcript = String::from_utf8(out).unwrap();
+        assert!(
+            transcript.ends_with('\n'),
+            "the macro prompt left the cursor mid-line: {transcript:?}"
+        );
+    }
+
+    /// The whole sequence `horus new` runs, with both answers pre-buffered,
+    /// followed by the first thing `create_new_project` prints afterwards.
+    #[test]
+    fn progress_output_cannot_land_on_a_pending_prompt() {
+        let mut input: &[u8] = b"2\nn\n";
+        let mut out = Vec::new();
+
+        assert_eq!(ask_language(&mut input, &mut out).unwrap(), "rust");
+        assert!(!ask_use_macro(&mut input, &mut out).unwrap());
+        write!(out, "  * Registered workspace in registry").unwrap();
+
+        let transcript = String::from_utf8(out).unwrap();
+        assert!(
+            !transcript
+                .lines()
+                .any(|line| line.contains("[y/N]:") && line.contains("Registered")),
+            "progress output landed on the prompt's line:\n{transcript}"
+        );
+    }
+
+    /// Routing the prompts through a reader/writer pair must not change a
+    /// single answer, including the empty line that takes the default and the
+    /// closed stdin that reads EOF.
+    #[test]
+    fn prompt_answers_are_unchanged() {
+        for (typed, want) in [
+            ("1\n", "python"),
+            ("2\n", "rust"),
+            ("3\n", "cpp"),
+            ("\n", "rust"),
+            ("  3  \n", "cpp"),
+            ("banana\n", "rust"),
+            ("", "rust"),
+        ] {
+            let mut out = Vec::new();
+            assert_eq!(
+                ask_language(&mut typed.as_bytes(), &mut out).unwrap(),
+                want,
+                "answering {typed:?}"
+            );
+        }
+
+        for (typed, want) in [
+            ("y\n", true),
+            ("Y\n", true),
+            ("yes\n", true),
+            ("YES\n", true),
+            ("n\n", false),
+            ("\n", false),
+            ("nope\n", false),
+            ("", false),
+        ] {
+            let mut out = Vec::new();
+            assert_eq!(
+                ask_use_macro(&mut typed.as_bytes(), &mut out).unwrap(),
+                want,
+                "answering {typed:?}"
+            );
+        }
+    }
+
+    // ── Main.py: pubs/subs spelling matches the README ──────────────
+
+    /// The template said `pubs="motors.cmd_vel"`, the README says
+    /// `pubs=["sensor.data"]`, and neither said both were legal — see
+    /// `create_main_py`. `tests/template_contract.rs` checks the same thing
+    /// against the README text itself; this pins the template alone so the
+    /// unit suite catches a regression without running the binary.
+    #[test]
+    fn main_py_passes_topics_as_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        create_main_py(dir.path()).unwrap();
+        let content = fs::read_to_string(dir.path().join("main.py")).unwrap();
+
+        assert!(
+            content.contains(r#"pubs=["motors.cmd_vel"]"#),
+            "pubs= must use the README's list form:\n{content}"
+        );
+        assert!(
+            content.contains(r#"subs=["sensors.data"]"#),
+            "subs= must use the README's list form:\n{content}"
+        );
     }
 }

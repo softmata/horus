@@ -566,8 +566,10 @@ pub struct CppConfig {
 /// with no supported way to be expressed. The documentation's own answer was to
 /// edit the generated file.
 ///
-/// Contents are merged verbatim into the generated manifest. Kept to the
-/// sections HORUS does not itself write, so there is nothing to conflict with:
+/// Contents are merged verbatim into the generated manifest — all but
+/// `rustflags`, which Cargo.toml cannot express at all and which goes to a
+/// generated cargo config file beside it instead. Kept to the sections HORUS
+/// does not itself write, so there is nothing to conflict with:
 /// `[dependencies]` is deliberately absent, because `horus.toml` already has a
 /// `[dependencies]` table that `horus cargo add` round-trips through, and a
 /// second channel would let the same crate be written twice.
@@ -612,6 +614,21 @@ pub struct RustConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<serde_json::Value>"))]
     pub target: Option<toml::value::Table>,
+
+    /// `rustflags` — flags handed to every `rustc` invocation for this project.
+    ///
+    /// The odd one out in this struct: everything above is a Cargo.toml
+    /// section and rides the passthrough into the generated manifest, but
+    /// Cargo.toml has no rustflags slot at all. The only homes cargo offers are
+    /// the `RUSTFLAGS` environment variable and `[build] rustflags` in a cargo
+    /// *config* file, so this one is emitted to a generated
+    /// `.horus/.cargo/config.toml` instead — see
+    /// `cargo_gen::write_cargo_config` for why that location is the one cargo
+    /// finds. An exported `RUSTFLAGS` still wins, because that is cargo's own
+    /// precedence and quietly overriding a variable the user set by hand would
+    /// be the worse surprise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rustflags: Vec<String>,
 }
 
 impl RustConfig {
@@ -4520,5 +4537,36 @@ test = "cargo test"
         let manifest: HorusManifest = toml::from_str(toml_str).unwrap();
         assert_eq!(manifest.scripts.len(), 1);
         assert_eq!(manifest.scripts["test"], "cargo test");
+    }
+
+    /// `[rust].rustflags` is the one key in the section that Cargo.toml cannot
+    /// hold, so it takes a different route out of the manifest — but it has to
+    /// come *in* through the same one.
+    #[test]
+    fn rustflags_parse_out_of_the_rust_section() {
+        let m = HorusManifest::parse_str(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n\
+             [rust]\nrustflags = [\"-C\", \"target-cpu=native\"]\n",
+            std::path::Path::new("horus.toml"),
+        )
+        .expect("[rust].rustflags must parse");
+
+        let rust = m.rust.expect("[rust] must be captured");
+        assert_eq!(rust.rustflags, vec!["-C", "target-cpu=native"]);
+        assert!(!rust.is_empty(), "a section with rustflags is not empty");
+    }
+
+    /// An empty `rustflags` must leave `[rust]` looking untouched, or every
+    /// caller that skips an empty section starts doing work for nothing — and
+    /// `warn_if_rust_section_is_ignored` starts warning about a section the
+    /// user never wrote.
+    #[test]
+    fn an_absent_rustflags_leaves_the_rust_section_empty() {
+        assert!(RustConfig::default().is_empty());
+        assert!(RustConfig {
+            rustflags: Vec::new(),
+            ..Default::default()
+        }
+        .is_empty());
     }
 }

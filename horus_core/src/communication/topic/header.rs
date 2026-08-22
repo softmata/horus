@@ -676,9 +676,13 @@ pub struct TopicSlotRead {
     /// For POD types this is the raw struct bytes.  For non-POD types this
     /// is the `bincode`-serialized wire form.
     pub payload: Vec<u8>,
-    /// Monotonic write counter at the time of the read.  Pass this back to
-    /// `read_latest_slot_bytes` as `last_write_idx` on the next poll; if
-    /// the value is unchanged, no new message has been published.
+    /// Position of this message in the ring's write sequence.  Pass this back
+    /// to `read_latest_slot_bytes` as `last_write_idx` on the next poll; if the
+    /// value is unchanged, no new message has been written.
+    ///
+    /// This counts slots *written*, so it can lag `messages_total`, which
+    /// counts `send()` calls including the ones a full ring dropped. It is the
+    /// former that indexes the ring, so it is the former this reports.
     pub write_idx: u64,
     /// `true` when the message type is a POD (plain-old-data) type, meaning
     /// `payload` contains raw struct bytes rather than a `bincode` stream.
@@ -764,32 +768,18 @@ fn read_slot_inner(
     // SAFETY: base is a valid mmap pointer; offset 20 is within the validated header region;
     // read_unaligned handles any alignment for the u8 is_pod field.
     let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, is_pod))) };
-    // SAFETY: base is a valid mmap pointer; offset 64 is within the validated header region;
-    // read_unaligned handles any alignment for the u64 seq/head field.
-    // Freshness and slot position both come from `messages_total`, not
-    // `sequence_or_head`.
+    // SAFETY: base is a valid mmap pointer; offsets 56 and 64 are within the
+    // validated header region; read_unaligned handles any alignment for the two
+    // u64 counters.
     //
-    // `sequence_or_head` is a slot cursor for some backends: it stops
-    // advancing once the ring wraps. Measured on a live 20 Hz topic with a
-    // 128-slot ring:
-    //
-    //     sample   messages_total(56)   sequence_or_head(64)
-    //       0             116                   116
-    //       1             135                   128     <- frozen at capacity
-    //       4             194                   128
-    //
-    // The caller's freshness test is `write_idx == last_write_idx`, so once
-    // the cursor froze this function returned None forever. `horus topic echo`
-    // — the most-used introspection command in robotics — printed one message
-    // and then nothing, on a topic publishing at 20 Hz, while
-    // `horus topic list` reported that same topic active with a rising count
-    // (it reads offset 56).
-    //
-    // `messages_total` is atomically incremented on every send() regardless of
-    // backend, and equals `sequence_or_head` before any wrap, so it is a strict
-    // improvement as both the freshness signal and the slot index.
-    let write_idx = unsafe {
+    // The two counters are read together because neither is the answer on its
+    // own — which one indexes the ring is decided below, once the geometry is
+    // known.
+    let messages_total = unsafe {
         std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, messages_total)) as *const u64)
+    };
+    let head = unsafe {
+        std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, sequence_or_head)) as *const u64)
     };
     // SAFETY: base is a valid mmap pointer; offset 72 is within the validated header region;
     // read_unaligned handles any alignment for the u32 capacity field.
@@ -830,6 +820,51 @@ fn read_slot_inner(
     }
 
     let is_pod = is_pod_raw == POD_YES;
+
+    // ── 3b. Which counter actually indexes the ring ───────────────────────────
+    //
+    // `messages_total` counts calls to `send()`. `sequence_or_head` counts
+    // slots written. They agree only while nothing is dropped — and `send` is
+    // the lossy publish, so a full ring drops. Everything below addresses
+    // messages in *slot* coordinates (message N lives at `(N - 1) & mask`, and
+    // "already lapped" is `head - N >= capacity`), which makes
+    // `sequence_or_head` the only counter those two rules are true of.
+    //
+    // Reading a stale-by-N-drops counter does not fail loudly, which is why
+    // this was not obvious: a 512-slot ring with 1000 sends and 488 drops
+    // returned message 488's payload labelled as message 1000, with no gap
+    // reported. `horus topic echo` printed a plausible, monotonically numbered
+    // stream of the wrong messages.
+    //
+    // An earlier fix keyed on `messages_total` precisely because
+    // `sequence_or_head` was seen frozen at the ring capacity on a live 20 Hz
+    // topic (116 -> 194 messages while the head sat at 128). That freeze was
+    // the symptom of the producer stall, not a property of the counter: a ring
+    // that stops being written stops advancing its write cursor. With the stall
+    // fixed (`RingTopic::send_lossy_retry`) the head advances again, and it is
+    // the only counter that names a slot.
+    //
+    // The exception is the role=Both same-thread fast path, which writes the
+    // data region directly and publishes neither the head nor the per-slot
+    // stamps; its `sequence_or_head` sits frozen wherever it was last synced.
+    // That is what the stamp probe distinguishes. A ring whose head slot
+    // carries a stamp was written by a stamping producer, so its head is live;
+    // an unstamped ring has no head worth reading and `messages_total` is the
+    // best cursor available for it.
+    let write_idx = if head > 0
+        && slot_stamp(
+            &mmap,
+            capacity,
+            ((head - 1) as usize) & cap_mask,
+            is_pod,
+            slot_size,
+        )
+        .is_some_and(|stamp| stamp != 0)
+    {
+        head
+    } else {
+        messages_total
+    };
 
     // ── 4. Guard: nothing written yet, or no new data since last poll ─────────
     if write_idx == 0 || write_idx == last_write_idx {
@@ -906,13 +941,11 @@ fn read_slot_inner(
         String::new()
     };
 
-    // Read topic_kind (byte 48 in cache line 1) and messages_total (offset 56).
+    // Read topic_kind (byte 48 in cache line 1). `messages_total` was already
+    // read above, where the cursor is chosen.
     // SAFETY: mmap is validated to be at least TOPIC_HEADER_SIZE (640) bytes.
     let topic_kind =
         unsafe { std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, topic_kind))) };
-    let messages_total = unsafe {
-        std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, messages_total)) as *const u64)
-    };
 
     Some(TopicSlotRead {
         payload,
@@ -931,6 +964,41 @@ fn read_slot_inner(
         messages_total,
         topic_kind,
     })
+}
+
+/// The per-slot ready stamp for `index`, or `None` when the mapping is too
+/// small to hold it.
+///
+/// Readiness deliberately lives in two different places (see `shm_layout`): the
+/// sequence array for POD topics, the first word of the slot itself for serde
+/// ones. Either way the stamp is `sequence + 1` of the message occupying the
+/// slot, with `SLOT_WRITING` set while a producer is mid-write. A slot that no
+/// stamping producer has ever touched reads back as 0, which is what
+/// `read_slot_inner` uses to tell a live head cursor from a frozen one.
+fn slot_stamp(
+    mmap: &[u8],
+    capacity: usize,
+    index: usize,
+    is_pod: bool,
+    slot_size: usize,
+) -> Option<u64> {
+    use super::shm_layout as layout;
+
+    let offset = if is_pod {
+        layout::seq_slot_offset(index)
+    } else {
+        if slot_size < layout::SERDE_SLOT_OVERHEAD {
+            return None;
+        }
+        layout::data_slot_offset(capacity, index, slot_size) + layout::SERDE_SLOT_READY_OFF
+    };
+    if offset.checked_add(mem::size_of::<u64>())? > mmap.len() {
+        return None;
+    }
+    // SAFETY: the read is bounds-checked against the mapping length directly
+    // above; read_unaligned handles any alignment.
+    let raw = unsafe { std::ptr::read_unaligned(mmap.as_ptr().add(offset) as *const u64) };
+    Some(raw & !layout::SLOT_WRITING)
 }
 
 /// Read the write-sequence counter from a raw topic SHM file.
@@ -2280,6 +2348,187 @@ mod echo_freshness_tests {
             1,
             "after a correct resume the next poll sees exactly the one new \
              message, not a re-read or a hole"
+        );
+    }
+
+    /// A topic nobody subscribes to must still show its newest message.
+    ///
+    /// This is the shape of every "let me look at what my node publishes"
+    /// session: one publisher, no subscriber, `horus topic echo`. The ring is
+    /// backpressured against `tail`, and with no consumer `tail` never moves —
+    /// so one ring-full after start-up every further `send` was dropped and the
+    /// shared region kept the FIRST `capacity` messages forever. Measured here
+    /// before the fix: 1000 sends into a 512-slot ring left the newest readable
+    /// payload at message 488, and `send_failures` at 488.
+    ///
+    /// `messages_total` kept counting all 1000, which is why every command that
+    /// reads the header (`topic list`, `topic hz`) reported the topic live at
+    /// its real rate while the one that reads the ring showed minute-old data.
+    #[test]
+    fn a_topic_nobody_subscribes_to_still_shows_its_newest_message() {
+        let name = format!("echo_unread_ring_{}", std::process::id());
+        let topic: Topic<u64> = match Topic::with_capacity(&name, 64_u32, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // Several ring-fulls, so the first wrap is well behind us.
+        const SENT: u64 = 500;
+        for i in 1..=SENT {
+            topic.send(i);
+        }
+
+        let slot = super::read_latest_slot_bytes(&path, 0)
+            .expect("a topic with 500 messages sent must yield a slot");
+        let newest = u64::from_le_bytes(slot.payload[..8].try_into().expect("u64 payload"));
+        assert_eq!(
+            newest, SENT,
+            "the ring is serving message {newest} as the newest of {SENT} — the \
+             producer stopped writing once the ring filled and no consumer \
+             drained it"
+        );
+    }
+
+    /// A dropped `send` must not shift every payload by the number dropped.
+    ///
+    /// `messages_total` counts `send()` calls; `sequence_or_head` counts slots
+    /// written. `send` is the lossy publish, so a genuinely full ring — one
+    /// whose subscriber is not reading — drops, and from the first drop the two
+    /// counters disagree. Addressing a slot as `(messages_total - 1) & mask`
+    /// then lands on a different message than the one it names, with no gap
+    /// reported: this exact case returned message 8's payload labelled as
+    /// message 200.
+    ///
+    /// A registered-but-idle consumer is what keeps the ring genuinely full
+    /// here; without one the producer retires the oldest slot instead (see
+    /// `a_topic_nobody_subscribes_to_still_shows_its_newest_message`).
+    #[test]
+    fn a_dropped_send_does_not_shift_the_payload_by_the_drop_count() {
+        const CAPACITY: u32 = 64;
+        let name = format!("echo_drop_shift_{}", std::process::id());
+        let publisher: Topic<u64> = match Topic::with_capacity(&name, CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let subscriber: Topic<u64> = match Topic::with_capacity(&name, CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // Registers a consumer without taking anything: the ring now has
+        // someone to protect, so backpressure is correct and the overflow is
+        // dropped rather than overwritten.
+        assert!(subscriber.recv().is_none(), "nothing has been sent yet");
+
+        for i in 1..=(u64::from(CAPACITY) * 3) {
+            publisher.send(i);
+        }
+
+        let slot = super::read_latest_slot_bytes(&path, 0).expect("the ring holds messages");
+        let newest = u64::from_le_bytes(slot.payload[..8].try_into().expect("u64 payload"));
+        assert_eq!(
+            newest,
+            u64::from(CAPACITY),
+            "the ring holds messages 1..={CAPACITY} and nothing newer, so the \
+             newest readable message is {CAPACITY}, not {newest}"
+        );
+        assert_eq!(
+            slot.write_idx,
+            u64::from(CAPACITY),
+            "the reported position must name the message actually returned"
+        );
+        assert!(
+            slot.messages_total > slot.write_idx,
+            "messages_total ({}) counts the dropped sends too; that is the \
+             difference this test exists to keep visible",
+            slot.messages_total
+        );
+    }
+
+    /// Streaming past several ring-fulls must yield every message, in order,
+    /// exactly once.
+    ///
+    /// The contract test that guarded `topic echo` asked for 20 messages, which
+    /// fits inside one ring — so it passed while echo replayed the same first
+    /// ring-full forever on any topic that had published more than that. Over
+    /// eight ring-fulls the difference is unmissable: a frozen ring hands back
+    /// `1..=capacity` on repeat, with a backward jump of `capacity - 1` at every
+    /// wrap.
+    #[test]
+    fn streaming_across_many_ring_fulls_yields_each_message_once() {
+        const CAPACITY: u32 = 64;
+        const BATCH: u64 = 16;
+        const ROUNDS: u64 = 32; // 512 messages == 8 ring-fulls
+        let name = format!("echo_many_wraps_{}", std::process::id());
+        let topic: Topic<u64> = match Topic::with_capacity(&name, CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // The cursor bookkeeping `horus topic echo` does, verbatim.
+        let mut cursor = 0u64;
+        let mut seen: Vec<u64> = Vec::new();
+        let mut next = 1u64;
+        for _ in 0..ROUNDS {
+            for _ in 0..BATCH {
+                topic.send(next);
+                next += 1;
+            }
+            let (slots, missed) = super::read_slots_since(&path, cursor, 4096);
+            assert_eq!(
+                missed, 0,
+                "a {BATCH}-message batch cannot lap a {CAPACITY}-slot ring"
+            );
+            for slot in &slots {
+                cursor = cursor.max(slot.write_idx);
+                seen.push(u64::from_le_bytes(
+                    slot.payload[..8].try_into().expect("u64 payload"),
+                ));
+            }
+        }
+
+        // The first poll deliberately hands back only the newest message rather
+        // than replaying history, so the run starts at whatever was current then
+        // and must be strictly consecutive from there.
+        let start = seen.first().copied().expect("at least one message");
+        let expected: Vec<u64> = (start..=(next - 1)).collect();
+        assert_eq!(
+            seen,
+            expected,
+            "expected {} consecutive messages from {start}; got {} with {} \
+             distinct values (a ring that stopped being written repeats itself)",
+            expected.len(),
+            seen.len(),
+            {
+                let mut u = seen.clone();
+                u.sort_unstable();
+                u.dedup();
+                u.len()
+            }
         );
     }
 

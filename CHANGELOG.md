@@ -36,6 +36,127 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
+66 commits past the `v0.3.0` tag, which is over the 50-commit trigger the
+cadence note above defines — a release is due. The tag itself has not been
+pushed and no GitHub release has been published, so `install.sh`, which points
+at `releases/latest`, still hands new users 0.2.2. Until that ships, everything
+below is fixed in the tree and absent from the binary people install.
+
+### Added
+
+- **manager** — `horus fmt` and `horus lint` state that they cover C++. Both
+  have run `clang-format` and `clang-tidy` for some time; the help said
+  "Rust + Python" and "clippy + ruff/pylint", so the C++ half was reachable
+  only by trying it.
+
+### Changed
+
+- **manager** — `horus run --sim` is now a hard error when the simulator it
+  needs cannot be launched. It previously logged one warning and then ran the
+  node against real hardware. On a bench with actuators attached, that is the
+  difference between a simulation and a motion command, and the flag was
+  explicitly asked for.
+- **manager** — the `--sim` help names `[hardware]` entries with `sim = true`.
+  It named `[sim-drivers]`, which the manifest has carried as legacy since the
+  flag moved.
+
+### Fixed
+
+- **core** — a crashed owner's shared-memory region hung every process that
+  opened it afterwards, so one crash took out introspection for the whole
+  namespace until `/dev/shm` was cleared by hand.
+- **core** — a lapped subscriber lost messages while every counter read zero,
+  which made the loss invisible to exactly the tooling that exists to find it.
+  A lapped *broadcast* subscriber received nothing at all.
+- **core** — a consumer's read position could be pulled backward by a
+  migration, replaying messages it had already handled.
+- **core** — a node whose registry was wiped reported `Healthy` at 0 ticks.
+- **core** — a topic created before the network hook was installed stayed
+  invisible to it, so whether a topic replicated depended on construction order.
+- **core** — `send_blocking` ignored its deadline until it had already blocked,
+  and the lossy send blocked for 100 ms rather than dropping — the one thing a
+  lossy send exists not to do.
+- **core** — a generic type name was stored mangled and then failed to match
+  itself, so two ends of the same topic disagreed about its type.
+- **core** — reading local presence deleted the fleet's remote host records.
+- **core, sys, cpp** — a print on a broken stream killed the thread doing the
+  printing. A robot's stdout breaks routinely: the supervisor exits, or an
+  operator pipes `horus run` into `head`. On a background thread that left the
+  process running with a subsystem silently dead.
+- **rt** — a closed stdout no longer kills the real-time thread, and the
+  per-tick diagnostics that were destroying the log are throttled.
+- **scheduler** — a node name can no longer forge lines in the runtime's output.
+- **shm** — a publisher restart no longer deafens its subscribers.
+- **services, actions** — a panic in user code no longer kills the server.
+- **net** — an e-stop that reached nobody was indistinguishable from one that
+  worked.
+- **net** — the default import mode admitted nothing, so no remote data ever
+  arrived; the import guard could not tell what the robot publishes; outbound
+  replication stopped once the topology settled; and a peer was declared
+  link-lost before it had time to answer.
+- **net** — the presence receiver read the namespace differently from everyone
+  else, and three further sites asked the environment directly instead of going
+  through the accessor.
+- **manager** — `horus clean --shm --force` wiped every robot on the machine,
+  not the current project's namespace.
+- **manager** — `horus check` failed on this repository over one of its own test
+  fixtures, reported a package's own modules as missing, and said a module was
+  missing without naming it.
+- **manager** — `horus topic echo` printed hex for 83 of 92 message types;
+  `topic echo` and `topic pub` could not be used together; `topic pub`
+  published a payload nothing could ever read; `topic list` called every topic
+  active, including empty ones; `topic info` said "(none)" for a topic with live
+  endpoints; and `horus service list` reported 0 servers for a service that was
+  serving.
+- **manager** — the CLI printed instructions naming commands it does not have.
+- **manager** — `horus doctor` called a ninja-only toolchain ready and the build
+  then demanded `make`: `cmake` was invoked with no `-G`, so it always took the
+  platform default generator. The generator is now selected, which makes
+  doctor's claim true rather than narrowing it (DOC-1).
+- **manager** — `horus topic echo` still dropped messages behind a fix that
+  claimed to have ended it. Every slot in a batch reported the header's live
+  head rather than the ordinal actually read, so a caller resuming from the
+  first slot skipped the rest of the batch (LIVE-5).
+- **python** — every `astype()` to a different dtype panicked with
+  `PyBorrowMutError`, taking `to_float32()`, `to_float16()`, `to_int32()` and
+  `to_uint8()` with it. Same-dtype conversions returned early and worked, which
+  is why the API looked healthy.
+- **python** — a failing Python node reported its exception without the
+  traceback, and the shipped Python example panicked on every tick.
+- **discovery** — `horus topic list` deleted a restarted node's topic.
+- **packaging** — the root `Dockerfile` is now actually built in CI (the
+  existing workflow built `tests/docker/Dockerfile.<distro>` instead, so it was
+  never covered), and the devcontainer is repaired. Shell-completion install is
+  verified against throwaway `HOME`s for bash, zsh and fish; the zsh `fpath`
+  case that shipped a file nothing sourced is fixed, and `uninstall` now removes
+  what `install` wrote (TOOL-1, TOOL-2, TRUST-2).
+- **manager** — the hand-written help template no longer drifts from clap, the
+  four mis-stated command rows resolve, and manifest errors name the file and
+  location on the single-file path as well as the workspace path
+  (HELP-1, HELP-2, HELP-5, CFG-3, FLAG-2).
+- **core, manager** — the message registry no longer stops at the built-in
+  types, and topic owner attribution reaches the zero-copy specialisations
+  (`Image`, `PointCloud`, `DepthImage`, `Tensor`), which still read the
+  constructor-captured owner (LIVE-4, LIVE-6).
+- **scheduler** — the timing report printed each node's total tick count under
+  its "Misses" header, so a node that shut down after 249 ticks having missed
+  nothing reported 249 misses. Ticks and deadline misses are now separate
+  columns (LIVE-7).
+- **manager** — generated projects name their node after the project in every
+  template, not `controller` (LIVE-8).
+
+### Testing
+
+- Contract suites added for the manifest, message-generation interop, the
+  install URL, completion install, translations and container images, so these
+  are gated rather than assumed.
+- `cargo test -p horus_net` failed on every run for four reasons; every
+  `cargo test` ran in the same shared memory a robot uses; two presence stress
+  tests corrupted each other's directory; the dual-write routing test read a
+  process-global counter; and the live introspection poll gave up before a
+  loaded machine could answer. All fixed — these were failures of the tests,
+  not of the product, and each one taught people to ignore a red suite.
+
 ## [0.3.0] — 2026-08-21
 
 Cuts the first release since 0.2.2 (2026-07-19), which the tree was 244 commits

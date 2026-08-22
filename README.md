@@ -22,7 +22,7 @@
 [**Docs**](https://docs.horusrobotics.dev) &middot;
 [**Quick Start**](https://docs.horusrobotics.dev/getting-started/quick-start) &middot;
 [**Benchmarks**](https://docs.horusrobotics.dev/performance/benchmarks) &middot;
-[**Coming from ROS2?**](https://docs.horusrobotics.dev/learn/coming-from-ros2) &middot;
+[**Coming from ROS2?**](https://docs.horusrobotics.dev/tutorials/migrating-from-ros2-rust) &middot;
 [**Discord**](https://discord.gg/hEZC3ev2Nf)
 
 ---
@@ -56,7 +56,7 @@ HORUS is a real-time distributed middleware that replaces DDS with shared-memory
 | IPC latency | **3–304 ns median** (topology-dependent)      | 50–500 µs (DDS)                             |
 | Scheduling  | Deterministic, 5 execution classes            | Best-effort callbacks                       |
 | RT support  | Built-in (budget, deadline, watchdog)         | Manual DDS QoS                              |
-| Safety      | Graduated watchdog, auto safe-state, BlackBox | Application-level                           |
+| Safety      | Graduated watchdog, safe-state hook, BlackBox | Application-level                           |
 | AI + RT     | Same process — AsyncIo for GPU, RT for motors | Separate processes                          |
 | GPU tensors | DLPack zero-copy (PyTorch/JAX native)         | Serialize → deserialize                     |
 | Languages   | **Rust + Python + C++** (same shared memory)  | C++ + Python (DDS serialization)            |
@@ -137,7 +137,7 @@ scheduler's clock (default 100 Hz), `.order()` sequences nodes within a tick
 `.on_miss()` says what to do when a node overruns its deadline. Delete all four
 and the program still runs — every node ticks best-effort at 100 Hz. Add them
 back when timing matters.
-[Execution classes &rarr;](https://docs.horusrobotics.dev/concepts/execution-classes)
+[Execution classes &rarr;](https://docs.horusrobotics.dev/advanced/scheduler-configuration#execution-classes)
 
 Prefer less boilerplate? The `node!` macro writes the `struct` and `impl Node`
 for you. `horus new --macro` scaffolds a starter in that style — a single
@@ -169,6 +169,11 @@ horus.run(
 asks the same question without consuming the message — the reading is held and
 handed to the next `recv()`. `horus new --python` scaffolds a one-node starter
 that uses both.
+
+`pubs=` and `subs=` accept either a list of topics, as above, or a single bare
+topic string: `pubs="motor.cmd"` and `pubs=["motor.cmd"]` build the same node.
+Both spellings are in circulation across the docs, so a bare string in an
+example is not a typo.
 
 **C++** — same robot, idiomatic API:
 
@@ -241,17 +246,29 @@ sched.add(detector).async_io().build()?;                                      //
 sched.add(logger).build()?;                                                   // Best-effort
 ```
 
-Set `.rate()`, `.budget()`, or `.deadline()` and RT is automatic — no manual thread management. [Learn more →](https://docs.horusrobotics.dev/concepts/execution-classes)
+Set `.rate()`, `.budget()`, or `.deadline()` and RT is automatic — no manual thread management. [Learn more →](https://docs.horusrobotics.dev/advanced/scheduler-configuration#execution-classes)
 
 ### Safety
 
 The scheduler monitors every node at runtime:
 
-- **Graduated watchdog** — warn → skip → isolate → safe state
+- **Graduated watchdog** — warn → halve the rate → isolate → kill, at 3, 5, 10
+  and 20 consecutive misses by default. Recovery walks back down: 100 clean
+  ticks de-isolate, 100 more restore the original rate. A killed node stays
+  stopped.
 - **Deadline enforcement** — `.budget()` and `.deadline()` with miss policies (Warn, Skip, SafeMode, Stop)
 - **`enter_safe_state()`** — you define what "safe" means per node (stop motors, close valves)
 - **BlackBox flight recorder** — ring-buffer event log for post-mortem crash analysis
 - **Fault tolerance** — per-node failure policies (restart with backoff, skip, fatal)
+
+`Miss::SafeMode` is a hook, not a state machine. The scheduler calls
+`enter_safe_state()` once, on the transition into safe mode, and the node keeps
+ticking afterwards — it is not isolated, and `is_safe_state()` is never polled.
+So `tick()` has to go on publishing the safe outputs itself; a zeroed velocity
+command still has to be sent every cycle. The latch clears the first time the
+node meets its deadline again, which is what lets a later degradation be caught,
+so a flapping node is safed once per episode rather than once per miss.
+Isolating or stopping a node is the graduated watchdog's job, above.
 
 [Safety Monitor →](https://docs.horusrobotics.dev/advanced/safety-monitor) · [BlackBox →](https://docs.horusrobotics.dev/advanced/blackbox) · [Fault Tolerance →](https://docs.horusrobotics.dev/advanced/circuit-breaker)
 
@@ -375,7 +392,7 @@ cargo run --example 04_services       # request/response
 cargo run --example 05_realtime       # RT with deadline enforcement
 ```
 
-[Full examples →](examples/) · [Tutorials →](https://docs.horusrobotics.dev/tutorials) · [Recipes →](https://docs.horusrobotics.dev/recipes)
+[Full examples →](examples/) · [Tutorials →](https://docs.horusrobotics.dev/tutorials/01-sensor-node-rust) · [ROS 2 bridge recipe →](https://docs.horusrobotics.dev/recipes/ros2-bridge)
 
 ---
 
