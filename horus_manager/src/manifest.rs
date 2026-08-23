@@ -555,6 +555,26 @@ pub struct CppConfig {
     /// Cross-compilation toolchain target (e.g., `"aarch64"`, `"armv7"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<String>,
+
+    /// How the HORUS C++ runtime is linked: `"static"` (default) or
+    /// `"shared"`.
+    ///
+    /// Static linking puts the whole runtime in every node binary — about
+    /// 2.0 MB stripped per binary in release, and 78 MB in debug. A robot
+    /// running a dozen nodes pays that a dozen times, which is the difference
+    /// between fitting on a flash partition and not. `"shared"` links
+    /// `libhorus_cpp.so` instead and leaves the node binary at tens of
+    /// kilobytes, at the cost of having to ship the library beside it.
+    ///
+    /// `run_cpp` reads this key out of the manifest directly rather than
+    /// through this struct, so it worked before this field existed — but
+    /// `manifest_lint` did not know the key, so `horus check` reported a
+    /// working setting as an unknown key with "it has no effect". Accepting a
+    /// setting that does nothing and rejecting one that works are the same
+    /// lie; the field is here so the schema, `horus check` and `horus doctor`
+    /// all agree with the build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// `[rust]` — Rust/Cargo build configuration in horus.toml.
@@ -568,7 +588,7 @@ pub struct CppConfig {
 ///
 /// Contents are merged verbatim into the generated manifest — all but
 /// `rustflags`, which Cargo.toml cannot express at all and which goes to a
-/// generated cargo config file beside it instead. Kept to the sections HORUS
+/// generated `.cargo/config.toml` instead. Kept to the sections HORUS
 /// does not itself write, so there is nothing to conflict with:
 /// `[dependencies]` is deliberately absent, because `horus.toml` already has a
 /// `[dependencies]` table that `horus cargo add` round-trips through, and a
@@ -622,11 +642,12 @@ pub struct RustConfig {
     /// Cargo.toml has no rustflags slot at all. The only homes cargo offers are
     /// the `RUSTFLAGS` environment variable and `[build] rustflags` in a cargo
     /// *config* file, so this one is emitted to a generated
-    /// `.horus/.cargo/config.toml` instead — see
-    /// `cargo_gen::write_cargo_config` for why that location is the one cargo
-    /// finds. An exported `RUSTFLAGS` still wins, because that is cargo's own
-    /// precedence and quietly overriding a variable the user set by hand would
-    /// be the worse surprise.
+    /// `.cargo/config.toml` in the project root instead — see
+    /// `cargo_gen::write_cargo_config` for why cargo finds it there and not
+    /// under `.horus/`, and for what happens when the project already has a
+    /// `.cargo/config.toml` of its own. An exported `RUSTFLAGS` still wins,
+    /// because that is cargo's own precedence and quietly overriding a variable
+    /// the user set by hand would be the worse surprise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rustflags: Vec<String>,
 }

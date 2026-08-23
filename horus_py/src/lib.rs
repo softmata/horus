@@ -42,6 +42,13 @@ mod topic;
 mod transform_frame;
 mod types;
 
+// Test-only: contract assertions over `horus/__init__.py`, the hand-written
+// Python half of this package. `Node` never reaches Rust, but its docstrings
+// are the API reference users actually read, so they are pinned here rather
+// than left to drift away from what the code accepts.
+#[cfg(test)]
+mod python_api_docs;
+
 use config::PySchedulerConfig;
 use node::{PyNodeInfo, PyNodeState};
 use scheduler::{PyMiss, PyScheduler};

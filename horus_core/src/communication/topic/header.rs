@@ -97,6 +97,25 @@ impl ParticipantEntry {
     }
 }
 
+/// Decrement a shared-memory participant counter, never below zero.
+///
+/// These counters are incremented by one process and decremented by another,
+/// on memory that survives either of them being killed mid-update. A plain
+/// `fetch_sub` on a counter that has already reached zero wraps to
+/// `u32::MAX`, and since nothing ever resets these counters short of
+/// re-creating the segment, one such wrap makes the topic report four billion
+/// subscribers for good.
+#[inline]
+fn decrement_to_floor(counter: &AtomicU32) {
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+        if v == 0 {
+            None
+        } else {
+            Some(v - 1)
+        }
+    });
+}
+
 // ============================================================================
 // Topic Header (Cache-Optimized)
 // ============================================================================
@@ -213,8 +232,20 @@ pub(crate) struct TopicHeader {
     pub(crate) capacity_mask: u32,
     /// Slot size in bytes (for non-POD types, includes header + data)
     pub(crate) slot_size: u32,
-    /// Padding to fill cache line (64 - 8 - 4 - 4 - 4 = 44 bytes)
-    pub(crate) _pad_producer: [u8; 44],
+    /// Alignment padding so the two 8-byte stall words below stay 8-aligned.
+    pub(crate) _pad_producer_align: [u8; 4],
+    /// Stall detector: the `tail` a producer last observed on a full ring.
+    ///
+    /// Carved out of what was reserved producer padding, so the header stays
+    /// 640 bytes and every existing offset is unchanged. Written only by
+    /// producers, from the cold "ring is full" path — see
+    /// [`TopicHeader::drain_has_stalled`].
+    pub(crate) stall_tail: AtomicU64,
+    /// Stall detector: when [`TopicHeader::stall_tail`] was observed
+    /// (ms since epoch). 0 means "no observation on record".
+    pub(crate) stall_since_ms: AtomicU64,
+    /// Padding to fill cache line (64 - 8 - 4 - 4 - 4 - 4 - 8 - 8 = 24 bytes)
+    pub(crate) _pad_producer: [u8; 24],
 
     // === Cache line 3 (bytes 128-191): CONSUMER WRITE LINE ===
     // This cache line is ONLY written by consumers (receivers)
@@ -231,8 +262,13 @@ pub(crate) struct TopicHeader {
     pub(crate) subscriber_count: AtomicU32,
     /// Total participants ever connected
     pub(crate) total_participants: AtomicU32,
-    /// Lease timeout in milliseconds
-    pub(crate) lease_timeout_ms: u32,
+    /// Lease timeout in milliseconds.
+    ///
+    /// Atomic because it lives in shared memory and is read by every
+    /// participant while the creator writes it, and because the freeze
+    /// detector below uses it as its grace period — a test that wants a short
+    /// grace has to be able to set it on a live header.
+    pub(crate) lease_timeout_ms: AtomicU32,
     /// Last topology change timestamp (ms)
     pub(crate) last_topology_change_ms: AtomicU64,
     /// Message type name (null-terminated, e.g. "CmdVel", "Imu").
@@ -297,7 +333,10 @@ impl TopicHeader {
             capacity: 0,
             capacity_mask: 0,
             slot_size: 0,
-            _pad_producer: [0; 44],
+            _pad_producer_align: [0; 4],
+            stall_tail: AtomicU64::new(0),
+            stall_since_ms: AtomicU64::new(0),
+            _pad_producer: [0; 24],
             // Cache line 3: Consumer write line
             tail: AtomicU64::new(0),
             _pad_consumer: [0; 56],
@@ -305,7 +344,7 @@ impl TopicHeader {
             publisher_count: AtomicU32::new(0),
             subscriber_count: AtomicU32::new(0),
             total_participants: AtomicU32::new(0),
-            lease_timeout_ms: 0,
+            lease_timeout_ms: AtomicU32::new(0),
             last_topology_change_ms: AtomicU64::new(0),
             type_name: [0; 32],
             layout_hash: AtomicU32::new(0),
@@ -362,6 +401,8 @@ impl TopicHeader {
         self.capacity = capacity;
         self.capacity_mask = capacity.wrapping_sub(1); // For bitwise AND instead of modulo
         self.slot_size = slot_size;
+        self.stall_tail.store(0, Ordering::Release);
+        self.stall_since_ms.store(0, Ordering::Release);
 
         // Cache line 3: Consumer write line
         self.tail.store(0, Ordering::Release);
@@ -370,7 +411,8 @@ impl TopicHeader {
         self.publisher_count.store(0, Ordering::Release);
         self.subscriber_count.store(0, Ordering::Release);
         self.total_participants.store(0, Ordering::Release);
-        self.lease_timeout_ms = DEFAULT_LEASE_TIMEOUT_MS as u32;
+        self.lease_timeout_ms
+            .store(DEFAULT_LEASE_TIMEOUT_MS as u32, Ordering::Release);
         self.last_topology_change_ms
             .store(current_time_ms(), Ordering::Release);
 
@@ -480,9 +522,39 @@ impl TopicHeader {
     }
 
     /// Get subscriber count
+    ///
+    /// This counts *registrations*, and a registration only disappears when
+    /// something notices the owner is gone — see [`Self::reap_dead_participants`].
+    /// Treat it as "how many participants claim to be subscribers", never as
+    /// "how many are reading right now": the ring's own `tail` is the only
+    /// witness of the latter.
     #[inline]
     pub fn sub_count(&self) -> u32 {
         self.subscriber_count.load(Ordering::Acquire)
+    }
+
+    /// How long a participant may go without refreshing its lease before it is
+    /// considered gone, in milliseconds.
+    ///
+    /// Falls back to the default for headers written before the field existed
+    /// (they read back as 0, and a zero timeout would expire every participant
+    /// the instant it registered).
+    #[inline]
+    pub(crate) fn lease_timeout(&self) -> u64 {
+        match self.lease_timeout_ms.load(Ordering::Acquire) {
+            0 => DEFAULT_LEASE_TIMEOUT_MS,
+            ms => ms as u64,
+        }
+    }
+
+    /// Override the lease timeout on a live header.
+    ///
+    /// Only tests use this: the grace the freeze detector waits out is a whole
+    /// lease timeout, and a test that had to sit through the 5-second default
+    /// would be five seconds of dead wall clock per case.
+    #[cfg(test)]
+    pub(crate) fn set_lease_timeout_ms(&self, ms: u32) {
+        self.lease_timeout_ms.store(ms, Ordering::Release);
     }
 
     /// Register as a publisher (returns slot index or error)
@@ -500,7 +572,7 @@ impl TopicHeader {
         let now_ms = current_time_ms();
         let pid = std::process::id();
         let thread_hash = hash_thread_id(std::thread::current().id()) as u32;
-        let timeout_ms = self.lease_timeout_ms as u64;
+        let timeout_ms = self.lease_timeout();
 
         // First, try to find existing entry for this thread
         for (i, p) in self.participants.iter().enumerate() {
@@ -541,14 +613,22 @@ impl TopicHeader {
                     .is_ok();
 
                 if claimed {
-                    // Now that we own the slot, safely decrement the old role counters
+                    // Now that we own the slot, safely decrement the old role counters.
+                    //
+                    // Saturating, because these counters live in shared memory
+                    // that any participant may have been killed in the middle
+                    // of writing: an unmatched `fetch_sub` on a zero counter
+                    // wraps to 4 billion, and every consumer of `sub_count()`
+                    // then believes the topic has four billion subscribers
+                    // forever. There is no honest recovery from that, so the
+                    // floor is enforced at the one place the decrement happens.
                     if is_expired {
                         let old_role = p.role.load(Ordering::Acquire);
                         if old_role & 1 != 0 {
-                            self.publisher_count.fetch_sub(1, Ordering::AcqRel);
+                            decrement_to_floor(&self.publisher_count);
                         }
                         if old_role & 2 != 0 {
-                            self.subscriber_count.fetch_sub(1, Ordering::AcqRel);
+                            decrement_to_floor(&self.subscriber_count);
                         }
                     }
 
@@ -584,6 +664,159 @@ impl TopicHeader {
             )
             .into(),
         ))
+    }
+
+    /// Drop the registrations of participants whose process no longer exists.
+    ///
+    /// `subscriber_count` and `publisher_count` had exactly one decrement in
+    /// the whole tree — inside `register_role`, and only when a brand-new
+    /// participant happened to claim that same expired slot. Nothing else ever
+    /// took a registration back: no `Drop`, no deregistration call, no reaper.
+    /// So a subscriber that was `kill -9`'d left `sub_count()` at 1 for the life
+    /// of the shared-memory segment, and every decision keyed on that count was
+    /// made against a participant that had not existed for hours. The one that
+    /// mattered: a full ring stays backpressured against a `tail` its only
+    /// consumer will never move again, so the producer's `send` drops every
+    /// message from then on while `topic list` still reports the topic live at
+    /// its real rate. That is the whole of LIVE-5 — one message printed by
+    /// `topic echo`, then silence, on a topic publishing at 100 Hz.
+    ///
+    /// Two conditions, both required, because either alone is wrong:
+    ///
+    /// * The lease must have expired. This is the cheap filter, and it keeps
+    ///   the liveness probe off every participant that is still working.
+    /// * The owning process must be gone. An expired lease on its own does NOT
+    ///   mean dead — leases are refreshed once every `LEASE_REFRESH_INTERVAL`
+    ///   (1024) messages, so a healthy 100 Hz subscriber refreshes about every
+    ///   10 s against a 5 s timeout and spends half its life looking expired.
+    ///   Reaping on the lease alone would deregister working subscribers.
+    ///
+    /// Deliberately NOT reaped: our own process (we cannot tell a departed
+    /// thread from a busy one, and `Drop` is the right place for that), and
+    /// network-replicated participants, whose `pid` belongs to another host and
+    /// means nothing here.
+    ///
+    /// This is not a substitute for the ring's own stall detector
+    /// ([`Self::drain_has_stalled`]) — a subscriber can stop reading without
+    /// its process dying — but it is what makes the participant table, and
+    /// everything that reads it (`topic info`, `detect_optimal_backend`),
+    /// describe the system that is actually running.
+    pub(crate) fn reap_dead_participants(&self, now_ms: u64) {
+        let me = std::process::id();
+        for p in self.participants.iter() {
+            // 1 = live entry. 0 = free, 2 = another thread is mid-claim; in
+            // both of those cases the slot is not ours to judge.
+            if p.active.load(Ordering::Acquire) != 1 {
+                continue;
+            }
+            if !p.is_lease_expired(now_ms) {
+                continue;
+            }
+            let pid = p.pid.load(Ordering::Acquire);
+            if pid == 0 || pid == me || p.source_host.load(Ordering::Acquire) != 0 {
+                continue;
+            }
+            if horus_sys::discover::is_process_alive(pid) {
+                continue;
+            }
+
+            // Claim the slot the same way `register_role` does, so exactly one
+            // thread — reaper or new registrant — ever retires a given entry.
+            if p.active
+                .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue;
+            }
+            let role = p.role.load(Ordering::Acquire);
+            if role & 1 != 0 {
+                decrement_to_floor(&self.publisher_count);
+            }
+            if role & 2 != 0 {
+                decrement_to_floor(&self.subscriber_count);
+            }
+            // Clear the identity BEFORE publishing `active = 0`: that store is
+            // what makes the slot claimable, and anything written after it
+            // could be overwriting a new owner's fields.
+            p.role.store(0, Ordering::Release);
+            p.pid.store(0, Ordering::Release);
+            p.thread_id_hash.store(0, Ordering::Release);
+            p.source_host.store(0, Ordering::Release);
+            p.lease_expires_ms.store(0, Ordering::Release);
+            p.active.store(0, Ordering::Release);
+            self.last_topology_change_ms
+                .store(now_ms, Ordering::Release);
+        }
+    }
+
+    /// Has this ring stopped being drained?
+    ///
+    /// Backpressure is a promise to a consumer: the producer will not overwrite
+    /// a message you have not taken. The promise has no expiry, and `tail` is
+    /// only moved by an actual `recv`, so a consumer that stops consuming — for
+    /// any reason, alive or dead, registered or long gone — freezes the ring
+    /// permanently. Every further `send` on the lossy path is then dropped, and
+    /// the shared region keeps the same `capacity` messages for the life of the
+    /// segment.
+    ///
+    /// Registration counts cannot answer "is anybody reading". `sub_count()`
+    /// says who signed up; a crashed subscriber is still signed up
+    /// ([`Self::reap_dead_participants`] fixes that case and only that case),
+    /// and a live subscriber that never calls `recv` was never distinguishable
+    /// from a busy one. `tail` is the only witness that is a *consequence* of
+    /// consumption: it moves if and only if something was consumed.
+    ///
+    /// So: remember the `tail` seen on a full ring, and the moment it was seen.
+    /// If a later full-ring observation finds the same `tail` a whole lease
+    /// timeout later, nothing has been taken out of this ring in all that time
+    /// and there is nothing left to protect.
+    ///
+    /// The one thing this is NOT is exact, and it is worth being precise about
+    /// where. The SPSC/MPSC recv paths flush `header.tail` only every
+    /// `capacity / 2` reads (`dispatch.rs`, so the producer never sees a tail
+    /// stale enough to cost it headroom), so a consumer that is reading can
+    /// still leave `tail` unmoved for that many messages. For the grace to
+    /// run out anyway, a consumer would have to read fewer than `capacity / 2`
+    /// messages in a whole lease timeout while the ring stayed full the entire
+    /// time — a 512-slot ring means under 51 messages a second against a
+    /// producer fast enough to keep it brim-full. That consumer is not being
+    /// protected by backpressure in any useful sense: it is being handed a
+    /// backlog a full ring deep and reading it minutes late, and today the
+    /// producer's every message after the first ring-full is discarded to
+    /// preserve that backlog. Lapping it delivers recent data with a counted
+    /// gap ([`missed_count`](crate::communication::Topic::missed_count)) instead
+    /// of a permanently stale stream, which is the trade this drops on the
+    /// right side of.
+    ///
+    /// Called only from the cold "ring is full" path, so the cost (two relaxed
+    /// loads and a clock read) is paid only by a producer that was about to
+    /// spin and yield anyway.
+    pub(crate) fn drain_has_stalled(&self, now_ms: u64) -> bool {
+        let tail = self.tail.load(Ordering::Acquire);
+        let observed = self.stall_tail.load(Ordering::Relaxed);
+        let since = self.stall_since_ms.load(Ordering::Relaxed);
+
+        // `since == 0` is "no observation yet"; `now_ms < since` is a clock that
+        // went backwards, and holding a start time in the future would suppress
+        // the detector until wall time caught up.
+        if since == 0 || observed != tail || now_ms < since {
+            self.stall_tail.store(tail, Ordering::Relaxed);
+            self.stall_since_ms.store(now_ms.max(1), Ordering::Relaxed);
+            return false;
+        }
+        now_ms - since >= self.lease_timeout()
+    }
+
+    /// Record a `tail` the producer moved itself, without restarting the clock.
+    ///
+    /// Once the stall is confirmed the producer retires the oldest slot, which
+    /// moves `tail`. That is the producer's own write, not evidence a consumer
+    /// woke up, so it must not read as drain activity — otherwise the detector
+    /// resets on every reclaim and the ring gets exactly one message through per
+    /// grace period instead of running freely.
+    #[inline]
+    pub(crate) fn note_producer_moved_tail(&self, tail: u64) {
+        self.stall_tail.store(tail, Ordering::Relaxed);
     }
 
     /// Try to acquire migration lock
@@ -1474,6 +1707,276 @@ mod tests {
         assert!(slot < MAX_PARTICIPANTS);
         assert_eq!(h.sub_count(), 1);
         assert_eq!(h.pub_count(), 0);
+    }
+
+    // ── Participant liveness ────────────────────────────────────────────
+    //
+    // `subscriber_count` had exactly one decrement in the whole tree, inside
+    // `register_role`, firing only when a brand-new participant happened to
+    // claim that same expired slot. A subscriber that was killed therefore
+    // stayed on the books for the life of the segment — and everything keyed on
+    // that count, including the backpressure release that keeps `topic echo`
+    // showing live data, was decided against a participant that no longer
+    // existed.
+
+    /// A pid that is guaranteed not to be running: a child we spawned and then
+    /// waited for. Linux hands out pids in increasing order, so it will not be
+    /// reused within the lifetime of a test.
+    fn a_dead_pid() -> Option<u32> {
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let pid = child.id();
+        child.wait().ok()?;
+        Some(pid)
+    }
+
+    /// Write the entry a crashed participant leaves behind: role and identity
+    /// intact, a lease nobody will ever refresh again.
+    fn plant_participant(h: &TopicHeader, index: usize, pid: u32, role: u8, expires_ms: u64) {
+        let p = &h.participants[index];
+        p.pid.store(pid, Ordering::Release);
+        p.thread_id_hash.store(0xDEAD_BEEF, Ordering::Release);
+        p.role.store(role, Ordering::Release);
+        p.lease_expires_ms.store(expires_ms, Ordering::Release);
+        p.active.store(1, Ordering::Release);
+        if role & 1 != 0 {
+            h.publisher_count.fetch_add(1, Ordering::AcqRel);
+        }
+        if role & 2 != 0 {
+            h.subscriber_count.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn a_subscriber_whose_process_is_gone_stops_being_counted() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let h = make_header(8, 8, true, 16);
+        plant_participant(&h, 0, dead, 2, 1);
+        assert_eq!(h.sub_count(), 1);
+
+        h.reap_dead_participants(current_time_ms());
+
+        assert_eq!(
+            h.sub_count(),
+            0,
+            "the subscriber's process is gone; nothing it registered can still \
+             be true"
+        );
+        assert_eq!(
+            h.participants[0].active.load(Ordering::Acquire),
+            0,
+            "the slot must be free for the next participant, not merely \
+             uncounted"
+        );
+        assert_eq!(h.participants[0].role.load(Ordering::Acquire), 0);
+        assert_eq!(h.participants[0].pid.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_participant_that_is_still_running_is_never_reaped() {
+        let h = make_header(8, 8, true, 16);
+        // Our own process, with a lease that expired long ago. This is the
+        // ordinary state of a healthy low-rate subscriber: leases are refreshed
+        // once every 1024 messages, so a 100 Hz consumer refreshes about every
+        // 10 s against a 5 s timeout and spends half its life looking expired.
+        // Reaping on the lease alone would deregister working subscribers.
+        plant_participant(&h, 3, std::process::id(), 2, 1);
+
+        h.reap_dead_participants(current_time_ms());
+
+        assert_eq!(
+            h.sub_count(),
+            1,
+            "an expired lease is not a death certificate — the process is right \
+             here"
+        );
+    }
+
+    #[test]
+    fn a_participant_with_a_live_lease_is_never_reaped() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let now = current_time_ms();
+        let h = make_header(8, 8, true, 16);
+        plant_participant(&h, 1, dead, 2, now + 60_000);
+
+        h.reap_dead_participants(now);
+
+        assert_eq!(
+            h.sub_count(),
+            1,
+            "the lease is the cheap filter that keeps the liveness probe off \
+             every working participant; a valid lease must short-circuit before \
+             the pid is ever looked at"
+        );
+    }
+
+    #[test]
+    fn a_participant_replicated_from_another_host_is_never_reaped() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let h = make_header(8, 8, true, 16);
+        plant_participant(&h, 2, dead, 2, 1);
+        // horus_net stamps `source_host` for network-replicated participants.
+        // Their pid identifies a process on the *other* machine, so judging it
+        // against this machine's process table would reap every remote peer
+        // whose pid happens not to exist locally.
+        h.participants[2].source_host.store(7, Ordering::Release);
+
+        h.reap_dead_participants(current_time_ms());
+
+        assert_eq!(
+            h.sub_count(),
+            1,
+            "a remote peer's pid means nothing on this host"
+        );
+    }
+
+    #[test]
+    fn reaping_a_publisher_and_a_consumer_entry_decrements_both() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let h = make_header(8, 8, true, 16);
+        plant_participant(&h, 4, dead, 3, 1); // role=Both
+        assert_eq!((h.pub_count(), h.sub_count()), (1, 1));
+
+        h.reap_dead_participants(current_time_ms());
+
+        assert_eq!((h.pub_count(), h.sub_count()), (0, 0));
+    }
+
+    #[test]
+    fn a_counter_at_zero_never_wraps_to_four_billion() {
+        // These counters are decremented by whichever process notices the owner
+        // is gone, on memory that outlives every one of them. Before the floor,
+        // one unmatched decrement turned "no subscribers" into "4,294,967,295
+        // subscribers" permanently — and every gate that asks `sub_count() == 0`
+        // would then be false forever.
+        let h = make_header(8, 8, true, 16);
+        assert_eq!(h.sub_count(), 0);
+        decrement_to_floor(&h.subscriber_count);
+        assert_eq!(h.sub_count(), 0);
+    }
+
+    // ── Drain stall detection ───────────────────────────────────────────
+
+    #[test]
+    fn a_tail_that_keeps_moving_is_never_called_stalled() {
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100);
+        let t0 = current_time_ms();
+        assert!(
+            !h.drain_has_stalled(t0),
+            "the first look only starts the clock"
+        );
+        for step in 1..=10u64 {
+            // A consumer took one message: `tail` moved.
+            h.tail.store(step, Ordering::Release);
+            assert!(
+                !h.drain_has_stalled(t0 + step * 1_000),
+                "ten seconds have passed but something was consumed within every \
+                 100 ms window; backpressure must hold"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tail_that_stops_moving_is_called_stalled_after_one_lease() {
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100);
+        let t0 = current_time_ms();
+        h.tail.store(42, Ordering::Release);
+        assert!(!h.drain_has_stalled(t0));
+        assert!(
+            !h.drain_has_stalled(t0 + 99),
+            "inside the grace a consumer is still owed its messages"
+        );
+        assert!(
+            h.drain_has_stalled(t0 + 100),
+            "nothing has been taken out of this ring for a whole lease timeout"
+        );
+    }
+
+    #[test]
+    fn the_producers_own_tail_advance_does_not_restart_the_grace() {
+        // Once the stall is confirmed the producer retires the oldest slot,
+        // which moves `tail`. If that read as consumer activity the clock would
+        // restart on every reclaim and exactly one message would get through per
+        // grace period — a 100 Hz topic delivering at 0.2 Hz, which looks like
+        // the freeze it was supposed to fix.
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100);
+        let t0 = current_time_ms();
+        h.tail.store(42, Ordering::Release);
+        assert!(!h.drain_has_stalled(t0));
+        assert!(h.drain_has_stalled(t0 + 100));
+
+        for step in 1..=5u64 {
+            h.tail.store(42 + step, Ordering::Release);
+            h.note_producer_moved_tail(42 + step);
+            assert!(
+                h.drain_has_stalled(t0 + 100 + step),
+                "the producer moved the tail itself; that is not a consumer \
+                 waking up"
+            );
+        }
+    }
+
+    #[test]
+    fn a_consumer_waking_up_restores_backpressure() {
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100);
+        let t0 = current_time_ms();
+        h.tail.store(42, Ordering::Release);
+        assert!(!h.drain_has_stalled(t0));
+        assert!(h.drain_has_stalled(t0 + 100));
+
+        // Something finally read a message — a position the producer did not
+        // write.
+        h.tail.store(1_000, Ordering::Release);
+        assert!(
+            !h.drain_has_stalled(t0 + 101),
+            "a ring that is being drained again is owed its backpressure back"
+        );
+    }
+
+    #[test]
+    fn a_clock_that_jumps_backwards_does_not_disable_the_detector() {
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100);
+        let t0 = current_time_ms();
+        h.tail.store(42, Ordering::Release);
+        assert!(!h.drain_has_stalled(t0));
+        // `current_time_ms` is wall clock, and wall clock is adjustable. A start
+        // time left in the future would suppress the detector until real time
+        // caught up with it.
+        assert!(!h.drain_has_stalled(t0 - 60_000));
+        assert!(h.drain_has_stalled(t0 - 60_000 + 100));
+    }
+
+    #[test]
+    fn a_header_written_before_the_lease_field_existed_uses_the_default_grace() {
+        let h = TopicHeader::zeroed();
+        assert_eq!(
+            h.lease_timeout(),
+            DEFAULT_LEASE_TIMEOUT_MS,
+            "a zero timeout read out of an old header would expire every \
+             participant the instant it registered"
+        );
     }
 
     #[test]
@@ -2581,6 +3084,279 @@ mod echo_freshness_tests {
         );
 
         let _ = 1_u64.ms();
+    }
+
+    // ── LIVE-5 wave 2: a ring that nobody is draining ────────────────────────
+    //
+    // The first fix for "topic echo shows one message and then nothing" keyed
+    // keep-last-N on `sub_count() == 0`. That gate is permanently false once
+    // any subscriber has ever registered, because nothing ever took a
+    // registration back — so the two tests below are the two ways a subscriber
+    // stops draining while its registration stays on the books, and neither
+    // was covered.
+
+    /// Child half of `a_subscriber_killed_with_sigkill_does_not_freeze_the_topic`.
+    ///
+    /// `#[ignore]`d: it never runs in the ordinary suite. The parent runs it by
+    /// name in a child process, and the point of a child process is that it can
+    /// be `kill -9`'d — which is the only way to produce the state under test,
+    /// a participant entry whose owner is gone and which therefore no `Drop`,
+    /// no deregistration and no lease refresh will ever tidy up.
+    #[test]
+    #[ignore]
+    fn ghost_subscriber_child() {
+        let Ok(name) = std::env::var("HORUS_LIVE5_GHOST_TOPIC") else {
+            return;
+        };
+        // The capacity has to match whatever created the region. The parent
+        // test uses a small ring so "past the wrap" is cheap; a live
+        // reproduction against a real node leaves it unset and gets the
+        // `auto_capacity` default the node itself used.
+        let opened = match std::env::var("HORUS_LIVE5_GHOST_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        {
+            Some(capacity) => Topic::<u64>::with_capacity(&name, capacity, None),
+            None => Topic::<u64>::new(&name),
+        };
+        let topic = opened.expect("open the parent's ring");
+        // One recv is all it takes to register as a consumer. It takes nothing
+        // else, ever — like a node that crashed on its first tick.
+        let _ = topic.recv();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+
+    /// Ring capacity for the SIGKILL case. Small, so "past the ring" is cheap.
+    const GHOST_CAPACITY: u32 = 64;
+
+    /// The name the child process is registered under in this test binary.
+    fn ghost_child_test_name() -> String {
+        // `module_path!()` is crate-qualified; libtest's filter names are not.
+        let path = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or(module_path!());
+        format!("{path}::ghost_subscriber_child")
+    }
+
+    /// A subscriber killed with SIGKILL must not freeze the topic for good.
+    ///
+    /// This is the original LIVE-5 report, reproduced against the first fix.
+    /// A publisher at 100 Hz and a separate subscriber process; `kill -9` the
+    /// subscriber and the header goes:
+    ///
+    /// ```text
+    ///   head FROZEN at 4736, tail 4608, subs=1, messages_total 5155 … 28955
+    ///   $ horus topic list   →  vfy_crash  9063  98.0 Hz  active
+    ///   $ horus topic echo vfy_crash -n 100
+    ///     [15:01:06.020] #1: …            ← payload timestamped 3m22s earlier
+    ///     <nothing for the remaining 45 s>
+    /// ```
+    ///
+    /// `subscriber_count` had one decrement in the whole tree, inside
+    /// `register_role`, and it only fired if a brand-new participant happened
+    /// to claim that exact expired slot. Nothing else ever gave a registration
+    /// back, so `sub_count()` stayed at 1 for the life of the segment and the
+    /// keep-last-N gate that was supposed to unfreeze the ring was switched off
+    /// permanently.
+    ///
+    /// The `sub_count()` assertion is what pins this to the reaper rather than
+    /// to the stall detector: the sends below all happen inside a millisecond,
+    /// far inside any stall grace, so the only thing that can free the ring
+    /// here is the dead participant being deregistered.
+    #[test]
+    fn a_subscriber_killed_with_sigkill_does_not_freeze_the_topic() {
+        let name = format!("echo_sigkill_sub_{}", std::process::id());
+        let publisher: Topic<u64> = match Topic::with_capacity(&name, GHOST_CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+        let header = publisher.ring.header();
+        // The reaper will not touch a participant whose lease is still good, and
+        // the default lease is 5 s of wall clock. Shorten it before the child
+        // registers, so the child's lease is short too.
+        header.set_lease_timeout_ms(150);
+
+        // Register the publisher BEFORE the subscriber exists, which is the
+        // ordering of every real system — the node is already running when
+        // something subscribes to it, and it does not re-register afterwards.
+        //
+        // This is load-bearing for what the test proves. `register_role` does
+        // decrement the counters when a *brand-new* participant happens to
+        // claim the dead one's expired slot, so a publisher that first
+        // registers after the subscriber has died cleans up the corpse on its
+        // way in and the ring is freed by accident. That accident is the only
+        // thing that ever retired a registration, and it does not happen to the
+        // publisher that was there first.
+        publisher.send(0);
+
+        let Ok(exe) = std::env::current_exe() else {
+            eprintln!("skipping: cannot locate the test binary");
+            return;
+        };
+        let spawned = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                &ghost_child_test_name(),
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("HORUS_LIVE5_GHOST_TOPIC", &name)
+            .env("HORUS_LIVE5_GHOST_CAPACITY", GHOST_CAPACITY.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skipping: cannot spawn the subscriber process ({e})");
+                return;
+            }
+        };
+
+        let registered = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                if header.sub_count() > 0 {
+                    break true;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        if !registered {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the subscriber process never registered on '{name}'");
+        }
+
+        // SIGKILL, then reap the zombie: a zombie still answers `kill(pid, 0)`,
+        // so a process that has not been waited for still reads as alive.
+        let _ = child.kill();
+        let _ = child.wait();
+        // Outlive the lease the child registered with.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+
+        const SENT: u64 = GHOST_CAPACITY as u64 * 3;
+        for i in 1..=SENT {
+            publisher.send(i);
+        }
+
+        // Read the ring before asserting anything, so whichever assertion fires
+        // first still reports both halves of the evidence: what the reader can
+        // see, and why.
+        let slot = super::read_latest_slot_bytes(&path, 0)
+            .expect("a topic with messages sent must yield a slot");
+        let newest = u64::from_le_bytes(slot.payload[..8].try_into().expect("u64 payload"));
+
+        assert_eq!(
+            header.sub_count(),
+            0,
+            "the only subscriber was killed and reaped 250 ms ago, and its \
+             registration is still on the books — meanwhile the ring is serving \
+             message {newest} of {SENT}, backpressured against a `tail` that \
+             belongs to a process which no longer exists"
+        );
+        assert_eq!(
+            newest, SENT,
+            "the ring is serving message {newest} of {SENT} — it is still \
+             backpressured against a `tail` belonging to a process that no \
+             longer exists, which is the whole of the original report"
+        );
+    }
+
+    /// A subscriber that is alive and simply stops reading must not freeze the
+    /// topic for good either.
+    ///
+    /// This is the case no liveness check can reach: the process is running,
+    /// the handle exists, the registration is legitimate — it just never calls
+    /// `recv` again. Deregistering the dead is not enough on its own, so the
+    /// decision is settled by the ring instead of by the participant table:
+    /// `tail` moves if and only if something was consumed, so a `tail` that has
+    /// not moved for a whole lease timeout means nothing is being consumed.
+    ///
+    /// Both halves matter and both are asserted. Inside the grace the ring must
+    /// still be backpressured — a consumer that is briefly behind is owed its
+    /// messages, and a detector that fires immediately would just be silent
+    /// data loss with extra steps. After the grace the newest message must be
+    /// getting through.
+    #[test]
+    fn a_live_subscriber_that_stops_reading_does_not_freeze_the_topic_forever() {
+        const CAPACITY: u32 = 64;
+        const GRACE_MS: u64 = 300;
+        let name = format!("echo_idle_sub_{}", std::process::id());
+        let publisher: Topic<u64> = match Topic::with_capacity(&name, CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let subscriber: Topic<u64> = match Topic::with_capacity(&name, CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+        let header = publisher.ring.header();
+        header.set_lease_timeout_ms(GRACE_MS as u32);
+
+        // Registers a consumer, in this very process, and never takes anything.
+        assert!(subscriber.recv().is_none(), "nothing has been sent yet");
+
+        // Fill the ring and overrun it, all within a millisecond — well inside
+        // the grace.
+        for i in 1..=(u64::from(CAPACITY) * 2) {
+            publisher.send(i);
+        }
+        let held = super::read_latest_slot_bytes(&path, 0).expect("the ring holds messages");
+        let held_newest = u64::from_le_bytes(held.payload[..8].try_into().expect("u64 payload"));
+        assert_eq!(
+            held_newest,
+            u64::from(CAPACITY),
+            "a consumer that has been quiet for under a millisecond is owed its \
+             messages; the ring must still be backpressured, not overwriting"
+        );
+
+        // Now let the grace pass with the ring still full and the subscriber
+        // still registered, still alive, still not reading.
+        let mut next = u64::from(CAPACITY) * 2 + 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(GRACE_MS + 400);
+        while std::time::Instant::now() < deadline {
+            publisher.send(next);
+            next += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let last_sent = next - 1;
+
+        assert!(
+            header.sub_count() >= 1,
+            "the subscriber is still registered and still alive — this case is \
+             not the reaper's, and if the registration went away the test is \
+             measuring the wrong mechanism"
+        );
+        let slot = super::read_latest_slot_bytes(&path, 0).expect("the ring holds messages");
+        let newest = u64::from_le_bytes(slot.payload[..8].try_into().expect("u64 payload"));
+        assert_eq!(
+            newest, last_sent,
+            "{GRACE_MS} ms after the last message anyone took out of this ring, \
+             it is still serving message {newest} of {last_sent} — a subscriber \
+             that stopped reading has stopped the topic"
+        );
     }
 }
 

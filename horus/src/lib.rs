@@ -431,10 +431,30 @@ pub use horus_core::serde_yaml;
 /// names an internal crate the user was never meant to know about, and it is
 /// not guessable — you find it by reading the source or by copying a doc
 /// snippet. Both sets are re-exported here, so the obvious path is the one that
-/// works. The names do not overlap.
+/// works.
+///
+/// The same argument then stopped one level short. This module is called
+/// "types", its own heading says "Message and geometry types", and it is the
+/// path a reader guesses before they have heard of [`msg`] — but it held only
+/// the geometry half. `horus::types::Pose2D` resolved while
+/// `horus::types::CmdVel`, `Imu`, `Odometry`, `LaserScan` and `NavGoal` all
+/// failed with `E0425` and no hint about where to look instead. A path that
+/// works for half the names you try is worse than one that does not exist at
+/// all: it reads as confirmation that you are in the right module and the type
+/// is simply missing. Everything in [`msg`] is re-exported here too, so the
+/// guess lands. [`msg`] stays the spelling the documentation uses, because it
+/// is the one C++ and Python already write.
 pub mod types {
     pub use horus_core::types::*;
     pub use horus_types::*;
+
+    // Glob-re-exporting [`msg`] rather than naming the messages one by one is
+    // what keeps the two from drifting: whatever becomes reachable as
+    // `horus::msg::X` is reachable as `horus::types::X` by construction, so
+    // this module cannot silently fall back to holding half the set. Where the
+    // three globs overlap (`Pose2D`, `ImageEncoding`, `Quaternion`, …) they
+    // resolve to the same item, so no name becomes ambiguous.
+    pub use crate::msg::*;
 }
 
 /// Standard message types, under one path — the same `horus::msg::` spelling
@@ -456,15 +476,48 @@ pub mod types {
 /// [`prelude`] already pulls them all in, but a glob is not a path. It cannot
 /// be written in a type position, and it tells a reader nothing about where
 /// `Imu` came from. [`types`] was the near miss that made the guess worse: it
-/// exists and it sounds canonical, but it holds only the geometry half, so
-/// `horus::types::CmdVel` fails with `E0425` instead of pointing anywhere
-/// useful.
+/// existed, it sounded canonical, and it held only the geometry half, so
+/// `horus::types::CmdVel` failed with `E0425` instead of pointing anywhere
+/// useful. That module now mirrors this one, so neither guess dead-ends.
 ///
 /// Every name C++ declares across `<horus/msg/*.hpp>` resolves here — the
 /// `msg_covers_the_whole_cpp_namespace` test below is that header list, so the
-/// two namespaces cannot drift apart silently. Nothing moved: these are
-/// re-exports, so every path that worked before still works. This only makes
-/// one of them canonical, and picks the one the other bindings already use.
+/// two namespaces cannot drift apart silently. The pool-backed payloads and
+/// the transform POD are here too even though C++ files them one namespace up,
+/// in plain `horus::`: `Image`, `PointCloud`, `DepthImage` and `Transform` are
+/// in this crate's own "Key Message Types" table, so a reader who just watched
+/// `horus::msg::CmdVel` work will type `horus::msg::Image` next, and getting
+/// `E0425` there would rebuild the very trap [`types`] used to be.
+///
+/// What is deliberately *not* here is the machinery underneath those payloads:
+/// `Tensor`, `TensorDtype`, `Device` and the raw `*Descriptor` structs. They
+/// are not things you put in a `Topic`, they are what the pool types are built
+/// out of, and they live in [`types`] — which re-exports this module in full,
+/// so `horus::types::` resolves for everything below plus those. Saying so out
+/// loud is the point: an exclusion a reader only discovers as an `E0425` is the
+/// same trap this module was written to remove.
+///
+/// Nothing moved: these are re-exports, so every path that worked before still
+/// works. This only makes one of them canonical, and picks the one the other
+/// bindings already use.
+///
+/// This module is glob-safe next to the prelude — you can write both, and the
+/// one name where the two source crates disagree resolves the same way under
+/// either:
+///
+/// ```rust
+/// use horus::prelude::*;
+/// use horus::msg::*;
+///
+/// // The action-server lifecycle enum, the meaning `horus::prelude` has
+/// // always given the bare name.
+/// let lifecycle: GoalStatus = GoalStatus::Succeeded;
+/// assert!(lifecycle.is_terminal());
+///
+/// // The navigation status code stored in `GoalResult::status` keeps the
+/// // module path the docs already teach for it.
+/// assert_eq!(navigation::GoalStatus::Succeeded as u8, 2);
+/// ```
 pub mod msg {
     /// Robotics wire types — sensor, control, navigation, detection, vision,
     /// force, input, perception and simulation. Rust ships a few that have no
@@ -478,6 +531,45 @@ pub mod msg {
     /// are an implementation detail of where the types are filed, which is
     /// exactly what this module exists to stop leaking.
     pub use horus_types::prelude::*;
+
+    /// The zero-copy payloads. C++ declares these in `horus::` rather than
+    /// `horus::msg::` (`<horus/pool.hpp>`), and `DepthImage` has no C++ type at
+    /// all, so parity offers no answer here — but they are messages in every
+    /// sense that matters to a caller: they are what a `Topic<Image>` carries.
+    /// Leaving them out made `horus::msg::Image` an `E0425` sitting two lines
+    /// below a working `horus::msg::LaserScan`.
+    pub use horus_core::memory::{DepthImage, Image, PointCloud};
+
+    /// The element types you need to fill the payloads above —
+    /// `Image::new(w, h, ImageEncoding::Rgb8)`, `PointCloud::from_xyz(&[PointXYZ])`
+    /// — for the same reason: a namespace that hands you `PointCloud` but not
+    /// `PointXYZ` has only moved the missing import one line down.
+    pub use horus_core::types::{ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB};
+
+    /// The rigid transform. C++ writes `horus::Transform` (`<horus/transform.hpp>`),
+    /// one namespace up, and Rust used to require a hand-added `horus_tf` git
+    /// dependency to name it at all.
+    pub use horus_tf::Transform;
+
+    /// `GoalStatus` is the one name the two source crates disagree about.
+    /// `horus_core::actions::GoalStatus` is the action-server lifecycle enum
+    /// (`Pending`/`Active`/`Succeeded`/`Aborted`/`Canceled`/`Preempted`/`Rejected`);
+    /// `horus_robotics::messages::navigation::GoalStatus` is the `#[repr(u8)]`
+    /// code stored in `GoalResult::status`, with different variants. C++ never
+    /// had to choose — `<horus/msg/navigation.hpp>` publishes `GOAL_STATUS_*`
+    /// constants and puts the enum class in `horus::`, not `horus::msg::` — so
+    /// there is no parity answer to copy.
+    ///
+    /// Left to the glob above, this one name made `use horus::prelude::*;`
+    /// together with `use horus::msg::*;` a hard `E0659` ambiguity error
+    /// (`ambiguous_glob_imports` is deny-by-default), which is the one thing a
+    /// convenience namespace must not do to the prelude it sits beside. Pinning
+    /// it to the prelude's meaning is also the rule the documentation already
+    /// teaches: the bare name is the action enum, and the navigation code is
+    /// reached through its module — `horus::msg::navigation::GoalStatus`, the
+    /// exact shape of the `horus::prelude::navigation::GoalStatus` the
+    /// navigation reference has always told readers to write.
+    pub use horus_core::actions::GoalStatus;
 }
 
 /// The HORUS prelude — everything you need for building robotics applications.
@@ -670,6 +762,91 @@ mod tests {
         reachable::<crate::msg::VelocityObstacle>();
         reachable::<crate::msg::Waypoint>();
         reachable::<crate::msg::WrenchStamped>();
+    }
+
+    /// The zero-copy payloads and the transform POD. C++ files these in plain
+    /// `horus::` rather than `horus::msg::`, which is why the first cut of this
+    /// module left them out — and that rebuilt the `horus::types` trap inside
+    /// the module written to close it: `horus::msg::Image` was an `E0425` two
+    /// lines below a working `horus::msg::LaserScan`. `Image`, `PointCloud` and
+    /// `DepthImage` are three of the eight rows in this crate's own "Key
+    /// Message Types" table, and the crate docs claim in so many words that
+    /// "every one of them is also at [`msg`]" — which was not true for those
+    /// three until this re-export existed.
+    #[test]
+    fn msg_covers_the_pool_backed_payloads() {
+        reachable::<crate::msg::Image>();
+        reachable::<crate::msg::PointCloud>();
+        reachable::<crate::msg::DepthImage>();
+        reachable::<crate::msg::Transform>();
+        reachable::<crate::msg::ImageEncoding>();
+        reachable::<crate::msg::PointXYZ>();
+        reachable::<crate::msg::PointXYZI>();
+        reachable::<crate::msg::PointXYZRGB>();
+    }
+
+    /// `horus::types` is the path a reader guesses before they have heard of
+    /// `horus::msg` — the module is literally called "types" and its heading
+    /// says "Message and geometry types". It resolved for the geometry half
+    /// only, which reads as "right module, missing type" rather than "wrong
+    /// module". It now mirrors `msg`.
+    #[test]
+    fn types_is_no_longer_the_geometry_half() {
+        reachable::<crate::types::CmdVel>();
+        reachable::<crate::types::Imu>();
+        reachable::<crate::types::Odometry>();
+        reachable::<crate::types::LaserScan>();
+        reachable::<crate::types::NavGoal>();
+        reachable::<crate::types::Image>();
+        reachable::<crate::types::Transform>();
+
+        // and it did not lose what it already had
+        reachable::<crate::types::Tensor>();
+        reachable::<crate::types::Pose2D>();
+    }
+
+    /// Globbing the prelude and `msg` together is the obvious thing to write,
+    /// and `GoalStatus` — the one name `horus_core::actions` and
+    /// `horus_robotics::messages::navigation` both define — made it a hard
+    /// `E0659` "ambiguous name" error, not a warning. This test is that exact
+    /// pair of globs; it cannot compile unless the two agree.
+    #[test]
+    fn msg_and_prelude_globs_compose() {
+        use crate::msg::*;
+        use crate::prelude::*;
+
+        let lifecycle: GoalStatus = GoalStatus::Succeeded;
+        assert!(lifecycle.is_terminal());
+
+        // The navigation status code is not gone, just where the navigation
+        // reference already said it was: under its module.
+        assert_eq!(navigation::GoalStatus::Succeeded as u8, 2);
+
+        // A message name from each source crate, and a prelude-only name, so
+        // this really is the two-glob situation and not a `msg` glob sitting
+        // next to a dead import.
+        let _: CmdVel = CmdVel::default();
+        let _: Pose2D = Pose2D::default();
+        let _: Option<HorusError> = None;
+    }
+
+    /// The bare name means the same thing under every path the facade offers,
+    /// so moving an import line from the prelude to `msg` cannot change which
+    /// enum a match arm is matching on.
+    #[test]
+    fn goal_status_is_one_enum_under_every_path() {
+        fn same<T>(_: &T, _: &T) {}
+
+        let from_msg = crate::msg::GoalStatus::Succeeded;
+        let from_prelude = crate::prelude::GoalStatus::Succeeded;
+        let from_types = crate::types::GoalStatus::Succeeded;
+        same(&from_msg, &from_prelude);
+        same(&from_msg, &from_types);
+
+        // The navigation `#[repr(u8)]` code is a different enum and stays
+        // reachable through its module, unchanged.
+        assert_eq!(crate::msg::navigation::GoalStatus::Succeeded as u8, 2);
+        assert_eq!(horus_robotics::GoalStatus::Succeeded as u8, 2);
     }
 
     /// The pre-existing paths are re-exports, not moves: whatever a user wrote

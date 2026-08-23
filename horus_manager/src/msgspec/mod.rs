@@ -39,6 +39,7 @@ pub mod emit_python;
 pub mod emit_rust;
 pub mod layout;
 pub mod parse;
+pub mod resolve;
 
 use std::path::PathBuf;
 

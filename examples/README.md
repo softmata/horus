@@ -1,6 +1,17 @@
 # Horus Examples
 
-Ten complete robotics applications covering every workflow a ROS2 developer needs. Ordered from simple to advanced. Rust and Python examples live here; the C++ examples are under [`horus_cpp/examples/`](../horus_cpp/examples/) — see [C++](#c) below.
+Twelve complete robotics applications covering every workflow a ROS2 developer needs. Ordered from simple to advanced.
+
+Every directory here is a `horus.toml` project: `horus build` and `horus run` drive all of them, in Rust, Python or C++. The single-file programs under [`horus_cpp/examples/`](../horus_cpp/examples/) are a different thing — standalone CMake translation units that demonstrate one API each. See [C++](#c) below.
+
+To start from one of these instead of the blank template:
+
+```bash
+horus new my_robot --from differential_drive
+```
+
+`--from` copies the example, renames the package to `my_robot`, and leaves the
+build output behind. Pass a name that does not exist to see the full list.
 
 ## Learning Path
 
@@ -9,12 +20,14 @@ Ten complete robotics applications covering every workflow a ROS2 developer need
 |---------|----------|-------------------|
 | [differential_drive](differential_drive/) | Rust | Nodes, topics, messages, scheduler basics |
 | [python_robot](python_robot/) | **Python** | Same as differential_drive — the Python starting point |
+| [differential_drive_cpp](differential_drive_cpp/) | **C++** | Same as differential_drive — the C++ starting point |
 
 ### Core Robotics
 | Example                                 | Language | What you'll learn                                               |
 |-----------------------------------------|----------|-----------------------------------------------------------------|
 | [robot_arm](robot_arm/)                 | Rust     | Services, frame transforms (TransformFrame), trajectory control |
 | [sensor_navigation](sensor_navigation/) | Rust     | Multi-rate scheduling, sensor pipelines, reactive control       |
+| [sensor_navigation_py](sensor_navigation_py/) | **Python** | The same pipeline in Python — typed sensor messages, frame tree |
 | [camera_perception](camera_perception/) | Rust     | CV pipeline: camera → object detection → tracking (IoU, SORT)   |
 
 ### Advanced
@@ -32,9 +45,14 @@ Ten complete robotics applications covering every workflow a ROS2 developer need
 
 ## C++
 
-The C++ examples are in [`horus_cpp/examples/`](../horus_cpp/examples/) rather
-than this directory, because they build with CMake against the C++ bindings
-instead of through `horus build`.
+[`differential_drive_cpp/`](differential_drive_cpp/) is a complete C++ project
+in this directory: `horus.toml` + `src/main.cpp`, built and run with the same
+`horus build` / `horus run` the Rust and Python examples use. Start there.
+
+The programs in [`horus_cpp/examples/`](../horus_cpp/examples/) are a different
+kind of thing — one file each, built with CMake directly against the C++
+bindings rather than through `horus build`. They are the place to look up a
+single API, not a project to copy.
 
 | Example | What you'll learn |
 |---------|-------------------|
@@ -60,9 +78,9 @@ CMake finds the library in `target/` automatically from a checkout; pass
 
 | ROS2 Workflow                 | Horus Example                          |
 |-------------------------------|----------------------------------------|
-| Publisher/Subscriber tutorial | `differential_drive` or `python_robot` |
+| Publisher/Subscriber tutorial | `differential_drive`, `python_robot` or `differential_drive_cpp` |
 | tf2 and frame transforms      | `robot_arm`                            |
-| nav2 sensor pipeline          | `sensor_navigation`                    |
+| nav2 sensor pipeline          | `sensor_navigation` or `sensor_navigation_py` |
 | darknet_ros / YOLO detection  | `camera_perception`                    |
 | Multi-robot swarm             | `multi_robot`                          |
 | ros2_control hardware         | `driver_integration`                   |
@@ -74,7 +92,9 @@ CMake finds the library in `target/` automatically from a checkout; pass
 
 - [Horus](https://github.com/softmata/horus) installed (`horus` CLI available)
 - [sim3d](https://github.com/softmata/horus-sim3d) installed (for physics simulation)
-- Python 3.9+ (for `python_robot` example)
+- Python 3.9+ (for `python_robot` and `sensor_navigation_py`)
+- A C++17 compiler, cmake 3.20+, and make or ninja (for `differential_drive_cpp`
+  and the `horus_cpp/examples/` programs) — `horus doctor` checks all three
 
 ## Quick start
 
@@ -93,6 +113,11 @@ For Python:
 horus run main.py
 ```
 
+For C++ (`horus build` drives cmake and links `libhorus_cpp.a` for you):
+```bash
+horus run
+```
+
 While running, use the CLI to inspect the system:
 
 ```bash
@@ -108,7 +133,10 @@ Each example contains:
 
 ```
 example_name/
-  main.rs / main.py      # Controller application
+  main.rs / main.py       # Controller application (Rust and Python)
+  src/main.cpp            # Controller application (C++ — the generated
+                          #   CMakeLists globs src/, so a .cpp at the project
+                          #   root is detected and then never compiled)
   horus.toml              # Project manifest (deps, drivers, scripts)
   robots/*.urdf           # Robot description (links, joints, sensors)
   worlds/*.yaml           # Environment (ground, obstacles, lighting)

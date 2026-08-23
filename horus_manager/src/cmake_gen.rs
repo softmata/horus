@@ -807,6 +807,7 @@ mod tests {
             compiler: Some("clang++".to_string()),
             cmake_args: vec![],
             toolchain: None,
+            link: None,
         });
 
         let (result, _) = generate(&manifest, dir.path(), false).unwrap();
@@ -825,6 +826,7 @@ mod tests {
                 "set(CMAKE_POSITION_INDEPENDENT_CODE ON)".to_string(),
             ],
             toolchain: None,
+            link: None,
         });
 
         let (result, _) = generate(&manifest, dir.path(), false).unwrap();
@@ -2199,6 +2201,7 @@ TEST(BasicTest, OnePlusOne) {
             compiler: Some("g++".to_string()),
             cmake_args: vec![],
             toolchain: None,
+            link: None,
         });
         let _ = generate(&manifest, dir.path(), false).unwrap();
 
@@ -2231,6 +2234,7 @@ TEST(BasicTest, OnePlusOne) {
             compiler: None,
             cmake_args: vec!["set(MY_CUSTOM_VAR \"hello\")".to_string()],
             toolchain: None,
+            link: None,
         });
         let _ = generate(&manifest, dir.path(), false).unwrap();
 

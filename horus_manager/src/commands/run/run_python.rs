@@ -168,10 +168,15 @@ fn collect_python_path_entries(project_dir: &Path, cache_roots: &[PathBuf]) -> V
     // Project-scoped entries first: `.horus/packages/<dist>` is a symlink into
     // the cache, so the link path itself is a usable sys.path entry and one
     // that names the packages *this* project resolved.
-    push_importable_dirs(&horus_packages, &mut entries, &mut seen);
+    push_importable_dirs(
+        &horus_packages,
+        CacheScope::Project,
+        &mut entries,
+        &mut seen,
+    );
 
     for root in cache_roots {
-        push_importable_dirs(root, &mut entries, &mut seen);
+        push_importable_dirs(root, CacheScope::Shared, &mut entries, &mut seen);
     }
 
     // `.horus/packages` itself stays on the path for anything that drops a
@@ -196,7 +201,12 @@ fn collect_python_path_entries(project_dir: &Path, cache_roots: &[PathBuf]) -> V
 /// as `horus@0.3.0`, whose `horus/` subdirectory has a `Cargo.toml` and no
 /// `__init__.py`. Putting one on sys.path would make `import horus` resolve to
 /// an empty namespace package that shadows the real one.
-fn push_importable_dirs(root: &Path, entries: &mut Vec<String>, seen: &mut HashSet<PathBuf>) {
+fn push_importable_dirs(
+    root: &Path,
+    scope: CacheScope,
+    entries: &mut Vec<String>,
+    seen: &mut HashSet<PathBuf>,
+) {
     let Ok(read) = fs::read_dir(root) else {
         return;
     };
@@ -209,6 +219,9 @@ fn push_importable_dirs(root: &Path, entries: &mut Vec<String>, seen: &mut HashS
     dirs.sort();
 
     for dir in dirs {
+        if scope == CacheScope::Shared && is_unlinked_pypi_cache_dir(&dir, seen) {
+            continue;
+        }
         let lib_dir = dir.join("lib");
         if lib_dir.is_dir() {
             push_entry(lib_dir, entries, seen);
@@ -217,6 +230,43 @@ fn push_importable_dirs(root: &Path, entries: &mut Vec<String>, seen: &mut HashS
             push_entry(dir, entries, seen);
         }
     }
+}
+
+/// Whose packages a directory of packages holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheScope {
+    /// `.horus/packages` — what this project resolved.
+    Project,
+    /// A global cache root — what every project on this machine resolved.
+    Shared,
+}
+
+/// A `pypi_<dist>@<version>` cache directory this project never linked to.
+///
+/// The global cache is storage shared by every project on the machine, and
+/// `install_pip_packages` links each distribution a project resolves into that
+/// project's own `.horus/packages`. Adding the whole cache root to PYTHONPATH
+/// therefore put *other projects'* dependencies on this one's import path: a
+/// project depending on nothing imported `serial`, `idna` and `wcwidth`
+/// because something else on the machine had once needed them. It worked on
+/// the developer's box and failed on the robot, which is the same shape of
+/// defect as the one this path was fixed for.
+///
+/// Being already in `seen` is exactly the test for "this project linked it":
+/// the `.horus/packages` pass ran first and deduplicates by canonical path, so
+/// a linked distribution's cache directory is already recorded. Anything else
+/// under the cache root — the HORUS registry layout, `<name>@<version>` with a
+/// `lib/` — is left alone; that is what `horus install --global` writes and it
+/// is not per-project.
+fn is_unlinked_pypi_cache_dir(dir: &Path, seen: &HashSet<PathBuf>) -> bool {
+    let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if !name.starts_with("pypi_") {
+        return false;
+    }
+    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    !seen.contains(&key)
 }
 
 /// Append a path unless the same directory is already on the list.
@@ -496,6 +546,55 @@ mod tests {
         assert!(
             !entries.iter().any(|e| e.contains("horus@0.3.0")),
             "a Rust source tree provides no importable module: {entries:?}"
+        );
+    }
+
+    /// The global cache is storage for every project on the machine, not an
+    /// import path for all of them.
+    ///
+    /// Adding the whole cache root put another project's dependencies on this
+    /// project's sys.path: a project depending on nothing imported `serial`,
+    /// `idna` and `wcwidth` because something else on the box had needed them
+    /// once. That is a build which works on the developer's machine and fails
+    /// on the robot — the same shape as the defect this path was fixed for,
+    /// pointing the other way.
+    #[test]
+    fn battle_python_path_does_not_leak_another_projects_packages() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = tmp.path().join("cache");
+        let project = tmp.path().join("project");
+
+        // This project's own dependency, resolved and linked.
+        let mine = cache.join("pypi_mine@1.0");
+        fs::create_dir_all(mine.join("minemod")).unwrap();
+        fs::write(mine.join("minemod/__init__.py"), "").unwrap();
+        fs::create_dir_all(project.join(".horus/packages")).unwrap();
+        horus_sys::fs::symlink(&mine, &project.join(".horus/packages/mine")).unwrap();
+
+        // Another project's dependency, sharing the cache and nothing else.
+        let theirs = cache.join("pypi_theirs@2.0");
+        fs::create_dir_all(theirs.join("theirmod")).unwrap();
+        fs::write(theirs.join("theirmod/__init__.py"), "").unwrap();
+
+        // A HORUS registry package, which is not per-project and stays.
+        let registry = cache.join("horus_py@0.3.0");
+        fs::create_dir_all(registry.join("lib/horus")).unwrap();
+        fs::write(registry.join("lib/horus/__init__.py"), "").unwrap();
+
+        let entries = collect_python_path_entries(&project, &[cache]);
+        assert!(
+            entries.iter().any(|e| e.contains("mine")),
+            "the project's own dependency has to stay importable: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("theirs")),
+            "a cached distribution this project never resolved is not its \
+             dependency: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e.contains("horus_py@0.3.0")),
+            "the registry layout is what `horus install --global` writes and is \
+             not per-project: {entries:?}"
         );
     }
 

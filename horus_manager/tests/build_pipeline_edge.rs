@@ -641,6 +641,7 @@ fn test_cmake_gen_compiler_override() {
         compiler: Some("clang++".to_string()),
         cmake_args: vec![],
         toolchain: None,
+        link: None,
     });
 
     let (_, content) = horus_manager::cmake_gen::generate(&manifest, dir.path(), false).unwrap();

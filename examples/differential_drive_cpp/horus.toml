@@ -1,0 +1,6 @@
+[package]
+name = "differential_drive_cpp"
+version = "0.1.0"
+description = "Differential-drive mobile robot in C++ — the differential_drive example, ported"
+authors = ["softmata"]
+license = "Apache-2.0"

@@ -14,16 +14,6 @@ fn timestamp_now() -> u64 {
         .as_nanos() as u64
 }
 
-macro_rules! impl_pod_message {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            unsafe impl horus_core::bytemuck::Pod for $ty {}
-            unsafe impl horus_core::bytemuck::Zeroable for $ty {}
-            unsafe impl horus_core::communication::PodMessage for $ty {}
-        )+
-    };
-}
-
 /// Clock source: wall clock time
 pub const SOURCE_WALL: u8 = 0;
 /// Clock source: simulation time
@@ -205,7 +195,41 @@ impl TimeReference {
 }
 
 // Register Pod types for zero-copy IPC
-impl_pod_message!(Clock, TimeReference, SimSync, RateRequest);
+impl_pod_message! {
+    // `_pad` is part of the layout, so it is part of the layout identity.
+    // Leaving it out would let two structs that differ only in their explicit
+    // padding hash the same.
+    Clock {
+        clock_ns: u64,
+        realtime_ns: u64,
+        sim_speed: f64,
+        paused: u8,
+        source: u8,
+        _pad: [u8; 6],
+        timestamp_ns: u64,
+    }
+    TimeReference {
+        time_ref_ns: u64,
+        source: [u8; 32],
+        offset_ns: i64,
+        timestamp_ns: u64,
+    }
+    SimSync {
+        step: u64,
+        sim_time_ns: u64,
+        dt_ns: u64,
+        state: u8,
+        _pad: [u8; 7],
+    }
+    RateRequest {
+        topic_name: [u8; 32],
+        desired_hz: f64,
+        min_hz: f64,
+        max_hz: f64,
+        requester_id: u64,
+        timestamp_ns: u64,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -324,7 +348,7 @@ mod tests {
     #[test]
     fn test_rate_request_new() {
         let rr = RateRequest::new("imu", 100.0, 50.0, 200.0);
-        assert_eq!(rr.topic(), "imu");
+        assert_eq!(rr.topic_name(), "imu");
         assert!((rr.desired_hz - 100.0).abs() < f64::EPSILON);
         assert!((rr.min_hz - 50.0).abs() < f64::EPSILON);
         assert!((rr.max_hz - 200.0).abs() < f64::EPSILON);
@@ -336,14 +360,14 @@ mod tests {
     fn test_rate_request_with_requester() {
         let rr = RateRequest::new("cmd_vel", 30.0, 10.0, 60.0).with_requester(99);
         assert_eq!(rr.requester_id, 99);
-        assert_eq!(rr.topic(), "cmd_vel");
+        assert_eq!(rr.topic_name(), "cmd_vel");
     }
 
     #[test]
     fn test_rate_request_topic_truncation() {
         let long_name = "a".repeat(100);
         let rr = RateRequest::new(&long_name, 1.0, 1.0, 1.0);
-        assert!(rr.topic().len() <= 31);
+        assert!(rr.topic_name().len() <= 31);
     }
 }
 
@@ -483,7 +507,14 @@ impl RateRequest {
     }
 
     /// Get the topic name as a string.
-    pub fn topic(&self) -> &str {
+    ///
+    /// Named for the field it reads. It used to be `topic()`, which collided
+    /// with the `Type::topic(name)` opener every HORUS message now carries —
+    /// the one that supplies `LAYOUT_HASH` to `Topic::new_checked`. An inherent
+    /// impl cannot hold both names, and `RateRequest` being the single built-in
+    /// without a layout-checked opener is exactly the gap that check exists to
+    /// close.
+    pub fn topic_name(&self) -> &str {
         let len = self.topic_name.iter().position(|&b| b == 0).unwrap_or(32);
         std::str::from_utf8(&self.topic_name[..len]).unwrap_or("")
     }

@@ -16,6 +16,9 @@
 #                           examples against the real horus crate.
 #
 # Tiers 1 and 2 take seconds. Tier 3 takes minutes, so it is not a PR gate.
+#
+# shipped-examples-build sits outside that ladder: it builds this repository's
+# own examples/ projects, needs no docs checkout, and runs on every PR.
 
 name: Docs Contract
 
@@ -208,35 +211,60 @@ jobs:
       # keep in step.
 
 
-  # ── Tier 3 ────────────────────────────────────────────────────────────────
-  # Compiles the documented Rust examples against the real horus crate. Minutes,
-  # not seconds, so it runs nightly rather than per-PR.
-  #
-  # It gates only on examples that resolved against horus and *then* failed —
-  # a wrong field, a wrong signature, an unsatisfied bound. Examples that merely
-  # reference a name the reader supplies are reported as advisory, because an
-  # undefined name is not by itself evidence the docs are wrong.
-  # The ten projects under examples/ are what a reader clones and runs first.
+  # ── Shipped examples ──────────────────────────────────────────────────────
+  # The projects under examples/ are what a reader clones and runs first.
   # Nothing built them: `examples-compile` below compiles snippets *extracted
   # from the docs*, which is a different set, and the `every_example_builds`
   # test guards itself behind HORUS_TEST_BUILD_EXAMPLES, which was set nowhere.
   # Fifteen of the sixteen shipped examples were broken and CI was green.
   #
-  # Scheduled rather than per-PR: it is ten full cargo builds against the whole
-  # HORUS tree. The cheap static half of examples_contract does run on every PR
-  # as part of the normal horus_manager test job.
+  # This job used to be gated `if: github.event_name == 'schedule' ||
+  # inputs.run_compile_sweep`, on the reasoning that it is a full build per
+  # example against the whole HORUS tree and that "the cheap static half of
+  # examples_contract does run on every PR as part of the normal horus_manager
+  # test job". That second half was not true: ci.yml runs
+  # `cargo test --workspace --lib`, which builds only library test targets and
+  # never touches an integration test like examples_contract. So no part of this
+  # ran per-PR, and a PR that broke an example stayed green until the next
+  # nightly — by which point the break is a bisect, not a review comment.
+  #
+  # It runs per-PR now, and the cost is paid down rather than deferred:
+  # CARGO_TARGET_DIR points every example at one shared, cached target
+  # directory. They all depend on the same horus/horus_core/horus_types path
+  # deps, so the graph compiles once and each example adds one small crate. The
+  # package names are distinct, so no two examples overwrite each other's
+  # binary there (which is the one hazard of sharing — see build_dirs.rs).
+  # Measured locally on a cold shared target directory: all twelve examples
+  # built in 114 s and 1.5 GB total, against roughly a gigabyte each when every
+  # example keeps its own .horus/target.
   shipped-examples-build:
     name: Shipped examples build
-    if: github.event_name == 'schedule' || inputs.run_compile_sweep
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # `horus build` generates .horus/Cargo.toml with path dependencies into
+      # the HORUS source tree, which cargo_gen locates via
+      # find_horus_source_dir(). That function probes /horus, ~/horus,
+      # ~/softmata/horus, /opt/horus and the installer's cache — none of which
+      # is where actions/checkout puts the repository. Without this the job
+      # fails on the first example with "HORUS source not found", which is a
+      # thing nobody noticed while it only ever ran at 04:00.
+      HORUS_SOURCE: ${{ github.workspace }}
+      # One target directory for every example. See the note above.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # cmake and a C++17 compiler are here for differential_drive_cpp: it is a
+      # horus.toml project like the others, so `horus build` drives cmake and
+      # links libhorus_cpp.a. ubuntu-latest ships cmake, make and g++, but name
+      # them anyway rather than depending on the image's contents.
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config cmake g++ make
 
       - uses: actions/cache@v4
         with:
@@ -248,6 +276,9 @@ jobs:
           key: ${{ runner.os }}-cargo-examples-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-examples-
 
+      # Both halves of examples_contract in one invocation: the static manifest
+      # and macro-shape checks, and — because HORUS_TEST_BUILD_EXAMPLES is set —
+      # the full `horus build` of every example.
       - name: Build every shipped example
         env:
           HORUS_TEST_BUILD_EXAMPLES: "1"
@@ -405,10 +436,14 @@ jobs:
           cargo test -p horus_manager --test docs_examples_python -- \
             --ignored documented_python_api_exists --nocapture
 
+  # The single check branch protection points at. shipped-examples-build is in
+  # `needs` because a job that merely turns red on the PR page is not a gate:
+  # only a required check blocks a merge, and adding it here means the one
+  # required name covers it without touching branch-protection settings.
   docs-contract-success:
     name: Docs Contract Success
     permissions: {}
-    needs: [contract-hermetic, contract-live]
+    needs: [contract-hermetic, contract-live, shipped-examples-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -416,12 +451,15 @@ jobs:
         run: |
           echo "Hermetic: ${{ needs.contract-hermetic.result }}"
           echo "Live:     ${{ needs.contract-live.result }}"
+          echo "Examples: ${{ needs.shipped-examples-build.result }}"
           FAIL=""
           [ "${{ needs.contract-hermetic.result }}" = "success" ] || FAIL="$FAIL hermetic"
           [ "${{ needs.contract-live.result }}" = "success" ] || FAIL="$FAIL live"
+          [ "${{ needs.shipped-examples-build.result }}" = "success" ] || FAIL="$FAIL examples"
           if [ -n "$FAIL" ]; then
             echo "Docs contract failed:$FAIL"
             echo "This PR changes the CLI in a way the published documentation contradicts."
+            echo "(\"examples\" means a project under examples/ no longer builds.)"
             exit 1
           fi
           echo "Docs contract upheld."

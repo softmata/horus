@@ -7,16 +7,6 @@ use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
-macro_rules! impl_pod_message {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            unsafe impl horus_core::bytemuck::Pod for $ty {}
-            unsafe impl horus_core::bytemuck::Zeroable for $ty {}
-            unsafe impl horus_core::communication::PodMessage for $ty {}
-        )+
-    };
-}
-
 /// Returns the current time as nanoseconds since the UNIX epoch.
 fn timestamp_now() -> u64 {
     std::time::SystemTime::now()
@@ -690,13 +680,71 @@ impl SafetyStatus {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-impl_pod_message!(
-    Heartbeat,
-    DiagnosticStatus,
-    EmergencyStop,
-    ResourceUsage,
-    DiagnosticValue,
-    DiagnosticReport,
-    NodeHeartbeat,
-    SafetyStatus,
-);
+impl_pod_message! {
+    Heartbeat {
+        node_name: [u8; 32],
+        node_id: u32,
+        sequence: u64,
+        alive: u8,
+        uptime: f64,
+        timestamp_ns: u64,
+    }
+    DiagnosticStatus {
+        level: u8,
+        code: u32,
+        message: [u8; 128],
+        component: [u8; 32],
+        timestamp_ns: u64,
+    }
+    EmergencyStop {
+        engaged: u8,
+        reason: [u8; 64],
+        source: [u8; 32],
+        auto_reset: u8,
+        timestamp_ns: u64,
+    }
+    ResourceUsage {
+        cpu_percent: f32,
+        memory_bytes: u64,
+        memory_percent: f32,
+        disk_bytes: u64,
+        disk_percent: f32,
+        network_tx_bytes: u64,
+        network_rx_bytes: u64,
+        temperature: f32,
+        thread_count: u32,
+        timestamp_ns: u64,
+    }
+    DiagnosticValue {
+        key: [u8; 32],
+        value: [u8; 64],
+        value_type: u8,
+    }
+    DiagnosticReport {
+        component: [u8; 32],
+        values: [DiagnosticValue; 16],
+        value_count: u8,
+        level: u8,
+        timestamp_ns: u64,
+    }
+    NodeHeartbeat {
+        state: u8,
+        health: u8,
+        tick_count: u64,
+        target_rate_hz: u32,
+        actual_rate_hz: u32,
+        error_count: u32,
+        last_tick_timestamp: u64,
+        heartbeat_timestamp: u64,
+    }
+    SafetyStatus {
+        enabled: u8,
+        estop_engaged: u8,
+        watchdog_ok: u8,
+        limits_ok: u8,
+        comms_ok: u8,
+        mode: u8,
+        fault_code: u32,
+        timestamp_ns: u64,
+    }
+}

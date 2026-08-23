@@ -205,7 +205,13 @@ pub fn lib_rs(pkg: &Package, env: &layout::Env) -> String {
     out
 }
 
-/// Whether any message references a type this generator cannot size.
+/// Names of every type each message references that is not declared in the
+/// package.
+///
+/// Superseded for `horus msg gen` by [`super::resolve`], which reports the
+/// same thing with a file:line:col and the fields to write instead. Kept
+/// because it answers the question without mutating the package, which is what
+/// a caller inspecting a parsed `.hmsg` wants.
 pub fn unresolved_refs(pkg: &Package) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let local: Vec<&str> = pkg.messages.iter().map(|m| m.name.as_str()).collect();

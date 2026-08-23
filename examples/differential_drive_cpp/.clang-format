@@ -1,0 +1,9 @@
+# Matches the style of the generated template. `horus fmt` uses this.
+BasedOnStyle: LLVM
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 2
+AllowShortFunctionsOnASingleLine: Empty
+PointerAlignment: Left

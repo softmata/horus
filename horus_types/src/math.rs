@@ -9,16 +9,6 @@ use std::ops;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
-macro_rules! impl_pod_message {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            unsafe impl horus_core::bytemuck::Pod for $ty {}
-            unsafe impl horus_core::bytemuck::Zeroable for $ty {}
-            unsafe impl horus_core::communication::PodMessage for $ty {}
-        )+
-    };
-}
-
 macro_rules! impl_with_frame_id {
     () => {
         pub fn with_frame_id(mut self, frame_id: &str) -> Self {
@@ -799,20 +789,72 @@ impl Pose2D {
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
 // for real-time robotics control loops. Topic automatically uses POD backend.
 
-impl_pod_message!(
-    Twist,
-    Pose2D,
-    TransformStamped,
-    Point3,
-    Vector3,
-    Quaternion,
-    Pose3D,
-    PoseStamped,
-    PoseWithCovariance,
-    TwistWithCovariance,
-    Accel,
-    AccelStamped,
-);
+impl_pod_message! {
+    Twist {
+        linear: [f64; 3],
+        angular: [f64; 3],
+        timestamp_ns: u64,
+    }
+    Pose2D {
+        x: f64,
+        y: f64,
+        theta: f64,
+        timestamp_ns: u64,
+    }
+    TransformStamped {
+        translation: [f64; 3],
+        rotation: [f64; 4],
+        timestamp_ns: u64,
+    }
+    Point3 {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    Vector3 {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    Quaternion {
+        x: f64,
+        y: f64,
+        z: f64,
+        w: f64,
+    }
+    Pose3D {
+        position: Point3,
+        orientation: Quaternion,
+        timestamp_ns: u64,
+    }
+    PoseStamped {
+        pose: Pose3D,
+        frame_id: [u8; 32],
+        timestamp_ns: u64,
+    }
+    PoseWithCovariance {
+        pose: Pose3D,
+        covariance: [f64; 36],
+        frame_id: [u8; 32],
+        timestamp_ns: u64,
+    }
+    TwistWithCovariance {
+        twist: Twist,
+        covariance: [f64; 36],
+        frame_id: [u8; 32],
+        timestamp_ns: u64,
+    }
+    Accel {
+        linear: [f64; 3],
+        angular: [f64; 3],
+        timestamp_ns: u64,
+    }
+    AccelStamped {
+        accel: Accel,
+        frame_id: [u8; 32],
+        timestamp_ns: u64,
+    }
+}
 
 #[cfg(test)]
 mod tests {

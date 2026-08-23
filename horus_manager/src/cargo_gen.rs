@@ -138,12 +138,12 @@ pub fn generate(
     // ── [rust] passthrough ───────────────────────────────────────────────
     // Before the patches, for the same reason they come last.
     if let Some(rust) = &manifest.rust {
-        write_rust_passthrough(&mut cargo, rust);
+        write_rust_passthrough(&mut cargo, rust, PACKAGE_RUST_SECTIONS);
     }
 
     // ── Patch tables ─────────────────────────────────────────────────────
     // Last: [patch.*] is a top-level table and would swallow later entries.
-    write_patch_sections_with(&mut cargo, &horus_source, manifest.rust.as_ref());
+    write_patch_sections(&mut cargo, &horus_source, manifest.rust.as_ref());
 
     // ── Write file ───────────────────────────────────────────────────────
     let cargo_toml_path = horus_dir.join("Cargo.toml");
@@ -154,61 +154,124 @@ pub fn generate(
         &cargo_toml_path,
         &cargo,
         &mut fingerprints,
+        &sections_horus_toml_keeps(manifest),
     )?;
     let _ = fingerprints.save(project_dir);
 
     // Not part of the manifest — see write_cargo_config.
-    write_cargo_config(&horus_dir, manifest.rust.as_ref())?;
-    ignore_build_dir(&horus_dir);
+    write_cargo_config(project_dir, &horus_dir, manifest.rust.as_ref())?;
+    ignore_generated_dir(&horus_dir, BUILD_DIR_IS_GENERATED);
 
     Ok((cargo_toml_path, cargo))
 }
 
-/// Say so when `[rust]` cannot reach a workspace build.
+/// Say which `[rust]` settings a workspace build cannot place, and where they go.
 ///
-/// Workspace generation predates `[rust]` and does not forward it: neither the
-/// root nor the member manifests are given `[profile]`, `[features]`,
-/// `[lints]`, `[build-dependencies]`, `[target]` or the user's `[patch]`, and
-/// the cargo config that carries `rustflags` is written but never read, because
-/// a workspace build spawns cargo with `--manifest-path` from the project root
-/// instead of from inside `.horus/` — and cargo discovers config by walking up
-/// from its working directory, not from the manifest.
+/// WHY THIS IS NO LONGER A BLANKET WARNING. The first version of this said
+/// "workspace builds do not forward it yet — only `edition` takes effect", and
+/// that was wrong in both directions. `rustflags` already reached a workspace:
+/// `horus test` spawns cargo from inside `.horus/`, so it read the generated
+/// cargo config and died on a bogus flag while `horus build` was printing that
+/// the section had no effect. And the settings that genuinely were dropped were
+/// never named, so the warning could not be acted on. Worse, the lost-edit
+/// warning on a member manifest told users to move a `[patch]` into `[rust]`,
+/// and this one then told them `[rust]` does nothing here — two contradictory
+/// instructions about the same setting, with the manifest still eating it.
 ///
-/// A section that parses, passes `horus check` and then does nothing is the
-/// exact failure `[rust]` exists to remove, and it does not stop being that
-/// failure because the project happens to be a workspace. Until the workspace
-/// path forwards the section, it has to say out loud that it is ignoring it —
-/// the same call `run_rust.rs` makes for a project with its own root
-/// `Cargo.toml`.
-///
-/// `edition` is excluded: `rust_edition` reads it on both paths, so a `[rust]`
-/// section containing only an edition is honoured and must not be warned about.
-fn warn_if_rust_section_cannot_reach_a_workspace(
+/// `generate_workspace` now forwards the section (root `profile` and `patch` to
+/// the root manifest, root `lints` and every member's own tables into the
+/// member manifests, `rustflags` to the cargo config). What is left is the set
+/// cargo will not accept in the position a workspace would have to put it in,
+/// and each of those gets named with the manifest it is in and the move that
+/// makes it work.
+fn warn_about_rust_settings_a_workspace_cannot_place(
     root_manifest: &HorusManifest,
     members: &[(PathBuf, HorusManifest)],
 ) {
-    let ignored = std::iter::once(root_manifest)
-        .chain(members.iter().map(|(_, m)| m))
-        .filter_map(|m| m.rust.as_ref())
-        .any(rust_section_is_ignored_by_workspaces);
-    if !ignored {
+    let unplaceable = rust_settings_a_workspace_cannot_place(root_manifest, members);
+    if unplaceable.is_empty() {
         return;
     }
-    crate::cli_output::warn(
-        "horus.toml has a [rust] section, but workspace builds do not forward \
-         it yet — only `edition` takes effect. Its settings have no effect on \
-         this build.",
-    );
+    let mut msg = "horus.toml settings this workspace build cannot apply:".to_string();
+    for item in &unplaceable {
+        msg.push_str("\n    - ");
+        msg.push_str(item);
+    }
+    crate::cli_output::warn(&msg);
 }
 
-/// Whether `[rust]` carries anything beyond the `edition` a workspace honours.
-fn rust_section_is_ignored_by_workspaces(rust: &crate::manifest::RustConfig) -> bool {
-    let mut beyond_edition = rust.clone();
-    beyond_edition.edition = None;
-    !beyond_edition.is_empty()
+/// The `[rust]` settings a workspace build has nowhere to put, each named with
+/// the manifest it is in and the move that makes it work.
+///
+/// Split out from the warning so the decision is testable without capturing
+/// stderr — the list is the part that has to be right.
+fn rust_settings_a_workspace_cannot_place(
+    root_manifest: &HorusManifest,
+    members: &[(PathBuf, HorusManifest)],
+) -> Vec<String> {
+    let mut unplaceable: Vec<String> = Vec::new();
+
+    // A virtual workspace root has no `[package]`, and cargo rejects a virtual
+    // manifest that carries package-level tables outright ("this virtual
+    // manifest specifies a `features` section, which is not allowed"). Writing
+    // them would break the build rather than ignore the setting.
+    if let Some(rust) = &root_manifest.rust {
+        for (name, table) in [
+            ("features", &rust.features),
+            ("build-dependencies", &rust.build_dependencies),
+            ("target", &rust.target),
+        ] {
+            if table.as_ref().is_some_and(|t| !t.is_empty()) {
+                unplaceable.push(format!(
+                    "[rust.{name}] in the workspace root — a virtual workspace \
+                     has no package to attach it to; put it in the horus.toml of \
+                     the member that needs it"
+                ));
+            }
+        }
+    }
+
+    for (rel_path, member) in members {
+        let Some(rust) = &member.rust else {
+            continue;
+        };
+        let where_ = rel_path.join(crate::manifest::HORUS_TOML);
+        let where_ = where_.display();
+        if rust.profile.as_ref().is_some_and(|t| !t.is_empty()) {
+            unplaceable.push(format!(
+                "[rust.profile] in {where_} — cargo honours profiles only at the \
+                 workspace root; move it to the root horus.toml"
+            ));
+        }
+        if rust.patch.as_ref().is_some_and(|t| !t.is_empty()) {
+            unplaceable.push(format!(
+                "[rust.patch] in {where_} — [patch] applies to a whole workspace; \
+                 move it to the root horus.toml"
+            ));
+        }
+        if !rust.rustflags.is_empty() {
+            unplaceable.push(format!(
+                "[rust].rustflags in {where_} — rustflags are set per build \
+                 directory, and a workspace has one; move them to the root \
+                 horus.toml"
+            ));
+        }
+    }
+
+    unplaceable
 }
 
-/// Keep `.horus/` out of `git status`, the way cargo keeps `target/` out.
+/// The `.gitignore` reason for `.horus/`.
+const BUILD_DIR_IS_GENERATED: &str =
+    "`.horus/` is a build directory — nothing in it belongs in version control.";
+
+/// The `.gitignore` reason for a `.cargo/` directory HORUS created.
+const CARGO_CONFIG_DIR_IS_GENERATED: &str =
+    "this .cargo/ directory holds nothing but the config HORUS generates from\n\
+     # [rust].rustflags in horus.toml.";
+
+/// Keep a directory HORUS generates out of `git status`, the way cargo keeps
+/// `target/` out.
 ///
 /// The generated project `.gitignore` names the contents of `.horus/` one path
 /// at a time — `.horus/target/`, `.horus/Cargo.toml`, `.horus/packages/` and so
@@ -218,22 +281,22 @@ fn rust_section_is_ignored_by_workspaces(rust: &crate::manifest::RustConfig) -> 
 /// that only runs at `horus new` also leaves every project created before the
 /// addition behind.
 ///
-/// A `.gitignore` inside the build directory itself is how cargo solves this
-/// for `target/`, and it covers the whole directory for old and new projects at
-/// once. Written only when absent: it is the user's repository, and a file they
-/// have changed is theirs. Failure is ignored — this is tidiness, and a build
-/// must not stop for it.
-fn ignore_build_dir(horus_dir: &Path) {
-    let path = horus_dir.join(".gitignore");
+/// A `.gitignore` inside the generated directory itself is how cargo solves
+/// this for `target/`, and it covers the whole directory for old and new
+/// projects at once — including the `.gitignore`, which `*` matches too, so the
+/// directory disappears from `git status` entirely instead of trading one
+/// untracked path for another.
+///
+/// Written only when absent, and — for a directory outside `.horus/` — only
+/// when HORUS created it: it is the user's repository, and neither a file they
+/// have changed nor a directory that was already theirs is ours to hide.
+/// Failure is ignored; this is tidiness, and a build must not stop for it.
+fn ignore_generated_dir(dir: &Path, what: &str) {
+    let path = dir.join(".gitignore");
     if path.exists() {
         return;
     }
-    let _ = fs::write(
-        &path,
-        "# Generated by horus. `.horus/` is a build directory — nothing in it\n\
-         # belongs in version control.\n\
-         *\n",
-    );
+    let _ = fs::write(&path, format!("# Generated by horus. {what}\n*\n"));
 }
 
 /// How many discarded settings to name before summarising the rest.
@@ -263,20 +326,33 @@ const LOST_EDIT_LIMIT: usize = 8;
 /// A project generated by an older HORUS has no fingerprint yet, so its first
 /// regeneration cannot tell a hand edit from an ordinary one and stays silent.
 /// It records on the way out, and every regeneration after that can.
+///
+/// `kept` names the tables `horus.toml` still holds even when this particular
+/// regeneration does not emit them — see `sections_horus_toml_keeps`, which is
+/// what stops `horus cargo add --dev` from reporting a loss that did not
+/// happen.
 fn write_generated(
     project_dir: &Path,
     key: &str,
     path: &Path,
     content: &str,
     fingerprints: &mut crate::fingerprint::Fingerprints,
+    kept: &[KeptSection],
 ) -> Result<()> {
     if fingerprints.is_modified(key, project_dir) {
         let existing = fs::read_to_string(path).unwrap_or_default();
-        let lost = dropped_settings(&existing, content);
+        let lost = dropped_settings(&existing, content, kept);
         if !lost.is_empty() {
             // Named relative to the project: an absolute path here is a
-            // tempdir-long line in front of the part that matters.
-            report_lost_edits(path.strip_prefix(project_dir).unwrap_or(path), &lost);
+            // tempdir-long line in front of the part that matters. The key
+            // doubles as the position: `Cargo.toml` is the root or a standalone
+            // package, `<member>/Cargo.toml` is a workspace member, and the two
+            // do not take the same advice.
+            report_lost_edits(
+                path.strip_prefix(project_dir).unwrap_or(path),
+                &lost,
+                key.contains('/'),
+            );
         }
     }
 
@@ -285,25 +361,183 @@ fn write_generated(
     Ok(())
 }
 
+/// A table of the generated manifest that `horus.toml` also holds, with the
+/// keys it holds.
+type KeptSection = (&'static str, Vec<String>);
+
+/// Tables `horus.toml` carries whether or not this regeneration emits them.
+///
+/// WHY THIS EXISTS. `generate` takes `include_dev`, and it is false everywhere
+/// but `horus test`: an ordinary build, and every `horus cargo <cmd>`
+/// sync-back, rewrites the manifest with no `[dev-dependencies]` table at all.
+/// The table therefore disappears from the file on a flow that lost nothing,
+/// and a plain key diff called that a destroyed hand edit —
+///
+/// ```text
+/// $ horus cargo add --dev rand
+///   ⟳ Synced 2 new dep(s) to horus.toml
+/// ! .horus/Cargo.toml is generated from horus.toml and has just been
+///   rewritten, discarding settings that were added to it directly:
+///     dev-dependencies
+/// ```
+///
+/// — every single time, on the flow that is *supposed* to be used. A warning
+/// that cries wolf on a normal command is worse than no warning: it trains
+/// people to scroll past the one that is real, and here it also mixed into the
+/// same list as real losses.
+///
+/// The honest question is not "is the table still in the file" but "does
+/// horus.toml still have this crate". Anything horus.toml knows about comes
+/// back the next time a path asks for dev-dependencies; a crate that only ever
+/// existed in the generated file does not, and is still reported — by name, and
+/// pointed at `[dev-dependencies]` rather than at `[rust]`.
+fn sections_horus_toml_keeps(manifest: &HorusManifest) -> Vec<KeptSection> {
+    vec![(
+        "dev-dependencies",
+        manifest.dev_dependencies.keys().cloned().collect(),
+    )]
+}
+
 /// Tell the user which of their edits just went away, and where they belong.
-fn report_lost_edits(path: &Path, lost: &[String]) {
+///
+/// The advice is per key, because one line for all of them was wrong for the
+/// keys people actually lose — see `horus_toml_home`.
+fn report_lost_edits(path: &Path, lost: &[String], in_workspace_member: bool) {
+    let named: Vec<&String> = lost.iter().take(LOST_EDIT_LIMIT).collect();
+    let width = named.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+
     let mut msg = format!(
         "{} is generated from horus.toml and has just been rewritten, \
          discarding settings that were added to it directly:",
         path.display()
     );
-    for name in lost.iter().take(LOST_EDIT_LIMIT) {
-        msg.push_str("\n    ");
-        msg.push_str(name);
+    let mut any_homeless = false;
+    for name in &named {
+        match horus_toml_home(name) {
+            Some(home) => {
+                let which = which_horus_toml(name, in_workspace_member);
+                let _ = write!(
+                    msg,
+                    "\n    {name:<width$}  → put it under {home} in {which}"
+                );
+            }
+            None => {
+                any_homeless = true;
+                let _ = write!(msg, "\n    {name:<width$}  → no horus.toml equivalent");
+            }
+        }
     }
     if lost.len() > LOST_EDIT_LIMIT {
         let _ = write!(msg, "\n    ... and {} more", lost.len() - LOST_EDIT_LIMIT);
     }
     msg.push_str(
-        "\n  Put them under [rust] in horus.toml — that section is spliced into \
-         every regeneration, so it survives.",
+        "\n  Those sections of horus.toml are written into this file on every \
+         regeneration, so a setting kept there survives.",
     );
+    if any_homeless {
+        let _ = write!(
+            msg,
+            "\n  [rust] forwards {}; a Cargo.toml section outside that list has \
+             nowhere in horus.toml to live yet.",
+            rust_forwarded_sections().join(", ")
+        );
+    }
+
+    // The tests watch this, not `dropped_settings`: the diff being right proves
+    // nothing if nobody is told. See `reported_lost_edits`.
+    #[cfg(test)]
+    REPORTED_LOST_EDITS.with(|reported| reported.borrow_mut().push(msg.clone()));
+
     crate::cli_output::warn(&msg);
+}
+
+// Every warning `report_lost_edits` has emitted on this thread.
+//
+// The user-visible warning is the whole of this fix, and a test that calls
+// `dropped_settings` itself only proves the diff works — deleting the report
+// call left every such test green. This is the seam that makes the emission
+// itself testable, and it exists only in test builds.
+#[cfg(test)]
+thread_local! {
+    static REPORTED_LOST_EDITS: std::cell::RefCell<Vec<String>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+/// Take (and clear) the warnings emitted on this thread.
+#[cfg(test)]
+fn reported_lost_edits() -> Vec<String> {
+    REPORTED_LOST_EDITS.with(|reported| std::mem::take(&mut *reported.borrow_mut()))
+}
+
+/// The `[rust]` keys that are Cargo.toml sections spliced into the generated
+/// manifest, in the order they are listed to the user.
+///
+/// Read off `manifest_lint::KNOWN_RUST` rather than written out a second time,
+/// so a section that stops being accepted by `horus check` stops being
+/// suggested here. `edition` and `rustflags` are excluded: neither is a
+/// Cargo.toml section, so neither can ever turn up in this diff.
+fn rust_forwarded_sections() -> Vec<&'static str> {
+    crate::manifest_lint::KNOWN_RUST
+        .iter()
+        .copied()
+        .filter(|key| !matches!(*key, "edition" | "rustflags"))
+        .collect()
+}
+
+/// Where a setting the rewrite dropped can be put so that it survives.
+///
+/// WHY PER KEY. One line of advice for every key was wrong for the keys people
+/// actually lose. `dev-dependencies` is a top-level table of horus.toml and
+/// `[rust.dev-dependencies]` is not a thing, so following the old message
+/// literally produced an error from HORUS's own validator:
+///
+/// ```text
+/// $ horus check
+/// x unknown key `rust.dev-dependencies` — the section is spelled
+///   `[dev-dependencies]`. It has no effect.
+/// ```
+///
+/// Advice that fails the tool's own check is worse than no advice. `[rust]` is
+/// the right answer only for the Cargo sections `[rust]` forwards, and this
+/// says so key by key — including the sub-path, so `patch.crates-io` names
+/// `[rust.patch.crates-io]`, which is the header the user can paste.
+/// Which manifest that section has to go in.
+///
+/// WHY THIS IS NOT ALWAYS "horus.toml". On a workspace, `[patch]` and
+/// `[profile]` are honoured only in the root — cargo ignores a member's — so
+/// `generate_workspace` forwards them from the root manifest and from nowhere
+/// else. A member's `.horus/<name>/Cargo.toml` losing a hand-written `[patch]`
+/// and being told to put it "under [rust.patch] in horus.toml" sent the user to
+/// the member's horus.toml, where it does nothing:
+///
+/// ```text
+/// ! .horus/ws/Cargo.toml ... discarding settings ...: patch
+///   Put them under [rust] in horus.toml ...
+/// $ (adds [rust.patch.crates-io] to crates/ws/horus.toml, rebuilds)
+/// ! horus.toml settings this workspace build cannot apply:
+///     - [rust.patch] in crates/ws/horus.toml — ...
+/// ```
+///
+/// Two messages contradicting each other about one setting is worse than one
+/// message being incomplete, so the first one names the manifest that works.
+fn which_horus_toml(dotted: &str, in_workspace_member: bool) -> &'static str {
+    let section = dotted.split('.').next().unwrap_or(dotted);
+    if in_workspace_member && matches!(section, "patch" | "profile") {
+        "the workspace root's horus.toml"
+    } else {
+        "horus.toml"
+    }
+}
+
+fn horus_toml_home(dotted: &str) -> Option<String> {
+    let section = dotted.split('.').next()?;
+    match section {
+        // Written into the generated manifest from horus.toml's own dependency
+        // tables — `horus cargo add` is the supported way to edit them.
+        "dependencies" | "dev-dependencies" => Some(format!("[{section}]")),
+        _ if rust_forwarded_sections().contains(&section) => Some(format!("[rust.{dotted}]")),
+        _ => None,
+    }
 }
 
 /// Settings present in `old` that `new` does not have, as dotted paths.
@@ -318,16 +552,43 @@ fn report_lost_edits(path: &Path, lost: &[String]) {
 /// Unparsable input yields nothing. If the file on disk is not valid TOML there
 /// is no way to say which of its settings a rewrite would drop, and guessing
 /// from the text would produce exactly the false alarms this avoids.
-fn dropped_settings(old: &str, new: &str) -> Vec<String> {
-    let (Ok(old), Ok(new)) = (
+fn dropped_settings(old: &str, new: &str, kept: &[KeptSection]) -> Vec<String> {
+    let (Ok(old), Ok(mut new)) = (
         toml::from_str::<toml::Value>(old),
         toml::from_str::<toml::Value>(new),
     ) else {
         return Vec::new();
     };
+    graft_kept_sections(&mut new, kept);
     let mut lost = Vec::new();
     collect_missing(&old, &new, &mut Vec::new(), &mut lost);
     lost
+}
+
+/// Put the tables horus.toml still holds back into the replacement, so the
+/// diff asks "is this setting gone" rather than "is it in this one file".
+///
+/// Only presence matters (see `collect_missing`), so the grafted entries carry
+/// a placeholder value: a `[dev-dependencies]` this regeneration did not emit
+/// is treated as still holding every crate horus.toml lists, and a crate
+/// horus.toml has never heard of is still reported.
+fn graft_kept_sections(new: &mut toml::Value, kept: &[KeptSection]) {
+    let Some(table) = new.as_table_mut() else {
+        return;
+    };
+    for (section, keys) in kept {
+        let entry = table
+            .entry(section.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        let Some(entry) = entry.as_table_mut() else {
+            continue;
+        };
+        for key in keys {
+            entry
+                .entry(key.clone())
+                .or_insert_with(|| toml::Value::Boolean(true));
+        }
+    }
 }
 
 /// Walk `old`, recording the path of every key `new` does not also have.
@@ -382,43 +643,120 @@ fn render_path(path: &[String]) -> String {
         .join(".")
 }
 
-/// Write `.horus/.cargo/config.toml` for `[rust].rustflags`, or remove it.
+/// First line of a cargo config HORUS generated, and the test for whether a
+/// cargo config on disk is ours to rewrite.
+const GENERATED_CARGO_CONFIG_HEADER: &str =
+    "# Generated by horus from [rust].rustflags in horus.toml — do not edit manually.";
+
+/// Write `.cargo/config.toml` for `[rust].rustflags`, or remove it.
 ///
 /// `rustflags` is the one `[rust]` key that cannot ride the manifest
 /// passthrough: Cargo.toml has no slot for it. Cargo's supported homes are the
 /// `RUSTFLAGS` environment variable — which only the process spawning cargo can
 /// set, and this module does not spawn it — and `[build] rustflags` in a cargo
-/// config file. Cargo discovers config by walking up from its *working
-/// directory*, and every build of a generated project runs with `.horus` as
-/// its cwd (`run_rust.rs` and `test.rs` all use `.current_dir(".horus")`), so a
-/// file at `.horus/.cargo/config.toml` is found. Putting it at the project root
-/// instead would reach the same builds and a few more, but that path belongs to
-/// the user — `.horus/` is entirely ours to rewrite.
+/// config file.
 ///
-/// Removed rather than left in place when `rustflags` is emptied. A stale file
-/// here would keep applying flags `horus.toml` no longer asks for, which is the
-/// same divergence between the manifest and the build that `[rust]` exists to
-/// end — and unlike the manifest, nothing else rewrites this file to correct it.
-fn write_cargo_config(horus_dir: &Path, rust: Option<&crate::manifest::RustConfig>) -> Result<()> {
-    let config_dir = horus_dir.join(".cargo");
-    let config_path = config_dir.join("config.toml");
+/// WHY THE PROJECT ROOT AND NOT `.horus/`. Cargo discovers config by walking up
+/// from its *working directory*, not from `--manifest-path`. The first version
+/// of this wrote `.horus/.cargo/config.toml`, reasoning that every build runs
+/// with `.horus` as its cwd — true of `run_rust.rs` and `test.rs`, and false of
+/// everything else. `horus lint`, `horus doc`, `horus bench` and the workspace
+/// build all spawn cargo from the project root with `--manifest-path
+/// .horus/Cargo.toml`, so the flags never reached them:
+///
+/// ```text
+/// $ horus build   # [rust] rustflags = ["--bogus-horus-flag"]
+/// error: Unrecognized option: 'bogus-horus-flag'
+/// $ horus lint
+///     Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.68s
+/// ```
+///
+/// A flag that applies to three commands and not the other four is worse than
+/// one that applies to none: `horus lint` then compiles a different crate than
+/// `horus build` does, and any `--cfg` disagreement shows up as errors in one
+/// and not the other. The project root is the one directory every one of those
+/// spawns sits in or under, so it is the only location that makes the setting
+/// mean one thing. It is also where a Rust developer would look for it.
+///
+/// WHAT PROTECTS THE USER'S OWN CONFIG. `.horus/` is entirely ours; the project
+/// root is not, and a cross-compiling robotics project may well already keep a
+/// `.cargo/config.toml` full of linker settings. Overwriting it would be the
+/// same silent destruction of a hand-written file that this module exists to
+/// stop, so a config HORUS did not write is never touched — the flags fall back
+/// to `.horus/` and the user is told which commands that leaves uncovered.
+///
+/// Exactly one of the two files exists at a time. Cargo *joins* array values
+/// from every config it finds on the way up, so a leftover `.horus/` copy would
+/// hand rustc every flag twice.
+///
+/// Removed rather than left in place when `rustflags` is emptied: a stale file
+/// would keep applying flags `horus.toml` no longer asks for, which is the same
+/// divergence between manifest and build that `[rust]` exists to end.
+fn write_cargo_config(
+    project_dir: &Path,
+    horus_dir: &Path,
+    rust: Option<&crate::manifest::RustConfig>,
+) -> Result<()> {
+    let root_config = project_dir.join(".cargo").join("config.toml");
+    let build_config = horus_dir.join(".cargo").join("config.toml");
 
     let flags: &[String] = rust.map(|r| r.rustflags.as_slice()).unwrap_or(&[]);
-    if flags.is_empty() {
-        if config_path.exists() {
-            fs::remove_file(&config_path)
-                .with_context(|| format!("Failed to remove {}", config_path.display()))?;
-        }
+
+    // A project with its own root `Cargo.toml` builds from that manifest and
+    // not from the generated one, and `[rust]` is documented as having no
+    // effect there — `run_rust.rs` warns about it by name. Writing a config
+    // into the root would quietly apply the flags to the user's own cargo
+    // builds while the tool is saying the section does nothing, which is the
+    // same disagreement between message and behaviour that the workspace
+    // warning was refuted over. Nothing is written, and the warning stays true.
+    let horus_owns_the_build = !project_dir.join("Cargo.toml").exists();
+
+    if flags.is_empty() || !horus_owns_the_build {
+        remove_generated_cargo_config(&root_config)?;
+        remove_generated_cargo_config(&build_config)?;
         return Ok(());
     }
 
-    fs::create_dir_all(&config_dir)
+    if root_cargo_config_is_ours_to_write(&root_config) {
+        write_generated_cargo_config(&root_config, flags)?;
+        remove_generated_cargo_config(&build_config)?;
+    } else {
+        write_generated_cargo_config(&build_config, flags)?;
+        crate::cli_output::warn(
+            "horus.toml sets [rust].rustflags, but this project already has a \
+             .cargo config HORUS did not write, so it is left alone. The flags \
+             went to .horus/.cargo/config.toml, which `horus build`, `horus run` \
+             and `horus test` read — `horus lint`, `horus doc` and `horus bench` \
+             run cargo from the project root and will not see them. Add the \
+             flags to your own .cargo config to cover those too.",
+        );
+    }
+    Ok(())
+}
+
+/// Whether the project root's cargo config is HORUS's to write.
+///
+/// `writable_by_horus`, plus the file cargo still reads under its pre-1.39
+/// name. Cargo accepts both `.cargo/config.toml` and `.cargo/config`, and when
+/// both exist it uses `config.toml` and ignores the other — so writing ours
+/// next to a user's `config` would not overwrite their settings, it would
+/// silently switch all of them off, which is worse.
+fn root_cargo_config_is_ours_to_write(root_config: &Path) -> bool {
+    let legacy_name = root_config.with_file_name("config");
+    !legacy_name.exists() && writable_by_horus(root_config)
+}
+
+/// Write one cargo config, creating (and gitignoring) its directory.
+fn write_generated_cargo_config(config_path: &Path, flags: &[String]) -> Result<()> {
+    let config_dir = config_path.parent().unwrap_or(Path::new("."));
+    let created_dir = !config_dir.exists();
+    fs::create_dir_all(config_dir)
         .with_context(|| format!("Failed to create {}", config_dir.display()))?;
 
     let mut text = String::with_capacity(256);
     writeln!(
         text,
-        "# Generated by horus from [rust].rustflags in horus.toml — do not edit manually.\n\
+        "{GENERATED_CARGO_CONFIG_HEADER}\n\
          # Edits are lost on the next build; change [rust].rustflags instead."
     )
     .unwrap();
@@ -427,9 +765,37 @@ fn write_cargo_config(horus_dir: &Path, rust: Option<&crate::manifest::RustConfi
     // is escaped by the serializer rather than by this format string.
     writeln!(text, "rustflags = {}", toml::Value::from(flags.to_vec())).unwrap();
 
-    fs::write(&config_path, text)
+    fs::write(config_path, text)
         .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+    // Only when HORUS created the directory: an existing `.cargo/` is the
+    // user's, and hiding it from git is not ours to decide.
+    if created_dir {
+        ignore_generated_dir(config_dir, CARGO_CONFIG_DIR_IS_GENERATED);
+    }
     Ok(())
+}
+
+/// Delete a cargo config, but only one HORUS generated.
+fn remove_generated_cargo_config(config_path: &Path) -> Result<()> {
+    if !generated_by_horus(config_path) {
+        return Ok(());
+    }
+    fs::remove_file(config_path)
+        .with_context(|| format!("Failed to remove {}", config_path.display()))?;
+    Ok(())
+}
+
+/// Whether this cargo config carries the header HORUS writes.
+fn generated_by_horus(config_path: &Path) -> bool {
+    fs::read_to_string(config_path)
+        .is_ok_and(|text| text.starts_with(GENERATED_CARGO_CONFIG_HEADER))
+}
+
+/// Whether HORUS may write this cargo config: nothing is there, or what is
+/// there is a file HORUS wrote.
+fn writable_by_horus(config_path: &Path) -> bool {
+    !config_path.exists() || generated_by_horus(config_path)
 }
 
 /// Write driver dependencies from `[drivers]` config tables.
@@ -658,26 +1024,18 @@ const GIT_PATCH_TARGETS: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// Write the `[patch]` tables that redirect git-sourced HORUS crates at the
-/// local source tree.
+/// The edition a manifest asks for, if it asks for one at all.
 ///
-/// `horus-robotics` and `horus-tf` depend on `horus_core` (and siblings) through
-/// relative paths that only resolve inside the HORUS checkout — a bare clone of
-/// either git repo has no such package. The root workspace compensates with
-/// `[patch."<git url>"]` tables.
-///
-/// A generated `.horus/Cargo.toml` declares its own `[workspace]`, which makes it
-/// a *new* workspace root. Cargo only honors `[patch]` from the workspace root of
-/// the build actually running and never inherits it through a path dependency, so
-/// the root workspace's tables are dropped on the floor and the build dies with
-/// `no matching package named 'horus_core' found`. Re-emitting them here is what
-/// keeps a generated project buildable. `horus_cpp/fuzz/Cargo.toml` solves the
-/// identical problem by hand for the same reason.
-///
-/// Must be called last: `[patch.*]` is a top-level table, so anything written
-/// after it would be parsed as part of it rather than of `[dependencies]`.
-fn write_patch_sections(cargo: &mut String, horus_source: &Path) {
-    write_patch_sections_with(cargo, horus_source, None);
+/// `[rust].edition` beats `[package].rust_edition`. Kept separate from the
+/// default below because a workspace member that names no edition has one more
+/// place to look — the workspace root — and "the user wrote 2021" and "nobody
+/// wrote anything" have to stay distinguishable for that.
+fn explicit_edition(manifest: &HorusManifest) -> Option<String> {
+    manifest
+        .rust
+        .as_ref()
+        .and_then(|r| r.edition.clone())
+        .or_else(|| manifest.package.rust_edition.clone())
 }
 
 /// The Rust edition for the generated package.
@@ -685,13 +1043,49 @@ fn write_patch_sections(cargo: &mut String, horus_source: &Path) {
 /// `[rust].edition` beats `[package].rust_edition`, which beats the 2021
 /// default. Both paths that emit an edition use this, so they cannot drift.
 fn rust_edition(manifest: &HorusManifest) -> String {
-    manifest
-        .rust
-        .as_ref()
-        .and_then(|r| r.edition.clone())
-        .or_else(|| manifest.package.rust_edition.clone())
+    explicit_edition(manifest).unwrap_or_else(|| "2021".to_string())
+}
+
+/// The Rust edition for a workspace member.
+///
+/// The root's edition is the workspace-wide default, the way cargo's
+/// `[workspace.package] edition` is: a member that names its own wins, and a
+/// member that names none inherits rather than silently falling back to 2021.
+/// Nothing read the root's `[rust].edition` on the workspace path before —
+/// `generate_workspace` only ever asked the member — so setting an edition at
+/// the root of a workspace did nothing at all.
+fn member_edition(member: &HorusManifest, root: &HorusManifest) -> String {
+    explicit_edition(member)
+        .or_else(|| explicit_edition(root))
         .unwrap_or_else(|| "2021".to_string())
 }
+
+/// The `[rust]` tables a standalone package manifest carries: all of them.
+const PACKAGE_RUST_SECTIONS: &[&str] = &[
+    "features",
+    "build-dependencies",
+    "lints",
+    "profile",
+    "target",
+];
+
+/// The `[rust]` tables a workspace *member* manifest carries.
+///
+/// `profile` is missing because cargo ignores a profile declared anywhere but
+/// the workspace root ("profiles for the non root package will be ignored"),
+/// and `patch` because the same is true of it — both are forwarded from the
+/// root manifest instead, and a member that declares one is warned about by
+/// `warn_about_rust_settings_a_workspace_cannot_place`.
+const MEMBER_RUST_SECTIONS: &[&str] = &["features", "build-dependencies", "lints", "target"];
+
+/// The `[rust]` tables the generated workspace *root* manifest carries.
+///
+/// Only `profile`: the root is a virtual manifest with no `[package]`, and
+/// cargo rejects a virtual manifest carrying `[features]`, `[target]` or
+/// `[build-dependencies]` rather than ignoring them. `patch` is written by
+/// `write_patch_sections`, and `lints` goes to the members (see
+/// `member_rust_section`).
+const WORKSPACE_ROOT_RUST_SECTIONS: &[&str] = &["profile"];
 
 /// Splice the user's `[rust]` tables into the generated manifest.
 ///
@@ -705,8 +1099,20 @@ fn rust_edition(manifest: &HorusManifest) -> String {
 ///
 /// Only sections HORUS does not write itself, so there is nothing to merge and
 /// nothing to lose. `[patch]` is the exception and is handled in
-/// `write_patch_sections_with`, where HORUS's own entries have to win.
-fn write_rust_passthrough(cargo: &mut String, rust: &crate::manifest::RustConfig) {
+/// `write_patch_sections`, where HORUS's own entries have to win.
+///
+/// `sections` says which of the tables the manifest being written is allowed to
+/// carry. A single-package manifest takes all of them; a workspace splits them,
+/// because cargo reads `[profile]` only from the workspace root and
+/// `[features]`, `[target]` and `[build-dependencies]` only from a package.
+/// Writing one into the wrong manifest is not a no-op — cargo fails a virtual
+/// workspace root that carries `[features]` outright — so the split is enforced
+/// here rather than left to the caller to remember.
+fn write_rust_passthrough(
+    cargo: &mut String,
+    rust: &crate::manifest::RustConfig,
+    sections: &[&str],
+) {
     let mut doc = toml::value::Table::new();
     for (name, table) in [
         ("features", &rust.features),
@@ -715,6 +1121,9 @@ fn write_rust_passthrough(cargo: &mut String, rust: &crate::manifest::RustConfig
         ("profile", &rust.profile),
         ("target", &rust.target),
     ] {
+        if !sections.contains(&name) {
+            continue;
+        }
         if let Some(table) = table {
             if !table.is_empty() {
                 doc.insert(name.to_string(), toml::Value::Table(table.clone()));
@@ -735,7 +1144,21 @@ fn write_rust_passthrough(cargo: &mut String, rust: &crate::manifest::RustConfig
     }
 }
 
-/// Patch tables, with the user's `[rust.patch]` merged in.
+/// Write the `[patch]` tables that redirect git-sourced HORUS crates at the
+/// local source tree, with the user's `[rust.patch]` merged in.
+///
+/// `horus-robotics` and `horus-tf` depend on `horus_core` (and siblings) through
+/// relative paths that only resolve inside the HORUS checkout — a bare clone of
+/// either git repo has no such package. The root workspace compensates with
+/// `[patch."<git url>"]` tables.
+///
+/// A generated `.horus/Cargo.toml` declares its own `[workspace]`, which makes it
+/// a *new* workspace root. Cargo only honors `[patch]` from the workspace root of
+/// the build actually running and never inherits it through a path dependency, so
+/// the root workspace's tables are dropped on the floor and the build dies with
+/// `no matching package named 'horus_core' found`. Re-emitting them here is what
+/// keeps a generated project buildable. `horus_cpp/fuzz/Cargo.toml` solves the
+/// identical problem by hand for the same reason.
 ///
 /// HORUS's own entries win a key collision and say so. They are load-bearing:
 /// without them every generated project fails to resolve `horus_core`. Any
@@ -747,7 +1170,10 @@ fn write_rust_passthrough(cargo: &mut String, rust: &crate::manifest::RustConfig
 /// far easier to read. `toml::Value`'s `Display` produces the inline form, so a
 /// user-supplied entry of any shape renders correctly without this code having
 /// to know what shape it is.
-fn write_patch_sections_with(
+///
+/// Must be called last: `[patch.*]` is a top-level table, so anything written
+/// after it would be parsed as part of it rather than of `[dependencies]`.
+fn write_patch_sections(
     cargo: &mut String,
     horus_source: &Path,
     rust: Option<&crate::manifest::RustConfig>,
@@ -1243,7 +1669,7 @@ pub fn generate_workspace(
         }
     }
 
-    warn_if_rust_section_cannot_reach_a_workspace(root_manifest, members);
+    warn_about_rust_settings_a_workspace_cannot_place(root_manifest, members);
 
     // Loaded once and saved once at the end: the root and every member are
     // written through the same fingerprint set, and reloading it per file would
@@ -1309,11 +1735,21 @@ pub fn generate_workspace(
             }
             // serde is implicit — see write_implicit_deps. Members opt in via
             // `serde = { workspace = true }` (added in generate_member_cargo).
-            writeln!(
-                root_cargo,
-                "serde = {{ version = \"1\", features = [\"derive\"] }}"
-            )
-            .unwrap();
+            //
+            // Skipped when the workspace declares its own: writing both put
+            // `serde` in `[workspace.dependencies]` twice, and a duplicate key
+            // is not a TOML document at all — cargo rejects the whole manifest
+            // with "duplicate key `serde`". `generate_member_cargo` has always
+            // made the same check for a member's own `[dependencies]`; the root
+            // had diverged. Only visible once something parsed the generated
+            // root as TOML instead of grepping it for substrings.
+            if !ws_deps.is_some_and(|deps| deps.contains_key("serde")) {
+                writeln!(
+                    root_cargo,
+                    "serde = {{ version = \"1\", features = [\"derive\"] }}"
+                )
+                .unwrap();
+            }
         }
 
         // User workspace deps
@@ -1355,12 +1791,25 @@ pub fn generate_workspace(
             &member_cargo_path,
             &member_cargo,
             &mut fingerprints,
+            &sections_horus_toml_keeps(member_manifest),
         )?;
+    }
+
+    // ── [rust] passthrough ───────────────────────────────────────────────
+    // Only `[profile]`, and only here: cargo reads profiles from the workspace
+    // root and ignores (with a warning of its own) any a member declares. The
+    // member-level tables are written into the member manifests instead, and a
+    // virtual workspace root cannot carry them at all — cargo rejects the whole
+    // manifest for it.
+    if let Some(rust) = &root_manifest.rust {
+        write_rust_passthrough(&mut root_cargo, rust, WORKSPACE_ROOT_RUST_SECTIONS);
     }
 
     // ── Patch tables ─────────────────────────────────────────────────────
     // Last: [patch.*] is a top-level table and would swallow later entries.
-    write_patch_sections(&mut root_cargo, &horus_source);
+    // The root's `[rust.patch]` rides along: [patch] is honoured only in the
+    // workspace root, so this is the one manifest it can go in.
+    write_patch_sections(&mut root_cargo, &horus_source, root_manifest.rust.as_ref());
 
     // ── Write root Cargo.toml ─────────────────────────────────────────────
     let root_path = horus_dir.join("Cargo.toml");
@@ -1370,14 +1819,15 @@ pub fn generate_workspace(
         &root_path,
         &root_cargo,
         &mut fingerprints,
+        &sections_horus_toml_keeps(root_manifest),
     )?;
     let _ = fingerprints.save(project_dir);
 
     // Not part of the manifest — see write_cargo_config. Taken from the root
-    // manifest: cargo config is per build directory, and `.horus/` is one build
-    // directory for the whole workspace.
-    write_cargo_config(&horus_dir, root_manifest.rust.as_ref())?;
-    ignore_build_dir(&horus_dir);
+    // manifest: cargo config is per build directory, and a workspace is one
+    // build directory.
+    write_cargo_config(project_dir, &horus_dir, root_manifest.rust.as_ref())?;
+    ignore_generated_dir(&horus_dir, BUILD_DIR_IS_GENERATED);
 
     Ok((root_path, root_cargo))
 }
@@ -1388,7 +1838,7 @@ fn generate_member_cargo(
     member_manifest: &HorusManifest,
     member_source_dir: &Path,
     member_horus_dir: &Path,
-    _root_manifest: &HorusManifest,
+    root_manifest: &HorusManifest,
     all_members: &[(PathBuf, HorusManifest)],
     horus_dir: &Path,
 ) -> Result<String> {
@@ -1397,7 +1847,7 @@ fn generate_member_cargo(
     writeln!(
         cargo,
         "# Generated by horus from horus.toml — do not edit manually.\n\
-         # Edits are lost on the next build."
+         # Edits are lost on the next build; add a [rust] section to horus.toml instead."
     )
     .unwrap();
 
@@ -1405,7 +1855,12 @@ fn generate_member_cargo(
     writeln!(cargo, "[package]").unwrap();
     writeln!(cargo, "name = \"{}\"", member_name).unwrap();
     writeln!(cargo, "version = \"{}\"", member_manifest.package.version).unwrap();
-    writeln!(cargo, "edition = \"{}\"", rust_edition(member_manifest)).unwrap();
+    writeln!(
+        cargo,
+        "edition = \"{}\"",
+        member_edition(member_manifest, root_manifest)
+    )
+    .unwrap();
     writeln!(cargo).unwrap();
 
     // ── Target sections ───────────────────────────────────────────────────
@@ -1504,7 +1959,59 @@ fn generate_member_cargo(
     }
 
     writeln!(cargo).unwrap();
+
+    // ── [rust] passthrough ───────────────────────────────────────────────
+    // The package-level half of the section. Before this, a workspace member
+    // forwarded nothing at all: `[features]`, `[lints]`, `[target]` and
+    // `[build-dependencies]` in a member's horus.toml parsed, passed
+    // `horus check` and were dropped on the floor.
+    if let Some(rust) = member_rust_section(member_manifest, root_manifest) {
+        write_rust_passthrough(&mut cargo, &rust, MEMBER_RUST_SECTIONS);
+    }
+
     Ok(cargo)
+}
+
+/// The `[rust]` section to splice into one workspace member's manifest.
+///
+/// The member's own, plus the root's `[rust.lints]`. Lints are the one table a
+/// workspace root can hold on behalf of every member — cargo spells that
+/// `[workspace.lints]` in the root and `lints.workspace = true` in each member,
+/// and writing the groups straight into the members is the same thing with one
+/// fewer indirection and no way for the two halves to get out of step.
+///
+/// A group the member also declares is the member's: `[rust.lints.clippy]` in a
+/// member replaces the root's `clippy` table rather than merging into it, which
+/// is what cargo's own `lints.workspace` opt-out does at the same granularity.
+///
+/// `None` when there is nothing to write, so a member with no `[rust]` section
+/// and a root with no lints produces exactly the manifest it did before.
+fn member_rust_section(
+    member: &HorusManifest,
+    root: &HorusManifest,
+) -> Option<crate::manifest::RustConfig> {
+    let mut rust = member.rust.clone().unwrap_or_default();
+
+    let root_lints = root.rust.as_ref().and_then(|r| r.lints.clone());
+    rust.lints = match (root_lints, rust.lints) {
+        (Some(mut inherited), Some(own)) => {
+            for (group, table) in own {
+                inherited.insert(group, table);
+            }
+            Some(inherited)
+        }
+        (inherited, own) => own.or(inherited),
+    };
+
+    let mut carried = rust.clone();
+    carried.edition = None;
+    carried.rustflags.clear();
+    carried.patch = None;
+    carried.profile = None;
+    if carried.is_empty() {
+        return None;
+    }
+    Some(rust)
 }
 
 /// Write a single dependency in Cargo.toml format.
@@ -3545,6 +4052,25 @@ mod tests {
 
     // ─── Regeneration over hand edits ────────────────────────────────────
 
+    /// A project with a `.horus/` and a `main.rs`, ready for `generate`.
+    ///
+    /// Every end-to-end test below writes into one of these and reads the
+    /// warning back out of `reported_lost_edits`, because the warning is the
+    /// entire user-visible half of the fix: an earlier version of this file
+    /// tested `dropped_settings` on its own, and deleting the call that
+    /// actually reports anything left all of it green.
+    fn scratch_project() -> Option<tempfile::TempDir> {
+        if crate::commands::run::find_horus_source_dir().is_err() {
+            eprintln!("skipping: HORUS source tree not found");
+            return None;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".horus")).unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let _ = reported_lost_edits();
+        Some(dir)
+    }
+
     /// The case the warning exists for: a table added to the generated file by
     /// hand, which the rewrite has no equivalent of.
     #[test]
@@ -3554,7 +4080,7 @@ mod tests {
         let new = "[dependencies]\nserde = \"1\"\n\n\
                    [patch.\"https://github.com/softmata/horus-robotics.git\"]\n\
                    horus_core = { path = \"/src/horus_core\" }\n";
-        assert_eq!(dropped_settings(old, new), vec!["patch.crates-io"]);
+        assert_eq!(dropped_settings(old, new, &[]), vec!["patch.crates-io"]);
     }
 
     /// Recursion stops at the first missing key: naming `patch.crates-io` says
@@ -3563,7 +4089,7 @@ mod tests {
     fn a_dropped_table_is_named_once_not_per_entry() {
         let old = "[patch.crates-io]\none = { path = \"/a\" }\ntwo = { path = \"/b\" }\n";
         let new = "[patch]\n";
-        assert_eq!(dropped_settings(old, new), vec!["patch.crates-io"]);
+        assert_eq!(dropped_settings(old, new, &[]), vec!["patch.crates-io"]);
     }
 
     /// A value HORUS rewrote is not a lost edit — only a key that is gone is.
@@ -3571,7 +4097,7 @@ mod tests {
     fn a_changed_value_is_not_a_lost_edit() {
         let old = "[package]\nname = \"demo\"\nedition = \"2021\"\n";
         let new = "[package]\nname = \"demo\"\nedition = \"2024\"\n";
-        assert!(dropped_settings(old, new).is_empty());
+        assert!(dropped_settings(old, new, &[]).is_empty());
     }
 
     /// `horus cargo add` writes `serde = { version = "1", features = [...] }`
@@ -3583,9 +4109,9 @@ mod tests {
         let old = "[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n";
         let new = "[dependencies]\nserde = \"1\"\n";
         assert!(
-            dropped_settings(old, new).is_empty(),
+            dropped_settings(old, new, &[]).is_empty(),
             "{:?}",
-            dropped_settings(old, new)
+            dropped_settings(old, new, &[])
         );
     }
 
@@ -3597,7 +4123,7 @@ mod tests {
         let old = "[[bin]]\nname = \"a\"\npath = \"../a.rs\"\n\n\
                    [[bin]]\nname = \"b\"\npath = \"../b.rs\"\n";
         let new = "[[bin]]\nname = \"b\"\npath = \"../b.rs\"\n";
-        assert!(dropped_settings(old, new).is_empty());
+        assert!(dropped_settings(old, new, &[]).is_empty());
     }
 
     /// A patch source is a URL, and printing it bare would name a path the
@@ -3608,7 +4134,7 @@ mod tests {
                    somecrate = { path = \"/tmp/somecrate\" }\n";
         let new = "[patch]\n";
         assert_eq!(
-            dropped_settings(old, new),
+            dropped_settings(old, new, &[]),
             vec!["patch.\"https://github.com/example/other.git\""]
         );
     }
@@ -3616,25 +4142,118 @@ mod tests {
     /// A file broken mid-edit must not produce a list of invented losses.
     #[test]
     fn unparsable_content_reports_nothing() {
-        assert!(dropped_settings("[not valid = toml", "[package]\n").is_empty());
-        assert!(dropped_settings("[package]\n", "[not valid = toml").is_empty());
+        assert!(dropped_settings("[not valid = toml", "[package]\n", &[]).is_empty());
+        assert!(dropped_settings("[package]\n", "[not valid = toml", &[]).is_empty());
     }
+
+    // ─── The dev-dependencies false positive ─────────────────────────────
+
+    /// `include_dev` is false on every path but `horus test`, so the table
+    /// legitimately disappears from the generated file — and horus.toml still
+    /// has the crate. Nothing was lost, and nothing may be reported.
+    #[test]
+    fn a_dev_dependency_horus_toml_still_has_is_not_a_lost_edit() {
+        let old = "[dependencies]\nserde = \"1\"\n\n[dev-dependencies]\nrand = \"0.10\"\n";
+        let new = "[dependencies]\nserde = \"1\"\n";
+        let kept = [("dev-dependencies", vec!["rand".to_string()])];
+        assert!(
+            dropped_settings(old, new, &kept).is_empty(),
+            "{:?}",
+            dropped_settings(old, new, &kept)
+        );
+    }
+
+    /// A crate that only ever existed in the generated file does not come
+    /// back, so it is still a lost edit — named, not lumped in with the table.
+    #[test]
+    fn a_dev_dependency_horus_toml_never_had_is_still_reported() {
+        let old = "[dev-dependencies]\nrand = \"0.10\"\nhandrolled = { path = \"/tmp/x\" }\n";
+        let new = "[dependencies]\nserde = \"1\"\n";
+        let kept = [("dev-dependencies", vec!["rand".to_string()])];
+        assert_eq!(
+            dropped_settings(old, new, &kept),
+            vec!["dev-dependencies.handrolled"]
+        );
+    }
+
+    /// The whole flow, through the real generator, as `horus cargo add --dev`
+    /// runs it: HORUS generates without dev-deps, cargo adds the table itself,
+    /// the dep is synced into horus.toml, HORUS regenerates. Every step is
+    /// working as designed and the build must say nothing.
+    #[test]
+    fn horus_cargo_add_dev_reports_nothing() {
+        let Some(dir) = scratch_project() else {
+            return;
+        };
+        let mut manifest = test_manifest(BTreeMap::new());
+        let (path, _) = generate(&manifest, dir.path(), &[], false).unwrap();
+
+        // `cargo add --dev rand` edits the generated manifest directly.
+        let mut edited = fs::read_to_string(&path).unwrap();
+        edited.push_str("\n[dev-dependencies]\nrand = \"0.10\"\n");
+        fs::write(&path, &edited).unwrap();
+
+        // ... and the sync-back puts it in horus.toml, where it belongs.
+        manifest.dev_dependencies.insert(
+            "rand".to_string(),
+            DependencyValue::Simple("0.10".to_string()),
+        );
+        let _ = reported_lost_edits();
+        generate(&manifest, dir.path(), &[], false).unwrap();
+
+        assert!(
+            reported_lost_edits().is_empty(),
+            "a dev-dependency that is in horus.toml was not lost, and warning \
+             about it teaches users to ignore the warning that is real"
+        );
+    }
+
+    /// The same rewrite, with nothing synced into horus.toml: that crate really
+    /// is gone, and the advice has to name the section it belongs in.
+    #[test]
+    fn a_dev_dependency_nobody_synced_is_reported_against_dev_dependencies() {
+        let Some(dir) = scratch_project() else {
+            return;
+        };
+        let manifest = test_manifest(BTreeMap::new());
+        let (path, _) = generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let mut edited = fs::read_to_string(&path).unwrap();
+        edited.push_str("\n[dev-dependencies]\nhandrolled = { path = \"/tmp/x\" }\n");
+        fs::write(&path, &edited).unwrap();
+
+        let _ = reported_lost_edits();
+        generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let reported = reported_lost_edits();
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(
+            reported[0].contains("dev-dependencies.handrolled"),
+            "{}",
+            reported[0]
+        );
+        assert!(
+            reported[0].contains("[dev-dependencies] in horus.toml"),
+            "the old message said `[rust]`, which `horus check` rejects: {}",
+            reported[0]
+        );
+    }
+
+    // ─── What the build actually says ────────────────────────────────────
 
     /// End to end over the real generator. Before this, `generate` overwrote a
     /// hand-edited `.horus/Cargo.toml` with no diff check and no warning: the
     /// repro was to append a `[patch]` table, run `horus build`, and watch the
     /// grep count go from 1 to 0 in silence.
+    ///
+    /// Asserted on the warning the user would see, not on `dropped_settings`:
+    /// the diff being right proves nothing if the build never mentions it.
     #[test]
-    fn regeneration_notices_a_hand_edit_and_ignores_an_untouched_file() {
-        if crate::commands::run::find_horus_source_dir().is_err() {
-            eprintln!("skipping: HORUS source tree not found");
+    fn regeneration_reports_a_hand_edit_and_says_where_it_belongs() {
+        let Some(dir) = scratch_project() else {
             return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join(".horus")).unwrap();
-        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        };
         let manifest = test_manifest(BTreeMap::new());
-
         let (path, _) = generate(&manifest, dir.path(), &[], false).unwrap();
 
         // Regeneration on its own is not an edit, however often it happens.
@@ -3654,12 +4273,128 @@ mod tests {
             "an edit to the generated manifest must be detectable"
         );
 
-        let (_, regenerated) = generate(&manifest, dir.path(), &[], false).unwrap();
+        let _ = reported_lost_edits();
+        generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let reported = reported_lost_edits();
         assert_eq!(
-            dropped_settings(&edited, &regenerated),
-            vec!["patch.crates-io"],
-            "the rewrite must name the setting it discarded"
+            reported.len(),
+            1,
+            "the build has to say the edit is gone: {reported:?}"
         );
+        assert!(
+            reported[0].contains(".horus/Cargo.toml"),
+            "named relative to the project: {}",
+            reported[0]
+        );
+        assert!(reported[0].contains("patch.crates-io"), "{}", reported[0]);
+        assert!(
+            reported[0].contains("[rust.patch.crates-io] in horus.toml"),
+            "the advice must be the header the user can paste: {}",
+            reported[0]
+        );
+    }
+
+    /// An ordinary rebuild changes nothing and must be silent — a warning on
+    /// every second build is one nobody reads.
+    #[test]
+    fn an_untouched_manifest_is_regenerated_in_silence() {
+        let Some(dir) = scratch_project() else {
+            return;
+        };
+        let manifest = test_manifest(BTreeMap::new());
+        generate(&manifest, dir.path(), &[], false).unwrap();
+        let _ = reported_lost_edits();
+        generate(&manifest, dir.path(), &[], false).unwrap();
+        assert!(reported_lost_edits().is_empty());
+    }
+
+    /// A dependency added to horus.toml is not a hand edit either, however
+    /// much the generated file changes.
+    #[test]
+    fn a_new_dependency_in_horus_toml_is_regenerated_in_silence() {
+        let Some(dir) = scratch_project() else {
+            return;
+        };
+        let manifest = test_manifest(BTreeMap::new());
+        generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let with_dep = test_manifest(BTreeMap::from([(
+            "serde".to_string(),
+            DependencyValue::Simple("1".to_string()),
+        )]));
+        let _ = reported_lost_edits();
+        generate(&with_dep, dir.path(), &[], false).unwrap();
+        assert!(reported_lost_edits().is_empty());
+    }
+
+    /// Every section the message points at has to be one `horus check`
+    /// accepts. The first version told users to put a lost `dev-dependencies`
+    /// under `[rust]`, and doing that produced `unknown key
+    /// rust.dev-dependencies` from HORUS's own validator.
+    #[test]
+    fn every_home_the_warning_suggests_is_accepted_by_horus_check() {
+        let lost = [
+            "dependencies.serde",
+            "dev-dependencies.rand",
+            "patch.crates-io",
+            "patch.\"https://github.com/example/other.git\"",
+            "profile.release",
+            "features",
+            "lints.clippy",
+            "target.\"cfg(unix)\"",
+            "build-dependencies.cc",
+        ];
+        for key in lost {
+            let home = horus_toml_home(key)
+                .unwrap_or_else(|| panic!("{key} is forwarded, so it must have a home"));
+            // `[section]` -> a horus.toml containing exactly that section.
+            let manifest = format!("{home}\nplaceholder = \"1\"\n");
+            let unknown = crate::manifest_lint::find_unknown_keys(&manifest);
+            assert!(
+                unknown.is_empty(),
+                "the advice for {key} is {home}, which horus check rejects: {:?}",
+                unknown.iter().map(|u| u.message()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A Cargo section `[rust]` does not forward has no home, and saying
+    /// "put it under [rust]" would send the user into the same error.
+    #[test]
+    fn a_section_the_rust_table_cannot_hold_is_not_given_a_home() {
+        assert_eq!(horus_toml_home("bench"), None);
+        assert_eq!(horus_toml_home("workspace"), None);
+        // `edition` and `rustflags` are `[rust]` keys but not Cargo sections,
+        // so they can never turn up in this diff and are not suggested.
+        assert_eq!(horus_toml_home("rustflags"), None);
+    }
+
+    /// Long lists are truncated: naming eight settings says what happened,
+    /// naming forty is a wall nobody reads.
+    #[test]
+    fn a_long_list_of_lost_settings_is_truncated() {
+        let Some(dir) = scratch_project() else {
+            return;
+        };
+        let manifest = test_manifest(BTreeMap::new());
+        let (path, _) = generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let mut edited = fs::read_to_string(&path).unwrap();
+        for i in 0..LOST_EDIT_LIMIT + 2 {
+            let _ = write!(
+                edited,
+                "\n[patch.\"source{i}\"]\nx = {{ path = \"/tmp/x\" }}\n"
+            );
+        }
+        fs::write(&path, &edited).unwrap();
+
+        let _ = reported_lost_edits();
+        generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let reported = reported_lost_edits();
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(reported[0].contains("... and 2 more"), "{}", reported[0]);
     }
 
     // ─── [rust].rustflags ────────────────────────────────────────────────
@@ -3671,26 +4406,44 @@ mod tests {
         }
     }
 
-    /// Cargo.toml has no rustflags slot, so the generated cargo config beside
-    /// it is the only place the setting can land.
+    fn cargo_config_flags(path: &Path) -> Vec<String> {
+        let text = fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("no cargo config at {}: {e}", path.display()));
+        let parsed: toml::Value = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("generated cargo config is not valid TOML: {e}\n{text}"));
+        parsed["build"]["rustflags"]
+            .as_array()
+            .expect("[build] rustflags must be an array")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// Cargo.toml has no rustflags slot, so a cargo config is the only place
+    /// the setting can land — and it has to be one every cargo spawn sees.
+    ///
+    /// `horus lint`, `horus doc`, `horus bench` and the workspace build spawn
+    /// cargo from the project root with `--manifest-path .horus/Cargo.toml`,
+    /// and cargo discovers config by walking up from its working directory,
+    /// not from the manifest. A config under `.horus/` reached three commands
+    /// and missed four.
     #[test]
-    fn rustflags_reach_a_generated_cargo_config() {
+    fn rustflags_reach_a_cargo_config_every_spawn_can_see() {
         let dir = tempfile::tempdir().unwrap();
         let horus_dir = dir.path().join(".horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
         let rust = rust_config_with_flags(&["-C", "target-cpu=native"]);
-        write_cargo_config(&horus_dir, Some(&rust)).unwrap();
+        write_cargo_config(dir.path(), &horus_dir, Some(&rust)).unwrap();
 
-        let text = fs::read_to_string(horus_dir.join(".cargo/config.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&text)
-            .unwrap_or_else(|e| panic!("generated cargo config is not valid TOML: {e}\n{text}"));
         assert_eq!(
-            parsed["build"]["rustflags"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
-            Some(vec!["-C", "target-cpu=native"]),
-            "{text}"
+            cargo_config_flags(&dir.path().join(".cargo/config.toml")),
+            vec!["-C", "target-cpu=native"]
+        );
+        assert!(
+            !horus_dir.join(".cargo/config.toml").exists(),
+            "cargo joins array values from every config it finds on the way up, \
+             so a second copy under .horus/ would pass every flag twice"
         );
     }
 
@@ -3703,14 +4456,11 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
 
         let rust = rust_config_with_flags(&["--cfg", "feature=\"odd\""]);
-        write_cargo_config(&horus_dir, Some(&rust)).unwrap();
+        write_cargo_config(dir.path(), &horus_dir, Some(&rust)).unwrap();
 
-        let text = fs::read_to_string(horus_dir.join(".cargo/config.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&text)
-            .unwrap_or_else(|e| panic!("generated cargo config is not valid TOML: {e}\n{text}"));
         assert_eq!(
-            parsed["build"]["rustflags"][1].as_str(),
-            Some("feature=\"odd\"")
+            cargo_config_flags(&dir.path().join(".cargo/config.toml"))[1],
+            "feature=\"odd\""
         );
     }
 
@@ -3723,41 +4473,119 @@ mod tests {
         let horus_dir = dir.path().join(".horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        write_cargo_config(&horus_dir, Some(&rust_config_with_flags(&["-C", "lto"]))).unwrap();
-        assert!(horus_dir.join(".cargo/config.toml").exists());
+        write_cargo_config(
+            dir.path(),
+            &horus_dir,
+            Some(&rust_config_with_flags(&["-C", "lto"])),
+        )
+        .unwrap();
+        assert!(dir.path().join(".cargo/config.toml").exists());
 
-        write_cargo_config(&horus_dir, Some(&rust_config_with_flags(&[]))).unwrap();
+        write_cargo_config(dir.path(), &horus_dir, Some(&rust_config_with_flags(&[]))).unwrap();
         assert!(
-            !horus_dir.join(".cargo/config.toml").exists(),
+            !dir.path().join(".cargo/config.toml").exists(),
             "a stale cargo config would keep applying flags horus.toml dropped"
         );
     }
 
-    /// A `[rust]` section a workspace build silently drops is the failure the
-    /// section was added to remove, so it has to be stated.
+    /// The project root belongs to the user. A cross-compiling project may
+    /// already keep linker settings there, and overwriting them would be the
+    /// same silent destruction this module exists to stop.
     #[test]
-    fn a_workspace_reports_the_rust_settings_it_cannot_forward() {
-        let profile: crate::manifest::RustConfig =
-            toml::from_str("[profile.release]\nlto = \"fat\"\ncodegen-units = 1\n")
-                .expect("[rust.profile.release] must parse");
-        assert!(rust_section_is_ignored_by_workspaces(&profile));
+    fn a_cargo_config_horus_did_not_write_is_never_touched() {
+        let dir = tempfile::tempdir().unwrap();
+        let horus_dir = dir.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::create_dir_all(dir.path().join(".cargo")).unwrap();
+        let theirs =
+            "[target.armv7-unknown-linux-gnueabihf]\nlinker = \"arm-linux-gnueabihf-gcc\"\n";
+        fs::write(dir.path().join(".cargo/config.toml"), theirs).unwrap();
 
-        let flags = rust_config_with_flags(&["-C", "lto"]);
-        assert!(rust_section_is_ignored_by_workspaces(&flags));
+        let rust = rust_config_with_flags(&["-C", "target-cpu=native"]);
+        write_cargo_config(dir.path(), &horus_dir, Some(&rust)).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".cargo/config.toml")).unwrap(),
+            theirs
+        );
+        assert_eq!(
+            cargo_config_flags(&horus_dir.join(".cargo/config.toml")),
+            vec!["-C", "target-cpu=native"],
+            "the flags still have to reach the builds that run from .horus/"
+        );
+
+        // ... and dropping the setting does not delete their file either.
+        write_cargo_config(dir.path(), &horus_dir, None).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".cargo/config.toml")).unwrap(),
+            theirs
+        );
     }
 
-    /// `rust_edition` reads `[rust].edition` on the workspace path too, so a
-    /// section that only sets one is honoured and must stay quiet.
+    /// Cargo reads `.cargo/config` under its old name too, and prefers
+    /// `config.toml` when both exist — so writing ours beside a user's
+    /// `config` would not overwrite their settings, it would switch every one
+    /// of them off.
     #[test]
-    fn a_workspace_does_not_warn_about_an_edition_it_honours() {
-        let edition_only = crate::manifest::RustConfig {
-            edition: Some("2024".to_string()),
-            ..Default::default()
+    fn a_legacy_cargo_config_is_not_shadowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let horus_dir = dir.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::create_dir_all(dir.path().join(".cargo")).unwrap();
+        fs::write(
+            dir.path().join(".cargo/config"),
+            "[net]\ngit-fetch-with-cli = true\n",
+        )
+        .unwrap();
+
+        write_cargo_config(
+            dir.path(),
+            &horus_dir,
+            Some(&rust_config_with_flags(&["-C", "lto"])),
+        )
+        .unwrap();
+
+        assert!(
+            !dir.path().join(".cargo/config.toml").exists(),
+            "cargo would use ours and ignore theirs entirely"
+        );
+        assert_eq!(
+            cargo_config_flags(&horus_dir.join(".cargo/config.toml")),
+            vec!["-C", "lto"]
+        );
+    }
+
+    /// A project that never asked for flags must not acquire a cargo config.
+    #[test]
+    fn no_rust_section_writes_no_cargo_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let horus_dir = dir.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        write_cargo_config(dir.path(), &horus_dir, None).unwrap();
+        assert!(!dir.path().join(".cargo").exists());
+        assert!(!horus_dir.join(".cargo").exists());
+    }
+
+    /// The whole point is that `horus build` produces it, not that the helper
+    /// can be called directly.
+    #[test]
+    fn generate_writes_the_cargo_config_for_rustflags() {
+        let Some(dir) = scratch_project() else {
+            return;
         };
-        assert!(!rust_section_is_ignored_by_workspaces(&edition_only));
-        assert!(!rust_section_is_ignored_by_workspaces(
-            &crate::manifest::RustConfig::default()
-        ));
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.rust = Some(rust_config_with_flags(&["-C", "target-cpu=native"]));
+        generate(&manifest, dir.path(), &[], false).unwrap();
+
+        let text = fs::read_to_string(dir.path().join(".cargo/config.toml"))
+            .expect("horus build must write the cargo config that carries rustflags");
+        assert!(text.contains("target-cpu=native"), "{text}");
+
+        // And it goes away again when the setting does.
+        manifest.rust = None;
+        generate(&manifest, dir.path(), &[], false).unwrap();
+        assert!(!dir.path().join(".cargo/config.toml").exists());
     }
 
     /// Everything HORUS puts in `.horus/` is a build artifact, and the project
@@ -3769,7 +4597,7 @@ mod tests {
         let horus_dir = dir.path().join(".horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        ignore_build_dir(&horus_dir);
+        ignore_generated_dir(&horus_dir, BUILD_DIR_IS_GENERATED);
         assert_eq!(
             fs::read_to_string(horus_dir.join(".gitignore"))
                 .unwrap()
@@ -3787,47 +4615,315 @@ mod tests {
         fs::create_dir_all(&horus_dir).unwrap();
         fs::write(horus_dir.join(".gitignore"), "!keep-me\n").unwrap();
 
-        ignore_build_dir(&horus_dir);
+        ignore_generated_dir(&horus_dir, BUILD_DIR_IS_GENERATED);
         assert_eq!(
             fs::read_to_string(horus_dir.join(".gitignore")).unwrap(),
             "!keep-me\n"
         );
     }
 
-    /// A project that never asked for flags must not acquire a cargo config.
+    /// A `.cargo/` HORUS created holds one generated file, so it goes the same
+    /// way `target/` does. A `.cargo/` that was already there is the user's and
+    /// is not ours to hide.
     #[test]
-    fn no_rust_section_writes_no_cargo_config() {
+    fn a_cargo_directory_horus_creates_ignores_itself() {
         let dir = tempfile::tempdir().unwrap();
         let horus_dir = dir.path().join(".horus");
         fs::create_dir_all(&horus_dir).unwrap();
 
-        write_cargo_config(&horus_dir, None).unwrap();
-        assert!(!horus_dir.join(".cargo").exists());
+        write_cargo_config(
+            dir.path(),
+            &horus_dir,
+            Some(&rust_config_with_flags(&["-C", "lto"])),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".cargo/.gitignore"))
+                .unwrap()
+                .lines()
+                .last(),
+            Some("*")
+        );
+
+        let other = tempfile::tempdir().unwrap();
+        fs::create_dir_all(other.path().join(".cargo")).unwrap();
+        fs::create_dir_all(other.path().join(".horus")).unwrap();
+        write_cargo_config(
+            other.path(),
+            &other.path().join(".horus"),
+            Some(&rust_config_with_flags(&["-C", "lto"])),
+        )
+        .unwrap();
+        assert!(!other.path().join(".cargo/.gitignore").exists());
     }
 
-    /// The whole point is that `horus build` produces it, not that the helper
-    /// can be called directly.
+    // ─── [rust] on a workspace ───────────────────────────────────────────
+
+    /// A `[rust]` section is spliced into the workspace root where cargo reads
+    /// it from: `[profile]` and `[patch]` are honoured only in the root
+    /// manifest of the build that is running.
     #[test]
-    fn generate_writes_the_cargo_config_for_rustflags() {
+    fn a_workspace_root_forwards_profile_and_patch() {
+        let (mut root, members, dir) = create_workspace_project();
+        root.rust = Some(crate::manifest::RustConfig {
+            profile: Some(
+                toml::from_str::<toml::value::Table>("[release]\nlto = \"fat\"\n").unwrap(),
+            ),
+            patch: Some(
+                toml::from_str::<toml::value::Table>(
+                    "[crates-io]\nhandedit = { path = \"/tmp/x\" }\n",
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        });
+
+        let (_, content) = generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let parsed: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
+            panic!("generated workspace root is not valid TOML: {e}\n{content}")
+        });
+        assert_eq!(
+            parsed["profile"]["release"]["lto"].as_str(),
+            Some("fat"),
+            "{content}"
+        );
+        assert!(
+            parsed["patch"]["crates-io"].get("handedit").is_some(),
+            "{content}"
+        );
+    }
+
+    /// The member half of the section. Before this, a member's `[rust]` was
+    /// dropped on the floor entirely.
+    #[test]
+    fn a_workspace_member_carries_its_own_rust_tables() {
+        let (root, mut members, dir) = create_workspace_project();
+        members[1].1.rust = Some(crate::manifest::RustConfig {
+            features: Some(
+                toml::from_str::<toml::value::Table>("default = [\"fast\"]\nfast = []\n").unwrap(),
+            ),
+            ..Default::default()
+        });
+
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let content =
+            fs::read_to_string(dir.path().join(".horus/my-controller/Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("generated member is not valid TOML: {e}\n{content}"));
+        assert!(parsed["features"].get("fast").is_some(), "{content}");
+    }
+
+    /// Lints at the workspace root are cargo's `[workspace.lints]` idea: they
+    /// belong to every member. A member that declares the same group keeps its
+    /// own.
+    #[test]
+    fn a_workspace_member_inherits_root_lints_and_can_override_them() {
+        let (mut root, mut members, dir) = create_workspace_project();
+        root.rust = Some(crate::manifest::RustConfig {
+            lints: Some(
+                toml::from_str::<toml::value::Table>(
+                    "[rust]\nunsafe_code = \"forbid\"\n[clippy]\nall = \"warn\"\n",
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        });
+        members[1].1.rust = Some(crate::manifest::RustConfig {
+            lints: Some(
+                toml::from_str::<toml::value::Table>("[clippy]\nall = \"deny\"\n").unwrap(),
+            ),
+            ..Default::default()
+        });
+
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let inherited =
+            fs::read_to_string(dir.path().join(".horus/my-messages/Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&inherited).unwrap();
+        assert_eq!(
+            parsed["lints"]["rust"]["unsafe_code"].as_str(),
+            Some("forbid"),
+            "{inherited}"
+        );
+
+        let overridden =
+            fs::read_to_string(dir.path().join(".horus/my-controller/Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&overridden).unwrap();
+        assert_eq!(
+            parsed["lints"]["clippy"]["all"].as_str(),
+            Some("deny"),
+            "{overridden}"
+        );
+        assert_eq!(
+            parsed["lints"]["rust"]["unsafe_code"].as_str(),
+            Some("forbid"),
+            "a group the member did not mention is still inherited: {overridden}"
+        );
+    }
+
+    /// `[rust].edition` at the workspace root is the workspace-wide default.
+    /// Nothing read it before: `generate_workspace` asked each member and each
+    /// member alone, so a root edition did nothing at all.
+    #[test]
+    fn a_workspace_member_inherits_the_root_edition() {
+        let (mut root, mut members, dir) = create_workspace_project();
+        root.rust = Some(crate::manifest::RustConfig {
+            edition: Some("2024".to_string()),
+            ..Default::default()
+        });
+        members[1].1.package.rust_edition = Some("2018".to_string());
+
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let inherited =
+            fs::read_to_string(dir.path().join(".horus/my-messages/Cargo.toml")).unwrap();
+        assert!(inherited.contains("edition = \"2024\""), "{inherited}");
+        let own = fs::read_to_string(dir.path().join(".horus/my-controller/Cargo.toml")).unwrap();
+        assert!(
+            own.contains("edition = \"2018\""),
+            "a member that names its own edition keeps it: {own}"
+        );
+    }
+
+    /// rustflags on a workspace go to the project root, where the workspace
+    /// build (`--manifest-path` from the project root) and `horus test`
+    /// (spawned inside `.horus/`) can both see them.
+    #[test]
+    fn a_workspace_writes_its_cargo_config_at_the_project_root() {
+        let (mut root, members, dir) = create_workspace_project();
+        root.rust = Some(rust_config_with_flags(&["-C", "target-cpu=native"]));
+
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        assert_eq!(
+            cargo_config_flags(&dir.path().join(".cargo/config.toml")),
+            vec!["-C", "target-cpu=native"]
+        );
+        assert!(!dir.path().join(".horus/.cargo/config.toml").exists());
+    }
+
+    /// What is left over is named with the manifest it is in and the move that
+    /// fixes it. The first version of this warning said the whole section had
+    /// no effect on a workspace, which was false in both directions: rustflags
+    /// already reached `horus test`, and the settings that really were dropped
+    /// were never named.
+    #[test]
+    fn a_workspace_names_only_the_settings_it_cannot_place() {
+        let (mut root, mut members, _dir) = create_workspace_project();
+        root.rust = Some(crate::manifest::RustConfig {
+            // Forwarded, so not mentioned.
+            profile: Some(toml::from_str::<toml::value::Table>("[release]\nlto = true\n").unwrap()),
+            rustflags: vec!["-C".to_string(), "lto".to_string()],
+            // Not expressible in a virtual manifest.
+            features: Some(toml::from_str::<toml::value::Table>("fast = []\n").unwrap()),
+            ..Default::default()
+        });
+        members[1].1.rust = Some(crate::manifest::RustConfig {
+            profile: Some(toml::from_str::<toml::value::Table>("[release]\nlto = true\n").unwrap()),
+            ..Default::default()
+        });
+
+        let unplaceable = rust_settings_a_workspace_cannot_place(&root, &members);
+
+        assert_eq!(unplaceable.len(), 2, "{unplaceable:#?}");
+        assert!(
+            unplaceable[0].contains("[rust.features]") && unplaceable[0].contains("workspace root"),
+            "{unplaceable:#?}"
+        );
+        assert!(
+            unplaceable[1].contains("[rust.profile]")
+                && unplaceable[1].contains("crates/controller"),
+            "the member has to be named, or there is nothing to act on: {unplaceable:#?}"
+        );
+    }
+
+    /// A workspace whose `[rust]` is entirely forwarded says nothing. A
+    /// warning that fires when everything worked is the one people learn to
+    /// scroll past.
+    #[test]
+    fn a_workspace_that_can_place_everything_says_nothing() {
+        let (mut root, mut members, _dir) = create_workspace_project();
+        root.rust = Some(crate::manifest::RustConfig {
+            edition: Some("2024".to_string()),
+            profile: Some(toml::from_str::<toml::value::Table>("[release]\nlto = true\n").unwrap()),
+            patch: Some(
+                toml::from_str::<toml::value::Table>("[crates-io]\nx = { path = \"/tmp/x\" }\n")
+                    .unwrap(),
+            ),
+            lints: Some(
+                toml::from_str::<toml::value::Table>("[rust]\nunsafe_code = \"forbid\"\n").unwrap(),
+            ),
+            rustflags: vec!["-C".to_string(), "lto".to_string()],
+            ..Default::default()
+        });
+        members[0].1.rust = Some(crate::manifest::RustConfig {
+            features: Some(toml::from_str::<toml::value::Table>("fast = []\n").unwrap()),
+            ..Default::default()
+        });
+
+        assert!(
+            rust_settings_a_workspace_cannot_place(&root, &members).is_empty(),
+            "{:#?}",
+            rust_settings_a_workspace_cannot_place(&root, &members)
+        );
+    }
+
+    /// A hand edit lost from a *member* manifest has to name the manifest that
+    /// can hold it. `[patch]` is honoured only in the workspace root, so
+    /// pointing at "horus.toml" sent the user to the member's, where it does
+    /// nothing — and the next build then contradicted the advice it had just
+    /// given.
+    #[test]
+    fn a_patch_lost_from_a_member_is_sent_to_the_workspace_root() {
         if crate::commands::run::find_horus_source_dir().is_err() {
             eprintln!("skipping: HORUS source tree not found");
             return;
         }
+        let (root, members, dir) = create_workspace_project();
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let member_path = dir.path().join(".horus/my-messages/Cargo.toml");
+        let mut edited = fs::read_to_string(&member_path).unwrap();
+        edited.push_str("\n[patch.crates-io]\nhandedit = { path = \"/tmp/x\" }\n");
+        fs::write(&member_path, &edited).unwrap();
+
+        let _ = reported_lost_edits();
+        generate_workspace(&root, dir.path(), &members).unwrap();
+
+        let reported = reported_lost_edits();
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(
+            reported[0].contains("[rust.patch] in the workspace root's horus.toml"),
+            "{}",
+            reported[0]
+        );
+    }
+
+    /// A project with its own root `Cargo.toml` builds from that manifest, and
+    /// `[rust]` is documented as having no effect there. Writing a cargo config
+    /// into its root would apply the flags to the user's own builds while the
+    /// tool says the section does nothing.
+    #[test]
+    fn a_project_with_its_own_cargo_toml_gets_no_generated_config() {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join(".horus")).unwrap();
-        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let horus_dir = dir.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"theirs\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
 
-        let mut manifest = test_manifest(BTreeMap::new());
-        manifest.rust = Some(rust_config_with_flags(&["-C", "target-cpu=native"]));
-        generate(&manifest, dir.path(), &[], false).unwrap();
+        write_cargo_config(
+            dir.path(),
+            &horus_dir,
+            Some(&rust_config_with_flags(&["-C", "target-cpu=native"])),
+        )
+        .unwrap();
 
-        let text = fs::read_to_string(dir.path().join(".horus/.cargo/config.toml"))
-            .expect("horus build must write the cargo config that carries rustflags");
-        assert!(text.contains("target-cpu=native"), "{text}");
-
-        // And it goes away again when the setting does.
-        manifest.rust = None;
-        generate(&manifest, dir.path(), &[], false).unwrap();
-        assert!(!dir.path().join(".horus/.cargo/config.toml").exists());
+        assert!(!dir.path().join(".cargo").exists());
+        assert!(!horus_dir.join(".cargo/config.toml").exists());
     }
 }

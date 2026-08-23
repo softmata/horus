@@ -10609,3 +10609,98 @@ mod owner_attribution {
         );
     }
 }
+
+/// A handle that publishes AND subscribes must still be readable from outside.
+///
+/// `send()` has a same-thread fast path for `role == Both`: it writes the ring
+/// data region directly and skips the dispatched send entirely. It also used to
+/// skip publishing `header.sequence_or_head`, advancing only its own
+/// `local_head` — and the head is what every reader outside the handle takes as
+/// the count of slots written, `horus topic echo` included.
+///
+/// A topic that publishes through the dispatched path first and then gains the
+/// consumer role is the case where that shows: the head freezes at whatever the
+/// dispatched path left it at, while `messages_total` climbs with every send.
+/// Measured here before the fix — 8 dispatched sends, then 292 through the fast
+/// path — the reader reported position 8 forever and handed back the payload
+/// sitting in slot 7, so `echo`, whose whole cursor is "has the position
+/// changed since last poll", printed one message and then nothing on a topic
+/// that was publishing the entire time.
+///
+/// The assertion that matters is the *position*, not the payload: a frozen
+/// position with a plausible payload is exactly what made this look like a live
+/// topic that had gone quiet.
+#[cfg(test)]
+mod both_path_publishes_its_head {
+    use super::*;
+    use horus_core_header::read_latest_slot_bytes;
+
+    use crate::communication::topic::header as horus_core_header;
+
+    #[test]
+    fn a_topic_that_switches_to_the_both_fast_path_keeps_advancing_its_cursor() {
+        const CAPACITY: u32 = 64;
+        const DISPATCHED: u64 = 8;
+        const TOTAL: u64 = 300;
+
+        let name = format!("both_head_publish_{}", std::process::id());
+        let t: Topic<u64> = match Topic::with_capacity(&name, CAPACITY, None) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("skipping: shared memory unavailable ({e})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        // Phase 1: producer only, so the dispatched send path runs.
+        for i in 1..=DISPATCHED {
+            t.send(i);
+        }
+        // Phase 2: the same handle takes the consumer role as well.
+        let _ = t.recv();
+        // Phase 3: role == Both, so every send from here takes the raw
+        // same-thread fast path.
+        for i in (DISPATCHED + 1)..=TOTAL {
+            t.send(i);
+            let _ = t.recv();
+        }
+
+        let head = t
+            .ring
+            .header()
+            .sequence_or_head
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert!(
+            head > DISPATCHED,
+            "the ring head is still {head} after {TOTAL} messages — the \
+             same-thread fast path wrote {} of them and published none",
+            TOTAL - DISPATCHED
+        );
+
+        let first = read_latest_slot_bytes(&path, 0).expect("a live topic must yield a slot");
+        assert!(
+            first.write_idx > DISPATCHED,
+            "the reader reports position {} on a topic that has published \
+             {TOTAL} messages; `echo` polls for a change in exactly this number, \
+             so a frozen one is silence",
+            first.write_idx
+        );
+
+        // And the cursor must keep moving, which is the property `echo` lives on.
+        for i in (TOTAL + 1)..=(TOTAL + 5) {
+            t.send(i);
+            let _ = t.recv();
+        }
+        let next = read_latest_slot_bytes(&path, first.write_idx)
+            .expect("five more messages must move the cursor");
+        assert!(
+            next.write_idx > first.write_idx,
+            "position stuck at {} across five further sends",
+            first.write_idx
+        );
+    }
+}

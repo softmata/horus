@@ -291,6 +291,49 @@ pub fn temp_dir() -> PathBuf {
     std::env::temp_dir().join("horus")
 }
 
+// ── Shared Libraries ────────────────────────────────────────────────────────
+
+/// The file name a shared library built from crate `stem` has on this platform.
+///
+/// - Linux/BSD: `lib<stem>.so`
+/// - macOS: `lib<stem>.dylib`
+/// - Windows: `<stem>.dll`
+///
+/// Cargo names a `cdylib` this way, and the C++ build path needs to find that
+/// artifact by name when a project asks to link the HORUS runtime dynamically
+/// rather than statically. Spelling the convention here rather than at the call
+/// site keeps the three-way `cfg` in one place; a caller that is
+/// *cross-compiling* must not use this, because the answer belongs to the
+/// target, not to the machine doing the building.
+pub fn shared_library_name(stem: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{stem}.dll")
+    } else if cfg!(target_os = "macos") {
+        format!("lib{stem}.dylib")
+    } else {
+        format!("lib{stem}.so")
+    }
+}
+
+/// The environment variable the dynamic loader searches for shared libraries.
+///
+/// - Linux/BSD: `LD_LIBRARY_PATH`
+/// - macOS: `DYLD_LIBRARY_PATH`
+/// - Windows: `PATH` (there is no separate loader path)
+///
+/// Needed to tell someone deploying a dynamically linked node where the runtime
+/// has to be, and to keep a built binary runnable when it is moved away from
+/// the rpath the linker recorded.
+pub fn shared_library_path_var() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "PATH"
+    } else if cfg!(target_os = "macos") {
+        "DYLD_LIBRARY_PATH"
+    } else {
+        "LD_LIBRARY_PATH"
+    }
+}
+
 // ── Shell Integration ───────────────────────────────────────────────────────
 
 /// Get the user's default shell command.

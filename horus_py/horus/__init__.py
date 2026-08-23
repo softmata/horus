@@ -444,13 +444,26 @@ class Node:
         run(node, rt=True, watchdog_ms=500)
     """
 
+    # The `pubs`/`subs` annotations below used to read
+    # `Optional[Union[List[str], str, Dict[str, Dict]]]`, which is narrower than
+    # what `_parse_topics` accepts and narrower than what the docstrings
+    # recommend: `List[str]` rejects `subs=[Sub("panda.joint_state", JointState)]`
+    # — the exact call the `Sub` class docstring shows — and rejects the bare
+    # message types in `pubs=[CmdVel]`, while `Dict[str, Dict]` rejects
+    # `pubs={"cmd": CmdVel}`. `horus/py.typed` ships, so a type checker does read
+    # this signature; mypy reported `List item 0 has incompatible type "Sub";
+    # expected "str"` on documented, working code. The union is spelled out
+    # inline rather than hidden behind a `TopicSpec` alias because
+    # `help(horus.Node)` prints the signature verbatim — spelled out, it answers
+    # "is a bare topic string legal?" without the reader chasing an alias.
     def __init__(self,
                  name: Optional[str] = None,
                  tick: Optional[Callable[['Node'], None]] = None,
                  rate: float = 30,
-                 # Topics
-                 pubs: Optional[Union[List[str], str, Dict[str, Dict]]] = None,
-                 subs: Optional[Union[List[str], str, Dict[str, Dict]]] = None,
+                 # Topics — see the note above `__init__` on why the union is
+                 # this wide and why it is spelled out rather than aliased.
+                 pubs: Optional[Union[str, List[Union[str, Sub, Pub, type]], Dict[str, Any]]] = None,
+                 subs: Optional[Union[str, List[Union[str, Sub, Pub, type]], Dict[str, Any]]] = None,
                  # Lifecycle callbacks
                  init: Optional[Callable[['Node'], None]] = None,
                  shutdown: Optional[Callable[['Node'], None]] = None,
@@ -478,9 +491,20 @@ class Node:
             rate: Tick rate in Hz (default 30)
             pubs: Topics to publish. Accepts:
                   - ``[CmdVel, LaserScan]`` — typed (fast Pod, ~1.5μs)
+                  - ``[Pub("cmd", CmdVel)]`` — typed, explicit name and capacity
                   - ``{"cmd": CmdVel}`` — typed with custom name
-                  - ``["data"]`` — string (GenericMessage, ~5-50μs)
-            subs: Topics to subscribe — same formats as pubs
+                  - ``["data"]`` — list of strings (GenericMessage, ~5-50μs)
+                  - ``"data"`` — a single bare string, same as ``["data"]``
+                  Every spelling above is legal; prefer the list form, which is
+                  what the template, the README and the docs site use. The bare
+                  string was missing from this list until 0.3.0 even though the
+                  annotation and ``_parse_topics`` had always taken it, and this
+                  docstring is all ``help(horus.Node)`` renders — so
+                  ``pubs="motors.cmd_vel"``, the spelling that
+                  ``horus new --python`` itself used to generate, could not be
+                  confirmed legal without reading the binding source.
+            subs: Topics to subscribe — same formats as pubs, the bare ``"data"``
+                  string included, with ``Sub`` in place of ``Pub``
             init: Called once before first tick — ``init(node)``. Can be async.
             shutdown: Called on scheduler stop — ``shutdown(node)``. Can be async.
             on_error: Error handler — ``on_error(node, exception)``
@@ -590,8 +614,16 @@ class Node:
             "topic"                       → ["topic"] (GenericMessage)
             ["topic1", "topic2"]          → ["topic1", "topic2"] (GenericMessage)
             [CmdVel, LaserScan]           → ["cmdvel", "laserscan"] (typed, fast Pod)
+            [Sub("cmd", CmdVel)]          → ["cmd"] (typed, explicit capacity)
+            [Pub("cmd", CmdVel)]          → ["cmd"] (typed, explicit capacity)
             {"cmd": CmdVel}               → ["cmd"] (typed, fast Pod)
             {"cmd": {"type": CmdVel}}     → ["cmd"] (typed, legacy format)
+
+        The Sub/Pub rows were missing from this table even though the branch
+        below has always handled them and the ``Sub``/``Pub`` class docstrings
+        tell users to pass them — the same omission as the one that hid the bare
+        string form from ``Node.__init__``'s "Accepts:" list. Keep this table and
+        that one in step: they describe one parser.
         """
         if spec is None:
             return []

@@ -172,6 +172,20 @@ enum Commands {
         #[arg(short = 'l', long = "lib")]
         lib: bool,
 
+        /// Start from a shipped example instead of the blank template
+        ///
+        /// `horus new my_robot --from differential_drive` copies
+        /// examples/differential_drive, renames the package to `my_robot` and
+        /// leaves the build output behind. Pass a name that does not exist to
+        /// see the list. The language comes from the example, so the language
+        /// flags do not apply.
+        #[arg(
+            long = "from",
+            value_name = "EXAMPLE",
+            conflicts_with_all = ["python", "rust", "cpp", "use_macro", "workspace", "lib"]
+        )]
+        from: Option<String>,
+
         /// Accept defaults without prompting (for scripts, Dockerfiles and CI)
         ///
         /// The README's `horus new my_robot` opened two prompts that the README
@@ -2386,6 +2400,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             workspace,
             lib,
             yes,
+            from,
         } => {
             warn_about_deprecated_new_short_flags();
             // `--yes` reuses the same signal the non-TTY path uses, so a
@@ -2393,6 +2408,18 @@ fn run_command(command: Commands) -> HorusResult<()> {
             if yes {
                 std::env::set_var("HORUS_ASSUME_YES", "1");
             }
+
+            // `--from <example>` is a different constructor, not a variant of
+            // the template one: the language, the sources and the manifest all
+            // come from the example, so nothing below applies. Clap rejects the
+            // language/workspace/lib flags alongside it rather than silently
+            // ignoring them.
+            if let Some(example) = from {
+                horus_manager::version::check_and_prompt_update().map_err(HorusError::from)?;
+                return commands::new::create_project_from_example(name, path, example)
+                    .map_err(HorusError::from);
+            }
+
             let language = if python {
                 "python"
             } else if cpp {

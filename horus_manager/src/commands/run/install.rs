@@ -34,19 +34,47 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
     // Use system Python's pip directly
     let python_cmd = super::detect_python_interpreter()?;
 
+    // The path the node will actually be run with, used for every question
+    // asked of the interpreter below. Computed once: it does not change while
+    // this loop runs, because the entries it would gain are the links this
+    // loop creates and those are re-scanned by the final verification.
+    let python_path = super::run_python::build_python_path().unwrap_or_default();
+
     // What the interpreter has to be able to import once this function has
-    // finished. Every branch that leaves a link behind records here, including
-    // the "(already linked)" fast paths: a link made by a previous run is
-    // exactly as unimportable as one made by this one if the path is wrong,
-    // and it is the second run onwards that users spend their time in.
+    // finished. Every branch that leaves a *resolution artifact* behind records
+    // here — links and system references alike, including the "(already
+    // linked)" fast paths: a link made by a previous run is exactly as
+    // unimportable as one made by this one if the path is wrong, and it is the
+    // second run onwards that users spend their time in.
+    //
+    // The system-reference branches record too, and that is not symmetry for
+    // its own sake. `.horus/packages/<name>.system.json` is a promise that the
+    // interpreter already has the distribution; nothing used to check it, so a
+    // distribution whose `*.dist-info` survived but whose module files did not
+    // — an interrupted `pip uninstall`, a hand `rm -rf`, a Python minor-version
+    // bump that moved site-packages — produced
+    //
+    //     * Creating reference to system package...
+    //     * Using system package
+    //     * Updated horus.lock
+    //     Node execution failed: No module named 'horus'
+    //
+    // which is the original defect's evidence block verbatim, reached down the
+    // branch beside the one that was fixed.
     let mut linked: Vec<(String, Vec<String>)> = Vec::new();
 
     for pkg in &packages {
-        // Check if package exists in system first
-        if let Ok(Some(system_version)) = detect_system_python_package(&pkg.name) {
+        // Check if package exists in system first. One probe answers both
+        // halves — the version to record and the modules to verify — because
+        // asking twice means starting the interpreter twice and importing a
+        // 14 MB compiled extension twice, on every run.
+        if let Some(system) = usable_system_distribution(&python_cmd, &python_path, &pkg.name) {
+            let system_version = system.version.clone().unwrap_or_else(|| "unknown".into());
+
             // Auto-use system package for horus-robotics (core dependency)
             if pkg.name == "horus-robotics" {
                 create_system_reference_python_run(&pkg.name, &system_version)?;
+                linked.push((pkg.name.clone(), system.modules.clone()));
                 continue;
             }
 
@@ -66,6 +94,7 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
             match prompt_system_package_choice_run(&pkg.name, &system_version)? {
                 SystemPackageChoiceRun::UseSystem => {
                     create_system_reference_python_run(&pkg.name, &system_version)?;
+                    linked.push((pkg.name.clone(), system.modules.clone()));
                     continue;
                 }
                 SystemPackageChoiceRun::InstallHORUS => {
@@ -237,6 +266,24 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 /// run — including the runs that only re-use existing links — costs one process
 /// start rather than one per dependency.
 fn verify_linked_packages_import(python_cmd: &str, linked: &[(String, Vec<String>)]) -> Result<()> {
+    // Recomputed rather than reusing the path taken at the top of the resolver:
+    // the links this run created are new PYTHONPATH entries, and they are
+    // exactly the ones being verified.
+    let python_path = super::run_python::build_python_path()?;
+    verify_linked_packages_import_on(python_cmd, &python_path, linked)
+}
+
+/// The body of `verify_linked_packages_import` with the path supplied.
+///
+/// Split out so the check can be exercised against a throw-away sys.path
+/// instead of the developer's real environment — a test that has to mutate the
+/// process-wide `PYTHONPATH` to build a fixture cannot run beside its
+/// neighbours.
+fn verify_linked_packages_import_on(
+    python_cmd: &str,
+    python_path: &str,
+    linked: &[(String, Vec<String>)],
+) -> Result<()> {
     let modules: Vec<String> = linked
         .iter()
         .flat_map(|(_, modules)| modules.iter().cloned())
@@ -247,8 +294,7 @@ fn verify_linked_packages_import(python_cmd: &str, linked: &[(String, Vec<String
         return Ok(());
     }
 
-    let python_path = super::run_python::build_python_path()?;
-    let (interpreter, failures) = probe_imports(python_cmd, &python_path, &modules)?;
+    let (interpreter, failures) = probe_imports(python_cmd, python_path, &modules)?;
     if failures.is_empty() {
         return Ok(());
     }
@@ -566,12 +612,39 @@ pub(crate) fn resolve_dependencies_with_context(
                     // with the code that would have reinstalled it never
                     // reached. The lock may skip work; it may not skip
                     // reality.
+                    // The interpreter is only consulted for packages that
+                    // actually left a system reference behind, and the answer
+                    // is memoised, so the ordinary project — which has none —
+                    // still takes this path without starting a child process.
+                    let system_answers: std::cell::RefCell<
+                        std::collections::HashMap<String, bool>,
+                    > = std::cell::RefCell::new(std::collections::HashMap::new());
+                    let interpreter = super::detect_python_interpreter().ok();
+                    let system_reference_usable = |name: &str| {
+                        if let Some(known) = system_answers.borrow().get(name) {
+                            return *known;
+                        }
+                        let answer = match interpreter.as_deref() {
+                            Some(python) => system_reference_is_usable(
+                                python,
+                                &super::run_python::build_python_path().unwrap_or_default(),
+                                name,
+                            ),
+                            // No interpreter to ask. That is a problem the run
+                            // itself will report; it is not evidence the
+                            // reference is stale.
+                            None => true,
+                        };
+                        system_answers.borrow_mut().insert(name.to_string(), answer);
+                        answer
+                    };
                     let missing = unmaterialized_dependencies(
                         Path::new("."),
                         &horus_packages,
                         &pip_packages,
                         &cargo_packages,
                         context_language,
+                        &system_reference_usable,
                     );
                     if missing.is_empty() {
                         log::info!("Lockfile is up-to-date, using pinned versions");
@@ -1007,11 +1080,317 @@ pub(crate) fn create_system_reference_cargo_run(
     Ok(())
 }
 
-pub(crate) fn detect_system_python_package(package_name: &str) -> Result<Option<String>> {
-    use std::process::Command;
+/// What the interpreter that will run the node says about a distribution it
+/// already has installed.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SystemDistribution {
+    /// The version its metadata records, when it records one.
+    pub version: Option<String>,
+    /// Top-level importable names, from `top_level.txt` or the file record.
+    pub modules: Vec<String>,
+    /// Those of `modules` that did not import, with the reason.
+    pub failed: Vec<(String, String)>,
+}
 
-    // Check if package is installed in system Python using pip show
-    let output = Command::new("python3")
+impl SystemDistribution {
+    /// Whether this distribution can be used as-is.
+    ///
+    /// A distribution whose recorded modules all fail to import is metadata
+    /// with nothing behind it. Where the module set could not be determined at
+    /// all there is nothing to disprove, so it counts as usable — that is the
+    /// pre-existing behaviour and the conservative answer.
+    fn is_importable(&self) -> bool {
+        self.modules.is_empty() || self.failed.len() < self.modules.len()
+    }
+}
+
+/// Ask one child interpreter what it knows about each distribution.
+///
+/// `pip show` was the whole of this check, and `pip show` reads metadata: it
+/// answers from the `*.dist-info` directory and never touches the module files
+/// the metadata describes. So a distribution whose dist-info survived a
+/// half-finished `pip uninstall`, a hand `rm -rf` of its package directory, or
+/// a Python minor-version bump that left the old site-packages behind, was
+/// reported as installed and usable. HORUS then wrote a system reference to it,
+/// printed three green lines, and the node died on `import`.
+///
+/// `importlib.metadata` answers the same question from the same records but is
+/// in the standard library — so this also works on an interpreter with no pip —
+/// and, crucially, the probe then *imports* each name it found. That is the one
+/// question a metadata lookup cannot fake.
+///
+/// Distribution names travel in `argv`, never interpolated into the source
+/// string, for the same reason `create_python_wrapper` passes the node path
+/// through the environment: a name that reached this from a manifest must not
+/// be able to become code.
+///
+/// Returns `Err` when the interpreter could not answer at all (no
+/// `importlib.metadata`, a killed process, unparseable output). That is "no
+/// information", not "not installed", and callers fall back to what they did
+/// before rather than acting on it.
+fn probe_system_distributions(
+    python_cmd: &str,
+    python_path: &str,
+    names: &[String],
+) -> Result<std::collections::HashMap<String, Option<SystemDistribution>>> {
+    const PROBE: &str = r#"import csv, io, json, sys
+try:
+    import importlib
+    import importlib.metadata as md
+except Exception:
+    try:
+        import importlib_metadata as md
+    except Exception:
+        md = None
+
+def add_path(path, names):
+    parts = str(path).replace("\\", "/").split("/")
+    head = parts[0]
+    if head in (".", "..") or head.endswith((".dist-info", ".egg-info")):
+        return
+    if len(parts) == 1:
+        if head.endswith(".py"):
+            cand = head[:-3]
+        elif head.endswith((".so", ".pyd", ".dll", ".dylib")):
+            cand = head.split(".")[0]
+        else:
+            return
+    else:
+        cand = head
+    if cand.isidentifier() and cand not in names:
+        names.append(cand)
+
+def top_level(dist):
+    names = []
+    try:
+        text = dist.read_text("top_level.txt")
+    except Exception:
+        text = None
+    if text:
+        for line in text.splitlines():
+            line = line.strip()
+            if line and line.isidentifier() and line not in names:
+                names.append(line)
+        if names:
+            return names
+    # RECORD, read as text and parsed here rather than through
+    # `Distribution.files`. Python 3.14's `files` drops entries whose file is
+    # not on disk, which erases exactly the evidence this probe exists to find:
+    # for a wheel with no top_level.txt (maturin writes none, and
+    # horus-robotics is a maturin wheel) a deleted package directory made
+    # `files` return the dist-info and nothing else, the module list came back
+    # empty, and "no modules to check" was read as "nothing wrong".
+    try:
+        text = dist.read_text("RECORD")
+    except Exception:
+        text = None
+    if text:
+        try:
+            rows = list(csv.reader(io.StringIO(text)))
+        except Exception:
+            rows = []
+        for row in rows:
+            if row and row[0]:
+                add_path(row[0], names)
+        if names:
+            return names
+    # Layouts with no RECORD at all: egg-info, and anything else the metadata
+    # API can enumerate for itself.
+    try:
+        files = dist.files or []
+    except Exception:
+        files = []
+    for f in files:
+        add_path(f, names)
+    return names
+
+def find(name):
+    seen = []
+    for cand in (name, name.replace("-", "_"), name.replace("_", "-")):
+        if cand in seen:
+            continue
+        seen.append(cand)
+        try:
+            return md.distribution(cand)
+        except Exception:
+            continue
+    return None
+
+out = {}
+for name in sys.argv[1:]:
+    entry = None
+    dist = find(name) if md is not None else None
+    if dist is not None:
+        try:
+            version = dist.version
+        except Exception:
+            version = None
+        modules = top_level(dist)
+        failed = []
+        for m in modules:
+            try:
+                importlib.import_module(m)
+            except BaseException as exc:
+                failed.append([m, "%s: %s" % (type(exc).__name__, exc)])
+        entry = {"version": version, "modules": modules, "failed": failed}
+    out[name] = entry
+sys.stdout.write(json.dumps({"metadata_api": md is not None, "dists": out}))
+"#;
+
+    let output = Command::new(python_cmd)
+        .arg("-c")
+        .arg(PROBE)
+        .args(names)
+        .env("PYTHONPATH", python_path)
+        .output()
+        .context("Failed to ask the interpreter about its installed packages")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .context("the installed-package probe produced no usable answer")?;
+    if parsed.get("metadata_api").and_then(|v| v.as_bool()) != Some(true) {
+        bail!("{python_cmd} has no importlib.metadata to query");
+    }
+
+    let mut out = std::collections::HashMap::new();
+    let dists = parsed
+        .get("dists")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow!("the installed-package probe answered without a package table"))?;
+    for (name, value) in dists {
+        if value.is_null() {
+            out.insert(name.clone(), None);
+            continue;
+        }
+        let modules = value
+            .get("modules")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let failed = value
+            .get("failed")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|pair| {
+                        let pair = pair.as_array()?;
+                        Some((
+                            pair.first()?.as_str()?.to_string(),
+                            pair.get(1)?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(
+            name.clone(),
+            Some(SystemDistribution {
+                version: value
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                modules,
+                failed,
+            }),
+        );
+    }
+    Ok(out)
+}
+
+/// Whether the interpreter still has a usable copy of the distribution a
+/// `<name>.system.json` marker points at.
+///
+/// The marker is a *claim*, and `unmaterialized_dependencies` used to accept it
+/// on the strength of the file existing. That is how the "up-to-date" fast path
+/// reported `* Dependencies locked (horus.lock is up-to-date)` and then died on
+/// `import`: nothing between writing the marker and reading it back ever asked
+/// the interpreter whether the reference still pointed at anything.
+///
+/// Unknown counts as usable. If the probe cannot run there is no evidence to
+/// act on, and answering "missing" would send every run back through
+/// resolution for as long as the interpreter stays unanswerable.
+fn system_reference_is_usable(python_cmd: &str, python_path: &str, package_name: &str) -> bool {
+    match probe_system_distributions(python_cmd, python_path, &[package_name.to_string()]) {
+        Ok(mut map) => match map.remove(package_name) {
+            Some(Some(dist)) => dist.is_importable(),
+            // The probe ran and the distribution is not installed. The marker
+            // is stale.
+            Some(None) => false,
+            None => true,
+        },
+        Err(_) => true,
+    }
+}
+
+/// What the interpreter has installed under `package_name`, if it is installed
+/// *and* what it installed can be imported.
+///
+/// Both halves of the answer come back together — the version to record and the
+/// module list to verify — because the caller needs both and each probe starts
+/// an interpreter and imports the distribution's modules; for horus-robotics
+/// that means loading a 14 MB compiled extension, which is not a thing to do
+/// twice per run.
+///
+/// Returning `None` for a distribution whose metadata is present but whose
+/// modules will not import is the point. The caller's next move is to install
+/// HORUS's own copy into the global cache, which repairs the project instead of
+/// binding it to a system copy that cannot be imported — the alternative, a
+/// hard error telling the user to `pip install` something `pip show` already
+/// reports as installed, is a dead end.
+fn usable_system_distribution(
+    python_cmd: &str,
+    python_path: &str,
+    package_name: &str,
+) -> Option<SystemDistribution> {
+    match probe_system_distributions(python_cmd, python_path, &[package_name.to_string()]) {
+        Ok(mut map) => match map.remove(package_name) {
+            Some(Some(dist)) => {
+                if !dist.is_importable() {
+                    let (module, reason) = dist.failed[0].clone();
+                    println!(
+                        "  {} {} is recorded as installed in {} but `import {}` fails ({}) \
+                         — installing HORUS's own copy instead",
+                        cli_output::ICON_WARN.yellow(),
+                        package_name,
+                        python_cmd,
+                        module,
+                        reason
+                    );
+                    return None;
+                }
+                Some(dist)
+            }
+            _ => None,
+        },
+        // No importlib.metadata, or the interpreter could not be asked. Fall
+        // back to what detection did before rather than guessing — with no
+        // module list, so the end-of-resolver verification has nothing to check
+        // and says so rather than inventing an answer.
+        Err(_) => detect_system_python_package_via_pip(python_cmd, package_name)
+            .ok()
+            .flatten()
+            .map(|version| SystemDistribution {
+                version: Some(version),
+                modules: Vec::new(),
+                failed: Vec::new(),
+            }),
+    }
+}
+
+/// `pip show`, the pre-`importlib.metadata` detection path.
+///
+/// Kept only as the fallback for an interpreter that cannot answer the
+/// structured probe. It reads metadata and nothing else, so anything it reports
+/// is still subject to the import verification at the end of the resolver.
+fn detect_system_python_package_via_pip(
+    python_cmd: &str,
+    package_name: &str,
+) -> Result<Option<String>> {
+    let output = Command::new(python_cmd)
         .args(["-m", "pip", "show", package_name])
         .output();
 
@@ -1127,45 +1506,86 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
 fn resolved_package_pins(project_dir: &Path) -> Vec<(String, String, String)> {
     let mut pins = Vec::new();
 
+    // Two passes over `.horus/packages`, because a package can be represented
+    // there both by a directory and by a JSON marker beside it and the
+    // directory is the better evidence.
+    //
+    // Pass 1 — directories. A link into the global cache, or, for
+    // `horus install <pkg>` against a local workspace target, a real directory
+    // that pip unpacked in place (registry/install.rs installs to
+    // `.horus/packages/<name>` and never links). This used to call
+    // `fs::read_link` on everything, so the real-directory layout failed the
+    // very first step and was silently left out of the lockfile: `horus run`
+    // put the package on PYTHONPATH and horus.lock never named it.
+    if let Ok(entries) = fs::read_dir(project_dir.join(".horus/packages")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            match link_target_name(&path) {
+                // A link into the global cache, whose directory name carries
+                // both the distribution and the version.
+                Some(target) => {
+                    if let Some((name, version)) =
+                        target.strip_prefix("pypi_").and_then(split_name_version)
+                    {
+                        // pip is asked for `latest` when the manifest names no
+                        // version, so the directory name cannot answer this one
+                        // — the installed dist-info can.
+                        let version = if version == "latest" {
+                            match dist_info_version(&path) {
+                                Some(v) => v,
+                                None => continue,
+                            }
+                        } else {
+                            version.to_string()
+                        };
+                        pins.push((name.to_string(), version, "pypi".to_string()));
+                    } else if let Some((name, version)) = split_name_version(target.as_str()) {
+                        pins.push((
+                            name.to_string(),
+                            version.to_string(),
+                            "registry".to_string(),
+                        ));
+                    }
+                }
+                // Installed in place. The directory is named after the
+                // distribution alone, so the version comes from the metadata
+                // the installer wrote or from pip's own dist-info.
+                None => {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if let Some(version) =
+                        installed_directory_version(&path).or_else(|| dist_info_version(&path))
+                    {
+                        pins.push((name, version, "pypi".to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 2 — markers, for the packages no directory accounted for. A
+    // reference to a package already installed in the system interpreter has no
+    // directory at all; `<name>.pypi.json` normally sits beside a directory
+    // pass 1 already pinned, and is the fallback when that directory is the one
+    // form pass 1 could not read a version out of.
     if let Ok(entries) = fs::read_dir(project_dir.join(".horus/packages")) {
         for entry in entries.flatten() {
             let path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
-
-            // A reference to a package already installed in the system
-            // interpreter — no cache directory, the version is in the marker.
-            if let Some(name) = file_name.strip_suffix(".system.json") {
-                if let Some(version) = system_reference_version(&path) {
-                    pins.push((name.to_string(), version, "pypi".to_string()));
-                }
-                continue;
-            }
-
-            // Everything else is a link into the global cache, whose directory
-            // name carries both the distribution and the version.
-            let Some(target) = link_target_name(&path) else {
+            let Some(name) = file_name
+                .strip_suffix(".system.json")
+                .or_else(|| file_name.strip_suffix(".pypi.json"))
+            else {
                 continue;
             };
-            if let Some((name, version)) = target.strip_prefix("pypi_").and_then(split_name_version)
-            {
-                // pip is asked for `latest` when the manifest names no version,
-                // so the directory name cannot answer this one — the installed
-                // dist-info can.
-                let version = if version == "latest" {
-                    match dist_info_version(&path) {
-                        Some(v) => v,
-                        None => continue,
-                    }
-                } else {
-                    version.to_string()
-                };
+            if pins.iter().any(|(pinned, _, _)| pinned == name) {
+                continue;
+            }
+            if let Some(version) = system_reference_version(&path) {
                 pins.push((name.to_string(), version, "pypi".to_string()));
-            } else if let Some((name, version)) = split_name_version(target.as_str()) {
-                pins.push((
-                    name.to_string(),
-                    version.to_string(),
-                    "registry".to_string(),
-                ));
             }
         }
     }
@@ -1213,7 +1633,19 @@ fn link_target_name(link: &Path) -> Option<String> {
     Some(target.file_name()?.to_string_lossy().to_string())
 }
 
-/// The version recorded in a `<name>.system.json` reference marker.
+/// The version recorded in the `metadata.json` an installer writes into a
+/// package directory it unpacked in place.
+///
+/// `registry/install.rs` writes this file last, after pip reports success, and
+/// it carries the version pip resolved — which for a `@latest` request is the
+/// only place it is written down other than the dist-info.
+fn installed_directory_version(pkg_dir: &Path) -> Option<String> {
+    system_reference_version(&pkg_dir.join("metadata.json"))
+}
+
+/// The version recorded in a `<name>.system.json` or `<name>.pypi.json` marker,
+/// or in a package directory's `metadata.json` — all three are the same
+/// `{"name", "version", "source"}` shape.
 fn system_reference_version(marker: &Path) -> Option<String> {
     let content = fs::read_to_string(marker).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -1547,7 +1979,8 @@ mod tests {
             version: None,
         }];
         assert!(
-            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty(),
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| true)
+                .is_empty(),
             "a directory that provides the module is installed, marker file or not"
         );
     }
@@ -1572,13 +2005,14 @@ mod tests {
         }];
 
         assert!(
-            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty(),
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| true)
+                .is_empty(),
             "everything is on disk — the lockfile fast path is legitimate here"
         );
 
         std::fs::remove_dir_all(&cache).expect("rm");
         assert_eq!(
-            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")),
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| true),
             vec!["cowsay".to_string()],
             "the cache is gone, so the lockfile must not be allowed to skip the reinstall"
         );
@@ -1605,14 +2039,15 @@ mod tests {
             version: None,
         }];
         assert!(
-            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty(),
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| true)
+                .is_empty(),
             "metadata.json is written only after pip reports success — that install \
              happened, and re-running it every time is not a fix"
         );
 
         std::fs::remove_dir_all(&cache).expect("rm");
         assert_eq!(
-            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")),
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| true),
             vec!["scripts-only".to_string()],
             "once the cache is gone the link is dangling and the install is not there"
         );
@@ -1635,7 +2070,8 @@ mod tests {
             version: None,
         }];
         assert!(
-            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python")).is_empty()
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| true)
+                .is_empty()
         );
     }
 
@@ -1650,11 +2086,11 @@ mod tests {
             version: None,
         }];
         assert!(
-            super::unmaterialized_dependencies(root, &[], &[], &cargo, Some("python")).is_empty(),
+            super::unmaterialized_dependencies(root, &[], &[], &cargo, Some("python"), &|_| true).is_empty(),
             "install_cargo_packages is not called for python — see resolve_dependencies_with_context"
         );
         assert_eq!(
-            super::unmaterialized_dependencies(root, &[], &[], &cargo, Some("rust")),
+            super::unmaterialized_dependencies(root, &[], &[], &cargo, Some("rust"), &|_| true),
             vec!["ripgrep".to_string()],
             "in a Rust project the same binary is genuinely missing"
         );
@@ -1950,33 +2386,280 @@ mod tests {
             .expect("one working module means the link resolves");
     }
 
-    /// The check has to cover every branch that leaves a link behind, not just
-    /// the branch that creates one. Users spend their time on the second run
-    /// onwards, which takes the "(already linked)" fast path — a link made by
-    /// an earlier run is exactly as unimportable as a fresh one if the path is
-    /// wrong.
+    /// The check has to cover every branch that leaves a resolution artifact
+    /// behind, not just the branch that creates a link. Users spend their time
+    /// on the second run onwards, which takes the "(already linked)" fast path
+    /// — a link made by an earlier run is exactly as unimportable as a fresh
+    /// one if the path is wrong.
+    ///
+    /// The first version of this test asserted `linked.push((` appeared exactly
+    /// three times. Three was the number of branches that already recorded, so
+    /// the assertion described the code rather than the guarantee: the two
+    /// `create_system_reference_python_run` branches recorded nothing, the
+    /// verification saw an empty module list and returned immediately, and the
+    /// original defect — four green lines then `No module named 'horus'` — was
+    /// still reachable down the branch beside the fixed one. A count of the
+    /// covered branches cannot detect the branch that is not covered; worse,
+    /// covering it would have made the test fail. So this walks the branches
+    /// instead of counting them.
     #[test]
-    fn every_branch_that_links_is_verified_before_the_resolver_returns() {
+    fn every_branch_that_leaves_an_artifact_is_verified_before_the_resolver_returns() {
         let full = include_str!("install.rs");
         let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
         let start = src
             .find("pub(crate) fn install_pip_packages")
             .expect("the pypi resolver must still be here");
         let end = src
-            .find("pub(crate) fn install_cargo_packages")
-            .expect("the cargo resolver follows it");
+            .find("/// Ask the interpreter that will run the node")
+            .expect("the verification follows the resolver");
         let body = &src[start..end];
         assert!(
             body.contains("verify_linked_packages_import("),
             "linking and then reporting success without asking the interpreter \
              is the whole defect"
         );
+
+        // Every `continue` in the resolution loop that follows a call which
+        // leaves something behind on disk must record what it left, between the
+        // call and the `continue`.
+        for creator in [
+            "create_system_reference_python_run(",
+            "python_link_is_usable(&local_link)",
+        ] {
+            let mut from = 0;
+            let mut branches = 0;
+            while let Some(at) = body[from..].find(creator) {
+                let at = from + at + creator.len();
+                let stop = body[at..]
+                    .find("continue;")
+                    .unwrap_or_else(|| body.len() - at);
+                let branch = &body[at..at + stop];
+                assert!(
+                    branch.contains("linked.push(("),
+                    "the branch after `{creator}` reaches `continue` without recording \
+                     what it left on disk, so verify_linked_packages_import never sees \
+                     it — that is the hole the original finding fell through:\n{branch}"
+                );
+                branches += 1;
+                from = at + stop;
+            }
+            assert!(branches > 0, "`{creator}` is no longer in the resolver");
+        }
+    }
+
+    /// The interpreter, not the metadata, decides whether a system package is
+    /// usable.
+    ///
+    /// A `*.dist-info` directory with no package beside it is exactly what an
+    /// interrupted `pip uninstall`, a hand `rm -rf`, or a Python minor-version
+    /// bump leaves behind, and `pip show` reports it as installed because
+    /// `pip show` reads metadata and nothing else. This builds one on a
+    /// throw-away sys.path and asks the two questions in order.
+    #[test]
+    fn a_distribution_with_metadata_but_no_module_is_not_usable() {
+        let Some(python) = test_python() else {
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let site = tmp.path();
+        let dist_info = site.join("ghostpkg-1.2.3.dist-info");
+        fs::create_dir_all(&dist_info).expect("mkdir");
+        fs::write(
+            dist_info.join("METADATA"),
+            "Metadata-Version: 2.1\nName: ghostpkg\nVersion: 1.2.3\n",
+        )
+        .expect("write");
+        fs::write(dist_info.join("top_level.txt"), "ghostmod\n").expect("write");
+        // ...and deliberately no `ghostmod` package: that is the defect state.
+
+        let path = site.to_string_lossy().to_string();
+        let probed = super::probe_system_distributions(&python, &path, &["ghostpkg".to_string()])
+            .expect("the probe must run");
+        let dist = probed
+            .get("ghostpkg")
+            .cloned()
+            .flatten()
+            .expect("importlib.metadata sees the dist-info, exactly as pip show does");
+        assert_eq!(dist.version.as_deref(), Some("1.2.3"));
+        assert_eq!(dist.modules, vec!["ghostmod".to_string()]);
         assert_eq!(
-            body.matches("linked.push((").count(),
-            3,
-            "each of the two already-linked fast paths and the fresh-link path \
-             has to record what it linked, or the check silently skips it"
+            dist.failed.len(),
+            1,
+            "the module it claims to provide does not import: {:?}",
+            dist.failed
         );
+
+        // And the resolver's own verification says so, rather than passing over
+        // a system reference with nothing to check.
+        let linked = vec![("ghostpkg".to_string(), dist.modules.clone())];
+        let err = super::verify_linked_packages_import_on(&python, &path, &linked)
+            .expect_err("a package whose only module cannot be imported is not installed");
+        let message = format!("{err}");
+        assert!(
+            message.contains("ghostpkg") && message.contains("ghostmod"),
+            "the error has to name the distribution and the module: {message}"
+        );
+    }
+
+    /// The same defect, in the layout the package this finding is about
+    /// actually ships.
+    ///
+    /// `horus-robotics` is a maturin wheel and maturin writes no
+    /// `top_level.txt`, so the module list has to come from RECORD — and
+    /// Python 3.14's `importlib.metadata.Distribution.files` drops entries
+    /// whose file is not on disk. Deleting the package directory therefore made
+    /// `files` return the dist-info and nothing else: the probe saw an empty
+    /// module list, "nothing to check" was read as "nothing wrong", and this
+    /// whole fix passed straight over the one distribution it exists for. Read
+    /// RECORD as text and the missing module is still named there, which is the
+    /// point of a record.
+    #[test]
+    fn a_wheel_without_top_level_txt_is_still_checked_against_its_record() {
+        let Some(python) = test_python() else {
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let site = tmp.path();
+        let dist_info = site.join("recordonly-2.0.dist-info");
+        fs::create_dir_all(&dist_info).expect("mkdir");
+        fs::write(
+            dist_info.join("METADATA"),
+            "Metadata-Version: 2.1\nName: recordonly\nVersion: 2.0\n",
+        )
+        .expect("write");
+        // Exactly the shape of horus_robotics-0.2.2.dist-info/RECORD: the
+        // package, its compiled extension, and the dist-info's own files. No
+        // top_level.txt, and no `recordmod/` on disk.
+        fs::write(
+            dist_info.join("RECORD"),
+            "recordmod/__init__.py,sha256=x,10\n\
+             recordmod/_ext.abi3.so,sha256=y,20\n\
+             recordonly-2.0.dist-info/METADATA,sha256=z,30\n\
+             recordonly-2.0.dist-info/RECORD,,\n",
+        )
+        .expect("write");
+
+        let path = site.to_string_lossy().to_string();
+        let probed = super::probe_system_distributions(&python, &path, &["recordonly".to_string()])
+            .expect("the probe must run");
+        let dist = probed
+            .get("recordonly")
+            .cloned()
+            .flatten()
+            .expect("the dist-info is there, so the distribution is 'installed'");
+        assert_eq!(
+            dist.modules,
+            vec!["recordmod".to_string()],
+            "RECORD names the module even when the module is gone — that is what \
+             a record is for"
+        );
+        assert_eq!(dist.failed.len(), 1, "and it does not import: {dist:?}");
+        assert!(
+            super::usable_system_distribution(&python, &path, "recordonly").is_none(),
+            "a maturin wheel with its package deleted is not an installed package"
+        );
+        assert!(
+            !super::system_reference_is_usable(&python, &path, "recordonly"),
+            "and a system reference to it is stale"
+        );
+    }
+
+    /// The same fixture, through the detection gate the resolver actually asks.
+    ///
+    /// `usable_system_distribution` returning a distribution is what routes a
+    /// package down the system-reference branch. For a distribution that cannot
+    /// be imported it must not, so the resolver falls through and installs
+    /// HORUS's own copy instead of binding the project to a broken one.
+    #[test]
+    fn detection_declines_a_system_package_that_cannot_be_imported() {
+        let Some(python) = test_python() else {
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let site = tmp.path();
+
+        // A real, importable distribution: detection must still accept this.
+        let live_info = site.join("livepkg-0.4.0.dist-info");
+        fs::create_dir_all(&live_info).expect("mkdir");
+        fs::write(
+            live_info.join("METADATA"),
+            "Metadata-Version: 2.1\nName: livepkg\nVersion: 0.4.0\n",
+        )
+        .expect("write");
+        fs::write(live_info.join("top_level.txt"), "livemod\n").expect("write");
+        fs::create_dir_all(site.join("livemod")).expect("mkdir");
+        fs::write(site.join("livemod/__init__.py"), "").expect("write");
+
+        // Metadata with nothing behind it.
+        let ghost_info = site.join("ghostpkg-1.2.3.dist-info");
+        fs::create_dir_all(&ghost_info).expect("mkdir");
+        fs::write(ghost_info.join("top_level.txt"), "ghostmod\n").expect("write");
+
+        let path = site.to_string_lossy().to_string();
+        assert_eq!(
+            super::usable_system_distribution(&python, &path, "livepkg")
+                .and_then(|dist| dist.version),
+            Some("0.4.0".to_string()),
+            "a system package that imports is still a system package"
+        );
+        assert_eq!(
+            super::usable_system_distribution(&python, &path, "ghostpkg")
+                .and_then(|dist| dist.version),
+            None,
+            "metadata alone is not an installed package — pip show says yes here, \
+             and the node then dies on `import`"
+        );
+
+        // And the lockfile fast path must not accept a marker pointing at it.
+        assert!(
+            super::system_reference_is_usable(&python, &path, "livepkg"),
+            "a reference to a working system package is not stale"
+        );
+        assert!(
+            !super::system_reference_is_usable(&python, &path, "ghostpkg"),
+            "`.horus/packages/<name>.system.json` is a claim about the interpreter; \
+             accepting it unchecked is how `Dependencies locked` preceded ModuleNotFoundError"
+        );
+    }
+
+    /// A marker whose referent has gone must send the run back through
+    /// resolution rather than letting the lockfile skip it.
+    #[test]
+    fn a_stale_system_reference_does_not_count_as_installed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".horus/packages")).expect("mkdir");
+        std::fs::write(
+            root.join(".horus/packages/horus-robotics.system.json"),
+            r#"{"name":"horus-robotics","version":"0.1.9","source":"System"}"#,
+        )
+        .expect("write");
+        let pip = vec![super::PipPackage {
+            name: "horus-robotics".to_string(),
+            version: None,
+        }];
+        assert_eq!(
+            super::unmaterialized_dependencies(root, &[], &pip, &[], Some("python"), &|_| false),
+            vec!["horus-robotics".to_string()],
+            "the marker file exists and the package does not; the fast path used to \
+             read the first fact and print `Dependencies locked` over the second"
+        );
+    }
+
+    /// The interpreter to run probe tests against, or `None` where there is
+    /// none — CI images without python3 must not fail the suite over it.
+    fn test_python() -> Option<String> {
+        for candidate in ["python3", "python"] {
+            if std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return Some(candidate.to_string());
+            }
+        }
+        None
     }
 
     // ── The lockfile names what it locked (PATH-3) ─────────────────────────
@@ -2062,6 +2745,66 @@ mod tests {
                 "crates.io".to_string()
             )),
             "got: {pins:?}"
+        );
+    }
+
+    /// A package installed in place is still a resolved package.
+    ///
+    /// `horus install <pkg>` against a local workspace target does not link
+    /// into the global cache — `registry/install.rs` pip-installs straight to
+    /// `.horus/packages/<name>` and drops a `<name>.pypi.json` beside it. This
+    /// reader began with `fs::read_link`, which fails on a real directory, so
+    /// that whole install shape fell out at the first step: `horus run` put the
+    /// package on PYTHONPATH and horus.lock never named it. A lockfile that
+    /// silently omits an installed dependency is worse than one that omits
+    /// everything, because it looks complete.
+    #[test]
+    fn a_package_installed_in_place_is_pinned_too() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let packages = root.join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+
+        // The workspace-local layout: a real directory, plus the marker.
+        let installed = packages.join("requests");
+        fs::create_dir_all(installed.join("requests")).unwrap();
+        fs::write(installed.join("requests/__init__.py"), "").unwrap();
+        fs::create_dir_all(installed.join("requests-2.32.3.dist-info")).unwrap();
+        fs::write(
+            installed.join("metadata.json"),
+            r#"{"name":"requests","version":"2.32.3","source":"PyPI"}"#,
+        )
+        .unwrap();
+        fs::write(
+            packages.join("requests.pypi.json"),
+            r#"{"name":"requests","version":"2.32.3","source":"PyPI"}"#,
+        )
+        .unwrap();
+
+        // The same layout without the metadata file the installer writes last:
+        // the dist-info still names the version.
+        let partial = packages.join("idna");
+        fs::create_dir_all(partial.join("idna-3.7.dist-info")).unwrap();
+
+        let pins = super::resolved_package_pins(root);
+        assert!(
+            pins.contains(&(
+                "requests".to_string(),
+                "2.32.3".to_string(),
+                "pypi".to_string()
+            )),
+            "a directory pip unpacked in place is an installed package: {pins:?}"
+        );
+        assert_eq!(
+            pins.iter()
+                .filter(|(name, _, _)| name == "requests")
+                .count(),
+            1,
+            "the directory and the marker describe one package, not two: {pins:?}"
+        );
+        assert!(
+            pins.contains(&("idna".to_string(), "3.7".to_string(), "pypi".to_string())),
+            "the dist-info is the fallback when metadata.json is not there: {pins:?}"
         );
     }
 
@@ -2306,12 +3049,19 @@ fn horus_link_is_usable(link: &Path) -> bool {
 ///
 /// `root` is the project directory (`.` in normal operation, a tempdir under
 /// test).
+///
+/// `system_reference_usable` answers, for a package that resolved to the
+/// interpreter's own copy, whether that copy is still there. It is a parameter
+/// rather than a call because answering it costs a child interpreter, and
+/// because a filesystem fixture cannot express "installed in Python" — see
+/// `system_reference_is_usable` for the production answer.
 fn unmaterialized_dependencies(
     root: &Path,
     horus_packages: &[String],
     pip_packages: &[PipPackage],
     cargo_packages: &[CargoPackage],
     context_language: Option<&str>,
+    system_reference_usable: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
     let packages_dir = root.join(".horus/packages");
     let bin_dir = root.join(".horus/bin");
@@ -2319,6 +3069,23 @@ fn unmaterialized_dependencies(
     // A package resolved to the system copy leaves a marker instead of a link.
     let has_system_reference =
         |name: &str| packages_dir.join(format!("{}.system.json", name)).is_file();
+
+    // For a *Python* package the marker's existence was the whole of this
+    // check, and a marker is a claim about somewhere else. `pip uninstall`
+    // interrupted halfway, a hand `rm -rf site-packages/<pkg>`, or a Python
+    // minor-version bump leaves the claim behind and the package gone, and this
+    // reported the dependency as installed — so the lockfile fast path printed
+    // "* Dependencies locked (horus.lock is up-to-date)" and the node then
+    // died on `import`, with the code that would have repaired it never
+    // reached. Asking whether the reference still resolves is what makes the
+    // green line true.
+    //
+    // Only the pip loop asks. `create_system_reference_cargo_run` writes into
+    // the same `<name>.system.json` namespace for a crates.io *binary*, and a
+    // binary on PATH is not a Python distribution: putting the import question
+    // to it would answer "missing" every time and re-resolve it on every run.
+    let has_importable_system_reference =
+        |name: &str| has_system_reference(name) && system_reference_usable(name);
 
     let mut missing = Vec::new();
 
@@ -2336,7 +3103,7 @@ fn unmaterialized_dependencies(
 
     for pkg in pip_packages {
         if !python_link_records_a_finished_install(&packages_dir.join(&pkg.name))
-            && !has_system_reference(&pkg.name)
+            && !has_importable_system_reference(&pkg.name)
         {
             missing.push(pkg.name.clone());
         }

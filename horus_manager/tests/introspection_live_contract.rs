@@ -108,6 +108,48 @@ impl LiveNode {
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
     }
 
+    /// Run `horus <args>` with a deadline, returning whatever it printed.
+    ///
+    /// `cli` waits for the process to exit, and `topic echo --count N` does not
+    /// exit until it has printed N messages. Against the defect the echo test
+    /// exists to catch — a ring that stops being written — that command never
+    /// returns, so the test hung instead of failing and reported nothing at
+    /// all. Bounded, the same run fails with the count it actually managed,
+    /// which is the number that names the defect.
+    fn cli_within(&self, args: &[&str], budget: Duration) -> String {
+        let mut child = Command::new(horus())
+            .args(args)
+            .env("HORUS_NAMESPACE", &self.namespace)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("horus must run");
+        // Drain stdout on its own thread: a pipe that fills stalls the child,
+        // which would look exactly like the hang this is here to prevent.
+        let mut pipe = child.stdout.take().expect("stdout was piped");
+        let reader = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = String::new();
+            let _ = pipe.read_to_string(&mut buf);
+            buf
+        });
+
+        let deadline = Instant::now() + budget;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => {}
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.wait();
+        reader.join().unwrap_or_default()
+    }
+
     /// Poll `horus <args>` until its output satisfies `done`, or give up.
     ///
     /// Presence is refreshed about once a second and an achieved rate needs two
@@ -335,7 +377,24 @@ fn a_topic_built_in_a_constructor_still_names_its_publisher() {
     });
 }
 
-/// `topic echo` must print every message, not sample the newest slot.
+/// The ring a `Topic<u64>` gets from `auto_capacity`: one 4 KB page of 8-byte
+/// messages, clamped to [16, 1024] and rounded up to a power of two. Confirmed
+/// against a live segment of the very topic this test publishes on
+/// (`capacity = 512`, `capacity_mask = 511`).
+const U64_RING_CAPACITY: usize = 512;
+
+/// How many messages this test asks `echo` for.
+///
+/// It has to exceed the ring, and by enough that the wrap is not the last thing
+/// that happens. Every echo defect so far has lived exactly at the wrap: a
+/// reader keying on a cursor that stops advancing at `capacity`, and a producer
+/// that stops writing once the ring fills and nothing drains it. At
+/// `--count 20` — one twenty-fifth of a ring — the run is over before the ring
+/// is ever full, so it passed against both.
+const ECHO_COUNT: usize = U64_RING_CAPACITY + 88;
+
+/// `topic echo` must print every message, not sample the newest slot — and must
+/// still be doing it after the ring has wrapped.
 ///
 /// It read the latest slot and asked "is it different from the one I last
 /// saw", which skips everything published while the poll slept: on a 40 Hz
@@ -344,7 +403,10 @@ fn a_topic_built_in_a_constructor_still_names_its_publisher() {
 /// slow one — absence of output reads as absence of traffic.
 ///
 /// The test node publishes a counter, so "did it miss anything" is answerable
-/// exactly: consecutive values or not.
+/// exactly. Both shapes this has failed in are checked, because they look
+/// nothing alike: a cursor that stops advancing at the wrap prints far fewer
+/// values than it was asked for and then goes quiet, while a ring that stopped
+/// being written prints the full count as the same lap over and over.
 #[test]
 fn topic_echo_streams_every_message_in_order() {
     let _serial = serialize();
@@ -354,7 +416,14 @@ fn topic_echo_streams_every_message_in_order() {
     node.wait_for(&["topic", "list"], |o| o.contains(&node.topic))
         .unwrap_or_else(|| panic!("topic never appeared:\n{}", node.cli(&["topic", "list"])));
 
-    let out = node.cli(&["topic", "echo", &node.topic, "--count", "20"]);
+    let count = ECHO_COUNT.to_string();
+    // The node publishes at about 90 Hz, so the ask is roughly seven seconds of
+    // traffic. The budget is generous against that and still bounded, because
+    // `echo` has no deadline of its own: it waits for the count forever.
+    let out = node.cli_within(
+        &["topic", "echo", &node.topic, "--count", &count],
+        Duration::from_secs(45),
+    );
 
     let values: Vec<u64> = out
         .lines()
@@ -363,8 +432,10 @@ fn topic_echo_streams_every_message_in_order() {
         .collect();
 
     assert!(
-        values.len() >= 10,
-        "echo returned {} values; it was asked for 20:\n{out}",
+        values.len() > U64_RING_CAPACITY,
+        "echo returned {} values; it was asked for {ECHO_COUNT}, and anything at \
+         or under the {U64_RING_CAPACITY}-slot ring capacity leaves the wrap \
+         untested:\n{out}",
         values.len()
     );
 
@@ -377,5 +448,23 @@ fn topic_echo_streams_every_message_in_order() {
         gaps.is_empty(),
         "echo skipped messages — the publisher emits a counter, so these jumps \
          are messages that were published and never printed: {gaps:?}\n{out}"
+    );
+
+    // A second, independent witness on the same evidence. The gap check above
+    // does catch a replayed lap — 512 followed by 1 is not 513 — but it reports
+    // one jump, and the shape is what names the defect: 600 printed values with
+    // only 512 distinct ones is a ring being read round and round.
+    let distinct = {
+        let mut v = values.clone();
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    };
+    assert_eq!(
+        distinct,
+        values.len(),
+        "echo printed {} values but only {distinct} distinct ones — a ring that \
+         stopped being written replays the same lap:\n{out}",
+        values.len()
     );
 }

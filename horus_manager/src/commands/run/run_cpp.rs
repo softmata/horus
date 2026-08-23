@@ -16,6 +16,117 @@ use std::process::Command;
 /// Build directory inside `.horus/`.
 const CPP_BUILD_DIR: &str = ".horus/cpp-build";
 
+/// How the HORUS runtime is linked into a C++ node executable.
+///
+/// The runtime is Rust compiled through CXX, and it arrived in one shape only:
+/// `libhorus_cpp.a`, linked whole into every executable. A hello-world node —
+/// one publisher, one `tick()` — is 78 MB in Debug and 2.0 MB stripped in
+/// Release *per binary*, and a robot is not one binary. Ten nodes on a board
+/// with 32 MB of flash do not fit, which is precisely the deployment
+/// `horus deploy --arch aarch64` exists to serve.
+///
+/// `horus_cpp` has always produced a `cdylib` beside the `staticlib` (see its
+/// `[lib] crate-type`); nothing ever offered it. Choosing it moves the runtime
+/// out of the executable and into one file the whole robot shares: measured on
+/// the generated template, Release, x86-64 — 2,074,176 bytes static against
+/// 47,392 bytes plus an 8.9 MB `libhorus_cpp.so`. It pays from the second node
+/// onwards and costs a file that has to travel with the binaries.
+///
+/// Static stays the default. It is the shape that needs no loader path, no
+/// deployment step and no version skew between a binary and a library beside
+/// it, and it is what every existing project already builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CppLinkMode {
+    /// Link `libhorus_cpp.a` into the executable. The default.
+    Static,
+    /// Link against the shared `libhorus_cpp` and load it at run time.
+    Shared,
+}
+
+impl CppLinkMode {
+    /// The `horus_cpp` artifact this mode links, as cargo names it.
+    ///
+    /// `triple` is the Rust target triple when cross-compiling, because the
+    /// suffix belongs to the target: a Linux host cross-building for
+    /// `aarch64-apple-darwin` needs `.dylib`, not the host's `.so`.
+    fn artifact_name(self, triple: Option<&str>) -> String {
+        match self {
+            CppLinkMode::Static => "libhorus_cpp.a".to_string(),
+            CppLinkMode::Shared => match triple {
+                Some(t) if t.contains("windows") => "horus_cpp.dll".to_string(),
+                Some(t) if t.contains("apple") || t.contains("darwin") => {
+                    "libhorus_cpp.dylib".to_string()
+                }
+                Some(_) => "libhorus_cpp.so".to_string(),
+                None => horus_sys::platform::shared_library_name("horus_cpp"),
+            },
+        }
+    }
+}
+
+/// Whether this project asked for the shared runtime.
+///
+/// Two ways in, because the two audiences are different. `[cpp] link = "shared"`
+/// in `horus.toml` is the deployment's decision, checked in beside the code that
+/// depends on it; `HORUS_CPP_LINK=shared` overrides it for one build, which is
+/// what a CI job or a size measurement needs. An unrecognised value is an error
+/// rather than a silent fall back to static: a deployment that believed it had
+/// asked for the shared runtime and got the 2 MB-per-binary one would find out
+/// at flash time.
+fn resolve_cpp_link_mode(project_dir: &Path) -> Result<CppLinkMode> {
+    resolve_cpp_link_mode_with(std::env::var("HORUS_CPP_LINK").ok().as_deref(), project_dir)
+}
+
+/// The body of `resolve_cpp_link_mode` with the override supplied.
+///
+/// Split out so the manifest half can be tested without the process-wide
+/// environment deciding the answer from underneath it.
+fn resolve_cpp_link_mode_with(
+    env_override: Option<&str>,
+    project_dir: &Path,
+) -> Result<CppLinkMode> {
+    if let Some(raw) = env_override {
+        if !raw.trim().is_empty() {
+            return parse_cpp_link_mode(raw.trim(), "HORUS_CPP_LINK");
+        }
+    }
+
+    // `[cpp] link` is read from the manifest directly rather than through
+    // `CppConfig`, which has no field for it — see the note in build_cpp.
+    let manifest_path = project_dir.join(HORUS_TOML);
+    let Ok(text) = fs::read_to_string(&manifest_path) else {
+        return Ok(CppLinkMode::Static);
+    };
+    // `toml::from_str`, not `str::parse`: `FromStr for toml::Value` parses a
+    // TOML *value* expression, not a document, and answers "unexpected content"
+    // on the first table header of a perfectly good horus.toml.
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
+        // A manifest this malformed fails louder elsewhere; not this function's
+        // error to report.
+        return Ok(CppLinkMode::Static);
+    };
+    match value.get("cpp").and_then(|c| c.get("link")) {
+        Some(link) => match link.as_str() {
+            Some(s) => parse_cpp_link_mode(s.trim(), "[cpp] link in horus.toml"),
+            None => bail!("[cpp] link in horus.toml must be a string (\"static\" or \"shared\")"),
+        },
+        None => Ok(CppLinkMode::Static),
+    }
+}
+
+/// Parse one spelling of the link mode, naming where it came from on error.
+fn parse_cpp_link_mode(raw: &str, source: &str) -> Result<CppLinkMode> {
+    match raw.to_ascii_lowercase().as_str() {
+        "static" => Ok(CppLinkMode::Static),
+        "shared" | "dynamic" => Ok(CppLinkMode::Shared),
+        other => bail!(
+            "unknown C++ link mode {other:?} from {source}. \
+             Use \"static\" (the default: the HORUS runtime is linked into each \
+             executable) or \"shared\" (one libhorus_cpp all executables load)."
+        ),
+    }
+}
+
 /// Build a C++ project using cmake.
 ///
 /// 1. Determines cmake source: root `CMakeLists.txt` or generated `.horus/CMakeLists.txt`
@@ -132,11 +243,26 @@ pub(crate) fn build_cpp(
 
     // ── HORUS C++ bindings ──────────────────────────────────────────────
     // The generated CMakeLists consumes HORUS_CPP_INCLUDE / HORUS_CPP_LIB.
-    // Resolving them here keeps host paths out of the generated file.
-    match ensure_horus_cpp(release, effective_target.as_deref()) {
+    // Resolving them here keeps host paths out of the generated file — which
+    // is also why the link mode is resolved here and not in cmake_gen: CMake is
+    // handed a full path to whichever artifact was chosen, so `.a` and `.so`
+    // need no difference in the generated file at all.
+    //
+    // `[cpp] link` is read straight out of horus.toml because `CppConfig` has
+    // no field for it. Two one-line additions elsewhere finish it:
+    // `manifest::CppConfig` needs `link: Option<String>` so the schema and
+    // `horus doctor` see the setting, and `manifest_lint::KNOWN_CPP` needs
+    // "link" — until that second one lands the key works but is reported as an
+    // unknown key, which `horus check` treats as an error. `HORUS_CPP_LINK` is
+    // the spelling that is clean today.
+    let link_mode = resolve_cpp_link_mode(project_dir)?;
+    match ensure_horus_cpp(release, effective_target.as_deref(), link_mode) {
         Ok((include_dir, lib_path)) => {
             configure_cmd.arg(format!("-DHORUS_CPP_INCLUDE={}", include_dir.display()));
             configure_cmd.arg(format!("-DHORUS_CPP_LIB={}", lib_path.display()));
+            if link_mode == CppLinkMode::Shared {
+                report_shared_runtime(&lib_path);
+            }
         }
         Err(e) => {
             // Not fatal on its own: a project may not use the bindings at all.
@@ -391,7 +517,17 @@ fn current_host_triple() -> &'static str {
 /// on a C++ project could not link. It failed earlier and more confusingly
 /// before that, complaining about a missing Cargo.toml, which is why this was
 /// never visible.
-fn ensure_horus_cpp(release: bool, target_arch: Option<&str>) -> Result<(PathBuf, PathBuf)> {
+///
+/// `mode` selects which of the two artifacts `horus_cpp` produces is linked.
+/// The archive is the default; `CppLinkMode::Shared` resolves the `cdylib`
+/// beside it, which is what a target that cannot afford the runtime once per
+/// executable needs. Both come out of the same `cargo build`, so nothing here
+/// changes except which file name is looked for and handed to CMake.
+fn ensure_horus_cpp(
+    release: bool,
+    target_arch: Option<&str>,
+    mode: CppLinkMode,
+) -> Result<(PathBuf, PathBuf)> {
     let source = super::run_rust::find_horus_source_dir()
         .context("could not locate the HORUS source tree (needed for horus_cpp headers)")?;
 
@@ -409,16 +545,14 @@ fn ensure_horus_cpp(release: bool, target_arch: Option<&str>) -> Result<(PathBuf
         .map(|t| t.rust_target());
 
     let profile_dir = if release { "release" } else { "debug" };
+    let artifact = mode.artifact_name(triple);
     let lib_path = match triple {
         Some(t) => source
             .join("target")
             .join(t)
             .join(profile_dir)
-            .join("libhorus_cpp.a"),
-        None => source
-            .join("target")
-            .join(profile_dir)
-            .join("libhorus_cpp.a"),
+            .join(&artifact),
+        None => source.join("target").join(profile_dir).join(&artifact),
     };
 
     if !lib_path.exists() {
@@ -477,6 +611,28 @@ fn ensure_horus_cpp(release: bool, target_arch: Option<&str>) -> Result<(PathBuf
     }
 
     Ok((include_dir, lib_path))
+}
+
+/// Say where the shared runtime is and what has to travel with the binary.
+///
+/// A statically linked executable is self-contained; a dynamically linked one
+/// is not, and the difference only shows up when it is copied to the robot. The
+/// loader path is named explicitly because it differs per platform and because
+/// the rpath CMake records points into this build tree, which will not exist on
+/// the target.
+fn report_shared_runtime(lib_path: &Path) {
+    let size = fs::metadata(lib_path).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "{} Linking the HORUS runtime dynamically: {} ({:.1} MB)",
+        cli_output::ICON_INFO.cyan(),
+        lib_path.display().to_string().green(),
+        size as f64 / (1024.0 * 1024.0)
+    );
+    eprintln!(
+        "  {} Deploy this file with the executable and point {} at its directory.",
+        "".dimmed(),
+        horus_sys::platform::shared_library_path_var().yellow()
+    );
 }
 
 /// Generate `.horus/CMakeLists.txt` from `horus.toml` if no root CMakeLists.txt exists.
@@ -708,6 +864,140 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Link mode (LIVE-10) ───────────────────────────────────────────────
+    //
+    // Every C++ node linked the whole Rust runtime into itself because this
+    // file named one artifact and only one: `libhorus_cpp.a`. 2.0 MB per
+    // executable stripped, 78 MB unstripped, on a board where flash is the
+    // scarce resource and a robot is ten executables. horus_cpp has produced a
+    // cdylib all along; there was no way to ask for it.
+
+    /// The default has to stay static — this is a new option, not a new
+    /// default. Every existing project builds the shape it already built.
+    #[test]
+    fn a_project_that_says_nothing_gets_the_static_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(HORUS_TOML),
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"1\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_cpp_link_mode_with(None, dir.path()).unwrap(),
+            CppLinkMode::Static
+        );
+        assert_eq!(
+            CppLinkMode::Static.artifact_name(None),
+            "libhorus_cpp.a",
+            "the archive is still what a default build links"
+        );
+    }
+
+    /// ...and a project that asks for the shared runtime gets it.
+    #[test]
+    fn a_manifest_can_ask_for_the_shared_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(HORUS_TOML),
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"1\"\n\n[cpp]\nlink = \"shared\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_cpp_link_mode_with(None, dir.path()).unwrap(),
+            CppLinkMode::Shared,
+            "`[cpp] link = \"shared\"` is the deployment's checked-in choice"
+        );
+    }
+
+    /// A value nobody recognises must not quietly build the 2 MB-per-binary
+    /// shape a deployment thought it had opted out of.
+    #[test]
+    fn an_unknown_link_mode_is_an_error_not_a_silent_static_build() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(HORUS_TOML),
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"1\"\n\n[cpp]\nlink = \"dynamick\"\n",
+        )
+        .unwrap();
+        let err = resolve_cpp_link_mode_with(None, dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("dynamick") && err.contains("shared"), "{err}");
+    }
+
+    /// The suffix belongs to the target, not to the machine doing the build:
+    /// `horus deploy --arch aarch64` from a Mac must not look for a `.dylib` in
+    /// a Linux target directory.
+    #[test]
+    fn the_shared_artifact_is_named_for_the_target_not_the_host() {
+        assert_eq!(
+            CppLinkMode::Shared.artifact_name(Some("aarch64-unknown-linux-gnu")),
+            "libhorus_cpp.so"
+        );
+        assert_eq!(
+            CppLinkMode::Shared.artifact_name(Some("aarch64-apple-darwin")),
+            "libhorus_cpp.dylib"
+        );
+        assert_eq!(
+            CppLinkMode::Shared.artifact_name(Some("x86_64-pc-windows-msvc")),
+            "horus_cpp.dll"
+        );
+        // Cross-compiling never changes which archive is linked.
+        assert_eq!(
+            CppLinkMode::Static.artifact_name(Some("aarch64-apple-darwin")),
+            "libhorus_cpp.a"
+        );
+        assert_eq!(
+            CppLinkMode::Shared.artifact_name(None),
+            horus_sys::platform::shared_library_name("horus_cpp"),
+            "a native build asks the platform module, which is where the \
+             three-way convention lives"
+        );
+    }
+
+    /// The option is only real if the build path routes through it.
+    ///
+    /// `ensure_horus_cpp` used to spell `libhorus_cpp.a` into the path it
+    /// resolved, twice, with nothing able to influence it. A test on
+    /// `artifact_name` alone would pass with the call site still hardcoding the
+    /// archive — the same shape of mistake the pypi cache tests in install.rs
+    /// call out.
+    #[test]
+    fn the_resolved_artifact_is_chosen_by_the_link_mode() {
+        let full = include_str!("run_cpp.rs");
+        let src = &full[..full.find("\nmod tests {").unwrap_or(full.len())];
+        let start = src
+            .find("fn ensure_horus_cpp(")
+            .expect("the bindings resolver must still be here");
+        let end = src[start..]
+            .find("\n/// Say where the shared runtime is")
+            .map(|at| start + at)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        assert!(
+            !body.contains("\"libhorus_cpp.a\""),
+            "hardcoding the archive here is the defect: a target that cannot \
+             afford the runtime once per executable then has no option at all"
+        );
+        assert!(
+            body.contains("mode.artifact_name(triple)"),
+            "the resolved path has to come from the requested link mode"
+        );
+
+        let start = src
+            .find("pub(crate) fn build_cpp(")
+            .expect("build_cpp must still be here");
+        let build = &src[start..];
+        let at = build
+            .find("ensure_horus_cpp(")
+            .expect("build_cpp still resolves the bindings");
+        assert!(
+            build[..at].contains("resolve_cpp_link_mode(project_dir)"),
+            "build_cpp has to ask for the project's link mode before resolving \
+             the artifact, or the setting is unreachable from a real build"
+        );
+    }
 
     #[test]
     fn load_project_name_from_manifest() {

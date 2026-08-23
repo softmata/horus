@@ -898,6 +898,281 @@ int main() {{
     Ok(())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// `horus new <name> --from <example>`
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Directory and file names that must never be copied out of an example.
+///
+/// Everything here is build output. `.horus/` in particular holds the generated
+/// Cargo.toml with an absolute path dependency on whatever HORUS tree built the
+/// example, plus a target directory that can be hundreds of megabytes — copying
+/// it gives the user a project that is both enormous and wired to someone
+/// else's checkout.
+const EXAMPLE_COPY_SKIP: &[&str] = &[
+    ".horus",
+    "target",
+    "build",
+    "__pycache__",
+    ".git",
+    // Tool caches keyed to absolute paths in the example's directory.
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    // A C++ build symlinks this into the project root for clangd, pointing at
+    // the example's own .horus/cpp-build. Copied verbatim it is a compile
+    // database describing someone else's directory.
+    "compile_commands.json",
+];
+
+/// Create a project by copying one of the shipped examples.
+///
+/// There was no supported path from "I like this example" to "this is my
+/// project" other than `cp -r`, and a raw copy keeps the example's package
+/// name: two copies of `differential_drive` build binaries that collide in a
+/// shared target directory and register the same node names at runtime, and
+/// `horus new` is the command that exists to prevent exactly that (see
+/// `two_projects_get_distinct_node_names`). So the copy is a command, and the
+/// command renames the package.
+pub fn create_project_from_example(
+    name: String,
+    path: Option<PathBuf>,
+    example: String,
+) -> Result<()> {
+    validate_project_name(&name)?;
+
+    let examples_dir = examples_root()?;
+    let source = resolve_example(&examples_dir, &example)?;
+
+    let project_path = if let Some(p) = path {
+        p.join(&name)
+    } else {
+        PathBuf::from(&name)
+    };
+    if project_path.exists()
+        && fs::read_dir(&project_path)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
+        anyhow::bail!(
+            "'{}' already exists and is not empty.\n  \
+             Pick another name, or remove the directory first.",
+            project_path.display()
+        );
+    }
+
+    cli_output::info(&format!(
+        "Creating new HORUS project '{}' from example '{}'",
+        name.green().bold(),
+        example.cyan()
+    ));
+
+    copy_example_tree(&source, &project_path)?;
+
+    // The manifest is the one file that must not survive verbatim: its
+    // `[package] name` is what cargo_gen and cmake_gen name the binary after,
+    // and what `horus node list` shows.
+    rename_package(&project_path.join(HORUS_TOML), &name)
+        .with_context(|| format!("failed to rename the package in {}", HORUS_TOML))?;
+
+    let language = example_language(&project_path);
+
+    // An example lives inside the HORUS repository and relies on its root
+    // .gitignore; a project standing on its own needs one of its own.
+    create_horus_directory(&project_path)?;
+    if !project_path.join(".gitignore").exists() {
+        create_gitignore(&project_path, language)?;
+    }
+    // `create_gitignore` writes .clang-format as a side effect for C++, so an
+    // example that ships its own .gitignore takes the branch above and never
+    // gets one — and `horus fmt --check` on a project with no .clang-format
+    // falls back to LLVM style and fails on code nobody has touched yet (see
+    // create_clang_format). Ask for it directly rather than through that
+    // side effect.
+    if language == "cpp" && !project_path.join(".clang-format").exists() {
+        create_clang_format(&project_path)?;
+    }
+
+    // Same IDE courtesy as the blank template — see create_new_project.
+    let ide_ready = crate::cargo_gen::ensure(&project_path);
+    if let crate::cargo_gen::Ensured::Failed(ref why) = ide_ready {
+        log::debug!("could not pre-generate .horus/Cargo.toml: {why}");
+    }
+
+    if let Ok(mut registry) = crate::workspace::WorkspaceRegistry::load() {
+        if let Ok(canonical_path) = project_path.canonicalize() {
+            if registry.add(name.clone(), canonical_path).is_ok() {
+                println!(
+                    "  {} Registered workspace in registry",
+                    cli_output::ICON_SUCCESS.green()
+                );
+            }
+        }
+    }
+
+    println!();
+    cli_output::success("Project created successfully!");
+    println!("\nTo get started:");
+    println!("  {} {}", "cd".cyan(), name);
+    println!("  {} (auto-installs dependencies)", "horus run".cyan());
+    println!(
+        "\n{} '{}' is a copy of examples/{} — its README explains what it does.",
+        cli_output::ICON_INFO.cyan(),
+        name,
+        example
+    );
+
+    if ide_ready == crate::cargo_gen::Ensured::Generated {
+        println!(
+            "\n{} rust-analyzer is ready — open the project and it will work.",
+            cli_output::ICON_SUCCESS.green()
+        );
+    }
+
+    Ok(())
+}
+
+/// Where the shipped examples live.
+///
+/// The same source tree every HORUS build already needs: `cargo_gen` writes
+/// path dependencies into it and `run_cpp` takes the C++ headers from it, so a
+/// machine that can build a HORUS project can also find the examples.
+fn examples_root() -> Result<PathBuf> {
+    let source = crate::commands::run::find_horus_source_dir().context(
+        "`horus new --from` copies one of the shipped examples, which live in the \
+         HORUS source tree",
+    )?;
+    let dir = source.join("examples");
+    if !dir.is_dir() {
+        anyhow::bail!(
+            "no examples directory at {} — this HORUS source tree looks incomplete",
+            dir.display()
+        );
+    }
+    Ok(dir)
+}
+
+/// Every directory under `examples/` that is a HORUS project, sorted.
+fn available_examples(examples_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(examples_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join(HORUS_TOML).is_file())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Resolve `--from <example>` to a directory, or say what the choices are.
+///
+/// An unknown name is the most likely mistake here — the examples are not
+/// listed anywhere the CLI shows — so the error is the list.
+fn resolve_example(examples_dir: &Path, example: &str) -> Result<PathBuf> {
+    // Reject anything that could climb out of examples/ before touching the
+    // filesystem: `--from ../../etc` must not become a copy of /etc.
+    let plain = !example.is_empty()
+        && example
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let candidate = examples_dir.join(example);
+    if plain && candidate.join(HORUS_TOML).is_file() {
+        return Ok(candidate);
+    }
+
+    let names = available_examples(examples_dir);
+    anyhow::bail!(
+        "no shipped example named '{}'.\n\nAvailable examples:\n{}\n\nUsage: {}",
+        example,
+        names
+            .iter()
+            .map(|n| format!("  {}", n.green()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        format!(
+            "horus new my_robot --from {}",
+            names.first().map(String::as_str).unwrap_or("<example>")
+        )
+        .cyan()
+    )
+}
+
+/// Copy an example into a new project directory, leaving build output behind.
+fn copy_example_tree(source: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry = entry?;
+        let from = entry.path();
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+
+        if EXAMPLE_COPY_SKIP.contains(&name.as_ref()) {
+            continue;
+        }
+        // Compiled Python and object files can also sit beside the sources.
+        if name.ends_with(".pyc") || name.ends_with(".o") || name.ends_with(".a") {
+            continue;
+        }
+
+        let to = dest.join(&file_name);
+        if from.is_dir() {
+            copy_example_tree(&from, &to)?;
+        } else {
+            fs::copy(&from, &to).with_context(|| format!("failed to copy {}", from.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Point `[package] name` at the new project.
+///
+/// Edited rather than regenerated so the example's description, license and
+/// any comments survive: the reader chose this example, and a manifest that
+/// came back as the blank template's would be a worse starting point than the
+/// `cp -r` this command replaces.
+fn rename_package(manifest_path: &Path, name: &str) -> Result<()> {
+    let text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("{} not found", manifest_path.display()))?;
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML", manifest_path.display()))?;
+
+    let package = doc
+        .get_mut("package")
+        .and_then(|p| p.as_table_like_mut())
+        .ok_or_else(|| anyhow::anyhow!("{} has no [package] table", manifest_path.display()))?;
+    package.insert("name", toml_edit::value(name));
+
+    fs::write(manifest_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Which language an example is written in, for the .gitignore.
+///
+/// Probes the same entry points `auto_detect_main_file` does, in the same
+/// order, so the answer here and the file `horus build` picks cannot disagree.
+fn example_language(project_path: &Path) -> &'static str {
+    for (rel, lang) in [
+        ("main.rs", "rust"),
+        ("main.py", "python"),
+        ("main.cpp", "cpp"),
+        ("src/main.rs", "rust"),
+        ("src/main.py", "python"),
+        ("src/main.cpp", "cpp"),
+    ] {
+        if project_path.join(rel).is_file() {
+            return lang;
+        }
+    }
+    "rust"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

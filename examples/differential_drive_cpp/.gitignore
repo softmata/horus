@@ -1,0 +1,28 @@
+# The other examples rely on the repository's root .gitignore, which already
+# covers .horus/ and target/. This one needs a file of its own because a C++
+# build also drops a `compile_commands.json` symlink in the project root
+# (run_cpp links it there for clangd) and the root .gitignore does not mention
+# it — so `horus build` here would otherwise leave the working tree dirty.
+#
+# The rest matches what `horus new --cpp` generates, so `horus new my_robot
+# --from differential_drive_cpp` hands you the same .gitignore the blank C++
+# template would have.
+
+# HORUS environment (auto-managed by `horus run`)
+.horus/packages/
+.horus/bin/
+.horus/lib/
+.horus/include/
+.horus/cache/
+.horus/target/
+.horus/Cargo.toml
+.horus/Cargo.lock
+*.log
+
+# C++
+build/
+.horus/cpp-build/
+compile_commands.json
+*.o
+*.so
+*.a

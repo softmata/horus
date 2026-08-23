@@ -578,7 +578,15 @@ fn local_hmsg_messages() -> Vec<MessageInfo> {
         .collect();
     files.sort();
 
-    let mut out = Vec::new();
+    // Every file, then one resolve over the lot. Resolving file by file would
+    // be wrong in the same way it was wrong in `generate_messages`: a
+    // reference is only resolvable once the whole package is known, and an
+    // unresolved reference renders as the empty string. `horus msg hash
+    // WeatherData` then printed the hash of
+    // `WeatherData|temperature:f32|wind:|ts:u64` — a number the runtime never
+    // computes, for the one command whose purpose is to be compared against a
+    // layout-mismatch error.
+    let mut messages = Vec::new();
     for file in files {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
@@ -586,25 +594,38 @@ fn local_hmsg_messages() -> Vec<MessageInfo> {
         let Ok(defs) = crate::msgspec::parse::parse_file(&text, &file) else {
             continue;
         };
-        for d in defs {
-            out.push(MessageInfo {
-                name: d.name.clone(),
-                module: manifest.package.name.clone(),
-                fields: d
-                    .fields
-                    .iter()
-                    .map(|f| FieldInfo {
-                        name: f.name.clone(),
-                        field_type: crate::msgspec::canonical::render_rust(&f.ty),
-                        doc: f.doc.join(" "),
-                    })
-                    .collect(),
-                doc: d.doc.join(" "),
-                source_file: d.src.display().to_string(),
-            });
-        }
+        messages.extend(defs);
     }
-    out
+
+    let mut pkg = crate::msgspec::Package {
+        name: manifest.package.name.clone(),
+        messages,
+    };
+    // Still the listing path, so a definition that does not resolve is skipped
+    // rather than reported — `horus msg gen` is where it gets a diagnostic.
+    // Skipping is not the same as listing it with a truncated hash.
+    if crate::msgspec::resolve::resolve(&mut pkg).is_err() {
+        return Vec::new();
+    }
+
+    pkg.messages
+        .iter()
+        .map(|d| MessageInfo {
+            name: d.name.clone(),
+            module: manifest.package.name.clone(),
+            fields: d
+                .fields
+                .iter()
+                .map(|f| FieldInfo {
+                    name: f.name.clone(),
+                    field_type: crate::msgspec::canonical::render_rust(&f.ty),
+                    doc: f.doc.join(" "),
+                })
+                .collect(),
+            doc: d.doc.join(" "),
+            source_file: d.src.display().to_string(),
+        })
+        .collect()
 }
 
 pub(crate) fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
@@ -910,10 +931,23 @@ fn parse_field(line: &str) -> Option<(String, String)> {
         return None;
     }
 
-    // Skip padding fields
-    if name.starts_with('_') {
-        return None;
-    }
+    // Padding is not decoration, it is layout.
+    //
+    // This used to `return None` for any field whose name begins with `_`,
+    // called "skip padding fields". The canonical form this feeds is the layout
+    // identity, so dropping `_pad: [u8; 6]` from `Clock` made
+    // `horus msg hash Clock` print the hash of a struct that does not exist —
+    // and the `message!` macro, which stringifies every field it is given,
+    // computes the hash *with* the padding. Two numbers for one type, from the
+    // two places a developer compares, which is the defect this whole canonical
+    // form was introduced to end.
+    //
+    // It also erased a real distinction: `A { x: u8, _pad: [u8; 7], y: u64 }`
+    // and `A { x: u8, y: u64 }` hashed identically while having different
+    // layouts, so a peer built against one would be accepted by the other.
+    //
+    // `horus msg info` now lists padding fields too. That is the point: a
+    // developer checking a Rust struct against a C++ one needs to see them.
 
     Some((name, field_type))
 }
@@ -1068,9 +1102,21 @@ pub struct ResumeRequest;
         assert!(parse_field("pub fn new() -> Self {").is_none());
     }
 
+    /// This test used to assert the opposite, and it was wrong.
+    ///
+    /// Skipping `_`-prefixed fields was called "skip padding fields", and it
+    /// silently changed what the canonical form describes: `horus msg hash
+    /// Clock` printed the hash of a `Clock` without its `_pad: [u8; 6]`, while
+    /// the `message!` macro — which stringifies every field it is handed —
+    /// hashes the padding in. Two numbers for one type, from the two places a
+    /// developer holds up against each other.
     #[test]
-    fn parse_field_skips_padding() {
-        assert!(parse_field("_pad: [u8; 3],").is_none());
+    fn parse_field_keeps_padding() {
+        assert_eq!(
+            parse_field("_pad: [u8; 3],"),
+            Some(("_pad".into(), "[u8; 3]".into())),
+            "padding occupies bytes on the wire, so it is part of the layout"
+        );
     }
 
     #[test]
@@ -1351,9 +1397,15 @@ pub struct B {
         assert_eq!(result, Some(("pos".into(), "(f64, f64, f64)".into())));
     }
 
+    /// A public reserved field is no more skippable than a private one: both
+    /// occupy bytes, and a layout identity that leaves them out cannot tell
+    /// `A { x: u8, _reserved: u8 }` from `A { x: u8 }`.
     #[test]
-    fn parse_field_padding_with_pub() {
-        assert!(parse_field("pub _reserved: u8,").is_none());
+    fn parse_field_keeps_a_public_reserved_field() {
+        assert_eq!(
+            parse_field("pub _reserved: u8,"),
+            Some(("_reserved".into(), "u8".into()))
+        );
     }
 
     #[test]
@@ -1556,8 +1608,13 @@ pub struct Complex {
         assert_eq!(messages[0].fields[3].field_type, "Vec<Option<(f64, f64)>>");
     }
 
+    /// Padding appears in the field list, in its declared position.
+    ///
+    /// The position matters as much as the presence: the canonical form is
+    /// ordered, so a `_pad` recorded in the wrong place would describe a
+    /// different layout just as surely as one left out.
     #[test]
-    fn parse_messages_struct_with_padding_fields_skipped() {
+    fn parse_messages_struct_keeps_padding_fields_in_place() {
         let source = r#"
 pub struct Padded {
     pub value: f64,
@@ -1567,10 +1624,9 @@ pub struct Padded {
 "#;
         let messages = parse_messages_from_source(source, "pad", "pad.rs".into());
         assert_eq!(messages.len(), 1);
-        // _pad is skipped by parse_field
-        assert_eq!(messages[0].fields.len(), 2);
-        assert_eq!(messages[0].fields[0].name, "value");
-        assert_eq!(messages[0].fields[1].name, "flag");
+        let names: Vec<&str> = messages[0].fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["value", "_pad", "flag"]);
+        assert_eq!(messages[0].fields[1].field_type, "[u8; 4]");
     }
 
     #[test]
@@ -3062,32 +3118,38 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
         }
     }
 
-    let pkg = Package {
+    let mut pkg = Package {
         name: manifest.package.name.clone(),
         messages,
     };
 
-    // References this generator cannot size exactly are rejected rather than
-    // guessed. A wrong size produces a header whose static_assert passes
-    // against the wrong number, which is the failure the layout contract exists
-    // to catch.
-    let unresolved = emit_rust::unresolved_refs(&pkg);
-    if !unresolved.is_empty() {
-        let body = unresolved
+    // Resolve every reference, and order the messages so a nested type is
+    // emitted before the message that embeds it.
+    //
+    // The parser records a reference by name and leaves the language paths
+    // empty, because a `.hmsg` may name a type declared in another file.
+    // Nothing filled them in, and `canonical::render_rust` returns that path
+    // verbatim — so `wind: Vec3` became `pub wind: ,` in the generated Rust,
+    // `    wind;` in the header, and `WeatherData|temperature:f32|wind:|ts:u64`
+    // in the layout identity, while this command printed `Generated 2
+    // message(s)`. A reference this generator cannot size is still rejected
+    // rather than guessed — a wrong size produces a header whose static_assert
+    // passes against the wrong number — but now with a file:line:col and the
+    // fields to write instead.
+    if let Err(diags) = crate::msgspec::resolve::resolve(&mut pkg) {
+        let body = diags
             .iter()
-            .map(|(m, r)| format!("  {m} references `{r}`"))
+            .map(|d| format!("  {d}"))
             .collect::<Vec<_>>()
             .join("\n");
         return Err(HorusError::Config(ConfigError::Other(format!(
-            "message definitions can reference primitives, arrays, and other \
-             messages in msgs/ — nothing else:\n{body}\n\n\
-             Write the fields out. A built-in like Vector3 is three f64s; \
-             inlining them keeps the layout exact and checkable."
+            "{} problem(s) in message definitions:\n{body}",
+            diags.len()
         ))));
     }
 
-    // Layouts, in declaration order, so a message may reference one declared
-    // above it.
+    // Layouts, in the dependency order `resolve` just established, so every
+    // nested type is already sized when the message embedding it is reached.
     let mut env = layout::builtin_layouts();
     for m in &pkg.messages {
         match layout::compute(m, &env) {
@@ -3095,8 +3157,12 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
                 env.insert(m.name.clone(), (l.size, l.align));
             }
             Err(missing) => {
+                // `resolve` rejects unknown names and cycles, and orders what
+                // is left, so nothing should reach here. Report rather than
+                // panic: an unsized field would otherwise be emitted as a
+                // struct with a missing member.
                 return Err(HorusError::Config(ConfigError::Other(format!(
-                    "{}: `{}` is used before it is declared — declare it above `{}`",
+                    "{}: `{}` could not be sized while laying out `{}`",
                     m.src.display(),
                     missing,
                     m.name
@@ -3104,6 +3170,8 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
             }
         }
     }
+
+    let pkg = pkg;
 
     let horus_src = crate::commands::run::run_rust::find_horus_source_dir()
         .map_err(|e| HorusError::Config(ConfigError::Other(format!("{e:#}"))))?;
@@ -3232,4 +3300,159 @@ pub fn generate_messages(check: bool, json: bool) -> HorusResult<()> {
         println!("    {}", rel.display().to_string().dimmed());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod builtin_layout_identity_tests {
+    use super::*;
+
+    /// Every type in `horus_types`, with the layout identity the runtime
+    /// carries for it.
+    ///
+    /// Written out rather than iterated, because there is no way to iterate the
+    /// inherent constants of a set of types — and because a type added to
+    /// `horus_types` and forgotten here is caught by
+    /// `every_horus_types_pod_message_is_listed_here` below.
+    fn runtime_identities() -> Vec<(&'static str, u32, &'static str)> {
+        macro_rules! row {
+            ($t:ty) => {
+                (stringify!($t), <$t>::LAYOUT_HASH, <$t>::LAYOUT_CANONICAL)
+            };
+        }
+        use horus_types::*;
+        vec![
+            row!(Twist),
+            row!(Pose2D),
+            row!(TransformStamped),
+            row!(Point3),
+            row!(Vector3),
+            row!(Quaternion),
+            row!(Pose3D),
+            row!(PoseStamped),
+            row!(PoseWithCovariance),
+            row!(TwistWithCovariance),
+            row!(Accel),
+            row!(AccelStamped),
+            row!(Heartbeat),
+            row!(DiagnosticStatus),
+            row!(EmergencyStop),
+            row!(ResourceUsage),
+            row!(DiagnosticValue),
+            row!(DiagnosticReport),
+            row!(NodeHeartbeat),
+            row!(SafetyStatus),
+            row!(Clock),
+            row!(TimeReference),
+            row!(SimSync),
+            row!(RateRequest),
+        ]
+    }
+
+    /// The source `horus msg` scrapes, compiled in so the test does not depend
+    /// on where the checkout is.
+    const SOURCES: &[(&str, &str)] = &[
+        ("math", include_str!("../../../horus_types/src/math.rs")),
+        (
+            "diagnostics",
+            include_str!("../../../horus_types/src/diagnostics.rs"),
+        ),
+        ("time", include_str!("../../../horus_types/src/time.rs")),
+    ];
+
+    fn scraped() -> Vec<MessageInfo> {
+        SOURCES
+            .iter()
+            .flat_map(|(module, src)| {
+                parse_messages_from_source(src, module, format!("{module}.rs"))
+            })
+            .collect()
+    }
+
+    /// `horus msg hash Twist` must print the number `Topic::new_checked`
+    /// compares for `Twist`.
+    ///
+    /// The command exists to be held up against a layout-mismatch error, and
+    /// for two of the shipped types it printed a number that error can never
+    /// show: `parse_field` dropped every field whose name begins with `_`,
+    /// calling them "padding fields", so `Clock`'s `_pad: [u8; 6]` and
+    /// `SimSync`'s `_pad: [u8; 7]` were missing from the canonical form the CLI
+    /// hashed. Padding is layout — `A { x: u8, _pad: [u8; 7], y: u64 }` and
+    /// `A { x: u8, y: u64 }` are different types — so the number was wrong, not
+    /// merely different.
+    #[test]
+    fn the_cli_canonical_form_matches_the_runtime_one() {
+        let messages = scraped();
+        for (name, hash, canonical) in runtime_identities() {
+            let msg = messages
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("`{name}` was not scraped out of horus_types"));
+            let fields: Vec<(String, String)> = msg
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.field_type.clone()))
+                .collect();
+            let form = canonical_message_form(name, &fields);
+            assert_eq!(
+                form, canonical,
+                "`horus msg` builds a different canonical form for `{name}` than the \
+                 runtime does, so the hash it prints is not the hash \
+                 `Topic::new_checked` compares"
+            );
+            assert_eq!(
+                compute_message_definition_hash(msg),
+                format!("{hash:#010x}"),
+                "`horus msg hash {name}` and `{name}::LAYOUT_HASH` disagree"
+            );
+        }
+    }
+
+    /// A `_`-prefixed field must survive scraping.
+    ///
+    /// The narrow version of the test above: it fails on the one line that was
+    /// wrong, so a future "skip padding" reintroduction is named precisely.
+    #[test]
+    fn a_padding_field_is_part_of_the_layout() {
+        assert_eq!(
+            parse_field("    _pad: [u8; 6],"),
+            Some(("_pad".to_string(), "[u8; 6]".to_string())),
+            "padding occupies bytes on the wire; a layout identity that omits it \
+             cannot tell two differently-padded structs apart"
+        );
+    }
+
+    /// A type registered as a POD message but left out of `runtime_identities`
+    /// would silently escape the check above.
+    #[test]
+    fn every_horus_types_pod_message_is_listed_here() {
+        let listed: Vec<&str> = runtime_identities().iter().map(|(n, _, _)| *n).collect();
+        let mut registered = Vec::new();
+        for (_, src) in SOURCES {
+            let mut rest = *src;
+            while let Some(at) = rest.find("impl_pod_message! {") {
+                rest = &rest[at + "impl_pod_message! {".len()..];
+                let end = rest.find("\n}\n").unwrap_or(rest.len());
+                for line in rest[..end].lines() {
+                    let line = line.trim();
+                    if let Some(name) = line.strip_suffix(" {") {
+                        if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                            registered.push(name.to_string());
+                        }
+                    }
+                }
+                rest = &rest[end..];
+            }
+        }
+        assert!(
+            !registered.is_empty(),
+            "no impl_pod_message! registrations found — the scan below is vacuous"
+        );
+        for name in &registered {
+            assert!(
+                listed.contains(&name.as_str()),
+                "`{name}` is registered as a POD message but is not checked against \
+                 the CLI's hash; add it to runtime_identities()"
+            );
+        }
+    }
 }

@@ -219,11 +219,22 @@ macro_rules! message {
             /// they are the same type. That direction is safe — it rejects a
             /// compatible pair rather than accepting an incompatible one — and
             /// in practice both sides are the same source file.
-            pub const LAYOUT_HASH: u32 = $crate::communication::topic::const_fnv1a(
-                concat!(
-                    stringify!($name),
-                    $( "|", stringify!($field), ":", stringify!($ty), )*
-                ).as_bytes()
+            pub const LAYOUT_HASH: u32 =
+                $crate::communication::topic::const_fnv1a(Self::LAYOUT_CANONICAL.as_bytes());
+
+            /// The exact string [`Self::LAYOUT_HASH`] is computed over.
+            ///
+            /// `Name|field:type|field:type`. Published for the same reason
+            /// `horus msg gen` and `horus_types` publish it: when
+            /// `Topic::new_checked` refuses an open it can only report two
+            /// numbers, and the next question is always *which field*. This is
+            /// the answer, available from the running program and from a
+            /// debugger, and it is the string the hash is actually taken over
+            /// rather than a second rendering of the same fields — the two
+            /// cannot drift because there is only one.
+            pub const LAYOUT_CANONICAL: &'static str = concat!(
+                stringify!($name),
+                $( "|", stringify!($field), ":", stringify!($ty), )*
             );
 
             /// Open a topic for this message with layout checking enabled.
@@ -298,11 +309,22 @@ macro_rules! message {
             /// they are the same type. That direction is safe — it rejects a
             /// compatible pair rather than accepting an incompatible one — and
             /// in practice both sides are the same source file.
-            pub const LAYOUT_HASH: u32 = $crate::communication::topic::const_fnv1a(
-                concat!(
-                    stringify!($name),
-                    $( "|", stringify!($field), ":", stringify!($ty), )*
-                ).as_bytes()
+            pub const LAYOUT_HASH: u32 =
+                $crate::communication::topic::const_fnv1a(Self::LAYOUT_CANONICAL.as_bytes());
+
+            /// The exact string [`Self::LAYOUT_HASH`] is computed over.
+            ///
+            /// `Name|field:type|field:type`. Published for the same reason
+            /// `horus msg gen` and `horus_types` publish it: when
+            /// `Topic::new_checked` refuses an open it can only report two
+            /// numbers, and the next question is always *which field*. This is
+            /// the answer, available from the running program and from a
+            /// debugger, and it is the string the hash is actually taken over
+            /// rather than a second rendering of the same fields — the two
+            /// cannot drift because there is only one.
+            pub const LAYOUT_CANONICAL: &'static str = concat!(
+                stringify!($name),
+                $( "|", stringify!($field), ":", stringify!($ty), )*
             );
 
             /// Open a topic for this message with layout checking enabled.
@@ -346,6 +368,63 @@ mod tests {
             y: f64,
             theta: f64,
         }
+    }
+
+    /// FNV-1a, written out rather than imported, so a change to
+    /// `const_fnv1a` has to be made here too and cannot pass unnoticed.
+    fn fnv1a(bytes: &[u8]) -> u32 {
+        let mut hash: u32 = 2166136261;
+        for &byte in bytes {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(16777619);
+        }
+        hash
+    }
+
+    /// `LAYOUT_HASH` is the number two peers compare; `LAYOUT_CANONICAL` is
+    /// what it was computed over. A type that published a canonical form its
+    /// own hash did not come from would send a developer investigating a
+    /// mismatch after the wrong field.
+    #[test]
+    fn the_canonical_form_is_what_the_hash_was_taken_over() {
+        assert_eq!(TestPose::LAYOUT_CANONICAL, "TestPose|x:f64|y:f64|theta:f64");
+        assert_eq!(
+            TestPose::LAYOUT_HASH,
+            fnv1a(TestPose::LAYOUT_CANONICAL.as_bytes())
+        );
+    }
+
+    /// The same for a `#[fixed]` message. The macro has two arms and they had
+    /// two copies of this constant; a change made to one and not the other is
+    /// exactly the kind of divergence a sibling path produces.
+    #[test]
+    fn a_fixed_message_publishes_the_same_pair() {
+        message! {
+            #[fixed]
+            TestFixedProbe {
+                a: f32,
+                b: [u8; 4],
+            }
+        }
+        assert_eq!(
+            TestFixedProbe::LAYOUT_CANONICAL,
+            "TestFixedProbe|a:f32|b:[u8; 4]"
+        );
+        assert_eq!(
+            TestFixedProbe::LAYOUT_HASH,
+            fnv1a(TestFixedProbe::LAYOUT_CANONICAL.as_bytes())
+        );
+    }
+
+    /// The property the whole mechanism exists for: two builds of `Pose { x, y }`
+    /// and `Pose { y, x }` share a name and a size, so only the layout hash can
+    /// tell them apart.
+    #[test]
+    fn reordering_fields_changes_the_canonical_form() {
+        assert_ne!(
+            fnv1a(TestPose::LAYOUT_CANONICAL.as_bytes()),
+            fnv1a(b"TestPose|theta:f64|x:f64|y:f64"),
+        );
     }
 
     #[test]

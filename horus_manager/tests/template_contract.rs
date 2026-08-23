@@ -296,3 +296,267 @@ fn generated_python_and_the_readme_agree_on_pubs_and_subs() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// `horus new <name> --from <example>`
+// ---------------------------------------------------------------------------
+//
+// There was no supported path from "I like this example" to "this is my
+// project" other than `cp -r`, and a raw copy keeps the example's package name
+// — the exact collision `two_projects_get_distinct_node_names` above exists to
+// prevent, reintroduced by the only route a reader had.
+
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("horus_manager must have a parent")
+        .to_path_buf()
+}
+
+/// Run `horus new <name> --from <example>` in `root`.
+///
+/// `HORUS_SOURCE` is pinned to this checkout so the test reads the examples it
+/// ships with rather than whatever tree happens to be at ~/horus.
+fn new_from(root: &Path, name: &str, example: &str) -> std::process::Output {
+    Command::new(horus())
+        .args(["new", name, "--from", example])
+        .env("HORUS_SOURCE", repo_root())
+        .current_dir(root)
+        .output()
+        .expect("horus new --from must run")
+}
+
+/// Every example project shipped under examples/.
+fn shipped_examples() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(repo_root().join("examples"))
+        .expect("examples/ must exist")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("horus.toml").is_file())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .collect();
+    names.sort();
+    assert!(!names.is_empty(), "no examples found");
+    names
+}
+
+fn package_name(manifest: &Path) -> String {
+    let text = std::fs::read_to_string(manifest)
+        .unwrap_or_else(|e| panic!("{} must exist: {e}", manifest.display()));
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("name") {
+            if let Some((_, v)) = rest.split_once('=') {
+                return v.trim().trim_matches('"').to_string();
+            }
+        }
+    }
+    panic!("no `name` in {}:\n{text}", manifest.display());
+}
+
+#[test]
+fn new_from_an_example_renames_the_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = new_from(tmp.path(), "my_robot", "differential_drive");
+    assert!(
+        out.status.success(),
+        "horus new my_robot --from differential_drive failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let project = tmp.path().join("my_robot");
+    assert_eq!(
+        package_name(&project.join("horus.toml")),
+        "my_robot",
+        "the copy kept the example's package name — so its binary, its cargo \
+         package and `horus node list` all still say `differential_drive`"
+    );
+    // The sources came across, not just a manifest.
+    assert!(
+        project.join("main.rs").is_file(),
+        "main.rs was not copied: {:?}",
+        std::fs::read_dir(&project)
+            .map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    assert!(
+        project.join("README.md").is_file(),
+        "README.md was not copied"
+    );
+    assert!(
+        project.join("robots/diffbot.urdf").is_file(),
+        "the robots/ subdirectory was not copied"
+    );
+}
+
+/// The copy must not carry the example's build output.
+///
+/// `.horus/` holds a generated Cargo.toml with absolute path dependencies on
+/// whichever HORUS tree built the example, plus a target directory that can be
+/// hundreds of megabytes; a C++ build additionally symlinks
+/// `compile_commands.json` into the project root, and Python leaves
+/// `__pycache__/`. All of it describes the example's directory, not the new
+/// one.
+#[test]
+fn new_from_leaves_the_examples_build_output_behind() {
+    for example in shipped_examples() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = new_from(tmp.path(), "copied", &example);
+        assert!(
+            out.status.success(),
+            "horus new copied --from {example} failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let project = tmp.path().join("copied");
+        assert_eq!(
+            package_name(&project.join("horus.toml")),
+            "copied",
+            "in {example}"
+        );
+
+        for stale in [
+            ".horus/target",
+            ".horus/cpp-build",
+            ".horus/packages",
+            "__pycache__",
+            ".ruff_cache",
+            ".pytest_cache",
+            "compile_commands.json",
+            "target",
+        ] {
+            assert!(
+                !project.join(stale).exists(),
+                "{example} copied its build output: {stale} is present in the new project"
+            );
+        }
+    }
+}
+
+/// An unknown name is the likely mistake, because nothing in the CLI lists the
+/// examples. So the error is the list.
+#[test]
+fn new_from_an_unknown_example_lists_what_is_available() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = new_from(tmp.path(), "my_robot", "no_such_example");
+    assert!(!out.status.success(), "an unknown example must not succeed");
+
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for example in shipped_examples() {
+        assert!(
+            text.contains(&example),
+            "the error does not mention `{example}`, so the reader still has no \
+             way to find out what --from accepts:\n{text}"
+        );
+    }
+    assert!(
+        !tmp.path().join("my_robot").exists(),
+        "a failed --from left a half-made project behind"
+    );
+}
+
+/// `--from` names an example, not a path.
+///
+/// Most traversals are already stopped by the horus.toml probe — there is no
+/// manifest at `examples/../../etc` — so the case that discriminates is one
+/// that climbs out and lands on a real HORUS project:
+/// `../examples/differential_drive` resolves to a directory with a horus.toml
+/// and would otherwise be copied, teaching `--from` to take paths.
+#[test]
+fn new_from_cannot_escape_the_examples_directory() {
+    for hostile in [
+        "../horus_manager",
+        "../../etc",
+        "/etc",
+        "differential_drive/robots",
+        "../examples/differential_drive",
+        "./differential_drive",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = new_from(tmp.path(), "escapee", hostile);
+        assert!(
+            !out.status.success(),
+            "--from {hostile} was accepted; it must name a directory under examples/"
+        );
+        assert!(
+            !tmp.path().join("escapee").exists(),
+            "--from {hostile} created a project"
+        );
+    }
+}
+
+/// The language comes from the example, so the language flags cannot also
+/// apply. Clap rejects them rather than silently picking one.
+#[test]
+fn new_from_rejects_the_flags_it_would_have_to_ignore() {
+    for flag in [
+        "--rust",
+        "--python",
+        "--cpp",
+        "--workspace",
+        "--lib",
+        "--macro",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = Command::new(horus())
+            .args(["new", "my_robot", "--from", "differential_drive", flag])
+            .env("HORUS_SOURCE", repo_root())
+            .current_dir(tmp.path())
+            .output()
+            .expect("horus new must run");
+        assert!(
+            !out.status.success(),
+            "`horus new --from differential_drive {flag}` was accepted, so {flag} \
+             is silently ignored"
+        );
+    }
+}
+
+/// The C++ example is the one where the rename has to reach past cargo: its
+/// binary name comes from cmake_gen, not cargo_gen.
+#[test]
+fn new_from_renames_a_cpp_example_too() {
+    let cpp = shipped_examples().into_iter().find(|e| {
+        repo_root()
+            .join("examples")
+            .join(e)
+            .join("src/main.cpp")
+            .is_file()
+    });
+    let Some(cpp) = cpp else {
+        panic!("no C++ example under examples/ — see examples_contract");
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = new_from(tmp.path(), "my_cpp_robot", &cpp);
+    assert!(
+        out.status.success(),
+        "horus new my_cpp_robot --from {cpp} failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let project = tmp.path().join("my_cpp_robot");
+    assert_eq!(package_name(&project.join("horus.toml")), "my_cpp_robot");
+    assert!(
+        project.join("src/main.cpp").is_file(),
+        "src/main.cpp was not copied"
+    );
+    assert!(
+        project.join(".gitignore").is_file(),
+        "a project outside the HORUS repository cannot rely on the repository's \
+         root .gitignore, so --from must leave one behind"
+    );
+    // `horus fmt --check` on a C++ project with no .clang-format falls back to
+    // LLVM style, which does not match the code HORUS itself generates — so a
+    // freshly made project fails a check on code its owner has not written yet.
+    assert!(
+        project.join(".clang-format").is_file(),
+        "the C++ copy has no .clang-format, so `horus fmt --check` will fail on it"
+    );
+}

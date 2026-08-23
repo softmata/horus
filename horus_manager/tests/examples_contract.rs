@@ -27,10 +27,10 @@
 //!
 //! ## Why this test only checks manifests by default
 //!
-//! Building ten examples means ten cargo builds against the full HORUS tree,
-//! which is minutes, not seconds — too slow for every PR. So the fast path
-//! checks what can be checked statically, and the full build is available
-//! behind `HORUS_TEST_BUILD_EXAMPLES=1` for CI:
+//! One cargo build per example against the full HORUS tree is minutes, not
+//! seconds, on a cold cache. So the fast path checks what can be checked
+//! statically, and the full build is available behind
+//! `HORUS_TEST_BUILD_EXAMPLES=1` for CI, which does run it on every PR:
 //!
 //! ```bash
 //! HORUS_TEST_BUILD_EXAMPLES=1 cargo test -p horus_manager --test examples_contract
@@ -245,14 +245,17 @@ fn no_example_requests_a_feature_horus_does_not_have() {
 
 /// The full check: every example actually compiles.
 ///
-/// Slow (ten cargo builds), so it is opt-in. This is the test that would have
-/// caught all four failure classes at once.
+/// Slow (one cargo build per example), so it is opt-in. This is the test that
+/// would have caught all four failure classes at once. CI sets the variable and
+/// shares one CARGO_TARGET_DIR across the examples, which is what makes it
+/// affordable per-PR: they all depend on the same horus path deps, so the graph
+/// compiles once.
 #[test]
 fn every_example_builds() {
     if std::env::var("HORUS_TEST_BUILD_EXAMPLES").is_err() {
         eprintln!(
             "SKIP every_example_builds: set HORUS_TEST_BUILD_EXAMPLES=1 to run \
-             (ten cargo builds against the full HORUS tree)"
+             (one cargo build per example against the full HORUS tree)"
         );
         return;
     }
@@ -366,5 +369,219 @@ fn the_examples_index_points_at_the_cpp_examples() {
         readme.contains("horus_cpp/examples"),
         "examples/README.md never mentions the C++ examples, so a C++ developer \
          reading it concludes there are none — there are six"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Language coverage
+// ---------------------------------------------------------------------------
+
+/// Which language an example project is written in, by its entry point.
+///
+/// The same order and the same six candidate paths `auto_detect_main_file` in
+/// run/mod.rs probes, so this agrees with the file `horus build` picks.
+fn example_language(dir: &Path) -> Option<&'static str> {
+    for (rel, lang) in [
+        ("main.rs", "rust"),
+        ("main.py", "python"),
+        ("main.cpp", "cpp"),
+        ("src/main.rs", "rust"),
+        ("src/main.py", "python"),
+        ("src/main.cpp", "cpp"),
+    ] {
+        if dir.join(rel).is_file() {
+            return Some(lang);
+        }
+    }
+    None
+}
+
+/// Every language HORUS claims to support first-class has a project to read.
+///
+/// examples/ was nine Rust, one Python and zero C++ — for a language with ten
+/// tutorials and twenty-five doc pages. The six programs under
+/// `horus_cpp/examples/` are not a substitute: they are standalone CMake
+/// translation units built with `cmake -S horus_cpp/examples -B build`, so they
+/// demonstrate individual APIs and not the `horus.toml` + `horus build`
+/// workflow those tutorials teach. A C++ developer evaluating HORUS had no
+/// complete project to open.
+#[test]
+fn every_first_class_language_has_a_complete_example_project() {
+    let mut by_language: std::collections::BTreeMap<&'static str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut without_entry_point = Vec::new();
+
+    for dir in example_dirs() {
+        let name = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        match example_language(&dir) {
+            Some(lang) => by_language.entry(lang).or_default().push(name),
+            None => without_entry_point.push(name),
+        }
+    }
+
+    assert!(
+        without_entry_point.is_empty(),
+        "these examples have a horus.toml but no entry point `horus build` can \
+         find (main.rs / main.py / main.cpp, at the root or under src/): {without_entry_point:?}"
+    );
+
+    for lang in ["rust", "python", "cpp"] {
+        assert!(
+            by_language.contains_key(lang),
+            "examples/ contains no {lang} project. Coverage is {by_language:?}.\n\n\
+             `horus_cpp/examples/*.cpp` does not count: those are standalone CMake \
+             translation units, not horus.toml projects, so they never exercise the \
+             workflow the {lang} tutorials teach."
+        );
+    }
+}
+
+/// A C++ example must keep its entry point under `src/`.
+///
+/// `auto_detect_main_file` accepts a `main.cpp` at the project root, but the
+/// CMakeLists cmake_gen writes globs `${CMAKE_SOURCE_DIR}/../src/*.cpp` only.
+/// A root main.cpp therefore reports
+///
+/// ```text
+/// > Detected: main.cpp (cpp)
+/// > cmake build...
+/// Error: Could not find compiled binary 'rootcpp' in .horus/cpp-build
+/// ```
+///
+/// — the file is found, then never compiled. Until the two agree, the example
+/// has to be on the side that works, because an example is the layout readers
+/// copy.
+#[test]
+fn cpp_examples_keep_their_entry_point_under_src() {
+    let mut offenders = Vec::new();
+    for dir in example_dirs() {
+        if example_language(&dir) != Some("cpp") {
+            continue;
+        }
+        if dir.join("main.cpp").is_file() && !dir.join("src/main.cpp").is_file() {
+            offenders.push(
+                dir.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these C++ examples put main.cpp at the project root, where the \
+         generated CMakeLists never globs it: {offenders:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CI
+// ---------------------------------------------------------------------------
+
+/// The body of one job in a workflow file, as `(line_number, text)` pairs.
+///
+/// Jobs are the four-space-indented keys under `jobs:`; the block runs to the
+/// next two-space-indented key.
+fn workflow_job<'a>(workflow: &'a str, job: &str) -> Vec<(usize, &'a str)> {
+    let header = format!("  {job}:");
+    let mut out = Vec::new();
+    let mut inside = false;
+    for (n, line) in workflow.lines().enumerate() {
+        if line.trim_end() == header {
+            inside = true;
+            continue;
+        }
+        if inside {
+            let is_new_key = line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#');
+            if is_new_key {
+                break;
+            }
+            out.push((n + 1, line));
+        }
+    }
+    assert!(!out.is_empty(), "no job `{job}` in the workflow");
+    out
+}
+
+fn docs_contract_workflow() -> String {
+    std::fs::read_to_string(repo_root().join(".github/workflows/docs-contract.yml"))
+        .expect(".github/workflows/docs-contract.yml must exist")
+}
+
+/// A PR that breaks a shipped example must not be green.
+///
+/// `shipped-examples-build` was gated
+/// `if: github.event_name == 'schedule' || inputs.run_compile_sweep`, so it ran
+/// at 04:00 UTC and on manual dispatch. The comment above it said the cheap
+/// static half ran on every PR anyway, "as part of the normal horus_manager
+/// test job" — but ci.yml runs `cargo test --workspace --lib`, which builds
+/// library test targets only and never compiles an integration test like this
+/// one. Nothing in examples_contract ran per-PR. A PR that broke an example
+/// stayed green until the next nightly, by which point finding it is a bisect
+/// rather than a review comment.
+#[test]
+fn the_shipped_examples_job_is_not_gated_off_pull_requests() {
+    let wf = docs_contract_workflow();
+
+    for (n, line) in workflow_job(&wf, "shipped-examples-build") {
+        let key = line.strip_prefix("    ").unwrap_or("");
+        if key.starts_with("if:") {
+            panic!(
+                "docs-contract.yml:{n} gates the shipped-examples job behind \
+                 `{}`, so a PR that breaks an example is green until the next \
+                 nightly run.",
+                key.trim()
+            );
+        }
+    }
+
+    // Running is not the same as gating: only a required check blocks a merge,
+    // and the required check here is the docs-contract-success aggregate.
+    let success: String = workflow_job(&wf, "docs-contract-success")
+        .into_iter()
+        .map(|(_, l)| l)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        success.contains("needs.shipped-examples-build.result"),
+        "docs-contract-success does not consider shipped-examples-build, so the \
+         job runs on the PR but nothing blocks a merge on its result:\n{success}"
+    );
+}
+
+/// The examples job has to be able to find the HORUS source tree.
+///
+/// `horus build` generates `.horus/Cargo.toml` with path dependencies into the
+/// HORUS checkout, resolved by `find_horus_source_dir()`. That function probes
+/// `HORUS_SOURCE`, then `/horus`, `~/softmata/horus`, `~/horus`, `/opt/horus`,
+/// `/usr/local/horus`, then the installer's cache. None of those is where
+/// `actions/checkout` puts the repository — it lands in
+/// `/home/runner/work/<repo>/<repo>` — so without `HORUS_SOURCE` the job fails
+/// on the first example with "HORUS source not found", and a job that only ever
+/// ran at 04:00 is a job nobody watches.
+#[test]
+fn the_shipped_examples_job_points_at_the_checkout() {
+    let wf = docs_contract_workflow();
+    let job: String = workflow_job(&wf, "shipped-examples-build")
+        .into_iter()
+        .map(|(_, l)| l)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        job.contains("HORUS_SOURCE:"),
+        "the shipped-examples job never sets HORUS_SOURCE, so \
+         find_horus_source_dir() cannot see the checkout:\n{job}"
+    );
+    assert!(
+        job.contains("HORUS_TEST_BUILD_EXAMPLES"),
+        "the shipped-examples job must set HORUS_TEST_BUILD_EXAMPLES, or \
+         every_example_builds skips itself and the job checks manifests only"
     );
 }

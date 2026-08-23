@@ -1,0 +1,6 @@
+[package]
+name = "sensor_navigation_py"
+version = "0.1.0"
+description = "Mobile robot with LiDAR + IMU in Python — the sensor_navigation example, ported"
+authors = ["softmata"]
+license = "Apache-2.0"

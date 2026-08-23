@@ -1,0 +1,31 @@
+# The other examples rely on the repository's root .gitignore. This one needs a
+# file of its own because running it leaves two artifacts the root file does not
+# mention — `.ruff_cache/` from `horus lint`/`horus fmt`, and the `horus.lock`
+# that `horus run` resolves — so running the example would otherwise dirty the
+# working tree.
+#
+# The rest matches what `horus new --python` generates, so `horus new my_robot
+# --from sensor_navigation_py` hands you the same .gitignore the blank Python
+# template would have.
+
+# HORUS environment (auto-managed by `horus run`)
+.horus/packages/
+.horus/bin/
+.horus/lib/
+.horus/include/
+.horus/cache/
+.horus/target/
+.horus/Cargo.toml
+.horus/Cargo.lock
+*.log
+horus.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/

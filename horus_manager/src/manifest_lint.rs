@@ -90,7 +90,7 @@ pub const KNOWN_PACKAGE: &[&str] = &[
 ];
 
 /// Keys accepted inside `[cpp]`.
-pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain"];
+pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain", "link"];
 
 /// Keys accepted inside `[rust]`.
 ///
@@ -100,9 +100,16 @@ pub const KNOWN_CPP: &[&str] = &["compiler", "cmake_args", "toolchain"];
 /// one, and a second channel would let the same crate be declared twice.
 ///
 /// `rustflags` is the exception — it has no Cargo.toml section, and is emitted
-/// to a generated `.horus/.cargo/config.toml`. It is listed here because a key
-/// this module rejects is a key `horus check` fails on, and rejecting a setting
-/// that does work would be the same lie as accepting one that does not.
+/// to a generated `.cargo/config.toml`. It is listed here because a key this
+/// module rejects is a key `horus check` fails on, and rejecting a setting that
+/// does work would be the same lie as accepting one that does not.
+///
+/// `cargo_gen::horus_toml_home` reads this list to tell a user where a setting
+/// the generated manifest just dropped can be put instead, so a key that stops
+/// being accepted here stops being suggested there. That is deliberate: the
+/// advice used to be a fixed "put it under [rust]", which for a lost
+/// `dev-dependencies` sent the user straight into `unknown key
+/// rust.dev-dependencies` from this very module.
 pub const KNOWN_RUST: &[&str] = &[
     "edition",
     "features",
@@ -990,5 +997,28 @@ bogus = 1
         let unknown = find_unknown_keys(manifest);
         assert_eq!(unknown.len(), 1, "{unknown:?}");
         assert_eq!(unknown[0].suggestion.as_deref(), Some("rustflags"));
+    }
+
+    /// The other half of `cargo_gen::horus_toml_home`, from this side.
+    ///
+    /// When a rewrite of `.horus/Cargo.toml` dropped a `[dev-dependencies]`
+    /// table, the warning used to say "put them under [rust]" — and doing
+    /// exactly that lands here, with the manifest failing `horus check`.
+    /// `[rust]` forwards Cargo *sections* HORUS does not write; the dependency
+    /// tables are horus.toml's own and are not among them. Advice that fails
+    /// the tool's own validator is worse than no advice, so the two have to
+    /// agree — `cargo_gen` builds its suggestions out of `KNOWN_RUST` for the
+    /// same reason.
+    #[test]
+    fn dev_dependencies_under_rust_is_rejected_and_names_the_real_section() {
+        let manifest = "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n\
+                        [rust.dev-dependencies]\nrand = \"0.10\"\n";
+        let unknown = find_unknown_keys(manifest);
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        assert!(
+            unknown[0].message().contains("[dev-dependencies]"),
+            "{}",
+            unknown[0].message()
+        );
     }
 }

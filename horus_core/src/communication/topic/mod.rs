@@ -1523,7 +1523,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let local = self.local();
         if local.slot_index >= 0 {
             let header = self.header();
-            let timeout = header.lease_timeout_ms as u64;
+            let timeout = header.lease_timeout();
             let now = current_time_ms();
             header.participants[local.slot_index as usize].refresh_lease(now, timeout);
         }
@@ -2062,6 +2062,40 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
                 }
                 local.local_head = head.wrapping_add(1);
+                // Publish the ring head. This path used to advance `local_head`
+                // and tell nobody, leaving `header.sequence_or_head` frozen
+                // wherever it was last synced — and the head is what every
+                // reader outside this handle takes as the count of slots
+                // written. A topic that sent a few messages through the
+                // dispatched path and then gained the consumer role (this path)
+                // reported a head of 8 for good while `messages_total` climbed
+                // past 300: `horus topic echo` printed exactly one message and
+                // then nothing, on a topic publishing the whole time. That is
+                // the LIVE-5 symptom reached from the writer's end rather than
+                // the reader's, and no probe in the reader can tell a head that
+                // stopped being published from one that stopped moving.
+                //
+                // It also keeps the two write paths agreeing about where the
+                // ring is: the dispatched POD send claims its slot with
+                // `sequence_or_head.fetch_add`, so with the head left behind it
+                // would restart on top of slots this path had already filled the
+                // moment one message fell through to it.
+                //
+                // `fetch_max` rather than `store` because the head must never
+                // move backwards for a reader — `read_slot_inner` decides "this
+                // message has been lapped" by subtracting from it — and this
+                // handle's `local_head` can be behind another producer's.
+                //
+                // POD only. For a non-POD `T` this path writes the raw Rust
+                // value at `size_of::<T>()` stride, which is neither the serde
+                // slot layout nor necessarily meaningful outside this process;
+                // publishing a head over those bytes would be inviting another
+                // process to read them. That case is left exactly as it was.
+                if local.is_pod {
+                    self.header()
+                        .sequence_or_head
+                        .fetch_max(local.local_head, Ordering::Release);
+                }
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     self.check_migration_periodic();
@@ -2120,6 +2154,46 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
+    /// Is this full ring being drained by anybody?
+    ///
+    /// The first version of the keep-last-N fix asked `sub_count() == 0`, which
+    /// answers a different question — "has anyone ever registered as a
+    /// subscriber" — and the two diverge the moment a subscriber goes away.
+    /// `subscriber_count` had no `Drop`, no deregistration and no reaper, so
+    /// after any subscriber had registered once the gate was false forever and
+    /// a `kill -9`'d node froze the topic permanently, reproducing the original
+    /// report verbatim: `topic list` showing 98 Hz while `topic echo` printed a
+    /// single three-minute-old message and then nothing for 45 s.
+    ///
+    /// Three questions, cheapest first, and each one covers a case the one
+    /// before it cannot:
+    ///
+    /// 1. Nobody registered at all — two atomic loads, and the common case for
+    ///    "let me look at what my node publishes".
+    /// 2. Somebody registered and their process is gone. `reap_dead_participants`
+    ///    takes the registration back, which also repairs `topic info` and
+    ///    backend selection, not just this decision.
+    /// 3. Somebody registered, is alive, and is not reading. No liveness signal
+    ///    can see this one — the process is running and its handle exists — so
+    ///    it is settled by the ring itself: `tail` has not moved for a whole
+    ///    lease timeout while the ring was full.
+    ///
+    /// Only reachable from the cold path with a full ring, which is why a
+    /// liveness syscall is affordable here at all.
+    #[cold]
+    #[inline(never)]
+    fn nothing_is_draining(&self, header: &TopicHeader) -> bool {
+        if header.sub_count() == 0 {
+            return true;
+        }
+        let now_ms = header::current_time_ms();
+        header.reap_dead_participants(now_ms);
+        if header.sub_count() == 0 {
+            return true;
+        }
+        header.drain_has_stalled(now_ms)
+    }
+
     /// Retry loop for send_lossy — outlined to keep the fast path tight.
     ///
     /// The retry is designed for TRANSIENT failures (ring buffer momentarily
@@ -2146,38 +2220,47 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // A ring nobody reads must not hold the newest data hostage.
         //
         // Backpressure exists to stop a producer overwriting a message some
-        // consumer has not taken yet. With no registered consumer there is
-        // nothing to protect and `tail` never moves, so one ring-full after the
-        // first send every further `send` fails here — permanently. The shared
-        // region then keeps the FIRST `capacity` messages for the life of the
-        // process while `messages_total` (bumped on every call, delivered or
-        // not) keeps climbing, so `topic list` and `topic hz` report the topic
-        // as live at its real rate while `topic echo` — which reads the ring —
-        // replays minutes-old payloads. Measured on a 100 Hz publisher with no
-        // subscriber: 14,474 sends, ring content frozen at message 128.
+        // consumer has not taken yet. If nothing is taking messages out, `tail`
+        // never moves, so one ring-full after the first send every further
+        // `send` fails here — permanently. The shared region then keeps the
+        // FIRST `capacity` messages for the life of the segment while
+        // `messages_total` (bumped on every call, delivered or not) keeps
+        // climbing, so `topic list` and `topic hz` report the topic as live at
+        // its real rate while `topic echo` — which reads the ring — replays
+        // minutes-old payloads. Measured on a 100 Hz publisher with no
+        // subscriber: 14,474 sends, ring content frozen at message 128; and
+        // again on a publisher whose subscriber was `kill -9`'d: 28,955 sends,
+        // head frozen at 4,736, `topic echo` printing one 3-minute-old message
+        // and then nothing.
         //
-        // `send` is the lossy publish, so the answer on a full ring with no
-        // reader is keep-last-N: retire the oldest slot and take it. Nothing
-        // changes for a topic that does have a subscriber — `sub_count()` is
-        // non-zero there and the spin/yield retry below runs exactly as before,
-        // because then the backpressure is protecting real unread messages.
-        // `try_send` and `send_blocking` are deliberately left alone: their
+        // `send` is the lossy publish, so the answer on a ring that is full and
+        // unattended is keep-last-N: retire the oldest slot and take it.
+        // `try_send` and `send_blocking` are deliberately left alone — their
         // contracts are "tell me the ring is full", not "drop something".
         let header = self.header();
-        if header.sub_count() == 0 {
-            let capacity = self.local().cached_capacity;
-            if capacity > 0 {
-                let head = header.sequence_or_head.load(Ordering::Acquire);
-                // Free exactly one slot; the ring stays as full of recent
-                // history as it can be.
-                header
-                    .tail
-                    .fetch_max(head.saturating_sub(capacity - 1), Ordering::Release);
-                self.local().local_tail = header.tail.load(Ordering::Acquire);
-                match self.try_send(msg) {
-                    Ok(()) => return,
-                    Err(returned) => msg = returned,
-                }
+        let capacity = self.local().cached_capacity;
+        if capacity > 0 && self.nothing_is_draining(header) {
+            let head = header.sequence_or_head.load(Ordering::Acquire);
+            // Free exactly one slot; the ring stays as full of recent
+            // history as it can be.
+            header
+                .tail
+                .fetch_max(head.saturating_sub(capacity - 1), Ordering::Release);
+            let new_tail = header.tail.load(Ordering::Acquire);
+            // We moved `tail` ourselves. Tell the stall detector so it does not
+            // mistake the producer's own write for a consumer waking up and
+            // restart its grace period on every single reclaim.
+            header.note_producer_moved_tail(new_tail);
+            // Never backwards. On a role=Both handle `local_tail` is this
+            // handle's own READ position, not a cached copy of the shared one,
+            // and assigning over it would re-deliver messages it had already
+            // taken. Moving it forward is what keep-last-N means for such a
+            // handle: the slot just retired is one it will not see.
+            let local = self.local();
+            local.local_tail = local.local_tail.max(new_tail);
+            match self.try_send(msg) {
+                Ok(()) => return,
+                Err(returned) => msg = returned,
             }
         }
 
@@ -2545,15 +2628,27 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Get publisher count (for debugging)
+    ///
+    /// Reaps participants whose process is gone first. Both counts are
+    /// registration counts on shared memory that outlives its registrants, so
+    /// without that they keep counting nodes that were killed hours ago — and
+    /// these two are exactly the numbers someone reads to answer "is anyone
+    /// still talking to this topic".
     #[doc(hidden)]
     pub fn pub_count(&self) -> u32 {
-        self.header().pub_count()
+        let header = self.header();
+        header.reap_dead_participants(header::current_time_ms());
+        header.pub_count()
     }
 
     /// Get subscriber count (for debugging)
+    ///
+    /// See [`Self::pub_count`]: dead registrants are reaped before counting.
     #[doc(hidden)]
     pub fn sub_count(&self) -> u32 {
-        self.header().sub_count()
+        let header = self.header();
+        header.reap_dead_participants(header::current_time_ms());
+        header.sub_count()
     }
 
     /// Get raw pointer to the SHM header (for benchmarking raw atomic latency).
