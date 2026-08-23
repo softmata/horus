@@ -76,6 +76,15 @@ enum Skip {
     /// point of the example; inventing one to satisfy the compiler would
     /// document a vendor SDK that does not exist.
     ReaderSuppliedHeader,
+    /// Includes a header `horus msg gen` writes into the reader's own project
+    /// — `.horus/generated/include/<package>/msgs.hpp`, included as
+    /// `<demo/msgs.hpp>` because the generated include directory is on the
+    /// target's include path. It is angle-bracketed like a shipped header and
+    /// is not one: it does not exist until the reader defines a `.hmsg` and
+    /// runs the generator, and its contents depend on what they defined. The
+    /// Rust twin of every such block is already `rust,ignore` for the same
+    /// reason.
+    GeneratedMessageHeader,
 }
 
 /// Headers that belong to a framework the docs are comparing against, not to
@@ -197,12 +206,36 @@ fn classify(code: &str) -> Option<Skip> {
     if quotes_unshipped_header(t) {
         return Some(Skip::ReaderSuppliedHeader);
     }
+    if includes_generated_message_header(t) {
+        return Some(Skip::GeneratedMessageHeader);
+    }
     // A translation unit needs at least one include; without one the block is an
     // excerpt of a body, not something a reader could compile.
     if !t.contains("#include") {
         return Some(Skip::Fragment);
     }
     None
+}
+
+/// Whether the block includes a message header `horus msg gen` produces.
+///
+/// The generator writes `.horus/generated/include/<package>/msgs.hpp` and puts
+/// that directory on the target's include path, so the documented spelling is
+/// the angle form `<demo/msgs.hpp>`. `quotes_unshipped_header` only recognises
+/// the quoted form, so this one reached the compiler and failed on a header
+/// that cannot exist until the reader has defined a message of their own.
+///
+/// Deliberately narrow: the segment before `msgs.hpp` is the reader's package
+/// name, so anything under `horus/` is still ours and still has to resolve.
+fn includes_generated_message_header(code: &str) -> bool {
+    code.lines()
+        .map(str::trim_start)
+        .filter_map(|l| l.strip_prefix("#include"))
+        .filter_map(|rest| {
+            let rest = rest.trim_start();
+            rest.strip_prefix('<').and_then(|r| r.split('>').next())
+        })
+        .any(|path| path.ends_with("/msgs.hpp") && !path.starts_with("horus/"))
 }
 
 /// Whether the block quotes a header this repository does not ship.
