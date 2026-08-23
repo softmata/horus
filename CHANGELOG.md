@@ -36,11 +36,45 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
-66 commits past the `v0.3.0` tag, which is over the 50-commit trigger the
-cadence note above defines — a release is due. The tag itself has not been
-pushed and no GitHub release has been published, so `install.sh`, which points
-at `releases/latest`, still hands new users 0.2.2. Until that ships, everything
-below is fixed in the tree and absent from the binary people install.
+## [0.4.0] — 2026-08-22
+
+The first release since 0.2.2 (2026-07-19). **0.3.0 was tagged and never
+published** — the tag was cut locally, no GitHub release was created, and
+`install.sh` reads `releases/latest`, so every user installing HORUS in that
+window got 0.2.2 with nothing to tell them so. That gap is the thing this
+release exists to close, and the tree had drifted 69 commits past the unshipped
+tag by the time it was cut.
+
+Version numbers move 0.3.0 -> 0.4.0 across `horus`, `horus_core`,
+`horus_manager`, `horus_types`, `horus_py`, `horus_macros` and `benchmarks`.
+`horus_sys` moves 0.1.0 -> 0.2.0 because its shared-memory header changed (see
+Compatibility). `horus_net`, `horus_cpp` and `horus_cpp_macros` stay at 0.1.0.
+
+Minor rather than patch: there is one breaking API change and three behaviour
+changes. Pre-1.0, so they ride in the minor slot.
+
+### Compatibility
+
+- **Do not mix 0.2.x and 0.4.0 processes on one machine's shared memory.**
+  `TopicHeader` gained two producer-side words, carved out of previously
+  reserved padding. The struct is still exactly 640 bytes and every existing
+  field is at its old offset, so the change is invisible to a reader that does
+  not look at them — but a 0.2.x publisher and a 0.4.0 subscriber disagree
+  about whether those bytes mean anything. Restart every node in a namespace
+  together.
+- **Two built-in message layout hashes changed value**: `Clock`
+  (`0xc25212af` -> `0x044c9261`) and `SimSync` (`0x3959875d` -> `0x6d289920`).
+  These are corrections — the old numbers described structs without their
+  padding fields, i.e. structs that do not exist — but they are the numbers
+  `horus msg hash` prints, so anything that recorded them needs updating. The
+  other 22 built-ins are unchanged.
+
+### Breaking
+
+- **`horus_types`** — `RateRequest::topic()` is renamed `topic_name()`. The old
+  name collided with the new `Type::topic(name)` opener that every message type
+  now carries. No caller outside `horus_types`' own tests existed.
+
 
 ### Added
 
@@ -157,10 +191,15 @@ below is fixed in the tree and absent from the binary people install.
   loaded machine could answer. All fixed — these were failures of the tests,
   not of the product, and each one taught people to ignore a red suite.
 
-## [0.3.0] — 2026-08-21
+## [0.3.0] — 2026-08-21 (tagged, never published)
 
-Cuts the first release since 0.2.2 (2026-07-19), which the tree was 244 commits
-ahead of. Users installed a binary that stale and had no way to tell — the gap
+This version was bumped and tagged locally and no GitHub release was ever
+created for it, so nobody installed it. Its entries are kept because the code
+changes are real and shipped in 0.4.0; the version number is the part that
+never reached anyone.
+
+Cut as the first release since 0.2.2 (2026-07-19), which the tree was 244
+commits ahead of. Users installed a binary that stale and had no way to tell — the gap
 this release exists to close, along with the cadence note below.
 
 Version numbers move 0.2.2 -> 0.3.0 across `horus`, `horus_core`,

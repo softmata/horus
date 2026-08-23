@@ -1,6 +1,6 @@
 [package]
 name = "horus_sys"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Platform abstraction layer for the HORUS robotics framework"
 license = "Apache-2.0"
