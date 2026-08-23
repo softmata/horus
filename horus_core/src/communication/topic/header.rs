@@ -3313,13 +3313,28 @@ mod echo_freshness_tests {
             return;
         };
         let header = publisher.ring.header();
-        header.set_lease_timeout_ms(GRACE_MS as u32);
+        // Phase 1 runs with the grace effectively disabled, rather than with a
+        // 300 ms one it is assumed to outrun.
+        //
+        // The fill below used to run against the real grace, on the reasoning
+        // that 128 in-process sends take under a millisecond. They do on an idle
+        // machine. Under the full suite on a loaded box they do not, the stall
+        // detector fires part-way through the fill, and the ring starts
+        // overwriting — so the assertion that it is *still backpressured* fails,
+        // reporting a scheduling delay as a backpressure defect. Sleep and
+        // scheduling have floors, not ceilings; a test that assumes a ceiling is
+        // asserting that the machine was idle.
+        //
+        // Setting the grace out of reach for phase 1 removes the race instead of
+        // widening it, and phase 2 sets the short one it actually wants to
+        // measure.
+        header.set_lease_timeout_ms(u32::MAX);
 
         // Registers a consumer, in this very process, and never takes anything.
         assert!(subscriber.recv().is_none(), "nothing has been sent yet");
 
-        // Fill the ring and overrun it, all within a millisecond — well inside
-        // the grace.
+        // Fill the ring and overrun it. However long this takes, the grace
+        // cannot elapse during it.
         for i in 1..=(u64::from(CAPACITY) * 2) {
             publisher.send(i);
         }
@@ -3333,7 +3348,9 @@ mod echo_freshness_tests {
         );
 
         // Now let the grace pass with the ring still full and the subscriber
-        // still registered, still alive, still not reading.
+        // still registered, still alive, still not reading. This is the
+        // measurement, so this is where the short grace goes on.
+        header.set_lease_timeout_ms(GRACE_MS as u32);
         let mut next = u64::from(CAPACITY) * 2 + 1;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(GRACE_MS + 400);
         while std::time::Instant::now() < deadline {

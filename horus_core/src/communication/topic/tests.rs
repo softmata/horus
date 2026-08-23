@@ -6124,6 +6124,19 @@ fn broadcast_two_subscribers_each_get_full_stream() {
 
 #[test]
 fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
+    // Serialised against the other thread-scheduling-sensitive tests. Both of
+    // these run a producer and two subscriber threads through a three-party
+    // barrier, so they need all three scheduled together; when cargo runs them
+    // alongside the rest of the suite on a loaded machine, one subscriber can
+    // fail to claim its FanoutShm endpoint inside the whole 60 s warm-up budget
+    // and the test reports a broadcast defect for a scheduling shortfall.
+    // Reproduced with 20 spinners on 12 cores: "only 1 of 2 subscribers became
+    // addressable endpoints in 60.001448728s", three runs out of three.
+    //
+    // TIMING_LOCK already existed for exactly this and 14 other tests take it;
+    // these two, the most scheduling-dependent in the file, did not.
+    let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     // The REAL multi-subscriber pattern: each subscriber is on its OWN thread (as
     // separate HORUS nodes are), so the (pid, thread)-keyed participant registration
     // counts subs = 2 and the detector selects a DESIGNED broadcast backend — not the
@@ -6170,11 +6183,20 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
                           // is still sending reports a timeout for a warm-up that was on its
                           // way — under the full suite, 5s reported a scheduling shortfall as
                           // "sub2 never observed the producer warm-up message".
-            let warmup_deadline = Instant::now() + Duration::from_secs(60);
+            let warmup_deadline = Instant::now() + WARM_UP_BUDGET;
             let mut warmed_up = false;
             loop {
                 sub.check_migration_now();
-                if sub.try_recv().as_deref() == Some("__horus_ready__") {
+                // try_recv is what claims the FanoutShm endpoint; the claim is
+                // the thing this loop is waiting for, so ask about the claim
+                // rather than about whether a warm-up message happened to
+                // arrive while this thread was scheduled. Waiting on the
+                // message made a local fact depend on winning a race against
+                // the producer, and under load one of the two subscribers lost
+                // it for the entire 60 s budget — reported as a broadcast
+                // defect, in a test whose subject is lapping.
+                let got = sub.try_recv();
+                if sub.fanout_endpoint_id().is_some() || got.as_deref() == Some("__horus_ready__") {
                     warmed_up = true;
                     warmed_count.fetch_add(1, Ordering::AcqRel);
                     break;
@@ -6191,7 +6213,13 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
                 if Instant::now() >= warmup_deadline {
                     break;
                 }
-                std::thread::yield_now();
+                // Sleep, not `yield_now`. Yielding on a machine whose cores are
+                // already busy hands the timeslice straight back to a runnable
+                // thread and this loop makes almost no progress; a short sleep
+                // takes it off the runqueue so the scheduler places it. The
+                // sibling lapped test failed exactly here under 20 spinners on
+                // 12 cores.
+                std::thread::sleep(WARM_UP_POLL);
             }
             ready.wait();
             // Clear the leftover warm-ups before measuring. The producer
@@ -6253,7 +6281,7 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
                   // about 1 run in 10 even in isolation — the subscriber threads simply had
                   // not been scheduled through their first successful try_recv yet — which
                   // reported a scheduling delay as a broadcast defect.
-    let warm_deadline = Instant::now() + Duration::from_secs(60);
+    let warm_deadline = Instant::now() + WARM_UP_BUDGET;
     while warmed_count.load(Ordering::Acquire) < 2 && Instant::now() < warm_deadline {
         producer.send("__horus_ready__".to_string());
         std::thread::sleep(Duration::from_millis(2));
@@ -6267,8 +6295,28 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
     let (t2, got2, be2, warm2, miss2) = h2.join().unwrap();
     // Surface a warm-up timeout as a failure here rather than as a panic inside
     // the subscriber thread — see the comment at the warm-up loop.
-    assert!(warm1, "{t1} never observed the producer warm-up message");
-    assert!(warm2, "{t2} never observed the producer warm-up message");
+    // Name the backend each side ended up on. A warm-up timeout has two very
+    // different causes and the message used to be the same for both: the
+    // subscriber never got CPU, or it never became an addressable FanoutShm
+    // endpoint — the case `claim_endpoint_locked` reports by returning None,
+    // which nothing else surfaces. `backend=FanoutShm` with no warm-up means
+    // the second; anything else means the first.
+    assert!(
+        warm1,
+        "{t1} never observed the producer warm-up message in {:?} \
+         (backend={be1}, producer={}) — if the backend is FanoutShm this is an \
+         endpoint claim that never landed, not a slow thread",
+        WARM_UP_BUDGET,
+        producer.backend_name()
+    );
+    assert!(
+        warm2,
+        "{t2} never observed the producer warm-up message in {:?} \
+         (backend={be2}, producer={}) — if the backend is FanoutShm this is an \
+         endpoint claim that never landed, not a slow thread",
+        WARM_UP_BUDGET,
+        producer.backend_name()
+    );
     eprintln!(
         "DIAG mt-nonpod: {t1} backend={be1} got={} missed={miss1} | \
          {t2} backend={be2} got={} missed={miss2} | producer={}",
@@ -6323,8 +6371,33 @@ fn multithread_nonpod_subscribers_each_get_a_contiguous_accounted_stream() {
     }
 }
 
+/// How long the two-subscriber warm-up handshake may take. Shared by both
+/// sides of it, because a producer that keeps offering after the consumer has
+/// given up is not a handshake — it is two unrelated timeouts that happened to
+/// be written near each other.
+const WARM_UP_BUDGET: Duration = Duration::from_secs(60);
+
+/// How long a subscriber waits between warm-up polls.
+///
+/// Short enough to be indistinguishable from spinning when the machine is idle,
+/// long enough to leave the runqueue when it is not.
+const WARM_UP_POLL: Duration = Duration::from_micros(200);
+
 #[test]
 fn multithread_nonpod_lapped_stream_stays_ordered() {
+    // Serialised against the other thread-scheduling-sensitive tests. Both of
+    // these run a producer and two subscriber threads through a three-party
+    // barrier, so they need all three scheduled together; when cargo runs them
+    // alongside the rest of the suite on a loaded machine, one subscriber can
+    // fail to claim its FanoutShm endpoint inside the whole 60 s warm-up budget
+    // and the test reports a broadcast defect for a scheduling shortfall.
+    // Reproduced with 20 spinners on 12 cores: "only 1 of 2 subscribers became
+    // addressable endpoints in 60.001448728s", three runs out of three.
+    //
+    // TIMING_LOCK already existed for exactly this and 14 other tests take it;
+    // these two, the most scheduling-dependent in the file, did not.
+    let _guard = TIMING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     // What broadcast does when the producer outruns a subscriber, as documented:
     //
     //   broadcast (1 pub / N subs, Fanout/PodShm): the OLDEST slot is
@@ -6371,21 +6444,40 @@ fn multithread_nonpod_lapped_stream_stays_ordered() {
             // send time, so a subscriber that has not claimed its endpoint
             // receives nothing at all and no error says so. Observed here as
             // `sub1 got=0` in one run out of three before this handshake existed.
-            // 30 s, matching the sibling test and for the same reason: this is
-            // a hang guard, not a timing assertion, and the producer re-sends
-            // for 30 s. At 10 s a full parallel run failed the warm-up
-            // assertion — the test then measures endpoint registration rather
-            // than lapping, which is what it says it measures.
-            let deadline = Instant::now() + Duration::from_secs(30);
+            // A hang guard, not a timing assertion. Two things about it were
+            // wrong and made the suite flaky under load:
+            //
+            // It was 30 s while the producer re-sends for WARM_UP_BUDGET (60 s),
+            // so this side gave up while the other was still trying, and the
+            // producer's assertion fired on a handshake that had simply been
+            // abandoned early. The two are one protocol and now share one
+            // budget.
+            //
+            // And it span on `yield_now()`. Against a machine whose cores are
+            // already saturated, yielding hands the timeslice straight back to
+            // a runnable spinner and this thread makes almost no progress; a
+            // short sleep takes it off the runqueue so the scheduler places it.
+            // Reproduced with 20 spinners on a 12-core box: `left: 1, right: 2`
+            // after 62 s.
+            let deadline = Instant::now() + WARM_UP_BUDGET;
             let mut warmed_up = false;
             while Instant::now() < deadline {
                 sub.check_migration_now();
-                if sub.try_recv().as_deref() == Some("__horus_ready__") {
+                // try_recv is what claims the FanoutShm endpoint; the claim is
+                // the thing this loop is waiting for, so ask about the claim
+                // rather than about whether a warm-up message happened to
+                // arrive while this thread was scheduled. Waiting on the
+                // message made a local fact depend on winning a race against
+                // the producer, and under load one of the two subscribers lost
+                // it for the entire 60 s budget — reported as a broadcast
+                // defect, in a test whose subject is lapping.
+                let got = sub.try_recv();
+                if sub.fanout_endpoint_id().is_some() || got.as_deref() == Some("__horus_ready__") {
                     warmed_up = true;
                     warmed_count.fetch_add(1, Ordering::AcqRel);
                     break;
                 }
-                std::thread::yield_now();
+                std::thread::sleep(WARM_UP_POLL);
             }
             warmed.wait();
 
@@ -6424,7 +6516,8 @@ fn multithread_nonpod_lapped_stream_stays_ordered() {
     // Re-send until both have acked, rather than publishing once: a single send
     // races the slowest subscriber's first post-registration try_recv, and
     // losing that race costs delivery entirely.
-    let warm_deadline = Instant::now() + Duration::from_secs(60);
+    let warm_started = Instant::now();
+    let warm_deadline = warm_started + WARM_UP_BUDGET;
     while warmed_count.load(Ordering::Acquire) < 2 && Instant::now() < warm_deadline {
         producer.send("__horus_ready__".to_string());
         std::thread::sleep(Duration::from_millis(2));
@@ -6433,8 +6526,13 @@ fn multithread_nonpod_lapped_stream_stays_ordered() {
     assert_eq!(
         warmed_count.load(Ordering::Acquire),
         2,
-        "both subscribers must become addressable endpoints before the stream, \
-         or the test measures endpoint registration rather than lapping"
+        "only {} of 2 subscribers became addressable endpoints in {:?} — the \
+         test would be measuring endpoint registration rather than lapping. If \
+         this is a loaded machine rather than a regression, the handshake was \
+         starved; if it is a regression, a subscriber is not claiming its \
+         FanoutShm endpoint on first try_recv",
+        warmed_count.load(Ordering::Acquire),
+        warm_started.elapsed()
     );
 
     for v in 1..=n {
@@ -10703,4 +10801,120 @@ mod both_path_publishes_its_head {
             first.write_idx
         );
     }
+}
+
+/// The same-thread fast path must not be taken by a non-POD topic.
+///
+/// The POD twin of this test (`a_topic_that_switches_to_the_both_fast_path_\
+/// keeps_advancing_its_cursor`) fixed the head not being published. The fix was
+/// gated on `local.is_pod` and the non-POD half was left alone, which left
+/// three defects standing on the same path rather than one:
+///
+///   1. Wrong stride. A non-POD ring's slots are `slot_size` apart — the serde
+///      wire buffer, `DEFAULT_SLOT_SIZE` unless negotiated — but the fast path
+///      indexes `cached_data_ptr as *mut T`, i.e. `size_of::<T>()` apart. For
+///      `Topic<String>` that is 24 bytes against a slot of hundreds. Every
+///      writer and reader outside this one handle uses the real geometry.
+///   2. Raw Rust values in shared memory. `ptr::write` puts a `String` — a
+///      heap pointer, length and capacity — into a segment other processes map.
+///      That pointer means nothing in another address space.
+///   3. A leak. `ptr::write` does not drop what it overwrites, so once the ring
+///      wraps ahead of the reader every overwritten slot leaks its allocation.
+///
+/// None of it showed up in-process because `recv`'s fast path reads back with
+/// the *same* wrong stride, so a send/recv pair on one handle is
+/// self-consistent. It is everyone else who sees a frozen head — LIVE-5, for
+/// exactly the message types most likely to carry a name or a label.
+///
+/// The fix routes non-POD through the dispatched path, which serialises into
+/// the real slot geometry and publishes the head. This test watches the head,
+/// because that is the part another process depends on.
+#[test]
+fn a_non_pod_topic_never_takes_the_same_thread_fast_path() {
+    const CAPACITY: u32 = 64;
+    const DISPATCHED: u64 = 8;
+    const TOTAL: u64 = 300;
+
+    let name = unique("both_nonpod_head");
+    let t: Topic<String> = match Topic::with_capacity(&name, CAPACITY, None) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("skipping: shared memory unavailable ({e})");
+            return;
+        }
+    };
+
+    // Phase 1: producer only — the dispatched send path runs.
+    for i in 1..=DISPATCHED {
+        t.send(format!("m{i}"));
+    }
+    // Phase 2: the same handle takes the consumer role as well.
+    let _ = t.recv();
+    // Phase 3: role == Both. This is where the raw fast path used to take over.
+    for i in (DISPATCHED + 1)..=TOTAL {
+        t.send(format!("m{i}"));
+        let _ = t.recv();
+    }
+
+    let head = t
+        .ring
+        .header()
+        .sequence_or_head
+        .load(std::sync::atomic::Ordering::Acquire);
+    assert!(
+        head > DISPATCHED,
+        "the ring head is still {head} after {TOTAL} non-POD messages — the \
+         same-thread fast path wrote {} of them into the wrong stride and \
+         published none of them",
+        TOTAL - DISPATCHED
+    );
+    assert_eq!(
+        head, TOTAL,
+        "every send must be a published slot: {TOTAL} sent, head at {head}"
+    );
+
+    // The reader outside this handle is the one the finding is about. It has to
+    // see a slot from the recent past, not one from before the ring wrapped.
+    let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+        eprintln!("skipping the external-reader half: cannot resolve topic path");
+        return;
+    };
+    let slot = read_latest_slot_bytes(&path, 0).expect("a live topic must yield a slot");
+    assert_eq!(
+        slot.write_idx, TOTAL,
+        "an outside reader sees slot {} while the writer is at {TOTAL} — this \
+         is the frozen head the finding was filed on",
+        slot.write_idx
+    );
+}
+
+/// A non-POD round trip on one handle must still return what was sent.
+///
+/// The guard added above changes which code path a role=Both non-POD topic
+/// takes, so the thing to prove is that the values survive the change.
+#[test]
+fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
+    let name = unique("both_nonpod_roundtrip");
+    let t: Topic<String> = match Topic::with_capacity(&name, 64, None) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("skipping: shared memory unavailable ({e})");
+            return;
+        }
+    };
+
+    t.send("first".to_string());
+    assert_eq!(t.recv().as_deref(), Some("first"));
+
+    // role == Both from here.
+    let mut got = Vec::new();
+    for i in 0..200u32 {
+        t.send(format!("value-{i}"));
+        if let Some(v) = t.recv() {
+            got.push(v);
+        }
+    }
+    assert_eq!(got.len(), 200, "every send should have a matching recv");
+    assert_eq!(got[0], "value-0");
+    assert_eq!(got[199], "value-199");
 }

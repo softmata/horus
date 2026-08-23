@@ -584,12 +584,18 @@ mod tests {
             .filter(|e| e.message.contains("every_throttle_9905"))
             .count();
 
-        // Call in a tight loop for 500ms with 200ms interval
+        const INTERVAL_MS: u128 = 200;
+
+        // Call in a tight loop for ~500ms with a 200ms interval, and measure how
+        // long the loop actually ran rather than assuming it was 500ms.
         let start = std::time::Instant::now();
+        let mut calls = 0u32;
         while start.elapsed() < std::time::Duration::from_millis(500) {
             crate::hlog_every!(200, info, "every_throttle_9905");
+            calls += 1;
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        let elapsed_ms = start.elapsed().as_millis();
 
         let after = GLOBAL_LOG_BUFFER
             .get_all()
@@ -597,11 +603,33 @@ mod tests {
             .filter(|e| e.message.contains("every_throttle_9905"))
             .count();
 
-        let count = after - before;
-        // At 200ms interval over 500ms: expect 2-4 entries (not 100+)
+        let count = (after - before) as u128;
+
+        // The property is the throttle: `calls` invocations must not produce
+        // `calls` entries, they must produce about one per interval.
+        //
+        // The old assertion was `(2..=6).contains(&count)` against a hardcoded
+        // 500ms window. Its upper bound tested the throttle; its lower bound
+        // tested the machine. Under load the `sleep(5)` stretches, the loop gets
+        // through far fewer iterations, and the window closes having crossed the
+        // 200ms boundary once instead of twice — a correct throttle reported as
+        // a broken one. Bounds now come from the elapsed time that was actually
+        // observed.
+        let most = elapsed_ms / INTERVAL_MS + 1;
         assert!(
-            (2..=6).contains(&count),
-            "hlog_every!(200ms) over 500ms should produce 2-6 entries, got {count}"
+            count >= 1,
+            "hlog_every! emitted nothing in {elapsed_ms}ms over {calls} calls"
+        );
+        assert!(
+            count <= most,
+            "hlog_every!({INTERVAL_MS}ms) emitted {count} entries in {elapsed_ms}ms \
+             over {calls} calls — at most {most} are possible if it is throttling \
+             at all"
+        );
+        assert!(
+            count < u128::from(calls),
+            "hlog_every! emitted {count} entries for {calls} calls — it is not \
+             throttling"
         );
     }
 }

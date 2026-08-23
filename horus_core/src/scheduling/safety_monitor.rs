@@ -250,8 +250,22 @@ impl Watchdog {
     /// - `Expired`: 2x-3x timeout
     /// - `Critical`: 3x+ timeout
     pub(crate) fn check_graduated(&self) -> WatchdogSeverity {
+        self.check_graduated_at(now_ns())
+    }
+
+    /// The severity decision, as a pure function of what time it is now.
+    ///
+    /// Split out so a test can state the elapsed time instead of sleeping for
+    /// it. `thread::sleep` guarantees a minimum and never a maximum, so a test
+    /// that sleeps 25ms against a 10ms timeout and asserts `Expired` is really
+    /// asserting that the machine was not busy: past 30ms the same code is
+    /// correctly `Critical`. Three of these tests flipped that way whenever the
+    /// suite ran under load, and a suite that goes red for reasons unrelated to
+    /// the change is one people stop reading — which is how a fix sat unnoticed
+    /// in this repository for 244 commits.
+    pub(crate) fn check_graduated_at(&self, now_ns: u64) -> WatchdogSeverity {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
-        let elapsed_ns = now_ns().saturating_sub(last_ns);
+        let elapsed_ns = now_ns.saturating_sub(last_ns);
         let timeout_ns = self.timeout.as_nanos() as u64;
 
         if elapsed_ns <= timeout_ns {
@@ -1552,55 +1566,68 @@ mod tests {
         assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
     }
 
-    /// Watchdog returns Warning between 1x and 2x timeout.
+    /// The graduated bands, stated rather than slept for.
+    ///
+    /// These four used `thread::sleep` and asserted the band they expected to
+    /// land in. Sleep has a floor, not a ceiling: under load a 25ms sleep
+    /// against a 10ms timeout overshoots 3x and `Expired` becomes `Critical`,
+    /// which is the code being right and the test being wrong. Reproduced by
+    /// running the suite against 20 spinners on a 12-core box —
+    /// `test_watchdog_graduated_feed_resets` failed with `left: Critical,
+    /// right: Expired`.
+    ///
+    /// `check_graduated_at` takes the clock as an argument, so the elapsed time
+    /// is now stated exactly. The bands are the assertion; the machine's mood
+    /// is not.
     #[test]
-    fn test_watchdog_graduated_warning() {
-        use std::thread;
-
-        // 10ms timeout, sleep 15ms → 1.5x → Warning
+    fn the_graduated_bands_follow_the_elapsed_time() {
         let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(15_u64.ms());
-        assert_eq!(wd.check_graduated(), WatchdogSeverity::Warning);
+        let fed_at = wd.last_heartbeat_ns.load(Ordering::Acquire);
+        let ms = |n: u64| fed_at + n * 1_000_000;
+
+        // Boundaries are inclusive at the top of each band: `elapsed <= 1x` is
+        // Ok, `<= 2x` Warning, `<= 3x` Expired, beyond that Critical.
+        assert_eq!(wd.check_graduated_at(ms(0)), WatchdogSeverity::Ok);
+        assert_eq!(wd.check_graduated_at(ms(10)), WatchdogSeverity::Ok);
+        assert_eq!(wd.check_graduated_at(ms(15)), WatchdogSeverity::Warning);
+        assert_eq!(wd.check_graduated_at(ms(20)), WatchdogSeverity::Warning);
+        assert_eq!(wd.check_graduated_at(ms(25)), WatchdogSeverity::Expired);
+        assert_eq!(wd.check_graduated_at(ms(30)), WatchdogSeverity::Expired);
+        assert_eq!(wd.check_graduated_at(ms(35)), WatchdogSeverity::Critical);
+        assert_eq!(wd.check_graduated_at(ms(1000)), WatchdogSeverity::Critical);
     }
 
-    /// Watchdog returns Expired between 2x and 3x timeout.
+    /// A clock that goes backwards must not read as a fresh heartbeat.
+    ///
+    /// `saturating_sub` makes a `now` before the last feed elapse zero, i.e.
+    /// `Ok`. Worth pinning: on a machine whose clock steps back, the failure
+    /// this watchdog exists to catch would otherwise be reported as health.
     #[test]
-    fn test_watchdog_graduated_expired() {
-        use std::thread;
-
-        // 10ms timeout, sleep 25ms → 2.5x → Expired
+    fn a_clock_that_steps_backwards_reads_as_ok_not_as_a_miss() {
         let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(25_u64.ms());
-        assert_eq!(wd.check_graduated(), WatchdogSeverity::Expired);
-    }
-
-    /// Watchdog returns Critical beyond 3x timeout.
-    #[test]
-    fn test_watchdog_graduated_critical() {
-        use std::thread;
-
-        // 10ms timeout, sleep 35ms → 3.5x → Critical
-        let wd = Watchdog::new(10_u64.ms());
-        wd.feed();
-        thread::sleep(35_u64.ms());
-        assert_eq!(wd.check_graduated(), WatchdogSeverity::Critical);
+        let fed_at = wd.last_heartbeat_ns.load(Ordering::Acquire);
+        assert_eq!(
+            wd.check_graduated_at(fed_at.saturating_sub(5_000_000)),
+            WatchdogSeverity::Ok
+        );
     }
 
     /// Feed resets graduated severity back to Ok.
     #[test]
     fn test_watchdog_graduated_feed_resets() {
-        use std::thread;
-
         let wd = Watchdog::new(10_u64.ms());
         wd.feed();
-        thread::sleep(25_u64.ms());
-        assert_eq!(wd.check_graduated(), WatchdogSeverity::Expired);
+        let fed_at = wd.last_heartbeat_ns.load(Ordering::Acquire);
+        assert_eq!(
+            wd.check_graduated_at(fed_at + 25_000_000),
+            WatchdogSeverity::Expired
+        );
 
-        // Feed → should be Ok again
         wd.feed();
-        assert_eq!(wd.check_graduated(), WatchdogSeverity::Ok);
+        let refed_at = wd.last_heartbeat_ns.load(Ordering::Acquire);
+        assert_eq!(wd.check_graduated_at(refed_at), WatchdogSeverity::Ok);
     }
 
     /// SafetyMonitor::check_watchdogs_graduated returns graduated severities.

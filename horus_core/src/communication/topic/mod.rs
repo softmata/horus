@@ -2047,11 +2047,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             crate::core::NodeInfo::notify_event(&self.name);
             return;
         }
-        // Fast path: role=Both (same-instance, same-thread pub+sub).
+        // Fast path: role=Both (same-instance, same-thread pub+sub) and POD.
         // Bypasses fn ptr indirection + call chain. LocalState fields are in
         // the Topic struct (no pointer chase), and role is on the hot cache line.
+        //
+        // POD is not an optimisation choice here, it is a correctness one. This
+        // path writes the raw Rust value through `cached_data_ptr as *mut T`,
+        // which strides by `size_of::<T>()`. That is the ring's real geometry
+        // only for a POD type: a non-POD ring's slots are `slot_size` apart —
+        // the serde wire buffer — so for `Topic<String>` the path was striding
+        // 24 bytes through slots hundreds of bytes wide, writing a heap pointer
+        // into a segment other processes map, and never dropping the value it
+        // overwrote. `recv`'s twin below read it back with the same wrong
+        // stride, so a send/recv pair on one handle agreed with itself and
+        // nothing in-process ever noticed; every reader outside the handle saw
+        // a head that had stopped moving. Non-POD goes through the dispatched
+        // path, which serialises into the real slots and publishes the head.
         let local = self.local();
-        if local.role == TopicRole::Both {
+        if local.role == TopicRole::Both && local.is_pod {
             let head = local.local_head;
             if head.wrapping_sub(local.local_tail) < local.cached_capacity {
                 // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
@@ -2086,16 +2099,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // message has been lapped" by subtracting from it — and this
                 // handle's `local_head` can be behind another producer's.
                 //
-                // POD only. For a non-POD `T` this path writes the raw Rust
-                // value at `size_of::<T>()` stride, which is neither the serde
-                // slot layout nor necessarily meaningful outside this process;
-                // publishing a head over those bytes would be inviting another
-                // process to read them. That case is left exactly as it was.
-                if local.is_pod {
-                    self.header()
-                        .sequence_or_head
-                        .fetch_max(local.local_head, Ordering::Release);
-                }
+                self.header()
+                    .sequence_or_head
+                    .fetch_max(local.local_head, Ordering::Release);
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     self.check_migration_periodic();
@@ -2387,9 +2393,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if unlikely(self.is_verbose()) {
             return self.recv_with_content_logging();
         }
-        // Fast path: role=Both (same-instance, same-thread pub+sub)
+        // Fast path: role=Both (same-instance, same-thread pub+sub) and POD.
+        //
+        // Gated on `is_pod` in lockstep with `send`: this reads back through
+        // `cached_data_ptr as *const T`, the same `size_of::<T>()` stride the
+        // write used, so the two are only ever correct together. A non-POD
+        // topic now sends through the dispatched path, and reading it here
+        // would read a slot nothing wrote.
         let local = self.local();
-        if local.role == TopicRole::Both {
+        if local.role == TopicRole::Both && local.is_pod {
             let tail = local.local_tail;
             if local.local_head.wrapping_sub(tail) > 0 {
                 // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
@@ -2510,15 +2522,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return None;
         }
 
-        // Role==Both (same-instance send+recv) uses the role=Both local fast
-        // path (LocalState head/tail over `cached_data_ptr`) regardless of the
-        // negotiated backend, including SHM-backed ones. The SHM header's
-        // sequence_or_head is never advanced on that path, so read the local
-        // counters here — otherwise read_latest reads a stale/uninitialized SHM
-        // slot (returning a phantom value after the data was drained).
+        // Role==Both AND POD uses the local fast path (LocalState head/tail
+        // over `cached_data_ptr`) regardless of the negotiated backend,
+        // including SHM-backed ones, and the SHM header's sequence_or_head is
+        // not what that path advances — so read the local counters here, or
+        // read_latest returns a phantom value after the data was drained.
+        //
+        // Non-POD is deliberately excluded, in lockstep with send/recv: it goes
+        // through the dispatched path, which maintains the header, and its
+        // local counters stand still.
         {
             let local = self.local();
-            if local.role == TopicRole::Both {
+            if local.role == TopicRole::Both && local.is_pod {
                 if local.local_tail >= local.local_head {
                     return None;
                 }
@@ -2577,14 +2592,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Get the number of pending messages
     pub fn pending_count(&self) -> u64 {
-        // Role==Both (same-instance send+recv) uses the role=Both local fast
-        // path in send()/recv() (LocalState head/tail over `cached_data_ptr`),
-        // regardless of the negotiated backend — including SHM-backed ones after
-        // the shm_backed change. The SHM header's head/tail are NEVER advanced on
-        // that path, so we must read the local counters here or report phantom
-        // pending messages (breaking has_message()/pending_count() after a drain).
+        // Role==Both AND POD uses the local fast path in send()/recv()
+        // (LocalState head/tail over `cached_data_ptr`), regardless of the
+        // negotiated backend. The SHM header's head/tail are not advanced on
+        // that path, so read the local counters here or report phantom pending
+        // messages after a drain.
+        //
+        // Non-POD is excluded in lockstep with send/recv — it is dispatched, so
+        // the header is the truth and the local counters stand still.
         let local = self.local();
-        if local.role == TopicRole::Both {
+        if local.role == TopicRole::Both && local.is_pod {
             return local.local_head.wrapping_sub(local.local_tail);
         }
         // All non-Both backends (ShmData / FanoutShm / Uninitialized) use the SHM header.
@@ -3037,6 +3054,20 @@ impl<T: TopicMessage> Topic<T> {
     #[doc(hidden)]
     pub fn backend_name(&self) -> &'static str {
         self.ring.backend_name()
+    }
+
+    /// This handle's FanoutShm subscriber endpoint, if it has claimed one.
+    ///
+    /// A subscriber bumps `sub_count` when it registers, but only becomes an
+    /// *addressable* endpoint once it has claimed a slot — and `send_serde`
+    /// fans out only to slots that were active when it ran, so an unclaimed
+    /// subscriber receives nothing and nothing says so. Tests that need both
+    /// subscribers addressable before a measured stream used to prove it by
+    /// waiting to receive a warm-up message, which made a local fact depend on
+    /// winning a scheduling race against the producer. This is the fact itself.
+    #[doc(hidden)]
+    pub fn fanout_endpoint_id(&self) -> Option<usize> {
+        self.ring.local().fanout_shm_sub_id
     }
 
     /// Get publisher count.

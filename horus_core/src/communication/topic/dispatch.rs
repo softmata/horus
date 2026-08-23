@@ -69,7 +69,7 @@
 //!    non-overlapping source/dest within the data region. The SHM layout ensures
 //!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
 
-use std::sync::atomic::{fence, AtomicBool, Ordering};
+use std::sync::atomic::{fence, Ordering};
 
 use super::shm_layout::SLOT_WRITING;
 
@@ -533,9 +533,8 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
             None => {
                 // COMM-H1: never let "all 16 slots live" become a SILENT no-comms
                 // endpoint (worse than the pre-fix loud panic). Warn LOUDLY, but
-                // once per process so a hot send-loop can't flood the log.
-                static WARNED: AtomicBool = AtomicBool::new(false);
-                if !WARNED.swap(true, Ordering::Relaxed) {
+                // rate-limited per topic so a hot send-loop can't flood the log.
+                if should_report_endpoint_exhaustion(topic.name()) {
                     tracing::warn!(
                         "FanoutShm topic '{}': all {} publisher endpoint slots are \
                          live — this publisher has NO comms until a slot frees \
@@ -642,9 +641,8 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 id
             }
             None => {
-                // COMM-H1: same as the send path — loud once, never silent.
-                static WARNED: AtomicBool = AtomicBool::new(false);
-                if !WARNED.swap(true, Ordering::Relaxed) {
+                // COMM-H1: same as the send path — loud, rate-limited, never silent.
+                if should_report_endpoint_exhaustion(topic.name()) {
                     tracing::warn!(
                         "FanoutShm topic '{}': all {} subscriber endpoint slots are \
                          live — this subscriber has NO comms until a slot frees \
@@ -2266,6 +2264,41 @@ mod tests {
             assert_eq!(recovered.generation_hi, 0xCAFE_F00D);
             assert_eq!(recovered.offset, 0x0102_0304_0506_0708);
             assert_eq!(recovered.size, 0x0A0B_0C0D_0E0F_1011);
+        }
+    }
+}
+
+/// Whether this topic should report an endpoint-exhaustion event now.
+///
+/// The two call sites each had `static WARNED: AtomicBool` and warned once per
+/// *process*, forever. The intent was not to flood a hot send loop, and the
+/// effect was that the second topic to run out of endpoints — and every one
+/// after it, for the life of the process — lost its comms in complete silence.
+/// On a robot that is a subsystem going quiet hours after an unrelated warning
+/// scrolled past, which is the failure mode the loud warning exists to prevent.
+///
+/// Keyed by topic and rate-limited per topic instead, so a hot loop still emits
+/// once a minute rather than once ever, and a second topic hitting the same
+/// wall is never masked by the first.
+fn should_report_endpoint_exhaustion(topic: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const QUIET: Duration = Duration::from_secs(60);
+    static LAST: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+    let mut guard = match LAST.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let seen = guard.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    match seen.get(topic) {
+        Some(t) if now.duration_since(*t) < QUIET => false,
+        _ => {
+            seen.insert(topic.to_string(), now);
+            true
         }
     }
 }
