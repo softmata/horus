@@ -113,6 +113,40 @@ impl Node for ControllerNode {
     }
 }
 
+/// Run the encoder + controller pair deterministically for 50 ticks and return
+/// every `cmd_vel` command the controller published, as raw f64 bits.
+///
+/// Bits, not floats: determinism means the same value, and `f64` equality would
+/// treat two different NaN payloads as equal while calling `-0.0` and `0.0` the
+/// same. Commands are drained after every tick rather than once at the end — a
+/// topic's ring buffer is bounded, so a single drain at the end would silently
+/// lose the earliest commands and compare only the tail.
+fn run_deterministic_once() -> Result<Vec<u64>> {
+    let mut outputs = Vec::new();
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .deterministic(true); // SimClock, sequential execution
+
+    // Subscribe before the run, and drop whatever the earlier recording session
+    // left on the topic, so run 2 cannot read run 1's residue.
+    let cmd_monitor: Topic<VelocityCommand> = Topic::new("cmd_vel")?;
+    while cmd_monitor.recv().is_some() {}
+
+    scheduler.add(EncoderNode::new()?).order(0).rate(100_u64.hz()).build()?;
+    scheduler.add(ControllerNode::new()?).order(10).rate(100_u64.hz()).build()?;
+
+    for _ in 0..50 {
+        scheduler.tick_once()?;
+        while let Some(cmd) = cmd_monitor.recv() {
+            outputs.push(cmd.linear.to_bits());
+            outputs.push(cmd.angular.to_bits());
+        }
+    }
+
+    Ok(outputs)
+}
+
 // ============================================================================
 // Main — demonstrates recording, analysis, and deterministic replay
 // ============================================================================
@@ -162,49 +196,34 @@ fn main() -> Result<()> {
     hlog!(info, "=== STEP 3: Deterministic replay ===");
     hlog!(info, "Running the same system deterministically twice...");
 
-    // Run 1
-    let mut outputs_1 = Vec::new();
-    {
-        let mut scheduler = Scheduler::new()
-            .tick_rate(100_u64.hz())
-            .deterministic(true); // SimClock, sequential execution
+    // Both runs are compared on the actual controller output, read back off the
+    // topic the controller publishes to.
+    //
+    // This block used to push the literal `50` — the loop bound — into each
+    // vector and then assert the two vectors were equal, which is
+    // `assert_eq!(vec![50], vec![50])`: a tautology that holds no matter what
+    // the two schedulers computed. It also opened a topic named
+    // "cmd_vel_det_1", which nothing publishes to, and never read it. Copying
+    // that shape into your own system gives you a determinism check that passes
+    // on a system that is not deterministic.
+    let outputs_1 = run_deterministic_once()?;
+    let outputs_2 = run_deterministic_once()?;
 
-        let encoder = EncoderNode::new()?;
-        let controller = ControllerNode::new()?;
-        scheduler.add(encoder).order(0).rate(100_u64.hz()).build()?;
-        scheduler.add(controller).order(10).rate(100_u64.hz()).build()?;
-
-        for _ in 0..50 {
-            scheduler.tick_once()?;
-        }
-
-        // Capture output from cmd_vel topic
-        let cmd_topic: Topic<VelocityCommand> = Topic::new("cmd_vel_det_1")?;
-        outputs_1.push(50); // tick count
-    }
-
-    // Run 2 (identical config)
-    let mut outputs_2 = Vec::new();
-    {
-        let mut scheduler = Scheduler::new()
-            .tick_rate(100_u64.hz())
-            .deterministic(true);
-
-        let encoder = EncoderNode::new()?;
-        let controller = ControllerNode::new()?;
-        scheduler.add(encoder).order(0).rate(100_u64.hz()).build()?;
-        scheduler.add(controller).order(10).rate(100_u64.hz()).build()?;
-
-        for _ in 0..50 {
-            scheduler.tick_once()?;
-        }
-
-        outputs_2.push(50);
-    }
-
-    // Both runs should produce identical results
-    assert_eq!(outputs_1, outputs_2, "Deterministic runs must match!");
-    hlog!(info, "Deterministic replay verified: both runs produced identical results");
+    // An empty capture would make the comparison vacuous again, so require that
+    // the controller actually produced commands before believing the match.
+    assert!(
+        !outputs_1.is_empty(),
+        "captured no controller output — the determinism check would be vacuous"
+    );
+    assert_eq!(
+        outputs_1, outputs_2,
+        "Deterministic runs must match! (comparing raw f64 bits of every cmd_vel command)"
+    );
+    hlog!(
+        info,
+        "Deterministic replay verified: {} commands, bit-identical across both runs",
+        outputs_1.len()
+    );
 
     // ================================================================
     // Summary

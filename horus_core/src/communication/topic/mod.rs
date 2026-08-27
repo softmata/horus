@@ -1606,7 +1606,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let expires = entry.lease_expires_ms.load(Ordering::Acquire);
         let now = current_time_ms();
         if expires == 0 || now.saturating_add(timeout / 2) >= expires {
-            entry.refresh_lease(now, timeout);
+            self.refresh_lease();
         }
     }
 
