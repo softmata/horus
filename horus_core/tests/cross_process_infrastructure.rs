@@ -215,8 +215,16 @@ fn cross_process_registry_readable() {
 
     // Parent: create registry, register nodes
     let registry = SchedulerRegistry::open(&sched_name).expect("open registry");
-    let slot0 = registry.register_node("sensor_driver", 0, 100.0, 0);
-    let slot1 = registry.register_node("controller", 1, 1000.0, 0);
+    // `register_node` returns Option: the registry has MAX_REGISTRY_NODES slots
+    // and overflow now yields None rather than silently aliasing the last slot.
+    // Two nodes in a fresh registry always fit, so unwrapping here is the
+    // assertion that they did.
+    let slot0 = registry
+        .register_node("sensor_driver", 0, 100.0, 0)
+        .expect("registry not full");
+    let slot1 = registry
+        .register_node("controller", 1, 1000.0, 0)
+        .expect("registry not full");
 
     // Update some metrics (health, tick_count, error_count, budget_misses, deadline_misses, watchdog_severity, last_tick_ns, avg_tick_ns, max_tick_ns, p99_tick_ns)
     registry.update_node(slot0, 0, 50, 0, 0, 0, 0, 1000, 500, 800, 750);

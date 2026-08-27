@@ -9961,10 +9961,18 @@ fn e2e_registry_write_read_roundtrip() {
     let reg_name = unique("e2e_reg");
     let reg = SchedulerRegistry::open(&reg_name).expect("open registry");
 
-    // Register 3 nodes
-    let idx0 = reg.register_node("motor", 0, 100.0, 0);
-    let idx1 = reg.register_node("sensor", 1, 200.0, 1);
-    let _idx2 = reg.register_node("planner", 5, 10.0, 2);
+    // Register 3 nodes. `register_node` returns Option since overflow past
+    // MAX_REGISTRY_NODES yields None rather than aliasing the last slot; three
+    // nodes in a fresh registry always fit, so unwrapping asserts exactly that.
+    let idx0 = reg
+        .register_node("motor", 0, 100.0, 0)
+        .expect("registry not full");
+    let idx1 = reg
+        .register_node("sensor", 1, 200.0, 1)
+        .expect("registry not full");
+    let _idx2 = reg
+        .register_node("planner", 5, 10.0, 2)
+        .expect("registry not full");
 
     // Update with different metrics
     reg.update_node(idx0, 0, 10000, 0, 0, 0, 0, 800_000, 750_000, 1_500_000, 0);

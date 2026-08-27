@@ -52,7 +52,7 @@ impl LogSummary for crate::types::Tensor {
         format!(
             "Tensor([{}], dtype={:?}, device={}, pool={}/slot={})",
             shape_str.join(", "),
-            self.dtype,
+            self.dtype(),
             self.device(),
             self.pool_id,
             self.slot_id
