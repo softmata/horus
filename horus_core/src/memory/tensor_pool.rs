@@ -2278,6 +2278,23 @@ mod tests {
 
     // ── validate_descriptor tests ──────────────────────────────────────────
 
+    /// Remove any pool file left behind at `id` before creating one.
+    ///
+    /// Tests pin literal pool ids, and a run that panicked (or was killed)
+    /// before its trailing `remove_file` leaves the SHM file behind. That used
+    /// to be harmless because `TensorPool::new` `set_len()`'d whatever it found
+    /// to the caller's own geometry. It no longer does — resizing a pool this
+    /// process did not create is how one process laid its tensor data on top of
+    /// another's slot headers — so an attacher now ADOPTS the geometry it finds.
+    /// A stale file from a differently-configured run therefore silently gives
+    /// the test a pool with the wrong `max_slots`, which is exactly what made
+    /// `test_alloc_with_timeout_zero_expires_immediately` fail against a 16 MB
+    /// leftover while asking for 1 MB. Clean first, so each test creates.
+    fn clear_stale_pool(id: u32) {
+        let path = shm_base_dir().join("tensors").join(format!("tensor_pool_{id}"));
+        std::fs::remove_file(path).ok();
+    }
+
     fn make_test_pool(id: u32) -> TensorPool {
         let config = TensorPoolConfig {
             pool_size: 1024 * 1024,
@@ -2285,6 +2302,7 @@ mod tests {
             slot_alignment: 64,
             allocator: Default::default(),
         };
+        clear_stale_pool(id);
         TensorPool::new(id, config).expect("Failed to create test pool")
     }
 
@@ -3005,6 +3023,7 @@ mod tests {
             slot_alignment: 64,
             allocator: Default::default(),
         };
+        clear_stale_pool(9791);
         let pool = TensorPool::new(9791, config).expect("Failed to create pool");
 
         // Exhaust the pool
