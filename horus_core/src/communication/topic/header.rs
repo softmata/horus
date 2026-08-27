@@ -689,7 +689,6 @@ impl TopicHeader {
         // slot is never reclaimed by anything else — and the reaper skips our
         // own pid deliberately, because it cannot tell a departed thread from a
         // busy one. A foreign live pid is never stolen.
-        let me = std::process::id();
         for (i, p) in self.participants.iter().enumerate() {
             if p.active.load(Ordering::Acquire) != 1 {
                 continue;
@@ -697,7 +696,7 @@ impl TopicHeader {
             if !p.is_lease_expired(now_ms) {
                 continue;
             }
-            if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != me {
+            if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != pid {
                 continue;
             }
             if p.active

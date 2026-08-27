@@ -1842,7 +1842,7 @@ mod tests {
         assert_eq!(recovered.slot_id, 7);
         assert_eq!(recovered.offset, 1024);
         assert_eq!(recovered.size, 5000);
-        assert_eq!(recovered.dtype, crate::types::TensorDtype::U8);
+        assert_eq!(recovered.dtype(), crate::types::TensorDtype::U8);
         assert_eq!(recovered.ndim, 1);
         assert_eq!(recovered.shape[0], 5000);
     }
@@ -2258,7 +2258,7 @@ mod tests {
         );
         let spill = SpillDescriptor::from_tensor(&tensor, 100);
         let recovered = spill.to_tensor();
-        assert_eq!(recovered.dtype, crate::types::TensorDtype::U8);
+        assert_eq!(recovered.dtype(), crate::types::TensorDtype::U8);
         assert_eq!(recovered.ndim, 1);
         // shape[0] == size (the serialized byte count)
         assert_eq!(recovered.shape[0], 100);

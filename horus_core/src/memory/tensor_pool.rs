@@ -4569,7 +4569,10 @@ mod tests {
                 allocator: Default::default(),
             },
         );
-        assert!(same.is_ok(), "an identically configured attach must succeed");
+        assert!(
+            same.is_ok(),
+            "an identically configured attach must succeed"
+        );
 
         drop(same);
         std::fs::remove_file(&creator.shm_path).ok();
@@ -4590,7 +4593,10 @@ mod tests {
         let b = pool
             .alloc(&[64], TensorDtype::U8, Device::cpu())
             .expect("alloc b");
-        assert_ne!(a.offset, b.offset, "the two slots must occupy distinct regions");
+        assert_ne!(
+            a.offset, b.offset,
+            "the two slots must occupy distinct regions"
+        );
 
         let mut forged = a;
         forged.offset = b.offset; // slot a's identity, slot b's bytes

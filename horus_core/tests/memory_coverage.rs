@@ -227,7 +227,11 @@ fn tensor_sanitize_preserves_valid_dtype() {
     // `t.dtype = ...` before the discriminant became a private byte.
     t.set_dtype(TensorDtype::U8);
     t.sanitize_from_shm();
-    assert_eq!(t.dtype(), TensorDtype::U8, "valid dtype should be preserved");
+    assert_eq!(
+        t.dtype(),
+        TensorDtype::U8,
+        "valid dtype should be preserved"
+    );
 }
 
 // ============================================================

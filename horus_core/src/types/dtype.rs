@@ -362,7 +362,11 @@ mod tests {
             (11, TensorDtype::U64),
             (12, TensorDtype::Bool),
         ] {
-            assert_eq!(dtype as u8, expected_byte, "byte repr mismatch for {:?}", dtype);
+            assert_eq!(
+                dtype as u8, expected_byte,
+                "byte repr mismatch for {:?}",
+                dtype
+            );
             assert_eq!(
                 TensorDtype::from_raw(expected_byte),
                 dtype,
