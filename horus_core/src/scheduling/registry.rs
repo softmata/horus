@@ -549,7 +549,9 @@ mod tests {
     fn register_single_node_roundtrip() {
         let name = test_name("single");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let idx = reg.register_node("motor_ctrl", 0, 100.0, 0).expect("registry not full");
+        let idx = reg
+            .register_node("motor_ctrl", 0, 100.0, 0)
+            .expect("registry not full");
         assert_eq!(idx, 0, "first node should get slot 0");
 
         let slots = SchedulerRegistry::read_all_slots(&name).expect("read");
@@ -571,11 +573,21 @@ mod tests {
         let name = test_name("multi");
         let reg = SchedulerRegistry::open(&name).expect("open");
 
-        let idx0 = reg.register_node("motor", 0, 100.0, 0).expect("registry not full");
-        let idx1 = reg.register_node("sensor", 1, 200.0, 1).expect("registry not full");
-        let idx2 = reg.register_node("planner", 5, 10.0, 2).expect("registry not full");
-        let idx3 = reg.register_node("logger", 10, 1.0, 4).expect("registry not full");
-        let idx4 = reg.register_node("telemetry", 20, 0.5, 3).expect("registry not full");
+        let idx0 = reg
+            .register_node("motor", 0, 100.0, 0)
+            .expect("registry not full");
+        let idx1 = reg
+            .register_node("sensor", 1, 200.0, 1)
+            .expect("registry not full");
+        let idx2 = reg
+            .register_node("planner", 5, 10.0, 2)
+            .expect("registry not full");
+        let idx3 = reg
+            .register_node("logger", 10, 1.0, 4)
+            .expect("registry not full");
+        let idx4 = reg
+            .register_node("telemetry", 20, 0.5, 3)
+            .expect("registry not full");
 
         assert_eq!(idx0, 0);
         assert_eq!(idx1, 1);
@@ -601,7 +613,9 @@ mod tests {
     fn update_node_changes_visible() {
         let name = test_name("update");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let idx = reg.register_node("sensor", 1, 200.0, 1).expect("registry not full");
+        let idx = reg
+            .register_node("sensor", 1, 200.0, 1)
+            .expect("registry not full");
 
         reg.update_node(
             idx, 2,         // health: Unhealthy
@@ -633,7 +647,9 @@ mod tests {
     fn update_node_multiple_times() {
         let name = test_name("multi_upd");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let idx = reg.register_node("ctrl", 0, 100.0, 0).expect("registry not full");
+        let idx = reg
+            .register_node("ctrl", 0, 100.0, 0)
+            .expect("registry not full");
 
         for tick in 1..=10u64 {
             reg.update_node(idx, 0, tick * 100, 0, 0, 0, 0, 500, 500, 500, 0);
@@ -684,7 +700,8 @@ mod tests {
     fn remove_deletes_file() {
         let name = test_name("rm");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        reg.register_node("node", 0, 10.0, 0).expect("registry not full");
+        reg.register_node("node", 0, 10.0, 0)
+            .expect("registry not full");
         let path = shm_scheduler_dir().join(&name);
         assert!(path.exists());
 
@@ -758,8 +775,10 @@ mod tests {
         let name = test_name("xproc");
         let reg = SchedulerRegistry::open(&name).expect("open");
 
-        reg.register_node("motor", 0, 100.0, 0).expect("registry not full");
-        reg.register_node("sensor", 1, 200.0, 1).expect("registry not full");
+        reg.register_node("motor", 0, 100.0, 0)
+            .expect("registry not full");
+        reg.register_node("sensor", 1, 200.0, 1)
+            .expect("registry not full");
         reg.update_node(0, 0, 10000, 0, 0, 0, 0, 800_000, 750_000, 1_500_000, 0);
         reg.update_node(1, 1, 20000, 5, 3, 1, 0, 400_000, 380_000, 900_000, 0);
 

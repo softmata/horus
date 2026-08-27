@@ -166,22 +166,25 @@ impl SpillDescriptor {
     // `to_tensor` takes &self because SpillDescriptor is not Copy (contains u64 fields
     // that are best borrowed), and the tensor is reconstructed from multiple fields.
     #[allow(clippy::wrong_self_convention)]
+    #[allow(clippy::field_reassign_with_default)]
     #[inline]
     pub fn to_tensor(&self) -> crate::types::Tensor {
-        let mut shape = [0u64; crate::types::tensor::MAX_TENSOR_DIMS];
-        shape[0] = self.size;
-        crate::types::Tensor {
-            pool_id: self.pool_id,
-            slot_id: self.slot_id,
-            generation: self.generation,
-            generation_hi: self.generation_hi,
-            offset: self.offset,
-            size: self.size,
-            dtype: crate::types::TensorDtype::U8,
-            ndim: 1,
-            shape,
-            ..Default::default()
-        }
+        // Built field-by-field rather than with a struct literal: `Tensor`'s
+        // dtype is a private raw byte (so a hostile wire descriptor cannot
+        // materialise an invalid discriminant), and a functional-update literal
+        // requires every field to be visible. The dtype goes through the
+        // accessor.
+        let mut tensor = crate::types::Tensor::default();
+        tensor.pool_id = self.pool_id;
+        tensor.slot_id = self.slot_id;
+        tensor.generation = self.generation;
+        tensor.generation_hi = self.generation_hi;
+        tensor.offset = self.offset;
+        tensor.size = self.size;
+        tensor.set_dtype(crate::types::TensorDtype::U8);
+        tensor.ndim = 1;
+        tensor.shape[0] = self.size;
+        tensor
     }
 }
 

@@ -108,8 +108,7 @@ impl EventExecutor {
     /// there is a watcher thread PER event node, so a per-thread budget would
     /// scale the worst case with the node count.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
-        let deadline =
-            std::time::Instant::now() + super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD;
+        let deadline = std::time::Instant::now() + super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD;
         let mut nodes = Vec::with_capacity(self.handles.len());
         for handle in self.handles.drain(..) {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -330,8 +329,7 @@ impl Drop for EventExecutor {
         // Bounded here too: an early return or a panic can drop the executor
         // without ever calling `stop()`, and an unbounded join on that path
         // hangs exactly as badly.
-        let deadline =
-            std::time::Instant::now() + super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD;
+        let deadline = std::time::Instant::now() + super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD;
         for handle in self.handles.drain(..) {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             let _ = super::primitives::join_with_timeout(handle, "Event", remaining);

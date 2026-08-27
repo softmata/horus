@@ -492,3 +492,62 @@ fn the_repository_manifest_passes_the_validator_it_ships() {
         );
     }
 }
+
+/// A failed `git clone` must actually stop the install.
+///
+/// The guard used to read `if ! git clone ... 2>&1 | tail -1; then`. install.sh
+/// sets `set -e` but not `set -o pipefail`, so the pipeline reports *tail*'s
+/// status — always 0 — and the failure branch was unreachable. A dead clone
+/// then fell through to `rm -rf "$HORUS_SRC_DIR"`, destroying a working cached
+/// source tree and replacing it with an empty one, while printing
+/// "Installation complete!".
+#[test]
+fn install_sh_tests_the_real_status_of_git_clone() {
+    let text = install_sh();
+    for (n, line) in text.lines().enumerate() {
+        if line.contains("git clone") && line.contains('|') && line.contains("tail") {
+            panic!(
+                "install.sh:{} pipes git clone into tail, so its exit status is \
+                 discarded (no `set -o pipefail`):\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+    }
+
+    // The cache directory is deleted before the fetched tree is moved into it,
+    // so the fetch must be proven complete first.
+    let marker = text
+        .find("horus/Cargo.toml\" ]")
+        .expect("install.sh must validate the fetched tree before caching it");
+    let destructive = text
+        .find("rm -rf \"$HORUS_SRC_DIR\"")
+        .expect("install.sh clears the cache dir before moving the new tree in");
+    assert!(
+        marker < destructive,
+        "install.sh deletes the cached source tree before checking that the \
+         freshly fetched one is usable"
+    );
+}
+
+/// install.sh must not assign to `TMPDIR`.
+///
+/// It did, and then `rm -rf`'d the directory. `TMPDIR` is exported on macOS and
+/// in most CI images, so every child the script spawns afterwards — mktemp,
+/// rustup's installer, cargo, rustc, cc/ld — inherited a scratch directory that
+/// no longer existed, and the build died in the linker with an error that named
+/// no cause the user could act on.
+#[test]
+fn install_sh_does_not_clobber_the_exported_tmpdir() {
+    let text = install_sh();
+    for (n, line) in text.lines().enumerate() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with("TMPDIR=") || code.starts_with("export TMPDIR=") {
+            panic!(
+                "install.sh:{} overwrites the exported POSIX TMPDIR:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+    }
+}

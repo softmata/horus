@@ -4478,6 +4478,148 @@ mod tests {
     }
 
     #[test]
+    fn return_slot_skips_the_scrub_when_the_slot_header_is_out_of_range() {
+        // `slot.offset`/`slot.size` are plain u64s in peer-writable shared memory.
+        // `return_slot` turned them into `data_base + offset` with no bounds check
+        // and handed the result to `backend.zero()`, which *writes* `size` bytes —
+        // an arbitrary-address zero-fill driven by whatever a peer (or a torn
+        // write, or a geometry-mismatched attacher) left in the header. It must
+        // now skip the scrub and still return the slot to the free stack.
+        let pool = make_test_pool(9975);
+        let tensor = pool
+            .alloc(&[32], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        let slot_id = tensor.slot_id;
+
+        {
+            let slot = pool.slot_mut(slot_id);
+            slot.offset = u64::MAX - 4095;
+            slot.size = 4096;
+        }
+
+        pool.release(&tensor); // must not fault, and must not zero-fill out of bounds
+
+        assert_eq!(
+            pool.slot(slot_id).flags.load(Ordering::Acquire),
+            SLOT_FREE,
+            "the slot must still be freed after a rejected scrub"
+        );
+        // The slot is back on the free stack: the pool can hand it out again.
+        let reused = pool
+            .alloc(&[32], TensorDtype::U8, Device::cpu())
+            .expect("slot must be reallocatable after a rejected scrub");
+        pool.release(&reused);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn attaching_with_a_different_geometry_is_rejected() {
+        // Two processes calling TensorPool::new() on the same pool_id with
+        // different max_slots used to produce two *different* layouts of the same
+        // file: the attacher derived data_offset from its own config, so its data
+        // region landed on top of the creator's SlotHeader array and each side
+        // shredded the other's live state. validate_fields() checked only version
+        // and pool_id; it must reject any geometry difference.
+        let creator = make_test_pool(9976); // max_slots 8, pool_size 1 MiB
+        let file_len_before = std::fs::metadata(&creator.shm_path).unwrap().len();
+
+        // Fewer slots than the creator: the file is big enough to map, so the
+        // header is readable and validate_fields() must reject the mismatch.
+        let fewer = TensorPool::new(
+            9976,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots: 4, // creator laid the file out for 8
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        );
+        assert!(
+            fewer.is_err(),
+            "attaching with a different max_slots must be rejected, not silently re-laid-out"
+        );
+
+        // More slots than the creator: this used to `set_len()` the creator's
+        // file — growing a file this process did not create, before any
+        // validation had run. It must fail and leave the file untouched.
+        let more = TensorPool::new(
+            9976,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots: 64,
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        );
+        assert!(more.is_err(), "attaching with more slots must be rejected");
+        assert_eq!(
+            std::fs::metadata(&creator.shm_path).unwrap().len(),
+            file_len_before,
+            "a failed attach must not resize the creator's pool file"
+        );
+
+        // Same geometry still attaches.
+        let same = TensorPool::new(
+            9976,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots: 8,
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        );
+        assert!(same.is_ok(), "an identically configured attach must succeed");
+
+        drop(same);
+        std::fs::remove_file(&creator.shm_path).ok();
+    }
+
+    #[test]
+    fn data_slice_rejects_a_descriptor_pointing_outside_its_own_slot() {
+        // A descriptor carries offset/size over the wire. Nothing compared them
+        // to the slot's own records, so a descriptor with slot 0's live
+        // generation but another region's offset/size handed out a slice
+        // spanning other tensors' buffers — bounded only by the whole data
+        // region. The comparison lived in `validate_descriptor`, which had no
+        // production caller.
+        let pool = make_test_pool(9977);
+        let a = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc a");
+        let b = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc b");
+        assert_ne!(a.offset, b.offset, "the two slots must occupy distinct regions");
+
+        let mut forged = a;
+        forged.offset = b.offset; // slot a's identity, slot b's bytes
+        assert!(
+            pool.data_slice(&forged).is_err(),
+            "a descriptor pointing outside its own slot must be rejected"
+        );
+        assert!(
+            pool.data_slice_mut(&forged).is_err(),
+            "the write path must reject it too"
+        );
+
+        // An oversized length inside the right slot is rejected as well.
+        let mut too_long = a;
+        too_long.size = a.size + 1;
+        assert!(pool.data_slice(&too_long).is_err());
+
+        // A legitimate sub-view of the same slot still works.
+        let sub = a.slice_first_dim(0, 32).expect("sub-view");
+        assert!(
+            pool.data_slice(&sub).is_ok(),
+            "a view contained in the slot's own region must still be readable"
+        );
+
+        pool.release(&a);
+        pool.release(&b);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
     fn alloc_rejects_size_overflowing_alignment() {
         // align_up(u64::MAX, 64) wraps to 0, so alloc would 'succeed' for an
         // impossible u64::MAX-byte allocation (backend.alloc(0) is Ok) and record

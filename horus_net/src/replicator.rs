@@ -225,9 +225,8 @@ impl Replicator {
                 std::io::Error::last_os_error()
             ));
         } else {
-            let notify_fd = unsafe {
-                <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(notify_fd)
-            };
+            let notify_fd =
+                unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(notify_fd) };
             self.registry.set_on_change(move || {
                 let val: u64 = 1;
                 unsafe {

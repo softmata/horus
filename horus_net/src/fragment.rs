@@ -508,7 +508,6 @@ mod tests {
     }
 
     /// Same, with an explicit sender id — the reassembly key includes it.
-    #[allow(clippy::too_many_arguments)]
     fn part_frag_from(
         sender: u16,
         topic: u32,
@@ -585,7 +584,10 @@ mod tests {
         b1.payload = vec![0xB2; 1000];
 
         assert!(reasm.feed(a0).is_none());
-        assert!(reasm.feed(b0).is_none(), "B's fragment 0 is not a duplicate");
+        assert!(
+            reasm.feed(b0).is_none(),
+            "B's fragment 0 is not a duplicate"
+        );
         assert_eq!(reasm.pending_count(), 2, "one buffer per sender");
 
         let msg = reasm.feed(b1).expect("B's message completes on its own");

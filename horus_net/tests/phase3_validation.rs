@@ -211,13 +211,16 @@ fn production_scenario_link_loss_safe_state() {
 
 #[test]
 fn all_optimizers_chain() {
+    // Inverted: this used to expect all four names to install an optimizer.
+    // "delta" is now refused by from_config — it encodes on the send side and
+    // has no decoder, so enabling it silently drops or corrupts replicated data.
     let chain = OptimizerChain::from_config(&[
         "fusion".into(),
         "delta".into(),
         "spatial".into(),
         "predict".into(),
     ]);
-    assert_eq!(chain.len(), 4);
+    assert_eq!(chain.len(), 3, "delta must not be installed");
 }
 
 #[test]
