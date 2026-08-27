@@ -331,8 +331,17 @@ impl Replicator {
             {
                 return;
             }
-            self.peers.update_peer(&ann);
-            self.heartbeat.add_peer(ann.peer_id, ann.source_addr);
+            // Only register a heartbeat emitter for a peer the table actually
+            // accepted. This used to be unconditional, so every announcement
+            // the (capped) peer table refused still created an uncapped
+            // heartbeat entry keyed on the attacker-chosen peer_id — one that
+            // nothing ever removed and that `tick` used to transmit to the
+            // announcement's spoofable source address every 50 ms, forever.
+            // One forged datagram bought permanent outbound traffic aimed
+            // wherever the sender liked.
+            if self.peers.update_peer(&ann) {
+                self.heartbeat.add_peer(ann.peer_id, ann.source_addr);
+            }
             // Record peer discovery to blackbox
             horus_core::scheduling::record_external_event(
                 horus_core::scheduling::BlackBoxEvent::NetPeerDiscovered {
@@ -798,6 +807,14 @@ impl Replicator {
                 self.update_matches();
             }
 
+            // Re-sync heartbeat membership against the peer table every
+            // discovery interval. `remove_peer` above only fires for peers the
+            // peer table reported as newly dead; a peer evicted to make room
+            // for another (peer.rs cap path) is never reported that way, so its
+            // heartbeat entry would otherwise live — and transmit — forever.
+            self.heartbeat
+                .retain_peers(|id| self.peers.get(id).is_some());
+
             if let Some(msg) = check_no_peers_diagnostic(
                 self.peers.alive_count(),
                 self.start_time,
@@ -1151,6 +1168,31 @@ mod tests {
             1,
             "real announcement registers a peer"
         );
+    }
+
+    #[test]
+    fn forged_announcement_flood_cannot_grow_the_heartbeat_table() {
+        // Regression for the UDP-reflector leak: the heartbeat table had no cap
+        // of any kind and was populated unconditionally from every announcement,
+        // including the ones the (capped) peer table refused. A flood of forged
+        // peer ids grew it without bound and made every entry transmit to the
+        // announcement's source address every 50ms, forever.
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        for i in 0..(crate::netfilter::MAX_PEERS * 4) {
+            let mut peer_id = [0u8; 16];
+            peer_id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            let mut buf = [0u8; 4096];
+            let len =
+                crate::discovery::encode_announcement(&peer_id, 9100, &[0u8; 4], &[], &mut buf);
+            rep.process_packet(&buf[..len], from);
+            assert!(
+                rep.heartbeat.peer_count() <= crate::netfilter::MAX_PEERS,
+                "heartbeat table exceeded the peer cap at iteration {i}: {}",
+                rep.heartbeat.peer_count()
+            );
+        }
+        assert!(rep.peers.total_count() <= crate::netfilter::MAX_PEERS);
     }
 
     #[test]

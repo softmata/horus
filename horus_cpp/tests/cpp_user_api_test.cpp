@@ -127,6 +127,36 @@ TEST(UserApi, PerceptionPoolImagePointcloudTensor) {
     EXPECT_GT(pool.stats().allocated, 0u);
 }
 
+// Regression: horus::Tensor's destructor used to call horus_tensor_destroy only.
+// That frees the FFI handle but never returns the pool slot (FfiTensor has no
+// Drop impl), so a node allocating one tensor per tick exhausted the pool after
+// max_slots ticks and then wrote through a null data() pointer. The test above
+// only checks `allocated > 0` while a tensor is alive, so it could not catch it.
+TEST(UserApi, TensorReturnsPoolSlotOnDestruction) {
+    const size_t kMaxSlots = 8;
+    horus::TensorPool pool(9961, 4 * 1024 * 1024, kMaxSlots);
+    ASSERT_TRUE(bool(pool));
+
+    uint64_t shape[] = {1, 3, 32, 32};
+    for (size_t i = 0; i < kMaxSlots * 4; ++i) {
+        horus::Tensor t(pool, shape, 4, horus::Dtype::F32);
+        ASSERT_TRUE(bool(t)) << "pool exhausted at iteration " << i;
+        ASSERT_NE(t.data(), nullptr);
+    }
+    EXPECT_EQ(pool.stats().allocated, 0u);
+
+    // An explicit release() empties the handle, so scope exit must not release
+    // (and must not hand out a pointer into) a slot that has been recycled.
+    {
+        horus::Tensor t(pool, shape, 4, horus::Dtype::F32);
+        ASSERT_TRUE(bool(t));
+        t.release();
+        EXPECT_FALSE(bool(t));
+        EXPECT_EQ(t.data(), nullptr);
+    }
+    EXPECT_EQ(pool.stats().allocated, 0u);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. Runtime Parameters
 // ═══════════════════════════════════════════════════════════════════════════

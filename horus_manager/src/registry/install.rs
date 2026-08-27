@@ -584,14 +584,23 @@ impl RegistryClient {
         // key, never against the installing user's own key.
         if let Some(ref sig_hex) = pkg_signature {
             verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Package")?;
-        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
-            // A publisher key is on file for this package but it arrived
-            // unsigned — that is a downgrade, and worth saying so.
-            log::warn!(
-                "Package {} is NOT signed, but a publisher key is on file for it. \
-                 Its integrity cannot be verified.",
-                package_name
-            );
+        } else if let Some(key_path) = crate::paths::publisher_key_path(package_name, None) {
+            // A publisher key on file is the user's statement that this
+            // package must verify against it. The signature field comes out of
+            // the registry's own response, so treating its absence as a
+            // fallback let the very party signatures defend against strip them
+            // and walk into the success path — the old code only logged a
+            // log::warn!, invisible at the default level. Missing signature
+            // with a key on file is a verification failure, not a downgrade.
+            return Err(anyhow!(
+                "Package {}@{} arrived UNSIGNED, but a publisher key is on file at {}.\n\
+                 Installing that key means this package must verify against it, so an \
+                 unsigned download is a downgrade, not a fallback. Refusing to install.\n\
+                 If the publisher genuinely stopped signing, remove the key explicitly.",
+                package_name,
+                version_str,
+                key_path.display()
+            ));
         }
 
         // Calculate checksum and verify against server
@@ -1084,15 +1093,23 @@ impl RegistryClient {
         // A same-origin checksum a compromised registry also controls is not
         // authentication; a signature the registry cannot forge (it lacks the private
         // key) is. Same policy as source install: a signed binary MUST verify against a
-        // configured public key; an unsigned binary only warns when a key is configured.
+        // configured public key, and an unsigned binary with a key on file is a
+        // verification FAILURE. It used to only log::warn! — invisible at the default
+        // level — which let whoever shaped the response strip the signature field and
+        // reach the success path, on the fast path most installs take.
         if let Some(ref sig_hex) = pkg_signature {
             verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Pre-built binary")?;
-        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
-            log::warn!(
-                "Pre-built binary for {} is NOT signed, but a publisher key is on file for it. \
-                 Its integrity cannot be verified.",
-                package_name
-            );
+        } else if let Some(key_path) = crate::paths::publisher_key_path(package_name, None) {
+            return Err(anyhow!(
+                "Pre-built binary for {}@{} arrived UNSIGNED, but a publisher key is on \
+                 file at {}.\n\
+                 Installing that key means this package must verify against it, so an \
+                 unsigned download is a downgrade, not a fallback. Refusing to install.\n\
+                 If the publisher genuinely stopped signing, remove the key explicitly.",
+                package_name,
+                version_str,
+                key_path.display()
+            ));
         }
 
         // Determine installation directory (same logic as source install)

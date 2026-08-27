@@ -1480,19 +1480,58 @@ mod tests {
         reader.join().unwrap();
     }
 
-    /// Smoke-test that a critical-node deadline miss still triggers emergency
-    /// stop after the RwLock refactor.
+    /// Inverted: this test used to assert that one deadline miss by a node in
+    /// `critical_nodes` latched an emergency stop. `critical_nodes` only means
+    /// "this node has a watchdog" — every RT node lands there as soon as any
+    /// `.watchdog()` is configured — so that made a single tick of jitter
+    /// fatal and overrode the node's own `Miss::Warn` policy. A watchdogged
+    /// node is not a must-never-miss node; escalation is the caller's, via the
+    /// Miss policy, the degradation ladder, or the `max_deadline_misses`
+    /// ceiling.
     #[test]
-    fn test_critical_node_deadline_miss_triggers_emergency_stop() {
+    fn test_critical_node_deadline_miss_does_not_trigger_emergency_stop() {
         let monitor = SafetyMonitor::new(100);
         monitor.add_critical_node("critical".to_string(), 1_u64.secs());
 
         assert!(!monitor.is_emergency_stop());
         monitor.record_deadline_miss("critical");
         assert!(
-            monitor.is_emergency_stop(),
-            "Emergency stop should be set after critical node deadline miss"
+            !monitor.is_emergency_stop(),
+            "A single deadline miss by a watchdogged node must not e-stop the robot"
         );
+    }
+
+    /// Regression for the same defect on the budget path: a watchdogged node
+    /// that overruns its tick budget once — the common case, since
+    /// `NodeRegistration::finalize` derives a budget of 80% of the period for
+    /// every `.rate()` node — must be reported to the caller and must NOT
+    /// escalate on its own. With `BudgetPolicy::Warn` / `Miss::Warn` the
+    /// graduated ladder is what eventually reacts, and only at `warn_after`.
+    #[test]
+    fn test_watchdogged_node_survives_first_budget_overrun() {
+        let monitor = SafetyMonitor::new(100);
+        monitor.add_critical_node("motor".to_string(), 500_u64.ms());
+        monitor.set_tick_budget("motor".to_string(), 800_u64.us());
+
+        // 810µs against an 800µs budget: ordinary RT jitter.
+        let result = monitor.check_tick_budget("motor", 810_u64.us());
+        assert!(result.is_err(), "the overrun must still be reported");
+        assert!(
+            !monitor.is_emergency_stop(),
+            "a single budget overrun must not e-stop the robot"
+        );
+
+        // The ladder stays quiet below warn_after (default 3) and only warns
+        // when it is reached.
+        assert!(matches!(
+            monitor.evaluate_degradation("motor", 1, Some(1000.0)),
+            DegradationAction::None
+        ));
+        assert!(matches!(
+            monitor.evaluate_degradation("motor", 3, Some(1000.0)),
+            DegradationAction::Warn(_)
+        ));
+        assert!(!monitor.is_emergency_stop());
     }
 
     /// check_watchdogs() with 100 watchdogs must complete in < 1μs on average
@@ -2339,16 +2378,23 @@ mod tests {
         assert!(monitor.is_emergency_stop());
     }
 
+    /// Inverted alongside `test_critical_node_deadline_miss_does_not_trigger_emergency_stop`:
+    /// watchdog membership is no longer an escalation trigger, so neither a
+    /// watchdogged nor a plain node e-stops on a single miss. The e-stop now
+    /// comes from the explicitly configured `max_deadline_misses` ceiling.
     #[test]
-    fn test_emergency_stop_from_critical_node_miss() {
-        let monitor = SafetyMonitor::new(100);
+    fn test_deadline_misses_estop_only_at_the_configured_ceiling() {
+        let monitor = SafetyMonitor::new(3);
         monitor.add_critical_node("balance_controller".to_string(), Duration::from_millis(100));
 
-        // Non-critical miss — no estop
         monitor.record_deadline_miss("arm_controller");
         assert!(!monitor.is_emergency_stop());
 
-        // Critical miss — estop
+        // A watchdogged node missing once is no longer fatal either.
+        monitor.record_deadline_miss("balance_controller");
+        assert!(!monitor.is_emergency_stop());
+
+        // Third miss reaches max_deadline_misses = 3 — that is what stops us.
         monitor.record_deadline_miss("balance_controller");
         assert!(monitor.is_emergency_stop());
     }

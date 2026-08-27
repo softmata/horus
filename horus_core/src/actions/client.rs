@@ -245,6 +245,22 @@ where
     }
 }
 
+/// The map entry inside the client exists purely to route status, feedback and
+/// result messages to a handle the caller still holds, so dropping the handle is
+/// the point at which the entry becomes unobservable. Without this, a handle for
+/// a goal that never reaches a terminal status (a server that is down, or one
+/// that silently discards the goal) left an entry in `ActionClientInner::goals`
+/// for the lifetime of the process.
+///
+/// Consequence to be aware of: after the handle is dropped, `goal_status()` and
+/// `active_goals()` on the client no longer report that goal. Keep the handle
+/// alive for as long as you intend to track the goal.
+impl<A: Action> Drop for ClientGoalHandle<A> {
+    fn drop(&mut self) {
+        self.client.forget_goal(self.goal_id);
+    }
+}
+
 impl<A: Action> Debug for ClientGoalHandle<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientGoalHandle")
@@ -411,6 +427,12 @@ where
                 self.handle_result(result_msg);
             }
         }
+
+        // The sweep used to hang off `handle_status_update`, so it only ever ran
+        // when a status message arrived — exactly the case a dead or silent
+        // server never produces. Running it here means every pump collects
+        // stale entries, whether or not the server is answering.
+        self.sweep_stale_terminal_goals();
     }
 
     /// Handle a status update.
@@ -444,7 +466,6 @@ where
         if update.status == GoalStatus::Rejected {
             self.goals.write().remove(&update.goal_id);
         }
-        self.sweep_stale_terminal_goals();
 
         // Call status callback
         if let Some(ref callback) = *self.status_callback.read() {
@@ -514,6 +535,18 @@ where
         let state = Arc::new(RwLock::new(ClientGoalState::new()));
         self.goals.write().insert(goal_id, state.clone());
         state
+    }
+
+    /// Drop a goal's bookkeeping entry.
+    ///
+    /// Called when ownership of the goal is provably abandoned — the blocking
+    /// helpers give up on it, or the caller's handle is dropped. `sweep_*` only
+    /// collects goals that reached a TERMINAL status, so a goal that never got
+    /// an answer at all (no server, or a server that dropped it) used to sit in
+    /// the map for the life of the process, and `ActionClientNode::tick` locked
+    /// and scanned every one of those corpses on every tick.
+    fn forget_goal(&self, goal_id: GoalId) {
+        self.goals.write().remove(&goal_id);
     }
 }
 
@@ -838,8 +871,13 @@ where
             std::thread::sleep(poll_interval);
         }
 
-        // Timed out - cancel the goal
+        // Timed out - cancel the goal.
+        // Also drop its map entry: neither the id nor the state handle escapes
+        // this function, so after `Err(GoalTimeout)` nothing can ever observe
+        // the entry again and leaving it behind is a pure leak — one per call
+        // for a caller polling a server that is down.
         self.inner.cancel_goal(goal_id);
+        self.inner.forget_goal(goal_id);
         Err(ActionError::GoalTimeout)
     }
 
@@ -893,8 +931,13 @@ where
             std::thread::sleep(poll_interval);
         }
 
-        // Timed out - cancel the goal
+        // Timed out - cancel the goal.
+        // Also drop its map entry: neither the id nor the state handle escapes
+        // this function, so after `Err(GoalTimeout)` nothing can ever observe
+        // the entry again and leaving it behind is a pure leak — one per call
+        // for a caller polling a server that is down.
         self.inner.cancel_goal(goal_id);
+        self.inner.forget_goal(goal_id);
         Err(ActionError::GoalTimeout)
     }
 

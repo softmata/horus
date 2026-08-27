@@ -81,7 +81,17 @@ impl PeerTable {
     }
 
     /// Update or insert a peer from a received announcement.
-    pub fn update_peer(&mut self, announcement: &PeerAnnouncement) {
+    ///
+    /// Returns `true` when the announcement actually landed in the table (a
+    /// refresh of a known peer, or a successful insert) and `false` when it was
+    /// refused because the table is full of live peers.
+    ///
+    /// The return value is load-bearing, not informational: callers that build
+    /// further per-peer state from an announcement (the safety heartbeat, which
+    /// then transmits to the announcement's spoofable source address every
+    /// 50 ms) must not create that state for a peer this table refused, or the
+    /// cap here bounds nothing.
+    pub fn update_peer(&mut self, announcement: &PeerAnnouncement) -> bool {
         if let Some(existing) = self.peers.get_mut(&announcement.peer_id) {
             existing.addr = announcement.source_addr;
             existing.data_port = announcement.data_port;
@@ -89,6 +99,7 @@ impl PeerTable {
             existing.last_seen = Instant::now();
             existing.alive = true;
             existing.secret_hash = announcement.secret_hash;
+            return true;
         } else {
             // Announcements are unauthenticated and peer_id is attacker-chosen,
             // so an uncapped table is both a memory DoS and a CPU one: every
@@ -116,7 +127,7 @@ impl PeerTable {
                                 crate::netfilter::MAX_PEERS
                             ));
                         }
-                        return;
+                        return false;
                     }
                 }
             }
@@ -133,6 +144,7 @@ impl PeerTable {
                 },
             );
         }
+        true
     }
 
     /// Check liveness of all peers. Mark dead if stale.

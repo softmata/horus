@@ -8,7 +8,9 @@
 #include "../duration.hpp"
 #include "../error.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <stdexcept>
 #include <string>
 
@@ -253,12 +255,21 @@ inline NodeBuilder& NodeBuilder::shutdown(std::function<void()> callback) {
 // The extern "C" trampoline indexes into this array.
 // Per-node callback registry with trampolines for tick, init, and safe_state.
 namespace detail {
-    static constexpr size_t MAX_NODES = 256;
-    static std::function<void()> g_tick_callbacks[MAX_NODES];
-    static std::function<void()> g_init_callbacks[MAX_NODES];
-    static std::function<void()> g_safe_callbacks[MAX_NODES];
-    static std::function<void()> g_shutdown_callbacks[MAX_NODES];
-    static size_t g_next_slot = 0;
+    // These MUST be `inline` (C++17 inline variables), not `static`. `static` at
+    // namespace scope in a header gives every translation unit its own copy, so
+    // two .cpp files each registering a node both took slot 0 of their private
+    // counter and both handed Rust the same `tick_trampoline_0` — while the
+    // linker kept exactly one body of that inline trampoline, bound to one TU's
+    // array. One node then ran the other's tick body, or never ticked at all.
+    // `inline` collapses the copies into a single definition program-wide and
+    // removes the ODR violation. The counter is atomic because build() may be
+    // called from more than one thread.
+    inline constexpr size_t MAX_NODES = 32;  // must equal the trampoline count below
+    inline std::function<void()> g_tick_callbacks[MAX_NODES];
+    inline std::function<void()> g_init_callbacks[MAX_NODES];
+    inline std::function<void()> g_safe_callbacks[MAX_NODES];
+    inline std::function<void()> g_shutdown_callbacks[MAX_NODES];
+    inline std::atomic<size_t> g_next_slot{0};
 
     // Generate trampolines for tick, init, safe_state, and shutdown
     #define HORUS_TRAMPOLINE_TICK(N) inline void tick_trampoline_##N() { if (g_tick_callbacks[N]) g_tick_callbacks[N](); }
@@ -291,7 +302,7 @@ namespace detail {
             HORUS_TABLE_ENTRY(24), HORUS_TABLE_ENTRY(25), HORUS_TABLE_ENTRY(26), HORUS_TABLE_ENTRY(27),
             HORUS_TABLE_ENTRY(28), HORUS_TABLE_ENTRY(29), HORUS_TABLE_ENTRY(30), HORUS_TABLE_ENTRY(31),
         };
-        return slot < 32 ? table[slot] : nullptr;
+        return slot < MAX_NODES ? table[slot] : nullptr;
     }
     #undef HORUS_TABLE_ENTRY
 
@@ -307,7 +318,7 @@ namespace detail {
             HORUS_TABLE_ENTRY(24), HORUS_TABLE_ENTRY(25), HORUS_TABLE_ENTRY(26), HORUS_TABLE_ENTRY(27),
             HORUS_TABLE_ENTRY(28), HORUS_TABLE_ENTRY(29), HORUS_TABLE_ENTRY(30), HORUS_TABLE_ENTRY(31),
         };
-        return slot < 32 ? table[slot] : nullptr;
+        return slot < MAX_NODES ? table[slot] : nullptr;
     }
     #undef HORUS_TABLE_ENTRY
 
@@ -323,7 +334,7 @@ namespace detail {
             HORUS_TABLE_ENTRY(24), HORUS_TABLE_ENTRY(25), HORUS_TABLE_ENTRY(26), HORUS_TABLE_ENTRY(27),
             HORUS_TABLE_ENTRY(28), HORUS_TABLE_ENTRY(29), HORUS_TABLE_ENTRY(30), HORUS_TABLE_ENTRY(31),
         };
-        return slot < 32 ? table[slot] : nullptr;
+        return slot < MAX_NODES ? table[slot] : nullptr;
     }
     #undef HORUS_TABLE_ENTRY
 
@@ -339,7 +350,7 @@ namespace detail {
             HORUS_TABLE_ENTRY(24), HORUS_TABLE_ENTRY(25), HORUS_TABLE_ENTRY(26), HORUS_TABLE_ENTRY(27),
             HORUS_TABLE_ENTRY(28), HORUS_TABLE_ENTRY(29), HORUS_TABLE_ENTRY(30), HORUS_TABLE_ENTRY(31),
         };
-        return slot < 32 ? table[slot] : nullptr;
+        return slot < MAX_NODES ? table[slot] : nullptr;
     }
     #undef HORUS_TABLE_ENTRY
 
@@ -352,8 +363,11 @@ namespace detail {
 
 inline void NodeBuilder::build() {
     if (tick_fn_ || init_fn_ || safe_state_fn_ || shutdown_fn_) {
-        size_t slot = detail::g_next_slot++;
-        if (slot >= 32) {
+        // fetch_add so two threads cannot take the same slot; give the slot
+        // back on overflow so a failed build does not burn one.
+        size_t slot = detail::g_next_slot.fetch_add(1, std::memory_order_relaxed);
+        if (slot >= detail::MAX_NODES) {
+            detail::g_next_slot.fetch_sub(1, std::memory_order_relaxed);
             throw Error("Too many nodes (max 32 with callbacks)");
         }
 

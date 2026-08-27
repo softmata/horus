@@ -82,29 +82,118 @@ pub fn check_latest_version() -> Result<Option<String>> {
     }
 }
 
-/// Upgrade horus by rebuilding from source.
+/// Upgrade horus by rebuilding from the HORUS source tree.
+///
+/// This used to run `cargo install --path .`, which resolves against the
+/// process's current working directory. `horus self update` is a command
+/// people naturally run from inside a project, so it built and installed
+/// *that* package — running its `build.rs` and proc-macro dependencies as the
+/// user, then dropping its binaries into `~/.cargo/bin`, which is on PATH
+/// ahead of the real CLI — and printed "Upgraded to <version>" either way.
+/// The artifact must come from the resolved HORUS source tree, never from
+/// `std::env::current_dir()`, and the success line must be earned.
 pub(crate) fn upgrade_horus(version: &str) -> Result<()> {
+    // `version` is whatever the registry's JSON said. Since it is about to
+    // reach a process argument and be reported to the user as installed,
+    // require it to be plain semver first: a hostile response cannot then
+    // smuggle a leading `-` through as a cargo flag.
+    semver::Version::parse(version)
+        .with_context(|| format!("registry reported a non-semver version {:?}", version))?;
+
     println!("  Building horus {}...", version.cyan());
 
-    // Try cargo install from source
+    let src_root = crate::commands::run::find_horus_source_dir()
+        .context("cannot locate the HORUS source tree to build from; set HORUS_SOURCE")?;
+    // find_horus_source_dir() returns the workspace root, whose Cargo.toml is a
+    // virtual manifest — `cargo install --path` needs the package directory.
+    let manifest_dir = src_root.join("horus_manager");
+    let manifest = manifest_dir.join("Cargo.toml");
+    let manifest_text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    anyhow::ensure!(
+        manifest_text.contains("name = \"horus_manager\""),
+        "{} is not the horus_manager package; refusing to install from it",
+        manifest.display()
+    );
+
+    let manual_hint = format!(
+        "cargo install --path {} --locked --force",
+        manifest_dir.display()
+    );
+
+    // --locked so the build cannot silently pick up newer transitive deps;
+    // --force because the same version may already be installed.
     let status = std::process::Command::new("cargo")
-        .args(["install", "--path", "."])
+        .current_dir(&manifest_dir)
+        .args(["install", "--path", ".", "--locked", "--force"])
         .status();
 
     match status {
         Ok(s) if s.success() => {
-            println!("  {} Upgraded to {}", "*".green(), version.green());
+            // A cargo exit code of 0 is not proof that the horus on PATH is
+            // the new one, so ask the installed binary what it is rather than
+            // asserting the upgrade happened.
+            match installed_horus_version() {
+                Some(installed) if installed == version => {
+                    println!("  {} Upgraded to {}", "*".green(), version.green());
+                }
+                Some(installed) => {
+                    println!(
+                        "  {} Install completed, but the installed horus reports {} (expected {})",
+                        "!".yellow(),
+                        installed.yellow(),
+                        version.dimmed()
+                    );
+                }
+                None => {
+                    println!(
+                        "  {} Install completed, but the installed horus could not be run to confirm its version",
+                        "!".yellow()
+                    );
+                }
+            }
         }
         _ => {
             println!(
                 "  {} Auto-upgrade failed. Manual upgrade: {}",
                 "!".yellow(),
-                "cargo install --path .".dimmed()
+                manual_hint.dimmed()
             );
         }
     }
 
     Ok(())
+}
+
+/// Ask the `horus` binary in the cargo bin directory — where `cargo install`
+/// just wrote — which version it is. `None` when it cannot be found or run.
+fn installed_horus_version() -> Option<String> {
+    let bin_name = if cfg!(windows) { "horus.exe" } else { "horus" };
+    let bin = cargo_bin_dir()?.join(bin_name);
+    if !bin.exists() {
+        return None;
+    }
+    let output = std::process::Command::new(&bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // clap prints "horus <version>".
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+}
+
+/// The directory `cargo install` writes binaries to: `$CARGO_HOME/bin`,
+/// falling back to `~/.cargo/bin`.
+fn cargo_bin_dir() -> Option<std::path::PathBuf> {
+    match std::env::var("CARGO_HOME") {
+        Ok(home) if !home.is_empty() => Some(std::path::PathBuf::from(home).join("bin")),
+        _ => dirs::home_dir().map(|h| h.join(".cargo").join("bin")),
+    }
 }
 
 /// Check the latest version of a plugin package from the registry API.
@@ -378,48 +467,91 @@ mod tests {
 
     // ── upgrade_horus ───────────────────────────────────────────────────
 
-    #[test]
-    fn upgrade_horus_returns_ok_even_on_failure() {
-        // upgrade_horus always returns Ok even if cargo install fails
-        // (it prints a fallback message instead of erroring)
-        // Run from temp dir where there's no Cargo.toml so cargo install fails fast
+    /// Point HORUS_SOURCE at an isolated tree that carries the marker
+    /// `find_horus_source_dir` looks for but no `horus_manager` package, run
+    /// `f`, and restore the environment. Every upgrade_horus test needs this:
+    /// the build now comes from the resolved source tree, so without it a test
+    /// on a developer machine would resolve the real workspace and start a
+    /// full release build of the CLI.
+    fn with_isolated_horus_source<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        // CWD_LOCK doubles as the serialization point for process-global env.
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-        std::env::set_current_dir(tmp.path()).unwrap();
+        std::fs::create_dir_all(tmp.path().join("horus")).unwrap();
+        std::fs::write(
+            tmp.path().join("horus/Cargo.toml"),
+            "[package]\nname = \"horus\"\n",
+        )
+        .unwrap();
 
-        let result = upgrade_horus("99.99.99");
-        std::env::set_current_dir(original).unwrap();
-
-        result.unwrap();
+        let old_val = std::env::var("HORUS_SOURCE").ok();
+        std::env::set_var("HORUS_SOURCE", tmp.path());
+        let result = f(tmp.path());
+        match old_val {
+            Some(v) => std::env::set_var("HORUS_SOURCE", v),
+            None => std::env::remove_var("HORUS_SOURCE"),
+        }
+        result
     }
 
     #[test]
-    fn upgrade_horus_with_empty_version() {
-        // Run from temp dir so cargo install fails fast instead of building
-        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-        std::env::set_current_dir(tmp.path()).unwrap();
+    fn upgrade_horus_refuses_a_source_tree_without_horus_manager() {
+        // Inverted: this test used to chdir into an empty temp dir and assert
+        // Ok, pinning the old contract that the upgrade builds whatever is in
+        // the current directory. The build now comes from the resolved HORUS
+        // source tree, and a tree with no horus_manager package is an error,
+        // not a silent no-op.
+        let result = with_isolated_horus_source(|_| upgrade_horus("99.99.99"));
+        let err = result.expect_err("no horus_manager package should be fatal");
+        assert!(
+            err.to_string().contains("Cargo.toml"),
+            "error should name the manifest it could not read: {}",
+            err
+        );
+    }
 
+    #[test]
+    fn upgrade_horus_rejects_non_semver_version() {
+        // Regression: `version` comes from registry JSON and is passed to
+        // cargo, so it is validated before anything is executed. The empty
+        // string used to reach the build step and return Ok.
         let result = upgrade_horus("");
-        std::env::set_current_dir(original).unwrap();
+        assert!(result.is_err(), "empty version must be rejected");
 
-        result.unwrap();
+        let result = upgrade_horus("--path");
+        assert!(
+            result.is_err(),
+            "a version that looks like a cargo flag must be rejected",
+        );
     }
 
     #[test]
-    fn upgrade_horus_with_real_looking_version() {
-        // Run from temp dir so cargo install fails fast instead of building
-        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-        std::env::set_current_dir(tmp.path()).unwrap();
+    fn upgrade_horus_does_not_depend_on_the_current_directory() {
+        // Regression for the cwd build: standing in a valid Cargo package must
+        // not make the upgrade build it. With HORUS_SOURCE isolated the call
+        // fails on the missing horus_manager manifest no matter where we
+        // stand, which is exactly the point — cwd is not consulted.
+        let cwd_pkg = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cwd_pkg.path().join("src")).unwrap();
+        std::fs::write(
+            cwd_pkg.path().join("Cargo.toml"),
+            "[package]\nname = \"totally-not-horus\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(cwd_pkg.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        let result = upgrade_horus("0.2.0");
-        std::env::set_current_dir(original).unwrap();
+        let result = with_isolated_horus_source(|_| {
+            let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+            std::env::set_current_dir(cwd_pkg.path()).unwrap();
+            let result = upgrade_horus("0.2.0");
+            std::env::set_current_dir(original).unwrap();
+            result
+        });
 
-        result.unwrap();
+        assert!(
+            result.is_err(),
+            "upgrade must resolve the HORUS source tree, not the cwd package",
+        );
     }
 
     // ── list_installed_plugins ──────────────────────────────────────────
@@ -645,22 +777,17 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_horus_does_not_propagate_command_failure() {
-        // The function catches command failures and prints a message
-        // instead of returning Err. Verify this contract.
-        // Run from a temp dir where there's no Cargo.toml — cargo install --path .
-        // will definitely fail.
-        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-
-        std::env::set_current_dir(tmp.path()).unwrap();
-        let result = upgrade_horus("1.0.0");
-        std::env::set_current_dir(original).unwrap();
-
+    fn upgrade_horus_reports_an_unusable_source_tree() {
+        // Inverted: this used to assert Ok because a failing `cargo install`
+        // is only printed, not propagated. That is still true of the build
+        // step, but the pre-flight checks that replaced the cwd build — semver
+        // validation and locating a real horus_manager manifest — do return
+        // Err, so a source tree that cannot be built from is now reported
+        // rather than swallowed.
+        let result = with_isolated_horus_source(|_| upgrade_horus("1.0.0"));
         assert!(
-            result.is_ok(),
-            "upgrade_horus should return Ok even when cargo install fails",
+            result.is_err(),
+            "an unusable HORUS source tree should be reported, not swallowed",
         );
     }
 

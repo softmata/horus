@@ -79,12 +79,19 @@ public:
         : handle_(horus_tensor_alloc(pool.raw(), shape, ndim, static_cast<uint8_t>(dtype)))
         , pool_raw_(pool.raw()) {}
 
-    ~Tensor() { if (handle_) horus_tensor_destroy(handle_); }
+    // horus_tensor_destroy only frees the FFI handle box; it does NOT touch the
+    // pool refcount, and FfiTensor has no Drop impl. Destroying without first
+    // calling horus_tensor_release therefore leaked the pool slot forever, so a
+    // node allocating one Tensor per tick exhausted the pool after max_slots
+    // ticks and then got null data() pointers. Every path that gives up
+    // ownership of the handle now goes through reset(), which releases the slot
+    // before destroying the handle.
+    ~Tensor() { reset(); }
 
     // Move only
-    Tensor(Tensor&& o) noexcept : handle_(o.handle_), pool_raw_(o.pool_raw_) { o.handle_ = nullptr; }
+    Tensor(Tensor&& o) noexcept : handle_(o.handle_), pool_raw_(o.pool_raw_) { o.handle_ = nullptr; o.pool_raw_ = nullptr; }
     Tensor& operator=(Tensor&& o) noexcept {
-        if (this != &o) { if (handle_) horus_tensor_destroy(handle_); handle_ = o.handle_; pool_raw_ = o.pool_raw_; o.handle_ = nullptr; }
+        if (this != &o) { reset(); handle_ = o.handle_; pool_raw_ = o.pool_raw_; o.handle_ = nullptr; o.pool_raw_ = nullptr; }
         return *this;
     }
     Tensor(const Tensor&) = delete;
@@ -95,11 +102,23 @@ public:
     uint8_t* data() const { return horus_tensor_data_ptr(pool_raw_, handle_); }
     uint64_t nbytes() const { return handle_ ? horus_tensor_nbytes(handle_) : 0; }
 
-    void release() {
-        if (handle_ && pool_raw_) horus_tensor_release(pool_raw_, handle_);
-    }
+    /// Return the slot to the pool early. The Tensor becomes empty; data()
+    /// then returns nullptr instead of a pointer into a recycled slot, and the
+    /// destructor will not release the same slot a second time.
+    void release() { reset(); }
 
 private:
+    // Order matters: horus_tensor_destroy frees the FfiTensor box that
+    // horus_tensor_release reads the slot descriptor from, so release first.
+    void reset() {
+        if (handle_) {
+            if (pool_raw_) horus_tensor_release(pool_raw_, handle_);
+            horus_tensor_destroy(handle_);
+            handle_ = nullptr;
+            pool_raw_ = nullptr;
+        }
+    }
+
     HorusTensor* handle_;
     HorusTensorPool* pool_raw_;
 };

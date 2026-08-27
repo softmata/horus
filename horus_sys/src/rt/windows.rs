@@ -13,7 +13,11 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         preempt_rt: false,
         max_priority: 31, // Windows thread priorities range 0-31
         min_priority: 1,
-        memory_locking: true, // VirtualLock available
+        // `lock_memory()` below pins the working set with
+        // SetProcessWorkingSetSizeEx; nothing in this backend calls VirtualLock,
+        // and the pin needs SeIncreaseWorkingSetPrivilege, so this advertises
+        // only that a mechanism exists — not that it will succeed unelevated.
+        memory_locking: true,
         cpu_affinity: true,
         kernel_version: get_windows_version(),
         cpu_count,
@@ -56,17 +60,26 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Lock memory on Windows via SetProcessWorkingSetSize.
+/// Lock memory on Windows via SetProcessWorkingSetSizeEx.
 ///
 /// Windows has no `mlockall()` equivalent. Instead:
-/// 1. `SetProcessWorkingSetSize` with min=max pins the working set,
-///    preventing the OS from paging out process memory under pressure.
-/// 2. This is the closest Windows equivalent to Linux `mlockall(MCL_CURRENT)`.
+/// 1. `SetProcessWorkingSetSizeEx` with hard min/max limits pins the working
+///    set, preventing the OS from paging out process memory under pressure.
+/// 2. This is the closest Windows equivalent to Linux `mlockall(MCL_CURRENT)`,
+///    though still weaker: it bounds the working set rather than pinning every
+///    page.
 ///
-/// Note: Requires SeIncreaseWorkingSetPrivilege (granted by default to admins).
-/// On non-admin processes, this may fail silently — we log and return Ok.
+/// Requires SeIncreaseWorkingSetPrivilege (granted by default to admins).
+/// Failure returns `Err` rather than `Ok`: the `Result` is the only channel by
+/// which `RtConfig::apply()` learns memory was not locked, and swallowing the
+/// error here made a non-elevated process report `RtApplyResult::FullSuccess`
+/// while its RT nodes still took page-fault stalls. Returning `Err` lets
+/// RtConfig record an honest `RtDegradation::MemoryLockUnavailable`, matching
+/// the macOS stub.
 pub(super) fn lock_memory() -> anyhow::Result<()> {
-    use windows_sys::Win32::System::Memory::SetProcessWorkingSetSizeEx;
+    use windows_sys::Win32::System::Memory::{
+        SetProcessWorkingSetSizeEx, QUOTA_LIMITS_HARDWS_MAX_ENABLE, QUOTA_LIMITS_HARDWS_MIN_ENABLE,
+    };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
     // Get current working set size to compute minimum
@@ -78,25 +91,28 @@ pub(super) fn lock_memory() -> anyhow::Result<()> {
     let min_ws: usize = 256 * 1024 * 1024; // 256 MB
     let max_ws: usize = 512 * 1024 * 1024; // 512 MB
 
+    // Flags 0 requests *soft* limits, which the OS may ignore under pressure —
+    // the opposite of what the previous comment here claimed. MIN_ENABLE |
+    // MAX_ENABLE is what actually enforces the limits as hard.
+    let flags = QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_ENABLE;
+
     // SAFETY: process is a valid pseudo-handle from GetCurrentProcess.
-    // Flags=0 means hard min/max limits (QUOTA_LIMITS_HARDWS_MIN_ENABLE | MAX_ENABLE)
-    let result = unsafe { SetProcessWorkingSetSizeEx(process, min_ws, max_ws, 0) };
+    let result = unsafe { SetProcessWorkingSetSizeEx(process, min_ws, max_ws, flags) };
 
     if result == 0 {
         let err = std::io::Error::last_os_error();
-        log::warn!(
-            "Windows: SetProcessWorkingSetSize failed (non-fatal): {}. \
-             RT nodes may experience occasional page fault jitter. \
-             Run as administrator for guaranteed memory locking.",
+        anyhow::bail!(
+            "SetProcessWorkingSetSizeEx failed: {}. Windows working-set pinning \
+             requires SeIncreaseWorkingSetPrivilege; run elevated for memory locking.",
             err
         );
-    } else {
-        log::debug!(
-            "Windows: Working set pinned to {}-{} MB (memory locked)",
-            min_ws / (1024 * 1024),
-            max_ws / (1024 * 1024)
-        );
     }
+
+    log::debug!(
+        "Windows: Working set pinned to {}-{} MB (hard limits)",
+        min_ws / (1024 * 1024),
+        max_ws / (1024 * 1024)
+    );
 
     Ok(())
 }
