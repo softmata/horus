@@ -288,12 +288,20 @@ struct ActionClientInner<A: Action> {
     /// Active goal handles
     goals: RwLock<HashMap<GoalId, Arc<RwLock<ClientGoalState<A>>>>>,
 
-    /// Communication links
-    goal_link: RwLock<Option<Topic<GoalRequest<A::Goal>>>>,
-    cancel_link: RwLock<Option<Topic<CancelRequest>>>,
-    result_link: RwLock<Option<Topic<ActionResult<A::Result>>>>,
-    feedback_link: RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>,
-    status_link: RwLock<Option<Topic<GoalStatusUpdate>>>,
+    /// Communication links.
+    ///
+    /// `Mutex`, not `RwLock`: `Topic` is `!Sync`, because `send`/`recv` take
+    /// `&self` and mutate unsynchronised per-handle cursor state. An `RwLock`
+    /// read guard hands out concurrent `&Topic`, which is exactly the race —
+    /// and `RwLock<Option<Topic<..>>>` would no longer even be `Sync`, so
+    /// `Arc<ActionClientInner<A>>` would stop being `Send` and this client
+    /// could not be a `Node`. `Mutex<T>: Sync` needs only `T: Send`, and
+    /// exclusive access is what a `Topic` actually requires.
+    goal_link: Mutex<Option<Topic<GoalRequest<A::Goal>>>>,
+    cancel_link: Mutex<Option<Topic<CancelRequest>>>,
+    result_link: Mutex<Option<Topic<ActionResult<A::Result>>>>,
+    feedback_link: Mutex<Option<Topic<ActionFeedback<A::Feedback>>>>,
+    status_link: Mutex<Option<Topic<GoalStatusUpdate>>>,
 
     /// Callbacks
     feedback_callback: RwLock<Option<FeedbackCallback<A>>>,
@@ -336,11 +344,11 @@ where
     fn new() -> Self {
         Self {
             goals: RwLock::new(HashMap::new()),
-            goal_link: RwLock::new(None),
-            cancel_link: RwLock::new(None),
-            result_link: RwLock::new(None),
-            feedback_link: RwLock::new(None),
-            status_link: RwLock::new(None),
+            goal_link: Mutex::new(None),
+            cancel_link: Mutex::new(None),
+            result_link: Mutex::new(None),
+            feedback_link: Mutex::new(None),
+            status_link: Mutex::new(None),
             feedback_callback: RwLock::new(None),
             result_callback: RwLock::new(None),
             status_callback: RwLock::new(None),
@@ -356,23 +364,23 @@ where
         }
 
         // Create links with proper TopicKind for discovery
-        *self.goal_link.write() = Some(Topic::new_with_kind(
+        *self.goal_link.lock() = Some(Topic::new_with_kind(
             A::goal_topic(),
             TopicKind::ActionGoal as u8,
         )?);
-        *self.cancel_link.write() = Some(Topic::new_with_kind(
+        *self.cancel_link.lock() = Some(Topic::new_with_kind(
             A::cancel_topic(),
             TopicKind::ActionCancel as u8,
         )?);
-        *self.result_link.write() = Some(Topic::new_with_kind(
+        *self.result_link.lock() = Some(Topic::new_with_kind(
             A::result_topic(),
             TopicKind::ActionResult as u8,
         )?);
-        *self.feedback_link.write() = Some(Topic::new_with_kind(
+        *self.feedback_link.lock() = Some(Topic::new_with_kind(
             A::feedback_topic(),
             TopicKind::ActionFeedback as u8,
         )?);
-        *self.status_link.write() = Some(Topic::new_with_kind(
+        *self.status_link.lock() = Some(Topic::new_with_kind(
             A::status_topic(),
             TopicKind::ActionStatus as u8,
         )?);
@@ -397,7 +405,7 @@ where
         let request = GoalRequest::with_priority(goal, priority);
         let goal_id = request.goal_id;
 
-        if let Some(ref link) = *self.goal_link.read() {
+        if let Some(ref link) = *self.goal_link.lock() {
             link.send(request);
 
             log::debug!("ActionClient '{}': Sent goal {}", A::name(), goal_id);
@@ -409,7 +417,7 @@ where
 
     /// Send a cancel request.
     fn cancel_goal(&self, goal_id: GoalId) {
-        if let Some(ref link) = *self.cancel_link.read() {
+        if let Some(ref link) = *self.cancel_link.lock() {
             let request = CancelRequest::new(goal_id);
             link.send(request);
             log::debug!("ActionClient '{}': Sent cancel for {}", A::name(), goal_id);
@@ -424,21 +432,21 @@ where
         let _pump = self.pump_lock.lock();
 
         // Process status updates
-        if let Some(ref link) = *self.status_link.read() {
+        if let Some(ref link) = *self.status_link.lock() {
             while let Some(update) = link.recv() {
                 self.handle_status_update(update);
             }
         }
 
         // Process feedback
-        if let Some(ref link) = *self.feedback_link.read() {
+        if let Some(ref link) = *self.feedback_link.lock() {
             while let Some(feedback_msg) = link.recv() {
                 self.handle_feedback(feedback_msg);
             }
         }
 
         // Process results
-        if let Some(ref link) = *self.result_link.read() {
+        if let Some(ref link) = *self.result_link.lock() {
             while let Some(result_msg) = link.recv() {
                 self.handle_result(result_msg);
             }

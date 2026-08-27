@@ -7,7 +7,7 @@
 //! metrics directly.
 
 use crate::memory::platform::shm_scheduler_dir;
-use memmap2::MmapMut;
+use memmap2::MmapRaw;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -135,13 +135,18 @@ pub struct NodeSlotSnapshot {
 /// `write_lock` serializes only the paths that do non-atomic writes
 /// (`init_header`, `register_node`); both run on the main thread at startup.
 ///
-/// `MmapMut` is `Send + Sync`, so keeping it unwrapped preserves this type's
-/// auto traits. Do NOT cache a raw `*mut u8` base pointer in a field — that
-/// would make `SchedulerRegistry` `!Send`/`!Sync`. The base is re-derived per
-/// call instead, which is stable because the region is never remapped or
+/// The mapping is a `MmapRaw`, not a `MmapMut`: `MmapRaw` hands out
+/// `*mut u8` from `&self` with the mapping's own provenance, whereas
+/// `MmapMut` only reaches a mutable pointer through `DerefMut`, i.e. `&mut
+/// self`. Casting `MmapMut::as_ptr()` (a pointer derived from a shared `&[u8]`)
+/// to `*mut` and storing through it is what the previous code did inside the
+/// lock; that is not sound to keep doing once the `&mut` is gone. `MmapRaw` is
+/// `Send + Sync`, so this type's auto traits are preserved; caching a bare
+/// `*mut u8` in a field instead would have made it `!Send`/`!Sync`. The base is
+/// re-derived per call, which is stable because the region is never remapped or
 /// resized after `open()`.
 pub struct SchedulerRegistry {
-    mmap: MmapMut,
+    mmap: MmapRaw,
     write_lock: Mutex<()>,
     path: PathBuf,
 }
@@ -175,14 +180,15 @@ impl SchedulerRegistry {
             file.set_len(REGISTRY_FILE_SIZE as u64)?;
         }
 
-        // SAFETY: file is valid, size set to REGISTRY_FILE_SIZE.
-        let mmap = unsafe {
-            MmapMut::map_mut(&file).map_err(|e| {
-                crate::error::HorusError::Memory(crate::error::MemoryError::MmapFailed {
-                    reason: e.to_string(),
-                })
-            })?
-        };
+        // `MmapRaw::map_raw` is the writable mapping that never materialises a
+        // reference to the region — the right primitive for a shared-memory
+        // area written concurrently by several threads and read by other
+        // processes. It is a safe fn for that reason.
+        let mmap = MmapRaw::map_raw(&file).map_err(|e| {
+            crate::error::HorusError::Memory(crate::error::MemoryError::MmapFailed {
+                reason: e.to_string(),
+            })
+        })?;
 
         let registry = Self {
             mmap,
@@ -200,7 +206,7 @@ impl SchedulerRegistry {
         // Non-atomic writes (version, pid, magic) — serialized against
         // `register_node`. Off the hot path: startup only.
         let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let base = self.mmap.as_ptr() as *mut u8;
+        let base = self.mmap.as_mut_ptr();
         // SAFETY: mmap is at least REGISTRY_FILE_SIZE bytes, HEADER_SIZE=64.
         unsafe {
             // Version first
@@ -230,7 +236,7 @@ impl SchedulerRegistry {
         // non-atomically, and does a load-then-fetch_add on the header count.
         // Startup only, so the lock is off the tick path.
         let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let base = self.mmap.as_ptr() as *mut u8;
+        let base = self.mmap.as_mut_ptr();
 
         // SAFETY: mmap covers REGISTRY_FILE_SIZE bytes.
         let count =
@@ -326,7 +332,7 @@ impl SchedulerRegistry {
         if slot_idx >= MAX_REGISTRY_NODES {
             return;
         }
-        let base = self.mmap.as_ptr() as *mut u8;
+        let base = self.mmap.as_mut_ptr();
         let slot_offset = HEADER_SIZE + slot_idx * SLOT_SIZE;
 
         // SAFETY: slot_idx < MAX, so slot_offset + SLOT_SIZE <= REGISTRY_FILE_SIZE.

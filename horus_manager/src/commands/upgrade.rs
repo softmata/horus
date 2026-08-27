@@ -515,14 +515,9 @@ mod tests {
         // Regression: `version` comes from registry JSON and is passed to
         // cargo, so it is validated before anything is executed. The empty
         // string used to reach the build step and return Ok.
-        let result = upgrade_horus("");
-        assert!(result.is_err(), "empty version must be rejected");
-
-        let result = upgrade_horus("--path");
-        assert!(
-            result.is_err(),
-            "a version that looks like a cargo flag must be rejected",
-        );
+        upgrade_horus("").expect_err("empty version must be rejected");
+        upgrade_horus("--path")
+            .expect_err("a version that looks like a cargo flag must be rejected");
     }
 
     #[test]
@@ -548,10 +543,7 @@ mod tests {
             result
         });
 
-        assert!(
-            result.is_err(),
-            "upgrade must resolve the HORUS source tree, not the cwd package",
-        );
+        result.expect_err("upgrade must resolve the HORUS source tree, not the cwd package");
     }
 
     // ── list_installed_plugins ──────────────────────────────────────────
@@ -784,11 +776,8 @@ mod tests {
         // validation and locating a real horus_manager manifest — do return
         // Err, so a source tree that cannot be built from is now reported
         // rather than swallowed.
-        let result = with_isolated_horus_source(|_| upgrade_horus("1.0.0"));
-        assert!(
-            result.is_err(),
-            "an unusable HORUS source tree should be reported, not swallowed",
-        );
+        with_isolated_horus_source(|_| upgrade_horus("1.0.0"))
+            .expect_err("an unusable HORUS source tree should be reported, not swallowed");
     }
 
     #[test]

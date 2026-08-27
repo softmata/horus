@@ -21,9 +21,10 @@
 //! println!("3 + 4 = {}", response.sum);
 //! ```
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -34,6 +35,27 @@ use crate::error::{HorusResult, RetryConfig};
 use crate::services::types::{
     Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
 };
+
+// ─── Response demultiplexing ──────────────────────────────────────────────────
+
+/// Responses that arrived for a *sibling* pending call, parked by request id
+/// until the handle waiting for them asks.
+///
+/// One `AsyncServiceClient` has one response topic, and `Topic::recv()` is a
+/// destructive, cursor-advancing read. Each handle used to `recv()` for itself
+/// and simply drop anything whose `request_id` did not match — so with two
+/// calls in flight, whichever handle was polled first ate the other's response
+/// and the other timed out on a request the server had answered. This map is
+/// where a response goes instead of on the floor.
+type ResponseInbox<Res> = Arc<Mutex<HashMap<u64, (ServiceResponse<Res>, Instant)>>>;
+
+/// How long an unclaimed parked response is kept before it is evicted.
+///
+/// Bounds the inbox: a handle can be dropped or leaked without ever collecting
+/// its response, and nothing else would ever remove that entry. Comfortably
+/// longer than any sane call timeout, short enough that a long-running node
+/// does not accumulate.
+const INBOX_TTL: Duration = Duration::from_secs(60);
 
 // ─── Request ID generator ─────────────────────────────────────────────────────
 
@@ -245,7 +267,16 @@ where
     Res: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
     request_id: u64,
-    res_topic: Arc<Topic<ServiceResponse<Res>>>,
+    /// This handle's OWN response-topic handle.
+    ///
+    /// Owned, not `Arc`-shared: `Topic` is `!Sync`, and two handles polled from
+    /// two threads through one `Arc` was a data race on the ring's
+    /// unsynchronised local cursor. `Clone` gives each handle independent local
+    /// state, and cross-handle correlation is done by `inbox` below rather than
+    /// by sharing the cursor.
+    res_topic: Topic<ServiceResponse<Res>>,
+    /// Shared with the client and every sibling handle — see [`ResponseInbox`].
+    inbox: ResponseInbox<Res>,
     sent_at: Instant,
     timeout: Duration,
     poll_interval: Duration,
@@ -263,22 +294,48 @@ where
     /// - `Err(Timeout)` — deadline exceeded.
     /// - `Err(ServiceFailed)` — server returned an error.
     pub fn check(&mut self) -> ServiceResult<Option<Res>> {
-        if self.sent_at.elapsed() >= self.timeout {
-            return Err(ServiceError::Timeout);
+        // A poisoned inbox mutex means some other handle panicked while holding
+        // it; the map itself is still a valid `HashMap`, and refusing to answer
+        // a completed call because of that would be worse than the panic.
+        let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+
+        // A sibling handle may already have parked our response.
+        let mut found = inbox.remove(&self.request_id).map(|(r, _)| r);
+        if found.is_none() {
+            // Drain the topic rather than peeking at one message: park every
+            // non-matching response for the handle that is waiting on it. The
+            // old code returned `Ok(None)` on a mismatch, which DISCARDED a
+            // sibling's response — that handle then timed out on a request the
+            // server had answered correctly.
+            while let Some(resp) = self.res_topic.recv() {
+                if resp.request_id == self.request_id {
+                    found = Some(resp);
+                    break;
+                }
+                inbox.insert(resp.request_id, (resp, Instant::now()));
+            }
+        }
+        // Bound memory: drop parked responses nobody ever claimed.
+        inbox.retain(|_, (_, at)| at.elapsed() < INBOX_TTL);
+        drop(inbox);
+
+        if let Some(resp) = found {
+            return if resp.ok {
+                Ok(Some(resp.payload.ok_or(ServiceError::ServiceFailed(
+                    "server returned ok=true but no payload".to_string(),
+                ))?))
+            } else {
+                Err(ServiceError::ServiceFailed(
+                    resp.error.unwrap_or_else(|| "unknown error".to_string()),
+                ))
+            };
         }
 
-        if let Some(resp) = self.res_topic.recv() {
-            if resp.request_id == self.request_id {
-                return if resp.ok {
-                    Ok(Some(resp.payload.ok_or(ServiceError::ServiceFailed(
-                        "server returned ok=true but no payload".to_string(),
-                    ))?))
-                } else {
-                    Err(ServiceError::ServiceFailed(
-                        resp.error.unwrap_or_else(|| "unknown error".to_string()),
-                    ))
-                };
-            }
+        // Deadline is tested AFTER the drain, so a response that landed just
+        // before the deadline is delivered instead of being reported as a
+        // timeout it beat.
+        if self.sent_at.elapsed() >= self.timeout {
+            return Err(ServiceError::Timeout);
         }
         Ok(None)
     }
@@ -299,15 +356,30 @@ where
     }
 }
 
+impl<Res> Drop for PendingServiceCall<Res>
+where
+    Res: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    fn drop(&mut self) {
+        // An abandoned handle must not leave its own parked response sitting in
+        // the shared inbox for the whole TTL.
+        if let Ok(mut inbox) = self.inbox.lock() {
+            inbox.remove(&self.request_id);
+        }
+    }
+}
+
 /// Non-blocking service client.
 ///
 /// Sends a request and returns a [`PendingServiceCall`] handle that can be
 /// checked each tick without blocking the scheduler.
 pub struct AsyncServiceClient<S: Service> {
     req_topic: Topic<ServiceRequest<S::Request>>,
-    res_topic: Arc<Topic<ServiceResponse<S::Response>>>,
+    res_topic: Topic<ServiceResponse<S::Response>>,
     response_topic_name: String,
     poll_interval: Duration,
+    /// Shared with every handle this client hands out — see [`ResponseInbox`].
+    inbox: ResponseInbox<S::Response>,
 }
 
 impl<S: Service> AsyncServiceClient<S>
@@ -326,12 +398,13 @@ where
         // Per-client response topic for async client
         let client_id = next_client_id();
         let response_topic_name = format!("{}.{}", S::response_topic(), client_id);
-        let res_topic = Arc::new(Topic::new(&response_topic_name)?);
+        let res_topic = Topic::new(&response_topic_name)?;
         Ok(Self {
             req_topic,
             res_topic,
             response_topic_name,
             poll_interval,
+            inbox: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -351,7 +424,10 @@ where
         });
         PendingServiceCall {
             request_id,
+            // A fresh `Topic` clone, not a shared `Arc`: each handle gets its
+            // own read cursor and stays `!Sync`-safe on its own thread.
             res_topic: self.res_topic.clone(),
+            inbox: Arc::clone(&self.inbox),
             sent_at: Instant::now(),
             timeout,
             poll_interval: self.poll_interval,
@@ -608,6 +684,67 @@ mod tests {
         let result = pending.check();
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    /// Regression: two calls in flight, answered out of order, polled out of
+    /// order — both must resolve.
+    ///
+    /// `check()` used to `recv()` one message and, if the `request_id` did not
+    /// match, return `Ok(None)` — dropping a sibling's response permanently.
+    /// Polling `b` first (so `b` drains `a`'s response) and then `a` reproduced
+    /// it: `a` timed out on a request that had been answered. The shared inbox
+    /// parks a non-matching response for the handle waiting on it.
+    #[test]
+    fn concurrent_pending_calls_do_not_eat_each_others_responses() {
+        let mut client = AsyncServiceClient::<CliTestService>::new().unwrap();
+        let mut a = client.call_async(CliTestReq { value: 1 }, Duration::from_secs(5));
+        let mut b = client.call_async(CliTestReq { value: 2 }, Duration::from_secs(5));
+
+        // Establish both read cursors before anything is published, which is
+        // what a node polling its handles every tick does.
+        assert!(a.check().unwrap().is_none());
+        assert!(b.check().unwrap().is_none());
+
+        // Stand in for the server: publish both responses on the client's own
+        // response topic, `a`'s first.
+        let responder: Topic<ServiceResponse<CliTestRes>> =
+            Topic::new(&client.response_topic_name).unwrap();
+        responder.send(ServiceResponse::success(
+            a.request_id,
+            CliTestRes { result: 10 },
+        ));
+        responder.send(ServiceResponse::success(
+            b.request_id,
+            CliTestRes { result: 20 },
+        ));
+
+        // Poll in REVERSE submission order, exactly as a node ticking two
+        // handles would be free to do.
+        let mut got_a = None;
+        let mut got_b = None;
+        for _ in 0..200 {
+            if got_b.is_none() {
+                got_b = b.check().expect("b must not error");
+            }
+            if got_a.is_none() {
+                got_a = a.check().expect("a must not error");
+            }
+            if got_a.is_some() && got_b.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(
+            got_a.map(|r| r.result),
+            Some(10),
+            "handle a's response was consumed by a sibling handle"
+        );
+        assert_eq!(
+            got_b.map(|r| r.result),
+            Some(20),
+            "handle b's response was consumed by a sibling handle"
+        );
     }
 
     #[test]

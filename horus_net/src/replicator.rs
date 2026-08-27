@@ -480,6 +480,15 @@ impl Replicator {
     }
 
     /// Process a single incoming data message (shared by regular and reassembled paths).
+    ///
+    /// **Nothing on this path authenticates the sender.** `peer_filter` limits
+    /// *reach*, the import guard limits *which topics*, and the type-hash check
+    /// compares against a hash the sender itself announced — so a host inside the
+    /// allowed peer range can write arbitrary bytes into any importable local SHM
+    /// topic, actuation commands included, and can replay anything it captured.
+    /// Only `_horus.estop` is authenticated (HMAC, `HORUS_ESTOP_KEY`). See the
+    /// crate-level trust model; closing this needs a per-datagram MAC and a
+    /// replay window, which is a wire-format change.
     fn process_incoming_message(
         &mut self,
         header: &PacketHeader,

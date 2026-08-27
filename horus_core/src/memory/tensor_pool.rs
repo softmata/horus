@@ -296,10 +296,7 @@ impl TensorPool {
                 // depth rather than the only barrier.
                 horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
-                let actual_size = file.metadata()?.len();
-                if actual_size < mmap_size as u64 {
-                    file.set_len(mmap_size as u64)?;
-                }
+                Self::await_pool_file_size(&file, mmap_size as u64, pool_id)?;
                 (file, false)
             }
             Err(e) => return Err(e.into()),
@@ -515,10 +512,7 @@ impl TensorPool {
                 // depth rather than the only barrier.
                 horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
-                let actual_size = file.metadata()?.len();
-                if actual_size < mmap_size as u64 {
-                    file.set_len(mmap_size as u64)?;
-                }
+                Self::await_pool_file_size(&file, mmap_size as u64, pool_id)?;
                 (file, false)
             }
             Err(e) => return Err(e.into()),
@@ -551,6 +545,37 @@ impl TensorPool {
         }
 
         Ok(pool)
+    }
+
+    /// Wait for a pool file created by *another* process to reach `needed` bytes.
+    ///
+    /// This replaced an unconditional `file.set_len(mmap_size)` on the attach
+    /// path. Resizing a file this process did not create is never right: the
+    /// creator's slot array does not move when the file grows, so growing it
+    /// only lets the two processes go on disagreeing about where the data
+    /// region starts — and it did so *before* any header validation, letting a
+    /// mismatched attacher mutate the creator's file on its way to an error.
+    ///
+    /// The creator `set_len()`s to its full geometry immediately after winning
+    /// the `create_new` race, so a short file means either that race is still
+    /// in flight (spin briefly, same ~100ms budget as `validate()`) or the
+    /// creator laid the pool out with a different geometry — which
+    /// `validate_fields()` reports precisely once the header is readable.
+    fn await_pool_file_size(file: &File, needed: u64, pool_id: u32) -> HorusResult<()> {
+        for _ in 0..100 {
+            if file.metadata()?.len() >= needed {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Err(HorusError::Config(ConfigError::Other(format!(
+            "Tensor pool {} exists but is only {} bytes, smaller than the {} bytes this \
+             process's configuration requires — the pool was created with a different \
+             geometry (or its creator has not finished initializing it)",
+            pool_id,
+            file.metadata()?.len(),
+            needed
+        ))))
     }
 
     /// Initialize a newly created pool
@@ -651,7 +676,8 @@ impl TensorPool {
         self.validate_fields()
     }
 
-    /// Validate header fields (version, pool_id). Called after magic is confirmed.
+    /// Validate header fields (version, pool_id, geometry). Called after magic
+    /// is confirmed.
     fn validate_fields(&self) -> HorusResult<()> {
         let header = self.header();
 
@@ -666,6 +692,36 @@ impl TensorPool {
             return Err(HorusError::Config(ConfigError::Other(format!(
                 "Tensor pool ID mismatch: expected {}, got {}",
                 self.pool_id, header.pool_id
+            ))));
+        }
+
+        // Geometry must match, and this used to check only version and pool_id.
+        // On the attach path of `new()`, `data_offset` and the whole slot/data
+        // split are derived from *this caller's* `TensorPoolConfig`, never from
+        // the header already in the file. An attacher configured with fewer
+        // slots than the creator computed a smaller `data_offset` and then
+        // bump-allocated tensor bytes directly on top of the creator's
+        // `SlotHeader` array — each side shredding the other's live data, with
+        // the corrupted `offset`/`size` fields then driving out-of-bounds
+        // dereferences. `open()` has always validated geometry (and documents
+        // why); the create-or-attach path must too.
+        if header.max_slots as usize != self.config.max_slots
+            || header.pool_size as usize != self.config.pool_size
+            || header.slot_alignment as usize != self.config.slot_alignment
+        {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Tensor pool {} geometry mismatch: the existing pool has \
+                 (max_slots {}, pool_size {}, slot_alignment {}) but this process requested \
+                 (max_slots {}, pool_size {}, slot_alignment {}). \
+                 Use TensorPool::open() to attach with the pool's own geometry, \
+                 or configure every process identically.",
+                self.pool_id,
+                header.max_slots,
+                header.pool_size,
+                header.slot_alignment,
+                self.config.max_slots,
+                self.config.pool_size,
+                self.config.slot_alignment,
             ))));
         }
 
@@ -1221,6 +1277,26 @@ impl TensorPool {
         self.checked_data_ptr(tensor.offset, tensor.size)
     }
 
+    /// Whether a wire descriptor's byte range lies inside the slot's own region.
+    ///
+    /// `slot.offset`/`slot.size` are what the pool actually handed out; the
+    /// descriptor's pair travelled over a topic and can say anything. A view
+    /// (`Tensor::slice_first_dim`) or a spill (`SpillDescriptor`, whose `size` is
+    /// the serialized length, not the allocation) is a legitimate sub-range, so
+    /// containment — not equality — is the property. Rejects on overflow.
+    #[inline]
+    fn descriptor_within_slot(tensor: &Tensor, slot: &SlotHeader) -> bool {
+        match (
+            tensor.offset.checked_add(tensor.size),
+            slot.offset.checked_add(slot.size),
+        ) {
+            (Some(desc_end), Some(slot_end)) => {
+                tensor.offset >= slot.offset && desc_end <= slot_end
+            }
+            _ => false,
+        }
+    }
+
     /// Bounds-checked `data_base + offset` for the shared mmap data region.
     ///
     /// Returns null if `offset + size` overflows or leaves the data region.
@@ -1294,20 +1370,21 @@ impl TensorPool {
             ));
         }
 
-        // `offset`/`size` arrive over the wire and nothing compared them to what
-        // the pool actually allocated for this slot: a descriptor could name
-        // slot N's live generation while pointing at a different slot's bytes
-        // with an arbitrary length, bounded only by the whole data region. The
-        // check that catches that lived in `validate_descriptor`, which had no
-        // production callers — so it is folded in here, where the slot is
-        // already loaded. `size <= slot.size` rather than `==`: SpillDescriptor
-        // carries a serialized_len that is legitimately smaller than the
-        // allocation, and any range inside the slot is safe.
-        if tensor.offset != slot.offset || tensor.size > slot.size {
+        // `offset`/`size` arrive over the wire, and nothing compared them to what
+        // the pool actually allocated for this slot: a descriptor could name slot
+        // N's live generation while pointing at a *different* slot's bytes with an
+        // arbitrary length, bounded only by the whole data region. The check that
+        // catches that lived in `validate_descriptor`, which had no production
+        // caller at all — so it is folded in here, where the slot is already
+        // loaded. Containment rather than equality: `Tensor::slice_first_dim`
+        // legitimately shifts `offset` and `SpillDescriptor` legitimately carries
+        // a `size` smaller than the allocation, and any range inside this slot's
+        // own region is safe.
+        if !Self::descriptor_within_slot(tensor, slot) {
             return Err(HorusError::Memory(
                 format!(
-                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}), \
-                     slot records (offset {}, size {})",
+                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}) \
+                     is not contained in slot records (offset {}, size {})",
                     tensor.slot_id, tensor.offset, tensor.size, slot.offset, slot.size
                 )
                 .into(),
@@ -1377,20 +1454,21 @@ impl TensorPool {
             ));
         }
 
-        // `offset`/`size` arrive over the wire and nothing compared them to what
-        // the pool actually allocated for this slot: a descriptor could name
-        // slot N's live generation while pointing at a different slot's bytes
-        // with an arbitrary length, bounded only by the whole data region. The
-        // check that catches that lived in `validate_descriptor`, which had no
-        // production callers — so it is folded in here, where the slot is
-        // already loaded. `size <= slot.size` rather than `==`: SpillDescriptor
-        // carries a serialized_len that is legitimately smaller than the
-        // allocation, and any range inside the slot is safe.
-        if tensor.offset != slot.offset || tensor.size > slot.size {
+        // `offset`/`size` arrive over the wire, and nothing compared them to what
+        // the pool actually allocated for this slot: a descriptor could name slot
+        // N's live generation while pointing at a *different* slot's bytes with an
+        // arbitrary length, bounded only by the whole data region. The check that
+        // catches that lived in `validate_descriptor`, which had no production
+        // caller at all — so it is folded in here, where the slot is already
+        // loaded. Containment rather than equality: `Tensor::slice_first_dim`
+        // legitimately shifts `offset` and `SpillDescriptor` legitimately carries
+        // a `size` smaller than the allocation, and any range inside this slot's
+        // own region is safe.
+        if !Self::descriptor_within_slot(tensor, slot) {
             return Err(HorusError::Memory(
                 format!(
-                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}), \
-                     slot records (offset {}, size {})",
+                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}) \
+                     is not contained in slot records (offset {}, size {})",
                     tensor.slot_id, tensor.offset, tensor.size, slot.offset, slot.size
                 )
                 .into(),
@@ -1684,6 +1762,20 @@ impl TensorPool {
             let tagged_head = header.free_stack_head.load(Ordering::Acquire);
             let (generation, slot_id) = unpack_tagged_head(tagged_head);
             if slot_id == INVALID_SLOT {
+                return None;
+            }
+            // The free-stack head lives in peer-writable shared memory, so a
+            // corrupt or torn head hands back an arbitrary index that `slot()`
+            // would turn into an out-of-bounds dereference. Every other reader
+            // of a slot index bounds-checks; this one did not.
+            if !self.slot_id_in_range(slot_id) {
+                log::error!(
+                    "tensor pool {}: free stack head names slot {} but the pool has {} slots \
+                     — refusing to allocate; pool metadata is corrupt",
+                    self.pool_id,
+                    slot_id,
+                    self.config.max_slots
+                );
                 return None;
             }
             let slot = self.slot(slot_id);

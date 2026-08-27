@@ -490,8 +490,7 @@ pub fn encode_fragment(
     fragment: &FragmentHeader,
     buf: &mut [u8],
 ) -> usize {
-    let total =
-        PacketHeader::SIZE + MessageHeader::SIZE + FragmentHeader::SIZE + msg.payload.len();
+    let total = PacketHeader::SIZE + MessageHeader::SIZE + FragmentHeader::SIZE + msg.payload.len();
     if buf.len() < total {
         horus_core::terminal::eprint_line(&format!(
             "[horus_net] Dropping a {}-byte fragment on topic hash {:#x} — it does not fit \
