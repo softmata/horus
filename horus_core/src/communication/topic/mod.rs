@@ -637,7 +637,11 @@ unsafe fn simd_aware_read_uninit<T>(src: *const T) -> mem::MaybeUninit<T> {
             mem::size_of::<T>(),
         );
     } else {
-        std::ptr::copy_nonoverlapping(src as *const u8, msg.as_mut_ptr() as *mut u8, mem::size_of::<T>());
+        std::ptr::copy_nonoverlapping(
+            src as *const u8,
+            msg.as_mut_ptr() as *mut u8,
+            mem::size_of::<T>(),
+        );
     }
     msg
 }

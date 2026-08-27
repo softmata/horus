@@ -669,7 +669,8 @@ impl TopicHeader {
 
         // Pass 1: genuinely free slots only. No counter decrement: nothing was
         // registered here.
-        if let Some(i) = self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
+        if let Some(i) =
+            self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
         {
             return Ok(i);
         }
@@ -677,7 +678,8 @@ impl TopicHeader {
         // Pass 2: nothing free — retire participants whose process is actually
         // gone (expired lease AND dead pid AND local AND not us), then rescan.
         self.reap_dead_participants(now_ms);
-        if let Some(i) = self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
+        if let Some(i) =
+            self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
         {
             return Ok(i);
         }
@@ -2841,7 +2843,9 @@ mod untrusted_header_tests {
     /// Serde slot layout: `[8B ready][8B len][data…]`.
     fn write_serde_header(path: &std::path::Path, slot_size: u32, data_len: u64) {
         let capacity: u32 = 1;
-        let total = TOPIC_HEADER_SIZE + (capacity as usize) * 8 + (capacity as usize) * (slot_size as usize);
+        let total = TOPIC_HEADER_SIZE
+            + (capacity as usize) * 8
+            + (capacity as usize) * (slot_size as usize);
         let mut buf = vec![0u8; total];
         buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
         buf[12..16].copy_from_slice(&8u32.to_ne_bytes()); // type_size (unused on the serde path)

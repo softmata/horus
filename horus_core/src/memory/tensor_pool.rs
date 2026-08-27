@@ -4504,11 +4504,12 @@ mod tests {
             SLOT_FREE,
             "the slot must still be freed after a rejected scrub"
         );
-        // The slot is back on the free stack: the pool can hand it out again.
-        let reused = pool
-            .alloc(&[32], TensorDtype::U8, Device::cpu())
-            .expect("slot must be reallocatable after a rejected scrub");
-        pool.release(&reused);
+        let (_gen, head) =
+            unpack_tagged_head(pool.header().free_stack_head.load(Ordering::Acquire));
+        assert_eq!(
+            head, slot_id,
+            "the slot must still be pushed back onto the free stack"
+        );
         std::fs::remove_file(&pool.shm_path).ok();
     }
 

@@ -12,7 +12,7 @@ cargo run --release -p horus_benchmarks --bin all_paths_latency
 
 | Benchmark                     | What It Measures                                                        |
 |-------------------------------|-------------------------------------------------------------------------|
-| `all_paths_latency`           | All 10 communication backends end-to-end with full statistical analysis |
+| `all_paths_latency`           | Every intra- and cross-process topic path, with full statistical analysis |
 | `cross_process_benchmark`     | True IPC between separate processes                                     |
 | `robotics_messages_benchmark` | Real message types (CmdVel, Imu, LaserScan, JointCommand)               |
 | `determinism_benchmark`       | Jitter and real-time suitability                                        |
@@ -33,48 +33,61 @@ cargo bench -p horus_benchmarks
 
 ## Measured Results
 
-Benchmarked on Intel Core i7-10750H @ 2.60 GHz (6C/12T), `powersave` governor, 100K iterations per scenario.
+> **The previously published tables have been withdrawn, not updated.** They were
+> wrong in two independent ways and no run on this machine can restore them:
+>
+> 1. **They named backends that do not exist.** The intra-process table listed
+>    `DirectChannel`, `SpscIntra`, `SpmcIntra`, `MpscIntra` and `MpmcIntra` under
+>    the heading "heap ring buffers". Those backends were removed. Every topic is
+>    SHM-backed today — `Topic::backend_name()` can only return `PodShm`,
+>    `SpscShm`, `SpmcShm`, `MpscShm`, `FanoutShm` or `Unknown` — so a real
+>    `all_paths_latency` run prints SHM backends for those same scenarios and
+>    nothing named `*Intra` exists to reproduce.
+> 2. **Their tails were truncated by construction.** `Statistics::from_samples`
+>    used to apply a Tukey IQR filter *before* computing `max`, `p99`, `p99.9` and
+>    `p99.99`, so the reported worst case could not exceed `Q3 + 1.5*IQR` however
+>    badly the machine stalled. The "Worst-Case Measured 885 ns" figure behind the
+>    1 kHz / 10 kHz / 100 kHz **PASS** verdicts was a number the code guaranteed
+>    could not be large. The filter now applies only to the mean and the
+>    confidence interval; every order statistic comes from the full sample set.
+>
+> Regenerate with `cargo run --release -p horus_benchmarks --bin all_paths_latency`
+> on a machine configured as described under *For Accurate Results* below, and
+> publish what that run prints — including the scenario, backend and measurement
+> columns it already emits.
 
-### Intra-Process (same process, heap ring buffers)
+### What `all_paths_latency` reports
 
-| Scenario                 | Backend       | p50        | p99    | p99.9  | Max    |
-|--------------------------|---------------|------------|--------|--------|--------|
-| Same thread              | DirectChannel | **23 ns**  | 31 ns  | 32 ns  | 32 ns  |
-| 1 pub, 1 sub             | SpscIntra     | **10 ns**  | 19 ns  | 19 ns  | 19 ns  |
-| 1 pub, N sub             | SpmcIntra     | **3 ns**   | 10 ns  | 11 ns  | 11 ns  |
-| N pub, 1 sub (contended) | MpscIntra     | **110 ns** | 426 ns | 528 ns | 578 ns |
-| N pub, N sub (contended) | MpmcIntra     | **100 ns** | 643 ns | 757 ns | 885 ns |
+The binary prints one row per scenario. The **measurement** column is the part
+the withdrawn tables dropped, and it is not comparable across kinds:
 
-### Cross-Process (shared memory, RDTSC-in-payload one-way)
+| Scenario           | Backend   | Measurement | What the number is                                    |
+|--------------------|-----------|-------------|-------------------------------------------------------|
+| `SameThread`       | `SpscShm` | `send`      | Producer-side `Topic::send()` cost, RDTSC overhead subtracted |
+| `CrossThread-1P1C` | `SpscShm` | `send`      | Producer-side `send()` cost                           |
+| `CrossThread-MP1C` | `MpscShm` | `send`      | Producer-side `send()` cost under producer contention |
+| `CrossThread-1PMC` | `PodShm`  | `send`      | Producer-side `send()` cost                           |
+| `CrossThread-MPMC` | `PodShm`  | `send`      | Producer-side `send()` cost under contention          |
+| `CrossProc-1P1C`   | `SpscShm` | `one-way`   | Pub-to-sub delivery, RDTSC timestamp in payload       |
+| `CrossProc-2P1C`   | `MpscShm` | `one-way`   | Pub-to-sub delivery                                   |
+| `CrossProc-1PMC`   | `SpmcShm` | `one-way`   | Pub-to-sub delivery                                   |
+| `CrossProc-PodShm` | `PodShm`  | `broadcast` | Latest-value broadcast; readers may skip ahead        |
+| `RawAtomic`        | —         | `one-way`   | Raw SHM atomic store/load — the hardware floor        |
 
-| Scenario       | Backend | p50        | p99    | p99.9  | Notes                    |
-|----------------|---------|------------|--------|--------|--------------------------|
-| 1 pub, 2 sub   | SpmcShm | **198 ns** | 298 ns | 308 ns | 31 ns framework overhead |
-| 1 pub, 4 sub   | SpmcShm | **236 ns** | 417 ns | 449 ns | Linear scaling           |
-| 1 pub, 8 sub   | SpmcShm | **276 ns** | 510 ns | 549 ns | 8 consumers              |
-| 4 pub, 4 sub   | PodShm  | **304 ns** | 1.5 us | 6.5 us | Broadcast/latest-value   |
-| Raw SHM atomic | —       | **167 ns** | 319 ns | 363 ns | Hardware floor           |
-
-### Robotics Messages (intra-process)
-
-| Message | Size     | Median    | p99   |
-|---------|----------|-----------|-------|
-| CmdVel  | 16 bytes | **20 ns** | 29 ns |
-
-### Real-Time Suitability
-
-All intra-process and SpmcShm cross-process paths are suitable for:
-
-| Control Rate | Budget   | Worst-Case Measured | Result   |
-|--------------|----------|---------------------|----------|
-| 1 kHz        | < 1 ms   | 885 ns (MpmcIntra)  | **PASS** |
-| 10 kHz       | < 100 us | 885 ns (MpmcIntra)  | **PASS** |
-| 100 kHz      | < 10 us  | 885 ns (MpmcIntra)  | **PASS** |
+A `send`-measurement row is *not* an IPC latency: it is the cost of the store
+into the shared-memory slot, with no consumer in the path. Only the `one-way`
+rows are comparable to a DDS end-to-end latency figure. `all_paths_latency`
+prints `MISMATCH` if the live backend differs from the expected one above, which
+is the check that would have caught the withdrawn table.
 
 ## Methodology
 
 - **Timing**: RDTSC with calibrated overhead subtraction (~29 ns overhead per measurement)
-- **Outlier removal**: Tukey IQR fences (1.5x)
+- **Outlier removal**: Tukey IQR fences (1.5x), applied to the **mean and
+  confidence interval only**. `min`, `max`, the median and every percentile are
+  computed from the full, unfiltered sample set — on a real-time path the tail
+  *is* the measurement, and an OS preemption or page fault is the event that
+  misses the deadline, not an artifact to discard.
 - **Confidence intervals**: Bootstrap 95% CI (10K resamples)
 - **CPU pinning**: Producer and consumer pinned to separate physical cores
 - **Warmup**: 5,000 iterations discarded before measurement

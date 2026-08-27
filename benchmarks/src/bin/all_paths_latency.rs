@@ -1764,8 +1764,11 @@ fn print_detail(r: &ScenarioResult) {
     }
 
     let s = r.stats();
+    // `outliers_removed` no longer means "removed from this table": the tail
+    // statistics below are computed from every sample. Only the mean and the
+    // confidence interval exclude them.
     println!(
-        "  Samples: {} (outliers removed: {})",
+        "  Samples: {} ({} excluded from mean/CI as outliers)",
         s.count, s.outliers_removed
     );
 
