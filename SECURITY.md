@@ -4,11 +4,12 @@
 
 Security updates will be provided for the following versions:
 
-| Version | Supported |
-| ------- | --------- |
-| 0.2.x   | Yes       |
-| 0.1.x   | No        |
-| < 0.1   | No        |
+| Version | Supported                    |
+| ------- | ---------------------------- |
+| 0.4.x   | Yes                          |
+| 0.3.x   | No (tagged, never published) |
+| 0.2.x   | No                           |
+| < 0.2   | No                           |
 
 ## Reporting a Vulnerability
 

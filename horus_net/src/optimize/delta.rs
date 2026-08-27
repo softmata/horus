@@ -17,6 +17,15 @@ use crate::wire::{InMessage, OutMessage};
 const DEFAULT_KEYFRAME_INTERVAL: u32 = 100;
 
 /// Delta optimizer — tracks per-topic state and sends diffs.
+///
+/// **Not usable as a replication optimizer today, and deliberately refused by
+/// [`OptimizerChain::from_config`](crate::optimize::OptimizerChain::from_config).**
+/// Only the encode half exists: `on_outgoing` replaces the payload with a region
+/// stream, `on_incoming` is a no-op, and no wire flag marks a packet as
+/// delta-encoded, so a receiver writes the region stream into SHM as if it were
+/// the message body. Finishing it needs a per-message delta bit on the wire
+/// (`MessageHeader` has no spare room today) plus a per-topic last-received
+/// payload cache applied in `on_incoming`.
 pub struct DeltaOptimizer {
     /// Per topic_hash: last sent payload bytes.
     last_sent: HashMap<u32, Vec<u8>>,
@@ -109,10 +118,11 @@ impl Optimizer for DeltaOptimizer {
     }
 
     fn on_incoming(&mut self, _messages: &mut Vec<InMessage>) {
-        // Delta decoding: receiver would need to track state and reconstruct.
-        // For now, deltas are self-describing (changed byte regions with offsets),
-        // so the receiver can apply them independently.
-        // Full implementation deferred until we have a delta wire format.
+        // Still a no-op — and that is exactly why `from_config` refuses to
+        // install this optimizer. The comment that used to sit here claimed the
+        // receiver "can apply [deltas] independently"; it cannot, because no
+        // code in this crate parses the (offset, length, data) region format and
+        // nothing on the wire says a payload is a delta at all.
     }
 
     fn name(&self) -> &str {

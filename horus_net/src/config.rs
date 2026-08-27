@@ -26,7 +26,10 @@ pub struct NetConfig {
     /// Posture for acting on authenticated remote e-stop packets.
     /// `HORUS_ESTOP_KEY` is mandatory. Env: HORUS_ESTOP_REMOTE = warn | off.
     pub estop_remote: EstopRemotePolicy,
-    /// Enabled optimizers (e.g., ["fusion", "delta"]).
+    /// Enabled optimizers (e.g., ["fusion", "spatial"]).
+    ///
+    /// "delta" is NOT supported: it encodes but never decodes, so enabling it
+    /// corrupts replicated data. `OptimizerChain::from_config` refuses it.
     pub optimizers: Vec<String>,
     /// Per-topic overrides.
     pub topic_overrides: std::collections::HashMap<String, TopicNetConfig>,

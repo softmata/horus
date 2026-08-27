@@ -150,7 +150,10 @@ fn test_shm_open_existing_view_is_writable() {
 fn test_shm_creator_drop_does_not_orphan_other_holders() {
     let name = unique_name("parity_holder_lifetime");
     let creator = shm::ShmRegion::new(&name, 4096).unwrap();
-    assert!(creator.is_owner(), "sanity: first caller creates the region");
+    assert!(
+        creator.is_owner(),
+        "sanity: first caller creates the region"
+    );
 
     let mut joiner = shm::ShmRegion::open_existing(&name, 4096).unwrap();
 

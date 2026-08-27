@@ -1228,10 +1228,27 @@ fn read_slot_inner(
         let data_len =
             unsafe { std::ptr::read_unaligned(mmap.as_ptr().add(len_offset) as *const u64) }
                 as usize;
-        if data_len == 0 || data_offset + data_len > mmap.len() {
+        // `data_offset + data_len` was computed twice, unchecked, on a length
+        // word taken straight out of the file — and release builds do not have
+        // `overflow-checks`. A length near `usize::MAX` wrapped the sum down to
+        // a small number, so `> mmap.len()` passed, and the slice expression
+        // below recomputed the same wrapped value into a range whose start was
+        // past its end: a panic on the reading thread of `horus topic echo` or
+        // horus_net's export reader, plantable by anyone who can write the file.
+        //
+        // `checked_add` removes the wrap. The payload is additionally bounded by
+        // the SLOT, not by the whole mapping, mirroring the writer's own limit
+        // in `write_topic_slot_bytes` — a length larger than a slot can hold was
+        // never written by us. `slot_size >= 16 > SERDE_SLOT_OVERHEAD` is
+        // guaranteed by the `slot_size < 16` check above, so the subtraction
+        // cannot underflow. `get(..)` makes any residual mismatch a `None`
+        // rather than a panic.
+        let max_payload = slot_size - super::shm_layout::SERDE_SLOT_OVERHEAD;
+        let end = data_offset.checked_add(data_len)?;
+        if data_len == 0 || data_len > max_payload || end > mmap.len() {
             return None;
         }
-        mmap[data_offset..data_offset + data_len].to_vec()
+        mmap.get(data_offset..end)?.to_vec()
     };
 
     // Read type_name from header (bytes 216-247, 32 bytes in cache line 4).
@@ -2815,6 +2832,68 @@ mod untrusted_header_tests {
         let path = tmp("bad_cap");
         write_header(&path, 7, 6, 8);
         assert!(read_latest_slot_bytes(&path, 0).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Build a SERDE-layout topic file with one slot whose length word is
+    /// `data_len`.
+    ///
+    /// Serde slot layout: `[8B ready][8B len][data…]`.
+    fn write_serde_header(path: &std::path::Path, slot_size: u32, data_len: u64) {
+        let capacity: u32 = 1;
+        let total = TOPIC_HEADER_SIZE + (capacity as usize) * 8 + (capacity as usize) * (slot_size as usize);
+        let mut buf = vec![0u8; total];
+        buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
+        buf[12..16].copy_from_slice(&8u32.to_ne_bytes()); // type_size (unused on the serde path)
+        buf[20] = POD_NO;
+        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
+        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
+        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
+        buf[76..80].copy_from_slice(&(capacity - 1).to_ne_bytes()); // cap_mask
+        buf[80..84].copy_from_slice(&slot_size.to_ne_bytes());
+        let slot_start = TOPIC_HEADER_SIZE + (capacity as usize) * 8;
+        buf[slot_start + 8..slot_start + 16].copy_from_slice(&data_len.to_ne_bytes());
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&buf).unwrap();
+    }
+
+    /// The serde branch's bounds check was `data_offset + data_len > mmap.len()`,
+    /// computed on a length word taken straight out of the file with no
+    /// `overflow-checks` in release builds. A length near `usize::MAX` wrapped
+    /// the sum to a small number, the guard passed, and the slice expression
+    /// recomputed the same wrapped value — `mmap[656..400]`, a panic on the
+    /// reading thread of `horus topic echo`.
+    #[test]
+    fn a_wrapping_serde_length_is_rejected_not_sliced() {
+        let path = tmp("serde_len_overflow");
+        write_serde_header(&path, 64, 0xFFFF_FFFF_FFFF_FF00);
+        assert!(
+            read_latest_slot_bytes(&path, 0).is_none(),
+            "a length word that overflows the offset arithmetic must be refused"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A length that fits the mapping but not the SLOT is equally impossible to
+    /// have been written (`write_topic_slot_bytes` caps payloads at
+    /// `slot_size - SERDE_SLOT_OVERHEAD`), and would read a neighbouring slot's
+    /// bytes as if they were this message's.
+    #[test]
+    fn a_serde_length_larger_than_the_slot_is_rejected() {
+        let path = tmp("serde_len_over_slot");
+        // slot_size 64 => max payload 48.
+        write_serde_header(&path, 64, 60);
+        assert!(read_latest_slot_bytes(&path, 0).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The bound must not reject a payload that really fits.
+    #[test]
+    fn a_serde_length_within_the_slot_still_reads() {
+        let path = tmp("serde_len_ok");
+        write_serde_header(&path, 64, 4);
+        let slot = read_latest_slot_bytes(&path, 0).expect("a well-formed serde slot must read");
+        assert_eq!(slot.payload.len(), 4);
         let _ = std::fs::remove_file(&path);
     }
 

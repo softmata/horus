@@ -200,41 +200,21 @@ impl DependencyGraph {
     pub fn node_count(&self) -> usize {
         self.dep_counts.len()
     }
-
-    /// Find independent RT chains for RT thread pool sizing.
-    ///
-    /// Returns groups of RT node indices where nodes within each group
-    /// are connected by dependencies. Independent groups can run on
-    /// separate RT threads.
-    pub fn independent_chains(&self, rt_node_indices: &[usize]) -> Vec<Vec<usize>> {
-        if rt_node_indices.is_empty() {
-            return Vec::new();
-        }
-        if rt_node_indices.len() == 1 {
-            return vec![rt_node_indices.to_vec()];
-        }
-
-        // Simple approach: each step's RT nodes form independent groups
-        // within that step. Across steps, connected RT nodes are in the same chain.
-        // For now, each RT node that appears in different steps with a dependency
-        // is in the same chain.
-
-        // Start with each RT node in its own chain
-        let mut chain_id: HashMap<usize, usize> = HashMap::new();
-        for (chain, &node) in rt_node_indices.iter().enumerate() {
-            chain_id.insert(node, chain);
-        }
-
-        // Collect chains
-        let mut chains: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &node in rt_node_indices {
-            let id = chain_id[&node];
-            chains.entry(id).or_default().push(node);
-        }
-
-        chains.into_values().collect()
-    }
 }
+
+// `independent_chains` used to live here. It was deleted rather than fixed: it
+// claimed to return "groups of RT node indices where nodes within each group
+// are connected by dependencies", but its body never read `successors`,
+// `dep_counts` or `steps` — it assigned every index a distinct chain id and
+// immediately regrouped by that id, so it always returned N singleton groups
+// and dependent RT nodes were never co-located or sequenced. Its one caller
+// also queried it against the wrong graph: `self.dependency_graph` is rebuilt
+// from `self.nodes` AFTER the execution-class partition, i.e. from the
+// BestEffort set, so the RT indices passed in referred to a different node
+// list entirely. Making the grouping real needs a graph built over the RT node
+// set, an index-driven redistribution, and a topological sort that survives
+// `RtExecutor::start_pool`'s `sort_by_key(priority)` — a design change, not a
+// patch. RT nodes are now documented as always one-per-thread.
 
 /// Error during dependency graph construction.
 #[derive(Debug, Clone)]
@@ -646,30 +626,9 @@ mod tests {
         assert_eq!(graph.steps()[3].len(), 2);
     }
 
-    #[test]
-    fn independent_chains_single_rt() {
-        let nodes = vec![make_registered(
-            TestNode::new("ics_A").publishes("ics_x"),
-            0,
-        )];
-        let graph = DependencyGraph::build(&nodes).unwrap();
-        let chains = graph.independent_chains(&[0]);
-        assert_eq!(chains.len(), 1);
-        assert_eq!(chains[0], vec![0]);
-    }
-
-    #[test]
-    fn independent_chains_multiple_independent() {
-        let nodes = vec![
-            make_registered(TestNode::new("icm_A").publishes("icm_x"), 0),
-            make_registered(TestNode::new("icm_B").publishes("icm_y"), 0),
-            make_registered(TestNode::new("icm_C").publishes("icm_z"), 0),
-        ];
-        let graph = DependencyGraph::build(&nodes).unwrap();
-        let chains = graph.independent_chains(&[0, 1, 2]);
-        // Each node is its own chain (all independent)
-        assert_eq!(chains.len(), 3);
-    }
+    // The two `independent_chains_*` tests that stood here were removed with the
+    // function: both only ever asserted that it returned one singleton group
+    // per index, which is what it did for EVERY input, dependent or not.
 
     #[test]
     fn large_graph_performance() {

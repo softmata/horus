@@ -7,17 +7,10 @@
 //!
 //! ```rust,no_run
 //! use horus::prelude::*;
-//! use serde::{Serialize, Deserialize};
 //!
-//! // Any Serialize + Deserialize type is a valid Topic message. Ready-made
-//! // robotics messages (CmdVel, Imu, …) live in the `horus_robotics` crate; here
-//! // we define one inline to keep the Quick Start self-contained.
-//! #[derive(Clone, Serialize, Deserialize)]
-//! struct CmdVel { linear: f32, angular: f32 }
-//! impl CmdVel {
-//!     fn new(linear: f32, angular: f32) -> Self { Self { linear, angular } }
-//! }
-//!
+//! // Any Serialize + Deserialize type is a valid Topic message, and the
+//! // ready-made robotics messages (CmdVel, Imu, …) are already in scope:
+//! // `horus::prelude` re-exports `horus_robotics::prelude::*`.
 //! pub struct MyNode {
 //!     cmd_pub: Topic<Twist>,
 //! }
@@ -33,7 +26,6 @@
 //!
 //!     fn tick(&mut self) {
 //!         // Twist is the prelude-native velocity command (linear, angular).
-//!         // Robotics-specific messages like CmdVel now live in `horus_robotics`.
 //!         self.cmd_pub.send(Twist::new_2d(0.5, 0.0));
 //!     }
 //! }
@@ -51,7 +43,7 @@
 //! img.fill(&[0, 0, 255]);           // Blue
 //! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
 //!
-//! // Send — only the 168-byte descriptor goes through the ring buffer
+//! // Send — only the 224-byte descriptor goes through the ring buffer
 //! let topic: Topic<Image> = Topic::new("camera.rgb").unwrap();
 //! topic.send(&img);
 //!
@@ -201,7 +193,13 @@
 //! not Rt. Execution class is determined by the explicit class call, not by `.rate()`.
 //! `.rate()` only auto-derives Rt when no explicit class is set.
 
-/// Framework time API — `horus::now()`, `horus::dt()`, `horus::rng()`, etc.
+/// Framework time API — `horus::time::now()`, `horus::time::dt()`,
+/// `horus::time::rng()`, and friends.
+///
+/// These are module functions: call them through `horus::time::`, or bring them
+/// in with `use horus::time::{now, dt};`. There is no `horus::now()`,
+/// `horus::dt()` or `horus::rng()` — the free functions are not re-exported at
+/// the crate root, and the prelude re-exports only [`TimeStamp`](time::TimeStamp).
 ///
 /// See [`time`] module documentation for details.
 pub mod time;

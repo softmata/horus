@@ -111,13 +111,13 @@ impl DepthImageDescriptor {
     /// Whether depth values are in meters (F32).
     #[inline]
     pub fn is_meters(&self) -> bool {
-        self.inner.dtype == TensorDtype::F32
+        self.inner.dtype() == TensorDtype::F32
     }
 
     /// Whether depth values are in millimeters (U16).
     #[inline]
     pub fn is_millimeters(&self) -> bool {
-        self.inner.dtype == TensorDtype::U16
+        self.inner.dtype() == TensorDtype::U16
     }
 
     /// Depth scale (mm per unit).

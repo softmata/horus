@@ -24,7 +24,7 @@ use super::tensor::Tensor;
 /// inner:        Tensor  (168 bytes)
 /// timestamp_ns: u64          (8 bytes)
 /// step:         u32          (4 bytes)
-/// encoding:     ImageEncoding(1 byte, repr(u8))
+/// encoding_raw: u8           (1 byte, ImageEncoding discriminant)
 /// _pad:         [u8; 3]      (3 bytes)
 /// frame_id:     [u8; 32]     (32 bytes)
 /// _reserved:    [u8; 8]      (8 bytes)
@@ -211,6 +211,36 @@ impl ImageDescriptor {
 mod tests {
     use super::*;
     use crate::types::{Device, TensorDtype};
+
+    /// `ImageDescriptor` used to carry `encoding: ImageEncoding` under
+    /// `unsafe impl Pod`, so a descriptor byte-copied out of peer-writable SHM
+    /// could hold a discriminant no variant names — undefined behaviour the
+    /// moment `bytes_per_pixel()` matched on it.  The byte is private and
+    /// laundered now, and it must still sit at the same wire offset.
+    #[test]
+    fn an_invalid_encoding_byte_is_laundered_and_stays_at_its_wire_offset() {
+        const ENCODING_BYTE_OFFSET: usize = 180; // 168 (Tensor) + 8 (ts) + 4 (step)
+
+        let tensor = Tensor::new(1, 0, 0, 0, &[8, 8, 1], TensorDtype::U8, Device::cpu());
+        let mut img = ImageDescriptor::new(tensor, ImageEncoding::Mono8);
+        assert_eq!(
+            bytemuck::bytes_of(&img)[ENCODING_BYTE_OFFSET],
+            ImageEncoding::Mono8 as u8,
+            "the encoding discriminant must stay at wire offset 180"
+        );
+
+        img.encoding_raw = 0xC0; // names no variant
+        assert_eq!(
+            img.encoding(),
+            ImageEncoding::Rgb8,
+            "a discriminant no variant names must read back as the Rgb8 fallback"
+        );
+        img.sanitize_from_shm();
+        assert_eq!(
+            bytemuck::bytes_of(&img)[ENCODING_BYTE_OFFSET],
+            ImageEncoding::Rgb8 as u8
+        );
+    }
 
     #[test]
     fn test_image_size_and_alignment() {

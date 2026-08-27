@@ -23,10 +23,9 @@ Thank you for your interest in contributing to HORUS! This document provides gui
 
 ### Prerequisites
 
-- Rust 1.92+ (`rustup update`)
+- Rust 1.90+ (`rustup update stable`) — the workspace MSRV in `[workspace.package] rust-version`
 - Python 3.9+ with `pip` (optional)
 - Build tools (GCC/Clang)
-- Node.js 18+ for documentation site
 
 ### Building
 
@@ -38,11 +37,6 @@ cargo build --release
 # First install maturin: cargo install maturin
 cd horus_py
 maturin develop --release
-
-# Build documentation site (optional)
-cd docs-site
-npm install
-npm run dev
 ```
 
 ## Testing
@@ -67,20 +61,28 @@ cargo bench
 
 ### Acceptance Tests
 
-User acceptance tests are in `tests/acceptance/` and document expected behavior.
+Acceptance tests live in two places:
+
+- **Rust acceptance tests** — `horus_core/tests/acceptance_topic.rs` and
+  `horus_core/tests/acceptance_scheduler.rs`, run by `cargo test`.
+- **Cross-platform CLI acceptance tests** — `tests/docker/acceptance_linux_macos.sh`
+  and `tests/docker/acceptance_windows.ps1`, which verify the complete user workflow.
+
+End-to-end QA scenarios (launch files and sample pub/sub projects) live in `tests/qa/`.
 
 **Before submitting a PR:**
-1. Review relevant acceptance test files
+1. Review the relevant acceptance tests
 2. Ensure changes align with documented behavior
 3. Update tests if changing functionality
 4. Add new scenarios for new features
 
 ```bash
-# Review test documentation
-cat tests/acceptance/README.md
+# Run the Rust acceptance tests
+cargo test -p horus_core --test acceptance_topic
+cargo test -p horus_core --test acceptance_scheduler
 
-# Check specific tests
-cat tests/acceptance/horus_manager/01_new_command.md
+# Run the cross-platform CLI acceptance suite
+bash tests/docker/acceptance_linux_macos.sh
 
 # Manually verify scenarios
 horus new test_project
@@ -157,7 +159,7 @@ When reporting bugs, include:
    Optionally run `cargo fmt` (may fail in some cases) and `cargo clippy` (warnings are acceptable).
 
 2. **Check acceptance tests**:
-   - Review relevant test files in `tests/acceptance/`
+   - Review the acceptance tests in `horus_core/tests/acceptance_*.rs` and `tests/docker/`
    - Manually verify key scenarios
    - Update test scenarios if behavior changed
    - Add new scenarios for new features
@@ -174,7 +176,7 @@ When reporting bugs, include:
 
    Detailed explanation of what changed and why.
 
-   - Updated acceptance tests in tests/acceptance/...
+   - Updated acceptance tests in horus_core/tests/acceptance_*.rs
    - Added new scenarios for ...
 
    Fixes #123
@@ -227,14 +229,21 @@ Fixes #123
 ```
 horus/
 ├── horus/              # Unified entry crate (use horus::prelude::*)
-├── horus_core/         # Core framework (Node, Topic, Scheduler, types, memory)
-├── horus_macros/       # Procedural macros (node!, message!)
-├── horus_library/      # Standard message types and TransformFrame transforms
+├── horus_core/         # Core framework (Node, Topic, Scheduler, types, memory, scheduling)
+├── horus_types/        # Universal IPC types (math, diagnostics, time, generic)
+├── horus_macros/       # Procedural macros (node!, LogSummary derive)
+├── horus_sys/          # Platform abstraction layer
+├── horus_net/          # Transparent LAN replication
+├── horus_cpp/          # C++ FFI bridge (CXX, staticlib+cdylib)
+├── horus_cpp_macros/   # C++ binding codegen (#[horus_api] proc macro)
 ├── horus_manager/      # CLI tool (horus command)
 ├── horus_py/           # Python bindings
 ├── benchmarks/         # Performance benchmarks
-└── tests/              # Integration tests
+├── examples/           # Example projects (Rust, C++, Python)
+└── tests/              # Integration and QA tests
 ```
+
+Standard message types come from `horus_types/` and the external `horus-robotics` git dependency; `TransformFrame` comes from the external `horus-tf` git dependency, re-exported through `horus::prelude`.
 
 ## What Not to Do
 

@@ -1217,20 +1217,31 @@ impl TensorPool {
                 .unwrap_or(std::ptr::null_mut());
         }
 
-        // Mmap backends: compute from base + offset. checked_add — a crafted or
-        // corrupt descriptor can carry offset+size that overflows usize, which
-        // would otherwise wrap past the `end > pool_size` gate and yield a valid
-        // base pointer for an out-of-bounds (multi-exabyte) slice.
-        let end = match (tensor.offset as usize).checked_add(tensor.size as usize) {
-            Some(end) => end,
-            None => return std::ptr::null_mut(),
-        };
-        if end > self.config.pool_size {
-            return std::ptr::null_mut();
-        }
+        // Mmap backends: compute from base + offset, bounds-checked.
+        self.checked_data_ptr(tensor.offset, tensor.size)
+    }
 
-        // SAFETY: tensor.offset is within the data region (validated above).
-        unsafe { self.data_base_ptr().add(tensor.offset as usize) as *mut u8 }
+    /// Bounds-checked `data_base + offset` for the shared mmap data region.
+    ///
+    /// Returns null if `offset + size` overflows or leaves the data region.
+    /// `offset`/`size` reach this function straight from a wire descriptor or
+    /// from a `SlotHeader` in peer-writable shared memory, so a crafted or
+    /// torn value can carry an `offset + size` that overflows usize — which
+    /// would otherwise wrap past the `end > pool_size` gate and yield a valid
+    /// base pointer for an out-of-bounds (multi-exabyte) slice.  Every caller
+    /// that turns those two fields into a pointer must come through here; they
+    /// used to be checked in `data_ptr` and *not* in `return_slot`, which is
+    /// how the one site that writes ended up the one site that did not check.
+    #[inline]
+    fn checked_data_ptr(&self, offset: u64, size: u64) -> *mut u8 {
+        let (offset, size) = (offset as usize, size as usize);
+        match offset.checked_add(size) {
+            Some(end) if end <= self.config.pool_size => {
+                // SAFETY: offset..offset+size validated to lie in the data region.
+                unsafe { self.data_base_ptr().add(offset) as *mut u8 }
+            }
+            _ => std::ptr::null_mut(),
+        }
     }
 
     /// Get data as a byte slice.
@@ -1278,6 +1289,26 @@ impl TensorPool {
                     "generation mismatch in data_slice: descriptor generation {} != slot generation {} \
                      (slot was freed and reallocated — stale spill descriptor)",
                     tensor.generation_full(), slot_gen
+                )
+                .into(),
+            ));
+        }
+
+        // `offset`/`size` arrive over the wire and nothing compared them to what
+        // the pool actually allocated for this slot: a descriptor could name
+        // slot N's live generation while pointing at a different slot's bytes
+        // with an arbitrary length, bounded only by the whole data region. The
+        // check that catches that lived in `validate_descriptor`, which had no
+        // production callers — so it is folded in here, where the slot is
+        // already loaded. `size <= slot.size` rather than `==`: SpillDescriptor
+        // carries a serialized_len that is legitimately smaller than the
+        // allocation, and any range inside the slot is safe.
+        if tensor.offset != slot.offset || tensor.size > slot.size {
+            return Err(HorusError::Memory(
+                format!(
+                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}), \
+                     slot records (offset {}, size {})",
+                    tensor.slot_id, tensor.offset, tensor.size, slot.offset, slot.size
                 )
                 .into(),
             ));
@@ -1346,6 +1377,26 @@ impl TensorPool {
             ));
         }
 
+        // `offset`/`size` arrive over the wire and nothing compared them to what
+        // the pool actually allocated for this slot: a descriptor could name
+        // slot N's live generation while pointing at a different slot's bytes
+        // with an arbitrary length, bounded only by the whole data region. The
+        // check that catches that lived in `validate_descriptor`, which had no
+        // production callers — so it is folded in here, where the slot is
+        // already loaded. `size <= slot.size` rather than `==`: SpillDescriptor
+        // carries a serialized_len that is legitimately smaller than the
+        // allocation, and any range inside the slot is safe.
+        if tensor.offset != slot.offset || tensor.size > slot.size {
+            return Err(HorusError::Memory(
+                format!(
+                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}), \
+                     slot records (offset {}, size {})",
+                    tensor.slot_id, tensor.offset, tensor.size, slot.offset, slot.size
+                )
+                .into(),
+            ));
+        }
+
         let size = tensor.size as usize;
         let ptr = self.data_ptr(tensor);
         if ptr.is_null() {
@@ -1380,8 +1431,14 @@ impl TensorPool {
     /// Returns `Ok(())` only when all checks pass.
     /// Returns [`HorusError::InvalidDescriptor`] on any violation.
     ///
-    /// Callers **must** call this before invoking [`data_slice`] or
-    /// [`data_slice_mut`] on descriptors received from untrusted processes.
+    /// Note: [`data_slice`] and [`data_slice_mut`] perform the pool_id, slot
+    /// range, generation and offset/size checks themselves, so they are safe on
+    /// an untrusted descriptor without a prior call here.  This function is not
+    /// a precondition for them — it used to claim it was, while having no
+    /// production caller at all.  What it adds over them is check 3, the
+    /// `SLOT_ALLOCATED` flag: deliberately *not* folded into `data_slice`,
+    /// because reading a freed-but-still-mapped slot is a supported diagnostic
+    /// (see `tests/memory_safety.rs`).
     pub fn validate_descriptor(&self, tensor: &Tensor) -> HorusResult<()> {
         // 1. Pool ID
         if tensor.pool_id != self.pool_id {
@@ -1729,7 +1786,17 @@ impl TensorPool {
         //   1. backend.zero()  — scrub all data bytes
         //   2. slot.flags = SLOT_FREE  — now visible to other allocators
         //   3. push to free stack  — slot becomes allocatable
-        let data_size = slot.size as usize;
+        // `slot.offset` / `slot.size` are non-atomic fields living in the shared
+        // mapping, so a peer process, a torn write from a crashed writer, or a
+        // pool laid out with a different geometry can leave them pointing far
+        // outside this mapping.  Snapshot them once and bounds-check before
+        // handing the pointer to `backend.zero()`, which *writes* `size` bytes:
+        // unchecked, this scrub was an arbitrary-address zero-fill.  Snapshot
+        // rather than re-read, so a concurrent peer cannot change the value
+        // between the check and the use.
+        let slot_offset = slot.offset;
+        let slot_size = slot.size;
+        let data_size = slot_size as usize;
         if data_size > 0 {
             // Get the data pointer — works for both mmap and non-mmap backends
             let data_ptr = if !self.backend.is_shared() {
@@ -1739,7 +1806,19 @@ impl TensorPool {
                     .copied()
                     .unwrap_or(std::ptr::null_mut())
             } else {
-                unsafe { self.data_base_ptr().add(slot.offset as usize) as *mut u8 }
+                let p = self.checked_data_ptr(slot_offset, slot_size);
+                if p.is_null() {
+                    log::error!(
+                        "tensor pool {}: slot {} has out-of-range offset {} size {} \
+                         (pool_size {}) — skipping the free-scrub; pool metadata is corrupt",
+                        self.pool_id,
+                        slot_id,
+                        slot_offset,
+                        data_size,
+                        self.config.pool_size
+                    );
+                }
+                p
             };
 
             if !data_ptr.is_null() {

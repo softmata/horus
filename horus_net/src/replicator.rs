@@ -598,11 +598,20 @@ impl Replicator {
         let payload_len = payload.len();
         encoding::process_incoming_payload(&mut payload, msg.encoding, payload_len);
 
-        // Write to local SHM
+        // Write to local SHM.
+        //
+        // `write` returns false when the payload does not match the topic's
+        // layout (a POD topic whose type_size differs, most often). The result
+        // used to be discarded and `record_topic_recv` bumped unconditionally,
+        // so a subscriber that never saw another sample still looked, in the
+        // metrics, like it was receiving everything.
         if let Some(writer) = self.find_writer_by_hash(msg.topic_hash) {
-            writer.write(&payload, msg.encoding);
-            self.metrics
-                .record_topic_recv(msg.topic_hash, payload.len());
+            if writer.write(&payload, msg.encoding) {
+                self.metrics
+                    .record_topic_recv(msg.topic_hash, payload.len());
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
         }
 
         // Send ACK for latched messages

@@ -291,7 +291,10 @@ pub struct NetworkConfig {
     /// Shared secret for peer filtering (NOT security).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
-    /// Enabled optimizers (e.g., ["fusion", "delta"]).
+    /// Enabled optimizers (e.g., ["fusion", "spatial"]).
+    ///
+    /// "delta" is NOT supported: it encodes but never decodes, so enabling it
+    /// corrupts replicated data. `OptimizerChain::from_config` refuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimize: Option<Vec<String>>,
     /// Safety heartbeat settings.

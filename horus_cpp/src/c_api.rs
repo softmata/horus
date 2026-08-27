@@ -38,8 +38,14 @@ pub unsafe extern "C" fn horus_scheduler_destroy(sched: *mut FfiScheduler) {
 #[no_mangle]
 pub unsafe extern "C" fn horus_scheduler_tick_rate(sched: *mut FfiScheduler, hz: f64) -> i32 {
     match sched.as_mut() {
-        Some(s) if scheduler_ffi::scheduler_tick_rate(s, hz) => 0,
-        _ => -1,
+        Some(s) => {
+            if scheduler_ffi::scheduler_tick_rate(s, hz) {
+                0
+            } else {
+                -1
+            }
+        }
+        None => -1,
     }
 }
 
