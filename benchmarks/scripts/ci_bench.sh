@@ -59,8 +59,15 @@ cargo bench --no-run -p horus_benchmarks 2>&1 | tail -5
 
 # Run criterion benchmarks
 if [ "$QUICK" = true ]; then
+    # Criterion filters on the benchmark *id*, not the source file name. The
+    # filter here read "topic_latency|tensor_alloc_release"; there is no
+    # benchmark id containing "topic_latency" (topic_latency.rs declares the
+    # groups native_shm_latency, latency_comparison and memory_usage), so quick
+    # mode ran only the tensor benchmarks and none of the critical latency paths
+    # it claims to cover — and produced none of the ids check_regression.py
+    # gates on.
     echo "Running critical path benchmarks (quick mode)..."
-    cargo bench -p horus_benchmarks -- "topic_latency|tensor_alloc_release" 2>&1 | tail -20
+    cargo bench -p horus_benchmarks -- "native_shm_latency|latency_comparison|pubsub_roundtrip|tensor_alloc_release" 2>&1 | tail -20
 else
     echo "Running all criterion benchmarks..."
     cargo bench -p horus_benchmarks 2>&1 | tail -40
