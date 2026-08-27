@@ -53,28 +53,50 @@ pub struct Statistics {
 
 impl Statistics {
     /// Compute statistics from raw latency samples
+    ///
+    /// `filter_outliers` affects ONLY the central estimates — mean, standard
+    /// deviation and the bootstrap confidence interval. Every order statistic
+    /// (`min`, `max`, `median`, and all percentiles) is computed from the full,
+    /// unfiltered sample set, and `count` is the full sample count.
+    ///
+    /// This used to filter first and then compute everything from what
+    /// survived. Tukey's fence drops every sample outside
+    /// `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]`, so on a tight latency distribution the
+    /// entire tail was deleted before `max`, `p99`, `p99.9` and `p99.99` were
+    /// taken: the reported worst case could not exceed `Q3 + 1.5*IQR` no matter
+    /// what the machine did, and the published "worst-case measured" figures
+    /// and the CI jitter metric derived from `max - min` were truncated by
+    /// construction. For a real-time middleware the tail is the measurement —
+    /// an OS preemption or a page fault on a control loop is precisely the
+    /// event that misses the deadline, not an artifact to be discarded.
     pub fn from_samples(samples: &[u64], confidence_level: f64, filter_outliers: bool) -> Self {
-        let (filtered, outliers_removed) = if filter_outliers {
-            let f = self::filter_outliers(samples);
-            let removed = samples.len() - f.len();
-            (f, removed)
-        } else {
-            (samples.to_vec(), 0)
-        };
-
-        if filtered.is_empty() {
+        if samples.is_empty() {
             return Self::empty(confidence_level);
         }
 
-        let mut sorted = filtered.clone();
+        let mut sorted = samples.to_vec();
         sorted.sort_unstable();
 
-        let count = sorted.len();
-        let mean_val = mean(&sorted);
-        let median_val = median(&sorted);
-        let std_dev_val = std_dev(&sorted);
+        // Samples used for the central estimates only. If the fence would drop
+        // everything, fall back to the full set rather than reporting nothing.
+        let (central, outliers_removed) = if filter_outliers {
+            let f = self::filter_outliers(samples);
+            if f.is_empty() {
+                (sorted.clone(), 0)
+            } else {
+                let removed = samples.len() - f.len();
+                (f, removed)
+            }
+        } else {
+            (sorted.clone(), 0)
+        };
 
-        let (ci_low, ci_high) = bootstrap_ci(&sorted, confidence_level, 10_000);
+        let count = sorted.len();
+        let mean_val = mean(&central);
+        let median_val = median(&sorted);
+        let std_dev_val = std_dev(&central);
+
+        let (ci_low, ci_high) = bootstrap_ci(&central, confidence_level, 10_000);
 
         Self {
             count,
@@ -240,8 +262,12 @@ pub fn bootstrap_ci(samples: &[u64], confidence_level: f64, iterations: usize) -
 
 /// Filter outliers using Tukey's method (IQR-based)
 ///
-/// Removes samples that fall outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
-/// This is standard practice in benchmarking to remove measurement artifacts.
+/// Removes samples that fall outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR].
+///
+/// Only ever use this for central estimates (mean, std dev, confidence
+/// interval). Applying it before a tail statistic caps `max`/`p99.9` at the
+/// upper fence, which makes a "worst-case latency" number that cannot be
+/// large — see `Statistics::from_samples`.
 pub fn filter_outliers(samples: &[u64]) -> Vec<u64> {
     if samples.len() < 4 {
         return samples.to_vec();
@@ -669,6 +695,54 @@ mod tests {
         assert!(stats.mean > 0.0);
         assert!(stats.p99 >= stats.p95);
         assert!(stats.ci_low <= stats.ci_high);
+    }
+
+    /// Outlier filtering must never truncate the reported tail.
+    ///
+    /// The old implementation filtered first and computed everything from the
+    /// survivors, so `max` and `p99.9` were capped at Tukey's upper fence and a
+    /// genuine 50 us stall in an otherwise tight distribution simply vanished
+    /// from the "worst case" the benchmarks publish. This asserts the opposite
+    /// of what the code used to do: the stall must still be reported, and only
+    /// the mean may be pulled back toward the body of the distribution.
+    #[test]
+    fn outlier_filtering_does_not_truncate_the_tail() {
+        let mut samples: Vec<u64> = (0..999).map(|x| 100 + (x % 5)).collect();
+        samples.push(50_000); // a real preemption, not a measurement artifact
+
+        let filtered = Statistics::from_samples(&samples, 95.0, true);
+        assert_eq!(
+            filtered.max, 50_000,
+            "max must come from the unfiltered samples"
+        );
+        assert_eq!(
+            filtered.count,
+            samples.len(),
+            "count must be the full sample count"
+        );
+        assert_eq!(
+            filtered.outliers_removed, 1,
+            "the stall is still counted as an outlier for the central estimate"
+        );
+
+        // The tail statistics must be identical with and without filtering;
+        // only the mean/CI may differ.
+        let unfiltered = Statistics::from_samples(&samples, 95.0, false);
+        assert_eq!(filtered.max, unfiltered.max);
+        assert_eq!(filtered.p99, unfiltered.p99);
+        assert_eq!(filtered.p999, unfiltered.p999);
+        assert_eq!(filtered.p9999, unfiltered.p9999);
+        assert!(filtered.mean < unfiltered.mean);
+    }
+
+    /// A zero-width Tukey fence must not swallow the distribution.
+    #[test]
+    fn constant_samples_survive_outlier_filtering() {
+        let samples = vec![7_u64; 8]; // IQR is 0, so the fence is a single point
+        let stats = Statistics::from_samples(&samples, 95.0, true);
+        assert_eq!(stats.count, 8);
+        assert_eq!(stats.max, 7);
+        assert_eq!(stats.min, 7);
     }
 
     #[test]

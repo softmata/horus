@@ -888,8 +888,8 @@ impl Replicator {
             // peer table reported as newly dead; a peer evicted to make room
             // for another (peer.rs cap path) is never reported that way, so its
             // heartbeat entry would otherwise live — and transmit — forever.
-            self.heartbeat
-                .retain_peers(|id| self.peers.get(id).is_some());
+            let known = &self.peers;
+            self.heartbeat.retain_peers(|id| known.get(id).is_some());
 
             if let Some(msg) = check_no_peers_diagnostic(
                 self.peers.alive_count(),

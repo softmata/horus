@@ -608,17 +608,38 @@ unsafe fn simd_aware_write<T>(dst: *mut T, msg: T) {
 /// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
 #[inline(always)]
 unsafe fn simd_aware_read<T>(src: *const T) -> T {
+    simd_aware_read_uninit(src).assume_init()
+}
+
+/// Copy a slot's bytes out WITHOUT asserting they are a valid `T`.
+///
+/// The seqlock consumers copy a slot that a lapping producer may be
+/// overwriting, then re-check the slot stamp and discard the copy if it was.
+/// Discarding is not enough on its own: producing a `T` from torn bytes is
+/// already undefined behaviour at the moment of materialisation — a `bool` that
+/// reads back as `0x02`, or an enum discriminant out of range, is UB before any
+/// re-check can reject it (see the `is_pod` heuristic in `communication::pod`,
+/// which admits structs containing such fields). Keeping the copy as
+/// `MaybeUninit<T>` until *after* the stamp re-check closes that window: torn
+/// bytes are dropped as raw memory and never become a `T`.
+///
+/// # Safety
+/// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
+/// The caller must only `assume_init()` the result once it has established that
+/// the bytes are a valid, fully-written `T`.
+#[inline(always)]
+unsafe fn simd_aware_read_uninit<T>(src: *const T) -> mem::MaybeUninit<T> {
+    let mut msg = mem::MaybeUninit::<T>::uninit();
     if mem::size_of::<T>() >= SIMD_COPY_THRESHOLD {
-        let mut msg = mem::MaybeUninit::<T>::uninit();
         simd_copy_from_shm(
             src as *const u8,
             msg.as_mut_ptr() as *mut u8,
             mem::size_of::<T>(),
         );
-        msg.assume_init()
     } else {
-        std::ptr::read(src)
+        std::ptr::copy_nonoverlapping(src as *const u8, msg.as_mut_ptr() as *mut u8, mem::size_of::<T>());
     }
+    msg
 }
 
 // ============================================================================

@@ -78,7 +78,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use super::backend::BackendStorage;
 use super::local_state::EPOCH_CHECK_INTERVAL;
 use super::RingTopic;
-use super::{simd_aware_read, simd_aware_write};
+use super::{simd_aware_read, simd_aware_read_uninit, simd_aware_write};
 use crate::utils::unlikely;
 
 // ============================================================================
@@ -1534,12 +1534,16 @@ pub(super) fn recv_shm_pod_broadcast<
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // The Acquire load above establishes happens-before with the producer's
-    // Release store, so the slot data is fully written. simd_aware_read handles
-    // alignment. The copy may still be torn if a lapping producer overwrites the
-    // slot DURING this read — the re-check below is what detects that.
+    // Release store, so the slot data is fully written. simd_aware_read_uninit
+    // handles alignment. The copy may still be torn if a lapping producer
+    // overwrites the slot DURING this read — the re-check below is what detects
+    // that, which is why the bytes are held as `MaybeUninit<T>` and not yet a
+    // `T`: `is_pod` admits types with validity invariants (a struct with a
+    // `bool` or a fieldless enum field), and materialising torn bytes into such
+    // a `T` would be UB committed before the re-check could reject it.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
-        simd_aware_read(base.add(index))
+        simd_aware_read_uninit(base.add(index))
     };
 
     // Seqlock re-check (Boehm): this Acquire fence pairs with the producer's
@@ -1550,10 +1554,14 @@ pub(super) fn recv_shm_pod_broadcast<
     // existed.
     fence(Ordering::Acquire);
     if ready_ptr.load(Ordering::Relaxed) != v1 {
-        // Overwritten mid-copy. Drop this read; the caller polls again. `msg` is
-        // a POD bitwise copy, so discarding it runs no destructor on torn bytes.
+        // Overwritten mid-copy. Drop the raw bytes; the caller polls again.
+        // `msg` is still `MaybeUninit`, so nothing is dropped and no invalid
+        // value is ever constructed.
         return None;
     }
+    // SAFETY: the stamp re-check above passed, so the slot was NOT overwritten
+    // during the copy and the bytes are the producer's fully-written value.
+    let msg = unsafe { msg.assume_init() };
 
     local.local_tail = tail.wrapping_add(1);
 
