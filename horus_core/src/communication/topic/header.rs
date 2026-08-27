@@ -765,10 +765,11 @@ impl TopicHeader {
     /// * The lease must have expired. This is the cheap filter, and it keeps
     ///   the liveness probe off every participant that is still working.
     /// * The owning process must be gone. An expired lease on its own does NOT
-    ///   mean dead — leases are refreshed once every `LEASE_REFRESH_INTERVAL`
-    ///   (1024) messages, so a healthy 100 Hz subscriber refreshes about every
-    ///   10 s against a 5 s timeout and spends half its life looking expired.
-    ///   Reaping on the lease alone would deregister working subscribers.
+    ///   mean dead. Refresh is clock-gated at half the lease timeout, so a
+    ///   healthy participant stays ahead of expiry whatever its rate — but a
+    ///   participant that is simply idle (no send, no recv) reaches no refresh
+    ///   point at all and will read as expired while perfectly alive. Reaping
+    ///   on the lease alone would deregister it.
     ///
     /// Deliberately NOT reaped: our own process (we cannot tell a departed
     /// thread from a busy one, and `Drop` is the right place for that), and
@@ -2499,17 +2500,29 @@ mod tests {
             .store(1, Ordering::Relaxed); // expired long ago
         h.publisher_count.store(1, Ordering::Relaxed);
 
-        // Register from current thread — should evict the expired slot
+        // INVERTED. This used to assert the new registration took slot 0 — that
+        // an expired lease alone was licence to evict. It is not: a lease is
+        // refreshed by traffic, so a live-but-idle participant, or one whose
+        // refresh point has simply not come round, reads as expired while
+        // perfectly alive. Evicting it deregistered working publishers and
+        // subscribers, which is how `sub_count()` fell to zero under a live
+        // subscriber. Registration now takes a genuinely FREE slot first and
+        // leaves the expired entry alone; an expired slot is considered only
+        // when no free one remains, and then only if its owner is really gone.
         let slot = h.register_producer().unwrap();
-        assert_eq!(slot, 0, "Should reclaim expired slot 0");
-        assert_eq!(
-            h.pub_count(),
-            1,
-            "Old pub decremented, new pub incremented → still 1"
+        assert_ne!(
+            slot, 0,
+            "must not evict an expired slot while others are free"
         );
         assert_eq!(
             h.participants[0].pid.load(Ordering::Relaxed),
-            std::process::id()
+            99999,
+            "the expired participant must be left untouched"
+        );
+        assert_eq!(
+            h.participants[slot].pid.load(Ordering::Relaxed),
+            std::process::id(),
+            "the new producer owns the slot it actually claimed"
         );
     }
 

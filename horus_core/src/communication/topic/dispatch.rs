@@ -328,8 +328,8 @@ macro_rules! epoch_guard_recv {
 ///
 /// The refresh itself is decided by wall clock inside `refresh_lease_if_due`;
 /// this counter only keeps the clock read off the per-message hot path. It is
-/// deliberately far smaller than `LEASE_REFRESH_INTERVAL`: the old code
-/// refreshed strictly every 1024 messages, so liveness depended on throughput
+/// deliberately far smaller than the 1024-message interval it replaces: the old
+/// code refreshed strictly every 1024 messages, so liveness depended on throughput
 /// and a slow-but-healthy participant looked expired most of the time. At 64,
 /// a 100 Hz participant reaches the clock check about twice a second against a
 /// 5 s lease.

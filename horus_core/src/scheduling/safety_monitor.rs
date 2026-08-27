@@ -3054,14 +3054,28 @@ mod tests {
         monitor.add_critical_node("safety_ctrl".to_string(), 1_u64.secs());
         monitor.set_tick_budget("safety_ctrl".to_string(), 100_u64.us());
 
-        // Within budget — no estop
+        // Within budget — no violation, no estop
         let _ = monitor.check_tick_budget("safety_ctrl", 50_u64.us());
         assert!(!monitor.is_emergency_stop());
 
-        // Over budget on critical node — estop
+        // INVERTED. This used to assert that one budget overrun by a node in
+        // `critical_nodes` latched an emergency stop. That was the defect:
+        // `critical_nodes` holds every node with a watchdog, and `.rate()`
+        // auto-derives a budget at 80% of the period, so a single page fault
+        // or IRQ stopped the robot — overriding the node's own
+        // `BudgetPolicy::Warn` default ("log the violation but take no
+        // corrective action") before the caller could consult it, and making
+        // the graduated-degradation ladder unreachable. `check_tick_budget` is
+        // pure accounting now: it reports the violation and leaves escalation
+        // to the policy dispatch, the `max_deadline_misses` ceiling and the 3x
+        // watchdog expiry.
         let result = monitor.check_tick_budget("safety_ctrl", 200_u64.us());
-        assert!(result.is_err());
-        assert!(monitor.is_emergency_stop());
+        assert!(result.is_err(), "the overrun is still reported to the caller");
+        assert!(
+            !monitor.is_emergency_stop(),
+            "a watchdogged node is not a must-never-miss node: one overrun \
+             must not stop the robot"
+        );
     }
 
     /// Timing ring stats with a single sample.
