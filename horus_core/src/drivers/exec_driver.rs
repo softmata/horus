@@ -53,6 +53,11 @@ pub struct ExecDriver {
     name: String,
     restart_count: u32,
     started: bool,
+    /// When the next restart attempt becomes due. `tick()` used to `sleep()` the
+    /// backoff inline, which blocks the whole executor thread — every RT node
+    /// sharing that thread misses its deadline for the full delay, up to 30 s.
+    /// The backoff is a deadline now, so `tick()` always returns promptly.
+    next_restart_at: Option<Instant>,
 }
 
 impl ExecDriver {
@@ -64,6 +69,7 @@ impl ExecDriver {
             name: name.into(),
             restart_count: 0,
             started: false,
+            next_restart_at: None,
         }
     }
 
@@ -216,10 +222,40 @@ impl crate::core::Node for ExecDriver {
         if !self.started {
             return;
         }
-        if !self.check_health() && self.restart_count < self.config.max_retries {
+        if self.check_health() {
+            return;
+        }
+
+        // A restart is already scheduled: return immediately until it is due.
+        // This used to be `std::thread::sleep(delay)` right here, on the shared
+        // executor thread, so a flapping device stalled every co-scheduled node
+        // for up to 30 s at a time.
+        if let Some(at) = self.next_restart_at {
+            if Instant::now() < at {
+                return;
+            }
+            self.next_restart_at = None;
+            if let Err(e) = self.launch() {
+                tracing::error!("Exec driver '{}' restart failed: {}", self.name, e);
+            }
+            return;
+        }
+
+        if self.restart_count < self.config.max_retries {
             self.restart_count += 1;
-            let delay = self.config.restart_delay_ms * 2u64.pow(self.restart_count - 1);
-            let delay = delay.min(30_000); // cap at 30s
+            // Clamp the shift BEFORE multiplying. `max_retries` and
+            // `restart_delay_ms` both come straight from horus.toml, so the old
+            // `restart_delay_ms * 2u64.pow(restart_count - 1)` overflowed for a
+            // large-but-plausible `max_retries`: a panic inside tick() in debug,
+            // and in release a wrap to ~0 that turned the backoff into an
+            // unthrottled respawn loop — the exact opposite of the 30 s cap the
+            // comment promised, because `.min(30_000)` was applied too late.
+            let shift = (self.restart_count - 1).min(20);
+            let delay = self
+                .config
+                .restart_delay_ms
+                .saturating_mul(1u64 << shift)
+                .min(30_000);
             tracing::warn!(
                 "Exec driver '{}' crashed, restarting (attempt {}/{}, delay {}ms)",
                 self.name,
@@ -227,14 +263,13 @@ impl crate::core::Node for ExecDriver {
                 self.config.max_retries,
                 delay,
             );
-            std::thread::sleep(Duration::from_millis(delay));
-            if let Err(e) = self.launch() {
-                tracing::error!("Exec driver '{}' restart failed: {}", self.name, e);
-            }
+            self.next_restart_at = Some(Instant::now() + Duration::from_millis(delay));
         }
     }
 
     fn shutdown(&mut self) -> crate::error::Result<()> {
+        // No pending restart survives shutdown.
+        self.next_restart_at = None;
         if let Some(ref mut child) = self.child {
             tracing::info!(
                 "Shutting down exec driver '{}' (PID: {})...",
@@ -343,5 +378,46 @@ mod tests {
         driver.restart_count = 2;
         // At max retries, tick should not increment further
         assert!(driver.restart_count >= driver.config.max_retries);
+    }
+
+    /// Regression: `tick()` must never sleep the executor thread, and the 30 s
+    /// cap must hold for any `max_retries` an operator can put in horus.toml.
+    /// The old code computed `restart_delay_ms * 2u64.pow(restart_count - 1)`
+    /// and only THEN applied `.min(30_000)`, so the multiply overflowed (panic
+    /// in debug, wrap-to-zero in release) well before the cap could apply.
+    #[test]
+    fn restart_backoff_is_non_blocking_and_cannot_overflow() {
+        let config = ExecDriverConfig {
+            path: PathBuf::from("/nonexistent/horus_exec_driver_test_binary"),
+            max_retries: 100,
+            restart_delay_ms: 1000,
+            ..Default::default()
+        };
+        let mut driver = ExecDriver::new("test", config);
+        driver.started = true;
+        // 1000 * 2^79 in the old expression — far past u64::MAX.
+        driver.restart_count = 80;
+
+        let start = Instant::now();
+        driver.tick();
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "tick must schedule the backoff, not sleep through it"
+        );
+        assert_eq!(driver.restart_count, 81);
+        let at = driver
+            .next_restart_at
+            .expect("a crashed driver must have a restart scheduled");
+        assert!(
+            at <= Instant::now() + Duration::from_millis(30_000),
+            "backoff must stay capped at 30s regardless of retry count"
+        );
+
+        // Not yet due: the next tick returns without stacking another attempt.
+        driver.tick();
+        assert_eq!(
+            driver.restart_count, 81,
+            "a pending restart must not accumulate further attempts"
+        );
     }
 }

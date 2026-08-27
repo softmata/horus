@@ -59,7 +59,8 @@ impl PyRate {
     // period — the GIL is process-wide, so running the loop in a "dedicated
     // background thread" was no escape from it.
     fn sleep(&mut self, py: Python<'_>) {
-        py.detach(|| self.inner.sleep());
+        let inner = &mut self.inner;
+        py.detach(|| inner.sleep());
     }
 
     /// Actual achieved frequency in Hz (exponentially smoothed).

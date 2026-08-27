@@ -311,6 +311,22 @@ struct ActionClientInner<A: Action> {
     pump_lock: Mutex<()>,
 }
 
+/// Bookkeeping that must be callable without the payload trait bounds — notably
+/// from `ClientGoalHandle`'s `Drop`, whose bounds are fixed by the struct.
+impl<A: Action> ActionClientInner<A> {
+    /// Drop a goal's bookkeeping entry.
+    ///
+    /// Called when ownership of the goal is provably abandoned — the blocking
+    /// helpers give up on it, or the caller's handle is dropped. `sweep_*` only
+    /// collects goals that reached a TERMINAL status, so a goal that never got
+    /// an answer at all (no server, or a server that dropped it) used to sit in
+    /// the map for the life of the process, and `ActionClientNode::tick` locked
+    /// and scanned every one of those corpses on every tick.
+    fn forget_goal(&self, goal_id: GoalId) {
+        self.goals.write().remove(&goal_id);
+    }
+}
+
 impl<A: Action> ActionClientInner<A>
 where
     A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
@@ -535,18 +551,6 @@ where
         let state = Arc::new(RwLock::new(ClientGoalState::new()));
         self.goals.write().insert(goal_id, state.clone());
         state
-    }
-
-    /// Drop a goal's bookkeeping entry.
-    ///
-    /// Called when ownership of the goal is provably abandoned — the blocking
-    /// helpers give up on it, or the caller's handle is dropped. `sweep_*` only
-    /// collects goals that reached a TERMINAL status, so a goal that never got
-    /// an answer at all (no server, or a server that dropped it) used to sit in
-    /// the map for the life of the process, and `ActionClientNode::tick` locked
-    /// and scanned every one of those corpses on every tick.
-    fn forget_goal(&self, goal_id: GoalId) {
-        self.goals.write().remove(&goal_id);
     }
 }
 

@@ -2663,13 +2663,21 @@ impl Scheduler {
                                         crate::scheduling::types::ExecutionClass::BestEffort => 4,
                                     };
                                     let rate = node.rate_hz.unwrap_or(0.0);
-                                    let slot = reg.register_node(
+                                    // `register_node` returns None when the SHM
+                                    // registry is full. Recording a slot anyway
+                                    // used to alias every overflow node onto
+                                    // slot 63. With no entry here,
+                                    // `SharedMonitors::update_registry` and
+                                    // `update_registry_slot` both return early,
+                                    // so the node simply has no live slot.
+                                    if let Some(slot) = reg.register_node(
                                         &node.name,
                                         node.priority as u8,
                                         rate,
                                         exec_class,
-                                    );
-                                    self.registry_slots.insert(node.name.to_string(), slot);
+                                    ) {
+                                        self.registry_slots.insert(node.name.to_string(), slot);
+                                    }
                                 }
                             }
                             Some(Arc::new(reg))

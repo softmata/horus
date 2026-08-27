@@ -473,6 +473,60 @@ pub fn encode_single(header: &PacketHeader, msg: &OutMessage, buf: &mut [u8]) ->
     total
 }
 
+/// Encode one fragment of a split message: `[PacketHeader][MessageHeader][FragmentHeader][chunk]`.
+///
+/// Returns the number of bytes written, or 0 if `buf` is too small (same
+/// contract as [`encode_single`]: callers MUST treat 0 as "not encoded").
+///
+/// The fragmented send path used to call `encode_single`, which emits no
+/// `FragmentHeader` at all, while the receive path (`Replicator::process_packet`)
+/// reads one at `PacketHeader::SIZE + MessageHeader::SIZE`. Every fragmented
+/// message was therefore parsed with the first 12 bytes of its payload
+/// interpreted as fragment metadata — a garbage `fragment_count`/`total_len` —
+/// so nothing over 1400 bytes ever reassembled correctly.
+pub fn encode_fragment(
+    header: &PacketHeader,
+    msg: &OutMessage,
+    fragment: &FragmentHeader,
+    buf: &mut [u8],
+) -> usize {
+    let total =
+        PacketHeader::SIZE + MessageHeader::SIZE + FragmentHeader::SIZE + msg.payload.len();
+    if buf.len() < total {
+        horus_core::terminal::eprint_line(&format!(
+            "[horus_net] Dropping a {}-byte fragment on topic hash {:#x} — it does not fit \
+             the {}-byte send buffer",
+            msg.payload.len(),
+            msg.topic_hash,
+            buf.len()
+        ));
+        return 0;
+    }
+
+    header.encode(&mut buf[..PacketHeader::SIZE]);
+
+    let msg_header = MessageHeader {
+        topic_hash: msg.topic_hash,
+        payload_len: msg.payload.len() as u32,
+        timestamp_ns: msg.timestamp_ns,
+        sequence: msg.sequence,
+        priority: msg.priority,
+        reliability: msg.reliability,
+        encoding: msg.encoding,
+        source_host: 0,
+    };
+    let mh_start = PacketHeader::SIZE;
+    msg_header.encode(&mut buf[mh_start..mh_start + MessageHeader::SIZE]);
+
+    let fh_start = mh_start + MessageHeader::SIZE;
+    fragment.encode(&mut buf[fh_start..fh_start + FragmentHeader::SIZE]);
+
+    let payload_start = fh_start + FragmentHeader::SIZE;
+    buf[payload_start..payload_start + msg.payload.len()].copy_from_slice(&msg.payload);
+
+    total
+}
+
 /// Encode multiple messages into a single batched packet.
 /// Returns the number of bytes written.
 pub fn encode_batch(header: &PacketHeader, msgs: &[OutMessage], buf: &mut [u8]) -> usize {

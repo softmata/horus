@@ -1,5 +1,5 @@
 use crate::cli_output;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use colored::*;
 use std::collections::HashSet;
 use std::env;
@@ -36,7 +36,9 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
             cli_output::ICON_INFO.cyan()
         );
 
-        let wrapper_script = create_python_wrapper()?;
+        // `_wrapper_dir` must outlive the child: dropping it deletes the
+        // directory holding the script.
+        let (_wrapper_dir, wrapper_script) = create_python_wrapper()?;
 
         let mut cmd = Command::new(python_cmd);
         cmd.arg(&wrapper_script);
@@ -48,9 +50,6 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         // Spawn child process with Ctrl+C forwarding
         let child = cmd.spawn()?;
         let status = super::spawn_with_ctrlc(child, "Python")?;
-
-        // Cleanup wrapper script
-        fs::remove_file(wrapper_script).ok();
 
         // Propagate the child's exit code as an error
         if !status.success() {
@@ -325,18 +324,28 @@ fn validate_node_path(file: &Path) -> Result<PathBuf> {
 /// Create a temporary Python wrapper script that loads the real node file from
 /// the `HORUS_NODE_FILE` environment variable at runtime.
 ///
+/// Returns the owning [`TempDir`] alongside the script path: the directory must
+/// stay alive until the interpreter has finished with the script, and dropping
+/// it removes both.
+///
 /// **Security**: the user-supplied file path is intentionally NOT interpolated
 /// into the Python source here.  It is passed out-of-band via the environment
 /// variable so that a crafted filename like `'); os.system('rm -rf /')` cannot
 /// execute arbitrary code.
-fn create_python_wrapper() -> Result<PathBuf> {
-    // Use a timestamp-based name so the wrapper cannot be guessed or hijacked,
-    // and no user-controlled string is included in the filename.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let wrapper_path = env::temp_dir().join(format!("horus_wrapper_{ts}.py"));
+fn create_python_wrapper() -> Result<(tempfile::TempDir, PathBuf)> {
+    // The wrapper used to be written to `/tmp/horus_wrapper_<nanos>.py` under
+    // the claim that a timestamp "cannot be guessed or hijacked". A timestamp
+    // is not a secret, and `fs::write` is O_CREAT|O_TRUNC without O_EXCL or
+    // O_NOFOLLOW: in a shared /tmp another local user could pre-create the
+    // path as a symlink, or simply rewrite the file in the window before the
+    // interpreter opens it — and this file is then executed. A private
+    // per-invocation directory (mode 0700, random name, created exclusively)
+    // puts the script out of other users' reach entirely.
+    let dir = tempfile::Builder::new()
+        .prefix("horus_wrapper_")
+        .tempdir()
+        .context("creating a private temporary directory for the Python wrapper")?;
+    let wrapper_path = dir.path().join("wrapper.py");
 
     // Fixed template — no user input anywhere inside this string.
     let wrapper_content = r#"#!/usr/bin/env python3
@@ -384,7 +393,7 @@ if __name__ == "__main__":
 "#;
 
     fs::write(&wrapper_path, wrapper_content)?;
-    Ok(wrapper_path)
+    Ok((dir, wrapper_path))
 }
 
 /// Generate `.horus/pyproject.toml` from `horus.toml` if the manifest exists.
@@ -452,9 +461,8 @@ mod tests {
         // create_python_wrapper writes a fixed string — verify it doesn't
         // contain `{}` or `r'{}'` patterns that would indicate leftover
         // format!() interpolation.
-        let wrapper_path = create_python_wrapper().expect("wrapper creation failed");
+        let (_dir, wrapper_path) = create_python_wrapper().expect("wrapper creation failed");
         let content = fs::read_to_string(&wrapper_path).expect("read wrapper");
-        fs::remove_file(&wrapper_path).ok();
 
         assert!(
             !content.contains("r'{}'") && !content.contains("open(r'"),
@@ -778,9 +786,8 @@ mod tests {
 
     #[test]
     fn battle_wrapper_is_valid_python() {
-        let wrapper = create_python_wrapper().unwrap();
+        let (_dir, wrapper) = create_python_wrapper().unwrap();
         let content = fs::read_to_string(&wrapper).unwrap();
-        fs::remove_file(&wrapper).ok();
 
         // Verify it's valid Python by checking structure
         assert!(content.contains("#!/usr/bin/env python3"));
@@ -791,13 +798,44 @@ mod tests {
 
     #[test]
     fn battle_wrapper_unique_filenames() {
-        let w1 = create_python_wrapper().unwrap();
-        let w2 = create_python_wrapper().unwrap();
-        // Two wrappers created at different times should have different names
-        // (or at least not collide)
-        fs::remove_file(&w1).ok();
-        fs::remove_file(&w2).ok();
-        // Both created successfully — that's the test
+        // This used to assert nothing at all — two timestamped names in a
+        // shared /tmp. Each wrapper now lives in its own private directory, so
+        // assert the real property: the two paths differ and both exist at
+        // once, i.e. concurrent runs cannot land on the same file.
+        let (d1, w1) = create_python_wrapper().unwrap();
+        let (d2, w2) = create_python_wrapper().unwrap();
+        assert_ne!(w1, w2, "two wrappers must not share a path");
+        assert!(w1.exists() && w2.exists());
+        drop(d1);
+        drop(d2);
+        assert!(!w1.exists(), "TempDir drop must remove the wrapper");
+        assert!(!w2.exists(), "TempDir drop must remove the wrapper");
+    }
+
+    #[test]
+    fn wrapper_lives_in_a_private_directory_not_shared_tmp() {
+        // Regression: the wrapper was written to a predictable
+        // `/tmp/horus_wrapper_<nanos>.py` and then executed, so any local user
+        // could pre-create or rewrite it. It must now sit inside its own
+        // directory, which tempfile creates with mode 0700.
+        let (dir, wrapper) = create_python_wrapper().unwrap();
+        assert_eq!(
+            wrapper.parent().unwrap(),
+            dir.path(),
+            "wrapper must live inside its own temp directory"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "wrapper directory must not be group/world accessible: {:o}",
+                mode
+            );
+        }
     }
 
     // ── Battle-testing: pyproject generation ─────────────────────────────

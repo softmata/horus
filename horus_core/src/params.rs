@@ -591,14 +591,38 @@ impl RuntimeParams {
         Ok(())
     }
 
-    /// Load parameters from YAML file
+    /// Load parameters from a YAML file, overlaying it onto the current store.
+    ///
+    /// Keys present in the file are set; keys absent from it are left alone.
+    /// This used to be `*params = loaded`, which replaced the WHOLE map — so
+    /// `horus param load ./tuning.yaml` with a one-key file dropped every other
+    /// parameter, and the `save_to_disk()` that follows it wrote that deletion
+    /// back over `.horus/config/params.yaml`. It is the same whole-map-replace
+    /// mistake `new()` documents having fixed for its three layers.
+    ///
+    /// Routing each key through `set()` also restores the read-only check,
+    /// `validate_value`, the version counters and the `on_change` callbacks,
+    /// all of which the direct map assignment bypassed.
+    ///
+    /// Note: because `set()` refuses a read-only or invalid key, a bad file
+    /// aborts the load partway, with the keys before it already applied. That
+    /// matches `new()`'s stance of refusing rather than running on limits
+    /// nobody chose.
     pub fn load_from_disk(&self, path: &Path) -> Result<(), HorusError> {
         if path.exists() {
             let yaml_str = std::fs::read_to_string(path)?;
-            let loaded: BTreeMap<String, Value> = serde_yaml::from_str(&yaml_str)?;
+            // An empty file parses to `null`, not to an empty map — same
+            // treatment as `new()` gives it, so a zero-byte params.yaml is
+            // "no overrides" here too instead of an "invalid type: unit value".
+            let loaded: BTreeMap<String, Value> = if yaml_str.trim().is_empty() {
+                BTreeMap::new()
+            } else {
+                serde_yaml::from_str(&yaml_str)?
+            };
 
-            let mut params = self.params.write()?;
-            *params = loaded;
+            for (key, value) in loaded {
+                self.set(&key, value)?;
+            }
         }
         Ok(())
     }

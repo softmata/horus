@@ -46,6 +46,16 @@ horus_add_gtest(cpp_stress_test     cpp_stress_test.cpp)
 horus_add_gtest(cpp_all_types_test  cpp_all_types_test.cpp)
 horus_add_gtest(cpp_fault_injection cpp_fault_injection.cpp)
 
+# Two translation units in one binary — pins that the header's node callback
+# registry has a single, external-linkage instance program-wide. Built at -O2
+# so the inline trampolines are actually collapsed by the linker.
+add_executable(cpp_multi_tu_test cpp_multi_tu_test.cpp cpp_multi_tu_node.cpp)
+target_compile_options(cpp_multi_tu_test PRIVATE -O2 -fext-numeric-literals)
+target_include_directories(cpp_multi_tu_test PRIVATE ${CMAKE_SOURCE_DIR}/../include)
+target_link_directories(cpp_multi_tu_test PRIVATE ${HORUS_RUST_TARGET_DIR})
+target_link_libraries(cpp_multi_tu_test PRIVATE GTest::gtest_main horus_cpp pthread dl m)
+gtest_discover_tests(cpp_multi_tu_test DISCOVERY_TIMEOUT 60)
+
 # Nightly-only: 2-hour soak. Default ctest excludes via label filter.
 horus_add_nightly_gtest(cpp_soak_test cpp_soak_test.cpp)
 

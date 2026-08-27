@@ -164,6 +164,38 @@ fn resolve_takes_info(
     takes_info
 }
 
+/// Invoke `obj.<name>`, with or without the `NodeInfo` argument, according to
+/// the cached arity decision.
+///
+/// The one retry left here is safe where the old blanket `TypeError` retry was
+/// not: it fires only when the `TypeError` carries no traceback, which means
+/// the call machinery rejected the arguments *before* entering any Python
+/// frame, so no user code can have run — let alone run twice. An exception
+/// raised inside the callback body always carries a traceback and is passed
+/// straight through. In practice only callables `inspect` could not introspect
+/// reach this path.
+fn call_node_callback(
+    cache: &mut Option<bool>,
+    py: Python<'_>,
+    obj: &Py<PyAny>,
+    name: &str,
+    info: Py<PyNodeInfo>,
+) -> PyResult<Py<PyAny>> {
+    if !resolve_takes_info(cache, py, obj, name) {
+        return obj.call_method0(py, name);
+    }
+    match obj.call_method1(py, name, (info,)) {
+        Err(e)
+            if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py)
+                && e.traceback(py).is_none() =>
+        {
+            *cache = Some(false);
+            obj.call_method0(py, name)
+        }
+        other => other,
+    }
+}
+
 impl CoreNode for PyNodeAdapter {
     fn name(&self) -> &str {
         &self.node_name
@@ -182,13 +214,13 @@ impl CoreNode for PyNodeAdapter {
 
             self.cached_info = Some(py_info.clone_ref(py));
 
-            let takes_info =
-                resolve_takes_info(&mut self.init_takes_info, py, &self.py_object, "init");
-            let result = if takes_info {
-                self.py_object.call_method1(py, "init", (py_info,))
-            } else {
-                self.py_object.call_method0(py, "init")
-            };
+            let result = call_node_callback(
+                &mut self.init_takes_info,
+                py,
+                &self.py_object,
+                "init",
+                py_info,
+            );
 
             match result {
                 Ok(_) => {
@@ -256,13 +288,13 @@ impl CoreNode for PyNodeAdapter {
             // (see module-level GIL/lock safety comment).  If the Python code
             // calls back into Rust (e.g., topic.send()), that is safe because
             // node_context and self.inner are unlocked.
-            let takes_info =
-                resolve_takes_info(&mut self.tick_takes_info, py, &self.py_object, "tick");
-            let result = if takes_info {
-                self.py_object.call_method1(py, "tick", (py_info,))
-            } else {
-                self.py_object.call_method0(py, "tick")
-            };
+            let result = call_node_callback(
+                &mut self.tick_takes_info,
+                py,
+                &self.py_object,
+                "tick",
+                py_info,
+            );
 
             match result {
                 Ok(_) => {
@@ -344,13 +376,13 @@ impl CoreNode for PyNodeAdapter {
                 .map_err(|e| HorusError::node(&self.node_name, e.to_string()))?
             };
 
-            let takes_info =
-                resolve_takes_info(&mut self.shutdown_takes_info, py, &self.py_object, "shutdown");
-            let result = if takes_info {
-                self.py_object.call_method1(py, "shutdown", (py_info,))
-            } else {
-                self.py_object.call_method0(py, "shutdown")
-            };
+            let result = call_node_callback(
+                &mut self.shutdown_takes_info,
+                py,
+                &self.py_object,
+                "shutdown",
+                py_info,
+            );
 
             match result {
                 Ok(_) => Ok(()),

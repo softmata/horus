@@ -201,13 +201,44 @@ impl Replicator {
             return;
         }
 
-        let shm_notify_fd = event_loop.shm_notify_fd();
-        self.registry.set_on_change(move || {
-            let val: u64 = 1;
-            unsafe {
-                libc::write(shm_notify_fd, &val as *const u64 as *const libc::c_void, 8);
-            }
-        });
+        // Never hand a raw fd across an ownership boundary. `shm_notify_fd` is
+        // owned by `event_loop`, which lives on this stack frame, but the
+        // callback is installed into the process-lifetime registry singleton and
+        // outlives it: every `Topic<T>` dropped during scheduler shutdown — which
+        // happens AFTER this thread has joined and `EpollLoop::drop` has closed
+        // the descriptor — still wrote 8 bytes to that descriptor *number*. By
+        // then the number may have been reissued to an unrelated file the
+        // shutdown path opened (blackbox WAL flush, crash report), and the
+        // discarded return value made the corruption silent.
+        //
+        // The closure now owns a dup of the eventfd description instead. Writing
+        // into it after shutdown is harmless — nothing reads it — and it is
+        // released when `clear_on_change` below drops the callback.
+        let notify_fd = unsafe { libc::dup(event_loop.shm_notify_fd()) };
+        if notify_fd < 0 {
+            // Not fatal: `handle_timer` drives the export path every tick, so
+            // losing the wakeup only delays a newly registered topic's first
+            // export by up to TIMER_INTERVAL.
+            horus_core::terminal::eprint_line(&format!(
+                "[horus_net] Could not duplicate the export notify fd ({}); topic \
+                 registration will not wake the event loop early",
+                std::io::Error::last_os_error()
+            ));
+        } else {
+            let notify_fd = unsafe {
+                <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(notify_fd)
+            };
+            self.registry.set_on_change(move || {
+                let val: u64 = 1;
+                unsafe {
+                    libc::write(
+                        std::os::fd::AsRawFd::as_raw_fd(&notify_fd),
+                        &val as *const u64 as *const libc::c_void,
+                        8,
+                    );
+                }
+            });
+        }
 
         while self.running.load(Ordering::Relaxed) {
             let events = match event_loop.wait(1000) {
@@ -234,6 +265,12 @@ impl Replicator {
                 self.handle_timer();
             }
         }
+
+        // Drop the callback before `event_loop` goes out of scope. The registry
+        // is a process-lifetime singleton, so a callback left installed here
+        // survives this thread and keeps firing on every topic unregistered
+        // during scheduler shutdown.
+        self.registry.clear_on_change();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -667,7 +704,23 @@ impl Replicator {
                 };
 
                 let mut send_buf = [0u8; 65536];
-                let len = wire::encode_single(&header, &frag_msg, &mut send_buf);
+                // A fragmented message MUST carry a FragmentHeader. This used
+                // to call `encode_single` for every fragment, which emits none,
+                // while the receive path reads one straight after the
+                // MessageHeader — so it consumed the first 12 bytes of the
+                // chunk as fragment metadata and reassembly of anything over
+                // MAX_FRAGMENT_PAYLOAD never produced the original message.
+                let len = if frag.fragment_count > 1 {
+                    let fh = wire::FragmentHeader {
+                        fragment_id: frag.fragment_id,
+                        fragment_index: frag.fragment_index,
+                        fragment_count: frag.fragment_count,
+                        total_payload_len: frag.total_payload_len,
+                    };
+                    wire::encode_fragment(&header, &frag_msg, &fh, &mut send_buf)
+                } else {
+                    wire::encode_single(&header, &frag_msg, &mut send_buf)
+                };
                 // 0 = did not fit; skip rather than send a truncated packet.
                 if len == 0 {
                     continue;

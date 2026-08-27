@@ -33,9 +33,21 @@
 //!
 //! ### Thread-Ownership Contract
 //!
-//! Each `Topic<T>` instance must be used from exactly **one thread**. The type
-//! is `!Send` and `!Sync` by design (contains `UnsafeCell`, raw pointers, and
-//! `Cell`-based local state). This single-thread-per-instance contract enables:
+//! Each `Topic<T>` instance must be used from exactly **one thread at a time**.
+//! The type is `Send` — an owned handle may be moved to another thread, and
+//! `Clone` hands the new thread its own independent state — but it is
+//! deliberately **not** `Sync`: it holds `UnsafeCell`, raw pointers, and
+//! `Cell`-based local state that no lock or atomic protects.
+//!
+//! This paragraph used to claim the type was `!Send` and `!Sync` "by design"
+//! while hand-written `unsafe impl Sync` blocks on `Topic` and `RingTopic`
+//! said the opposite, so safe code could share one `&Topic` across threads and
+//! race the unsynchronised state with no `unsafe` of its own. Those impls are
+//! gone; sharing one handle now requires an explicit lock
+//! (`Mutex<Topic<T>>` — an `RwLock` read guard is NOT enough, it hands out
+//! concurrent `&Topic`) or a per-thread `Clone`.
+//!
+//! This single-thread-per-instance contract enables:
 //!
 //! - **Unsynchronized local state**: `LocalState` uses `Cell` for cached head/tail,
 //!   role tracking, and epoch caching — no atomic overhead on the hot path.
@@ -721,21 +733,21 @@ pub(crate) struct RingTopic<T> {
 // another thread transfers exclusive ownership of its per-instance state.
 unsafe impl<T: Send> Send for RingTopic<T> {}
 
-// SAFETY (Sync): Required so Arc<Topic<T>> can be Send (used in services/actions).
+// There is deliberately NO `Sync` impl here.
 //
-// INVARIANT: Callers must NOT share a single &RingTopic across threads. Each
-// thread must use its own Clone. The UnsafeCell fields (backend, send_fn, recv_fn,
-// local, spill_pool) have NO synchronization — concurrent &self access from
-// multiple threads is UB. The Sync impl is sound only because:
-// 1. Clone creates independent UnsafeCell state (not shared aliases)
-// 2. Shared fields (storage: Arc<ShmRegion>, metrics: Arc<MigrationMetrics>,
-//    process_epoch: Arc<AtomicU64>) use Arc/atomics which are truly Sync
-// 3. All cross-thread usage in the codebase wraps Topic in Arc<RwLock<..>>
+// There used to be one, justified as "required so Arc<Topic<T>> can be Send",
+// with an INVARIANT comment stating that callers must not share a single
+// `&RingTopic` across threads — an invariant the impl itself made
+// unenforceable. `send`/`recv`/`try_send`/`try_recv` all take `&self` and then
+// read-modify-write `local.local_head`, `local.local_tail`, `local.msg_counter`
+// and the cached pointers behind `UnsafeCell`, none of it synchronised, so two
+// threads holding `&Topic` from one `Arc` raced on plain fields — a data race,
+// UB, with no `unsafe` anywhere in the caller. The `Cell`/`UnsafeCell` fields
+// make both types `!Sync` on their own; letting them do so is the fix.
 //
-// TODO: Consider wrapping RingTopic in a newtype that enforces single-thread
-// access and only exposes Arc<Newtype> for cross-thread sharing, eliminating
-// the need for this Sync impl.
-unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
+// To share one handle, wrap it in an EXCLUSIVE lock (`Mutex<Topic<T>>`; an
+// `RwLock` read guard hands out concurrent `&Topic` and does not satisfy this),
+// or give each thread its own `Clone`, which gets independent local state.
 
 #[allow(private_interfaces)]
 /// Where a consumer's read position lands after a migration resync.
@@ -1131,8 +1143,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             ));
         }
 
-        // Size validation — skip for GenericMessage (variable-size serde container)
-        if !is_generic && is_pod && header.type_size != type_size {
+        // Size validation.
+        //
+        // Deliberately NOT exempt for GenericMessage, unlike the type-NAME check
+        // above. The POD data path addresses slots as
+        // `(cached_data_ptr as *mut T).add(index)` (dispatch.rs), so its stride
+        // is `size_of::<T>()` — it must equal the creator's `type_size` no matter
+        // what the type names say, and a name-based exemption cannot make two
+        // different strides agree. `GenericMessage` is itself POD-classified
+        // (fixed array, no Drop), so the old exemption let a
+        // `Topic<GenericMessage>` (4364 bytes) join a `Topic<CmdVel>` ring
+        // (8 bytes) and write megabytes past the end of the mapping. The header
+        // side of the test matters too: `sync_local` adopts `header.is_pod_type()`
+        // for dispatch selection, so either side being POD puts a raw stride on
+        // this ring.
+        if (is_pod || header.is_pod_type()) && header.type_size != type_size {
             return Err(HorusError::Communication(
                 crate::error::CommunicationError::TopicCreationFailed {
                     topic: name.to_string(),
@@ -2691,7 +2716,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
             state: AtomicU8::new(self.state.load(Ordering::Relaxed)),
             // Clone shares the spill pool if one was already created
             spill_pool: std::cell::UnsafeCell::new(
-                // SAFETY: single-thread access (Topic is !Sync for mutation)
+                // SAFETY: `RingTopic` has no `Sync` impl, so `&self` here can
+                // only be held by one thread — this shared borrow of the
+                // `UnsafeCell` cannot alias a concurrent `&mut` from another.
                 unsafe { &*self.spill_pool.get() }.clone(),
             ),
             _marker: PhantomData,
@@ -2807,10 +2834,26 @@ pub struct Topic<T: TopicMessage> {
     last_sent_keepalive: std::cell::Cell<Option<(Arc<TensorPool>, Tensor, Option<Tensor>)>>,
 }
 
-// Safety: Topic delegates to RingTopic which handles synchronization.
-// The pool field is Arc (Send+Sync).
+// SAFETY (Send): an owned `Topic` carries its `RingTopic` (itself `Send`) plus
+// `Cell` state that only this handle touches; the `pool` field is an `Arc`
+// (Send+Sync). Moving the whole handle transfers that state exclusively.
 unsafe impl<T: TopicMessage> Send for Topic<T> where T::Wire: Send {}
-unsafe impl<T: TopicMessage> Sync for Topic<T> where T::Wire: Send + Sync {}
+
+// No `Sync` impl, for the same reason as `RingTopic` above: `send`/`recv` take
+// `&self` and mutate `registered_pub`/`registered_sub`/`owner_attempts` and the
+// `last_sent_keepalive` `Cell`. Two threads sharing one `&Topic<Image>` could
+// both `Cell::replace` the same keep-alive tuple and release the pool slot
+// twice — a use-after-free of shared-memory the subscribers are still reading.
+// `Cell` makes `Topic` `!Sync` all by itself.
+
+// Compile-time guard: `Topic` must stay `Send` (owned handles move between
+// threads all over the tree) even though it is no longer `Sync`. If a future
+// field silently takes `Send` away, this fails to compile here rather than at
+// the far end of a `thread::spawn` in a downstream crate.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<Topic<u64>>();
+};
 
 /// Release a keep-alive tuple `(pool, primary, secondary)` on its own stored
 /// pool. Safe against the drop-oldest ABA: `release` generation-checks and

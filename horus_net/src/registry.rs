@@ -242,6 +242,17 @@ impl TopicRegistry {
         *self.on_change.write().unwrap() = Some(Box::new(callback));
     }
 
+    /// Drop the change callback.
+    ///
+    /// This registry is a process-lifetime singleton while the callback the
+    /// replicator installs borrows resources owned by its event loop. Without a
+    /// way to clear it, every topic unregistered after the replicator thread
+    /// exited — which is exactly what scheduler shutdown does — still ran a
+    /// callback whose resources were gone.
+    pub fn clear_on_change(&self) {
+        *self.on_change.write().unwrap() = None;
+    }
+
     fn notify_change(&self) {
         if let Some(cb) = self.on_change.read().unwrap().as_ref() {
             cb();
@@ -377,6 +388,33 @@ mod tests {
         reg.unregister("a", TopicRole::Publisher);
 
         assert_eq!(counter.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn cleared_callback_stops_firing() {
+        // Regression: the replicator's callback holds resources tied to its
+        // event loop, and the registry outlives that loop. Unregistering a topic
+        // after shutdown must not run a stale callback.
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let reg = make_registry();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        reg.set_on_change(move || {
+            counter_clone.fetch_add(1, Ordering::Relaxed);
+        });
+
+        reg.register("a", 1, 1, TopicRole::Publisher, true);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+
+        reg.clear_on_change();
+        reg.unregister("a", TopicRole::Publisher);
+        reg.register("b", 2, 2, TopicRole::Subscriber, true);
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            1,
+            "callback must not fire after being cleared"
+        );
     }
 
     #[test]
