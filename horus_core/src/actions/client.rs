@@ -478,7 +478,8 @@ where
         //
         // Goals that go terminal without a result for any other reason — e.g.
         // the server abandoning a non-cooperative goal after `goal_timeout` —
-        // are collected by the sweep below rather than raced here.
+        // are collected by `sweep_stale_terminal_goals`, which every pump runs
+        // at the end of `process_messages`, rather than raced here.
         if update.status == GoalStatus::Rejected {
             self.goals.write().remove(&update.goal_id);
         }
@@ -1136,6 +1137,48 @@ mod tests {
             handle.status(),
             GoalStatus::Succeeded,
             "await_result must pump the client so a standalone goal leaves Pending (F-ACT1)"
+        );
+    }
+
+    /// Regression: the client's goal map must not accumulate entries for goals
+    /// nobody can observe any more. Pruning only ever happened for goals that
+    /// reached a TERMINAL status, so a goal that never got an answer at all —
+    /// a server that is down, the `send_goal_and_wait` timeout path — stayed in
+    /// the map for the life of the process, and `ActionClientNode::tick` locked
+    /// and scanned every one of them on every tick.
+    #[test]
+    fn abandoned_goals_leave_no_entry_in_the_goal_map() {
+        let client = Arc::new(ActionClientInner::<TestAction>::new());
+        let gid = GoalId::new();
+        let state = client.register_goal(gid);
+
+        {
+            let _handle = ClientGoalHandle::<TestAction> {
+                goal_id: gid,
+                priority: GoalPriority::NORMAL,
+                state: state.clone(),
+                client: Arc::clone(&client),
+                sent_at: Instant::now(),
+            };
+            assert_eq!(
+                client.goals.read().len(),
+                1,
+                "the goal is tracked for as long as its handle lives"
+            );
+        }
+        assert!(
+            client.goals.read().is_empty(),
+            "dropping the handle must evict the goal — the entry exists only to \
+             route messages to that handle"
+        );
+
+        // The same eviction the blocking helpers use on their timeout path.
+        let other = GoalId::new();
+        client.register_goal(other);
+        client.forget_goal(other);
+        assert!(
+            client.goals.read().is_empty(),
+            "a goal given up on must not stay in the map"
         );
     }
 

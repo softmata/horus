@@ -567,6 +567,64 @@ impl TopicHeader {
         self.register_role(2, &self.subscriber_count)
     }
 
+    /// Claim the first slot that is genuinely free (`active == 0`), if any.
+    ///
+    /// Split out of [`Self::register_role`] so the "take an empty seat" pass can
+    /// run twice — once before and once after reaping dead participants —
+    /// without duplicating the CAS protocol.
+    #[allow(clippy::too_many_arguments)]
+    fn claim_free_slot(
+        &self,
+        role_bit: u8,
+        counter: &AtomicU32,
+        pid: u32,
+        thread_hash: u32,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Option<usize> {
+        for (i, p) in self.participants.iter().enumerate() {
+            if p.active.load(Ordering::Acquire) != 0 {
+                continue;
+            }
+            // CAS 0 -> 2 (initializing): exactly one thread wins per slot.
+            if p.active
+                .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue;
+            }
+            self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
+            return Some(i);
+        }
+        None
+    }
+
+    /// Populate a slot this thread has already CAS'd to the initializing
+    /// sentinel (2), and publish it as active.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_claim(
+        &self,
+        p: &ParticipantEntry,
+        role_bit: u8,
+        counter: &AtomicU32,
+        pid: u32,
+        thread_hash: u32,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) {
+        p.pid.store(pid, Ordering::Release);
+        p.thread_id_hash.store(thread_hash, Ordering::Release);
+        p.role.store(role_bit, Ordering::Release);
+        p.refresh_lease(now_ms, timeout_ms);
+        counter.fetch_add(1, Ordering::AcqRel);
+        self.total_participants.fetch_add(1, Ordering::AcqRel);
+        self.last_topology_change_ms
+            .store(now_ms, Ordering::Release);
+        // Finalize: transition from initializing (2) to active (1).
+        // This makes the slot visible with all fields properly set.
+        p.active.store(1, Ordering::Release);
+    }
+
     /// Shared registration logic for producer (role_bit=1) and consumer (role_bit=2).
     fn register_role(&self, role_bit: u8, counter: &AtomicU32) -> HorusResult<usize> {
         let now_ms = current_time_ms();
@@ -591,61 +649,81 @@ impl TopicHeader {
             }
         }
 
-        // Find empty slot or expired lease.
+        // Find a slot, in three passes of decreasing safety.
+        //
+        // This used to be a single scan that claimed the first slot that was
+        // either free OR merely lease-expired, in index order. An expired lease
+        // does NOT mean the owner is gone: leases are refreshed on a message
+        // count, so an idle or slow subscriber spends much of its life looking
+        // expired (`reap_dead_participants` documents exactly this, and refuses
+        // to reap on the lease alone for that reason). The old scan therefore
+        // preferred stealing slot 0 from a live, polling subscriber over taking
+        // one of the free slots behind it — it decremented `subscriber_count`
+        // for a participant that was still reading, after which
+        // `nothing_is_draining` saw `sub_count() == 0` and let the producer
+        // retire unread slots. Silent message loss, with no counter to show it.
         //
         // We use active=2 as an "initializing" sentinel so that a freshly
         // claimed slot (whose lease_expires_ms is still 0) is not mistaken
         // for an expired slot by another thread.
+
+        // Pass 1: genuinely free slots only. No counter decrement: nothing was
+        // registered here.
+        if let Some(i) = self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
+        {
+            return Ok(i);
+        }
+
+        // Pass 2: nothing free — retire participants whose process is actually
+        // gone (expired lease AND dead pid AND local AND not us), then rescan.
+        self.reap_dead_participants(now_ms);
+        if let Some(i) = self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
+        {
+            return Ok(i);
+        }
+
+        // Pass 3, last resort: a stale entry belonging to a thread of THIS
+        // process. `Drop for Topic` does not deregister, so a finished thread's
+        // slot is never reclaimed by anything else — and the reaper skips our
+        // own pid deliberately, because it cannot tell a departed thread from a
+        // busy one. A foreign live pid is never stolen.
+        let me = std::process::id();
         for (i, p) in self.participants.iter().enumerate() {
-            let active_val = p.active.load(Ordering::Acquire);
-            if active_val == 2 {
-                continue; // Another thread is initializing this slot
+            if p.active.load(Ordering::Acquire) != 1 {
+                continue;
             }
-            let is_active = active_val != 0;
-            let is_expired = is_active && p.is_lease_expired(now_ms);
-
-            if !is_active || is_expired {
-                // Try to claim the slot via CAS → 2 (initializing).
-                // Exactly one thread wins per slot.
-                let claimed = p
-                    .active
-                    .compare_exchange(active_val, 2, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok();
-
-                if claimed {
-                    // Now that we own the slot, safely decrement the old role counters.
-                    //
-                    // Saturating, because these counters live in shared memory
-                    // that any participant may have been killed in the middle
-                    // of writing: an unmatched `fetch_sub` on a zero counter
-                    // wraps to 4 billion, and every consumer of `sub_count()`
-                    // then believes the topic has four billion subscribers
-                    // forever. There is no honest recovery from that, so the
-                    // floor is enforced at the one place the decrement happens.
-                    if is_expired {
-                        let old_role = p.role.load(Ordering::Acquire);
-                        if old_role & 1 != 0 {
-                            decrement_to_floor(&self.publisher_count);
-                        }
-                        if old_role & 2 != 0 {
-                            decrement_to_floor(&self.subscriber_count);
-                        }
-                    }
-
-                    p.pid.store(pid, Ordering::Release);
-                    p.thread_id_hash.store(thread_hash, Ordering::Release);
-                    p.role.store(role_bit, Ordering::Release);
-                    p.refresh_lease(now_ms, timeout_ms);
-                    counter.fetch_add(1, Ordering::AcqRel);
-                    self.total_participants.fetch_add(1, Ordering::AcqRel);
-                    self.last_topology_change_ms
-                        .store(now_ms, Ordering::Release);
-                    // Finalize: transition from initializing (2) to active (1).
-                    // This makes the slot visible with all fields properly set.
-                    p.active.store(1, Ordering::Release);
-                    return Ok(i);
-                }
+            if !p.is_lease_expired(now_ms) {
+                continue;
             }
+            if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != me {
+                continue;
+            }
+            if p.active
+                .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue; // Someone else got there first.
+            }
+
+            // Now that we own the slot, safely decrement the old role counters.
+            //
+            // Saturating, because these counters live in shared memory
+            // that any participant may have been killed in the middle
+            // of writing: an unmatched `fetch_sub` on a zero counter
+            // wraps to 4 billion, and every consumer of `sub_count()`
+            // then believes the topic has four billion subscribers
+            // forever. There is no honest recovery from that, so the
+            // floor is enforced at the one place the decrement happens.
+            let old_role = p.role.load(Ordering::Acquire);
+            if old_role & 1 != 0 {
+                decrement_to_floor(&self.publisher_count);
+            }
+            if old_role & 2 != 0 {
+                decrement_to_floor(&self.subscriber_count);
+            }
+
+            self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
+            return Ok(i);
         }
 
         // All 16 participant slots occupied by live processes.

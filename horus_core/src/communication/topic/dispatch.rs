@@ -76,7 +76,7 @@ use super::shm_layout::SLOT_WRITING;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::local_state::{EPOCH_CHECK_INTERVAL, LEASE_REFRESH_INTERVAL};
+use super::local_state::EPOCH_CHECK_INTERVAL;
 use super::RingTopic;
 use super::{simd_aware_read, simd_aware_write};
 use crate::utils::unlikely;
@@ -321,32 +321,53 @@ macro_rules! epoch_guard_recv {
 // Housekeeping macros — amortized maintenance after each message
 // ============================================================================
 
+/// How often (in messages) to *consider* refreshing the lease.
+///
+/// The refresh itself is decided by wall clock inside `refresh_lease_if_due`;
+/// this counter only keeps the clock read off the per-message hot path. It is
+/// deliberately far smaller than `LEASE_REFRESH_INTERVAL`: the old code
+/// refreshed strictly every 1024 messages, so liveness depended on throughput
+/// and a slow-but-healthy participant looked expired most of the time. At 64,
+/// a 100 Hz participant reaches the clock check about twice a second against a
+/// 5 s lease.
+const LEASE_CHECK_INTERVAL: u32 = 64;
+
 /// Housekeeping after a successful send or recv: migration check (fast, every
-/// EPOCH_CHECK_INTERVAL msgs) + lease refresh (slower syscall, every
-/// LEASE_REFRESH_INTERVAL msgs).  Used by all dispatched (fn-ptr) send/recv paths.
+/// EPOCH_CHECK_INTERVAL msgs) + lease refresh (clock-gated, considered every
+/// LEASE_CHECK_INTERVAL msgs).  Used by all dispatched (fn-ptr) send/recv paths.
 macro_rules! housekeep_lease {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
         if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
             $topic.check_migration_periodic();
-            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                $topic.refresh_lease();
+            if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
+                $topic.refresh_lease_if_due();
             }
         }
     };
 }
 
-/// Housekeeping on empty recv: epoch check on EVERY empty recv.
+/// Housekeeping on empty recv: epoch check on EVERY empty recv, plus a
+/// clock-gated lease refresh.
 ///
 /// When recv returns None, the topic may be empty because a cross-process
 /// producer joined and this participant hasn't observed the migration epoch
 /// yet (still pointed at the old SHM ring). Checking the SHM
 /// epoch on every empty recv ensures migration is detected immediately.
 /// Cost: one Relaxed atomic load (~1ns) — negligible for polling loops.
+///
+/// The empty path refreshed nothing at all, so a subscriber polling a topic
+/// that has not published yet stopped refreshing the instant it registered and
+/// was permanently lease-expired one timeout later — while still polling. That
+/// is a liveness report about a live process, and slot reclamation used to act
+/// on it.
 macro_rules! housekeep_epoch {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
         $topic.check_migration_periodic();
+        if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
+            $topic.refresh_lease_if_due();
+        }
     };
 }
 
@@ -359,10 +380,11 @@ macro_rules! housekeep_recv {
         // Check SHM epoch on every recv — detects cross-process producers immediately.
         // Cost: one Relaxed atomic load (~1ns), negligible vs the ring buffer read.
         $topic.check_migration_periodic();
-        if $result.is_some() {
-            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                $topic.refresh_lease();
-            }
+        // Refresh on a wall clock, and on the empty path too (see
+        // `housekeep_epoch`): a consumer is just as alive when the ring is
+        // empty as when it is not.
+        if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
+            $topic.refresh_lease_if_due();
         }
     };
 }

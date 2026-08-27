@@ -1019,11 +1019,7 @@ where
         // canceled before it ever runs. Remove it and finalize as Canceled —
         // otherwise the cancel would be dropped and the goal would run anyway
         // when a slot frees.
-        if let Some(pos) = self
-            .goal_queue
-            .iter()
-            .position(|g| g.goal_id == goal_id)
-        {
+        if let Some(pos) = self.goal_queue.iter().position(|g| g.goal_id == goal_id) {
             let response = if let Some(ref callback) = self.cancel_callback {
                 callback(goal_id)
             } else {
@@ -1074,11 +1070,7 @@ where
         match response {
             CancelResponse::Accept => {
                 if let Some(state) = self.active_goals.get(&goal_id) {
-                    log::info!(
-                        "ActionServer '{}': Canceling goal {}",
-                        A::name(),
-                        goal_id
-                    );
+                    log::info!("ActionServer '{}': Canceling goal {}", A::name(), goal_id);
                     state.cancel_requested.store(true, Ordering::Release);
                 }
             }

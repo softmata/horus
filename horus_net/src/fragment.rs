@@ -39,6 +39,14 @@ pub const FRAGMENT_TIMEOUT: Duration = Duration::from_millis(100);
 /// A single fragment ready to be sent.
 #[derive(Debug, Clone)]
 pub struct Fragment {
+    /// Sender identity (`PacketHeader::sender_id_hash`) on the receive side.
+    ///
+    /// Part of the reassembly key. `fragment_id` is a per-process counter that
+    /// every `Fragmenter` starts at 0, so it is identical across hosts: without
+    /// the sender, two peers publishing the same topic land in one reassembly
+    /// buffer and a message is spliced together out of both of their fragments.
+    /// The send side leaves it 0 — only the receiver keys on it.
+    pub sender_id_hash: u16,
     pub topic_hash: u32,
     pub sequence: u32,
     pub timestamp_ns: u64,
@@ -70,6 +78,7 @@ impl Fragmenter {
         if msg.payload.len() <= MAX_FRAGMENT_PAYLOAD {
             // No fragmentation needed — return as single fragment
             return vec![Fragment {
+                sender_id_hash: 0,
                 topic_hash: msg.topic_hash,
                 sequence: msg.sequence,
                 timestamp_ns: msg.timestamp_ns,
@@ -105,6 +114,7 @@ impl Fragmenter {
             .iter()
             .enumerate()
             .map(|(i, chunk)| Fragment {
+                sender_id_hash: 0,
                 topic_hash: msg.topic_hash,
                 sequence: msg.sequence,
                 timestamp_ns: msg.timestamp_ns,
@@ -160,8 +170,15 @@ pub struct ReassembledMessage {
 
 /// Reassembles fragments into complete messages.
 pub struct Reassembler {
-    /// Pending messages keyed by (topic_hash, fragment_id).
-    pending: HashMap<(u32, u32), PendingMessage>,
+    /// Pending messages keyed by (sender_id_hash, topic_hash, fragment_id).
+    ///
+    /// The sender is part of the key. Keyed on (topic_hash, fragment_id) alone,
+    /// fragments from *different* senders sharing a topic merged into one
+    /// buffer — and since slot filling is first-write-wins, whichever host's
+    /// fragment arrived first owned that region and the genuine one was
+    /// discarded as a duplicate. Two robots publishing the same topic both
+    /// start their fragment counter at 0, so this needed no attacker.
+    pending: HashMap<(u16, u32, u32), PendingMessage>,
 }
 
 impl Reassembler {
@@ -202,7 +219,7 @@ impl Reassembler {
             });
         }
 
-        let key = (frag.topic_hash, frag.fragment_id);
+        let key = (frag.sender_id_hash, frag.topic_hash, frag.fragment_id);
 
         // Bound 3: cap concurrent partial messages. Refuse to open a NEW reassembly
         // buffer once at capacity (existing keys may still receive their fragments).
@@ -367,6 +384,7 @@ mod tests {
     fn reassemble_single_fragment() {
         let mut reasm = Reassembler::new();
         let frag = Fragment {
+            sender_id_hash: 0,
             topic_hash: 100,
             sequence: 1,
             timestamp_ns: 999,
@@ -443,6 +461,7 @@ mod tests {
         let mut reasm = Reassembler::new();
         // Feed partial fragment set
         let frag = Fragment {
+            sender_id_hash: 0,
             topic_hash: 100,
             sequence: 1,
             timestamp_ns: 0,
@@ -485,7 +504,22 @@ mod tests {
         total: u32,
         bytes: usize,
     ) -> Fragment {
+        part_frag_from(0, topic, id, index, count, total, bytes)
+    }
+
+    /// Same, with an explicit sender id — the reassembly key includes it.
+    #[allow(clippy::too_many_arguments)]
+    fn part_frag_from(
+        sender: u16,
+        topic: u32,
+        id: u32,
+        index: u16,
+        count: u16,
+        total: u32,
+        bytes: usize,
+    ) -> Fragment {
         Fragment {
+            sender_id_hash: sender,
             topic_hash: topic,
             sequence: 0,
             timestamp_ns: 0,
@@ -533,6 +567,33 @@ mod tests {
             .feed(part_frag(999_999, 999_999, 0, 2, 2000, 1000))
             .is_none());
         assert_eq!(reasm.pending_count(), MAX_PENDING_MESSAGES);
+    }
+
+    #[test]
+    fn fragments_from_different_senders_do_not_splice() {
+        // Regression: keyed on (topic_hash, fragment_id) alone, two peers that
+        // both publish "pointcloud" — each starting its fragment counter at 0 —
+        // filled ONE buffer, and the completed message was half of each.
+        let mut reasm = Reassembler::new();
+        let topic = topic_hash("pointcloud");
+
+        let mut a0 = part_frag_from(0xAAAA, topic, 0, 0, 2, 2000, 1000);
+        a0.payload = vec![0xA1; 1000];
+        let mut b0 = part_frag_from(0xBBBB, topic, 0, 0, 2, 2000, 1000);
+        b0.payload = vec![0xB1; 1000];
+        let mut b1 = part_frag_from(0xBBBB, topic, 0, 1, 2, 2000, 1000);
+        b1.payload = vec![0xB2; 1000];
+
+        assert!(reasm.feed(a0).is_none());
+        assert!(reasm.feed(b0).is_none(), "B's fragment 0 is not a duplicate");
+        assert_eq!(reasm.pending_count(), 2, "one buffer per sender");
+
+        let msg = reasm.feed(b1).expect("B's message completes on its own");
+        assert!(
+            msg.payload.iter().all(|b| *b == 0xB1 || *b == 0xB2),
+            "reassembled message must contain no bytes from the other sender"
+        );
+        assert_eq!(reasm.pending_count(), 1, "A's partial message is untouched");
     }
 
     #[test]

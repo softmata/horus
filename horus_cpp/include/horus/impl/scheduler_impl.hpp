@@ -40,7 +40,12 @@ inline Scheduler& Scheduler::operator=(Scheduler&& other) noexcept {
 }
 
 inline Scheduler& Scheduler::tick_rate(Frequency freq) {
-    horus_scheduler_tick_rate(inner_, freq.value());
+    // A non-positive or non-finite rate used to reach an assert! on the Rust
+    // side and abort the process from inside an extern "C" frame. It is now
+    // rejected at the boundary and surfaces here as an ordinary exception.
+    if (horus_scheduler_tick_rate(inner_, freq.value()) != 0) {
+        throw Error("Invalid tick rate (must be finite and > 0 Hz)");
+    }
     return *this;
 }
 

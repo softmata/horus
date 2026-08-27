@@ -1554,6 +1554,37 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
+    /// Refresh this participant's lease only once it is past the halfway point
+    /// to expiry.
+    ///
+    /// The lease used to be refreshed purely on a message count (once every
+    /// 1024 messages), which made liveness a function of throughput rather than
+    /// of time: a 100 Hz subscriber refreshed about every 10 s against a 5 s
+    /// timeout and spent half its life *looking* expired, and a subscriber that
+    /// had not received anything yet never refreshed at all. Everything that
+    /// reads the participant table — `sub_count()`, `detect_optimal_backend`,
+    /// and (before it was fixed) slot reclamation in `register_role` — was then
+    /// making decisions about a live participant it believed was gone.
+    ///
+    /// Callers still gate this behind a small message counter so the clock read
+    /// stays off the per-message hot path; the wall-clock test here is what
+    /// decides whether the store actually happens.
+    #[inline]
+    fn refresh_lease_if_due(&self) {
+        let local = self.local();
+        if local.slot_index < 0 {
+            return;
+        }
+        let header = self.header();
+        let entry = &header.participants[local.slot_index as usize];
+        let timeout = header.lease_timeout();
+        let expires = entry.lease_expires_ms.load(Ordering::Acquire);
+        let now = current_time_ms();
+        if expires == 0 || now.saturating_add(timeout / 2) >= expires {
+            entry.refresh_lease(now, timeout);
+        }
+    }
+
     /// Initialize or re-initialize the per-path optimized backend based on current mode.
     ///
     /// Every topic is SHM-backed, so this creates (or restores) an ShmData backend

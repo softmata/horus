@@ -30,8 +30,53 @@ fn is_safe_path_component(name: &str) -> bool {
     if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
         return false;
     }
+    // `host_id` is interpolated as a JSON *value* as well as used as a filename,
+    // and this check used to look only at path safety — a quote character passed
+    // happily and let a remote peer author JSON structure in the presence file.
+    if name.contains('"') || name.chars().any(|c| (c as u32) < 0x20) {
+        return false;
+    }
     let mut comps = Path::new(name).components();
     matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
+}
+
+/// Escape a wire-supplied string for interpolation into the presence JSON.
+///
+/// `host_id` and node names arrive from an unauthenticated UDP peer and are
+/// pasted into a JSON document with `format!`. Without escaping, a node named
+/// `x","rate_hz":0},{"name":"fake` authors JSON *structure*, so a remote party
+/// decides what `horus node list` reports about the fleet — and an unbalanced
+/// quote makes the document unparseable, taking the host's presence out
+/// entirely. The module encodes JSON by hand on purpose (no serde here), so the
+/// escaper is the fix that fits: quote, backslash and every control character.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether a wire-supplied node name is a plain identifier.
+///
+/// Node names had no validation at all: any length, any bytes. Bounding them
+/// and restricting them to identifier characters keeps a hostile broadcast from
+/// filling the presence file with megabytes of arbitrary text (and is a second
+/// line of defence behind `json_escape`).
+fn is_plain_node_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 /// Manages incoming remote presence data — writes presence files to disk.
@@ -148,6 +193,10 @@ impl PresenceReceiver {
             let name = String::from_utf8_lossy(&data[pos..pos + name_len]).to_string();
             pos += name_len;
 
+            // Skip just this node, not the whole broadcast: one malformed entry
+            // should not cost us the rest of a peer's presence.
+            let name_ok = is_plain_node_name(&name);
+
             // Rate Hz (f64)
             if pos + 8 > data.len() {
                 break;
@@ -165,9 +214,13 @@ impl PresenceReceiver {
             let rate_hz = f64::from_bits(rate_bits);
             pos += 8;
 
+            if !name_ok {
+                continue;
+            }
+
             nodes_json.push(format!(
                 r#"{{"name":"{}","rate_hz":{}}}"#,
-                name,
+                json_escape(&name),
                 if rate_hz.is_finite() {
                     format!("{:.1}", rate_hz)
                 } else {
@@ -188,9 +241,9 @@ impl PresenceReceiver {
         // Write JSON presence file
         let json = format!(
             r#"{{"host_id":"{}","is_remote":true,"last_seen_ns":{},"namespace":"{}","nodes":[{}]}}"#,
-            host_id,
+            json_escape(&host_id),
             timestamp_ns,
-            namespace,
+            json_escape(&namespace),
             nodes_json.join(",")
         );
 

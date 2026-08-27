@@ -4,7 +4,7 @@
 //! so both `horus_core` (for `Topic<Image>`) and `horus_robotics` (for
 //! `CompressedImage`, `CameraInfo`) can reference it.
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Zeroable;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -13,7 +13,8 @@ use super::dtype::TensorDtype;
 /// Image encoding formats
 ///
 /// Represents the pixel format and data layout of image data.
-/// `repr(u8)` for Pod safety — stored inline in fixed-size descriptors.
+/// `repr(u8)` — stored inline in fixed-size descriptors as the raw
+/// discriminant byte, laundered through [`ImageEncoding::from_raw`] on read.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ImageEncoding {
@@ -42,8 +43,16 @@ pub enum ImageEncoding {
     Depth16 = 10,
 }
 
-// Safety: ImageEncoding is repr(u8) with valid values 0-10.
-unsafe impl Pod for ImageEncoding {}
+// `Pod` used to be implemented here, and it was never sound: `Pod` promises that
+// EVERY bit pattern of the type's size is a valid value, and only 11 of the 256
+// byte values name a variant.  The impl licensed `bytemuck::from_bytes` and the
+// bare `ptr::read` recv path to materialise an `ImageEncoding` straight out of
+// peer-writable shared memory, so a byte outside 0..=10 produced an invalid
+// discriminant — undefined behaviour, because `bytes_per_pixel()`'s exhaustive
+// `match` may lower to an unguarded jump table indexed by it.  `ImageDescriptor`
+// now holds the raw byte and launders it through `from_raw()`.
+//
+// `Zeroable` is sound and stays: discriminant 0 is `Mono8`.
 unsafe impl Zeroable for ImageEncoding {}
 
 impl ImageEncoding {
@@ -189,18 +198,20 @@ mod tests {
         );
     }
 
+    /// This test used to roundtrip every variant through `bytemuck::bytes_of` /
+    /// `bytemuck::from_bytes`, which only compiled because of the unsound
+    /// `unsafe impl Pod for ImageEncoding`.  `Pod` is gone; the property it was
+    /// really pinning — the on-wire byte value of each variant — is checked here
+    /// through the discriminant cast and `from_raw`, which is how
+    /// `ImageDescriptor` reads the byte now.
     #[test]
-    fn test_encoding_pod_soundness() {
+    fn test_encoding_wire_byte_repr() {
         // ImageEncoding is repr(u8): 1 byte, 1-byte alignment
         assert_eq!(std::mem::size_of::<ImageEncoding>(), 1);
         assert_eq!(std::mem::align_of::<ImageEncoding>(), 1);
 
-        let enc = ImageEncoding::Rgb8;
-        let bytes = bytemuck::bytes_of(&enc);
-        assert_eq!(bytes.len(), 1);
-        assert_eq!(bytes[0], 2); // Rgb8 = 2
+        assert_eq!(ImageEncoding::Rgb8 as u8, 2);
 
-        // Roundtrip every variant through bytemuck
         for (expected_byte, enc) in [
             (0u8, ImageEncoding::Mono8),
             (1, ImageEncoding::Mono16),
@@ -214,10 +225,19 @@ mod tests {
             (9, ImageEncoding::BayerRggb8),
             (10, ImageEncoding::Depth16),
         ] {
-            let b = bytemuck::bytes_of(&enc);
-            assert_eq!(b[0], expected_byte, "byte repr mismatch for {:?}", enc);
-            let recovered: &ImageEncoding = bytemuck::from_bytes(b);
-            assert_eq!(*recovered, enc, "roundtrip failed for {:?}", enc);
+            assert_eq!(enc as u8, expected_byte, "byte repr mismatch for {:?}", enc);
+            assert_eq!(
+                ImageEncoding::from_raw(expected_byte),
+                enc,
+                "roundtrip failed for {:?}",
+                enc
+            );
+        }
+
+        // Every byte that names no variant must launder to the Rgb8 fallback
+        // rather than becoming an invalid discriminant.
+        for raw in (ImageEncoding::MAX_DISCRIMINANT + 1)..=u8::MAX {
+            assert_eq!(ImageEncoding::from_raw(raw), ImageEncoding::Rgb8);
         }
     }
 

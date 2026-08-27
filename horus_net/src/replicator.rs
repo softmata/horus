@@ -424,6 +424,12 @@ impl Replicator {
                     let payload = buf[payload_start..].to_vec();
 
                     let frag = crate::fragment::Fragment {
+                        // The reassembly key includes the sender: `fragment_id`
+                        // is a per-process counter every peer starts at 0, so
+                        // without this two peers publishing the same topic
+                        // reassemble into a single buffer and one message is
+                        // spliced together from both of their fragments.
+                        sender_id_hash: header.sender_id_hash,
                         topic_hash: mh.topic_hash,
                         sequence: mh.sequence,
                         timestamp_ns: mh.timestamp_ns,

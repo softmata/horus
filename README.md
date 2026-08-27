@@ -41,7 +41,7 @@ git clone https://github.com/softmata/horus.git && cd horus && ./install.sh
 ```
 
 **Requires Rust 1.90 or newer** (`rustup update stable`). Python 3.9+ for the
-Python API; CMake 3.16+ and a C++17 compiler for the C++ API.
+Python API; CMake 3.20+ and a C++17 compiler for the C++ API.
 
 Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#include <horus/horus.hpp>`
 
@@ -348,7 +348,15 @@ Measured with RDTSC cycle counting, Tukey IQR outlier filtering, bootstrap 95% C
 | Cross-process        | **171 ns** | end-to-end, one-way    |
 | 1 pub → 3 subs       | **80 ns**  | producer-side `send()` |
 
-Reproduce with `cargo run --release --bin all_paths_latency`, which prints the
+The link above is to the methodology — RDTSC timing with calibrated overhead
+subtraction, Tukey IQR fences, bootstrap 95% CIs — which is shared. The numbers
+are not: this table is an i9-14900K run whose raw percentiles are not published
+here, while the tables in [`benchmarks/README.md`](benchmarks/README.md) were
+taken on an Intel Core i7-10750H @ 2.60 GHz under the `powersave` governor. The
+two sets are not comparable row to row, and the i7 figures are the ones this
+repository can show its work for.
+
+Reproduce with `cargo run --release -p horus_benchmarks --bin all_paths_latency`, which prints the
 full percentile distribution, the backend selected for each topology, and the
 measured hardware floor it subtracts.
 
@@ -369,7 +377,7 @@ your own hardware and message sizes.
 | Throughput    | 95 M msg/s | 22 M msg/s | **4.3x** |
 
 Unlike the ROS 2 row above, this one is measured on both sides: reproduce with
-`cargo run --release --bin iceoryx2_comparison --features iceoryx2`, which links
+`cargo run --release -p horus_benchmarks --bin iceoryx2_comparison --features iceoryx2`, which links
 iceoryx2 and times it in the same harness.
 
 Scales near-linearly to 100 nodes (14% degradation) and O(1) to 1,000 topics.
@@ -382,14 +390,16 @@ cargo run --release -p horus_benchmarks --bin all_paths_latency    # run it your
 
 ## Examples
 
-10 working projects in [`examples/`](examples/) — from differential drive to quadruped gait generation:
+12 working projects in [`examples/`](examples/) — from differential drive to quadruped gait generation. Every directory there is a `horus.toml` project: `horus build` and `horus run` drive all of them, in Rust, Python or C++.
+
+The single-file API demos are examples of the `horus` crate. The workspace root is a virtual manifest, so select the package with `-p`:
 
 ```bash
-cargo run --example 01_hello_node     # your first node
-cargo run --example 02_pub_sub        # topics and messages
-cargo run --example 03_multi_rate     # multi-rate scheduling
-cargo run --example 04_services       # request/response
-cargo run --example 05_realtime       # RT with deadline enforcement
+cargo run -p horus --example 01_hello_node     # your first node
+cargo run -p horus --example 02_pub_sub        # topics and messages
+cargo run -p horus --example 03_multi_rate     # multi-rate scheduling
+cargo run -p horus --example 04_services       # request/response
+cargo run -p horus --example 05_realtime       # RT with deadline enforcement
 ```
 
 [Full examples →](examples/) · [Tutorials →](https://docs.horusrobotics.dev/tutorials/01-sensor-node-rust) · [ROS 2 bridge recipe →](https://docs.horusrobotics.dev/recipes/ros2-bridge)

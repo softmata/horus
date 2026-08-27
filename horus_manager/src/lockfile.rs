@@ -2,7 +2,22 @@
 //!
 //! Tracks pinned versions for all dependency sources (registry, crates.io, PyPI)
 //! alongside toolchain versions, system dependencies, and feature flags.
-//! This is the single source of truth for reproducible builds across machines.
+//!
+//! ## Known limitation: the pins are recorded, not yet enforced
+//!
+//! This module used to claim to be "the single source of truth for
+//! reproducible builds across machines". It is not one yet, and saying so hid
+//! the gap. `[[package]]` entries are written by the resolver and read back by
+//! [`HorusLockfile::get_pinned`], but no install path consults them: the pip,
+//! crates.io and registry installers still take their versions from the
+//! manifest and fall back to `latest`, so a checkout of a committed
+//! `horus.lock` on a clean machine can install a different version than the
+//! one recorded. `LockedPackage::checksum` is likewise written (always `None`
+//! today) and never compared against a download. Only `config_hash` is
+//! consulted, and it merely decides whether resolution can be skipped.
+//!
+//! Until the resolver applies `get_pinned` before installing, treat this file
+//! as a record of what *was* resolved, not a guarantee of what *will* be.
 //!
 //! ## Format (v4)
 //!
@@ -224,6 +239,19 @@ impl HorusLockfile {
         self.packages
             .sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.name.cmp(&b.name)));
     }
+
+    /// Get the pinned version for a package, if any.
+    ///
+    /// This lived behind `#[cfg(test)]`, which is why the pins were written
+    /// and never enforced: nothing outside the test module could read them.
+    /// It is production API now so the resolver can apply a pin before
+    /// installing; see the module-level note on what is still missing.
+    pub fn get_pinned(&self, name: &str, source: &str) -> Option<&str> {
+        self.packages
+            .iter()
+            .find(|p| p.name == name && p.source == source)
+            .map(|p| p.version.as_str())
+    }
 }
 
 #[cfg(test)]
@@ -232,14 +260,6 @@ impl HorusLockfile {
     pub fn unpin(&mut self, name: &str, source: &str) {
         self.packages
             .retain(|p| !(p.name == name && p.source == source));
-    }
-
-    /// Get the pinned version for a package, if any.
-    pub fn get_pinned(&self, name: &str, source: &str) -> Option<&str> {
-        self.packages
-            .iter()
-            .find(|p| p.name == name && p.source == source)
-            .map(|p| p.version.as_str())
     }
 
     /// Get all pinned packages for a given source.

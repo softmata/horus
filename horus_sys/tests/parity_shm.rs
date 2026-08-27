@@ -98,6 +98,83 @@ fn test_shm_rejects_empty_name() {
     assert!(result.is_err(), "empty name should be rejected");
 }
 
+/// A name no other run can collide with.
+///
+/// The two tests below assert on *ownership*, so a region left behind by an
+/// aborted earlier run would make the first `new()` attach instead of create and
+/// the assertion would fail for the wrong reason.
+fn unique_name(prefix: &str) -> String {
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
+}
+
+/// A region joined through `open_existing` must be writable on every backend.
+///
+/// `as_slice_mut()` promises a `&mut [u8]` in the one API all four backends
+/// share, but macOS mapped `PROT_READ` and Windows `FILE_MAP_READ` in
+/// `open_existing`, so the same safe code that worked on Linux took SIGBUS /
+/// EXCEPTION_ACCESS_VIOLATION at its first store. Nothing in this suite ever
+/// built a region through `open_existing`, which is why the divergence survived.
+#[test]
+fn test_shm_open_existing_view_is_writable() {
+    let name = unique_name("parity_open_existing_rw");
+    let creator = shm::ShmRegion::new(&name, 4096).unwrap();
+
+    let mut joiner = shm::ShmRegion::open_existing(&name, 4096).unwrap();
+    joiner.as_slice_mut()[0] = 0xAB;
+
+    assert_eq!(
+        creator.as_slice()[0],
+        0xAB,
+        "a write through open_existing's view must be visible to the creator"
+    );
+
+    drop(joiner);
+    drop(creator);
+}
+
+/// The creator leaving must not take the region away from the other holders.
+///
+/// "Owner" records only who won the race to create the region. Cleaning up on
+/// that basis alone breaks the ordinary publisher restart: the creator exits,
+/// the subscribers stay mapped to something nobody will write to again, and the
+/// restarted publisher creates a *second* region with no error on either side.
+#[test]
+fn test_shm_creator_drop_does_not_orphan_other_holders() {
+    let name = unique_name("parity_holder_lifetime");
+    let creator = shm::ShmRegion::new(&name, 4096).unwrap();
+    assert!(creator.is_owner(), "sanity: first caller creates the region");
+
+    let mut joiner = shm::ShmRegion::open_existing(&name, 4096).unwrap();
+
+    // The creator leaves first — the common case when a publisher restarts.
+    drop(creator);
+
+    // The surviving holder still has live, writable memory.
+    joiner.as_slice_mut()[0] = 0x5A;
+    assert_eq!(joiner.as_slice()[0], 0x5A);
+
+    // And the restarted publisher joins the SAME region rather than creating a
+    // second one alongside it.
+    let restarted = shm::ShmRegion::new(&name, 4096).unwrap();
+    assert!(
+        !restarted.is_owner(),
+        "the region was removed while another holder still had it mapped, so \
+         the restarted publisher created a second one; its subscribers would \
+         wait forever on memory it never writes to"
+    );
+
+    drop(restarted);
+    drop(joiner);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Group 2: TopicMeta CRUD
 // ═══════════════════════════════════════════════════════════════════════════

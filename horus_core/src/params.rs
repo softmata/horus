@@ -1444,6 +1444,53 @@ mod tests {
         assert_eq!(v.unwrap().as_bool(), Some(true));
     }
 
+    /// Regression: `load_from_disk` must OVERLAY the file's keys, never replace
+    /// the whole map. It used to do `*params = loaded`, so `horus param load`
+    /// with a small tuning file erased every other parameter — and the
+    /// `save_to_disk()` that follows it persisted the erasure.
+    #[test]
+    fn load_from_disk_overlays_instead_of_replacing() {
+        let params = create_test_params();
+        params.set("gripper_max_current", 3.5_f64).unwrap();
+        params.set("max_speed", 1.0_f64).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("speed_tuning.yaml");
+        std::fs::write(&path, "max_speed: 2.0\n").unwrap();
+
+        params.load_from_disk(&path).unwrap();
+
+        let speed: Option<f64> = params.get("max_speed");
+        assert_eq!(speed, Some(2.0), "the file's key must be applied");
+        let current: Option<f64> = params.get("gripper_max_current");
+        assert_eq!(
+            current,
+            Some(3.5),
+            "a key absent from the file must survive the load"
+        );
+        // The overlay goes through set(), so versions advance as for any change.
+        assert!(
+            params.get_version("max_speed") > 0,
+            "loading a key must bump its version like any other set()"
+        );
+    }
+
+    /// An empty params file means "no overrides", not a parse error — `new()`
+    /// already treats it that way and `load_from_disk` must agree.
+    #[test]
+    fn load_from_disk_tolerates_an_empty_file() {
+        let params = create_test_params();
+        params.set("keep_me", 7_i64).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.yaml");
+        std::fs::write(&path, "").unwrap();
+
+        params.load_from_disk(&path).expect("empty file must load");
+        let kept: Option<i64> = params.get("keep_me");
+        assert_eq!(kept, Some(7));
+    }
+
     #[test]
     fn version_advances_under_concurrent_writes() {
         let params = create_test_params();

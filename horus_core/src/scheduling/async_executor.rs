@@ -82,15 +82,17 @@ impl AsyncExecutor {
             print_line("[Async I/O] Warning: thread handle already consumed — nothing to join");
             return Vec::new();
         };
-        match handle.join() {
-            Ok(nodes) => nodes,
-            Err(_) => {
-                print_line(
-                    "[Async I/O] Warning: executor thread panicked; its nodes could not be reclaimed",
-                );
-                Vec::new()
-            }
-        }
+        // Bounded join, matching the guarantee RtExecutor::stop documents. A
+        // bare `handle.join()` here hung the entire shutdown whenever an async
+        // node blocked inside `tick()`, because this loop only re-checks
+        // `running` between ticks — and `run_with_filter` calls this before it
+        // shuts down or safes any other node.
+        super::primitives::join_with_timeout(
+            handle,
+            "Async I/O",
+            super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
+        )
+        .unwrap_or_default()
     }
 
     /// Main function for the async I/O thread.
@@ -387,8 +389,15 @@ impl AsyncExecutor {
 
 impl Drop for AsyncExecutor {
     fn drop(&mut self) {
+        // Bounded here too: an early return or a panic can drop the executor
+        // without ever calling `stop()`, and an unbounded join on that path
+        // hangs exactly as badly.
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            let _ = super::primitives::join_with_timeout(
+                handle,
+                "Async I/O",
+                super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
+            );
         }
     }
 }

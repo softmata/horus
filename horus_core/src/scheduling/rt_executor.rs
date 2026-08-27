@@ -153,37 +153,17 @@ impl RtExecutor {
     /// Shutdown always completes within `SHUTDOWN_TIMEOUT_PER_THREAD × num_threads`.
     /// A single stalled node cannot block the process from exiting.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
-        /// Maximum time to wait for each RT thread to exit during shutdown.
-        /// If a thread doesn't exit within this time, it is detached.
-        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
-
+        // The bounded-join loop lives in `primitives::join_with_timeout` so the
+        // compute, event and async executors — which used to join unbounded —
+        // back the same guarantee from one implementation.
         let mut all_nodes = Vec::new();
         for (i, handle) in std::mem::take(&mut self.handles).into_iter().enumerate() {
-            let start = Instant::now();
-            loop {
-                if handle.is_finished() {
-                    match handle.join() {
-                        Ok(nodes) => all_nodes.extend(nodes),
-                        Err(_) => {
-                            print_line(&format!("[RT-thread] Thread {} panicked during stop", i));
-                        }
-                    }
-                    break;
-                }
-                if start.elapsed() > SHUTDOWN_TIMEOUT {
-                    print_line(&format!(
-                        "[RT-thread] Thread {} did not exit within {:?} — \
-                         detaching (possible stalled tick). The thread will be \
-                         terminated when the process exits.",
-                        i, SHUTDOWN_TIMEOUT
-                    ));
-                    // Drop JoinHandle without joining. The thread continues
-                    // running but dies when the process exits. Nodes on this
-                    // thread are lost (not returned to the scheduler).
-                    drop(handle);
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            if let Some(nodes) = super::primitives::join_with_timeout(
+                handle,
+                &format!("RT-thread {i}"),
+                super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
+            ) {
+                all_nodes.extend(nodes);
             }
         }
         all_nodes

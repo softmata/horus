@@ -3,7 +3,7 @@
 //! Provides the canonical enumeration of supported tensor element types
 //! with conversions to/from DLPack codes, numpy type strings, and string parsing.
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Zeroable;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -24,7 +24,8 @@ pub(crate) mod dlpack_codes {
 /// Data type for tensor elements
 ///
 /// Matches common ML framework dtypes for seamless interop.
-/// repr(u8) with values 0-12 for Pod safety.
+/// `repr(u8)` with values 0-12.  Wire structs store the raw discriminant
+/// byte and launder it through [`TensorDtype::from_raw`].
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TensorDtype {
@@ -57,8 +58,16 @@ pub enum TensorDtype {
     Bool = 12,
 }
 
-// Safety: TensorDtype is repr(u8) with valid values 0-12, all bit patterns in that range are valid
-unsafe impl Pod for TensorDtype {}
+// `Pod` used to be implemented here, and it was never sound: `Pod` promises that
+// EVERY bit pattern of the type's size is a valid value, and only 13 of the 256
+// byte values name a variant.  The impl licensed `bytemuck::from_bytes` and the
+// bare `ptr::read` recv path to materialise a `TensorDtype` straight out of
+// peer-writable shared memory, so a byte outside 0..=12 produced an invalid
+// discriminant — undefined behaviour, because an exhaustive `match` may lower to
+// an unguarded jump table indexed by it.  Wire structs now hold the raw byte and
+// launder it through `from_raw()`.
+//
+// `Zeroable` is sound and stays: discriminant 0 is `F32`.
 unsafe impl Zeroable for TensorDtype {}
 
 impl TensorDtype {
@@ -323,22 +332,21 @@ mod tests {
         assert_eq!(TensorDtype::I64.numpy_typestr(), "<i8");
     }
 
+    /// This test used to roundtrip every variant through `bytemuck::bytes_of` /
+    /// `bytemuck::from_bytes`, which only compiled because of the unsound
+    /// `unsafe impl Pod for TensorDtype`.  `Pod` is gone; the property it was
+    /// really pinning — the on-wire byte value of each variant — is checked here
+    /// through the discriminant cast and `from_raw`, which is how wire structs
+    /// read the byte now.
     #[test]
-    fn test_dtype_pod_soundness() {
+    fn test_dtype_wire_byte_repr() {
         // TensorDtype is repr(u8), so each variant occupies exactly 1 byte
         assert_eq!(std::mem::size_of::<TensorDtype>(), 1);
         assert_eq!(std::mem::align_of::<TensorDtype>(), 1);
 
-        let dtype = TensorDtype::F32;
-        let bytes = bytemuck::bytes_of(&dtype);
-        assert_eq!(bytes.len(), 1);
-        assert_eq!(bytes[0], 0); // F32 = 0
+        assert_eq!(TensorDtype::F32 as u8, 0);
+        assert_eq!(TensorDtype::U8 as u8, 8);
 
-        let dtype2 = TensorDtype::U8;
-        let bytes2 = bytemuck::bytes_of(&dtype2);
-        assert_eq!(bytes2[0], 8); // U8 = 8
-
-        // Roundtrip every variant through bytemuck
         for (expected_byte, dtype) in [
             (0u8, TensorDtype::F32),
             (1, TensorDtype::F64),
@@ -354,10 +362,19 @@ mod tests {
             (11, TensorDtype::U64),
             (12, TensorDtype::Bool),
         ] {
-            let b = bytemuck::bytes_of(&dtype);
-            assert_eq!(b[0], expected_byte, "byte repr mismatch for {:?}", dtype);
-            let recovered: &TensorDtype = bytemuck::from_bytes(b);
-            assert_eq!(*recovered, dtype, "roundtrip failed for {:?}", dtype);
+            assert_eq!(dtype as u8, expected_byte, "byte repr mismatch for {:?}", dtype);
+            assert_eq!(
+                TensorDtype::from_raw(expected_byte),
+                dtype,
+                "roundtrip failed for {:?}",
+                dtype
+            );
+        }
+
+        // Every byte that names no variant must launder to the F32 fallback
+        // rather than becoming an invalid discriminant.
+        for raw in (TensorDtype::MAX_DISCRIMINANT + 1)..=u8::MAX {
+            assert_eq!(TensorDtype::from_raw(raw), TensorDtype::F32);
         }
     }
 

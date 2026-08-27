@@ -394,6 +394,58 @@ mod tests {
         let _ = can_set_rt_priority(); // just verify it doesn't panic
     }
 
+    /// The capability probe must not change the caller's scheduling class.
+    ///
+    /// `RuntimeCapabilities::detect()` calls this on whichever thread builds a
+    /// `Scheduler`, and the scheduler's tick loop then runs on that same thread.
+    /// The probe used to set SCHED_FIFO and "restore" a hardcoded SCHED_OTHER
+    /// priority 0, so a process deployed with `chrt -f 80` had its tick loop
+    /// silently demoted to the time-sharing class while the detection it just
+    /// ran reported RT as available.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_can_set_rt_priority_leaves_thread_policy_untouched() {
+        // A scratch thread, so a failure here cannot disturb the rest of the
+        // suite. If the process happens to be privileged the thread is put on
+        // SCHED_FIFO first, which is the case that used to be destroyed.
+        std::thread::spawn(|| {
+            // SAFETY: pid 0 = current thread; sched_param is a POD struct for
+            // which all-zero is a valid bit pattern.
+            unsafe {
+                let mut param: libc::sched_param = std::mem::zeroed();
+                param.sched_priority = 10;
+                libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
+            }
+
+            // SAFETY: pid 0 = current thread; both calls only read.
+            let (policy_before, prio_before) = unsafe {
+                let mut param: libc::sched_param = std::mem::zeroed();
+                libc::sched_getparam(0, &mut param);
+                (libc::sched_getscheduler(0), param.sched_priority)
+            };
+
+            let _ = can_set_rt_priority();
+
+            // SAFETY: same read-only queries as above.
+            let (policy_after, prio_after) = unsafe {
+                let mut param: libc::sched_param = std::mem::zeroed();
+                libc::sched_getparam(0, &mut param);
+                (libc::sched_getscheduler(0), param.sched_priority)
+            };
+
+            assert_eq!(
+                policy_before, policy_after,
+                "can_set_rt_priority() changed the calling thread's scheduling policy"
+            );
+            assert_eq!(
+                prio_before, prio_after,
+                "can_set_rt_priority() changed the calling thread's priority"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn test_pin_to_cores_empty_is_ok() {
         pin_to_cores(&[]).unwrap();

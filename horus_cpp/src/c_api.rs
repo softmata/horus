@@ -28,11 +28,18 @@ pub unsafe extern "C" fn horus_scheduler_destroy(sched: *mut FfiScheduler) {
     }
 }
 
-/// Set tick rate in Hz.
+/// Set tick rate in Hz. Returns 0 on success, -1 if `sched` is null or `hz` is
+/// not a finite positive number.
+///
+/// This used to return void and truncate `hz` to a `u64`, so any rate below
+/// 1 Hz became 0 and tripped an `assert!` deep in `u64::hz()` — a panic inside
+/// an `extern "C"` frame, which aborts the process rather than telling C++
+/// anything. Invalid rates are now reported through the return value.
 #[no_mangle]
-pub unsafe extern "C" fn horus_scheduler_tick_rate(sched: *mut FfiScheduler, hz: f64) {
-    if let Some(s) = sched.as_mut() {
-        scheduler_ffi::scheduler_tick_rate(s, hz);
+pub unsafe extern "C" fn horus_scheduler_tick_rate(sched: *mut FfiScheduler, hz: f64) -> i32 {
+    match sched.as_mut() {
+        Some(s) if scheduler_ffi::scheduler_tick_rate(s, hz) => 0,
+        _ => -1,
     }
 }
 
@@ -202,9 +209,16 @@ pub unsafe extern "C" fn horus_node_builder_build(
     }
     let builder = Box::from_raw(builder);
     let sched = &mut *sched;
-    match node_ffi::node_builder_build(builder, sched) {
-        Ok(()) => 0,
-        Err(_) => -1,
+    // A panic that escapes an `extern "C"` frame is undefined behaviour and in
+    // practice aborts the process, giving the C++ caller no way to react. Build
+    // runs a lot of horus_core code, so catch any unwind here and report it as
+    // the ordinary -1 failure the C API already documents.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        node_ffi::node_builder_build(builder, sched)
+    }));
+    match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) | Err(_) => -1,
     }
 }
 
@@ -2059,7 +2073,13 @@ mod tests {
             assert!(!sched.is_null());
             assert!(horus_scheduler_is_running(sched));
 
-            horus_scheduler_tick_rate(sched, 100.0);
+            assert_eq!(horus_scheduler_tick_rate(sched, 100.0), 0);
+            // Sub-1 Hz rates used to truncate to 0 and abort the process from
+            // inside this extern "C" frame; invalid ones now return -1.
+            assert_eq!(horus_scheduler_tick_rate(sched, 0.5), 0);
+            assert_eq!(horus_scheduler_tick_rate(sched, 0.0), -1);
+            assert_eq!(horus_scheduler_tick_rate(sched, f64::NAN), -1);
+            assert_eq!(horus_scheduler_tick_rate(sched, 100.0), 0);
             horus_scheduler_prefer_rt(sched);
 
             assert_eq!(horus_scheduler_tick_once(sched), 0);
@@ -2106,7 +2126,7 @@ mod tests {
         unsafe {
             // All functions should handle null gracefully
             horus_scheduler_destroy(std::ptr::null_mut());
-            horus_scheduler_tick_rate(std::ptr::null_mut(), 100.0);
+            assert_eq!(horus_scheduler_tick_rate(std::ptr::null_mut(), 100.0), -1);
             horus_scheduler_stop(std::ptr::null());
             assert!(!horus_scheduler_is_running(std::ptr::null()));
             assert_eq!(horus_scheduler_tick_once(std::ptr::null_mut()), -1);

@@ -39,8 +39,18 @@ pub struct ImageDescriptor {
     timestamp_ns: u64,
     /// Bytes per row (may include padding for alignment)
     step: u32,
-    /// Pixel encoding format
-    encoding: ImageEncoding,
+    /// Pixel encoding format, held as the raw `repr(u8)` discriminant byte.
+    ///
+    /// This was `encoding: ImageEncoding`, and it was unsound: the descriptor is
+    /// read byte-for-byte out of peer-writable shared memory, so a byte outside
+    /// `0..=ImageEncoding::MAX_DISCRIMINANT` materialised an invalid enum
+    /// discriminant — undefined behaviour committed *before* any sanitiser could
+    /// run.  Read it through [`ImageDescriptor::encoding`], which launders the
+    /// byte via `ImageEncoding::from_raw`.  Same offset and size, so the
+    /// 224-byte wire layout is unchanged; `serde` still names the field
+    /// `encoding` and still writes the enum form.
+    #[serde(rename = "encoding", with = "encoding_serde")]
+    encoding_raw: u8,
     #[serde(skip)]
     _pad: [u8; 3],
     /// Frame ID (camera identifier, null-terminated)
@@ -49,7 +59,27 @@ pub struct ImageDescriptor {
     _reserved: [u8; 8],
 }
 
-// Safety: Image is repr(C), all fields are Pod, no implicit padding.
+/// Serde bridge for the raw encoding byte.
+///
+/// The discriminant is stored as a `u8` (see `encoding_raw`), but the serde form
+/// must stay byte-for-byte what it was when the field held an `ImageEncoding`,
+/// so recordings and JSON written by older builds still load.
+mod encoding_serde {
+    use super::ImageEncoding;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(raw: &u8, serializer: S) -> Result<S::Ok, S::Error> {
+        ImageEncoding::from_raw(*raw).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+        Ok(ImageEncoding::deserialize(deserializer)? as u8)
+    }
+}
+
+// Safety: Image is repr(C), every field is a plain integer or an array of them
+// (the encoding discriminant is a raw `u8` precisely so that all 256 byte values
+// really are valid, as `Pod` requires), no implicit padding.
 // 168 + 8 + 4 + 1 + 3 + 32 + 8 = 224 bytes, 224 % 8 = 0.
 unsafe impl Zeroable for ImageDescriptor {}
 unsafe impl Pod for ImageDescriptor {}
@@ -60,7 +90,7 @@ impl Default for ImageDescriptor {
             inner: Tensor::default(),
             timestamp_ns: 0,
             step: 0,
-            encoding: ImageEncoding::Rgb8,
+            encoding_raw: ImageEncoding::Rgb8 as u8,
             _pad: [0; 3],
             frame_id: [0; 32],
             _reserved: [0; 8],
@@ -71,12 +101,14 @@ impl Default for ImageDescriptor {
 impl ImageDescriptor {
     /// Sanitize an ImageDescriptor read from untrusted bytes (SHM, network, file).
     ///
-    /// Clamps inner tensor fields and encoding to valid ranges.
+    /// Clamps inner tensor fields and normalises the raw encoding byte.
+    /// [`encoding`](Self::encoding) already launders the byte on every read —
+    /// this only makes the *stored* byte agree, so a descriptor forwarded on the
+    /// wire carries the clamped value.
     #[inline]
     pub fn sanitize_from_shm(&mut self) {
         self.inner.sanitize_from_shm();
-        let enc_raw = unsafe { *(&self.encoding as *const ImageEncoding as *const u8) };
-        self.encoding = ImageEncoding::from_raw(enc_raw);
+        self.encoding_raw = self.encoding() as u8;
     }
 
     /// Create a new image descriptor from pre-built tensor + metadata.
@@ -108,7 +140,7 @@ impl ImageDescriptor {
             inner: tensor,
             timestamp_ns: 0,
             step,
-            encoding,
+            encoding_raw: encoding as u8,
             _pad: [0; 3],
             frame_id: [0; 32],
             _reserved: [0; 8],
@@ -122,7 +154,7 @@ impl ImageDescriptor {
         } else {
             1
         };
-        let encoding = ImageEncoding::from_dtype_channels(tensor.dtype, channels);
+        let encoding = ImageEncoding::from_dtype_channels(tensor.dtype(), channels);
         Self::new(tensor, encoding)
     }
 
@@ -161,7 +193,7 @@ impl ImageDescriptor {
     /// Pixel encoding format.
     #[inline]
     pub fn encoding(&self) -> ImageEncoding {
-        self.encoding
+        ImageEncoding::from_raw(self.encoding_raw)
     }
 
     /// Bytes per row.

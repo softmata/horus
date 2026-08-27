@@ -17,7 +17,7 @@
 extern "C" {
     void*    horus_scheduler_new();
     void     horus_scheduler_destroy(void* sched);
-    void     horus_scheduler_tick_rate(void* sched, double hz);
+    int      horus_scheduler_tick_rate(void* sched, double hz);
     void     horus_scheduler_stop(const void* sched);
     bool     horus_scheduler_is_running(const void* sched);
     int      horus_scheduler_tick_once(void* sched);
