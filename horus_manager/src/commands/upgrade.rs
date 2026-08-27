@@ -3,7 +3,7 @@
 //! Checks for newer versions of horus and installed plugins,
 //! downloads and installs updates.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::*;
 
 /// Run `horus self update`.

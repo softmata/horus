@@ -961,6 +961,25 @@ impl SafetyMonitor {
     }
 
     /// Check tick budget for a node — records timing data and checks overrun.
+    ///
+    /// This is pure accounting: it records the timing sample and reports the
+    /// violation to the caller. It does NOT escalate.
+    ///
+    /// It used to emergency-stop the whole robot whenever the overrunning node
+    /// was in `critical_nodes`. That set is populated by
+    /// `Scheduler::apply_safety_config` for EVERY RT node as soon as any
+    /// `.watchdog()` is configured, and `NodeRegistration::finalize` derives a
+    /// tick budget of 80% of the period for every `.rate()` node — so a single
+    /// microsecond of ordinary RT jitter latched a fleet-wide e-stop, silently
+    /// overriding the node's own `BudgetPolicy::Warn` (the documented default:
+    /// "log the violation but take no corrective action"). `critical_nodes`
+    /// means "has a watchdog", not "any timing blip is fatal".
+    ///
+    /// Escalation belongs to the paths that actually read configuration: the
+    /// `BudgetPolicy` dispatch in `rt_executor.rs` and
+    /// `Scheduler::check_timing_violations`, the graduated ladder via
+    /// `evaluate_degradation`, and the 3x-timeout watchdog e-stop in
+    /// `check_watchdogs_graduated`.
     pub(crate) fn check_tick_budget(
         &self,
         node_name: &str,
@@ -971,20 +990,9 @@ impl SafetyMonitor {
             .lock()
             .check_budget(node_name, execution_time);
 
-        if let Err(ref violation) = result {
-            let is_critical = self
-                .critical_nodes
-                .read()
-                .contains(&violation.node_name().to_string());
-            if is_critical {
-                self.budget_enforcer.lock().mark_critical_overrun();
-                self.trigger_emergency_stop(format!(
-                    "Critical node {} exceeded tick budget: {:?} > {:?}",
-                    violation.node_name(),
-                    violation.actual(),
-                    violation.budget()
-                ));
-            }
+        // Still counted for reporting — only the escalation is gone.
+        if result.is_err() && self.critical_nodes.read().contains(&node_name.to_string()) {
+            self.budget_enforcer.lock().mark_critical_overrun();
         }
 
         result
@@ -993,12 +1001,23 @@ impl SafetyMonitor {
     /// Record a deadline miss with severity tracking.
     ///
     /// Tracks per-node: total misses, consecutive misses, worst miss duration.
-    /// Triggers emergency stop for critical nodes or when total exceeds max.
+    /// Triggers emergency stop only when the process-wide total crosses
+    /// `max_deadline_misses`.
     pub(crate) fn record_deadline_miss(&self, node_name: &str) {
         self.record_deadline_miss_with_severity(node_name, 0);
     }
 
     /// Record a deadline miss with a specific severity (how far past deadline, in μs).
+    ///
+    /// Like `check_tick_budget`, this used to e-stop immediately whenever the
+    /// missing node was in `critical_nodes` — i.e. on the first miss of any
+    /// node reachable from a `.watchdog()` call. That contradicted
+    /// `Miss::Warn` (the `#[default]`, documented "log warning and continue
+    /// normally") and made the whole graduated ladder dead code, since
+    /// `DegradationPolicy` only starts acting at `warn_after: 3` consecutive
+    /// misses. Per-node escalation is the caller's job, via the `Miss` policy
+    /// dispatch and `evaluate_degradation`; only the `max_deadline_misses`
+    /// ceiling — an explicitly configured number — stops the robot here.
     pub(crate) fn record_deadline_miss_with_severity(&self, node_name: &str, severity_us: u64) {
         let misses = self.deadline_misses.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -1007,10 +1026,7 @@ impl SafetyMonitor {
             .lock()
             .record_deadline_miss(node_name, severity_us);
 
-        let is_critical = self.critical_nodes.read().contains(&node_name.to_string());
-        if is_critical {
-            self.trigger_emergency_stop(format!("Critical node {} missed deadline", node_name));
-        } else if misses >= self.max_deadline_misses {
+        if misses >= self.max_deadline_misses {
             self.trigger_emergency_stop(format!("Too many deadline misses: {}", misses));
         }
     }

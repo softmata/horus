@@ -23,8 +23,8 @@ use horus_core::core::timer::Rate;
 /// print(f"Actual: {rate.actual_hz():.1f} Hz")
 /// ```
 ///
-/// Note: ``sleep()`` blocks the calling thread. In multi-threaded Python code,
-/// the GIL is NOT released during sleep. Use in dedicated background threads.
+/// Note: ``sleep()`` blocks the calling thread, but releases the GIL for the
+/// duration of the sleep, so other Python threads keep running.
 #[pyclass(name = "Rate")]
 pub struct PyRate {
     inner: Rate,
@@ -52,8 +52,14 @@ impl PyRate {
     ///
     /// If work took longer than the period, sleep is skipped and the next
     /// cycle catches up (drift compensation).
-    fn sleep(&mut self) {
-        self.inner.sleep();
+    ///
+    /// Releases the GIL for the duration of the sleep.
+    // This is a real blocking OS sleep of up to one full period. It used to run
+    // with the GIL held, which froze every other Python thread for that whole
+    // period — the GIL is process-wide, so running the loop in a "dedicated
+    // background thread" was no escape from it.
+    fn sleep(&mut self, py: Python<'_>) {
+        py.detach(|| self.inner.sleep());
     }
 
     /// Actual achieved frequency in Hz (exponentially smoothed).
