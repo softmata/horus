@@ -240,15 +240,42 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
         if type_size == 0 || data.len() != type_size {
             return false;
         }
-        if len < layout::required_region_len(capacity, type_size) {
-            return false;
-        }
-        let slot_start = layout::data_slot_offset(capacity, index, type_size);
+        // Which geometry this region uses. Read from the region, never
+        // re-derived: this writer is fed by unauthenticated network data, and
+        // writing split offsets into a colo region (or the reverse) lands
+        // payload bytes on top of a neighbouring slot's stamp. That is the
+        // exact failure mode the copied-offset drift produced before
+        // `shm_layout` existed, reached this time through a layout mismatch
+        // instead of a stale constant.
+        // SAFETY: OFF_LAYOUT_KIND (49) sits inside the 640-byte header, whose
+        // presence the caller validated via the magic check.
+        let colo = unsafe { std::ptr::read_unaligned(base.add(layout::OFF_LAYOUT_KIND)) }
+            == layout::LAYOUT_COLO;
+        let (slot_start, ready_off) = if colo {
+            // slot_size is the colo stride; it must at least hold stamp+payload.
+            if slot_size < layout::COLO_PAYLOAD_OFF + type_size {
+                return false;
+            }
+            if len < layout::colo_required_region_len(capacity, slot_size) {
+                return false;
+            }
+            (
+                layout::colo_payload_offset(index, slot_size),
+                layout::colo_stamp_offset(index, slot_size),
+            )
+        } else {
+            if len < layout::required_region_len(capacity, type_size) {
+                return false;
+            }
+            // POD readiness lives in SEQ_ARRAY, not in the slot.
+            (
+                layout::data_slot_offset(capacity, index, type_size),
+                layout::seq_slot_offset(index),
+            )
+        };
         if slot_start + type_size > len {
             return false;
         }
-        // POD readiness lives in SEQ_ARRAY, not in the slot.
-        let ready_off = layout::seq_slot_offset(index);
 
         // Seqlock write phase: mark BEFORE touching the data, or a concurrent
         // `recv_shm_pod_broadcast` can validate a stamp, copy bytes we are

@@ -76,7 +76,7 @@ use super::shm_layout::SLOT_WRITING;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::local_state::EPOCH_CHECK_INTERVAL;
+use super::local_state::{LocalState, EPOCH_CHECK_INTERVAL};
 use super::RingTopic;
 use super::{simd_aware_read, simd_aware_read_uninit, simd_aware_write};
 use crate::utils::unlikely;
@@ -334,6 +334,40 @@ pub(super) type RecvFn<T> = fn(&RingTopic<T>) -> Option<T>;
 /// (e.g. cached per-batch) because migration can swap the `BackendStorage` enum
 /// variant between calls. If the guard were skipped, a stale `unreachable_unchecked`
 /// match on the wrong variant would be instant UB.
+/// Address of slot `index`'s readiness stamp and its payload, under whichever
+/// slot geometry this mapping uses.
+///
+/// Single point that knows both layouts. The split layout keeps stamps in a
+/// contiguous array (stride 8) and payloads in a separate region (stride
+/// `size_of::<T>()`); the colo layout interleaves them, one slot per cache
+/// line or more. Every POD path routes through here, because a path that
+/// computed the offsets itself and missed a layout would read payload bytes
+/// as a stamp — silent corruption on a live IPC region, which is exactly what
+/// `shm_layout` was written to prevent.
+///
+/// # Safety
+/// `index` must be `< capacity`, and `local`'s cached pointers must belong to
+/// the current mapping.
+#[inline(always)]
+pub(super) unsafe fn slot_ptrs<T>(
+    local: &LocalState,
+    index: usize,
+) -> (*const std::sync::atomic::AtomicU64, *mut T) {
+    let stride = local.cached_colo_stride;
+    if stride != 0 {
+        let off = index * stride as usize;
+        (
+            local.cached_seq_ptr.add(off) as *const std::sync::atomic::AtomicU64,
+            local.cached_data_ptr.add(off) as *mut T,
+        )
+    } else {
+        (
+            local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64,
+            (local.cached_data_ptr as *mut T).add(index),
+        )
+    }
+}
+
 macro_rules! epoch_guard_send {
     ($topic:expr, $msg:ident) => {
         // Acquire ordering ensures that backend writes from the migrating thread
@@ -837,6 +871,34 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     let index = (seq & local.cached_capacity_mask) as usize;
     let new_seq = seq.wrapping_add(1);
+    // Co-located geometry: the stamp shares a cache line with its payload, so
+    // publishing dirties one line instead of the three the split layout does
+    // (data slot, sequence-array entry, and the header's publish word). The
+    // stride is a cached register, constant for the life of the mapping, so
+    // this branch predicts perfectly.
+    let colo_stride = local.cached_colo_stride;
+    if colo_stride != 0 {
+        let off = index * colo_stride as usize;
+        // SAFETY: cached_seq_ptr is slot 0's stamp and cached_data_ptr slot 0's
+        // payload; index < capacity (mask), and the region was sized for
+        // capacity * colo_stride bytes past HEADER_SIZE.
+        unsafe {
+            let stamp =
+                &*(local.cached_seq_ptr.add(off) as *const std::sync::atomic::AtomicU64);
+            // Boehm seqlock write side. The WRITING marker is what lets a
+            // consumer detect a producer that lapped onto this slot mid-copy;
+            // PodShm broadcast overwrites without backpressure, so that
+            // window is real rather than theoretical.
+            stamp.store(SLOT_WRITING | new_seq, Ordering::Release);
+            simd_aware_write(local.cached_data_ptr.add(off) as *mut T, msg);
+            stamp.store(new_seq, Ordering::Release);
+        }
+        local.local_head = new_seq;
+        header.sequence_or_head.store(new_seq, Ordering::Release);
+        housekeep_lease!(local, topic);
+        return Ok(());
+    }
+
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // cached_seq_ptr points to the per-slot ready-flag array (set unconditionally
     // in ensure_role). index*8 is within bounds. simd_aware_write handles alignment
@@ -923,11 +985,9 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     // cached_seq_ptr points to per-slot ready-flag array. index*8 is within bounds.
     // simd_aware_write handles alignment. Release store publishes data to consumers.
     unsafe {
-        let base = local.cached_data_ptr as *mut T;
-        simd_aware_write(base.add(index), msg);
-        let ready_ptr =
-            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
+        let (ready_ptr, data_ptr) = slot_ptrs::<T>(local, index);
+        simd_aware_write(data_ptr, msg);
+        (*ready_ptr).store(seq.wrapping_add(1), Ordering::Release);
     }
     local.local_head = seq + 1;
 
@@ -960,9 +1020,8 @@ pub(super) fn send_shm_pod_broadcast<
     // within bounds (index < capacity). cached_data_ptr points to SHM data region.
     // simd_aware_write handles alignment. Release store publishes data to consumers.
     unsafe {
-        let ready_ptr =
-            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        let base = local.cached_data_ptr as *mut T;
+        let (ready_ptr_raw, data_ptr) = slot_ptrs::<T>(local, index);
+        let ready_ptr = &*ready_ptr_raw;
 
         // Seqlock write phase. Broadcast has NO backpressure — it overwrites the
         // oldest slot unconditionally — so a producer that laps the ring can
@@ -983,7 +1042,7 @@ pub(super) fn send_shm_pod_broadcast<
         // those consumers simply read "not ready" for the duration of a write.
         ready_ptr.store(seq.wrapping_add(1) | SLOT_WRITING, Ordering::Relaxed);
         fence(Ordering::Release);
-        simd_aware_write(base.add(index), msg);
+        simd_aware_write(data_ptr, msg);
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
     }
     local.local_head = seq + 1;
@@ -1291,6 +1350,47 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
     let tail = local.local_tail;
     let mask = local.cached_capacity_mask;
+
+    // Co-located geometry: gate on the slot's own stamp rather than on
+    // `header.sequence_or_head`. That is the entire point of the layout — the
+    // stamp and the payload are the same cache line, so a receive costs ONE
+    // coherence miss. The split path below costs two: the header's publish
+    // word (a line the producer writes every message, so always a miss) and
+    // then the data slot.
+    let colo_stride = local.cached_colo_stride;
+    if colo_stride != 0 {
+        let off = (tail & mask) as usize * colo_stride as usize;
+        let want = tail.wrapping_add(1);
+        // SAFETY: cached_seq_ptr is slot 0's stamp; (tail & mask) < capacity and
+        // the region holds capacity * colo_stride bytes past HEADER_SIZE.
+        let stamp =
+            unsafe { &*(local.cached_seq_ptr.add(off) as *const std::sync::atomic::AtomicU64) };
+        // A slot is ours exactly when it carries `tail + 1`. A producer that
+        // has lapped stores `tail + 1 + capacity`, and one mid-write has the
+        // WRITING bit set, so both are excluded by the same equality.
+        if stamp.load(Ordering::Acquire) != want {
+            housekeep_epoch!(local, topic);
+            return None;
+        }
+        // SAFETY: the Acquire load above observed the producer's Release
+        // store of this exact sequence, so the payload beside it is fully
+        // written. SPSC has backpressure, so it cannot be overwritten while
+        // we read.
+        let msg = unsafe { simd_aware_read(local.cached_data_ptr.add(off) as *const T) };
+        local.local_tail = want;
+        // Keep `local_head` a valid lower bound on what has been published.
+        // The split path refreshes it from the header; if this topic ever
+        // migrates to that path, a stale `local_head` would make its
+        // `local_head - tail == 0` emptiness test read an unwritten slot.
+        local.local_head = want;
+        let flush_mask = mask >> 1;
+        if want & flush_mask == 0 {
+            header.tail.store(want, Ordering::Release);
+        }
+        housekeep_lease!(local, topic);
+        return Some(msg);
+    }
+
     if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if local.local_head.wrapping_sub(tail) == 0 {
@@ -1371,9 +1471,8 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
     // index*8 is within bounds (index < capacity, array has capacity entries).
     let ready_ok = unsafe {
-        let ready_ptr =
-            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
+        let (ready_ptr, _) = slot_ptrs::<T>(local, index);
+        (*ready_ptr).load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
         return None;
@@ -1383,8 +1482,8 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // The ready flag Acquire load above established happens-before with the producer's
     // Release store, so the slot data is fully written. simd_aware_read handles alignment.
     let msg = unsafe {
-        let base = local.cached_data_ptr as *const T;
-        simd_aware_read(base.add(index))
+        let (_, data_ptr) = slot_ptrs::<T>(local, index);
+        simd_aware_read(data_ptr as *const T)
     };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1471,8 +1570,8 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
             // CAS success means we own this slot. The producer's Release on sequence_or_head
             // was observed via our Acquire load. simd_aware_read handles alignment.
             let msg = unsafe {
-                let base = local.cached_data_ptr as *const T;
-                simd_aware_read(base.add((tail & mask) as usize))
+                let (_, data_ptr) = slot_ptrs::<T>(local, (tail & mask) as usize);
+                simd_aware_read(data_ptr as *const T)
             };
             local.local_tail = tail.wrapping_add(1);
 
@@ -1575,8 +1674,7 @@ pub(super) fn recv_shm_pod_broadcast<
     // index*8 is within bounds (index < capacity, array has capacity entries).
     // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM;
     // index*8 is within bounds (index < capacity).
-    let ready_ptr =
-        unsafe { &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64) };
+    let ready_ptr = unsafe { &*slot_ptrs::<T>(local, index).0 };
     let v1 = ready_ptr.load(Ordering::Acquire);
     // A write is in progress on this slot right now.
     if v1 & SLOT_WRITING != 0 {
@@ -1663,8 +1761,8 @@ pub(super) fn recv_shm_pod_broadcast<
     // `bool` or a fieldless enum field), and materialising torn bytes into such
     // a `T` would be UB committed before the re-check could reject it.
     let msg = unsafe {
-        let base = local.cached_data_ptr as *const T;
-        simd_aware_read_uninit(base.add(index))
+        let (_, data_ptr) = slot_ptrs::<T>(local, index);
+        simd_aware_read_uninit(data_ptr as *const T)
     };
 
     // Seqlock re-check (Boehm): this Acquire fence pairs with the producer's
