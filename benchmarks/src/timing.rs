@@ -75,8 +75,31 @@ pub struct RdtscCalibration {
     pub ns_per_cycle: f64,
     /// Cycles per nanosecond
     pub cycles_per_ns: f64,
-    /// Overhead of RDTSC itself (cycles)
+    /// Overhead of RDTSC itself (cycles).
+    ///
+    /// A **minimum** over 10,000 iterations, captured once, immediately after a
+    /// busy-spin that leaves the core in its highest P-state. It is then
+    /// subtracted from every later sample for the life of the process. When the
+    /// core drops to a lower P-state the instantaneous instrumentation cost
+    /// exceeds this minimum, so the subtraction under-corrects; when a later
+    /// sample happens to beat it, the subtraction over-corrects and floors the
+    /// sample at zero. Use [`net_cycles`] rather than a bare `saturating_sub`
+    /// so the floor is counted instead of silently entering the distribution.
     pub overhead_cycles: u64,
+}
+
+/// Subtract the calibrated instrumentation overhead, reporting whether the
+/// subtraction clamped.
+///
+/// Returns `(net_cycles, clamped)`. `clamped == true` means the raw delta was
+/// *smaller* than the once-calibrated overhead, so the true net cost is
+/// unknown and the sample has been floored at 0. A benchmark cannot observe a
+/// genuine 0 ns operation, so every clamped sample is a measurement artefact
+/// that drags the median and the mean down. `saturating_sub` on its own hides
+/// them; this makes the caller carry the count.
+#[inline(always)]
+pub fn net_cycles(raw: u64, overhead: u64) -> (u64, bool) {
+    (raw.saturating_sub(overhead), raw < overhead)
 }
 
 impl RdtscCalibration {
@@ -208,13 +231,27 @@ impl PrecisionTimer {
         rdtsc()
     }
 
-    /// End a measurement and return elapsed nanoseconds
+    /// End a measurement and return elapsed nanoseconds.
+    ///
+    /// Prefer [`PrecisionTimer::elapsed_ns_checked`] where the caller can carry
+    /// a clamp counter: this variant discards the information that the overhead
+    /// subtraction floored the sample at 0 ns.
     #[inline(always)]
     pub fn elapsed_ns(&self, start_cycles: u64) -> u64 {
+        self.elapsed_ns_checked(start_cycles).0
+    }
+
+    /// End a measurement, returning `(elapsed_ns, clamped)`.
+    ///
+    /// `clamped` is true when the raw cycle delta was below the calibrated
+    /// instrumentation overhead and the result was floored at 0 ns. See
+    /// [`net_cycles`].
+    #[inline(always)]
+    pub fn elapsed_ns_checked(&self, start_cycles: u64) -> (u64, bool) {
         let end = rdtscp();
         let cycles = end.wrapping_sub(start_cycles);
-        self.calibration
-            .cycles_to_ns(cycles.saturating_sub(self.calibration.overhead_cycles))
+        let (net, clamped) = net_cycles(cycles, self.calibration.overhead_cycles);
+        (self.calibration.cycles_to_ns(net), clamped)
     }
 
     /// Measure a closure and return elapsed nanoseconds
@@ -299,6 +336,17 @@ mod tests {
             "Unexpected elapsed time: {} ns",
             elapsed
         );
+    }
+
+    /// The overhead subtraction must report when it floors a sample.
+    ///
+    /// A silent `saturating_sub` puts an exact 0 ns into the distribution,
+    /// indistinguishable from a genuinely fast operation, and nothing counts it.
+    #[test]
+    fn net_cycles_reports_the_clamp() {
+        assert_eq!(net_cycles(500, 40), (460, false));
+        assert_eq!(net_cycles(40, 40), (0, false));
+        assert_eq!(net_cycles(30, 40), (0, true));
     }
 
     #[test]

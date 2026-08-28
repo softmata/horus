@@ -2124,7 +2124,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.header().messages_total.fetch_add(1, Ordering::Relaxed);
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
-            // Notify event nodes that new data arrived on this topic
+            // Notify event nodes watching this topic. Gated inside
+            // `notify_event`; see the note on the fast path below.
             crate::core::NodeInfo::notify_event(&self.name);
             return;
         }
@@ -2187,17 +2188,33 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     self.check_migration_periodic();
                 }
-                // Notify event nodes that new data arrived on this topic.
-                // This uses the topic name to find registered event node notifiers.
-                // Cost: ~100ns (mutex + HashMap lookup). Only impacts topics that
-                // have a registered event subscriber. No-op if no event node exists.
+                // Notify event nodes watching this topic, by topic name.
+                //
+                // This was NOT a no-op when no event node existed, whatever the
+                // comment here used to claim: only the final `fetch_add` was
+                // skipped. Every send on every topic locked a process-global
+                // `Mutex` and probed a `HashMap<String, _>` to discover there
+                // was nothing to notify — and `std::sync::Mutex` is a futex
+                // with no priority inheritance, so a SCHED_FIFO publisher could
+                // block behind a preempted SCHED_OTHER thread for an unbounded
+                // time, right here in the primary publish API.
+                //
+                // `notify_event` now gates itself on an atomic bit-filter of
+                // the registered names: one Relaxed load and a not-taken branch
+                // when no event node is registered under this topic's name,
+                // which is the common case and the only cost this path pays.
+                // The lock is reached only when the name is (or collides with)
+                // a registered one — see `core::node::EVENT_NOTIFIER_FILTER`,
+                // which also documents the blocking edge that survives for a
+                // topic an event node really is watching.
                 crate::core::NodeInfo::notify_event(&self.name);
                 return;
             }
             // Buffer full — extremely rare for same-thread, fall through to retry
         }
         self.send_lossy(msg);
-        // Notify event nodes after successful send through dispatched path
+        // Notify event nodes after the send through the dispatched path. Gated
+        // inside `notify_event`; see the note on the fast path above.
         crate::core::NodeInfo::notify_event(&self.name);
     }
 

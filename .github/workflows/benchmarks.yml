@@ -18,8 +18,48 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Regression threshold: fail if latency increases by more than this percentage
-  REGRESSION_THRESHOLD: 10
+
+  # ---------------------------------------------------------------------------
+  # The performance gate
+  #
+  # HORUS's figure of merit is worst-case latency and jitter first, median
+  # second. A change that improves the median and widens the tail is a
+  # regression here.
+  #
+  # There used to be a `REGRESSION_THRESHOLD: 10` here. Nothing enforced it: the
+  # step named "Check for performance regression" only grepped the benchmark's
+  # own stdout for a PASS/FAIL string, `benchmarks/baseline.json` was restored
+  # from a cache that nothing ever wrote, and `BenchmarkReport::compare` — the
+  # only baseline-relative comparison in the tree — had no caller at all. It was
+  # also median-only: it computed `p99_change_percent`, stored it, and never
+  # read it, so a change that left the median alone and added 50 µs to p99
+  # reported "All benchmarks within acceptable range".
+  #
+  # There is no single threshold any more, because there cannot be one honest
+  # number: each metric is gated at `max(relative, center + k·σ_observed,
+  # absolute floor)` against a rolling window, so the band is derived from the
+  # noise the baseline itself measured. The thresholds, the enforcement split
+  # between blocking and report-only, and the reasoning for every number live in
+  # `RegressionPolicy` in benchmarks/src/output.rs — one place, next to the code
+  # that applies them, instead of a YAML constant that drifts away from what
+  # runs.
+  # ---------------------------------------------------------------------------
+
+  # Repetitions of each benchmark per job. The gate reduces them to their
+  # median, so one bad draw out of three cannot fail the build; below 3 there is
+  # no median to take, only an average, which a single outlier drags halfway.
+  # This is the main lever on job duration: lower it and the current arm gets
+  # noisier, which the gate reports rather than hides.
+  BENCH_REPETITIONS: 3
+
+  # How many past trunk runs the rolling baseline keeps. The window has to be
+  # long enough to estimate a spread (the gate needs 5 before it trusts one) and
+  # short enough to still describe current trunk.
+  BENCH_WINDOW: 20
+
+  # The rolling baseline itself. Lives in the Actions cache, written only by
+  # pushes to main.
+  BENCH_HISTORY: baseline-history.json
 
 permissions:
   contents: read
@@ -35,7 +75,10 @@ jobs:
     steps:
     - uses: actions/checkout@v7
       with:
-        fetch-depth: 0  # Need full history for baseline comparison
+        # The gate's baseline is a cache artifact, not a git history walk, so it
+        # does not need this. Kept for provenance: the report records the commit
+        # under test and the commit the baseline window was gathered on.
+        fetch-depth: 0
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -64,6 +107,18 @@ jobs:
         # Disable turbo boost
         echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo || true
 
+        # Both of the above are best-effort on a hosted runner, and when they
+        # fail they fail silently. Print what actually took effect: every
+        # reported nanosecond scales with core frequency (RDTSC counts at the
+        # nominal rate while the work costs a fixed number of core cycles), so a
+        # baseline window that mixes governors is a window whose spread is
+        # measuring the governor. The gate records the governor with each run.
+        echo "--- effective CPU configuration ---"
+        cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "governor: unavailable"
+        cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo "no_turbo: unavailable"
+        grep -m1 'model name' /proc/cpuinfo || true
+        nproc
+
     - name: Cache cargo dependencies
       uses: actions/cache@v6
       with:
@@ -75,14 +130,22 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Download baseline (if exists)
-      uses: actions/cache@v6
+    - name: Restore rolling baseline
+      uses: actions/cache/restore@v6
       with:
-        path: benchmarks/baseline.json
-        key: benchmark-baseline-${{ github.base_ref || 'main' }}
+        path: benchmarks/${{ env.BENCH_HISTORY }}
+        # The primary key is deliberately unique per run so it never hits: the
+        # restore always falls through to the prefix below, which returns the
+        # most recently *created* matching cache — i.e. the newest baseline.
+        #
+        # This is the bug that made the old baseline useless. The key was
+        # `benchmark-baseline-${{ github.base_ref || 'main' }}`, a constant. A
+        # cache entry can never be overwritten under a key that already exists,
+        # so after the very first save the baseline would have frozen at that
+        # first run forever — if anything had ever saved it, which nothing did.
+        key: benchmark-history-main-${{ github.run_id }}
         restore-keys: |
-          benchmark-baseline-main
-          benchmark-baseline-
+          benchmark-history-main-
 
     - name: Setup Shared Memory
       run: |
@@ -99,54 +162,49 @@ jobs:
     - name: Build benchmarks
       run: |
         cd benchmarks
+        # Builds every bin in the package, including regression_gate.
         cargo build --release
 
-    - name: Run cross-process benchmark
+    - name: Run benchmarks
       run: |
         # Actions' default shell is `bash -e {0}` WITHOUT pipefail, so a panic or
         # SIGSEGV in the benchmark would be masked by tee's exit status.
         set -o pipefail
         cd benchmarks
-        cargo run --release --bin cross_process_benchmark | tee benchmark-results.txt
+        mkdir -p gate-reports
+        : > benchmark-results.txt
 
-    - name: Run robotics messages benchmark
+        SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+
+        for rep in $(seq 1 "$BENCH_REPETITIONS"); do
+          echo "===== repetition ${rep}/${BENCH_REPETITIONS} =====" | tee -a benchmark-results.txt
+
+          cargo run --release --bin cross_process_benchmark -- \
+            --json "$PWD/gate-reports/cross_process-${rep}.json" \
+            | tee -a benchmark-results.txt
+
+          cargo run --release --bin robotics_messages_benchmark -- \
+            --json "$PWD/gate-reports/robotics-${rep}.json" \
+            | tee -a benchmark-results.txt
+
+          # Between repetitions only. Leftover segments from the previous
+          # repetition are warm page cache the next one would inherit, which is
+          # a difference between repetitions that is not a difference in the
+          # code.
+          rm -rf "$SHM_DIR"/topics/* 2>/dev/null || true
+        done
+
+        echo "--- reports produced ---"
+        ls -l gate-reports/
+
+    - name: Real-time suitability check
       run: |
-        set -o pipefail
         cd benchmarks
-        cargo run --release --bin robotics_messages_benchmark | tee -a benchmark-results.txt
-
-    - name: Generate benchmark report
-      run: |
-        cd benchmarks
-        mkdir -p benchmark-report
-        cp benchmark-results.txt ./benchmark-report/ || true
-
-    - name: Check for performance regression
-      id: regression-check
-      run: |
-        cd benchmarks
-        # What is enforced here is each benchmark's OWN real-time suitability
-        # verdict (the "✓ PASS" / "✗ FAIL" lines robotics_messages_benchmark
-        # prints for the 1kHz/10kHz/500Hz/40Hz criteria). Those have large
-        # headroom — locally p99 is ~425ns against a 1ms ceiling — so they are
-        # stable on a shared CI runner.
-        #
-        # The old comment here claimed ceilings of "<600ns cross-process" and
-        # "<1000ns robotics messages"; nothing ever checked them, and
-        # cross_process_benchmark's median on a CI-class machine is several
-        # thousand ns, so re-enabling them as written would fail every run.
-        # A real baseline-relative check already exists in
-        # benchmarks/scripts/check_regression.py (driven by ci_bench.sh) and is
-        # the right thing to wire up once a baseline.json is actually published.
-        echo "## Benchmark Results" > /tmp/benchmark-report.md
-        echo "" >> /tmp/benchmark-report.md
-        cat benchmark-results.txt >> /tmp/benchmark-report.md
-        echo "" >> /tmp/benchmark-report.md
-        echo "Regression threshold: ${{ env.REGRESSION_THRESHOLD }}%" >> /tmp/benchmark-report.md
-
         # robotics_messages_benchmark prints its own real-time suitability
-        # verdicts but always exits 0. Without this the step named "Check for
-        # performance regression" checked nothing at all and could never fail.
+        # verdicts (the "✓ PASS" / "✗ FAIL" lines for the 1kHz/10kHz/500Hz/40Hz
+        # criteria) but always exits 0. This is an absolute check against a
+        # fixed deadline, independent of any baseline, so it runs even on the
+        # very first build where the rolling window is empty.
         if grep -q '✗ FAIL' benchmark-results.txt; then
           echo "::error::Benchmark failed its real-time suitability criteria:"
           grep -n '✗ FAIL' benchmark-results.txt
@@ -154,16 +212,80 @@ jobs:
         fi
         echo "All benchmark real-time suitability checks passed."
 
+    - name: Performance gate
+      id: gate
+      run: |
+        cd benchmarks
+
+        CURRENT=""
+        for f in gate-reports/*.json; do
+          CURRENT="$CURRENT --current $f"
+        done
+        if [ -z "$CURRENT" ]; then
+          echo "::error::No benchmark JSON reports were produced. Nothing was gated."
+          exit 1
+        fi
+
+        # --record rewrites the rolling baseline and must only ever happen on a
+        # trunk build: recording a pull request would let a regression become
+        # its own baseline. --trunk additionally enables the
+        # consecutive-runs escalation, which turns sustained tail creep that no
+        # single run can distinguish from noise into a blocking failure. It is
+        # deliberately off for pull requests: a PR author is not responsible for
+        # drift that landed on main before their branch, and a gate that fails
+        # people for someone else's commit gets switched off within a week.
+        TRUNK=""
+        if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          TRUNK="--trunk --record"
+        fi
+
+        "$GITHUB_WORKSPACE/target/release/regression_gate" \
+          --history "$BENCH_HISTORY" \
+          $CURRENT \
+          --window "$BENCH_WINDOW" \
+          --markdown /tmp/benchmark-report.md \
+          --json gate-comparison.json \
+          $TRUNK \
+          | tee gate-output.txt
+        GATE_STATUS=${PIPESTATUS[0]}
+
+        if [ "$GATE_STATUS" -ne 0 ]; then
+          # Surface the blocking findings as annotations so they appear on the
+          # job summary rather than only in the log.
+          grep -E '^\s+BLOCKING: ' gate-output.txt | while read -r line; do
+            echo "::error::performance gate: ${line}"
+          done
+          echo "::error::Performance gate failed. The step log above prints, for every"
+          echo "::error::benchmark: the baseline distribution, the current distribution, the"
+          echo "::error::threshold that was crossed, and where that threshold came from."
+        fi
+        exit "$GATE_STATUS"
+
+    - name: Save rolling baseline
+      # Runs even when the gate failed. A regression that lands on main is a
+      # regression the baseline has to know about; otherwise every subsequent
+      # build fails for the same reason and the gate gets disabled.
+      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      continue-on-error: true
+      uses: actions/cache/save@v6
+      with:
+        path: benchmarks/${{ env.BENCH_HISTORY }}
+        key: benchmark-history-main-${{ github.run_id }}
+
     - name: Upload benchmark results
+      if: always()
       uses: actions/upload-artifact@v7
       with:
         name: benchmark-results
         path: |
-          benchmarks/benchmark-report
           benchmarks/benchmark-results.txt
+          benchmarks/gate-reports/
+          benchmarks/gate-comparison.json
+          benchmarks/gate-output.txt
+          benchmarks/${{ env.BENCH_HISTORY }}
 
     - name: Comment PR with results
-      if: github.event_name == 'pull_request'
+      if: always() && github.event_name == 'pull_request'
       uses: actions/github-script@v9
       with:
         script: |
@@ -173,12 +295,27 @@ jobs:
           try {
             summary = fs.readFileSync('/tmp/benchmark-report.md', 'utf8');
           } catch (e) {
-            summary = "## Benchmark Results\n\n:warning: Could not parse benchmark results.";
+            summary =
+              "## Benchmark gate\n\n" +
+              ":warning: The gate produced no report. The benchmarks or the gate itself " +
+              "failed before a comparison could be made — see the job log. **This is not a pass.**";
           }
 
-          // Add footer
-          summary += "\n\n---\n";
-          summary += `*Regression threshold: ${{ env.REGRESSION_THRESHOLD }}%*\n`;
+          try {
+            const raw = fs.readFileSync('benchmarks/benchmark-results.txt', 'utf8');
+            summary +=
+              "\n<details><summary>Raw benchmark output</summary>\n\n```\n" +
+              raw.slice(-40000) +
+              "\n```\n\n</details>\n";
+          } catch (e) { /* the gate report is the deliverable; raw output is a bonus */ }
+
+          summary += "\n---\n";
+          summary +=
+            "*Gated against a rolling window of recent `main` runs. Each metric's band is " +
+            "`max(relative, center + k·sigma_observed, absolute floor)`, so it is derived from the " +
+            "noise the baseline itself measured — where a band is printed wider than the change " +
+            "you care about, this run did not detect a regression and could not have. Thresholds " +
+            "and their reasoning: `RegressionPolicy` in `benchmarks/src/output.rs`.*\n";
           summary += `*Commit: ${{ github.sha }}*`;
 
           // Find and update existing comment or create new one
@@ -190,7 +327,7 @@ jobs:
 
           const botComment = comments.find(comment =>
             comment.user.type === 'Bot' &&
-            comment.body.includes('Benchmark Results')
+            (comment.body.includes('Benchmark gate') || comment.body.includes('Benchmark Results'))
           );
 
           if (botComment) {
@@ -208,4 +345,3 @@ jobs:
               body: summary
             });
           }
-

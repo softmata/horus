@@ -60,6 +60,19 @@ pub(crate) struct LocalState {
     pub local_head: u64, // offset 8
 
     /// Cached capacity mask for bitwise AND (seq & mask)
+    ///
+    /// Invariant: `cached_capacity_mask == cached_capacity - 1` and
+    /// `cached_capacity` is a power of two (or both are 0 before `sync_local`
+    /// has run). `TopicHeader::initialize` rounds capacity with
+    /// `next_power_of_two()` and derives `capacity_mask` from it, and
+    /// `header::read_slot_inner` refuses to read any mapping where the pair
+    /// disagrees. `sync_local` copies both out of the header together.
+    ///
+    /// The recv paths lean on this beyond index masking: the batched
+    /// `header.tail` flush interval is `capacity / 2`, so its mask is exactly
+    /// `cached_capacity_mask >> 1` — see the three `flush_mask` sites in
+    /// `dispatch.rs`, which derive it with a shift instead of recomputing a
+    /// divide plus `is_power_of_two`/`next_power_of_two` on every message.
     pub cached_capacity_mask: u64, // offset 16
 
     /// Cached pointer to data region - for ring buffer write

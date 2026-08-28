@@ -22,7 +22,7 @@
 //! ```
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,460 @@ fn suppressed_suffix(hidden: u32) -> String {
         String::new()
     } else {
         format!(" (+{hidden} more in the last second)")
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Cyclic wait: absolute-deadline sleep with a bounded guard spin
+// ════════════════════════════════════════════════════════════════════════════
+//
+// # What this replaces, and why
+//
+// The tick loop used to close each period with, in essence:
+//
+// ```text
+// let elapsed = loop_start.elapsed();              // loop_start re-sampled each iteration
+// if tick_period - elapsed < 1ms { spin until the period is up }
+// else { sleep(tick_period - elapsed - 500us); then spin }
+// ```
+//
+// Two defects, in increasing order of severity.
+//
+// **1. Drift.** The target was `loop_start + tick_period` with `loop_start`
+// re-sampled by `Instant::now()` at the top of every iteration — i.e. "now +
+// period", not "start + n*period". Every iteration folded its own overshoot
+// (spin-exit granularity, loop overhead, wake latency) into the phase and never
+// gave it back. At 1 kHz even a 50 ns per-tick overshoot is 50 us/s of phase
+// slip, ~4.3 s/day. Anything that assumes a fixed dt — a discrete-time
+// controller, a sensor fusion timestamp — inherits that slip. This is the
+// classic bug in this code shape, and the old code had it.
+//
+// **2. An unbounded busy-wait under RT bandwidth control.** The branch tested
+// SLACK (`tick_period - elapsed`), not the period, so it took the pure-spin
+// path whenever a tick left under 1 ms of slack. That is unconditionally true
+// for any tick period at or below 1 ms, and intermittently true at larger
+// periods whenever a tick ran long — so a 1 kHz chain busy-waited essentially
+// the entire period, every period. Linux RT bandwidth control
+// (`sched_rt_runtime_us` / `sched_rt_period_us`, 950 ms / 1000 ms by default)
+// forcibly DEQUEUES a SCHED_FIFO thread that exceeds its share for the
+// remainder of the RT period: roughly 50 ms, i.e. ~50 consecutive missed
+// deadlines at 1 kHz, once per second. SCHED_DEADLINE polices its declared
+// runtime even more tightly.
+//
+// That tail never showed up in test because `set_realtime_priority` fails
+// without CAP_SYS_NICE and the thread silently stays SCHED_OTHER, where RT
+// bandwidth control does not apply. **The defect only manifests once RT
+// priority is actually granted** — on the robot, not on a developer box or in
+// CI. `CyclicWaiter::new` therefore takes `rt_policy_active` and warns exactly
+// in the configuration where the old behaviour would bite.
+//
+// # The replacement, and the trade it makes
+//
+// Sleep to an ABSOLUTE deadline on CLOCK_MONOTONIC (`clock_nanosleep` with
+// `TIMER_ABSTIME`) for the bulk of the period, then guard-spin only the last
+// few microseconds. This is the standard cyclictest-style cyclic-task pattern.
+//
+// **TRADE, STATED RATHER THAN BURIED:** median wake jitter rises from the old
+// spin's ~100 ns to hrtimer precision — single-digit microseconds on
+// PREEMPT_RT, worse on a stock kernel. That is a MEDIAN REGRESSION, bought to
+// delete a ~50 ms tail item. It is the right trade for this runtime's figure of
+// merit (worst case and jitter first, median second), but it is a real cost, so
+// it is explicit here, configurable (`HORUS_RT_WAIT=spin` restores a pure spin,
+// `HORUS_RT_SPIN_GUARD_US` retunes the guard), and measured
+// (`rt_wait_stats()` publishes the observed wake lateness and spin time).
+//
+// The fix is deliberately in the code. The other way to stop the throttle is
+// `sched_rt_runtime_us=-1`, and that is NOT recommended: it removes the
+// kernel's last defence against a runaway RT thread wedging the machine. A loop
+// that gives back the CPU it does not need makes that config change
+// unnecessary.
+
+/// Width of the busy-wait that guards the final approach to a tick deadline.
+///
+/// Chosen against the wake-latency distribution the guard exists to hide: on a
+/// PREEMPT_RT kernel a pinned SCHED_FIFO thread's hrtimer wakeup lands within
+/// single-digit microseconds of the programmed time, so a 20 us guard converts
+/// the *typical* wake into a deadline-accurate one. It deliberately does NOT
+/// cover the worst case — widening it toward the tail would trade back exactly
+/// the RT bandwidth this rewrite reclaims, and buys nothing on a stock kernel,
+/// where the overshoot usually exceeds the guard and no spin happens at all.
+///
+/// Cost ceiling: 20 us is 2 % of a 1 kHz period, and the spin only covers the
+/// slice of the guard the sleep did not already consume, so the typical cost is
+/// well under that. Override with `HORUS_RT_SPIN_GUARD_US`; `0` disables the
+/// spin entirely (lowest CPU, pure hrtimer precision).
+const SPIN_GUARD_DEFAULT_NS: u64 = 20_000;
+
+/// The guard spin may never exceed `tick_period >> SPIN_GUARD_PERIOD_SHIFT`
+/// — one sixteenth, 6.25 %, of the period.
+///
+/// This clamp is the structural defence against re-introducing the defect above
+/// at high tick rates. A *fixed* guard is 2 % of a 1 ms period but 20 % of a
+/// 100 us one, so it would silently walk the loop back toward the kernel's 95 %
+/// RT bandwidth ceiling as the rate rises. Bounding the guard as a fraction of
+/// the period keeps the loop's unconditional CPU draw at 6.25 % or below at
+/// every rate, leaving the remainder of the budget for the nodes' real work.
+const SPIN_GUARD_PERIOD_SHIFT: u32 = 4;
+
+/// Minimum slack worth an absolute-sleep syscall, in nanoseconds.
+///
+/// Arming an hrtimer, switching out, taking the timer interrupt and switching
+/// back costs single-digit microseconds. Below this threshold the syscall costs
+/// more than the wait it replaces, so the residue is spun instead. The spin is
+/// bounded by this constant, so it can only dominate periods shorter than
+/// `MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT` (160 us, i.e. above ~6 kHz);
+/// `CyclicWaiter::new` warns once when the configured rate is in that regime,
+/// because a spin-dominated loop plus a real RT policy is the throttle case.
+const MIN_SLEEP_SLACK_NS: u64 = 10_000;
+
+/// How often the per-thread wait counters are published to the process-wide
+/// totals. The counters are plain integers in the hot path (a few register
+/// adds); only this flush touches shared atomics, so the tick loop never pays
+/// for a contended cache line.
+const WAIT_STATS_FLUSH_INTERVAL_NS: u64 = 1_000_000_000;
+
+/// Absolute CLOCK_MONOTONIC nanoseconds — the same timebase the absolute sleep
+/// targets, so deadline arithmetic and the guard spin cannot disagree.
+///
+/// Distinct from [`monotonic_nanos`], which is `Instant`-based and exists for
+/// log throttling; mixing the two epochs in deadline arithmetic would be a bug.
+#[cfg(target_os = "linux")]
+#[inline]
+fn cyclic_now_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a live, writable `timespec` and CLOCK_MONOTONIC is always
+    // a valid clock id, so both documented failure modes (EFAULT for a bad
+    // pointer, EINVAL for a bad clock id) are unreachable. On Linux this
+    // resolves through the vDSO and does not enter the kernel.
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    (ts.tv_sec as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec as u64)
+}
+
+/// Portable monotonic nanoseconds for the non-Linux cyclic path.
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn cyclic_now_ns() -> u64 {
+    monotonic_nanos()
+}
+
+/// Sleep until an absolute instant on CLOCK_MONOTONIC.
+#[cfg(target_os = "linux")]
+#[inline]
+fn sleep_until_ns(deadline_ns: u64) {
+    let ts = libc::timespec {
+        tv_sec: (deadline_ns / 1_000_000_000) as _,
+        tv_nsec: (deadline_ns % 1_000_000_000) as _,
+    };
+    loop {
+        // SAFETY: `ts` is a live, valid `timespec` for the duration of the
+        // call. With TIMER_ABSTIME the kernel never writes the remaining-time
+        // pointer, so passing null is correct. `clock_nanosleep` returns the
+        // error number directly and does NOT set `errno`.
+        let rc = unsafe {
+            libc::clock_nanosleep(
+                libc::CLOCK_MONOTONIC,
+                libc::TIMER_ABSTIME,
+                &ts,
+                std::ptr::null_mut(),
+            )
+        };
+        if rc != libc::EINTR {
+            return;
+        }
+        // A signal handler ran. Because the target is ABSOLUTE, re-arming with
+        // the identical timespec resumes the same deadline and loses no time.
+        // A relative `nanosleep` would have to carry `rmtp` forward and would
+        // shed a little phase on every signal — the second reason to use
+        // TIMER_ABSTIME, on top of drift.
+    }
+}
+
+/// Portable fallback: a relative sleep recomputed from the ABSOLUTE target on
+/// every period, so oversleep is corrected rather than accumulated.
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn sleep_until_ns(deadline_ns: u64) {
+    let now = cyclic_now_ns();
+    if deadline_ns > now {
+        std::thread::sleep(Duration::from_nanos(deadline_ns - now));
+    }
+}
+
+/// How the tick loop waits out the remainder of a period.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WaitMode {
+    /// Sleep to an absolute CLOCK_MONOTONIC deadline (`clock_nanosleep` +
+    /// `TIMER_ABSTIME`), then guard-spin the residue. The default, and the
+    /// only mode that keeps the loop inside its RT bandwidth share.
+    AbsoluteSleep,
+    /// Non-Linux fallback: absolute deadlines on `Instant`'s clock, reached
+    /// with a relative `thread::sleep` recomputed each period.
+    PortableSleep,
+    /// Pure busy-wait to the absolute deadline. Opt-in via `HORUS_RT_WAIT=spin`
+    /// for the ~100 ns median wake, and DANGEROUS to combine with a real RT
+    /// policy: see the section note above. Unlike the code this replaces it is
+    /// still phase-absolute, so it does not drift.
+    Spin,
+}
+
+/// Observed behaviour of the cyclic wait, aggregated across all RT threads.
+///
+/// This rewrite trades median wake jitter for the removal of a ~50 ms tail, and
+/// a trade you cannot see is a trade you cannot defend. These counters are what
+/// make both sides of it visible in production: `wake_late_max_ns` is the worst
+/// gap ever observed between a tick's scheduled slot and the instant the loop
+/// actually resumed, and `overruns` / `slots_skipped` count the periods the
+/// executor could not keep up with at all.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RtWaitSnapshot {
+    /// Completed cyclic waits (i.e. tick slots serviced).
+    pub slots: u64,
+    /// Waits that found their own slot already in the past.
+    pub overruns: u64,
+    /// Total slots dropped by those overruns.
+    pub slots_skipped: u64,
+    /// Worst observed `resume - scheduled_slot`. The tail metric for the wake
+    /// path, and the honest cost of giving up the busy-wait.
+    pub wake_late_max_ns: u64,
+    /// Sum of `resume - scheduled_slot`; divide by `slots` for the mean.
+    pub wake_late_total_ns: u64,
+    /// Total time spent in the guard spin. The RT-bandwidth draw of the wait
+    /// itself — what used to be ~99.5 % of every period.
+    pub spin_total_ns: u64,
+}
+
+static WAIT_SLOTS: AtomicU64 = AtomicU64::new(0);
+static WAIT_OVERRUNS: AtomicU64 = AtomicU64::new(0);
+static WAIT_SLOTS_SKIPPED: AtomicU64 = AtomicU64::new(0);
+static WAIT_LATE_MAX_NS: AtomicU64 = AtomicU64::new(0);
+static WAIT_LATE_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+static WAIT_SPIN_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Process-wide cyclic-wait statistics, safe to poll from any thread.
+pub(crate) fn rt_wait_stats() -> RtWaitSnapshot {
+    RtWaitSnapshot {
+        slots: WAIT_SLOTS.load(Ordering::Relaxed),
+        overruns: WAIT_OVERRUNS.load(Ordering::Relaxed),
+        slots_skipped: WAIT_SLOTS_SKIPPED.load(Ordering::Relaxed),
+        wake_late_max_ns: WAIT_LATE_MAX_NS.load(Ordering::Relaxed),
+        wake_late_total_ns: WAIT_LATE_TOTAL_NS.load(Ordering::Relaxed),
+        spin_total_ns: WAIT_SPIN_TOTAL_NS.load(Ordering::Relaxed),
+    }
+}
+
+/// Drives one RT thread's tick cadence on an absolute phase grid.
+///
+/// Deadlines are always `anchor + n * period` for an integer `n`. They are
+/// never computed as "now + period": that is the drift bug this type exists to
+/// remove, and the arithmetic below is written so the grid survives even a
+/// multi-second stall.
+struct CyclicWaiter {
+    mode: WaitMode,
+    period_ns: u64,
+    guard_ns: u64,
+    /// Phase anchor. Every slot is `anchor_ns + n * period_ns`, exactly.
+    anchor_ns: u64,
+    /// Absolute time at which the NEXT work pass should begin.
+    next_slot_ns: u64,
+    /// Counters since the last flush. Plain integers so the per-period cost is
+    /// a handful of register adds, not shared-atomic traffic.
+    local: RtWaitSnapshot,
+    last_flush_ns: u64,
+}
+
+impl CyclicWaiter {
+    /// `rt_policy_active` is whether SCHED_FIFO or SCHED_DEADLINE was actually
+    /// granted. It gates the warnings, because RT bandwidth control — the whole
+    /// reason this type exists — only applies when it is true.
+    fn new(tick_period: Duration, rt_policy_active: bool, verbose: bool) -> Self {
+        // A zero period would make the slot arithmetic divide by zero; clamp to
+        // 1 ns, which degenerates to "run flat out" exactly as before.
+        let period_ns = (tick_period.as_nanos() as u64).max(1);
+
+        let mut mode = if cfg!(target_os = "linux") {
+            WaitMode::AbsoluteSleep
+        } else {
+            WaitMode::PortableSleep
+        };
+        match std::env::var("HORUS_RT_WAIT").as_deref() {
+            Ok("spin") => mode = WaitMode::Spin,
+            Ok("sleep") => {}
+            Ok(other) => print_line(&format!(
+                "[RT-thread] HORUS_RT_WAIT='{other}' not recognised (expected 'sleep' or 'spin') — using 'sleep'"
+            )),
+            Err(_) => {}
+        }
+
+        let requested_guard_ns = std::env::var("HORUS_RT_SPIN_GUARD_US")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|us| us.saturating_mul(1_000))
+            .unwrap_or(SPIN_GUARD_DEFAULT_NS);
+        // Never let the guard eat more than 1/16 of the period; see
+        // SPIN_GUARD_PERIOD_SHIFT.
+        let guard_ns = requested_guard_ns.min(period_ns >> SPIN_GUARD_PERIOD_SHIFT);
+
+        if mode == WaitMode::Spin && rt_policy_active {
+            // Unconditional, not verbose-gated: this is the exact combination
+            // that produces the ~50 ms dequeue, and an operator who opted into
+            // it deserves to be told on every boot.
+            print_line(
+                "[RT-thread] WARNING: HORUS_RT_WAIT=spin with a real RT policy. The tick loop \
+                 will busy-wait every period; Linux RT bandwidth control will dequeue this \
+                 thread for ~50ms once its share is exhausted (~50 missed deadlines at 1kHz). \
+                 Median wake jitter improves to ~100ns and the worst case gets far worse.",
+            );
+        } else if period_ns < (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) && rt_policy_active {
+            print_line(&format!(
+                "[RT-thread] WARNING: tick period {}us is below the {}us floor where an \
+                 absolute sleep is cheaper than spinning; the final approach will be \
+                 spin-dominated and RT bandwidth control may throttle this thread.",
+                period_ns / 1000,
+                (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) / 1000,
+            ));
+        }
+
+        if verbose {
+            print_line(&format!(
+                "[RT-thread] Cyclic wait: {:?}, period {}us, guard spin {}ns, RT policy {}",
+                mode,
+                period_ns / 1000,
+                guard_ns,
+                if rt_policy_active {
+                    "ACTIVE"
+                } else {
+                    "not granted (SCHED_OTHER)"
+                },
+            ));
+        }
+
+        // Anchor the phase grid LAST: the diagnostics above take a lock and may
+        // touch stdout, and folding that into the anchor would make the very
+        // first slot arrive already overrun.
+        let now = cyclic_now_ns();
+
+        Self {
+            mode,
+            period_ns,
+            guard_ns,
+            anchor_ns: now,
+            next_slot_ns: now.wrapping_add(period_ns),
+            local: RtWaitSnapshot::default(),
+            last_flush_ns: now,
+        }
+    }
+
+    /// Wait out the remainder of the current period and return at the next
+    /// slot boundary.
+    fn wait(&mut self) {
+        let now = cyclic_now_ns();
+        self.local.slots += 1;
+
+        if now >= self.next_slot_ns {
+            // OVERRUN — the work pass ran past its own slot boundary.
+            //
+            // POLICY (documented deliberately, because both choices are
+            // defensible): the executor SKIPS FORWARD to the next slot that is
+            // still in the future, on the ORIGINAL phase grid, and waits for
+            // it. Missed slots are dropped, never run back to back.
+            //
+            // Why skip rather than catch up: a burst of zero-slack ticks is
+            // precisely the CPU pattern that trips RT bandwidth control, so a
+            // catch-up policy would let a single overrun manufacture the very
+            // ~50 ms dequeue this rewrite exists to remove. It would also hand
+            // nodes an inter-tick interval far shorter than the fixed dt their
+            // control math assumes. Skipping keeps every interval a whole
+            // number of periods and keeps the loop phase-locked to its grid.
+            //
+            // Why it cannot spiral: the number of slots to drop is one
+            // division, not a loop, so even a multi-second stall (suspend/
+            // resume, a stop-the-world pause, the old RT throttle itself) costs
+            // O(1) and lands the loop exactly one slot ahead of `now`. Cost per
+            // overrun is bounded and independent of how far behind we were.
+            let late_ns = now - self.next_slot_ns;
+            let skipped = late_ns / self.period_ns + 1;
+            self.local.overruns += 1;
+            self.local.slots_skipped += skipped;
+            self.next_slot_ns = self
+                .next_slot_ns
+                .wrapping_add(skipped.wrapping_mul(self.period_ns));
+        }
+
+        let target = self.next_slot_ns;
+        // Advance the grid BEFORE waiting: the next slot is defined by the
+        // phase, not by when this wait happens to return.
+        self.next_slot_ns = target.wrapping_add(self.period_ns);
+
+        let mut t = now;
+        if self.mode != WaitMode::Spin {
+            let sleep_until = target.saturating_sub(self.guard_ns);
+            // A `while`, not an `if`: a platform sleep that returns early is
+            // re-armed against the same absolute target, which keeps the guard
+            // spin below bounded by `guard_ns + MIN_SLEEP_SLACK_NS` instead of
+            // letting it absorb the whole period.
+            while sleep_until > t && sleep_until - t >= MIN_SLEEP_SLACK_NS {
+                sleep_until_ns(sleep_until);
+                t = cyclic_now_ns();
+            }
+        }
+
+        // Guard spin. Bounded by construction: the absolute sleep above returns
+        // at or after `target - guard_ns`, so this covers at most `guard_ns` —
+        // and nothing at all when the wake already overshot the guard, which is
+        // the common case on a stock kernel.
+        let spin_start = t;
+        while t < target {
+            std::hint::spin_loop();
+            t = cyclic_now_ns();
+        }
+
+        self.local.spin_total_ns += t.saturating_sub(spin_start);
+        let late_ns = t.saturating_sub(target);
+        self.local.wake_late_total_ns += late_ns;
+        if late_ns > self.local.wake_late_max_ns {
+            self.local.wake_late_max_ns = late_ns;
+        }
+
+        if t.saturating_sub(self.last_flush_ns) >= WAIT_STATS_FLUSH_INTERVAL_NS {
+            self.flush();
+            self.last_flush_ns = t;
+        }
+    }
+
+    /// Publish the local counters to the process-wide totals and reset them.
+    fn flush(&mut self) {
+        WAIT_SLOTS.fetch_add(self.local.slots, Ordering::Relaxed);
+        WAIT_OVERRUNS.fetch_add(self.local.overruns, Ordering::Relaxed);
+        WAIT_SLOTS_SKIPPED.fetch_add(self.local.slots_skipped, Ordering::Relaxed);
+        WAIT_LATE_TOTAL_NS.fetch_add(self.local.wake_late_total_ns, Ordering::Relaxed);
+        WAIT_SPIN_TOTAL_NS.fetch_add(self.local.spin_total_ns, Ordering::Relaxed);
+        WAIT_LATE_MAX_NS.fetch_max(self.local.wake_late_max_ns, Ordering::Relaxed);
+        self.local = RtWaitSnapshot::default();
+    }
+
+    /// Final flush plus, under `verbose`, the one line that makes the trade
+    /// legible: what the wake path actually cost on this run.
+    fn finish(&mut self, verbose: bool) {
+        let slots = self.local.slots;
+        let late_total = self.local.wake_late_total_ns;
+        let late_max = self.local.wake_late_max_ns;
+        let overruns = self.local.overruns;
+        let spin = self.local.spin_total_ns;
+        self.flush();
+        if verbose {
+            let mean = late_total.checked_div(slots).unwrap_or(0);
+            print_line(&format!(
+                "[RT-thread] Cyclic wait: {slots} slots, wake late mean {mean}ns / max \
+                 {late_max}ns, {overruns} overruns, {spin}ns spun"
+            ));
+        }
     }
 }
 
@@ -647,10 +1101,19 @@ impl RtExecutor {
             }
         }
 
-        // SCHED_FIFO fallback (also the default when SCHED_DEADLINE not requested)
+        // SCHED_FIFO fallback (also the default when SCHED_DEADLINE not requested).
+        //
+        // Whether this SUCCEEDS is load-bearing, not cosmetic: Linux RT
+        // bandwidth control only polices SCHED_FIFO/SCHED_DEADLINE threads, so
+        // the tick loop's CPU draw only matters once one of them is actually
+        // granted. Without CAP_SYS_NICE this fails and the thread stays
+        // SCHED_OTHER — which is exactly why the busy-wait defect this file
+        // used to have was invisible on developer machines and in CI. Track it
+        // so `CyclicWaiter` can warn in the configuration that bites.
+        let mut rt_policy_active = deadline_active;
         if !deadline_active {
             match super::rt::set_realtime_priority(thread_priority) {
-                Ok(()) => {}
+                Ok(()) => rt_policy_active = true,
                 Err(e) => {
                     print_line(&format!(
                         "[RT-thread] Could not set SCHED_FIFO: {} (continuing with normal priority)",
@@ -738,6 +1201,11 @@ impl RtExecutor {
         // first recv/send) may allocate; steady-state ticks are then enforced.
         let mut warmed = vec![false; nodes.len()];
 
+        // Cyclic cadence on an absolute phase grid. Constructed here, after all
+        // the one-time setup above, so the phase anchor is not polluted by
+        // affinity/governor/IRQ work that only happens once.
+        let mut waiter = CyclicWaiter::new(tick_period, rt_policy_active, monitors.verbose);
+
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
@@ -819,27 +1287,19 @@ impl RtExecutor {
                 }
             }
 
-            // Sleep until next tick period
-            let elapsed = loop_start.elapsed();
-            if elapsed < tick_period {
-                // Use spin-wait for sub-millisecond precision on RT thread
-                if tick_period - elapsed < 1_u64.ms() {
-                    // Spin-wait for very short sleeps (better jitter than thread::sleep)
-                    while loop_start.elapsed() < tick_period {
-                        std::hint::spin_loop();
-                    }
-                } else {
-                    // Sleep for bulk of the time, then spin for the remainder
-                    let sleep_dur = (tick_period - elapsed) - 500_u64.us();
-                    if sleep_dur > Duration::ZERO {
-                        std::thread::sleep(sleep_dur);
-                    }
-                    while loop_start.elapsed() < tick_period {
-                        std::hint::spin_loop();
-                    }
-                }
-            }
+            // Wait out the period on an ABSOLUTE deadline grid.
+            //
+            // What used to be here spun the CPU for the whole period at any
+            // tick rate of 1 kHz or above, and computed its target as
+            // `loop_start + tick_period` with `loop_start` re-sampled every
+            // iteration — a busy-wait that RT bandwidth control punishes with a
+            // ~50 ms dequeue, on top of unbounded phase drift. See the
+            // `CyclicWaiter` section at the top of this file for the full
+            // reasoning and for the median-jitter cost this trade accepts.
+            waiter.wait();
         }
+
+        waiter.finish(monitors.verbose);
 
         if monitors.verbose {
             print_line(&format!(
@@ -3129,5 +3589,162 @@ mod tests {
         release.store(true, Ordering::SeqCst);
         running.store(false, Ordering::SeqCst);
         let _ = executor.stop();
+    }
+
+    // ========================================================================
+    // Cyclic wait: absolute phase grid, overrun policy, guard-spin bounds
+    // ========================================================================
+
+    /// Operator overrides would invalidate the default-value assertions below.
+    fn cyclic_env_overridden() -> bool {
+        std::env::var("HORUS_RT_SPIN_GUARD_US").is_ok() || std::env::var("HORUS_RT_WAIT").is_ok()
+    }
+
+    /// Deadlines must be `anchor + n*period`, never `now + period`.
+    ///
+    /// The difference is invisible in a tick *count* — both shapes tick roughly
+    /// the right number of times — so this asserts the invariant directly:
+    /// every slot the waiter produces is an exact integer multiple of the
+    /// period away from the anchor it started on. A "now + period" loop fails
+    /// this the moment a wake overshoots, which is every wake.
+    #[test]
+    fn test_cyclic_waiter_deadlines_stay_on_an_absolute_grid() {
+        let mut w = CyclicWaiter::new(Duration::from_millis(2), false, false);
+        let anchor = w.anchor_ns;
+        for _ in 0..10 {
+            w.wait();
+        }
+        assert_eq!(
+            (w.next_slot_ns - anchor) % w.period_ns,
+            0,
+            "slot {} is off the {}ns grid anchored at {} — deadlines are being \
+             computed relative to 'now', which accumulates drift",
+            w.next_slot_ns,
+            w.period_ns,
+            anchor
+        );
+        let advanced = (w.next_slot_ns - anchor) / w.period_ns;
+        assert!(
+            advanced >= 11,
+            "10 waits must advance the grid by at least 11 slots, got {advanced}"
+        );
+    }
+
+    /// An overrun drops whole slots and resumes on the ORIGINAL grid.
+    ///
+    /// It must not replay the missed ticks back to back: a burst of zero-slack
+    /// ticks is exactly the CPU pattern RT bandwidth control punishes, so a
+    /// catch-up policy would let one overrun manufacture the ~50 ms dequeue
+    /// this rewrite exists to remove. Recovery cost must also be O(1) in how
+    /// far behind the loop fell — no spiral.
+    #[test]
+    fn test_cyclic_waiter_overrun_skips_slots_without_catching_up() {
+        let mut w = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        let anchor = w.anchor_ns;
+
+        // Blow through ~20 slots without servicing any of them.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let t0 = Instant::now();
+        w.wait();
+        let waited = t0.elapsed();
+
+        assert_eq!(w.local.overruns, 1, "the missed slot must be counted");
+        assert!(
+            w.local.slots_skipped >= 15,
+            "expected ~20 dropped slots, got {}",
+            w.local.slots_skipped
+        );
+        assert_eq!(
+            (w.next_slot_ns - anchor) % w.period_ns,
+            0,
+            "an overrun must resume on the original phase grid, not re-anchor"
+        );
+        assert!(
+            waited < Duration::from_millis(10),
+            "overrun recovery took {waited:?}; it must cost about one period no \
+             matter how far behind the loop fell"
+        );
+    }
+
+    /// The guard spin is a named constant, and it is additionally capped as a
+    /// fraction of the period. A fixed guard is 2 % of a 1 kHz period but 20 %
+    /// of a 10 kHz one — it would walk the loop back toward the kernel's 95 %
+    /// RT bandwidth ceiling as the tick rate rises.
+    #[test]
+    fn test_guard_spin_is_clamped_to_a_fraction_of_the_period() {
+        let slow = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        assert!(
+            slow.guard_ns <= slow.period_ns >> SPIN_GUARD_PERIOD_SHIFT,
+            "guard {}ns exceeds 1/{} of a 1ms period",
+            slow.guard_ns,
+            1u32 << SPIN_GUARD_PERIOD_SHIFT
+        );
+
+        let fast = CyclicWaiter::new(Duration::from_micros(100), false, false);
+        assert!(
+            fast.guard_ns <= fast.period_ns >> SPIN_GUARD_PERIOD_SHIFT,
+            "guard {}ns exceeds 1/{} of a 100us period",
+            fast.guard_ns,
+            1u32 << SPIN_GUARD_PERIOD_SHIFT
+        );
+
+        if cyclic_env_overridden() {
+            return;
+        }
+        assert_eq!(
+            slow.guard_ns, SPIN_GUARD_DEFAULT_NS,
+            "a 1ms period has room for the full default guard"
+        );
+        assert_eq!(
+            fast.guard_ns,
+            100_000 >> SPIN_GUARD_PERIOD_SHIFT,
+            "a 100us period must clamp the default guard down"
+        );
+        assert!(fast.guard_ns < SPIN_GUARD_DEFAULT_NS);
+    }
+
+    /// The default must be the absolute sleep, not the busy-wait it replaced.
+    #[test]
+    fn test_absolute_sleep_is_the_default_wait_mode() {
+        if cyclic_env_overridden() {
+            return;
+        }
+        let w = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        let expected = if cfg!(target_os = "linux") {
+            WaitMode::AbsoluteSleep
+        } else {
+            WaitMode::PortableSleep
+        };
+        assert_eq!(
+            w.mode, expected,
+            "the tick loop must sleep to an absolute deadline by default; \
+             busy-waiting is opt-in via HORUS_RT_WAIT=spin"
+        );
+    }
+
+    /// The median-for-tail trade must be measurable, not merely asserted in a
+    /// comment: the wake path publishes what it actually cost.
+    #[test]
+    fn test_rt_wait_stats_are_published() {
+        let before = rt_wait_stats().slots;
+        let mut w = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        for _ in 0..5 {
+            w.wait();
+        }
+        w.finish(false);
+
+        let after = rt_wait_stats();
+        assert!(
+            after.slots >= before + 5,
+            "cyclic wait slots must reach the process-wide counters ({} -> {})",
+            before,
+            after.slots
+        );
+        assert!(
+            after.wake_late_total_ns > 0,
+            "wake lateness must be recorded — it is the measured cost of \
+             giving up the busy-wait"
+        );
     }
 }

@@ -1,35 +1,45 @@
-//! Proof that the **steady-state** real-time hot path is allocation-free.
+//! `.no_alloc()` **without** the allocator installed — the documented no-op, pinned.
 //!
-//! This test registers [`RtAwareAllocator`] as the global allocator for this test
-//! binary, then exercises the canonical robotics hot path — receive a POD message,
-//! do control math, publish a POD message — inside the RT allocation-free context
-//! (`enter_rt_context` / `leave_rt_context`, the same bracket the RT executor puts
-//! around `tick()` for `.no_alloc()` nodes). If any step heap-allocates, the
-//! allocator panics and the test fails.
+//! This binary does **not** register [`RtAwareAllocator`] as its
+//! `#[global_allocator]`, and that is deliberate. Its sibling
+//! `rt_alloc_guard_installed.rs` does, and that is where the guarantee is
+//! actually proved. Together they cover both halves of the downstream opt-in:
+//! what you get when you install the allocator, and what you get when you do
+//! not.
 //!
-//! ## Why it warms up first
+//! ## What this file used to claim
 //!
-//! A `Topic`'s shared-memory backend is initialized **lazily on first `recv`/`send`**
-//! (see `RingTopic::ensure_consumer` → `initialize_backend`). That one-time init
-//! allocates. This test performs the warmup *outside* the RT context, then measures
-//! the steady state — which is what a control loop spends ~all of its time in.
+//! Its doc comment used to open with "This test registers `RtAwareAllocator` as
+//! the global allocator for this test binary … If any step heap-allocates, the
+//! allocator panics and the test fails." It did not register anything — no
+//! `#[global_allocator]` existed anywhere in the repository — so the tests below
+//! ran with the system allocator and could not fail the way they said they
+//! could. The claim is removed rather than made true here, because the
+//! not-installed case needs test coverage of its own and this is the binary that
+//! provides it.
 //!
-//! (Separately: because that init is lazy and happens inside the first `tick()`,
-//! `.no_alloc()` currently trips on tick 1 for any topic-using RT node unless the
-//! backend is pre-warmed. That is a distinct issue tracked outside this test.)
+//! ## What is asserted here
 //!
-//! ## Regression coverage
-//!   1. The zero-copy POD `Topic` path (`recv`/`send`) is allocation-free once
-//!      initialized.
-//!   2. `enter_rt_context` does not allocate per tick — it previously `Box::leak`ed
-//!      a fresh `String` every tick (a per-tick heap allocation + unbounded leak).
+//! 1. The runtime probe correctly reports that enforcement is **absent**, and
+//!    `warn_if_unenforced()` says so rather than letting a user assume they are
+//!    protected. (`is_installed()` returning a false positive would silence the
+//!    one warning that tells an operator their RT guarantee is not being
+//!    checked, so its negative case is worth a test.)
+//! 2. Without the allocator, an allocation inside a `.no_alloc()` bracket is
+//!    genuinely undetected — the flag is inert. This pins the documented
+//!    behaviour and is the reason the warning in (1) has to exist.
+//! 3. The `enter_rt_context` / `leave_rt_context` bracket and the RT executor's
+//!    warmup exemption work — plumbing that is independent of which allocator is
+//!    installed.
+//!
+//! [`RtAwareAllocator`]: horus_core::memory::rt_allocator::RtAwareAllocator
 
 mod common;
 use common::cleanup_stale_shm;
 
 use horus_core::communication::Topic;
 use horus_core::core::{DurationExt, Node};
-use horus_core::memory::rt_allocator::{enter_rt_context, leave_rt_context};
+use horus_core::memory::rt_allocator::{self, enter_rt_context_guarded};
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -58,8 +68,84 @@ unsafe impl horus_core::bytemuck::Zeroable for Command {}
 unsafe impl horus_core::bytemuck::Pod for Command {}
 unsafe impl horus_core::communication::PodMessage for Command {}
 
+// ──────────────────── the not-installed case, made explicit ──────────────────
+
+/// The probe must report enforcement as absent here.
+///
+/// Also a guard against "fixing" this binary by installing the allocator in it:
+/// doing so would silently change what every other test in this file means, and
+/// would delete the only coverage of the not-installed path.
 #[test]
-fn rt_steady_state_recv_compute_send_is_allocation_free() {
+fn this_binary_has_no_rt_allocator_and_reports_that_honestly() {
+    assert!(
+        !rt_allocator::is_installed(),
+        "this binary deliberately does not install RtAwareAllocator — it is the \
+         negative control for rt_alloc_guard_installed.rs. If the probe says \
+         otherwise, either someone added a #[global_allocator] here (install it \
+         there instead) or the probe reports false positives, which would \
+         suppress the .no_alloc() warning in every unprotected binary."
+    );
+    assert!(
+        !rt_allocator::warn_if_unenforced("unprotected_node"),
+        "a .no_alloc() node registered without the allocator must be told it is \
+         unenforced, not left to assume it is protected"
+    );
+}
+
+/// Without the allocator, `.no_alloc()` is inert — allocating inside the bracket
+/// is not detected. Asserting the no-op keeps the documentation honest and makes
+/// the warning above load-bearing rather than decorative.
+///
+/// This is the exact allocation that
+/// `rt_alloc_guard_installed::an_allocation_inside_an_rt_tick_is_detected_counted_and_panics`
+/// catches. The only difference between the two binaries is the
+/// `#[global_allocator]` line.
+#[test]
+fn without_the_allocator_an_allocating_rt_tick_goes_undetected() {
+    let before = rt_allocator::violation_count();
+
+    let outcome = std::panic::catch_unwind(|| {
+        let _guard = enter_rt_context_guarded("unprotected_node");
+        let v: Vec<u8> = Vec::with_capacity(64);
+        std::hint::black_box(&v);
+    });
+
+    assert!(
+        outcome.is_ok(),
+        "with no RtAwareAllocator installed nothing inspects the RT flag, so this \
+         allocation must pass silently — that no-op is the documented behaviour \
+         and the reason .no_alloc() has to warn at registration"
+    );
+    assert_eq!(
+        rt_allocator::violation_count(),
+        before,
+        "an uninstalled allocator cannot count violations"
+    );
+    assert!(
+        !rt_allocator::is_rt_context(),
+        "the guard must still clear the RT flag"
+    );
+}
+
+// ───────────────────────────── bracket plumbing ──────────────────────────────
+
+/// The RT bracket wraps the canonical robotics hot path — receive a POD message,
+/// do control math, publish a POD message — without disturbing it.
+///
+/// **This does not prove the loop is allocation-free.** No allocator is
+/// installed in this binary, so nothing inspects the flag; that proof lives in
+/// `rt_alloc_guard_installed::steady_state_topic_recv_compute_send_does_not_allocate`,
+/// which runs the same loop with the allocator live. What is covered here is the
+/// bracket itself: `enter_rt_context` takes a borrowed `&str` and allocates
+/// nothing per tick (it once `Box::leak`ed a fresh `String` every tick — a
+/// per-tick heap allocation plus an unbounded leak), the guard clears the flag
+/// on both exits, and 200 warm send/recv cycles run to completion under it.
+///
+/// The warmup outside the bracket is kept because it is part of the shape the
+/// sibling test depends on: a `Topic`'s SHM backend is initialised lazily on
+/// first `recv`/`send` and that one-time init allocates.
+#[test]
+fn rt_bracket_wraps_the_steady_state_topic_path_without_disturbing_it() {
     let _shm_guard = cleanup_stale_shm();
 
     let reading_topic = common::unique("rt.noalloc.reading");
@@ -70,9 +156,6 @@ fn rt_steady_state_recv_compute_send_is_allocation_free() {
     let command_pub = Topic::<Command>::new(&command_topic).expect("create command pub");
 
     // ── Warmup (outside the RT context) ──────────────────────────────────────
-    // The first send/recv lazily initializes each topic's SHM backend, which
-    // allocates. Do it here, where allocations are allowed, so the measured loop
-    // below runs against fully-initialized backends.
     reading_pub.send(Reading {
         value: 1.0,
         seq: 0.0,
@@ -83,10 +166,7 @@ fn rt_steady_state_recv_compute_send_is_allocation_free() {
         seq: 0.0,
     });
 
-    // ── Steady state (inside the RT context — allocations now forbidden) ──────
-    // Bracket exactly the work a `.no_alloc()` node does each tick: recv a POD
-    // reading, compute, send a POD command. If any of this allocates, the global
-    // allocator panics and the test fails.
+    // ── Steady state (inside the RT context) ─────────────────────────────────
     let mut state = 0.0f32;
     for i in 0..200u32 {
         reading_pub.send(Reading {
@@ -94,7 +174,7 @@ fn rt_steady_state_recv_compute_send_is_allocation_free() {
             seq: i as f32,
         });
 
-        enter_rt_context("rt_control_node");
+        let _guard = enter_rt_context_guarded("rt_control_node");
         // recv: zero-copy read out of the SHM ring (POD memcpy).
         if let Some(r) = reading_sub.recv() {
             state = r.value * 0.5; // trivial control law
@@ -104,11 +184,12 @@ fn rt_steady_state_recv_compute_send_is_allocation_free() {
             output: state,
             seq: i as f32,
         });
-        leave_rt_context();
     }
 
-    // Reaching here means 200 steady-state recv → compute → send cycles ran with
-    // zero heap allocations under the RT guard.
+    assert!(
+        !rt_allocator::is_rt_context(),
+        "the guard must clear the RT flag at the end of every tick"
+    );
     assert_eq!(
         state,
         199.0 * 0.5,
@@ -121,13 +202,18 @@ fn rt_steady_state_recv_compute_send_is_allocation_free() {
 static EXEC_TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// End-to-end through the RT executor: a `.no_alloc()` control node ticking
-/// `recv → compute → send` runs continuously without tripping the allocator.
+/// `recv → compute → send` runs continuously.
 ///
 /// This exercises the executor's **warmup exemption** — the first tick is not
 /// alloc-checked, so the `Topic`'s lazy SHM-backend init may allocate — followed
-/// by steady-state enforcement from the second tick on. That combination is what
-/// makes `.no_alloc()` usable for real control nodes. Without the exemption the
-/// node would panic on tick 1 (lazy init) and the counter would freeze near zero.
+/// by enforcement from the second tick on. That combination is what makes
+/// `.no_alloc()` usable for real control nodes.
+///
+/// In *this* binary the enforcement half is inert (no allocator installed), so
+/// what is covered here is the executor plumbing: the flag is entered and left
+/// around each tick and the node keeps running.
+/// `rt_alloc_guard_installed::a_clean_no_alloc_node_survives_the_rt_executor`
+/// runs the same graph with the allocator live and asserts zero violations.
 #[test]
 fn no_alloc_node_runs_through_the_rt_executor() {
     let _shm_guard = cleanup_stale_shm();
@@ -187,7 +273,7 @@ fn no_alloc_node_runs_through_the_rt_executor() {
         .build()
         .unwrap();
     // Real-time (`.rate()`) + `.no_alloc()` ⇒ runs on the RT executor with the
-    // allocation guard active from the second tick.
+    // allocation bracket around every tick from the second on.
     scheduler
         .add(Controller {
             input: ctrl_in,
@@ -206,7 +292,6 @@ fn no_alloc_node_runs_through_the_rt_executor() {
     assert!(
         ticks > 20,
         ".no_alloc() controller should have run many ticks through the RT executor \
-         (tick 1 warms up the topic backend, steady state is alloc-checked); got {ticks}. \
-         A low count means it panicked on a heap allocation."
+         (tick 1 warms up the topic backend, steady state is bracketed); got {ticks}."
     );
 }

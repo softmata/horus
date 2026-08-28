@@ -558,6 +558,25 @@ impl NodeInfo {
         // Register under both node name and topic name
         registry.insert(self.name.clone(), notifier.clone());
         registry.insert(topic_name.to_string(), notifier.clone());
+        // Open the publish-side gate for both keys, while still holding the
+        // registry lock. `notify_event` reads this word with a plain Relaxed
+        // load and only takes the lock when a bit it cares about is set, so the
+        // bits MUST be published no earlier than the entries they stand for.
+        //
+        // Ordering: the filter carries no data, it only gates the lock. A
+        // reader that observes a bit then acquires this same mutex, whose
+        // release below happens-after both `insert`s — so the entries are
+        // visible to it. A reader that observes the bit as still clear returns
+        // `false`, which is the same answer it would have got by winning the
+        // race for the lock a moment before this registration took it; that
+        // window is pre-existing and is exactly why callers such as
+        // `wiring_verification::event_node_ticks_via_notify_event` spin on the
+        // return value until registration lands.
+        EVENT_NOTIFIER_FILTER.fetch_or(
+            event_filter_bit(&self.name) | event_filter_bit(topic_name),
+            std::sync::atomic::Ordering::Release,
+        );
+        drop(registry);
         self.event_notifier = Some(notifier);
     }
 
@@ -565,7 +584,53 @@ impl NodeInfo {
     ///
     /// This is the primary way to trigger an event-driven node from external code
     /// or from a topic publisher. Returns `true` if the node was found.
+    ///
+    /// # Why this is gated
+    ///
+    /// `Topic::send()` calls this on **every publish of every topic**, so the
+    /// unconditional body — lock a process-global `Mutex`, probe a
+    /// `HashMap<String, _>` — sat in the primary publish API of the runtime.
+    /// Two costs, and the second is the one that matters:
+    ///
+    /// 1. The lock/probe is pure waste in any process that registers no event
+    ///    node at all, which is the common configuration.
+    /// 2. `std::sync::Mutex` is a futex with **no priority inheritance**. A
+    ///    SCHED_FIFO publisher that arrives while a preempted SCHED_OTHER
+    ///    thread holds this lock blocks for as long as the low-priority thread
+    ///    takes to be scheduled again — unbounded, and unanalysable to a static
+    ///    WCET tool. Nothing about the publish is allowed to depend on it.
+    ///
+    /// The gate is `EVENT_NOTIFIER_FILTER`, a 64-bit summary of the names
+    /// present in the registry. Publishing costs one Relaxed load and a
+    /// predictable not-taken branch; the lock is reached only for a name whose
+    /// bit is set. False positives (two names sharing a bit) cost a lock
+    /// acquire and a miss — the same answer, more slowly. False negatives are
+    /// impossible: `event_filter_bit` is a pure function of the name and the
+    /// bit is published under the registry lock at registration.
+    ///
+    /// This narrows the priority inversion from "every publish in every
+    /// process" to "a publish on a name an event node is registered under".
+    /// It does not eliminate it for that name — see the "Residual blocking
+    /// edge" note on `EVENT_NOTIFIER_REGISTRY`.
+    #[inline]
     pub fn notify_event(node_name: &str) -> bool {
+        let filter = EVENT_NOTIFIER_FILTER.load(std::sync::atomic::Ordering::Relaxed);
+        // No event node has ever registered in this process: no bit, no probe,
+        // no lock. The mask test alone would cover this (`0 & x == 0`); the
+        // explicit compare is what lets the common path skip even computing the
+        // bit, leaving a load, a compare and a not-taken branch.
+        if filter == 0 || filter & event_filter_bit(node_name) == 0 {
+            return false;
+        }
+        Self::notify_event_registered(node_name)
+    }
+
+    /// Slow path of [`NodeInfo::notify_event`]: a name whose filter bit is set,
+    /// so the registry has to be consulted. Outlined so the gate above inlines
+    /// into `Topic::send()` as a load and a branch.
+    #[cold]
+    #[inline(never)]
+    fn notify_event_registered(node_name: &str) -> bool {
         let registry = EVENT_NOTIFIER_REGISTRY
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -578,10 +643,69 @@ impl NodeInfo {
     }
 }
 
+/// Bit this name occupies in [`EVENT_NOTIFIER_FILTER`].
+///
+/// A pure, total function of the name — the only thing correctness needs, since
+/// registration and lookup both go through it. Mixes length with the first and
+/// last byte through a multiplicative constant and takes the top 6 bits, which
+/// separates the names that actually differ in practice (`evt_a`/`evt_b`,
+/// `lidar_scan`/`lidar_pose`) for the price of one multiply. Names agreeing on
+/// all three inputs share a bit; that is a false positive, not a lost
+/// notification.
+#[inline(always)]
+fn event_filter_bit(name: &str) -> u64 {
+    let b = name.as_bytes();
+    let first = *b.first().unwrap_or(&0) as u64;
+    let last = *b.last().unwrap_or(&0) as u64;
+    let mixed =
+        ((b.len() as u64) | (first << 8) | (last << 16)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    1u64 << (mixed >> 58)
+}
+
+/// Publish-side gate for [`EVENT_NOTIFIER_REGISTRY`]: bit `event_filter_bit(k)`
+/// is set for every key `k` ever registered.
+///
+/// Zero until the first event node registers, which is the whole point — a
+/// process with no event nodes never touches the registry mutex on a publish.
+/// Set-only, exactly like the registry itself (nothing is ever removed from
+/// it), so the gate can never go stale in the unsafe direction: a bit stays set
+/// after the entry that justified it, which costs a lock, never a missed tick.
+///
+/// Saturation is graceful: with enough distinct registered names the word fills
+/// and every publish falls through to the lock — i.e. back to the old
+/// behaviour, never worse.
+static EVENT_NOTIFIER_FILTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Global registry of event notifiers keyed by node name.
 ///
 /// Allows external code (topic publishers, tests) to notify event-driven nodes
 /// without holding a direct reference to their NodeInfo.
+///
+/// Entries are inserted and never removed, and a re-registration under an
+/// existing key replaces that key's `Arc`. Both properties are relied on by
+/// [`EVENT_NOTIFIER_FILTER`], which gates the publish path.
+///
+/// # Residual blocking edge
+///
+/// This is still a `std::sync::Mutex` — a futex with no priority inheritance —
+/// and a publish on a name an event node is registered under still takes it.
+/// For that one name the publish path remains unbounded under preemption. The
+/// filter removes the inversion from every *other* publish, which is where it
+/// had no business being at all; it does not make an event-driven topic's
+/// publish WCET analysable.
+///
+/// Closing that requires the read side to be wait-free, and the obstacle is
+/// ownership, not the data structure: the watcher thread in
+/// `scheduling::event_executor` creates its own `AtomicU64` and hands it here,
+/// so a re-registration must swap the value a publisher may be dereferencing —
+/// which no lock-free map can do without a reclamation scheme. Invert that
+/// (registry owns a stable counter per name, watcher asks for it) and the
+/// registry becomes an append-only array of `(name, &'static AtomicU64)` a
+/// publisher can scan without any lock, with a WCET linear in the number of
+/// registered event nodes. That change is in the event executor, not here, and
+/// it must also seed the watcher's `last_seen_generation` from the counter it
+/// adopts, or a restarted scheduler replays every notification the previous
+/// run delivered.
 static EVENT_NOTIFIER_REGISTRY: std::sync::LazyLock<
     Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -1124,6 +1248,116 @@ mod failure_attribution_tests {
             "a tick failure was filed under {:?} instead of {name:?} — \
              `horus log --node {name}` would not find the node's own panic",
             mine.iter().map(|e| &e.node_name).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod event_notifier_gate_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// The safety property of the publish-side gate: anything the registry
+    /// holds must still be reachable through `notify_event`.
+    ///
+    /// `Topic::send()` no longer takes the registry lock unconditionally — it
+    /// consults `EVENT_NOTIFIER_FILTER` first — so a registration that failed
+    /// to open the gate would look exactly like a working system until an event
+    /// node silently stopped ticking. This pins both keys the registration
+    /// writes (node name AND topic name), because `Topic::send()` only ever
+    /// looks up the topic one.
+    #[test]
+    fn registration_opens_the_gate_for_both_keys() {
+        let node_name = format!("gate_node_{}", std::process::id());
+        let topic_name = format!("gate_topic_{}", std::process::id());
+
+        // Before registration: no entry, so no notification, and — the whole
+        // point — no reason to have touched the registry mutex.
+        assert!(
+            !NodeInfo::notify_event(&node_name),
+            "unregistered name must not report a delivered notification"
+        );
+        assert!(!NodeInfo::notify_event(&topic_name));
+
+        let notifier = Arc::new(AtomicU64::new(0));
+        let mut info = NodeInfo::new(node_name.clone());
+        info.set_event_notifier_with_topic(notifier.clone(), &topic_name);
+
+        let filter = EVENT_NOTIFIER_FILTER.load(Ordering::Relaxed);
+        assert_ne!(
+            filter & event_filter_bit(&node_name),
+            0,
+            "registration left the gate shut for the node name"
+        );
+        assert_ne!(
+            filter & event_filter_bit(&topic_name),
+            0,
+            "registration left the gate shut for the topic name — \
+             Topic::send() would never notify this event node"
+        );
+
+        assert!(NodeInfo::notify_event(&node_name));
+        assert!(
+            NodeInfo::notify_event(&topic_name),
+            "the key Topic::send() uses did not resolve"
+        );
+        assert_eq!(
+            notifier.load(Ordering::Acquire),
+            2,
+            "one notification per call — the watcher ticks once per generation"
+        );
+    }
+
+    /// A name the registry has never seen answers `false` without a lock. The
+    /// return value is load-bearing: several tests spin on it to discover when
+    /// the event executor's watcher thread has finished registering.
+    #[test]
+    fn unregistered_name_is_rejected_by_the_gate() {
+        for name in ["", "x", "no_such_event_node_1a2b3c", "another/one"] {
+            assert!(
+                !NodeInfo::notify_event(name),
+                "notify_event({name:?}) claimed to notify a node that was never registered"
+            );
+        }
+    }
+
+    /// The gate's correctness rests on `event_filter_bit` being a pure, total
+    /// function that names exactly one bit — the same one at registration and
+    /// at lookup. An empty name must not panic (it is a legal `&str` and
+    /// reaches this from `notify_event`'s public API).
+    #[test]
+    fn filter_bit_is_pure_total_and_single() {
+        let long = "z".repeat(300);
+        for name in [
+            "",
+            "a",
+            "evt_a",
+            "evt_b",
+            "lidar_scan",
+            "/cmd_vel",
+            long.as_str(),
+        ] {
+            let bit = event_filter_bit(name);
+            assert_eq!(
+                bit.count_ones(),
+                1,
+                "event_filter_bit({name:?}) must select exactly one of the 64 bits"
+            );
+            assert_eq!(bit, event_filter_bit(name), "event_filter_bit is not pure");
+        }
+
+        // Not a correctness requirement — a false positive only costs a lock —
+        // but names that differ only in their last byte are the common shape
+        // (`evt_a`/`evt_b`, `cam_0`/`cam_1`), so they had better not all pile
+        // onto one bit and hand every publisher the mutex back.
+        let spread: u64 = ["evt_a", "evt_b", "evt_c", "evt_d"]
+            .into_iter()
+            .map(event_filter_bit)
+            .fold(0, |acc, b| acc | b);
+        assert!(
+            spread.count_ones() >= 3,
+            "sibling names collapsed onto {} bit(s); the filter would not gate them apart",
+            spread.count_ones()
         );
     }
 }

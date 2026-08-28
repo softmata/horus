@@ -1,0 +1,1844 @@
+//! Cross-process ONE-WAY latency for the HORUS `Topic` shared-memory transport.
+//!
+//! # Why this binary exists
+//!
+//! `benchmarks/README.md:77` says of the headline send-cost row that it "is *not*
+//! an IPC latency: it is the cost of the store into the shared-memory slot, with
+//! no consumer in the path". That figure is produced by a same-thread self-loop
+//! through the `role == Both` inlined fast path in `Topic::send`/`Topic::recv`,
+//! which requires one handle to both publish and subscribe on one thread — a
+//! shape that exists in benchmarks and in no real node graph. It is therefore
+//! not comparable to any published inter-process number (iceoryx2 publishes
+//! ~240 ns pub->sub at 64 B on an i7-10875H, Linux 6.5.9).
+//!
+//! This binary measures the thing that figure is quoted as: two real OS
+//! processes, pinned to two distinct physical cores, exchanging POD messages
+//! over the same `Topic` SHM ring a robot node graph would use, with every
+//! handle holding exactly ONE role so the `role == Both` fast path is
+//! unreachable.
+//!
+//! # Clock
+//!
+//! Both processes read the same hardware TSC. Rather than assume the two cores'
+//! TSCs are offset-free, the ping-pong scenario records four timestamps per
+//! sample and decomposes them the way NTP does:
+//!
+//! ```text
+//!   t0       (clock A) parent stamps, then publishes on `ping`
+//!   tb_recv  (clock B) child's recv() returns the message
+//!   tb_send  (clock B) child stamps, then publishes on `pong`
+//!   t1       (clock A) parent's recv() returns the reply
+//!
+//!   fwd = tb_recv - t0      = D_fwd + theta       (theta = clock_B - clock_A)
+//!   rev = t1      - tb_send = D_rev - theta
+//!   rtt = t1      - t0      = D_fwd + turnaround + D_rev   (one clock, exact)
+//!
+//!   one-way (offset-free) = (fwd + rev) / 2 = (D_fwd + D_rev) / 2
+//!   theta_hat             = (median(fwd) - median(rev)) / 2
+//! ```
+//!
+//! `(fwd + rev) / 2` cancels `theta` exactly and needs no assumption about TSC
+//! synchronisation across cores. It is the headline one-way figure. `rtt / 2` is
+//! printed alongside it, explicitly labelled as a halved round trip; it is the
+//! larger of the two because it also carries the responder's recv->send
+//! turnaround. Which one to compare against a competitor depends on that
+//! competitor's methodology, so both are printed and neither is hidden.
+//!
+//! The paced-stream scenario measures one way directly (publisher stamps,
+//! subscriber stamps on arrival) and therefore *does* depend on cross-core TSC
+//! coherence; the `theta_hat` measured above bounds that bias and is printed
+//! with it.
+//!
+//! # What is included and not subtracted
+//!
+//! No clock-instrumentation overhead is subtracted from any sample. The measured
+//! cost of the `serialize(); rdtsc()` / `rdtscp()` pattern is printed instead, so
+//! a reader can see how much of the figure is instrumentation. Subtracting a
+//! once-captured minimum from every later sample (which `all_paths_latency` does
+//! and `cross_process_benchmark` does not) is what makes those two binaries'
+//! cross-process numbers non-comparable, and it biases the result in the
+//! flattering direction.
+//!
+//! # Running
+//!
+//! ```bash
+//! cargo build --release -p horus_benchmarks --bin cross_process_oneway
+//! ./target/release/cross_process_oneway
+//! ./target/release/cross_process_oneway --iterations 4000000 --json out.json
+//! ```
+
+use horus_benchmarks::timing::{calibrate_rdtsc, rdtsc, rdtscp, serialize, RdtscCalibration};
+use horus_benchmarks::{calculate_percentile, detect_platform, set_cpu_affinity};
+use horus_core::communication::{Topic, TopicMessage};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// Measured samples per scenario. p99.99 rests on `n / 10_000` observations, and
+/// that count is printed on every row. +/-5% on p99.99 needs ~400 exceedances,
+/// i.e. `--iterations 4000000`.
+const DEFAULT_ITERATIONS: usize = 1_000_000;
+
+/// Discarded iterations before measurement. Must exceed 256: `resolve_owner`
+/// retries node-name resolution on every send until it has failed 256 times, so
+/// a benchmark that warms up for less than that measures the retry too.
+const DEFAULT_WARMUP: usize = 200_000;
+
+/// Ring slots. Power of two (validated by `Topic::with_capacity`).
+const RING_CAPACITY: u32 = 256;
+
+/// Publish interval for the paced-stream scenario. Flooding measures queueing
+/// delay, not wire latency — `all_paths_latency.rs:905` documents the same
+/// effect as "~3 us instead of true wire latency ~300 ns".
+const DEFAULT_PACE_NS: u64 = 10_000;
+
+/// Consecutive empty polls before a loop gives up. Clock-free on purpose: an
+/// `Instant::now()` in the poll loop lands in the p99 band of the very
+/// distribution being measured.
+const MAX_IDLE_SPINS: u64 = 4_000_000_000;
+
+const SEQ_STOP: u64 = u64::MAX;
+const SEQ_HELLO: u64 = u64::MAX - 1;
+
+// ============================================================================
+// Probe messages
+// ============================================================================
+
+/// A fixed-size POD probe message.
+///
+/// `Copy`, `!Drop`, `size_of > 1`, so `communication::pod::is_pod` classifies it
+/// POD and the topic takes the raw shared-ring path rather than the serde path.
+/// The serde derives exist only to satisfy the `TopicMessage` blanket impl's
+/// bounds; they are not on the data path for these types.
+trait Probe: Copy + Clone + Send + Sync + Serialize + DeserializeOwned + 'static {
+    /// Wire size in bytes.
+    const BYTES: usize;
+    /// Type name, printed with every row.
+    const TYPE_NAME: &'static str;
+
+    fn new_probe() -> Self;
+    fn seq(&self) -> u64;
+    fn set_seq(&mut self, v: u64);
+    fn t0(&self) -> u64;
+    fn set_t0(&mut self, v: u64);
+    fn tb_recv(&self) -> u64;
+    fn set_tb_recv(&mut self, v: u64);
+    fn tb_send(&self) -> u64;
+    fn set_tb_send(&mut self, v: u64);
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+struct Probe64 {
+    seq: u64,
+    t0: u64,
+    tb_recv: u64,
+    tb_send: u64,
+    payload: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+struct Probe1k {
+    seq: u64,
+    t0: u64,
+    tb_recv: u64,
+    tb_send: u64,
+    #[serde(with = "serde_arrays")]
+    payload: [u8; 992],
+}
+
+macro_rules! impl_probe {
+    ($t:ty, $bytes:expr, $name:expr, $pad:expr) => {
+        impl Probe for $t {
+            const BYTES: usize = $bytes;
+            const TYPE_NAME: &'static str = $name;
+
+            #[inline(always)]
+            fn new_probe() -> Self {
+                Self {
+                    seq: 0,
+                    t0: 0,
+                    tb_recv: 0,
+                    tb_send: 0,
+                    payload: [0u8; $pad],
+                }
+            }
+            #[inline(always)]
+            fn seq(&self) -> u64 {
+                self.seq
+            }
+            #[inline(always)]
+            fn set_seq(&mut self, v: u64) {
+                self.seq = v;
+            }
+            #[inline(always)]
+            fn t0(&self) -> u64 {
+                self.t0
+            }
+            #[inline(always)]
+            fn set_t0(&mut self, v: u64) {
+                self.t0 = v;
+            }
+            #[inline(always)]
+            fn tb_recv(&self) -> u64 {
+                self.tb_recv
+            }
+            #[inline(always)]
+            fn set_tb_recv(&mut self, v: u64) {
+                self.tb_recv = v;
+            }
+            #[inline(always)]
+            fn tb_send(&self) -> u64 {
+                self.tb_send
+            }
+            #[inline(always)]
+            fn set_tb_send(&mut self, v: u64) {
+                self.tb_send = v;
+            }
+        }
+    };
+}
+
+impl_probe!(Probe64, 64, "Probe64", 32);
+impl_probe!(Probe1k, 1024, "Probe1k", 992);
+
+/// Mirrors `communication::pod::is_pod`, which decides whether the topic takes
+/// the raw-ring path or the serde path.
+fn is_pod_like<M: 'static>() -> bool {
+    !std::mem::needs_drop::<M>() && std::mem::size_of::<M>() > 1
+}
+
+// ============================================================================
+// Machine facts — the settings every reported nanosecond is conditional on
+// ============================================================================
+
+fn read_trim(path: &str) -> Option<String> {
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
+fn read_u64(path: &str) -> Option<u64> {
+    read_trim(path).and_then(|s| s.parse().ok())
+}
+
+fn cpufreq(cpu: usize, leaf: &str) -> String {
+    format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/{leaf}")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MachineConfig {
+    governor_a: Option<String>,
+    governor_b: Option<String>,
+    scaling_driver: Option<String>,
+    scaling_min_khz: Option<u64>,
+    scaling_max_khz: Option<u64>,
+    cpuinfo_max_khz: Option<u64>,
+    turbo_disabled: Option<bool>,
+    clocksource: Option<String>,
+    tsc_flags: Vec<String>,
+    transparent_hugepage: Option<String>,
+    sched_rt_runtime_us: Option<i64>,
+    sched_rt_period_us: Option<i64>,
+    perf_event_paranoid: Option<i64>,
+    isolcpus: Option<String>,
+    nohz_full: Option<String>,
+    smt_active: Option<String>,
+}
+
+fn detect_machine_config(cpu_a: usize, cpu_b: usize) -> MachineConfig {
+    let cmdline = read_trim("/proc/cmdline").unwrap_or_default();
+    let extract = |key: &str| -> Option<String> {
+        cmdline
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix(key).map(|v| v.to_string()))
+    };
+    let tsc_flags: Vec<String> = fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("flags")).map(String::from))
+        .map(|l| {
+            l.split_whitespace()
+                .filter(|f| {
+                    matches!(
+                        *f,
+                        "tsc" | "constant_tsc" | "nonstop_tsc" | "tsc_reliable" | "rdtscp"
+                    )
+                })
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // `intel_pstate/no_turbo` on Intel, `cpufreq/boost` on the generic driver.
+    let turbo_disabled = read_u64("/sys/devices/system/cpu/intel_pstate/no_turbo")
+        .map(|v| v == 1)
+        .or_else(|| read_u64("/sys/devices/system/cpu/cpufreq/boost").map(|v| v == 0));
+
+    MachineConfig {
+        governor_a: read_trim(&cpufreq(cpu_a, "scaling_governor")),
+        governor_b: read_trim(&cpufreq(cpu_b, "scaling_governor")),
+        scaling_driver: read_trim(&cpufreq(cpu_a, "scaling_driver")),
+        scaling_min_khz: read_u64(&cpufreq(cpu_a, "scaling_min_freq")),
+        scaling_max_khz: read_u64(&cpufreq(cpu_a, "scaling_max_freq")),
+        cpuinfo_max_khz: read_u64(&cpufreq(cpu_a, "cpuinfo_max_freq")),
+        turbo_disabled,
+        clocksource: read_trim("/sys/devices/system/clocksource/clocksource0/current_clocksource"),
+        tsc_flags,
+        transparent_hugepage: read_trim("/sys/kernel/mm/transparent_hugepage/enabled"),
+        sched_rt_runtime_us: read_trim("/proc/sys/kernel/sched_rt_runtime_us")
+            .and_then(|s| s.parse().ok()),
+        sched_rt_period_us: read_trim("/proc/sys/kernel/sched_rt_period_us")
+            .and_then(|s| s.parse().ok()),
+        perf_event_paranoid: read_trim("/proc/sys/kernel/perf_event_paranoid")
+            .and_then(|s| s.parse().ok()),
+        isolcpus: extract("isolcpus="),
+        nohz_full: extract("nohz_full="),
+        smt_active: read_trim("/sys/devices/system/cpu/smt/active"),
+    }
+}
+
+// ============================================================================
+// Core frequency: sampled throughout, not assumed
+// ============================================================================
+//
+// RDTSC counts at the nominal TSC rate on `constant_tsc` regardless of P-state,
+// so a TSC-derived nanosecond is a correct WALL-CLOCK nanosecond — but the work
+// costs a fixed number of CORE cycles, so every reported ns is
+// `core_cycles / f_core`, and `f_core` is never recorded anywhere in this
+// harness: `platform.rs:154` declares `measured_freq_mhz: None, // Set later by
+// calibration` and nothing sets it. On both intel_pstate and acpi-cpufreq,
+// `scaling_cur_freq` is derived from APERF/MPERF and does track the real core
+// frequency, so it is sampled throughout each measured window here rather than
+// read once, and the sampled record is printed with the results.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FreqRecord {
+    cpu: usize,
+    start_khz: Option<u64>,
+    end_khz: Option<u64>,
+    min_khz: u64,
+    max_khz: u64,
+    mean_khz: f64,
+    samples: usize,
+}
+
+impl FreqRecord {
+    fn spread_frac(&self) -> f64 {
+        if self.mean_khz <= 0.0 {
+            return 0.0;
+        }
+        self.max_khz.saturating_sub(self.min_khz) as f64 / self.mean_khz
+    }
+    /// Two samples is the minimum that can show movement at all; below that the
+    /// record says nothing and must not raise an alarm.
+    fn moved(&self) -> bool {
+        self.samples >= 2 && self.spread_frac() > 0.02
+    }
+}
+
+struct FreqSampler {
+    stop: Arc<AtomicBool>,
+    gate: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<(Vec<u64>, Vec<u64>)>,
+    cpu_a: usize,
+    cpu_b: usize,
+}
+
+impl FreqSampler {
+    /// Sample both benchmark cores every 5 ms from a third core, so the
+    /// sampler's own `read(2)`s never land on a core under measurement.
+    ///
+    /// Samples are recorded only while the gate is open. The gate is opened by
+    /// the measuring process immediately before its measured loop and closed
+    /// immediately after, so process spawn, SHM attach, the handshake and warmup
+    /// — during which a core legitimately sits at its idle P-state — cannot
+    /// masquerade as a frequency excursion during measurement.
+    fn start(cpu_a: usize, cpu_b: usize, sampler_cpu: usize) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new(AtomicBool::new(false));
+        let s = stop.clone();
+        let g = gate.clone();
+        let pa = cpufreq(cpu_a, "scaling_cur_freq");
+        let pb = cpufreq(cpu_b, "scaling_cur_freq");
+        let handle = std::thread::spawn(move || {
+            let _ = set_cpu_affinity(sampler_cpu);
+            let mut va = Vec::with_capacity(8192);
+            let mut vb = Vec::with_capacity(8192);
+            while !s.load(Ordering::Relaxed) {
+                if g.load(Ordering::Relaxed) {
+                    if let Some(v) = read_u64(&pa) {
+                        va.push(v);
+                    }
+                    if let Some(v) = read_u64(&pb) {
+                        vb.push(v);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            (va, vb)
+        });
+        Self {
+            stop,
+            gate,
+            handle,
+            cpu_a,
+            cpu_b,
+        }
+    }
+
+    fn gate(&self) -> Arc<AtomicBool> {
+        self.gate.clone()
+    }
+
+    fn finish(self) -> (FreqRecord, FreqRecord) {
+        self.gate.store(false, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
+        let (va, vb) = self.handle.join().unwrap_or_default();
+        let build = |cpu: usize, v: &[u64]| FreqRecord {
+            cpu,
+            start_khz: v.first().copied(),
+            end_khz: v.last().copied(),
+            min_khz: v.iter().copied().min().unwrap_or(0),
+            max_khz: v.iter().copied().max().unwrap_or(0),
+            mean_khz: if v.is_empty() {
+                0.0
+            } else {
+                v.iter().map(|&x| x as f64).sum::<f64>() / v.len() as f64
+            },
+            samples: v.len(),
+        };
+        (build(self.cpu_a, &va), build(self.cpu_b, &vb))
+    }
+}
+
+// ============================================================================
+// Kernel-visible perturbation counters
+// ============================================================================
+
+/// Minor faults, major faults, and voluntary/involuntary context switches,
+/// reported as a delta across the measured window.
+///
+/// A pre-faulted buffer that still takes minor faults during measurement is a
+/// benchmark bug, not a property of the transport, and this is how a reader
+/// finds out. Involuntary context switches are the mechanism behind most of the
+/// far tail on a box without CPU isolation; a `max` quoted without them is not
+/// interpretable.
+///
+/// SCOPE CAVEAT: `RUSAGE_SELF` is process-wide, so this also counts the
+/// frequency-sampler thread, whose two `read_to_string` calls every 5 ms
+/// allocate and therefore contribute a handful of minor faults per measured
+/// window (observed: 1-6 per million samples). Those are NOT faults on the
+/// measured path. Narrowing this to the measuring thread needs `RUSAGE_THREAD`,
+/// which the `libc` crate does not define for `linux-gnu` — it would have to be
+/// declared here as the raw value 1. Until then, read a single-digit `minflt`
+/// as "the sampler", and anything larger as a genuine missed pre-fault.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+struct Perturbation {
+    minflt: u64,
+    majflt: u64,
+    nvcsw: u64,
+    nivcsw: u64,
+}
+
+fn rusage_now() -> Perturbation {
+    // SAFETY: `ru` is a zeroed, correctly sized `rusage` on this thread's stack
+    // and `getrusage` only writes into it; RUSAGE_SELF is a valid resource id.
+    unsafe {
+        let mut ru: libc::rusage = std::mem::zeroed();
+        if libc::getrusage(libc::RUSAGE_SELF, &mut ru) != 0 {
+            return Perturbation::default();
+        }
+        Perturbation {
+            minflt: ru.ru_minflt as u64,
+            majflt: ru.ru_majflt as u64,
+            nvcsw: ru.ru_nvcsw as u64,
+            nivcsw: ru.ru_nivcsw as u64,
+        }
+    }
+}
+
+fn perturbation_delta(a: Perturbation, b: Perturbation) -> Perturbation {
+    Perturbation {
+        minflt: b.minflt.saturating_sub(a.minflt),
+        majflt: b.majflt.saturating_sub(a.majflt),
+        nvcsw: b.nvcsw.saturating_sub(a.nvcsw),
+        nivcsw: b.nivcsw.saturating_sub(a.nivcsw),
+    }
+}
+
+/// Lock currently-mapped pages. `MCL_CURRENT` only: `MCL_FUTURE` converts a swap
+/// event into an OOM kill, which is a trade a benchmark has no business making
+/// on the user's behalf.
+fn try_mlock_current() -> bool {
+    // SAFETY: `mlockall` takes only a flags word and has no memory-safety
+    // preconditions; failure is reported through the return value.
+    unsafe { libc::mlockall(libc::MCL_CURRENT) == 0 }
+}
+
+/// Allocate and touch every element, so every page is resident before the first
+/// timestamp is taken.
+///
+/// `vec![0u64; n]` goes through `calloc`, which for a large allocation hands
+/// back lazily-zeroed pages: the faults then land inside the measured window.
+/// The research traced ~196 minor faults from an 800 KB lazily-faulted `Vec`
+/// straight into the cross-process p99.9 band.
+fn prefaulted(n: usize) -> Vec<u64> {
+    let mut v = vec![0u64; n];
+    for (i, slot) in v.iter_mut().enumerate() {
+        *slot = i as u64 | 1;
+    }
+    std::hint::black_box(&v);
+    for slot in v.iter_mut() {
+        *slot = 0;
+    }
+    v
+}
+
+// ============================================================================
+// Distributions
+// ============================================================================
+
+/// Order statistics over the FULL sample set, with the exceedance count behind
+/// each tail figure.
+///
+/// No outlier filtering anywhere. Tukey's fence deletes exactly the preemptions
+/// and faults that constitute the tail, and the tail is the figure of merit; a
+/// "worst case" that cannot exceed `Q3 + 1.5*IQR` is not a worst case.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Dist {
+    n: usize,
+    min_c: u64,
+    median_c: u64,
+    p99_c: u64,
+    p999_c: u64,
+    p9999_c: u64,
+    max_c: u64,
+    mean_c: f64,
+    stdev_c: f64,
+    n_gt_p99: usize,
+    n_gt_p999: usize,
+    n_gt_p9999: usize,
+}
+
+/// `sorted` must be ascending.
+fn dist_from_sorted(sorted: &[u64]) -> Dist {
+    if sorted.is_empty() {
+        return Dist {
+            n: 0,
+            min_c: 0,
+            median_c: 0,
+            p99_c: 0,
+            p999_c: 0,
+            p9999_c: 0,
+            max_c: 0,
+            mean_c: 0.0,
+            stdev_c: 0.0,
+            n_gt_p99: 0,
+            n_gt_p999: 0,
+            n_gt_p9999: 0,
+        };
+    }
+    let n = sorted.len();
+    let mean = sorted.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
+    let var = sorted
+        .iter()
+        .map(|&x| {
+            let d = x as f64 - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n as f64;
+    let p99 = calculate_percentile(sorted, 99.0);
+    let p999 = calculate_percentile(sorted, 99.9);
+    let p9999 = calculate_percentile(sorted, 99.99);
+    let gt = |v: u64| n - sorted.partition_point(|&x| x <= v);
+    Dist {
+        n,
+        min_c: sorted[0],
+        median_c: calculate_percentile(sorted, 50.0),
+        p99_c: p99,
+        p999_c: p999,
+        p9999_c: p9999,
+        max_c: sorted[n - 1],
+        mean_c: mean,
+        stdev_c: var.sqrt(),
+        n_gt_p99: gt(p99),
+        n_gt_p999: gt(p999),
+        n_gt_p9999: gt(p9999),
+    }
+}
+
+/// Materialise `f(i)` for `i in 0..n` into `scratch`, sort it, and summarise.
+fn dist_of<F: FnMut(usize) -> u64>(n: usize, scratch: &mut [u64], mut f: F) -> Dist {
+    for (i, slot) in scratch.iter_mut().enumerate().take(n) {
+        *slot = f(i);
+    }
+    let s = &mut scratch[..n];
+    s.sort_unstable();
+    dist_from_sorted(s)
+}
+
+/// Dump raw per-sample cycle counts so a percentile can be re-derived later.
+///
+/// The primary harness writes `raw_latencies_ns: Vec::new()` with the comment
+/// "Exclude raw latencies to keep JSON compact", which makes every result in it
+/// unfalsifiable from the artefact it produced.
+fn dump_raw(dir: Option<&str>, name: &str, v: &[u64]) {
+    let Some(dir) = dir else { return };
+    let _ = fs::create_dir_all(dir);
+    let path = PathBuf::from(dir).join(format!("{name}.u64le"));
+    if let Err(e) = fs::write(&path, bytemuck::cast_slice::<u64, u8>(v)) {
+        eprintln!("warning: could not write {}: {e}", path.display());
+    }
+}
+
+// ============================================================================
+// Scenario results
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScenarioResult {
+    scenario: String,
+    kind: String,
+    payload_type: String,
+    message_bytes: usize,
+    is_pod: bool,
+    ring_capacity: u32,
+    topology: String,
+    cpu_a: usize,
+    cpu_b: usize,
+    iterations: usize,
+    warmup: usize,
+    /// Metric name -> distribution, in TSC cycles.
+    metrics: Vec<(String, Dist)>,
+    messages_lost: u64,
+    invalid_samples: usize,
+    theta_hat_cycles: f64,
+    perturbation: Perturbation,
+    freq_a: FreqRecord,
+    freq_b: FreqRecord,
+    empty_poll_cycles: u64,
+}
+
+// ============================================================================
+// Scenario 1: cross-process ping-pong
+// ============================================================================
+
+struct PingPongRaw {
+    fwd: Vec<u64>,
+    turn: Vec<u64>,
+    rev: Vec<u64>,
+    invalid: usize,
+    perturbation: Perturbation,
+    empty_poll_cycles: u64,
+}
+
+/// Parent side: publishes on `ping`, subscribes to `pong`.
+///
+/// Two distinct topics, so this handle publishes on one and subscribes on the
+/// other, and the `role == Both` inlined fast path is unreachable. That path is
+/// where the repo's headline figure comes from, and it is why that figure is not
+/// an IPC latency.
+fn ping_pong_parent<M>(
+    ping_name: &str,
+    pong_name: &str,
+    n: usize,
+    warmup: usize,
+    gate: &AtomicBool,
+) -> Result<(PingPongRaw, u32, u32), String>
+where
+    M: Probe
+        + TopicMessage<Wire = M>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static,
+{
+    let ping: Topic<M> = Topic::with_capacity(ping_name, RING_CAPACITY, None)
+        .map_err(|e| format!("ping topic: {e}"))?;
+    let pong: Topic<M> = Topic::with_capacity(pong_name, RING_CAPACITY, None)
+        .map_err(|e| format!("pong topic: {e}"))?;
+
+    // Sample buffers are faulted in before the first timestamp is taken.
+    let mut fwd = prefaulted(n);
+    let mut turn = prefaulted(n);
+    let mut rev = prefaulted(n);
+
+    let mut msg = M::new_probe();
+
+    // Handshake, so the measured loop never includes the child's process
+    // start-up or its SHM attach.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut connected = false;
+    while Instant::now() < deadline && !connected {
+        msg.set_seq(SEQ_HELLO);
+        msg.set_t0(rdtsc());
+        ping.send(msg);
+        let spin_end = Instant::now() + Duration::from_millis(50);
+        while Instant::now() < spin_end {
+            if let Some(r) = pong.recv() {
+                if r.seq() == SEQ_HELLO {
+                    connected = true;
+                    break;
+                }
+            }
+            std::hint::spin_loop();
+        }
+    }
+    if !connected {
+        return Err("echo child never responded".to_string());
+    }
+    while pong.recv().is_some() {}
+
+    // The subscriber's empty-poll cost is the detection granularity of a
+    // spin-polling consumer, and it sits inside every one-way figure below.
+    let empty_poll_cycles = {
+        const PROBES: u64 = 20_000;
+        serialize();
+        let s = rdtsc();
+        for _ in 0..PROBES {
+            std::hint::black_box(pong.recv());
+        }
+        let e = rdtscp();
+        e.wrapping_sub(s) / PROBES
+    };
+
+    // One closure for warmup and measurement, so the measured code path is
+    // byte-identical to the warmed one.
+    let mut round = |seq: u64| -> Option<(u64, u64, u64)> {
+        msg.set_seq(seq);
+        msg.set_tb_recv(0);
+        msg.set_tb_send(0);
+        serialize();
+        let t0 = rdtsc();
+        msg.set_t0(t0);
+        ping.send(msg);
+
+        let mut idle: u64 = 0;
+        loop {
+            if let Some(r) = pong.recv() {
+                if r.seq() == seq {
+                    let t1 = rdtscp();
+                    return Some((
+                        r.tb_recv().wrapping_sub(t0),
+                        r.tb_send().wrapping_sub(r.tb_recv()),
+                        t1.wrapping_sub(r.tb_send()),
+                    ));
+                }
+                idle = 0;
+                continue;
+            }
+            idle += 1;
+            if idle > MAX_IDLE_SPINS {
+                return None;
+            }
+            std::hint::spin_loop();
+        }
+    };
+
+    for i in 0..warmup {
+        if round(i as u64).is_none() {
+            return Err("echo child stopped responding during warmup".to_string());
+        }
+    }
+
+    gate.store(true, Ordering::Relaxed);
+    let before = rusage_now();
+    for i in 0..n {
+        match round((warmup + i) as u64) {
+            Some((f, tn, v)) => {
+                fwd[i] = f;
+                turn[i] = tn;
+                rev[i] = v;
+            }
+            None => {
+                gate.store(false, Ordering::Relaxed);
+                return Err(format!("echo child stopped responding at sample {i}"));
+            }
+        }
+    }
+    let after = rusage_now();
+    gate.store(false, Ordering::Relaxed);
+
+    // A cross-core TSC offset large enough to make the decomposition
+    // meaningless shows up as a leg longer than the whole round trip.
+    let mut invalid = 0usize;
+    for i in 0..n {
+        let rtt = fwd[i].wrapping_add(turn[i]).wrapping_add(rev[i]);
+        if fwd[i] > rtt || rev[i] > rtt {
+            invalid += 1;
+        }
+    }
+
+    let (pubs, subs) = (ping.pub_count(), ping.sub_count());
+
+    msg.set_seq(SEQ_STOP);
+    for _ in 0..8 {
+        ping.send(msg);
+    }
+
+    Ok((
+        PingPongRaw {
+            fwd,
+            turn,
+            rev,
+            invalid,
+            perturbation: perturbation_delta(before, after),
+            empty_poll_cycles,
+        },
+        pubs,
+        subs,
+    ))
+}
+
+/// Child side: subscribes to `ping`, publishes on `pong`. One role per handle.
+fn echo_child<M>(ping_name: &str, pong_name: &str) -> Result<(), String>
+where
+    M: Probe
+        + TopicMessage<Wire = M>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static,
+{
+    let ping: Topic<M> = Topic::with_capacity(ping_name, RING_CAPACITY, None)
+        .map_err(|e| format!("ping topic: {e}"))?;
+    let pong: Topic<M> = Topic::with_capacity(pong_name, RING_CAPACITY, None)
+        .map_err(|e| format!("pong topic: {e}"))?;
+    try_mlock_current();
+
+    let mut idle: u64 = 0;
+    loop {
+        match ping.recv() {
+            Some(mut m) => {
+                let tb_recv = rdtscp();
+                if m.seq() == SEQ_STOP {
+                    return Ok(());
+                }
+                m.set_tb_recv(tb_recv);
+                serialize();
+                m.set_tb_send(rdtsc());
+                pong.send(m);
+                idle = 0;
+            }
+            None => {
+                idle += 1;
+                if idle > MAX_IDLE_SPINS {
+                    return Ok(());
+                }
+                std::hint::spin_loop();
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Scenario 2: paced one-way stream
+// ============================================================================
+
+struct StreamRaw {
+    lat: Vec<u64>,
+    received: usize,
+    lost: u64,
+    perturbation: Perturbation,
+    empty_poll_cycles: u64,
+}
+
+/// Parent side: subscriber only.
+fn stream_parent<M>(
+    topic_name: &str,
+    n: usize,
+    warmup: usize,
+    gate: &AtomicBool,
+) -> Result<(StreamRaw, u32, u32), String>
+where
+    M: Probe
+        + TopicMessage<Wire = M>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static,
+{
+    let sub: Topic<M> = Topic::with_capacity(topic_name, RING_CAPACITY, None)
+        .map_err(|e| format!("stream topic: {e}"))?;
+    let mut lat = prefaulted(n);
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen_any = false;
+    while Instant::now() < deadline && !seen_any {
+        if let Some(m) = sub.recv() {
+            if m.seq() != SEQ_STOP {
+                seen_any = true;
+            }
+        }
+        std::hint::spin_loop();
+    }
+    if !seen_any {
+        return Err("publisher child never produced a message".to_string());
+    }
+
+    let empty_poll_cycles = {
+        const PROBES: u64 = 2_000;
+        serialize();
+        let s = rdtsc();
+        for _ in 0..PROBES {
+            std::hint::black_box(sub.try_recv());
+        }
+        let e = rdtscp();
+        e.wrapping_sub(s) / PROBES
+    };
+
+    let mut received = 0usize;
+    let mut lost = 0u64;
+    let mut last: Option<u64> = None;
+    let mut idle: u64 = 0;
+    let mut measuring = false;
+    let mut before = rusage_now();
+
+    loop {
+        match sub.recv() {
+            Some(m) => {
+                let t = rdtscp();
+                idle = 0;
+                let seq = m.seq();
+                if seq == SEQ_STOP {
+                    break;
+                }
+                if seq >= warmup as u64 {
+                    if !measuring {
+                        measuring = true;
+                        gate.store(true, Ordering::Relaxed);
+                        before = rusage_now();
+                        last = None;
+                    }
+                    if let Some(l) = last {
+                        if seq > l + 1 {
+                            lost += seq - l - 1;
+                        }
+                    }
+                    last = Some(seq);
+                    lat[received] = t.wrapping_sub(m.t0());
+                    received += 1;
+                    if received == n {
+                        break;
+                    }
+                }
+            }
+            None => {
+                idle += 1;
+                if idle > MAX_IDLE_SPINS {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+        }
+    }
+    let after = rusage_now();
+    gate.store(false, Ordering::Relaxed);
+    let (pubs, subs) = (sub.pub_count(), sub.sub_count());
+
+    Ok((
+        StreamRaw {
+            lat,
+            received,
+            lost,
+            perturbation: perturbation_delta(before, after),
+            empty_poll_cycles,
+        },
+        pubs,
+        subs,
+    ))
+}
+
+/// Child side: publisher only, paced in TSC cycles.
+///
+/// Paced rather than flooded. A flooding publisher fills the ring and the
+/// consumer then measures queueing delay — the failure the repo's own note at
+/// `all_paths_latency.rs:905` describes as "~3 us instead of true wire latency".
+///
+/// Pacing removes the *systematic* queueing, but not the episodic kind: if the
+/// subscriber is descheduled for longer than `ring_capacity * pace`, the
+/// publisher keeps filling the ring, and every message the subscriber then
+/// drains reports how long it sat there rather than how long the wire took.
+/// A measured run showed exactly this — median 201 ns, p99 1.3 us, then a cliff
+/// to p99.9 = 2.7 ms with 3,225 messages lost, against a backlog ceiling of
+/// `256 slots * 10 us = 2.56 ms`. `messages_lost` and the involuntary
+/// context-switch count are printed so a reader can tell that shape apart from
+/// a transport tail. The lock-step ping-pong cannot queue and is therefore the
+/// more trustworthy tail estimator on a box without CPU isolation.
+fn pub_child<M>(topic_name: &str, total: usize, pace_cycles: u64) -> Result<(), String>
+where
+    M: Probe
+        + TopicMessage<Wire = M>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static,
+{
+    let tx: Topic<M> = Topic::with_capacity(topic_name, RING_CAPACITY, None)
+        .map_err(|e| format!("stream topic: {e}"))?;
+    try_mlock_current();
+
+    // Let the subscriber attach before the first paced message.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let mut msg = M::new_probe();
+    let mut next = rdtsc();
+    for i in 0..total {
+        while rdtsc() < next {
+            std::hint::spin_loop();
+        }
+        next = next.wrapping_add(pace_cycles);
+        msg.set_seq(i as u64);
+        serialize();
+        msg.set_t0(rdtsc());
+        tx.send(msg);
+    }
+    msg.set_seq(SEQ_STOP);
+    for _ in 0..8 {
+        tx.send(msg);
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Scenario drivers
+// ============================================================================
+
+fn spawn_child(args: &[String]) -> std::io::Result<Child> {
+    let exe = std::env::current_exe()?;
+    Command::new(exe).args(args).spawn()
+}
+
+fn reap(mut child: Child, secs: u64) {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+struct RunCtx<'a> {
+    run_id: &'a str,
+    cpu_a: usize,
+    cpu_b: usize,
+    sampler_cpu: usize,
+    iterations: usize,
+    warmup: usize,
+    raw_dir: Option<&'a str>,
+}
+
+fn run_pingpong<M>(ctx: &RunCtx<'_>, scratch: &mut [u64]) -> Result<ScenarioResult, String>
+where
+    M: Probe
+        + TopicMessage<Wire = M>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static,
+{
+    let bytes = M::BYTES;
+    let ping = format!("xpo.ping.{}.{}", bytes, ctx.run_id);
+    let pong = format!("xpo.pong.{}.{}", bytes, ctx.run_id);
+    let child = spawn_child(&[
+        "--child".to_string(),
+        "echo".to_string(),
+        ctx.cpu_b.to_string(),
+        bytes.to_string(),
+        ping.clone(),
+        pong.clone(),
+    ])
+    .map_err(|e| format!("spawn echo child: {e}"))?;
+
+    let sampler = FreqSampler::start(ctx.cpu_a, ctx.cpu_b, ctx.sampler_cpu);
+    let gate = sampler.gate();
+    let outcome = ping_pong_parent::<M>(&ping, &pong, ctx.iterations, ctx.warmup, &gate);
+    let (freq_a, freq_b) = sampler.finish();
+    reap(child, 15);
+
+    let (raw, pubs, subs) = outcome?;
+    let n = ctx.iterations;
+
+    dump_raw(ctx.raw_dir, &format!("pingpong.{bytes}.fwd"), &raw.fwd);
+    dump_raw(
+        ctx.raw_dir,
+        &format!("pingpong.{bytes}.turnaround"),
+        &raw.turn,
+    );
+    dump_raw(ctx.raw_dir, &format!("pingpong.{bytes}.rev"), &raw.rev);
+
+    let fwd = &raw.fwd;
+    let turn = &raw.turn;
+    let rev = &raw.rev;
+
+    let d_oneway = dist_of(n, scratch, |i| fwd[i].wrapping_add(rev[i]) / 2);
+    let d_rtt = dist_of(n, scratch, |i| {
+        fwd[i].wrapping_add(turn[i]).wrapping_add(rev[i])
+    });
+    // Halving a round trip is a monotone transform, so the same distribution
+    // scaled by 0.5 at print time gives exact percentiles.
+    let d_rtt_half = d_rtt.clone();
+    let d_fwd = dist_of(n, scratch, |i| fwd[i]);
+    let d_rev = dist_of(n, scratch, |i| rev[i]);
+    let d_turn = dist_of(n, scratch, |i| turn[i]);
+
+    let theta = (d_fwd.median_c as f64 - d_rev.median_c as f64) / 2.0;
+
+    Ok(ScenarioResult {
+        scenario: "cross-process ping-pong (2 processes, 2 topics, 1 role per handle)".to_string(),
+        kind: "pingpong".to_string(),
+        payload_type: M::TYPE_NAME.to_string(),
+        message_bytes: bytes,
+        is_pod: is_pod_like::<M>(),
+        ring_capacity: RING_CAPACITY,
+        topology: format!("{pubs}P/{subs}C"),
+        cpu_a: ctx.cpu_a,
+        cpu_b: ctx.cpu_b,
+        iterations: n,
+        warmup: ctx.warmup,
+        metrics: vec![
+            ("one-way, offset-free".to_string(), d_oneway),
+            ("round trip (RTT)".to_string(), d_rtt),
+            ("RTT halved (one-way)".to_string(), d_rtt_half),
+            ("leg A->B (apparent)".to_string(), d_fwd),
+            ("leg B->A (apparent)".to_string(), d_rev),
+            ("responder turnaround".to_string(), d_turn),
+        ],
+        messages_lost: 0,
+        invalid_samples: raw.invalid,
+        theta_hat_cycles: theta,
+        perturbation: raw.perturbation,
+        freq_a,
+        freq_b,
+        empty_poll_cycles: raw.empty_poll_cycles,
+    })
+}
+
+fn run_stream<M>(
+    ctx: &RunCtx<'_>,
+    pace_ns: u64,
+    pace_cycles: u64,
+    theta_hat: f64,
+    scratch: &mut [u64],
+) -> Result<ScenarioResult, String>
+where
+    M: Probe
+        + TopicMessage<Wire = M>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static,
+{
+    let bytes = M::BYTES;
+    let topic = format!("xpo.stream.{}.{}", bytes, ctx.run_id);
+    let total = ctx.iterations + ctx.warmup + 1024;
+    let child = spawn_child(&[
+        "--child".to_string(),
+        "pub".to_string(),
+        ctx.cpu_b.to_string(),
+        bytes.to_string(),
+        topic.clone(),
+        total.to_string(),
+        pace_cycles.max(1).to_string(),
+    ])
+    .map_err(|e| format!("spawn publisher child: {e}"))?;
+
+    let sampler = FreqSampler::start(ctx.cpu_a, ctx.cpu_b, ctx.sampler_cpu);
+    let gate = sampler.gate();
+    let outcome = stream_parent::<M>(&topic, ctx.iterations, ctx.warmup, &gate);
+    let (freq_a, freq_b) = sampler.finish();
+    reap(child, 20);
+
+    let (raw, pubs, subs) = outcome?;
+    let n = raw.received;
+    dump_raw(
+        ctx.raw_dir,
+        &format!("stream.{bytes}.oneway"),
+        &raw.lat[..n],
+    );
+
+    let lat = &raw.lat;
+    let d = dist_of(n, scratch, |i| lat[i]);
+
+    Ok(ScenarioResult {
+        scenario: format!(
+            "cross-process paced stream ({pace_ns} ns period, publisher -> subscriber, direct one-way)"
+        ),
+        kind: "stream".to_string(),
+        payload_type: M::TYPE_NAME.to_string(),
+        message_bytes: bytes,
+        is_pod: is_pod_like::<M>(),
+        ring_capacity: RING_CAPACITY,
+        topology: format!("{pubs}P/{subs}C"),
+        cpu_a: ctx.cpu_a,
+        cpu_b: ctx.cpu_b,
+        iterations: n,
+        warmup: ctx.warmup,
+        metrics: vec![("one-way (assumes TSC coherence)".to_string(), d)],
+        messages_lost: raw.lost,
+        invalid_samples: 0,
+        theta_hat_cycles: theta_hat,
+        perturbation: raw.perturbation,
+        freq_a,
+        freq_b,
+        empty_poll_cycles: raw.empty_poll_cycles,
+    })
+}
+
+// ============================================================================
+// CPU selection
+// ============================================================================
+
+/// Online CPU -> physical core id.
+fn cpu_core_ids() -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for cpu in 0..512usize {
+        let p = format!("/sys/devices/system/cpu/cpu{cpu}/topology/core_id");
+        if let Some(core) = read_u64(&p) {
+            out.push((cpu, core as usize));
+        } else if let Some(&(last, _)) = out.last() {
+            if cpu > last + 8 {
+                break;
+            }
+        } else if cpu > 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Two CPUs on *different* physical cores, plus a third for the frequency
+/// sampler.
+///
+/// SMT siblings share the whole core pipeline, so a pair pinned to one physical
+/// core measures something else entirely. CPU 0 is skipped: it is the default
+/// IRQ target on a box with no explicit affinity mask.
+fn pick_cpus() -> (usize, usize, usize) {
+    let map = cpu_core_ids();
+    if map.len() < 2 {
+        return (0, 1, 0);
+    }
+    let mut chosen: Vec<(usize, usize)> = Vec::new();
+    for &(cpu, core) in map.iter().rev() {
+        if cpu == 0 || chosen.iter().any(|&(_, c)| c == core) {
+            continue;
+        }
+        chosen.push((cpu, core));
+        if chosen.len() == 3 {
+            break;
+        }
+    }
+    match chosen.len() {
+        0 => (0, 1, 0),
+        1 => (chosen[0].0, chosen[0].0, chosen[0].0),
+        2 => (chosen[0].0, chosen[1].0, chosen[1].0),
+        _ => (chosen[0].0, chosen[1].0, chosen[2].0),
+    }
+}
+
+// ============================================================================
+// SHM housekeeping
+// ============================================================================
+
+fn topics_dir() -> PathBuf {
+    let ns = std::env::var("HORUS_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    PathBuf::from("/dev/shm")
+        .join(format!("horus_{ns}"))
+        .join("topics")
+}
+
+/// Remove only files whose name carries this run's unique token. Other agents
+/// and other benchmarks share this directory; a blanket wipe would break them.
+fn cleanup_run(run_id: &str) {
+    if let Ok(rd) = fs::read_dir(topics_dir()) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().contains(run_id) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Printing
+// ============================================================================
+
+fn hr() {
+    println!("{}", "-".repeat(120));
+}
+
+fn fmt_khz(k: Option<u64>) -> String {
+    k.map(|v| format!("{:.0}MHz", v as f64 / 1000.0))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn print_machine(cfg: &MachineConfig, cpu_a: usize, cpu_b: usize, cal: &RdtscCalibration) {
+    let plat = detect_platform();
+    println!("MACHINE — every nanosecond below is conditional on this block");
+    hr();
+    println!(
+        "  cpu model              : {} ({} physical / {} logical cores)",
+        plat.cpu.model, plat.cpu.physical_cores, plat.cpu.logical_cores
+    );
+    println!("  kernel                 : {} ({})", plat.kernel, plat.arch);
+    println!("  benchmark cores        : cpu{cpu_a} = process A (pinger / subscriber), cpu{cpu_b} = process B (responder / publisher)");
+    println!(
+        "  governor               : cpu{cpu_a}={} cpu{cpu_b}={}  driver={}",
+        cfg.governor_a.as_deref().unwrap_or("n/a"),
+        cfg.governor_b.as_deref().unwrap_or("n/a"),
+        cfg.scaling_driver.as_deref().unwrap_or("n/a")
+    );
+    println!(
+        "  scaling range          : {} .. {}  (hw max {})  turbo_disabled={}",
+        fmt_khz(cfg.scaling_min_khz),
+        fmt_khz(cfg.scaling_max_khz),
+        fmt_khz(cfg.cpuinfo_max_khz),
+        cfg.turbo_disabled
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!(
+        "  clocksource            : {}   tsc flags: [{}]",
+        cfg.clocksource.as_deref().unwrap_or("n/a"),
+        cfg.tsc_flags.join(", ")
+    );
+    println!(
+        "  TSC rate (calibrated)  : {:.3} MHz ({:.4} ns/cycle) — a WALL clock; NOT the core clock",
+        cal.freq_hz / 1e6,
+        cal.ns_per_cycle
+    );
+    println!(
+        "  clock instrumentation  : {} cycles = {:.1} ns for serialize()+rdtsc()+rdtscp(), INCLUDED in every sample and never subtracted",
+        cal.overhead_cycles,
+        cal.overhead_cycles as f64 * cal.ns_per_cycle
+    );
+    println!(
+        "  transparent_hugepage   : {}",
+        cfg.transparent_hugepage.as_deref().unwrap_or("n/a")
+    );
+    println!(
+        "  sched_rt_runtime/period: {} / {} us    perf_event_paranoid={}",
+        cfg.sched_rt_runtime_us
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".into()),
+        cfg.sched_rt_period_us
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".into()),
+        cfg.perf_event_paranoid
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "  isolcpus={}  nohz_full={}  smt_active={}  mlockall(MCL_CURRENT)={}",
+        cfg.isolcpus.as_deref().unwrap_or("(none)"),
+        cfg.nohz_full.as_deref().unwrap_or("(none)"),
+        cfg.smt_active.as_deref().unwrap_or("n/a"),
+        try_mlock_current()
+    );
+    hr();
+}
+
+fn print_warnings(warnings: &[String], header: &str) {
+    if warnings.is_empty() {
+        return;
+    }
+    println!();
+    println!("{}", "!".repeat(120));
+    println!("!! {header}");
+    println!("{}", "!".repeat(120));
+    for w in warnings {
+        println!("!!  {w}");
+    }
+    println!("{}", "!".repeat(120));
+}
+
+fn print_metric_header() {
+    println!(
+        "  {:<30} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>11} | {:>8} {:>9}",
+        "metric (ns)", "n", "min", "median", "p99", "p99.9", "p99.99", "max", "n>p99.9", "n>p99.99"
+    );
+}
+
+/// One metric row in nanoseconds, with the exceedance count behind each tail
+/// figure so nobody quotes a p99.99 that rests on two observations.
+fn print_metric_row(label: &str, d: &Dist, ns_per_cycle: f64, scale: f64) {
+    let c = |v: u64| v as f64 * ns_per_cycle * scale;
+    println!(
+        "  {:<30} {:>9} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>10.1} {:>11.1} | {:>8} {:>9}",
+        label,
+        d.n,
+        c(d.min_c),
+        c(d.median_c),
+        c(d.p99_c),
+        c(d.p999_c),
+        c(d.p9999_c),
+        c(d.max_c),
+        d.n_gt_p999,
+        d.n_gt_p9999,
+    );
+}
+
+fn print_scenario(r: &ScenarioResult, ns_per_cycle: f64) {
+    println!();
+    println!("== {} ==", r.scenario);
+    println!(
+        "   payload {} = {} B (POD={}) | ring capacity {} slots | topology {} | cpu{} <-> cpu{}",
+        r.payload_type, r.message_bytes, r.is_pod, r.ring_capacity, r.topology, r.cpu_a, r.cpu_b
+    );
+    hr();
+    print_metric_header();
+    hr();
+    for (name, d) in &r.metrics {
+        let scale = if name.contains("halved") { 0.5 } else { 1.0 };
+        print_metric_row(name, d, ns_per_cycle, scale);
+    }
+    hr();
+    println!(
+        "  samples={}  warmup={}  messages_lost={}  invalid(TSC-skew)={}  empty-poll cost={:.1} ns",
+        r.iterations,
+        r.warmup,
+        r.messages_lost,
+        r.invalid_samples,
+        r.empty_poll_cycles as f64 * ns_per_cycle
+    );
+    println!(
+        "  measured window: minor_faults={} major_faults={} ctx_switches vol={} invol={}",
+        r.perturbation.minflt, r.perturbation.majflt, r.perturbation.nvcsw, r.perturbation.nivcsw
+    );
+    for f in [&r.freq_a, &r.freq_b] {
+        println!(
+            "  core freq cpu{:<3} (measured window only): start={} end={} min={} max={} mean={:.0}MHz spread={:.2}% (n={})",
+            f.cpu,
+            fmt_khz(f.start_khz),
+            fmt_khz(f.end_khz),
+            fmt_khz(Some(f.min_khz)),
+            fmt_khz(Some(f.max_khz)),
+            f.mean_khz / 1000.0,
+            f.spread_frac() * 100.0,
+            f.samples
+        );
+    }
+    if let Some((name, d)) = r.metrics.first() {
+        let ghz = r.freq_a.mean_khz / 1_000_000.0;
+        if ghz > 0.0 {
+            println!(
+                "  frequency-normalised `{}`: median {:.0} core cycles, p99.9 {:.0} core cycles at f_core={:.2} GHz",
+                name,
+                d.median_c as f64 * ns_per_cycle * ghz,
+                d.p999_c as f64 * ns_per_cycle * ghz,
+                ghz
+            );
+        }
+    }
+    if r.kind == "pingpong" {
+        println!(
+            "  cross-core TSC offset theta_hat = {:+.1} ns (clock B - clock A). The `one-way, offset-free` row does not depend on it.",
+            r.theta_hat_cycles * ns_per_cycle
+        );
+    } else {
+        println!(
+            "  this row assumes cross-core TSC coherence; theta_hat measured in the ping-pong at this size = {:+.1} ns (add to correct).",
+            r.theta_hat_cycles * ns_per_cycle
+        );
+    }
+}
+
+// ============================================================================
+// Report
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Report {
+    generated_utc: String,
+    tsc_freq_hz: f64,
+    ns_per_cycle: f64,
+    clock_overhead_cycles: u64,
+    machine: MachineConfig,
+    warnings: Vec<String>,
+    scenarios: Vec<ScenarioResult>,
+}
+
+fn usage() {
+    println!(
+        "cross_process_oneway — cross-process one-way latency over the HORUS Topic SHM transport"
+    );
+    println!();
+    println!("USAGE:");
+    println!("  cross_process_oneway [--iterations N] [--warmup N] [--pace-ns N] [--cpus A,B]");
+    println!("                       [--json PATH] [--raw-dir DIR]");
+    println!();
+    println!(
+        "  --iterations N   measured samples per scenario (default {}). p99.99 rests on N/10000",
+        DEFAULT_ITERATIONS
+    );
+    println!("                   observations; +/-5% on p99.99 needs ~400, i.e. 4000000.");
+    println!(
+        "  --warmup N       discarded iterations (default {}; must exceed 256).",
+        DEFAULT_WARMUP
+    );
+    println!(
+        "  --pace-ns N      publish interval for the paced-stream scenario (default {}).",
+        DEFAULT_PACE_NS
+    );
+    println!("  --cpus A,B       pin process A to A and process B to B (default: two distinct physical cores).");
+    println!("  --json PATH      write the full report, every distribution included, as JSON.");
+    println!("  --raw-dir DIR    dump raw per-sample cycle counts as little-endian u64 arrays.");
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // ---- child dispatch ----------------------------------------------------
+    // --child <echo|pub> <cpu> <bytes> <topic> <topic2|count> [pace_cycles]
+    if args.first().map(String::as_str) == Some("--child") {
+        let mode = args.get(1).cloned().unwrap_or_default();
+        let cpu: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
+        let bytes: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(64);
+        let _ = set_cpu_affinity(cpu);
+        let r = match (mode.as_str(), bytes) {
+            ("echo", 64) => echo_child::<Probe64>(&args[4], &args[5]),
+            ("echo", _) => echo_child::<Probe1k>(&args[4], &args[5]),
+            ("pub", 64) => pub_child::<Probe64>(
+                &args[4],
+                args[5].parse().unwrap_or(0),
+                args[6].parse().unwrap_or(1),
+            ),
+            ("pub", _) => pub_child::<Probe1k>(
+                &args[4],
+                args[5].parse().unwrap_or(0),
+                args[6].parse().unwrap_or(1),
+            ),
+            _ => Err(format!("unknown child mode {mode}")),
+        };
+        if let Err(e) = r {
+            eprintln!("[child {mode}] {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // ---- arguments ---------------------------------------------------------
+    let mut iterations = DEFAULT_ITERATIONS;
+    let mut warmup = DEFAULT_WARMUP;
+    let mut pace_ns = DEFAULT_PACE_NS;
+    let mut json_path: Option<String> = None;
+    let mut raw_dir: Option<String> = None;
+    let mut cpu_override: Option<(usize, usize)> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--iterations" => {
+                iterations = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(DEFAULT_ITERATIONS);
+                i += 2;
+            }
+            "--warmup" => {
+                warmup = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(DEFAULT_WARMUP);
+                i += 2;
+            }
+            "--pace-ns" => {
+                pace_ns = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(DEFAULT_PACE_NS);
+                i += 2;
+            }
+            "--json" => {
+                json_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--raw-dir" => {
+                raw_dir = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--cpus" => {
+                if let Some(v) = args.get(i + 1) {
+                    let parts: Vec<&str> = v.split(',').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(a), Ok(b)) = (parts[0].trim().parse(), parts[1].trim().parse()) {
+                            cpu_override = Some((a, b));
+                        }
+                    }
+                }
+                i += 2;
+            }
+            "--help" | "-h" => {
+                usage();
+                return;
+            }
+            _ => i += 1,
+        }
+    }
+    if iterations == 0 {
+        iterations = DEFAULT_ITERATIONS;
+    }
+
+    let (mut cpu_a, mut cpu_b, sampler_cpu) = pick_cpus();
+    if let Some((a, b)) = cpu_override {
+        cpu_a = a;
+        cpu_b = b;
+    }
+
+    println!();
+    println!("HORUS cross-process ONE-WAY latency");
+    println!("Two OS processes on two distinct physical cores over the real Topic SHM transport.");
+    println!(
+        "Every handle holds exactly one role, so the `role == Both` same-thread fast path that"
+    );
+    println!(
+        "produces the repo's headline figure is never taken. Round-trip rows are labelled where"
+    );
+    println!("they are a halved round trip. See the module header for the clock decomposition.");
+    println!();
+
+    let cal = calibrate_rdtsc(300);
+    let cfg = detect_machine_config(cpu_a, cpu_b);
+    print_machine(&cfg, cpu_a, cpu_b, &cal);
+
+    let _ = set_cpu_affinity(cpu_a);
+    try_mlock_current();
+
+    let run_id = format!(
+        "{}x{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    );
+
+    let ctx = RunCtx {
+        run_id: &run_id,
+        cpu_a,
+        cpu_b,
+        sampler_cpu,
+        iterations,
+        warmup,
+        raw_dir: raw_dir.as_deref(),
+    };
+
+    let mut scratch = prefaulted(iterations);
+    let mut scenarios: Vec<ScenarioResult> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    println!();
+    println!("running ping-pong, 64 B payload ...");
+    match run_pingpong::<Probe64>(&ctx, &mut scratch) {
+        Ok(r) => scenarios.push(r),
+        Err(e) => warnings.push(format!("ping-pong 64 B failed: {e}")),
+    }
+    println!("running ping-pong, 1024 B payload ...");
+    match run_pingpong::<Probe1k>(&ctx, &mut scratch) {
+        Ok(r) => scenarios.push(r),
+        Err(e) => warnings.push(format!("ping-pong 1024 B failed: {e}")),
+    }
+
+    let theta_for = |bytes: usize, s: &[ScenarioResult]| -> f64 {
+        s.iter()
+            .find(|r| r.kind == "pingpong" && r.message_bytes == bytes)
+            .map(|r| r.theta_hat_cycles)
+            .unwrap_or(0.0)
+    };
+    let pace_cycles = (pace_ns as f64 * cal.cycles_per_ns) as u64;
+
+    println!("running paced stream, 64 B payload ...");
+    let t64 = theta_for(64, &scenarios);
+    match run_stream::<Probe64>(&ctx, pace_ns, pace_cycles, t64, &mut scratch) {
+        Ok(r) => scenarios.push(r),
+        Err(e) => warnings.push(format!("paced stream 64 B failed: {e}")),
+    }
+    println!("running paced stream, 1024 B payload ...");
+    let t1k = theta_for(1024, &scenarios);
+    match run_stream::<Probe1k>(&ctx, pace_ns, pace_cycles, t1k, &mut scratch) {
+        Ok(r) => scenarios.push(r),
+        Err(e) => warnings.push(format!("paced stream 1024 B failed: {e}")),
+    }
+
+    cleanup_run(&run_id);
+
+    // ---- integrity checks ---------------------------------------------------
+    if cfg.governor_a.as_deref() != Some("performance")
+        || cfg.governor_b.as_deref() != Some("performance")
+    {
+        warnings.push(format!(
+            "CPU governor is {}/{}, not `performance`. RDTSC is a wall clock while the work costs a fixed number of CORE cycles, so every nanosecond below scales with a frequency the governor is free to change. iceoryx2's maintainers measured ~300 ns of difference from the governor alone.",
+            cfg.governor_a.as_deref().unwrap_or("?"),
+            cfg.governor_b.as_deref().unwrap_or("?")
+        ));
+    }
+    if cfg.scaling_min_khz != cfg.scaling_max_khz {
+        warnings.push(format!(
+            "DVFS is live: scaling_min_freq ({}) != scaling_max_freq ({}). Pin them equal before quoting any absolute figure.",
+            fmt_khz(cfg.scaling_min_khz),
+            fmt_khz(cfg.scaling_max_khz)
+        ));
+    }
+    if cfg.turbo_disabled == Some(false) {
+        warnings.push(
+            "Turbo/boost is ENABLED; core frequency varies with thermals and neighbour load."
+                .to_string(),
+        );
+    }
+    if cfg.clocksource.as_deref() != Some("tsc") {
+        warnings.push(format!(
+            "clocksource is {:?}, not `tsc`; the calibration and the cross-process decomposition both assume an invariant TSC.",
+            cfg.clocksource
+        ));
+    }
+    if cfg.isolcpus.is_none() {
+        warnings.push("No isolcpus= on the kernel command line: the benchmark cores are shared with everything else on this box. The involuntary context-switch count in each scenario block is the mechanism behind the far tail.".to_string());
+    }
+    for r in &scenarios {
+        if r.freq_a.moved() || r.freq_b.moved() {
+            warnings.push(format!(
+                "FREQUENCY MOVED during {} ({} B): cpu{} spread {:.1}%, cpu{} spread {:.1}%. These nanoseconds are not comparable to another run, including another run on this same box.",
+                r.kind,
+                r.message_bytes,
+                r.freq_a.cpu,
+                r.freq_a.spread_frac() * 100.0,
+                r.freq_b.cpu,
+                r.freq_b.spread_frac() * 100.0
+            ));
+        }
+        if r.perturbation.minflt > 0 {
+            warnings.push(format!(
+                "{} ({} B): {} MINOR PAGE FAULTS inside the measured window — a pre-fault was missed, and those faults are in the tail figures.",
+                r.kind, r.message_bytes, r.perturbation.minflt
+            ));
+        }
+        if r.perturbation.majflt > 0 {
+            warnings.push(format!(
+                "{} ({} B): {} MAJOR page faults inside the measured window.",
+                r.kind, r.message_bytes, r.perturbation.majflt
+            ));
+        }
+        if r.messages_lost > 0 {
+            warnings.push(format!(
+                "{} ({} B): {} messages LOST. The distribution is over delivered messages only and is biased by the loss.",
+                r.kind, r.message_bytes, r.messages_lost
+            ));
+        }
+        if r.invalid_samples > 0 {
+            warnings.push(format!(
+                "{} ({} B): {} samples had a one-way leg longer than the whole round trip — cross-core TSC skew large enough to invalidate the decomposition.",
+                r.kind, r.message_bytes, r.invalid_samples
+            ));
+        }
+        if let Some((name, d)) = r.metrics.first() {
+            if d.n_gt_p9999 < 100 {
+                warnings.push(format!(
+                    "{} ({} B) `{}`: p99.99 rests on {} observations. Below ~100 exceedances it is a max wearing a percentile's name; +/-5% needs ~400 (--iterations 4000000).",
+                    r.kind, r.message_bytes, name, d.n_gt_p9999
+                ));
+            }
+        }
+    }
+    if scenarios.is_empty() {
+        warnings.push("NO SCENARIO PRODUCED A RESULT.".to_string());
+    }
+
+    // ---- output -------------------------------------------------------------
+    print_warnings(&warnings, "READ THIS BEFORE QUOTING ANY NUMBER BELOW");
+
+    for r in &scenarios {
+        print_scenario(r, cal.ns_per_cycle);
+    }
+
+    println!();
+    println!("HEADLINE — cross-process one-way latency (nanoseconds, wall clock)");
+    hr();
+    println!(
+        "  {:<52} {:>9} {:>9} {:>9} {:>9} {:>10} {:>11}",
+        "scenario / payload / metric", "n", "median", "p99", "p99.9", "p99.99", "max"
+    );
+    hr();
+    for r in &scenarios {
+        if let Some((name, d)) = r.metrics.first() {
+            let c = |v: u64| v as f64 * cal.ns_per_cycle;
+            println!(
+                "  {:<52} {:>9} {:>9.1} {:>9.1} {:>9.1} {:>10.1} {:>11.1}",
+                format!(
+                    "{} / {} {}B / {}",
+                    r.kind, r.payload_type, r.message_bytes, name
+                ),
+                d.n,
+                c(d.median_c),
+                c(d.p99_c),
+                c(d.p999_c),
+                c(d.p9999_c),
+                c(d.max_c)
+            );
+        }
+    }
+    hr();
+    println!("  Instrumentation is INCLUDED in every figure and never subtracted.");
+    println!(
+        "  `pingpong / one-way, offset-free` is a true one-way figure: it assumes nothing about"
+    );
+    println!("  cross-core TSC synchronisation, and excludes the responder's turnaround.");
+    println!(
+        "  `RTT halved (one-way)` in the per-scenario tables is a ROUND TRIP DIVIDED BY TWO; it is"
+    );
+    println!("  the row to compare against any competitor publishing a halved ping-pong.");
+    println!("  A figure without its payload size and topology is not comparable to anything.");
+
+    print_warnings(
+        &warnings,
+        "THE SAME WARNINGS AGAIN — they apply to every number above",
+    );
+
+    if let Some(path) = json_path {
+        let report = Report {
+            generated_utc: chrono::Utc::now().to_rfc3339(),
+            tsc_freq_hz: cal.freq_hz,
+            ns_per_cycle: cal.ns_per_cycle,
+            clock_overhead_cycles: cal.overhead_cycles,
+            machine: cfg,
+            warnings,
+            scenarios,
+        };
+        match serde_json::to_string_pretty(&report) {
+            Ok(s) => match fs::write(&path, s) {
+                Ok(()) => println!("\nJSON report written to {path}"),
+                Err(e) => eprintln!("\nfailed to write {path}: {e}"),
+            },
+            Err(e) => eprintln!("\nfailed to serialise report: {e}"),
+        }
+    }
+}

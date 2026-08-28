@@ -132,9 +132,15 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
 
     /// Zero out a previously allocated region (security: prevent data leaks).
     ///
-    /// Called by `return_slot()` before marking a slot as free.
-    /// The default implementation uses volatile byte writes for CPU-accessible
-    /// memory, which cannot be elided by the compiler.
+    /// Called by `return_slot()` before marking a slot as free, so a later
+    /// tenant of the same slot — possibly in another process — cannot read the
+    /// previous tenant's bytes.
+    ///
+    /// The default implementation writes the region with *word*-sized volatile
+    /// stores (see [`volatile_zero_bytes`]). Volatile is what makes the write
+    /// unelidable; the word width is what makes it affordable. See that
+    /// function's docs for why the width matters and why it is still a
+    /// guarantee rather than an argument.
     ///
     /// GPU backends may override to use `cudaMemset` or skip zeroing
     /// entirely if cross-process data leaks are not a concern.
@@ -142,13 +148,123 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
         if alloc.cpu_ptr.is_null() || alloc.size == 0 {
             return;
         }
-        // Volatile writes prevent the compiler from eliding the zeroing.
-        for i in 0..alloc.size {
-            // SAFETY: cpu_ptr is valid for alloc.size bytes (guaranteed by alloc()).
-            unsafe { alloc.cpu_ptr.add(i).write_volatile(0u8) };
-        }
+        // SAFETY: cpu_ptr is valid and writable for alloc.size bytes — that is
+        // the contract of `alloc()`, and `TensorPool::return_slot` additionally
+        // bounds-checks a shared-backend pointer against the mapping before
+        // building the `BackendAllocation` handed here.
+        unsafe { volatile_zero_bytes(alloc.cpu_ptr, alloc.size) };
         // Ensure the zero writes are ordered before the slot is marked free.
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scrub primitive
+// ---------------------------------------------------------------------------
+
+/// Number of words written per unrolled iteration of the scrub body.
+///
+/// 8 × `usize` is one 64-byte cache line on a 64-bit target, so the body loop
+/// closes exactly one line per branch.
+const SCRUB_UNROLL: usize = 8;
+
+/// Overwrite `len` bytes at `ptr` with zeros using volatile word stores.
+///
+/// # Why volatile, and why *not* byte-at-a-time
+///
+/// This is the slot scrub that stands between two tenants of the same pool
+/// slot, so the bytes have to actually reach memory: the compiler must not be
+/// allowed to decide the stores are dead. Volatile gives that as a *language
+/// guarantee* — a volatile store is an observable side effect and LLVM may
+/// neither remove it nor merge it with its neighbours.
+///
+/// That last clause is also the reason the old byte-at-a-time form was so
+/// expensive. Because volatile stores cannot be merged or vectorised, one
+/// `write_volatile::<u8>` is one store *instruction*, so scrubbing a 1080p RGB
+/// frame (~6 MB) cost ~6 million stores — and on the default `MmapBackend` that
+/// ran synchronously inside `Topic<Image>::send`, on the publisher's thread.
+///
+/// Widening the unit to `usize` keeps the guarantee exactly (each store is
+/// still volatile, still unelidable) while cutting the instruction count by
+/// `size_of::<usize>()`. What is left is the memory system: a multi-megabyte
+/// region has to be written once no matter how, so large scrubs bottom out on
+/// write bandwidth rather than on store issue.
+///
+/// # Why not `ptr::write_bytes` / `memset`
+///
+/// A plain `memset` would be somewhat faster still (glibc can reach for
+/// non-temporal stores above its shared-cache threshold, which also avoids
+/// evicting the caller's working set). It was deliberately not used here: a
+/// non-volatile store is only kept alive by the argument that LLVM cannot prove
+/// the region unread, and on this particular function that argument is doing
+/// security work. Volatile makes it a guarantee instead. See the module docs of
+/// the tensor pool for the trade if it is ever revisited.
+///
+/// # Alignment
+///
+/// `write_volatile::<usize>` requires a properly aligned pointer — misaligned
+/// is UB in Rust even on ISAs that tolerate it — so the head is scrubbed a byte
+/// at a time until the cursor is word-aligned, and the tail likewise. Both are
+/// bounded by `size_of::<usize>() - 1` bytes.
+///
+/// # Safety
+///
+/// `ptr..ptr + len` must be valid for writes and exclusively owned by the
+/// caller for the duration of the call.
+#[inline]
+pub unsafe fn volatile_zero_bytes(ptr: *mut u8, len: usize) {
+    const WORD: usize = core::mem::size_of::<usize>();
+    const BLOCK: usize = WORD * SCRUB_UNROLL;
+    // The body below is unrolled by hand; keep the constant and the code in step.
+    const _: () = assert!(SCRUB_UNROLL == 8);
+
+    if len == 0 {
+        return;
+    }
+
+    let mut offset = 0usize;
+
+    // ── Head: byte stores until the cursor is word-aligned ──────────────────
+    let misalign = ptr as usize & (WORD - 1);
+    let head = if misalign == 0 { 0 } else { WORD - misalign };
+    let head = head.min(len);
+    while offset < head {
+        // SAFETY: offset < head <= len, so ptr.add(offset) is inside the region.
+        unsafe { ptr.add(offset).write_volatile(0u8) };
+        offset += 1;
+    }
+
+    // ── Body: SCRUB_UNROLL word stores per branch ───────────────────────────
+    // `offset` is word-aligned from here on, so every `*mut usize` below is too.
+    let body_end = head + ((len - head) / BLOCK) * BLOCK;
+    while offset < body_end {
+        // SAFETY: offset + BLOCK <= body_end <= len, and offset is word-aligned.
+        unsafe {
+            let p = ptr.add(offset) as *mut usize;
+            p.write_volatile(0);
+            p.add(1).write_volatile(0);
+            p.add(2).write_volatile(0);
+            p.add(3).write_volatile(0);
+            p.add(4).write_volatile(0);
+            p.add(5).write_volatile(0);
+            p.add(6).write_volatile(0);
+            p.add(7).write_volatile(0);
+        }
+        offset += BLOCK;
+    }
+
+    // ── Remaining whole words ───────────────────────────────────────────────
+    while len - offset >= WORD {
+        // SAFETY: at least WORD bytes remain and offset is word-aligned.
+        unsafe { (ptr.add(offset) as *mut usize).write_volatile(0) };
+        offset += WORD;
+    }
+
+    // ── Tail: fewer than WORD bytes left ────────────────────────────────────
+    while offset < len {
+        // SAFETY: offset < len, so ptr.add(offset) is inside the region.
+        unsafe { ptr.add(offset).write_volatile(0u8) };
+        offset += 1;
     }
 }
 
@@ -294,7 +410,147 @@ impl PoolBackend for MmapBackend {
         "mmap"
     }
 
-    // zero() uses the default implementation from PoolBackend trait
-    // (volatile byte writes + compiler fence), which matches the existing
-    // TensorPool::volatile_zero + compiler_fence pattern exactly.
+    // zero() uses the default implementation from the PoolBackend trait
+    // (word-sized volatile stores + compiler fence). The compiler fence keeps
+    // the scrub ahead of `return_slot`'s `flags.store(SLOT_FREE, Release)`,
+    // which is what publishes the slot to other allocators; on a weakly ordered
+    // target that Release store is also what orders the scrub in *hardware*.
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scrub `len` bytes starting `start` bytes into a `0xAB`-filled buffer and
+    /// assert that exactly `start..start + len` came back zero and every byte
+    /// outside it is untouched.
+    ///
+    /// Both halves matter. A short write is a data leak (the whole point of the
+    /// scrub); a long write is memory corruption of the neighbouring slot.
+    fn scrub_exactly(buf: &mut [u8], start: usize, len: usize) {
+        buf.fill(0xAB);
+        // SAFETY: start + len <= buf.len() is checked by the caller's slicing.
+        unsafe { volatile_zero_bytes(buf.as_mut_ptr().add(start), len) };
+
+        let short: Vec<usize> = buf[start..start + len]
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| b != 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            short.is_empty(),
+            "start={start} len={len}: unscrubbed bytes (LEAK) at offsets {short:?}"
+        );
+
+        let over_before: Vec<usize> = buf[..start]
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| b != 0xAB)
+            .map(|(i, _)| i)
+            .collect();
+        let over_after: Vec<usize> = buf[start + len..]
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| b != 0xAB)
+            .map(|(i, _)| i + start + len)
+            .collect();
+        assert!(
+            over_before.is_empty() && over_after.is_empty(),
+            "start={start} len={len}: wrote outside the region (CORRUPTION) \
+             before={over_before:?} after={over_after:?}"
+        );
+    }
+
+    #[test]
+    fn volatile_zero_bytes_covers_every_alignment_and_length() {
+        // The head/body/tail split means the interesting cases are every
+        // combination of start misalignment and length remainder around the
+        // 8-word block. 0..=40 crosses two full blocks on a 64-bit target and
+        // four on a 32-bit one, with every misalignment.
+        let mut buf = vec![0u8; 128];
+        for start in 0..=16usize {
+            for len in 0..=40usize {
+                scrub_exactly(&mut buf, start, len);
+            }
+        }
+    }
+
+    #[test]
+    fn volatile_zero_bytes_handles_a_multi_block_region() {
+        // A length well past the unrolled body, at an odd start and an odd
+        // length, so head, body, the whole-word remainder and the tail all run.
+        let mut buf = vec![0u8; 4096];
+        scrub_exactly(&mut buf, 3, 4001);
+        scrub_exactly(&mut buf, 0, 4096);
+        scrub_exactly(&mut buf, 7, 1);
+    }
+
+    #[test]
+    fn volatile_zero_bytes_of_zero_length_writes_nothing() {
+        let mut buf = vec![0xABu8; 64];
+        // SAFETY: a zero-length write through a valid pointer.
+        unsafe { volatile_zero_bytes(buf.as_mut_ptr(), 0) };
+        assert!(buf.iter().all(|&b| b == 0xAB), "len=0 must write nothing");
+    }
+
+    /// Minimal backend used to exercise the `PoolBackend::zero` default body
+    /// (null/zero-size guards and the delegation to `volatile_zero_bytes`)
+    /// without standing up a whole `TensorPool`.
+    #[derive(Debug)]
+    struct HeapBackend;
+
+    impl PoolBackend for HeapBackend {
+        fn alloc(&self, _size: usize) -> Result<BackendAllocation, String> {
+            Err("test backend does not allocate".to_string())
+        }
+        fn free(&self, _alloc: &BackendAllocation) {}
+        fn device(&self) -> Device {
+            Device::cpu()
+        }
+        fn is_shared(&self) -> bool {
+            false
+        }
+        fn name(&self) -> &str {
+            "test-heap"
+        }
+    }
+
+    #[test]
+    fn pool_backend_zero_scrubs_the_whole_allocation() {
+        let mut buf = vec![0xCDu8; 300];
+        let alloc = BackendAllocation {
+            cpu_ptr: buf.as_mut_ptr(),
+            device_ptr: std::ptr::null_mut(),
+            size: buf.len(),
+        };
+        HeapBackend.zero(&alloc);
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "PoolBackend::zero must scrub the whole allocation"
+        );
+    }
+
+    #[test]
+    fn pool_backend_zero_ignores_null_and_empty_allocations() {
+        // A GPU-only allocation has a null cpu_ptr; a zero-size slot has
+        // nothing to scrub. Neither may be dereferenced.
+        HeapBackend.zero(&BackendAllocation {
+            cpu_ptr: std::ptr::null_mut(),
+            device_ptr: std::ptr::null_mut(),
+            size: 4096,
+        });
+
+        let mut buf = vec![0xCDu8; 16];
+        HeapBackend.zero(&BackendAllocation {
+            cpu_ptr: buf.as_mut_ptr(),
+            device_ptr: std::ptr::null_mut(),
+            size: 0,
+        });
+        assert!(buf.iter().all(|&b| b == 0xCD), "size=0 must write nothing");
+    }
 }

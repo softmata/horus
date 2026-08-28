@@ -361,6 +361,39 @@ macro_rules! epoch_guard_recv {
     };
 }
 
+/// Inline SHM-epoch compare — the migration check, split from its handler.
+///
+/// Loads `migration_epoch` from the stable `self.header_ptr` (NOT
+/// `local.cached_header_ptr`, which the role=Both same-instance fast path
+/// repurposes) and calls the `#[cold]` `handle_epoch_change` only on a
+/// mismatch. Same load, same `Acquire` ordering, same handler, same call
+/// frequency as `RingTopic::check_migration_periodic` — this is that function
+/// with its comparison inlined into the caller.
+///
+/// Why: `check_migration_periodic` is `#[cold] #[inline(never)]`, yet the
+/// housekeeping macros below call it on EVERY recv (issue #37 made the check
+/// every-recv on purpose, so a subscriber discovers a cross-process producer
+/// within one `recv()` — that latency is preserved exactly here). The
+/// attribute and the frequency contradicted each other: `#[cold]` puts the
+/// body in `.text.unlikely`, so the *comparison* — three instructions — cost a
+/// distant `call`, an extra I-cache line, a possible iTLB miss and register
+/// spills across it, and it marked the caller's block cold, dragging the
+/// layout of the empty-recv path with it. Only the mismatch is genuinely cold,
+/// and `handle_epoch_change` is still `#[cold] #[inline(never)]`.
+macro_rules! migration_check {
+    ($local:ident, $topic:expr) => {
+        // SAFETY: header_ptr always points to the real SHM TopicHeader, valid
+        // for the topic's lifetime (backed by the Arc<ShmRegion> in `storage`),
+        // and is re-pointed by auto-grow whenever the mmap moves.
+        let __shm_epoch = unsafe { &*$topic.header_ptr.get() }
+            .migration_epoch
+            .load(Ordering::Acquire);
+        if unlikely(__shm_epoch != $local.cached_epoch) {
+            $topic.handle_epoch_change(__shm_epoch);
+        }
+    };
+}
+
 // ============================================================================
 // Housekeeping macros — amortized maintenance after each message
 // ============================================================================
@@ -383,7 +416,7 @@ macro_rules! housekeep_lease {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
         if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-            $topic.check_migration_periodic();
+            migration_check!($local, $topic);
             if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
                 $topic.refresh_lease_if_due();
             }
@@ -398,7 +431,9 @@ macro_rules! housekeep_lease {
 /// producer joined and this participant hasn't observed the migration epoch
 /// yet (still pointed at the old SHM ring). Checking the SHM
 /// epoch on every empty recv ensures migration is detected immediately.
-/// Cost: one Relaxed atomic load (~1ns) — negligible for polling loops.
+/// Cost: one Acquire load of a header word (`migration_check!`) — negligible
+/// for polling loops, and since that check was split out of the `#[cold]`
+/// `check_migration_periodic` it no longer costs a call into `.text.unlikely`.
 ///
 /// The empty path refreshed nothing at all, so a subscriber polling a topic
 /// that has not published yet stopped refreshing the instant it registered and
@@ -408,7 +443,7 @@ macro_rules! housekeep_lease {
 macro_rules! housekeep_epoch {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
-        $topic.check_migration_periodic();
+        migration_check!($local, $topic);
         if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
             $topic.refresh_lease_if_due();
         }
@@ -422,8 +457,8 @@ macro_rules! housekeep_recv {
     ($local:ident, $topic:expr, $result:ident) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
         // Check SHM epoch on every recv — detects cross-process producers immediately.
-        // Cost: one Relaxed atomic load (~1ns), negligible vs the ring buffer read.
-        $topic.check_migration_periodic();
+        // Cost: one Acquire load of a header word already in L1, plus a compare.
+        migration_check!($local, $topic);
         // Refresh on a wall clock, and on the empty path too (see
         // `housekeep_epoch`): a consumer is just as alive when the ring is
         // empty as when it is not.
@@ -1277,15 +1312,28 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // SMALLER than the ring capacity, otherwise the producer sees a stale tail
     // and drops messages (backpressure) even though the consumer has read them.
     //
-    // Use min(capacity/2, 32) as the flush interval:
-    // - capacity/2 ensures the producer always has headroom
-    // - 32 caps the interval for large-capacity rings
-    let flush_interval = (local.cached_capacity / 2).max(1);
-    let flush_mask = if flush_interval.is_power_of_two() {
-        flush_interval - 1
-    } else {
-        flush_interval.next_power_of_two() - 1
-    };
+    // The interval is capacity/2, which always leaves the producer headroom.
+    // (The comment here used to claim `min(capacity/2, 32)`; no code ever
+    // applied that cap, so the claim is dropped rather than the behaviour
+    // changed — capping it would flush more often, not less.)
+    //
+    // `flush_interval` is `capacity / 2` and the ring capacity is always a power
+    // of two (`TopicHeader::initialize` rounds it with `next_power_of_two` and
+    // sets `capacity_mask = capacity - 1`; `header::read_slot_inner` rejects any
+    // mapping where that does not hold). So the interval is itself a power of
+    // two and `capacity / 2 - 1 == cached_capacity_mask >> 1` — one shift of a
+    // value already in a register, instead of the `div`, `popcnt` and `lzcnt`
+    // that `/ 2`, `is_power_of_two()` and `next_power_of_two()` emitted on every
+    // single recv for a quantity that is constant for the life of the ring.
+    // The `.max(1)` is subsumed: capacity 0, 1 and 2 all give mask >> 1 == 0.
+    let flush_mask = mask >> 1;
+    debug_assert_eq!(
+        flush_mask,
+        (local.cached_capacity / 2).max(1).next_power_of_two() - 1,
+        "flush_mask identity broken: capacity {} / mask {} is not a power-of-two ring",
+        local.cached_capacity,
+        mask,
+    );
     if new_tail & flush_mask == 0 {
         header.tail.store(new_tail, Ordering::Release);
     }
@@ -1342,12 +1390,23 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     local.local_tail = new_tail;
     // Batch header.tail updates. Interval must be < capacity to avoid
     // backpressure when the producer has written but consumer hasn't flushed.
-    let flush_interval = (local.cached_capacity / 2).max(1);
-    let flush_mask = if flush_interval.is_power_of_two() {
-        flush_interval - 1
-    } else {
-        flush_interval.next_power_of_two() - 1
-    };
+    // `flush_interval` is `capacity / 2` and the ring capacity is always a power
+    // of two (`TopicHeader::initialize` rounds it with `next_power_of_two` and
+    // sets `capacity_mask = capacity - 1`; `header::read_slot_inner` rejects any
+    // mapping where that does not hold). So the interval is itself a power of
+    // two and `capacity / 2 - 1 == cached_capacity_mask >> 1` — one shift of a
+    // value already in a register, instead of the `div`, `popcnt` and `lzcnt`
+    // that `/ 2`, `is_power_of_two()` and `next_power_of_two()` emitted on every
+    // single recv for a quantity that is constant for the life of the ring.
+    // The `.max(1)` is subsumed: capacity 0, 1 and 2 all give mask >> 1 == 0.
+    let flush_mask = mask >> 1;
+    debug_assert_eq!(
+        flush_mask,
+        (local.cached_capacity / 2).max(1).next_power_of_two() - 1,
+        "flush_mask identity broken: capacity {} / mask {} is not a power-of-two ring",
+        local.cached_capacity,
+        mask,
+    );
     if new_tail & flush_mask == 0 {
         header.tail.store(new_tail, Ordering::Release);
     }
@@ -1393,7 +1452,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
             if drained(local.local_head, tail) {
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                    topic.check_migration_periodic();
+                    migration_check!(local, topic);
                 }
                 return None;
             }
@@ -1745,12 +1804,23 @@ pub(super) fn recv_shm_mpsc_serde<
     // < capacity avoids producer backpressure. (Broadcast via independent per-handle
     // local_tail is only sound while the frontier lags and messages fit the ring;
     // a designed broadcast backend is the general answer — see roadmap-mrgqzlmb-ixl127.)
-    let flush_interval = (local.cached_capacity / 2).max(1);
-    let flush_mask = if flush_interval.is_power_of_two() {
-        flush_interval - 1
-    } else {
-        flush_interval.next_power_of_two() - 1
-    };
+    // `flush_interval` is `capacity / 2` and the ring capacity is always a power
+    // of two (`TopicHeader::initialize` rounds it with `next_power_of_two` and
+    // sets `capacity_mask = capacity - 1`; `header::read_slot_inner` rejects any
+    // mapping where that does not hold). So the interval is itself a power of
+    // two and `capacity / 2 - 1 == cached_capacity_mask >> 1` — one shift of a
+    // value already in a register, instead of the `div`, `popcnt` and `lzcnt`
+    // that `/ 2`, `is_power_of_two()` and `next_power_of_two()` emitted on every
+    // single recv for a quantity that is constant for the life of the ring.
+    // The `.max(1)` is subsumed: capacity 0, 1 and 2 all give mask >> 1 == 0.
+    let flush_mask = mask >> 1;
+    debug_assert_eq!(
+        flush_mask,
+        (local.cached_capacity / 2).max(1).next_power_of_two() - 1,
+        "flush_mask identity broken: capacity {} / mask {} is not a power-of-two ring",
+        local.cached_capacity,
+        mask,
+    );
     if new_tail & flush_mask == 0 {
         header.tail.store(new_tail, Ordering::Release);
     }
