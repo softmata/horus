@@ -3070,7 +3070,10 @@ mod tests {
         // to the policy dispatch, the `max_deadline_misses` ceiling and the 3x
         // watchdog expiry.
         let result = monitor.check_tick_budget("safety_ctrl", 200_u64.us());
-        assert!(result.is_err(), "the overrun is still reported to the caller");
+        assert!(
+            result.is_err(),
+            "the overrun is still reported to the caller"
+        );
         assert!(
             !monitor.is_emergency_stop(),
             "a watchdogged node is not a must-never-miss node: one overrun \

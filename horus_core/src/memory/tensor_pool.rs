@@ -2291,7 +2291,9 @@ mod tests {
     /// `test_alloc_with_timeout_zero_expires_immediately` fail against a 16 MB
     /// leftover while asking for 1 MB. Clean first, so each test creates.
     fn clear_stale_pool(id: u32) {
-        let path = shm_base_dir().join("tensors").join(format!("tensor_pool_{id}"));
+        let path = shm_base_dir()
+            .join("tensors")
+            .join(format!("tensor_pool_{id}"));
         std::fs::remove_file(path).ok();
     }
 
