@@ -24,10 +24,82 @@ use std::time::{Duration, Instant};
 mod common;
 use common::cleanup_stale_shm;
 
-/// Clean up tensor pool SHM files (cleanup_stale_shm only removes topics/nodes).
-fn cleanup_tensor_shm() {
-    let tensors_dir = shm_base_dir().join("tensors");
-    let _ = std::fs::remove_dir_all(&tensors_dir);
+// ============================================================================
+// Pool identity
+// ============================================================================
+//
+// Every test in this file gets its OWN base id and they all use the SAME
+// `PID_SPREAD` modulus, so no two tests in this binary can ever derive the same
+// pool id.
+//
+// They used to. `stress_tensorpool_alternating_free_pattern` used
+// `9900 + pid % 100` and `stress_tensorpool_rapid_slot_churn` used
+// `9950 + pid % 50`. For every pid where `pid % 100 >= 50` — half of all runs —
+// those are the *same number*: with `p = pid % 100 >= 50`, `p % 50 == p - 50`,
+// so `9950 + (p - 50) == 9900 + p`. libtest runs tests in name order, so
+// `alternating` went first, created the pool with a 32 MiB / 128-slot geometry,
+// and left the file behind — `cleanup_stale_shm()` only wipes topics/ and
+// nodes/, `TensorPool`'s `Drop` deliberately does not unlink, so nothing
+// removed it. `rapid_slot_churn` then asked for 64 MiB / 32 slots at that same
+// id and `TensorPool::new` correctly refused to resize a pool it did not
+// create:
+//
+//     Failed to create pool: Config(Other("Tensor pool 9989 exists but is only
+//     33561664 bytes, smaller than the 67110720 bytes this process needs"))
+//
+// The two byte counts are the two geometries exactly, which is what pins the
+// diagnosis to this collision rather than to a stale file from another run:
+//   33561664 = 64 (PoolHeader) + 128 * 56 (SlotHeader) + 32 MiB  <- alternating
+//   67110720 = 64 (PoolHeader) +  32 * 56 (SlotHeader) + 64 MiB  <- churn
+// and 9989 is reachable by both formulas only at `pid % 100 == 89`.
+//
+// Bases are 1000 apart and live in an id range no other test file uses
+// (tensor_pool_concurrent.rs holds 9700-9799, resource_exhaustion.rs and
+// regressions.rs hold 9800-9899, memory_coverage.rs holds 99990/99999).
+
+/// Width of the pid-derived spread. Keeps concurrently running *processes* off
+/// each other's pools; `clear_stale_pool` covers the leftovers of dead ones.
+const PID_SPREAD: u32 = 1000;
+
+const POOL_BASE_MULTITHREAD: u32 = 30_000;
+const POOL_BASE_ALTERNATING: u32 = 31_000;
+const POOL_BASE_CHURN: u32 = 32_000;
+/// Reserved 33_000..35_000: this test adds a per-cycle offset on top of the
+/// spread, so its band is two wide.
+const POOL_BASE_LIFECYCLE: u32 = 33_000;
+
+/// Pool id for one test: its own base plus this process's spread.
+fn test_pool_id(base: u32) -> u32 {
+    base + (std::process::id() % PID_SPREAD)
+}
+
+/// Path of a pool's backing SHM file.
+fn pool_shm_path(pool_id: u32) -> std::path::PathBuf {
+    shm_base_dir()
+        .join("tensors")
+        .join(format!("tensor_pool_{}", pool_id))
+}
+
+/// Remove a leftover pool file *before* creating, so this test creates rather
+/// than attaches.
+///
+/// A run that panicked or was killed leaves its SHM file behind (`Drop` does not
+/// unlink, and `cleanup_stale_shm()` only clears topics/ and nodes/). If a later
+/// run's pid lands on the same spread slot, `TensorPool::new` attaches to that
+/// stale file instead — and then either adopts a geometry the test did not ask
+/// for, or fails outright when the leftover is smaller than the mapping this
+/// config needs. Same idiom as `clear_stale_pool` in tensor_pool.rs's own tests.
+fn clear_stale_pool(pool_id: u32) {
+    let _ = std::fs::remove_file(pool_shm_path(pool_id));
+}
+
+/// Drop a pool's backing file once the test is done with it.
+///
+/// Targeted on purpose: the previous helper here did `remove_dir_all` on the
+/// whole `tensors/` directory, which also destroys pools belonging to any other
+/// test binary running at the same time.
+fn remove_pool_file(pool_id: u32) {
+    let _ = std::fs::remove_file(pool_shm_path(pool_id));
 }
 
 // ============================================================================
@@ -104,12 +176,13 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
     let mut cycle = 0;
     let mut all_stats: Vec<CycleStats> = Vec::new();
 
-    // Use PID + monotonic counter for unique pool IDs across runs
-    let pid_base = std::process::id() % 10000;
-
     while start.elapsed() < test_duration {
         // Unique pool ID per cycle — avoids stale SHM file collisions
-        let pool_id = 10000 + pid_base + cycle as u32;
+        // `% PID_SPREAD` keeps the id inside the reserved 33_000..35_000 band
+        // even if a create-failure loop spins `cycle` far past the ~12 a 60s
+        // run normally reaches.
+        let pool_id = test_pool_id(POOL_BASE_LIFECYCLE) + (cycle as u32 % PID_SPREAD);
+        clear_stale_pool(pool_id);
         let config = TensorPoolConfig {
             pool_size: 32 * 1024 * 1024, // 32MB
             max_slots: 128,
@@ -209,7 +282,7 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
         // Clean up ALL SHM files (including tensor pool) before next cycle
         drop(pool); // ensure mmap is unmapped before deleting backing file
         let _shm_guard = cleanup_stale_shm();
-        cleanup_tensor_shm();
+        remove_pool_file(pool_id);
 
         all_stats.push(stats);
         cycle += 1;
@@ -264,7 +337,8 @@ fn stress_tensorpool_repeated_lifecycle_60s() {
 fn stress_tensorpool_multithread_exhaust() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 9860 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_MULTITHREAD);
+    clear_stale_pool(pool_id);
     let config = TensorPoolConfig {
         pool_size: 16 * 1024 * 1024, // 16MB
         max_slots: 64,
@@ -357,6 +431,8 @@ fn stress_tensorpool_multithread_exhaust() {
     let releases = total_releases.load(Ordering::SeqCst);
     let corruptions = data_corruptions.load(Ordering::SeqCst);
 
+    remove_pool_file(pool_id);
+
     eprintln!(
         "[multithread] allocs: {}, failures: {}, releases: {}, corruptions: {}",
         allocs, failures, releases, corruptions
@@ -386,7 +462,8 @@ fn stress_tensorpool_multithread_exhaust() {
 fn stress_tensorpool_alternating_free_pattern() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 9900 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_ALTERNATING);
+    clear_stale_pool(pool_id);
     let config = TensorPoolConfig {
         pool_size: 32 * 1024 * 1024, // 32MB
         max_slots: 128,
@@ -461,6 +538,9 @@ fn stress_tensorpool_alternating_free_pattern() {
         stats.used_bytes as f64 / 1024.0
     );
 
+    drop(pool);
+    remove_pool_file(pool_id);
+
     // All freed slots should be reclaimable (if data space allows)
     assert!(
         reallocated >= freed / 2,
@@ -476,7 +556,8 @@ fn stress_tensorpool_alternating_free_pattern() {
 fn stress_tensorpool_rapid_slot_churn() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 9950 + (std::process::id() % 50);
+    let pool_id = test_pool_id(POOL_BASE_CHURN);
+    clear_stale_pool(pool_id);
     let config = TensorPoolConfig {
         pool_size: 64 * 1024 * 1024, // 64MB — generous for many small allocs
         max_slots: 32,               // few slots, high reuse
@@ -503,6 +584,10 @@ fn stress_tensorpool_rapid_slot_churn() {
     }
 
     let completed = alloc_times_ns.len();
+
+    drop(pool);
+    remove_pool_file(pool_id);
+
     eprintln!(
         "[churn] Completed {}/{} alloc+release cycles",
         completed, churn_count

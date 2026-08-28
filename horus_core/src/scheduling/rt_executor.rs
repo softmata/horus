@@ -2417,7 +2417,12 @@ mod tests {
         );
         // Check that within each 3-node cycle, priority order is maintained
         // (prio_0, prio_10, prio_20) repeating
-        for chunk in recorded.chunks_exact(3) {
+        // `as_chunks::<3>()` rather than `chunks_exact(3)`: the chunk size is a
+        // constant, so this yields `&[String; 3]` and the indexing below is
+        // bounds-checked at compile time. clippy 1.98 lints the `chunks_exact`
+        // form for exactly this reason.
+        let (cycles, _partial) = recorded.as_chunks::<3>();
+        for chunk in cycles {
             assert_eq!(chunk[0], "prio_0", "first in cycle should be prio_0");
             assert_eq!(chunk[1], "prio_10", "second in cycle should be prio_10");
             assert_eq!(chunk[2], "prio_20", "third in cycle should be prio_20");

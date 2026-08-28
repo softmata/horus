@@ -233,8 +233,49 @@ fn spill_to_pool<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static
         .ok()?;
 
     // Copy serialized bytes into the pool slot
-    let dst = pool.data_slice_mut(&tensor).ok()?;
+    let dst = match pool.data_slice_mut(&tensor) {
+        Ok(d) => d,
+        // Give the slot back rather than leaking it: `alloc` left the refcount
+        // at 1 and nothing else will ever drop it (the `?` this replaces
+        // returned `None` with the allocation still outstanding).
+        Err(_) => {
+            pool.release(&tensor);
+            return None;
+        }
+    };
     dst[..bytes.len()].copy_from_slice(bytes);
+
+    // Publish those bytes through the POOL's mapping, not only the ring's.
+    //
+    // The ring publish that follows in every caller (`fence(Release)` + a
+    // Release store of the ready flag / head, matched by an Acquire load in
+    // every recv path) is a correct release/acquire pair — but only on paper,
+    // because the two sides do not touch the same object.  Every `RingTopic`
+    // handle builds its own `ShmRegion`, i.e. its own `mmap` of the topic file,
+    // so two handles in one process release and acquire that flag at two
+    // different virtual addresses of the same physical page.  The hardware still
+    // delivers the bytes; the memory model derives no synchronizes-with from two
+    // distinct atomics, and ThreadSanitizer — which shadows by virtual address —
+    // derived none either.  That is why it reported this `copy_from_slice`
+    // racing `deserialize_spill_slot`'s read of the identical payload, even
+    // though the consumer holds a `try_retain` pin: the pin stops the slot being
+    // freed or reused under the reader, but a pin is not an ordering edge for
+    // bytes written before it was taken.
+    //
+    // The pool is a single process-wide mapping — `pool_registry` hands out one
+    // `Arc<TensorPool>` per topic name — and every reader of a spilled payload
+    // pins the slot with `try_retain` before it touches a byte, which is an
+    // acquire RMW on the slot refcount.  `publish_payload` is the matching
+    // release half, so the copy above is ordered before every consumer's read
+    // through an edge that both the model and the sanitizer can see.
+    if pool.publish_payload(&tensor).is_err() {
+        // Unreachable in practice: the slot was allocated a few lines above and
+        // this thread still holds that reference.  If it ever does happen, drop
+        // the allocation instead of publishing a descriptor to bytes nothing is
+        // ordered against.
+        pool.release(&tensor);
+        return None;
+    }
 
     // The alloc starts at refcount=1. How that refcount is reclaimed depends on
     // the backend (both COMM-H3 — the old "freed when the slot gets reallocated"

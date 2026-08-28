@@ -35,6 +35,39 @@ fn install_sh() -> String {
     std::fs::read_to_string(repo_root().join("install.sh")).expect("install.sh must exist")
 }
 
+/// The executable part of a shell line, with any trailing comment removed.
+///
+/// A `#` opens a comment only at the start of a word, so `${REPO}#ref` is code
+/// while `cmd  # note` is not. The cheap `split('#')` used elsewhere in this
+/// file is fine for scanners whose pattern never appears in prose, but install.sh
+/// quotes the *old, broken* clone guard verbatim in a comment explaining why it
+/// no longer does that. A scanner that reads comments fails the script for
+/// documenting the very bug it fixed.
+fn shell_code(line: &str) -> &str {
+    let mut at_word_start = true;
+    for (i, c) in line.char_indices() {
+        if c == '#' && at_word_start {
+            return &line[..i];
+        }
+        at_word_start = c.is_whitespace();
+    }
+    line
+}
+
+/// Does this line pipe `git clone` into another command?
+///
+/// `||` is not a pipe. Anything else after `git clone` on the line is, and with
+/// `pipefail` off a pipeline reports only its *last* command's status.
+fn clone_is_piped(code: &str) -> bool {
+    let Some(pos) = code.find("git clone") else {
+        return false;
+    };
+    let bytes = &code.as_bytes()[pos..];
+    bytes.iter().enumerate().any(|(i, &b)| {
+        b == b'|' && bytes.get(i.wrapping_sub(1)) != Some(&b'|') && bytes.get(i + 1) != Some(&b'|')
+    })
+}
+
 /// The shipped binary is meant to carry `schema` — the crate comment says so.
 /// Disabling default features contradicts that and, for a while, did not build.
 #[test]
@@ -504,16 +537,39 @@ fn the_repository_manifest_passes_the_validator_it_ships() {
 #[test]
 fn install_sh_tests_the_real_status_of_git_clone() {
     let text = install_sh();
+
+    // A pipeline only masks the clone's status while `pipefail` is off, which is
+    // the state install.sh is actually in (`set -e` alone, line 15). If it ever
+    // turns pipefail on, piping is no longer the bug this guards.
+    let pipefail_is_on = text.lines().any(|l| {
+        shell_code(l).contains("set -o pipefail") || shell_code(l).contains("set -eo pipe")
+    });
+
+    let mut clones = 0;
     for (n, line) in text.lines().enumerate() {
-        if line.contains("git clone") && line.contains('|') && line.contains("tail") {
+        let code = shell_code(line);
+        if !code.contains("git clone") {
+            continue;
+        }
+        clones += 1;
+        if !pipefail_is_on && clone_is_piped(code) {
             panic!(
-                "install.sh:{} pipes git clone into tail, so its exit status is \
-                 discarded (no `set -o pipefail`):\n  {}",
+                "install.sh:{} pipes git clone into another command, so the \
+                 pipeline reports that command's status and the clone's failure \
+                 is discarded (the script sets `set -e` but not \
+                 `set -o pipefail`):\n  {}",
                 n + 1,
                 line.trim()
             );
         }
     }
+
+    assert!(
+        clones > 0,
+        "no `git clone` found in install.sh's executable lines — either the \
+         script no longer fetches source or this scan is broken, and the test \
+         is vacuous"
+    );
 
     // The cache directory is deleted before the fetched tree is moved into it,
     // so the fetch must be proven complete first.

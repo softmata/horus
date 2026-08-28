@@ -1218,6 +1218,69 @@ impl TensorPool {
         }
     }
 
+    /// Publish payload bytes written into `tensor`'s data region.
+    ///
+    /// Call this after filling a freshly allocated slot and *before* handing the
+    /// descriptor to another thread or process.  It establishes the
+    /// happens-before edge that makes those bytes visible to a reader that later
+    /// pins the slot with [`retain`](Self::retain) / [`try_retain`](Self::try_retain).
+    ///
+    /// # Why the pool has to carry this edge itself
+    ///
+    /// `alloc()` stores `refcount = 1` *before* the owner writes a single
+    /// payload byte, so nothing the pool does orders those bytes against a
+    /// reader.  On the topic spill path the ordering came entirely from the
+    /// topic's ring: the producer copies the payload, then `fence(Release)` and
+    /// release-stores the ring slot's ready flag, and the consumer acquire-loads
+    /// that flag before it follows the descriptor.  That argument is only sound
+    /// while both sides operate on ONE object — and they do not.  Every
+    /// `RingTopic` handle builds its own `ShmRegion`, i.e. its own `mmap` of the
+    /// topic file, so two handles in the same process release and acquire the
+    /// ready flag at two *different virtual addresses* backed by the same
+    /// physical page.  Cache coherence still delivers the bytes on real
+    /// hardware, but the abstract machine derives no synchronizes-with from two
+    /// distinct atomics, and ThreadSanitizer — whose shadow memory is keyed by
+    /// virtual address — sees no edge either.  That is what TSan reported as a
+    /// data race between `dispatch::spill_to_pool`'s `copy_from_slice` and the
+    /// consumer's `bincode::deserialize` of the very same payload.
+    ///
+    /// The pool has no such split: `pool_registry` hands every handle in the
+    /// process the same `Arc<TensorPool>`, hence a single mapping.  An edge
+    /// taken here is therefore one both the memory model and the sanitizer can
+    /// follow.
+    ///
+    /// # How the ordering works
+    ///
+    /// This takes a reference and immediately drops it again — the count is
+    /// unchanged, only the ordering matters.  Both halves are `AcqRel`
+    /// compare-exchanges on `refcount`, the same word a reader's pin touches,
+    /// and the first is sequenced after the caller's payload writes, so it is
+    /// the release half.  A reader's pin is itself a read-modify-write, and an
+    /// RMW always reads the latest value in `refcount`'s modification order, so
+    /// it reads from one of these two operations (or from a later RMW in the
+    /// release sequence they head) and synchronizes-with it.  No blind store is
+    /// used: overwriting `refcount` with its current value would race a
+    /// concurrent `retain` from a peer process.
+    ///
+    /// Cost is two uncontended CAS loops — negligible beside the copy that
+    /// precedes it, on a path that is `#[cold]` to begin with.
+    ///
+    /// # Errors
+    ///
+    /// [`HorusError::Memory`] if `tensor` does not name a live allocation in
+    /// this pool: wrong pool id, out-of-range slot, stale generation, or a
+    /// refcount that has already fallen to zero.  On the error path nothing is
+    /// retained and nothing is released, so the caller keeps whatever reference
+    /// it held.
+    pub fn publish_payload(&self, tensor: &Tensor) -> HorusResult<()> {
+        self.try_retain(tensor)?;
+        // Cannot reach zero: `try_retain` just took a reference on top of the
+        // caller's, so this decrement lands on a count of at least two and can
+        // neither free nor scrub the slot.
+        self.release(tensor);
+        Ok(())
+    }
+
     /// Decrement reference count for a tensor.
     ///
     /// If the count reaches zero, the slot is returned to the free list.
@@ -5247,6 +5310,81 @@ mod tests {
         pool.release(&tensor);
         assert_eq!(pool.stats().allocated_slots, 0);
 
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn publish_payload_leaves_the_refcount_untouched() {
+        // `publish_payload` exists for its ORDERING, not for its accounting: it
+        // retains and releases so that the writes preceding it are ordered before
+        // any reader's pin. If it ever changed the count, the spill path would
+        // either leak the slot (pool fills, large messages silently dropped) or
+        // free it under a live reader.
+        let pool = make_test_pool(8818);
+        let tensor = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        assert_eq!(pool.refcount(&tensor), 1, "alloc hands back one reference");
+
+        pool.publish_payload(&tensor).expect("publish a live slot");
+        assert_eq!(
+            pool.refcount(&tensor),
+            1,
+            "publish_payload must be refcount-neutral"
+        );
+        assert_eq!(
+            pool.stats().allocated_slots,
+            1,
+            "publish_payload must not free the slot"
+        );
+
+        pool.release(&tensor);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn publish_payload_rejects_a_freed_or_stale_slot() {
+        // The spill producer publishes only what it just allocated, so an error
+        // here means the descriptor no longer names that allocation. It must
+        // report rather than silently order nothing — the caller drops the spill
+        // instead of putting a descriptor on the wire for unordered bytes.
+        // max_slots = 1 forces the realloc below to reuse the same slot, so the
+        // stale descriptor names a LIVE slot at the wrong generation — the case
+        // that matters — rather than a still-free one.
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 1,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        clear_stale_pool(8819);
+        let pool = TensorPool::new(8819, config).expect("create pool");
+
+        let freed = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        pool.release(&freed);
+        assert!(
+            pool.publish_payload(&freed).is_err(),
+            "a released slot has no payload to publish"
+        );
+
+        // Reallocation bumps the generation, so the old descriptor is stale even
+        // though the slot is live again.
+        let live = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("realloc");
+        assert!(
+            pool.publish_payload(&freed).is_err(),
+            "a stale generation must not publish over the slot's new owner"
+        );
+        assert_eq!(
+            pool.refcount(&live),
+            1,
+            "a rejected publish must not disturb the live allocation's refcount"
+        );
+
+        pool.release(&live);
         std::fs::remove_file(&pool.shm_path).ok();
     }
 }
