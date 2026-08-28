@@ -531,6 +531,21 @@ where
 
     /// Handle an incoming goal request.
     fn handle_goal(&mut self, request: GoalRequest<A::Goal>) {
+        // The nil UUID is the cancel-all sentinel on the cancel topic
+        // (`CancelRequest::is_cancel_all`). Goal ids arrive verbatim off the
+        // wire, so nothing else stops a publisher from admitting a goal that
+        // carries it — one that could never be cancelled by id, and that would
+        // put the sentinel into every cancel-all's target set. Refuse it here,
+        // before the counters and the goal callback, so neither `accept_goal`
+        // nor the `Queue` path can ever store it.
+        if request.goal_id.0.is_nil() {
+            self.reject_goal(
+                request.goal_id,
+                "nil goal id is reserved as the cancel-all sentinel",
+            );
+            return;
+        }
+
         self.goals_received.fetch_add(1, Ordering::Relaxed);
 
         log::debug!(
@@ -958,6 +973,16 @@ where
     fn handle_cancel(&mut self, request: CancelRequest) {
         // Cancel-all was advertised by the CLI but never implemented here, so
         // `horus action cancel_goal <name>` (no id) did nothing at all.
+        //
+        // The cancel-all branch used to re-dispatch every collected id through
+        // `handle_cancel(CancelRequest::new(goal_id))`. `is_cancel_all()` is
+        // defined purely as `goal_id.is_nil()`, so a tracked goal carrying the
+        // nil UUID made the synthesized request satisfy `is_cancel_all()` again,
+        // collect the same set, and recurse without bound until the thread's
+        // stack was exhausted (an abort, killing every node in the process).
+        // The per-goal work now lives in `cancel_one`, which takes a bare
+        // `GoalId`: no `CancelRequest` is synthesized anywhere, so nothing can
+        // re-enter this branch regardless of what ids are tracked.
         if request.is_cancel_all() {
             let all: Vec<GoalId> = self
                 .active_goals
@@ -971,28 +996,32 @@ where
                 all.len()
             );
             for goal_id in all {
-                self.handle_cancel(CancelRequest::new(goal_id));
+                self.cancel_one(goal_id);
             }
             return;
         }
 
+        self.cancel_one(request.goal_id);
+    }
+
+    /// Cancel one goal by id, whether it is queued or already running.
+    ///
+    /// Takes the id directly rather than a `CancelRequest` so that the
+    /// cancel-all sentinel can never be re-synthesized on this path.
+    fn cancel_one(&mut self, goal_id: GoalId) {
         log::debug!(
             "ActionServer '{}': Cancel request for goal {}",
             A::name(),
-            request.goal_id
+            goal_id
         );
 
         // A goal still sitting in the queue (accepted-but-not-yet-started) can be
         // canceled before it ever runs. Remove it and finalize as Canceled —
         // otherwise the cancel would be dropped and the goal would run anyway
         // when a slot frees.
-        if let Some(pos) = self
-            .goal_queue
-            .iter()
-            .position(|g| g.goal_id == request.goal_id)
-        {
+        if let Some(pos) = self.goal_queue.iter().position(|g| g.goal_id == goal_id) {
             let response = if let Some(ref callback) = self.cancel_callback {
-                callback(request.goal_id)
+                callback(goal_id)
             } else {
                 CancelResponse::Accept
             };
@@ -1003,17 +1032,17 @@ where
                     log::info!(
                         "ActionServer '{}': Canceling queued goal {}",
                         A::name(),
-                        request.goal_id
+                        goal_id
                     );
                     // No result payload — the goal never executed; the terminal
                     // status conveys cancellation to the client.
-                    self.publish_status(request.goal_id, GoalStatus::Canceled);
+                    self.publish_status(goal_id, GoalStatus::Canceled);
                 }
                 CancelResponse::Reject(reason) => {
                     log::debug!(
                         "ActionServer '{}': Cancel rejected for queued goal {}: {}",
                         A::name(),
-                        request.goal_id,
+                        goal_id,
                         reason
                     );
                 }
@@ -1023,29 +1052,25 @@ where
 
         // Otherwise it must be an active goal; signal cooperative cancellation
         // via the shared flag the running callback polls.
-        if !self.active_goals.contains_key(&request.goal_id) {
+        if !self.active_goals.contains_key(&goal_id) {
             log::debug!(
                 "ActionServer '{}': Cancel rejected - goal {} not found",
                 A::name(),
-                request.goal_id
+                goal_id
             );
             return;
         }
 
         let response = if let Some(ref callback) = self.cancel_callback {
-            callback(request.goal_id)
+            callback(goal_id)
         } else {
             CancelResponse::Accept // Accept all cancels by default
         };
 
         match response {
             CancelResponse::Accept => {
-                if let Some(state) = self.active_goals.get(&request.goal_id) {
-                    log::info!(
-                        "ActionServer '{}': Canceling goal {}",
-                        A::name(),
-                        request.goal_id
-                    );
+                if let Some(state) = self.active_goals.get(&goal_id) {
+                    log::info!("ActionServer '{}': Canceling goal {}", A::name(), goal_id);
                     state.cancel_requested.store(true, Ordering::Release);
                 }
             }
@@ -1053,7 +1078,7 @@ where
                 log::debug!(
                     "ActionServer '{}': Cancel rejected for goal {}: {}",
                     A::name(),
-                    request.goal_id,
+                    goal_id,
                     reason
                 );
             }
@@ -1646,6 +1671,52 @@ mod tests {
                 !CancelRequest::new(GoalId::new()).is_cancel_all(),
                 "a v4 goal id must never look like the cancel-all sentinel"
             );
+        }
+    }
+
+    /// A goal carrying the nil UUID must be refused, and cancel-all must not
+    /// recurse.
+    ///
+    /// `is_cancel_all()` is defined purely as `goal_id.is_nil()`, so the old
+    /// cancel-all branch — which re-dispatched every tracked id as a fresh
+    /// `CancelRequest` — recursed without bound the moment any goal held the
+    /// nil id, aborting the process on stack overflow.
+    #[test]
+    fn nil_goal_id_is_refused_and_cancel_all_does_not_recurse() {
+        let mut server = ActionServerBuilder::<TestAction>::new()
+            .on_goal(|_| GoalResponse::Accept)
+            .on_cancel(|_| CancelResponse::Accept)
+            .on_execute(|handle| handle.succeed(TestResult { success: true }))
+            .max_concurrent_goals(Some(1))
+            .preemption_policy(PreemptionPolicy::Queue { max_size: 4 })
+            .build();
+
+        server.handle_goal(GoalRequest {
+            goal_id: GoalId(uuid::Uuid::nil()),
+            goal: TestGoal { target: 1.0 },
+            priority: GoalPriority::default(),
+            timestamp: Duration::from_secs(0),
+        });
+
+        assert!(
+            server.active_goals.is_empty(),
+            "the cancel-all sentinel must never be admitted as a goal"
+        );
+        assert!(
+            server.goal_queue.is_empty(),
+            "the Queue policy must not park the sentinel either"
+        );
+        assert_eq!(
+            server.metrics().goals_rejected,
+            1,
+            "the sentinel goal must be reported as rejected"
+        );
+
+        // Terminates only because cancel-all no longer re-enters itself.
+        server.handle_cancel(CancelRequest::cancel_all());
+
+        for (_id, join) in server.goal_threads.drain() {
+            let _ = join.join();
         }
     }
 

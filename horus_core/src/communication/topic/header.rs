@@ -567,6 +567,64 @@ impl TopicHeader {
         self.register_role(2, &self.subscriber_count)
     }
 
+    /// Claim the first slot that is genuinely free (`active == 0`), if any.
+    ///
+    /// Split out of [`Self::register_role`] so the "take an empty seat" pass can
+    /// run twice — once before and once after reaping dead participants —
+    /// without duplicating the CAS protocol.
+    #[allow(clippy::too_many_arguments)]
+    fn claim_free_slot(
+        &self,
+        role_bit: u8,
+        counter: &AtomicU32,
+        pid: u32,
+        thread_hash: u32,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Option<usize> {
+        for (i, p) in self.participants.iter().enumerate() {
+            if p.active.load(Ordering::Acquire) != 0 {
+                continue;
+            }
+            // CAS 0 -> 2 (initializing): exactly one thread wins per slot.
+            if p.active
+                .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue;
+            }
+            self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
+            return Some(i);
+        }
+        None
+    }
+
+    /// Populate a slot this thread has already CAS'd to the initializing
+    /// sentinel (2), and publish it as active.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_claim(
+        &self,
+        p: &ParticipantEntry,
+        role_bit: u8,
+        counter: &AtomicU32,
+        pid: u32,
+        thread_hash: u32,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) {
+        p.pid.store(pid, Ordering::Release);
+        p.thread_id_hash.store(thread_hash, Ordering::Release);
+        p.role.store(role_bit, Ordering::Release);
+        p.refresh_lease(now_ms, timeout_ms);
+        counter.fetch_add(1, Ordering::AcqRel);
+        self.total_participants.fetch_add(1, Ordering::AcqRel);
+        self.last_topology_change_ms
+            .store(now_ms, Ordering::Release);
+        // Finalize: transition from initializing (2) to active (1).
+        // This makes the slot visible with all fields properly set.
+        p.active.store(1, Ordering::Release);
+    }
+
     /// Shared registration logic for producer (role_bit=1) and consumer (role_bit=2).
     fn register_role(&self, role_bit: u8, counter: &AtomicU32) -> HorusResult<usize> {
         let now_ms = current_time_ms();
@@ -591,61 +649,82 @@ impl TopicHeader {
             }
         }
 
-        // Find empty slot or expired lease.
+        // Find a slot, in three passes of decreasing safety.
+        //
+        // This used to be a single scan that claimed the first slot that was
+        // either free OR merely lease-expired, in index order. An expired lease
+        // does NOT mean the owner is gone: leases are refreshed on a message
+        // count, so an idle or slow subscriber spends much of its life looking
+        // expired (`reap_dead_participants` documents exactly this, and refuses
+        // to reap on the lease alone for that reason). The old scan therefore
+        // preferred stealing slot 0 from a live, polling subscriber over taking
+        // one of the free slots behind it — it decremented `subscriber_count`
+        // for a participant that was still reading, after which
+        // `nothing_is_draining` saw `sub_count() == 0` and let the producer
+        // retire unread slots. Silent message loss, with no counter to show it.
         //
         // We use active=2 as an "initializing" sentinel so that a freshly
         // claimed slot (whose lease_expires_ms is still 0) is not mistaken
         // for an expired slot by another thread.
+
+        // Pass 1: genuinely free slots only. No counter decrement: nothing was
+        // registered here.
+        if let Some(i) =
+            self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
+        {
+            return Ok(i);
+        }
+
+        // Pass 2: nothing free — retire participants whose process is actually
+        // gone (expired lease AND dead pid AND local AND not us), then rescan.
+        self.reap_dead_participants(now_ms);
+        if let Some(i) =
+            self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
+        {
+            return Ok(i);
+        }
+
+        // Pass 3, last resort: a stale entry belonging to a thread of THIS
+        // process. `Drop for Topic` does not deregister, so a finished thread's
+        // slot is never reclaimed by anything else — and the reaper skips our
+        // own pid deliberately, because it cannot tell a departed thread from a
+        // busy one. A foreign live pid is never stolen.
         for (i, p) in self.participants.iter().enumerate() {
-            let active_val = p.active.load(Ordering::Acquire);
-            if active_val == 2 {
-                continue; // Another thread is initializing this slot
+            if p.active.load(Ordering::Acquire) != 1 {
+                continue;
             }
-            let is_active = active_val != 0;
-            let is_expired = is_active && p.is_lease_expired(now_ms);
-
-            if !is_active || is_expired {
-                // Try to claim the slot via CAS → 2 (initializing).
-                // Exactly one thread wins per slot.
-                let claimed = p
-                    .active
-                    .compare_exchange(active_val, 2, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok();
-
-                if claimed {
-                    // Now that we own the slot, safely decrement the old role counters.
-                    //
-                    // Saturating, because these counters live in shared memory
-                    // that any participant may have been killed in the middle
-                    // of writing: an unmatched `fetch_sub` on a zero counter
-                    // wraps to 4 billion, and every consumer of `sub_count()`
-                    // then believes the topic has four billion subscribers
-                    // forever. There is no honest recovery from that, so the
-                    // floor is enforced at the one place the decrement happens.
-                    if is_expired {
-                        let old_role = p.role.load(Ordering::Acquire);
-                        if old_role & 1 != 0 {
-                            decrement_to_floor(&self.publisher_count);
-                        }
-                        if old_role & 2 != 0 {
-                            decrement_to_floor(&self.subscriber_count);
-                        }
-                    }
-
-                    p.pid.store(pid, Ordering::Release);
-                    p.thread_id_hash.store(thread_hash, Ordering::Release);
-                    p.role.store(role_bit, Ordering::Release);
-                    p.refresh_lease(now_ms, timeout_ms);
-                    counter.fetch_add(1, Ordering::AcqRel);
-                    self.total_participants.fetch_add(1, Ordering::AcqRel);
-                    self.last_topology_change_ms
-                        .store(now_ms, Ordering::Release);
-                    // Finalize: transition from initializing (2) to active (1).
-                    // This makes the slot visible with all fields properly set.
-                    p.active.store(1, Ordering::Release);
-                    return Ok(i);
-                }
+            if !p.is_lease_expired(now_ms) {
+                continue;
             }
+            if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != pid {
+                continue;
+            }
+            if p.active
+                .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue; // Someone else got there first.
+            }
+
+            // Now that we own the slot, safely decrement the old role counters.
+            //
+            // Saturating, because these counters live in shared memory
+            // that any participant may have been killed in the middle
+            // of writing: an unmatched `fetch_sub` on a zero counter
+            // wraps to 4 billion, and every consumer of `sub_count()`
+            // then believes the topic has four billion subscribers
+            // forever. There is no honest recovery from that, so the
+            // floor is enforced at the one place the decrement happens.
+            let old_role = p.role.load(Ordering::Acquire);
+            if old_role & 1 != 0 {
+                decrement_to_floor(&self.publisher_count);
+            }
+            if old_role & 2 != 0 {
+                decrement_to_floor(&self.subscriber_count);
+            }
+
+            self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
+            return Ok(i);
         }
 
         // All 16 participant slots occupied by live processes.
@@ -686,10 +765,11 @@ impl TopicHeader {
     /// * The lease must have expired. This is the cheap filter, and it keeps
     ///   the liveness probe off every participant that is still working.
     /// * The owning process must be gone. An expired lease on its own does NOT
-    ///   mean dead — leases are refreshed once every `LEASE_REFRESH_INTERVAL`
-    ///   (1024) messages, so a healthy 100 Hz subscriber refreshes about every
-    ///   10 s against a 5 s timeout and spends half its life looking expired.
-    ///   Reaping on the lease alone would deregister working subscribers.
+    ///   mean dead. Refresh is clock-gated at half the lease timeout, so a
+    ///   healthy participant stays ahead of expiry whatever its rate — but a
+    ///   participant that is simply idle (no send, no recv) reaches no refresh
+    ///   point at all and will read as expired while perfectly alive. Reaping
+    ///   on the lease alone would deregister it.
     ///
     /// Deliberately NOT reaped: our own process (we cannot tell a departed
     /// thread from a busy one, and `Drop` is the right place for that), and
@@ -929,12 +1009,115 @@ pub struct TopicSlotRead {
     pub topic_kind: u8,
 }
 
-/// Read the latest message payload from a topic's shared-memory backing file.
+/// A read-only view of a topic's shared region, opened the way the running
+/// platform actually backs it.
+///
+/// The path-based readers below address a topic by its `topic_shm_path`, which
+/// was correct back when every backend was a file: `/dev/shm/horus_<ns>/topics/
+/// <name>` on Linux, `/tmp/…` on macOS and on the generic fallback. The Windows
+/// backend is not a file at all — `ShmRegion::new` calls
+/// `CreateFileMappingW(INVALID_HANDLE_VALUE, …)`, a pagefile-backed section
+/// named `Local\horus_<name>`, and `ShmRegion::backing_path()` correspondingly
+/// reports `None` there. Nothing is ever created at the topic path, so
+/// `File::open` failed with `NotFound` and every reader here returned `None`
+/// for every live topic on Windows: `horus topic echo` and `horus topic hz`
+/// printed nothing and horus_net's SHM reader exported nothing, on a platform
+/// where the ring itself works — the cross-process half is fine there, it is
+/// only the region's *address* that differs.
+///
+/// The path stays the public address because it is the address wherever there
+/// is one, and it still *names* the topic where there is not: `topic_shm_path`
+/// is `<topics dir>/<name>`, so the name is recoverable from the path and the
+/// section can be opened by it.
+enum TopicRegion {
+    /// A file-backed region (Linux, macOS, the generic fallback), mapped
+    /// read-only.
+    Mapped(memmap2::Mmap),
+    /// A Windows named section. The handle is held for the life of the view.
+    #[cfg(target_os = "windows")]
+    Section(horus_sys::shm::ShmRegion),
+}
+
+impl std::ops::Deref for TopicRegion {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Mapped(mmap) => &mmap[..],
+            #[cfg(target_os = "windows")]
+            Self::Section(region) => region.as_slice(),
+        }
+    }
+}
+
+/// Map a topic's shared region read-only, or `None` when it is absent, too
+/// small to hold a header, or unmappable.
+///
+/// Every reader in this file goes through here, so the guarantee they all rely
+/// on is made once: the returned view is at least `TOPIC_HEADER_SIZE` bytes.
+///
+/// The file is tried first on every platform, because where one exists it *is*
+/// the region. Only when there is none does the Windows section lookup run, so
+/// nothing about the file-backed platforms changes.
+fn map_topic_region(path: &std::path::Path) -> Option<TopicRegion> {
+    use memmap2::MmapOptions;
+    use std::fs::File;
+
+    if let Ok(file) = File::open(path) {
+        if file.metadata().ok()?.len() < TOPIC_HEADER_SIZE as u64 {
+            return None;
+        }
+        // SAFETY: the file is opened read-only; the mapping is read-only.
+        let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+        return Some(TopicRegion::Mapped(mmap));
+    }
+
+    open_named_section(path)
+}
+
+/// Open the Windows named section a topic path refers to.
+///
+/// `topic_shm_path` is `shm_topics_dir().join(name)` and a topic name may
+/// itself contain separators, so the name is the whole remainder of the path
+/// rather than just its last component — `file_name()` on `robot/cmd_vel`
+/// would ask the kernel for a section called `cmd_vel`, which is either absent
+/// or, worse, a different topic.
+#[cfg(target_os = "windows")]
+fn open_named_section(path: &std::path::Path) -> Option<TopicRegion> {
+    let name = path
+        .strip_prefix(horus_sys::shm::shm_topics_dir())
+        .ok()?
+        .to_str()?;
+    let region = horus_sys::shm::ShmRegion::open_existing(name, TOPIC_HEADER_SIZE).ok()?;
+    // `open_existing` already refuses a region smaller than the minimum, but it
+    // falls back to *assuming* the minimum when `VirtualQuery` fails rather
+    // than measuring it. Re-check what we were actually handed, because the
+    // readers below index into it on the strength of that guarantee.
+    if region.len() < TOPIC_HEADER_SIZE {
+        return None;
+    }
+    Some(TopicRegion::Section(region))
+}
+
+/// Non-Windows counterpart of the section lookup: every other backend is
+/// file-backed, so a missing file is a missing topic and there is nowhere else
+/// to look.
+#[cfg(not(target_os = "windows"))]
+fn open_named_section(_path: &std::path::Path) -> Option<TopicRegion> {
+    None
+}
+
+/// Read the latest message payload from a topic's shared-memory region.
+///
+/// `path` is the topic's `topic_shm_path`. It is the backing file itself on
+/// Linux, macOS and the fallback backend; on Windows, where the region is a
+/// pagefile-backed named section with nothing on disk, it names the section
+/// instead.
 ///
 /// Returns `None` when:
-/// - `path` does not exist or cannot be opened,
-/// - the file is too small to contain a valid header,
-/// - the magic-number check fails (file not a HORUS topic),
+/// - no region exists at `path`, or it cannot be mapped,
+/// - the region is too small to contain a valid header,
+/// - the magic-number check fails (not a HORUS topic),
 /// - `write_idx == last_write_idx` (no new message since the previous call), or
 /// - `write_idx == 0` (no message has ever been written on this topic).
 ///
@@ -964,17 +1147,10 @@ fn read_slot_inner(
     last_write_idx: u64,
     ordinal: Option<u64>,
 ) -> Option<TopicSlotRead> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    // ── 1. Open and memory-map the file ──────────────────────────────────────
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    // SAFETY: the file is opened read-only; the mapping is read-only.
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    // ── 1. Map the topic's shared region ─────────────────────────────────────
+    // File-backed on Linux/macOS, a named section on Windows; either way at
+    // least TOPIC_HEADER_SIZE bytes, which is what everything below assumes.
+    let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
 
     // ── 2. Validate magic ─────────────────────────────────────────────────────
@@ -1150,10 +1326,27 @@ fn read_slot_inner(
         let data_len =
             unsafe { std::ptr::read_unaligned(mmap.as_ptr().add(len_offset) as *const u64) }
                 as usize;
-        if data_len == 0 || data_offset + data_len > mmap.len() {
+        // `data_offset + data_len` was computed twice, unchecked, on a length
+        // word taken straight out of the file — and release builds do not have
+        // `overflow-checks`. A length near `usize::MAX` wrapped the sum down to
+        // a small number, so `> mmap.len()` passed, and the slice expression
+        // below recomputed the same wrapped value into a range whose start was
+        // past its end: a panic on the reading thread of `horus topic echo` or
+        // horus_net's export reader, plantable by anyone who can write the file.
+        //
+        // `checked_add` removes the wrap. The payload is additionally bounded by
+        // the SLOT, not by the whole mapping, mirroring the writer's own limit
+        // in `write_topic_slot_bytes` — a length larger than a slot can hold was
+        // never written by us. `slot_size >= 16 > SERDE_SLOT_OVERHEAD` is
+        // guaranteed by the `slot_size < 16` check above, so the subtraction
+        // cannot underflow. `get(..)` makes any residual mismatch a `None`
+        // rather than a panic.
+        let max_payload = slot_size - super::shm_layout::SERDE_SLOT_OVERHEAD;
+        let end = data_offset.checked_add(data_len)?;
+        if data_len == 0 || data_len > max_payload || end > mmap.len() {
             return None;
         }
-        mmap[data_offset..data_offset + data_len].to_vec()
+        mmap.get(data_offset..end)?.to_vec()
     };
 
     // Read type_name from header (bytes 216-247, 32 bytes in cache line 4).
@@ -1240,16 +1433,7 @@ fn slot_stamp(
 /// rates without needing a typed `Topic<T>`.  Returns `None` when the file
 /// cannot be opened, is too small, or has an invalid magic number.
 pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    // SAFETY: the file is opened read-only; the mapping is read-only.
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
 
     // SAFETY: mmap is at least TOPIC_HEADER_SIZE (640) bytes.
@@ -1271,15 +1455,7 @@ pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
 /// (offset 56) which is atomically incremented on **every** send() regardless
 /// of backend type. Use this for accurate rate measurement.
 pub fn read_topic_messages_total(path: &std::path::Path) -> Option<u64> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
 
     let magic = unsafe { std::ptr::read_unaligned(base as *const u64) };
@@ -1327,8 +1503,10 @@ pub struct TopicHeaderInfo {
 /// Callers comparing a type name against a header must compare *this*, not the
 /// full name. Doing otherwise reported a type as mismatching itself:
 ///
-///   Existing type 'ActionFeedback<CancelTopicFeedb',
-///   attempted 'ActionFeedback<CancelTopicFeedback>'
+/// ```text
+/// Existing type 'ActionFeedback<CancelTopicFeedb',
+/// attempted 'ActionFeedback<CancelTopicFeedback>'
+/// ```
 pub(crate) fn type_name_as_stored(name: &str) -> &str {
     const USABLE: usize = 31;
     if name.len() <= USABLE {
@@ -1342,16 +1520,7 @@ pub(crate) fn type_name_as_stored(name: &str) -> &str {
 }
 
 pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    // SAFETY: read-only mmap.
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let mmap = map_topic_region(path)?;
     let base = mmap.as_ptr();
 
     // SAFETY: mmap >= TOPIC_HEADER_SIZE (640) bytes.
@@ -2403,17 +2572,29 @@ mod tests {
             .store(1, Ordering::Relaxed); // expired long ago
         h.publisher_count.store(1, Ordering::Relaxed);
 
-        // Register from current thread — should evict the expired slot
+        // INVERTED. This used to assert the new registration took slot 0 — that
+        // an expired lease alone was licence to evict. It is not: a lease is
+        // refreshed by traffic, so a live-but-idle participant, or one whose
+        // refresh point has simply not come round, reads as expired while
+        // perfectly alive. Evicting it deregistered working publishers and
+        // subscribers, which is how `sub_count()` fell to zero under a live
+        // subscriber. Registration now takes a genuinely FREE slot first and
+        // leaves the expired entry alone; an expired slot is considered only
+        // when no free one remains, and then only if its owner is really gone.
         let slot = h.register_producer().unwrap();
-        assert_eq!(slot, 0, "Should reclaim expired slot 0");
-        assert_eq!(
-            h.pub_count(),
-            1,
-            "Old pub decremented, new pub incremented → still 1"
+        assert_ne!(
+            slot, 0,
+            "must not evict an expired slot while others are free"
         );
         assert_eq!(
             h.participants[0].pid.load(Ordering::Relaxed),
-            std::process::id()
+            99999,
+            "the expired participant must be left untouched"
+        );
+        assert_eq!(
+            h.participants[slot].pid.load(Ordering::Relaxed),
+            std::process::id(),
+            "the new producer owns the slot it actually claimed"
         );
     }
 
@@ -2737,6 +2918,70 @@ mod untrusted_header_tests {
         let path = tmp("bad_cap");
         write_header(&path, 7, 6, 8);
         assert!(read_latest_slot_bytes(&path, 0).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Build a SERDE-layout topic file with one slot whose length word is
+    /// `data_len`.
+    ///
+    /// Serde slot layout: `[8B ready][8B len][data…]`.
+    fn write_serde_header(path: &std::path::Path, slot_size: u32, data_len: u64) {
+        let capacity: u32 = 1;
+        let total = TOPIC_HEADER_SIZE
+            + (capacity as usize) * 8
+            + (capacity as usize) * (slot_size as usize);
+        let mut buf = vec![0u8; total];
+        buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
+        buf[12..16].copy_from_slice(&8u32.to_ne_bytes()); // type_size (unused on the serde path)
+        buf[20] = POD_NO;
+        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
+        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
+        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
+        buf[76..80].copy_from_slice(&(capacity - 1).to_ne_bytes()); // cap_mask
+        buf[80..84].copy_from_slice(&slot_size.to_ne_bytes());
+        let slot_start = TOPIC_HEADER_SIZE + (capacity as usize) * 8;
+        buf[slot_start + 8..slot_start + 16].copy_from_slice(&data_len.to_ne_bytes());
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&buf).unwrap();
+    }
+
+    /// The serde branch's bounds check was `data_offset + data_len > mmap.len()`,
+    /// computed on a length word taken straight out of the file with no
+    /// `overflow-checks` in release builds. A length near `usize::MAX` wrapped
+    /// the sum to a small number, the guard passed, and the slice expression
+    /// recomputed the same wrapped value — `mmap[656..400]`, a panic on the
+    /// reading thread of `horus topic echo`.
+    #[test]
+    fn a_wrapping_serde_length_is_rejected_not_sliced() {
+        let path = tmp("serde_len_overflow");
+        write_serde_header(&path, 64, 0xFFFF_FFFF_FFFF_FF00);
+        assert!(
+            read_latest_slot_bytes(&path, 0).is_none(),
+            "a length word that overflows the offset arithmetic must be refused"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A length that fits the mapping but not the SLOT is equally impossible to
+    /// have been written (`write_topic_slot_bytes` caps payloads at
+    /// `slot_size - SERDE_SLOT_OVERHEAD`), and would read a neighbouring slot's
+    /// bytes as if they were this message's.
+    #[test]
+    fn a_serde_length_larger_than_the_slot_is_rejected() {
+        let path = tmp("serde_len_over_slot");
+        // slot_size 64 => max payload 48.
+        write_serde_header(&path, 64, 60);
+        assert!(read_latest_slot_bytes(&path, 0).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The bound must not reject a payload that really fits.
+    #[test]
+    fn a_serde_length_within_the_slot_still_reads() {
+        let path = tmp("serde_len_ok");
+        write_serde_header(&path, 64, 4);
+        let slot = read_latest_slot_bytes(&path, 0).expect("a well-formed serde slot must read");
+        assert_eq!(slot.payload.len(), 4);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -3490,6 +3735,6 @@ mod stored_type_name_tests {
         let name = format!("{}é", "a".repeat(30)); // 'é' straddles byte 30..32
         let stored = type_name_as_stored(&name);
         assert_eq!(stored, "a".repeat(30));
-        assert!(std::str::from_utf8(stored.as_bytes()).is_ok());
+        std::str::from_utf8(stored.as_bytes()).unwrap();
     }
 }

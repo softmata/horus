@@ -46,11 +46,12 @@ fn sanitize_namespace(ns: &str) -> String {
         .collect()
 }
 
-/// A namespace private to one cargo target directory, for test binaries.
+/// A namespace private to one cargo build directory, for test binaries.
 ///
-/// Cargo builds test harnesses — and the helper binaries they spawn — into
-/// `<target>/<profile>/deps/`. Anything running from there is a test, and tests
-/// must not share shared memory with anything else on the machine.
+/// Cargo builds test harnesses — and the helper binaries they spawn — into its
+/// own subdirectories of `<target>/<profile>/`. Anything running from there is
+/// a test, and tests must not share shared memory with anything else on the
+/// machine.
 ///
 /// Without this, every `cargo test` ran in the `"default"` namespace: the same
 /// one a robot uses. Two test runs on one box — two developers, two CI jobs, a
@@ -59,38 +60,118 @@ fn sanitize_namespace(ns: &str) -> String {
 /// `cargo test` could also disturb a robot running on the same machine, and
 /// `horus clean --shm` from a test would wipe its regions.
 ///
-/// Keying on the target directory rather than the binary keeps a harness and
+/// Keying on `<target>/<profile>` rather than on the binary keeps a harness and
 /// the helpers it spawns together — `cross_process` and `peer_process` share a
 /// `deps/` — while separating unrelated checkouts, which have different targets.
 ///
-/// Returns `None` for anything not under a `deps/` directory, so `cargo run`
-/// binaries and an installed `horus` stay in `"default"` and keep seeing each
-/// other, which is what a developer expects.
+/// Returns `None` for anything cargo did not build for its own use, so
+/// `cargo run` binaries and an installed `horus` stay in `"default"` and keep
+/// seeing each other, which is what a developer expects.
 fn cargo_test_namespace() -> Option<String> {
-    namespace_for_exe(&std::env::current_exe().ok()?)
+    let exe = std::env::current_exe().ok()?;
+    if let Some(ns) = namespace_for_exe(&exe) {
+        return Some(ns);
+    }
+
+    // A build of *this* crate carrying `cfg(test)` is a test harness by
+    // construction, whatever path it was launched from, so there is nothing
+    // left to infer from the layout. The path rule above still has to carry
+    // every other crate's harness and the helpers tests spawn; this arm only
+    // removes horus_sys's own tests from depending on it, which matters because
+    // the sanitizer jobs build with `-Zbuild-std --target <triple>` and a test
+    // binary quietly falling back to `"default"` is the exact corruption this
+    // function exists to prevent.
+    if cfg!(test) {
+        return Some(namespace_for_dir(exe.parent()?));
+    }
+
+    None
 }
 
-/// The namespace [`cargo_test_namespace`] would derive for a given executable
+/// The namespace `cargo_test_namespace` would derive for a given executable
 /// path. Split out so the rule is testable against paths this process is not
 /// actually running from.
+///
+/// An executable is one cargo built for its own use when either:
+/// - it sits in a `deps/` directory — the classic
+///   `<target>/<profile>/deps/<name>-<metadata>` layout; or
+/// - its file name carries cargo's metadata suffix: `-` followed by 16 hex
+///   digits. Cargo stamps that onto every artifact it builds and strips it only
+///   when it uplifts a *final* binary to `<target>/<profile>/<name>`, so the
+///   suffix marks a file cargo runs itself, never one a person installs, ships,
+///   or launches on a robot.
+///
+/// The second rule is what holds under the sanitizer jobs: they build with
+/// `-Zbuild-std --target <triple>`, which does not leave the harness in the
+/// plain `<profile>/deps/` shape the first rule was written for. Without it
+/// those runs landed in the shared `"default"` namespace, beside whatever else
+/// was using shared memory on the machine.
 fn namespace_for_exe(exe: &std::path::Path) -> Option<String> {
-    let deps = exe.parent()?;
-    if deps.file_name()? != "deps" {
+    let dir = exe.parent()?;
+    let built_by_cargo_for_itself =
+        dir.file_name().is_some_and(|n| n == "deps") || has_cargo_metadata_suffix(exe);
+    if !built_by_cargo_for_itself {
         return None;
     }
-    // <target>/<profile>/deps -> <target>/<profile>. Keeping the profile in
-    // means a `cargo test` and a `cargo test --release` running side by side
-    // are separated too, while a harness and the helpers it spawns — same
-    // profile, same `deps/` — stay together.
-    let target_root = deps.parent()?;
 
-    // FNV-1a over the path: short, stable, and no dependency.
+    // Key on <target>/<profile>. Keeping the profile in means a `cargo test`
+    // and a `cargo test --release` running side by side are separated too,
+    // while a harness and the helpers it spawns — same profile, same build —
+    // stay together. The fallback covers an artifact that carries the metadata
+    // suffix from a directory cargo's own layout does not explain: keying on
+    // where it sits is still better than sharing the robot's namespace.
+    let build_root = cargo_build_root(exe).unwrap_or(dir);
+    Some(namespace_for_dir(build_root))
+}
+
+/// Does this file name carry cargo's build-metadata suffix — `-` + 16 hex digits?
+fn has_cargo_metadata_suffix(exe: &std::path::Path) -> bool {
+    // `file_stem`, so a Windows `.exe` is off before the suffix is read.
+    let Some(stem) = exe.file_stem().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some((name, metadata)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    !name.is_empty()
+        && metadata.len() == 16
+        && metadata
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The `<target>/<profile>` directory an executable was built into, found by
+/// walking up through cargo's own subdirectories of it.
+///
+/// `deps/` holds the test harnesses; `build/<pkg>-<metadata>/out/` holds what a
+/// build script produced. Both sit directly in the profile directory, so the
+/// parent of one of them is that directory. The *outermost* match is the one to
+/// take: it keeps every artifact of a build under one namespace however deeply
+/// cargo nested it.
+fn cargo_build_root(exe: &std::path::Path) -> Option<&std::path::Path> {
+    let mut profile_dir = None;
+    // `ancestors()` yields the path itself first; skip it, since what is being
+    // matched here are directories the executable lives under.
+    for dir in exe.ancestors().skip(1) {
+        if matches!(
+            dir.file_name().and_then(|n| n.to_str()),
+            Some("deps" | "build")
+        ) {
+            profile_dir = dir.parent();
+        }
+    }
+    profile_dir
+}
+
+/// FNV-1a over a directory path, rendered as a `test_<hash>` namespace: short,
+/// stable across the processes of one build, and no dependency.
+fn namespace_for_dir(dir: &std::path::Path) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in target_root.as_os_str().as_encoded_bytes() {
+    for byte in dir.as_os_str().as_encoded_bytes() {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    Some(format!("test_{hash:016x}"))
+    format!("test_{hash:016x}")
 }
 
 /// Generate the SHM namespace for this process without caching.
@@ -98,7 +179,7 @@ fn namespace_for_exe(exe: &std::path::Path) -> Option<String> {
 /// Priority:
 /// 1. `HORUS_NAMESPACE` env var (set by horus_manager when launching node graphs)
 /// 2. A namespace private to the cargo target directory, when this process is a
-///    test binary — see [`cargo_test_namespace`]
+///    test binary — see `cargo_test_namespace`
 /// 3. Otherwise the fixed shared namespace `"default"` (ROS 2 domain-0 model:
 ///    every process on the machine shares one namespace). Multi-robot isolation
 ///    is opt-in — set `HORUS_NAMESPACE` (or a launch-config `namespace`) per robot.
@@ -833,7 +914,7 @@ pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
 /// a pid that still answers `kill(pid, 0)` but belongs to a process that has
 /// exited and not yet been reaped is dead. Without the zombie test a session
 /// leader killed under a parent that never waits kept its whole SHM namespace
-/// marked `alive`, so [`list_namespaces`] reported it as live and
+/// marked `alive`, so [`list_all_horus_namespaces`] reported it as live and
 /// [`cleanup_stale_namespaces`] refused to reclaim it — the same defect the
 /// node list had.
 #[cfg(unix)]
@@ -1103,7 +1184,7 @@ mod tests {
     /// LIVE-12: namespace liveness is a second liveness check, and it used to
     /// have its own raw `kill(sid, 0)` with no zombie test — so a session
     /// leader killed under a parent that never reaps kept its SHM namespace
-    /// reported alive by `list_namespaces` and skipped by
+    /// reported alive by `list_all_horus_namespaces` and skipped by
     /// `cleanup_stale_namespaces` forever.
     #[test]
     #[cfg(unix)]
@@ -1457,6 +1538,60 @@ mod tests {
         );
         assert_eq!(
             namespace_for_exe(std::path::Path::new("/usr/local/bin/horus")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_harness_built_for_an_explicit_target_is_still_a_test_binary() {
+        // The ASan and TSan jobs build with `-Zbuild-std --target
+        // x86_64-unknown-linux-gnu`, which does not leave the harness in the
+        // plain `<profile>/deps/` shape — it ends up under the profile's
+        // `build/.../out/`. The `deps/`-only rule returned None there, so those
+        // runs used the shared "default" namespace: a test binary writing to a
+        // robot's shared memory, which is exactly what this rule forbids.
+        let ns = namespace_for_exe(std::path::Path::new(
+            "/w/target/x86_64-unknown-linux-gnu/debug/build/horus_sys-754ee89886aac265/out/horus_sys-754ee89886aac265",
+        ));
+        assert!(
+            ns.is_some(),
+            "a harness under <profile>/build/ is still a test binary, got {ns:?}"
+        );
+        // ...and it is keyed on <target>/<profile> like every other artifact of
+        // that build, so a harness and the binaries it spawns from `deps/` of
+        // the same build still share one namespace.
+        assert_eq!(
+            ns,
+            namespace_for_exe(std::path::Path::new(
+                "/w/target/x86_64-unknown-linux-gnu/debug/deps/horus_sys-0123456789abcdef",
+            ))
+        );
+        // A different --target is a different build directory, so it is separate.
+        assert_ne!(
+            ns,
+            namespace_for_exe(std::path::Path::new(
+                "/w/target/aarch64-unknown-linux-gnu/debug/deps/horus_sys-0123456789abcdef",
+            ))
+        );
+    }
+
+    #[test]
+    fn a_shipped_binary_in_a_build_directory_stays_in_the_shared_namespace() {
+        // `build/` is one of cargo's directories, but it is also where every
+        // C++ project puts its output — horus_cpp's own examples included. Only
+        // cargo's metadata suffix (`-` + 16 hex digits) marks a file cargo runs
+        // itself, so a real binary that happens to live in a `build/` tree, or
+        // that merely has a dash in its name, keeps the shared namespace.
+        assert_eq!(
+            namespace_for_exe(std::path::Path::new("/w/horus_cpp/build/horus_talker")),
+            None
+        );
+        assert_eq!(
+            namespace_for_exe(std::path::Path::new("/usr/local/bin/horus-cli")),
+            None
+        );
+        assert_eq!(
+            namespace_for_exe(std::path::Path::new("/opt/robot/bin/horus-v2")),
             None
         );
     }

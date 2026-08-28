@@ -10,6 +10,38 @@
 //!
 //! The network layer activates automatically when remote horus peers exist on the LAN,
 //! and costs nothing when they don't.
+//!
+//! ## Trust model — READ BEFORE DEPLOYING
+//!
+//! **Topic replication is unauthenticated.** There is no MAC, no handshake and no
+//! source binding on the data path: a datagram that reaches the port and passes
+//! the source-address filter is treated as coming from a legitimate peer. Any
+//! host that can send UDP to this process — anything inside the allowed peer
+//! ranges, which default to private/loopback/link-local — can therefore:
+//!
+//! - **Write arbitrary bytes into local SHM topics.** One forged discovery
+//!   announcement claiming to publish `cmd_vel`, then one forged data packet, and
+//!   the local subscriber reads the attacker's value as if a local publisher had
+//!   sent it. This includes actuation commands.
+//! - **Impersonate a peer.** `HORUS_NET_SECRET` is a cleartext FNV-1a value in
+//!   every announcement, so it stops accidental cross-fleet mixing, not an
+//!   attacker; `sender_id_hash` is 16 bits and attacker-chosen; the type-hash
+//!   check compares against a hash the *sender* announced.
+//! - **Replay any packet it captured**, including a captured `cmd_vel`.
+//! - **Consume bounded resources**: peer table, heartbeat table, reassembly
+//!   buffers and system-topic rates are all capped, so a flood degrades
+//!   throughput rather than exhausting memory — but it is not kept out.
+//!
+//! What *is* authenticated: the e-stop channel only. `_horus.estop` packets carry
+//! an HMAC keyed by `HORUS_ESTOP_KEY` (see [`mac`]) and are rejected outright
+//! when no key is provisioned.
+//!
+//! Consequently: **run `horus_net` only on a network you trust as much as you
+//! trust the robot.** On a shared or reachable network, disable it
+//! (`HORUS_NO_NETWORK=1`), or set `HORUS_NET_IMPORT=deny` to refuse remote writes
+//! into local SHM, and narrow `HORUS_NET_ALLOW_PEERS` to the exact peer
+//! addresses. Authenticating the data plane (per-datagram MAC + replay window)
+//! is a wire-format change and is not implemented.
 
 pub mod config;
 pub mod discovery;

@@ -76,9 +76,9 @@ use super::shm_layout::SLOT_WRITING;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::local_state::{EPOCH_CHECK_INTERVAL, LEASE_REFRESH_INTERVAL};
+use super::local_state::EPOCH_CHECK_INTERVAL;
 use super::RingTopic;
-use super::{simd_aware_read, simd_aware_write};
+use super::{simd_aware_read, simd_aware_read_uninit, simd_aware_write};
 use crate::utils::unlikely;
 
 // ============================================================================
@@ -166,22 +166,25 @@ impl SpillDescriptor {
     // `to_tensor` takes &self because SpillDescriptor is not Copy (contains u64 fields
     // that are best borrowed), and the tensor is reconstructed from multiple fields.
     #[allow(clippy::wrong_self_convention)]
+    #[allow(clippy::field_reassign_with_default)]
     #[inline]
     pub fn to_tensor(&self) -> crate::types::Tensor {
-        let mut shape = [0u64; crate::types::tensor::MAX_TENSOR_DIMS];
-        shape[0] = self.size;
-        crate::types::Tensor {
-            pool_id: self.pool_id,
-            slot_id: self.slot_id,
-            generation: self.generation,
-            generation_hi: self.generation_hi,
-            offset: self.offset,
-            size: self.size,
-            dtype: crate::types::TensorDtype::U8,
-            ndim: 1,
-            shape,
-            ..Default::default()
-        }
+        // Built field-by-field rather than with a struct literal: `Tensor`'s
+        // dtype is a private raw byte (so a hostile wire descriptor cannot
+        // materialise an invalid discriminant), and a functional-update literal
+        // requires every field to be visible. The dtype goes through the
+        // accessor.
+        let mut tensor = crate::types::Tensor::default();
+        tensor.pool_id = self.pool_id;
+        tensor.slot_id = self.slot_id;
+        tensor.generation = self.generation;
+        tensor.generation_hi = self.generation_hi;
+        tensor.offset = self.offset;
+        tensor.size = self.size;
+        tensor.set_dtype(crate::types::TensorDtype::U8);
+        tensor.ndim = 1;
+        tensor.shape[0] = self.size;
+        tensor
     }
 }
 
@@ -230,8 +233,49 @@ fn spill_to_pool<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static
         .ok()?;
 
     // Copy serialized bytes into the pool slot
-    let dst = pool.data_slice_mut(&tensor).ok()?;
+    let dst = match pool.data_slice_mut(&tensor) {
+        Ok(d) => d,
+        // Give the slot back rather than leaking it: `alloc` left the refcount
+        // at 1 and nothing else will ever drop it (the `?` this replaces
+        // returned `None` with the allocation still outstanding).
+        Err(_) => {
+            pool.release(&tensor);
+            return None;
+        }
+    };
     dst[..bytes.len()].copy_from_slice(bytes);
+
+    // Publish those bytes through the POOL's mapping, not only the ring's.
+    //
+    // The ring publish that follows in every caller (`fence(Release)` + a
+    // Release store of the ready flag / head, matched by an Acquire load in
+    // every recv path) is a correct release/acquire pair — but only on paper,
+    // because the two sides do not touch the same object.  Every `RingTopic`
+    // handle builds its own `ShmRegion`, i.e. its own `mmap` of the topic file,
+    // so two handles in one process release and acquire that flag at two
+    // different virtual addresses of the same physical page.  The hardware still
+    // delivers the bytes; the memory model derives no synchronizes-with from two
+    // distinct atomics, and ThreadSanitizer — which shadows by virtual address —
+    // derived none either.  That is why it reported this `copy_from_slice`
+    // racing `deserialize_spill_slot`'s read of the identical payload, even
+    // though the consumer holds a `try_retain` pin: the pin stops the slot being
+    // freed or reused under the reader, but a pin is not an ordering edge for
+    // bytes written before it was taken.
+    //
+    // The pool is a single process-wide mapping — `pool_registry` hands out one
+    // `Arc<TensorPool>` per topic name — and every reader of a spilled payload
+    // pins the slot with `try_retain` before it touches a byte, which is an
+    // acquire RMW on the slot refcount.  `publish_payload` is the matching
+    // release half, so the copy above is ordered before every consumer's read
+    // through an edge that both the model and the sanitizer can see.
+    if pool.publish_payload(&tensor).is_err() {
+        // Unreachable in practice: the slot was allocated a few lines above and
+        // this thread still holds that reference.  If it ever does happen, drop
+        // the allocation instead of publishing a descriptor to bytes nothing is
+        // ordered against.
+        pool.release(&tensor);
+        return None;
+    }
 
     // The alloc starts at refcount=1. How that refcount is reclaimed depends on
     // the backend (both COMM-H3 — the old "freed when the slot gets reallocated"
@@ -321,32 +365,53 @@ macro_rules! epoch_guard_recv {
 // Housekeeping macros — amortized maintenance after each message
 // ============================================================================
 
+/// How often (in messages) to *consider* refreshing the lease.
+///
+/// The refresh itself is decided by wall clock inside `refresh_lease_if_due`;
+/// this counter only keeps the clock read off the per-message hot path. It is
+/// deliberately far smaller than the 1024-message interval it replaces: the old
+/// code refreshed strictly every 1024 messages, so liveness depended on throughput
+/// and a slow-but-healthy participant looked expired most of the time. At 64,
+/// a 100 Hz participant reaches the clock check about twice a second against a
+/// 5 s lease.
+const LEASE_CHECK_INTERVAL: u32 = 64;
+
 /// Housekeeping after a successful send or recv: migration check (fast, every
-/// EPOCH_CHECK_INTERVAL msgs) + lease refresh (slower syscall, every
-/// LEASE_REFRESH_INTERVAL msgs).  Used by all dispatched (fn-ptr) send/recv paths.
+/// EPOCH_CHECK_INTERVAL msgs) + lease refresh (clock-gated, considered every
+/// LEASE_CHECK_INTERVAL msgs).  Used by all dispatched (fn-ptr) send/recv paths.
 macro_rules! housekeep_lease {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
         if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
             $topic.check_migration_periodic();
-            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                $topic.refresh_lease();
+            if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
+                $topic.refresh_lease_if_due();
             }
         }
     };
 }
 
-/// Housekeeping on empty recv: epoch check on EVERY empty recv.
+/// Housekeeping on empty recv: epoch check on EVERY empty recv, plus a
+/// clock-gated lease refresh.
 ///
 /// When recv returns None, the topic may be empty because a cross-process
 /// producer joined and this participant hasn't observed the migration epoch
 /// yet (still pointed at the old SHM ring). Checking the SHM
 /// epoch on every empty recv ensures migration is detected immediately.
 /// Cost: one Relaxed atomic load (~1ns) — negligible for polling loops.
+///
+/// The empty path refreshed nothing at all, so a subscriber polling a topic
+/// that has not published yet stopped refreshing the instant it registered and
+/// was permanently lease-expired one timeout later — while still polling. That
+/// is a liveness report about a live process, and slot reclamation used to act
+/// on it.
 macro_rules! housekeep_epoch {
     ($local:ident, $topic:expr) => {
         $local.msg_counter = $local.msg_counter.wrapping_add(1);
         $topic.check_migration_periodic();
+        if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
+            $topic.refresh_lease_if_due();
+        }
     };
 }
 
@@ -359,10 +424,11 @@ macro_rules! housekeep_recv {
         // Check SHM epoch on every recv — detects cross-process producers immediately.
         // Cost: one Relaxed atomic load (~1ns), negligible vs the ring buffer read.
         $topic.check_migration_periodic();
-        if $result.is_some() {
-            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                $topic.refresh_lease();
-            }
+        // Refresh on a wall clock, and on the empty path too (see
+        // `housekeep_epoch`): a consumer is just as alive when the ring is
+        // empty as when it is not.
+        if unlikely($local.msg_counter & (LEASE_CHECK_INTERVAL - 1) == 0) {
+            $topic.refresh_lease_if_due();
         }
     };
 }
@@ -462,9 +528,30 @@ fn deserialize_spill_slot<T: DeserializeOwned>(
 fn read_spilled_once<T: DeserializeOwned>(spill: SpillDescriptor, topic_name: &str) -> Option<T> {
     let tensor = spill.to_tensor();
     let pool = super::pool_registry::get_or_create_pool(topic_name);
+    // Pin the slot across the read, exactly as `read_spilled_retained` does.
+    //
+    // "There is exactly one reader" was true and still is; what it did not cover
+    // is the SAME reader arriving at one ring position twice. The first read
+    // released the producer's alloc refcount, `return_slot` freed the slot and
+    // `backend.zero()` began writing volatile zeroes over it — and the second
+    // read then validated a descriptor whose generation had not yet been bumped
+    // (generation moves on alloc, not on free) and handed the region to bincode
+    // while it was being zeroed. That is a data race on the payload itself, and
+    // it is what ThreadSanitizer caught under `auto_grow_cross_thread_no_crash`.
+    //
+    // `try_retain` closes it: it refuses on a zero refcount, so a position that
+    // has already been consumed reads as a clean miss instead of a torn read.
+    if pool.try_retain(&tensor).is_err() {
+        return None;
+    }
     let msg = deserialize_spill_slot::<T>(&pool, &tensor, spill.size as usize);
-    // Single consumer owns the alloc refcount; free it now (gen-checked no-op if stale).
-    pool.release(&tensor);
+    // Two references are outstanding and both are ours to drop: the pin above,
+    // and the producer's alloc refcount that this single consumer inherits. The
+    // second release is the COMM-H3 reclaim that keeps the spill pool from
+    // leaking; together they take the slot to zero and free it, which is the
+    // same end state as the single release this replaced.
+    pool.release(&tensor); // our read pin
+    pool.release(&tensor); // the producer's alloc refcount
     msg
 }
 
@@ -1509,12 +1596,16 @@ pub(super) fn recv_shm_pod_broadcast<
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // The Acquire load above establishes happens-before with the producer's
-    // Release store, so the slot data is fully written. simd_aware_read handles
-    // alignment. The copy may still be torn if a lapping producer overwrites the
-    // slot DURING this read — the re-check below is what detects that.
+    // Release store, so the slot data is fully written. simd_aware_read_uninit
+    // handles alignment. The copy may still be torn if a lapping producer
+    // overwrites the slot DURING this read — the re-check below is what detects
+    // that, which is why the bytes are held as `MaybeUninit<T>` and not yet a
+    // `T`: `is_pod` admits types with validity invariants (a struct with a
+    // `bool` or a fieldless enum field), and materialising torn bytes into such
+    // a `T` would be UB committed before the re-check could reject it.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
-        simd_aware_read(base.add(index))
+        simd_aware_read_uninit(base.add(index))
     };
 
     // Seqlock re-check (Boehm): this Acquire fence pairs with the producer's
@@ -1525,10 +1616,14 @@ pub(super) fn recv_shm_pod_broadcast<
     // existed.
     fence(Ordering::Acquire);
     if ready_ptr.load(Ordering::Relaxed) != v1 {
-        // Overwritten mid-copy. Drop this read; the caller polls again. `msg` is
-        // a POD bitwise copy, so discarding it runs no destructor on torn bytes.
+        // Overwritten mid-copy. Drop the raw bytes; the caller polls again.
+        // `msg` is still `MaybeUninit`, so nothing is dropped and no invalid
+        // value is ever constructed.
         return None;
     }
+    // SAFETY: the stamp re-check above passed, so the slot was NOT overwritten
+    // during the copy and the bytes are the producer's fully-written value.
+    let msg = unsafe { msg.assume_init() };
 
     local.local_tail = tail.wrapping_add(1);
 
@@ -1758,6 +1853,41 @@ pub(super) fn recv_uninitialized<
     unsafe { (*topic.recv_fn.get())(topic) }
 }
 
+/// Whether this topic should report an endpoint-exhaustion event now.
+///
+/// The two call sites each had `static WARNED: AtomicBool` and warned once per
+/// *process*, forever. The intent was not to flood a hot send loop, and the
+/// effect was that the second topic to run out of endpoints — and every one
+/// after it, for the life of the process — lost its comms in complete silence.
+/// On a robot that is a subsystem going quiet hours after an unrelated warning
+/// scrolled past, which is the failure mode the loud warning exists to prevent.
+///
+/// Keyed by topic and rate-limited per topic instead, so a hot loop still emits
+/// once a minute rather than once ever, and a second topic hitting the same
+/// wall is never masked by the first.
+fn should_report_endpoint_exhaustion(topic: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const QUIET: Duration = Duration::from_secs(60);
+    static LAST: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+    let mut guard = match LAST.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let seen = guard.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    match seen.get(topic) {
+        Some(t) if now.duration_since(*t) < QUIET => false,
+        _ => {
+            seen.insert(topic.to_string(), now);
+            true
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1809,7 +1939,7 @@ mod tests {
         assert_eq!(recovered.slot_id, 7);
         assert_eq!(recovered.offset, 1024);
         assert_eq!(recovered.size, 5000);
-        assert_eq!(recovered.dtype, crate::types::TensorDtype::U8);
+        assert_eq!(recovered.dtype(), crate::types::TensorDtype::U8);
         assert_eq!(recovered.ndim, 1);
         assert_eq!(recovered.shape[0], 5000);
     }
@@ -2225,7 +2355,7 @@ mod tests {
         );
         let spill = SpillDescriptor::from_tensor(&tensor, 100);
         let recovered = spill.to_tensor();
-        assert_eq!(recovered.dtype, crate::types::TensorDtype::U8);
+        assert_eq!(recovered.dtype(), crate::types::TensorDtype::U8);
         assert_eq!(recovered.ndim, 1);
         // shape[0] == size (the serialized byte count)
         assert_eq!(recovered.shape[0], 100);
@@ -2264,41 +2394,6 @@ mod tests {
             assert_eq!(recovered.generation_hi, 0xCAFE_F00D);
             assert_eq!(recovered.offset, 0x0102_0304_0506_0708);
             assert_eq!(recovered.size, 0x0A0B_0C0D_0E0F_1011);
-        }
-    }
-}
-
-/// Whether this topic should report an endpoint-exhaustion event now.
-///
-/// The two call sites each had `static WARNED: AtomicBool` and warned once per
-/// *process*, forever. The intent was not to flood a hot send loop, and the
-/// effect was that the second topic to run out of endpoints — and every one
-/// after it, for the life of the process — lost its comms in complete silence.
-/// On a robot that is a subsystem going quiet hours after an unrelated warning
-/// scrolled past, which is the failure mode the loud warning exists to prevent.
-///
-/// Keyed by topic and rate-limited per topic instead, so a hot loop still emits
-/// once a minute rather than once ever, and a second topic hitting the same
-/// wall is never masked by the first.
-fn should_report_endpoint_exhaustion(topic: &str) -> bool {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    const QUIET: Duration = Duration::from_secs(60);
-    static LAST: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
-
-    let mut guard = match LAST.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
-    let seen = guard.get_or_insert_with(HashMap::new);
-    let now = Instant::now();
-    match seen.get(topic) {
-        Some(t) if now.duration_since(*t) < QUIET => false,
-        _ => {
-            seen.insert(topic.to_string(), now);
-            true
         }
     }
 }

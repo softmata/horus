@@ -168,10 +168,19 @@ else
     # memlock and nice -20. Any local user can then lock all of RAM, or run a
     # SCHED_FIFO 99 spinner that preempts the kernel's own threads — and on a
     # robot, preempts the very control loops these limits exist to protect.
+    #
+    # The two "Created ..." / "LOG OUT" echoes used to sit *after* this if/else,
+    # so the skip branch — the normal case under cloud-init, Docker, systemd and
+    # Ansible's `become`, all of which leave SUDO_USER empty — reported a limits
+    # file it had not written. RT nodes then came up without SCHED_FIFO on a
+    # machine whose setup script had said "complete!". Report per branch, and
+    # remember the skip so the final summary does not claim success either.
     RT_USER="${SUDO_USER:-}"
     if [ -z "$RT_USER" ] || [ "$RT_USER" = "root" ]; then
+        rt_limits_skipped=true
         echo -e "  ${YELLOW}${WARN}${NC} Could not determine the invoking user (SUDO_USER unset)."
-        echo -e "  ${YELLOW}${WARN}${NC} Skipping RT limits. Re-run as: sudo $0"
+        echo -e "  ${YELLOW}${WARN}${NC} Skipping RT limits — $LIMITS_FILE was NOT written."
+        echo -e "  ${YELLOW}${WARN}${NC} Re-run as: sudo $0"
         echo -e "      Or add these lines to $LIMITS_FILE for the account running HORUS:"
         echo -e "        <user>  -  rtprio   99"
         echo -e "        <user>  -  memlock  unlimited"
@@ -190,9 +199,9 @@ $RT_USER    hard    memlock    unlimited
 $RT_USER    soft    nice       -20
 $RT_USER    hard    nice       -20
 LIMEOF
+        echo -e "  ${GREEN}${OK}${NC} Created $LIMITS_FILE"
+        echo -e "  ${YELLOW}${WARN}${NC} LOG OUT and LOG BACK IN for limits to take effect"
     fi
-    echo -e "  ${GREEN}${OK}${NC} Created $LIMITS_FILE"
-    echo -e "  ${YELLOW}${WARN}${NC} LOG OUT and LOG BACK IN for limits to take effect"
 fi
 
 echo ""
@@ -238,25 +247,35 @@ echo -e "${CYAN}${INFO}${NC} Kernel Parameters"
 SYSCTL_FILE="/etc/sysctl.d/99-horus-realtime.conf"
 
 if $check_only; then
-    shmmax=$(sysctl -n kernel.shmmax 2>/dev/null || echo "0")
     timer_slack=$(sysctl -n kernel.timer_migration 2>/dev/null || echo "unknown")
-    echo "  kernel.shmmax: $shmmax"
+    swappiness=$(sysctl -n vm.swappiness 2>/dev/null || echo "unknown")
     echo "  kernel.timer_migration: $timer_slack"
+    echo "  vm.swappiness: $swappiness"
 else
+    # This file used to set kernel.shmmax = 256 MiB and kernel.shmall = 65536
+    # *pages* under a comment claiming it maximized shared memory. Since Linux
+    # 4.14 both default to effectively unlimited, so the file permanently cut a
+    # system-wide limit by orders of magnitude for every process on the host —
+    # enough to stop PostgreSQL and any other SysV-shm user from starting. It
+    # did nothing for HORUS either: HORUS IPC is POSIX shm on /dev/shm (see
+    # section 3 above), which is bounded by the tmpfs mount size, not by
+    # shmmax/shmall. Both lines are therefore gone rather than raised.
     cat > "$SYSCTL_FILE" << 'SYSEOF'
 # HORUS Real-Time Kernel Parameters
-# Maximize shared memory for high-throughput IPC
-kernel.shmmax = 268435456
-kernel.shmall = 65536
-
 # Disable timer migration for better RT latency
 kernel.timer_migration = 0
 
 # Reduce VM swappiness for robotics workloads
 vm.swappiness = 10
 SYSEOF
-    sysctl -p "$SYSCTL_FILE" 2>/dev/null || true
-    echo -e "  ${GREEN}${OK}${NC} Applied kernel parameters ($SYSCTL_FILE)"
+    # `2>/dev/null || true` announced "Applied" even when the kernel rejected a
+    # parameter. `|| true` has to stay under `set -e`; the status gates the
+    # message instead, and stderr is left visible.
+    if sysctl -p "$SYSCTL_FILE"; then
+        echo -e "  ${GREEN}${OK}${NC} Applied kernel parameters ($SYSCTL_FILE)"
+    else
+        echo -e "  ${YELLOW}${WARN}${NC} Wrote $SYSCTL_FILE but sysctl -p reported errors"
+    fi
 fi
 
 echo ""
@@ -306,6 +325,16 @@ echo -e "${CYAN}═════════════════════�
 
 if $check_only; then
     echo -e "${CYAN}${INFO}${NC} Check complete. Run without --check to apply fixes."
+elif [ "${rt_limits_skipped:-false}" = "true" ]; then
+    # Not "complete": the RT limits file was never written, so ulimit -r stays
+    # at 0 and every RT node will silently fall back to normal priority.
+    echo -e "${YELLOW}${WARN}${NC} Real-time configuration completed WITH WARNINGS."
+    echo -e "${YELLOW}${WARN}${NC} $LIMITS_FILE was not written — RT scheduling is NOT enabled."
+    echo ""
+    echo "  Verify with:"
+    echo -e "    ${CYAN}ulimit -r${NC}    # Shows 0 until the limits file exists"
+    echo ""
+    exit 1
 else
     echo -e "${GREEN}${OK}${NC} Real-time configuration complete!"
     echo ""

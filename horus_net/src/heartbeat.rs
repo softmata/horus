@@ -77,6 +77,8 @@ pub struct SafetyHeartbeat {
     our_peer_id: [u8; 16],
     /// Monotonic heartbeat sequence counter.
     sequence: u32,
+    /// Whether the heartbeat-table-full warning has already been emitted.
+    cap_warned: bool,
 }
 
 impl SafetyHeartbeat {
@@ -99,6 +101,7 @@ impl SafetyHeartbeat {
             peers: HashMap::new(),
             our_peer_id,
             sequence: 0,
+            cap_warned: false,
         }
     }
 
@@ -116,11 +119,33 @@ impl SafetyHeartbeat {
             peers: HashMap::new(),
             our_peer_id,
             sequence: 0,
+            cap_warned: false,
         }
     }
 
     /// Register a matched peer for heartbeat tracking.
+    ///
+    /// Capped at `netfilter::MAX_PEERS`, the same ceiling `PeerTable` enforces.
+    /// This table used to have no bound at all while its only caller registered
+    /// every announcement unconditionally — including the ones `PeerTable`
+    /// refused once full — so a flood of forged peer ids grew it without limit
+    /// AND made `tick` transmit a heartbeat every 50 ms to each announcement's
+    /// (spoofable) source address, forever. The caller now gates on the peer
+    /// table's answer; this cap is the defence in depth so a future caller that
+    /// forgets cannot re-open the same hole.
     pub fn add_peer(&mut self, peer_id: PeerId, addr: SocketAddr) {
+        if !self.peers.contains_key(&peer_id) && self.peers.len() >= crate::netfilter::MAX_PEERS {
+            if !self.cap_warned {
+                self.cap_warned = true;
+                horus_core::terminal::eprint_line(&format!(
+                    "[horus_net] Heartbeat table is full ({} peers); ignoring further \
+                     registrations. If this is not a real fleet of that size, a host is \
+                     forging peer ids — check HORUS_NET_ALLOW_PEERS. (Fires once.)",
+                    crate::netfilter::MAX_PEERS
+                ));
+            }
+            return;
+        }
         let now = Instant::now();
         self.peers.entry(peer_id).or_insert(PeerHeartbeatState {
             addr,
@@ -138,6 +163,17 @@ impl SafetyHeartbeat {
     /// Remove a peer (e.g., when discovery marks it dead).
     pub fn remove_peer(&mut self, peer_id: &PeerId) {
         self.peers.remove(peer_id);
+    }
+
+    /// Drop every tracked peer for which `keep` returns false.
+    ///
+    /// The replicator re-syncs this table against the peer table once per
+    /// discovery interval. Removal used to happen only through `remove_peer`
+    /// on a newly-dead peer, so an entry for a peer that never made it into
+    /// (or was silently evicted from) `PeerTable` was never removed and kept
+    /// emitting heartbeats indefinitely.
+    pub fn retain_peers<F: FnMut(&PeerId) -> bool>(&mut self, mut keep: F) {
+        self.peers.retain(|id, _| keep(id));
     }
 
     /// Update address for a peer (e.g., if their data port changed).

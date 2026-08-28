@@ -357,9 +357,9 @@ mod tests {
         // A payload from a different version of the type, or a layout this code
         // computed wrongly. Either way the caller falls back to hex.
         let reg = registry();
-        assert!(decode("Twist", &vec![0u8; 55], &reg).is_none());
-        assert!(decode("Twist", &vec![0u8; 57], &reg).is_none());
-        assert!(decode("NotAMessage", &vec![0u8; 8], &reg).is_none());
+        assert!(decode("Twist", &[0u8; 55], &reg).is_none());
+        assert!(decode("Twist", &[0u8; 57], &reg).is_none());
+        assert!(decode("NotAMessage", &[0u8; 8], &reg).is_none());
     }
 
     #[test]

@@ -98,14 +98,22 @@ impl EventExecutor {
     }
 
     /// Stop all watcher threads and reclaim nodes.
+    ///
+    /// Bounded, matching the guarantee `RtExecutor::stop` documents. A bare
+    /// `handle.join()` here hung the whole scheduler shutdown whenever an event
+    /// node blocked inside `tick()`, and `run_with_filter` runs the executor
+    /// stops before it shuts down or safes any other node.
+    ///
+    /// The budget is a single overall deadline rather than one per thread:
+    /// there is a watcher thread PER event node, so a per-thread budget would
+    /// scale the worst case with the node count.
     pub fn stop(mut self) -> Vec<RegisteredNode> {
+        let deadline = std::time::Instant::now() + super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD;
         let mut nodes = Vec::with_capacity(self.handles.len());
         for handle in self.handles.drain(..) {
-            match handle.join() {
-                Ok(node) => nodes.push(node),
-                Err(_) => {
-                    print_line("[Event] Warning: watcher thread panicked during join");
-                }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if let Some(node) = super::primitives::join_with_timeout(handle, "Event", remaining) {
+                nodes.push(node);
             }
         }
         print_line(&format!(
@@ -318,8 +326,13 @@ impl EventExecutor {
 
 impl Drop for EventExecutor {
     fn drop(&mut self) {
+        // Bounded here too: an early return or a panic can drop the executor
+        // without ever calling `stop()`, and an unbounded join on that path
+        // hangs exactly as badly.
+        let deadline = std::time::Instant::now() + super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD;
         for handle in self.handles.drain(..) {
-            let _ = handle.join();
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let _ = super::primitives::join_with_timeout(handle, "Event", remaining);
         }
     }
 }

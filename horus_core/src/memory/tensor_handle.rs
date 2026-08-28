@@ -298,7 +298,7 @@ impl TensorHandle {
     /// Get tensor dtype
     #[inline]
     pub fn dtype(&self) -> TensorDtype {
-        self.tensor.dtype
+        self.tensor.dtype()
     }
 
     /// Get tensor device

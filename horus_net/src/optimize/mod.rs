@@ -54,7 +54,19 @@ impl OptimizerChain {
         for name in names {
             match name.as_str() {
                 "fusion" => chain.add(Box::new(fusion::FusionOptimizer::new())),
-                "delta" => chain.add(Box::new(delta::DeltaOptimizer::new())),
+                // NOT enabled. `DeltaOptimizer::on_outgoing` replaces the payload
+                // with a region stream, but `on_incoming` is a no-op and nothing
+                // on the wire marks a packet as delta-encoded — so the receiver
+                // hands the region stream to `ShmRingWriter::write` as if it were
+                // the message body. POD topics then fail the size check and the
+                // remote subscriber silently freezes between keyframes; non-POD
+                // topics store the stream and deserialize garbage. Refuse loudly
+                // rather than corrupt replicated robot data from a config value
+                // the docs advertised as supported.
+                "delta" => horus_core::terminal::eprint_line(
+                    "[horus_net] Optimizer 'delta' is not implemented on the receive side \
+                     and would silently drop or corrupt replicated data. Ignoring.",
+                ),
                 "spatial" => chain.add(Box::new(spatial::SpatialOptimizer::new())),
                 "predict" => chain.add(Box::new(predict::PredictOptimizer::new())),
                 other => horus_core::terminal::eprint_line(&format!(
@@ -217,8 +229,17 @@ mod tests {
 
     #[test]
     fn from_config_builds_chain() {
-        let chain = OptimizerChain::from_config(&["fusion".into(), "delta".into()]);
+        let chain = OptimizerChain::from_config(&["fusion".into(), "spatial".into()]);
         assert_eq!(chain.len(), 2);
+    }
+
+    #[test]
+    fn from_config_refuses_delta() {
+        // Inverted: this used to assert that "delta" was added to the chain.
+        // Enabling it corrupts replicated data (encode side only, no decoder),
+        // so a shipped configuration naming it must produce no optimizer.
+        let chain = OptimizerChain::from_config(&["fusion".into(), "delta".into()]);
+        assert_eq!(chain.len(), 1, "delta must not be installed");
     }
 
     #[test]

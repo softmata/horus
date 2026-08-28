@@ -7,7 +7,6 @@ use std::time::Instant;
 
 use horus_core::communication::Topic;
 use iceoryx2::prelude::*;
-use serde::{Deserialize, Serialize};
 
 const ITERATIONS: usize = 20_000;
 
@@ -32,6 +31,15 @@ fn main() {
 }
 
 fn bench_horus_xproc_mpmc(num_pubs: usize, num_subs: usize) {
+    // The parent process is the only consumer here, so the topology is
+    // N-producer/single-consumer by construction. Assert rather than quietly
+    // ignore `num_subs`: a 2P/2S call would otherwise be measured as 2P/1S and
+    // reported under the caller's label.
+    assert_eq!(
+        num_subs, 1,
+        "bench_horus_xproc_mpmc only forks publishers; the parent is the sole subscriber"
+    );
+
     // Fork publisher children
     let mut child_pids = Vec::new();
     for p in 0..num_pubs {
@@ -91,9 +99,16 @@ fn bench_horus_xproc_mpmc(num_pubs: usize, num_subs: usize) {
 }
 
 fn bench_horus_xproc_spmc(num_pubs: usize, num_subs: usize) {
+    // Mirror image of the MPMC case: the parent is the only producer, so
+    // `num_pubs` is fixed at 1 rather than silently ignored.
+    assert_eq!(
+        num_pubs, 1,
+        "bench_horus_xproc_spmc only forks subscribers; the parent is the sole publisher"
+    );
+
     // Fork subscriber children that each count messages
     let mut child_pids = Vec::new();
-    for s in 0..num_subs {
+    for _ in 0..num_subs {
         let pid = unsafe { libc::fork() };
         if pid == 0 {
             // Child subscriber
@@ -139,6 +154,13 @@ fn bench_horus_xproc_spmc(num_pubs: usize, num_subs: usize) {
 }
 
 fn bench_iox2_xproc_mpmc(num_pubs: usize, num_subs: usize) {
+    // Same shape as the horus arm above — parent is the sole subscriber — and
+    // the two must agree on topology or the comparison is not like-for-like.
+    assert_eq!(
+        num_subs, 1,
+        "bench_iox2_xproc_mpmc only forks publishers; the parent is the sole subscriber"
+    );
+
     let mut child_pids = Vec::new();
     for p in 0..num_pubs {
         let pid = unsafe { libc::fork() };
@@ -215,8 +237,14 @@ fn bench_iox2_xproc_mpmc(num_pubs: usize, num_subs: usize) {
 }
 
 fn bench_iox2_xproc_spmc(num_pubs: usize, num_subs: usize) {
+    // Parent is the sole publisher, matching bench_horus_xproc_spmc.
+    assert_eq!(
+        num_pubs, 1,
+        "bench_iox2_xproc_spmc only forks subscribers; the parent is the sole publisher"
+    );
+
     let mut child_pids = Vec::new();
-    for s in 0..num_subs {
+    for _ in 0..num_subs {
         let pid = unsafe { libc::fork() };
         if pid == 0 {
             std::thread::sleep(std::time::Duration::from_millis(200));

@@ -56,7 +56,7 @@ use horus_types::{
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 
 use crate::depth_image::PyDepthImage;
 use crate::image::PyImage;
@@ -79,10 +79,20 @@ use crate::messages::{
 use crate::pointcloud::PyPointCloud;
 use crate::tensor::PyTensorHandle;
 
-/// Acquire a read lock, converting a poisoned lock into a PyRuntimeError.
+/// Acquire the topic's lock, converting a poisoned lock into a PyRuntimeError.
+///
+/// This was a *read* lock on an `RwLock`, and every recv path plus every
+/// pool-backed send path used it. That handed out N simultaneous `&Topic<T>` to
+/// N Python threads, while `horus_core` requires exclusive access: every
+/// `Topic` method takes `&self` and then mutates unsynchronised `UnsafeCell`
+/// cursor state and `Cell` keep-alive state. Two threads calling `recv()` on
+/// one `horus.Topic` raced on `local_tail` (duplicated or lost messages, and a
+/// data race outright); two calling `send()` on an image topic could release
+/// the same pool slot twice. `Topic` is now `!Sync` in horus_core, and the lock
+/// here is a `Mutex` so no shared-borrow path can be reintroduced by accident.
 #[inline]
-fn read_lock<T>(lock: &RwLock<T>) -> PyResult<std::sync::RwLockReadGuard<'_, T>> {
-    lock.read()
+fn topic_lock<T>(lock: &Mutex<T>) -> PyResult<std::sync::MutexGuard<'_, T>> {
+    lock.lock()
         .map_err(|e| PyRuntimeError::new_err(format!("Topic lock poisoned: {e}")))
 }
 
@@ -133,12 +143,12 @@ fn log_ipc_event(
 macro_rules! pod_topic_types {
     ( $( ($rust_ty:ident, $py_ty:ident) ),* $(,)? ) => {
         enum TopicType {
-            $( $rust_ty(Arc<RwLock<Topic<$rust_ty>>>), )*
-            Image(Arc<RwLock<Topic<Image>>>),
-            PointCloud(Arc<RwLock<Topic<PointCloud>>>),
-            DepthImage(Arc<RwLock<Topic<DepthImage>>>),
-            Tensor(Arc<RwLock<Topic<horus_core::types::Tensor>>>),
-            Generic(Arc<RwLock<Topic<GenericMessage>>>),
+            $( $rust_ty(Arc<Mutex<Topic<$rust_ty>>>), )*
+            Image(Arc<Mutex<Topic<Image>>>),
+            PointCloud(Arc<Mutex<Topic<PointCloud>>>),
+            DepthImage(Arc<Mutex<Topic<DepthImage>>>),
+            Tensor(Arc<Mutex<Topic<horus_core::types::Tensor>>>),
+            Generic(Arc<Mutex<Topic<GenericMessage>>>),
         }
 
         macro_rules! topic_dispatch {
@@ -161,7 +171,7 @@ macro_rules! pod_topic_types {
                 let tt = match type_name {
                     $( stringify!($rust_ty) => {
                         let topic = create_topic::<$rust_ty>(endpoint, cap)?;
-                        TopicType::$rust_ty(Arc::new(RwLock::new(topic)))
+                        TopicType::$rust_ty(Arc::new(Mutex::new(topic)))
                     }, )*
                     _ => return Ok(None),
                 };
@@ -183,7 +193,7 @@ macro_rules! pod_topic_types {
                                 Some(val.log_summary())
                             } else { None };
                             let topic_ref = topic.clone();
-                            py.detach(|| { topic_ref.write().expect("lock").send(val); });
+                            py.detach(|| { topic_ref.lock().expect("lock").send(val); });
                             if let Some(s) = summary {
                                 log_ipc_event(py, node, &self.name, s,
                                     start.elapsed().as_nanos() as u64, "log_pub");
@@ -205,7 +215,7 @@ macro_rules! pod_topic_types {
                         TopicType::$rust_ty(topic) => {
                             let topic_ref = topic.clone();
                             let msg_opt = py.detach(|| {
-                                topic_ref.read().expect("lock").recv()
+                                topic_ref.lock().expect("lock").recv()
                             });
                             if let Some(val) = msg_opt {
                                 if node.is_some() {
@@ -407,24 +417,24 @@ impl PyTopic {
             match type_name.as_str() {
                 "Image" => {
                     let topic = create_pool_topic::<Image>(&effective_endpoint, cap)?;
-                    TopicType::Image(Arc::new(RwLock::new(topic)))
+                    TopicType::Image(Arc::new(Mutex::new(topic)))
                 }
                 "PointCloud" => {
                     let topic = create_pool_topic::<PointCloud>(&effective_endpoint, cap)?;
-                    TopicType::PointCloud(Arc::new(RwLock::new(topic)))
+                    TopicType::PointCloud(Arc::new(Mutex::new(topic)))
                 }
                 "DepthImage" => {
                     let topic = create_pool_topic::<DepthImage>(&effective_endpoint, cap)?;
-                    TopicType::DepthImage(Arc::new(RwLock::new(topic)))
+                    TopicType::DepthImage(Arc::new(Mutex::new(topic)))
                 }
                 "Tensor" | "TensorHandle" => {
                     let topic =
                         create_pool_topic::<horus_core::types::Tensor>(&effective_endpoint, cap)?;
-                    TopicType::Tensor(Arc::new(RwLock::new(topic)))
+                    TopicType::Tensor(Arc::new(Mutex::new(topic)))
                 }
                 _ => {
                     let topic = create_topic::<GenericMessage>(&effective_endpoint, cap)?;
-                    TopicType::Generic(Arc::new(RwLock::new(topic)))
+                    TopicType::Generic(Arc::new(Mutex::new(topic)))
                 }
             }
         };
@@ -473,7 +483,7 @@ impl PyTopic {
                 let img = py_img.inner().clone();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.read().expect("topic lock poisoned").send(&img);
+                    topic_ref.lock().expect("topic lock poisoned").send(&img);
                     true
                 });
                 if node.is_some() {
@@ -493,7 +503,7 @@ impl PyTopic {
                 let pc = py_pc.inner().clone();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.read().expect("topic lock poisoned").send(&pc);
+                    topic_ref.lock().expect("topic lock poisoned").send(&pc);
                     true
                 });
                 if node.is_some() {
@@ -513,7 +523,7 @@ impl PyTopic {
                 let depth = py_depth.inner().clone();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.read().expect("topic lock poisoned").send(&depth);
+                    topic_ref.lock().expect("topic lock poisoned").send(&depth);
                     true
                 });
                 if node.is_some() {
@@ -554,7 +564,7 @@ impl PyTopic {
                     .data_slice()
                     .map_err(|e| PyRuntimeError::new_err(format!("tensor read failed: {e}")))?;
                 let success = py.detach(|| -> PyResult<bool> {
-                    let t = topic_ref.read().expect("topic lock poisoned");
+                    let t = topic_ref.lock().expect("topic lock poisoned");
                     let dst = t
                         .alloc_tensor(&shape, dtype, device)
                         .map_err(|e| PyRuntimeError::new_err(format!("pool alloc failed: {e}")))?;
@@ -600,7 +610,7 @@ impl PyTopic {
                 let log_summary = msg.log_summary();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.write().expect("topic lock poisoned").send(msg);
+                    topic_ref.lock().expect("topic lock poisoned").send(msg);
                     true
                 });
                 if node.is_some() {
@@ -646,7 +656,7 @@ impl PyTopic {
         match &self.topic_type {
             TopicType::Image(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
                 if let Some(img) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -666,7 +676,7 @@ impl PyTopic {
             }
             TopicType::PointCloud(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
                 if let Some(pc) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -686,7 +696,7 @@ impl PyTopic {
             }
             TopicType::DepthImage(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
                 if let Some(depth) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -712,7 +722,7 @@ impl PyTopic {
                 // against a cross-pool descriptor instead of silently handing back
                 // a null data pointer.
                 let msg_opt =
-                    py.detach(|| topic_ref.read().expect("topic lock poisoned").recv_handle());
+                    py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv_handle());
                 if let Some(handle) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -740,7 +750,7 @@ impl PyTopic {
             }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.read().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
                 if let Some(msg) = msg_opt {
                     if node.is_some() {
                         use horus::core::LogSummary;
@@ -793,259 +803,259 @@ impl PyTopic {
     #[getter]
     fn backend_type(&self) -> String {
         match &self.topic_type {
-            TopicType::CmdVel(t) => read_lock(t)
+            TopicType::CmdVel(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Pose2D(t) => read_lock(t)
+            TopicType::Pose2D(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Pose3D(t) => read_lock(t)
+            TopicType::Pose3D(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Imu(t) => read_lock(t)
+            TopicType::Imu(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Odometry(t) => read_lock(t)
+            TopicType::Odometry(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::LaserScan(t) => read_lock(t)
+            TopicType::LaserScan(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::JointState(t) => read_lock(t)
+            TopicType::JointState(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Clock(t) => read_lock(t)
+            TopicType::Clock(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::TimeReference(t) => read_lock(t)
+            TopicType::TimeReference(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Image(t) => read_lock(t)
+            TopicType::Image(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PointCloud(t) => read_lock(t)
+            TopicType::PointCloud(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::DepthImage(t) => read_lock(t)
+            TopicType::DepthImage(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Geometry types
-            TopicType::Twist(t) => read_lock(t)
+            TopicType::Twist(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Vector3(t) => read_lock(t)
+            TopicType::Vector3(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Point3(t) => read_lock(t)
+            TopicType::Point3(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Quaternion(t) => read_lock(t)
+            TopicType::Quaternion(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::TransformStamped(t) => read_lock(t)
+            TopicType::TransformStamped(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PoseStamped(t) => read_lock(t)
+            TopicType::PoseStamped(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PoseWithCovariance(t) => read_lock(t)
+            TopicType::PoseWithCovariance(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::TwistWithCovariance(t) => read_lock(t)
+            TopicType::TwistWithCovariance(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Accel(t) => read_lock(t)
+            TopicType::Accel(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::AccelStamped(t) => read_lock(t)
+            TopicType::AccelStamped(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Control types
-            TopicType::MotorCommand(t) => read_lock(t)
+            TopicType::MotorCommand(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::ServoCommand(t) => read_lock(t)
+            TopicType::ServoCommand(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::DifferentialDriveCommand(t) => read_lock(t)
+            TopicType::DifferentialDriveCommand(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PidConfig(t) => read_lock(t)
+            TopicType::PidConfig(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::TrajectoryPoint(t) => read_lock(t)
+            TopicType::TrajectoryPoint(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::JointCommand(t) => read_lock(t)
+            TopicType::JointCommand(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Sensor types
-            TopicType::RangeSensor(t) => read_lock(t)
+            TopicType::RangeSensor(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::BatteryState(t) => read_lock(t)
+            TopicType::BatteryState(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::NavSatFix(t) => read_lock(t)
+            TopicType::NavSatFix(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::MagneticField(t) => read_lock(t)
+            TopicType::MagneticField(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Temperature(t) => read_lock(t)
+            TopicType::Temperature(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::FluidPressure(t) => read_lock(t)
+            TopicType::FluidPressure(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Illuminance(t) => read_lock(t)
+            TopicType::Illuminance(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Diagnostics types
-            TopicType::Heartbeat(t) => read_lock(t)
+            TopicType::Heartbeat(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::DiagnosticStatus(t) => read_lock(t)
+            TopicType::DiagnosticStatus(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::EmergencyStop(t) => read_lock(t)
+            TopicType::EmergencyStop(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::ResourceUsage(t) => read_lock(t)
+            TopicType::ResourceUsage(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Force types
-            TopicType::WrenchStamped(t) => read_lock(t)
+            TopicType::WrenchStamped(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::ForceCommand(t) => read_lock(t)
+            TopicType::ForceCommand(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::ContactInfo(t) => read_lock(t)
+            TopicType::ContactInfo(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Navigation types
-            TopicType::NavGoal(t) => read_lock(t)
+            TopicType::NavGoal(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::GoalResult(t) => read_lock(t)
+            TopicType::GoalResult(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PathPlan(t) => read_lock(t)
+            TopicType::PathPlan(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Input types
-            TopicType::JoystickInput(t) => read_lock(t)
+            TopicType::JoystickInput(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::KeyboardInput(t) => read_lock(t)
+            TopicType::KeyboardInput(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Detection/Perception types
-            TopicType::BoundingBox2D(t) => read_lock(t)
+            TopicType::BoundingBox2D(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::BoundingBox3D(t) => read_lock(t)
+            TopicType::BoundingBox3D(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Detection(t) => read_lock(t)
+            TopicType::Detection(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Detection3D(t) => read_lock(t)
+            TopicType::Detection3D(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::SegmentationMask(t) => read_lock(t)
+            TopicType::SegmentationMask(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Tracking types
-            TopicType::TrackedObject(t) => read_lock(t)
+            TopicType::TrackedObject(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::TrackingHeader(t) => read_lock(t)
+            TopicType::TrackingHeader(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Landmark types
-            TopicType::Landmark(t) => read_lock(t)
+            TopicType::Landmark(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Landmark3D(t) => read_lock(t)
+            TopicType::Landmark3D(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::LandmarkArray(t) => read_lock(t)
+            TopicType::LandmarkArray(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Perception helper types
-            TopicType::PointField(t) => read_lock(t)
+            TopicType::PointField(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PlaneDetection(t) => read_lock(t)
+            TopicType::PlaneDetection(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::PlaneArray(t) => read_lock(t)
+            TopicType::PlaneArray(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Vision types
-            TopicType::CompressedImage(t) => read_lock(t)
+            TopicType::CompressedImage(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::CameraInfo(t) => read_lock(t)
+            TopicType::CameraInfo(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::RegionOfInterest(t) => read_lock(t)
+            TopicType::RegionOfInterest(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::StereoInfo(t) => read_lock(t)
+            TopicType::StereoInfo(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Force types (additional)
-            TopicType::ImpedanceParameters(t) => read_lock(t)
+            TopicType::ImpedanceParameters(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::HapticFeedback(t) => read_lock(t)
+            TopicType::HapticFeedback(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::TactileArray(t) => read_lock(t)
+            TopicType::TactileArray(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Diagnostics types (additional)
-            TopicType::DiagnosticValue(t) => read_lock(t)
+            TopicType::DiagnosticValue(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::DiagnosticReport(t) => read_lock(t)
+            TopicType::DiagnosticReport(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::NodeHeartbeat(t) => read_lock(t)
+            TopicType::NodeHeartbeat(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::SafetyStatus(t) => read_lock(t)
+            TopicType::SafetyStatus(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
             // Navigation types (additional)
-            TopicType::Waypoint(t) => read_lock(t)
+            TopicType::Waypoint(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::NavPath(t) => read_lock(t)
+            TopicType::NavPath(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::VelocityObstacle(t) => read_lock(t)
+            TopicType::VelocityObstacle(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::VelocityObstacles(t) => read_lock(t)
+            TopicType::VelocityObstacles(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::OccupancyGrid(t) => read_lock(t)
+            TopicType::OccupancyGrid(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::CostMap(t) => read_lock(t)
+            TopicType::CostMap(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::AudioFrame(t) => read_lock(t)
+            TopicType::AudioFrame(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Tensor(t) => read_lock(t)
+            TopicType::Tensor(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
-            TopicType::Generic(t) => read_lock(t)
+            TopicType::Generic(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
         }
@@ -1060,101 +1070,101 @@ impl PyTopic {
             let dict = pyo3::types::PyDict::new(py);
 
             let metrics = match &self.topic_type {
-                TopicType::CmdVel(t) => read_lock(t)?.metrics(),
-                TopicType::Pose2D(t) => read_lock(t)?.metrics(),
-                TopicType::Pose3D(t) => read_lock(t)?.metrics(),
-                TopicType::Imu(t) => read_lock(t)?.metrics(),
-                TopicType::Odometry(t) => read_lock(t)?.metrics(),
-                TopicType::LaserScan(t) => read_lock(t)?.metrics(),
-                TopicType::JointState(t) => read_lock(t)?.metrics(),
-                TopicType::Clock(t) => read_lock(t)?.metrics(),
-                TopicType::TimeReference(t) => read_lock(t)?.metrics(),
-                TopicType::Image(t) => read_lock(t)?.metrics(),
-                TopicType::PointCloud(t) => read_lock(t)?.metrics(),
-                TopicType::DepthImage(t) => read_lock(t)?.metrics(),
+                TopicType::CmdVel(t) => topic_lock(t)?.metrics(),
+                TopicType::Pose2D(t) => topic_lock(t)?.metrics(),
+                TopicType::Pose3D(t) => topic_lock(t)?.metrics(),
+                TopicType::Imu(t) => topic_lock(t)?.metrics(),
+                TopicType::Odometry(t) => topic_lock(t)?.metrics(),
+                TopicType::LaserScan(t) => topic_lock(t)?.metrics(),
+                TopicType::JointState(t) => topic_lock(t)?.metrics(),
+                TopicType::Clock(t) => topic_lock(t)?.metrics(),
+                TopicType::TimeReference(t) => topic_lock(t)?.metrics(),
+                TopicType::Image(t) => topic_lock(t)?.metrics(),
+                TopicType::PointCloud(t) => topic_lock(t)?.metrics(),
+                TopicType::DepthImage(t) => topic_lock(t)?.metrics(),
                 // Geometry types
-                TopicType::Twist(t) => read_lock(t)?.metrics(),
-                TopicType::Vector3(t) => read_lock(t)?.metrics(),
-                TopicType::Point3(t) => read_lock(t)?.metrics(),
-                TopicType::Quaternion(t) => read_lock(t)?.metrics(),
-                TopicType::TransformStamped(t) => read_lock(t)?.metrics(),
-                TopicType::PoseStamped(t) => read_lock(t)?.metrics(),
-                TopicType::PoseWithCovariance(t) => read_lock(t)?.metrics(),
-                TopicType::TwistWithCovariance(t) => read_lock(t)?.metrics(),
-                TopicType::Accel(t) => read_lock(t)?.metrics(),
-                TopicType::AccelStamped(t) => read_lock(t)?.metrics(),
+                TopicType::Twist(t) => topic_lock(t)?.metrics(),
+                TopicType::Vector3(t) => topic_lock(t)?.metrics(),
+                TopicType::Point3(t) => topic_lock(t)?.metrics(),
+                TopicType::Quaternion(t) => topic_lock(t)?.metrics(),
+                TopicType::TransformStamped(t) => topic_lock(t)?.metrics(),
+                TopicType::PoseStamped(t) => topic_lock(t)?.metrics(),
+                TopicType::PoseWithCovariance(t) => topic_lock(t)?.metrics(),
+                TopicType::TwistWithCovariance(t) => topic_lock(t)?.metrics(),
+                TopicType::Accel(t) => topic_lock(t)?.metrics(),
+                TopicType::AccelStamped(t) => topic_lock(t)?.metrics(),
                 // Control types
-                TopicType::MotorCommand(t) => read_lock(t)?.metrics(),
-                TopicType::ServoCommand(t) => read_lock(t)?.metrics(),
-                TopicType::DifferentialDriveCommand(t) => read_lock(t)?.metrics(),
-                TopicType::PidConfig(t) => read_lock(t)?.metrics(),
-                TopicType::TrajectoryPoint(t) => read_lock(t)?.metrics(),
-                TopicType::JointCommand(t) => read_lock(t)?.metrics(),
+                TopicType::MotorCommand(t) => topic_lock(t)?.metrics(),
+                TopicType::ServoCommand(t) => topic_lock(t)?.metrics(),
+                TopicType::DifferentialDriveCommand(t) => topic_lock(t)?.metrics(),
+                TopicType::PidConfig(t) => topic_lock(t)?.metrics(),
+                TopicType::TrajectoryPoint(t) => topic_lock(t)?.metrics(),
+                TopicType::JointCommand(t) => topic_lock(t)?.metrics(),
                 // Sensor types
-                TopicType::RangeSensor(t) => read_lock(t)?.metrics(),
-                TopicType::BatteryState(t) => read_lock(t)?.metrics(),
-                TopicType::NavSatFix(t) => read_lock(t)?.metrics(),
-                TopicType::MagneticField(t) => read_lock(t)?.metrics(),
-                TopicType::Temperature(t) => read_lock(t)?.metrics(),
-                TopicType::FluidPressure(t) => read_lock(t)?.metrics(),
-                TopicType::Illuminance(t) => read_lock(t)?.metrics(),
+                TopicType::RangeSensor(t) => topic_lock(t)?.metrics(),
+                TopicType::BatteryState(t) => topic_lock(t)?.metrics(),
+                TopicType::NavSatFix(t) => topic_lock(t)?.metrics(),
+                TopicType::MagneticField(t) => topic_lock(t)?.metrics(),
+                TopicType::Temperature(t) => topic_lock(t)?.metrics(),
+                TopicType::FluidPressure(t) => topic_lock(t)?.metrics(),
+                TopicType::Illuminance(t) => topic_lock(t)?.metrics(),
                 // Diagnostics types
-                TopicType::Heartbeat(t) => read_lock(t)?.metrics(),
-                TopicType::DiagnosticStatus(t) => read_lock(t)?.metrics(),
-                TopicType::EmergencyStop(t) => read_lock(t)?.metrics(),
-                TopicType::ResourceUsage(t) => read_lock(t)?.metrics(),
+                TopicType::Heartbeat(t) => topic_lock(t)?.metrics(),
+                TopicType::DiagnosticStatus(t) => topic_lock(t)?.metrics(),
+                TopicType::EmergencyStop(t) => topic_lock(t)?.metrics(),
+                TopicType::ResourceUsage(t) => topic_lock(t)?.metrics(),
                 // Force types
-                TopicType::WrenchStamped(t) => read_lock(t)?.metrics(),
-                TopicType::ForceCommand(t) => read_lock(t)?.metrics(),
-                TopicType::ContactInfo(t) => read_lock(t)?.metrics(),
+                TopicType::WrenchStamped(t) => topic_lock(t)?.metrics(),
+                TopicType::ForceCommand(t) => topic_lock(t)?.metrics(),
+                TopicType::ContactInfo(t) => topic_lock(t)?.metrics(),
                 // Navigation types
-                TopicType::NavGoal(t) => read_lock(t)?.metrics(),
-                TopicType::GoalResult(t) => read_lock(t)?.metrics(),
-                TopicType::PathPlan(t) => read_lock(t)?.metrics(),
+                TopicType::NavGoal(t) => topic_lock(t)?.metrics(),
+                TopicType::GoalResult(t) => topic_lock(t)?.metrics(),
+                TopicType::PathPlan(t) => topic_lock(t)?.metrics(),
                 // Input types
-                TopicType::JoystickInput(t) => read_lock(t)?.metrics(),
-                TopicType::KeyboardInput(t) => read_lock(t)?.metrics(),
+                TopicType::JoystickInput(t) => topic_lock(t)?.metrics(),
+                TopicType::KeyboardInput(t) => topic_lock(t)?.metrics(),
                 // Detection/Perception types
-                TopicType::BoundingBox2D(t) => read_lock(t)?.metrics(),
-                TopicType::BoundingBox3D(t) => read_lock(t)?.metrics(),
-                TopicType::Detection(t) => read_lock(t)?.metrics(),
-                TopicType::Detection3D(t) => read_lock(t)?.metrics(),
-                TopicType::SegmentationMask(t) => read_lock(t)?.metrics(),
+                TopicType::BoundingBox2D(t) => topic_lock(t)?.metrics(),
+                TopicType::BoundingBox3D(t) => topic_lock(t)?.metrics(),
+                TopicType::Detection(t) => topic_lock(t)?.metrics(),
+                TopicType::Detection3D(t) => topic_lock(t)?.metrics(),
+                TopicType::SegmentationMask(t) => topic_lock(t)?.metrics(),
                 // Tracking types
-                TopicType::TrackedObject(t) => read_lock(t)?.metrics(),
-                TopicType::TrackingHeader(t) => read_lock(t)?.metrics(),
+                TopicType::TrackedObject(t) => topic_lock(t)?.metrics(),
+                TopicType::TrackingHeader(t) => topic_lock(t)?.metrics(),
                 // Landmark types
-                TopicType::Landmark(t) => read_lock(t)?.metrics(),
-                TopicType::Landmark3D(t) => read_lock(t)?.metrics(),
-                TopicType::LandmarkArray(t) => read_lock(t)?.metrics(),
+                TopicType::Landmark(t) => topic_lock(t)?.metrics(),
+                TopicType::Landmark3D(t) => topic_lock(t)?.metrics(),
+                TopicType::LandmarkArray(t) => topic_lock(t)?.metrics(),
                 // Perception helper types
-                TopicType::PointField(t) => read_lock(t)?.metrics(),
-                TopicType::PlaneDetection(t) => read_lock(t)?.metrics(),
-                TopicType::PlaneArray(t) => read_lock(t)?.metrics(),
+                TopicType::PointField(t) => topic_lock(t)?.metrics(),
+                TopicType::PlaneDetection(t) => topic_lock(t)?.metrics(),
+                TopicType::PlaneArray(t) => topic_lock(t)?.metrics(),
                 // Vision types
-                TopicType::CompressedImage(t) => read_lock(t)?.metrics(),
-                TopicType::CameraInfo(t) => read_lock(t)?.metrics(),
-                TopicType::RegionOfInterest(t) => read_lock(t)?.metrics(),
-                TopicType::StereoInfo(t) => read_lock(t)?.metrics(),
+                TopicType::CompressedImage(t) => topic_lock(t)?.metrics(),
+                TopicType::CameraInfo(t) => topic_lock(t)?.metrics(),
+                TopicType::RegionOfInterest(t) => topic_lock(t)?.metrics(),
+                TopicType::StereoInfo(t) => topic_lock(t)?.metrics(),
                 // Force types (additional)
-                TopicType::ImpedanceParameters(t) => read_lock(t)?.metrics(),
-                TopicType::HapticFeedback(t) => read_lock(t)?.metrics(),
-                TopicType::TactileArray(t) => read_lock(t)?.metrics(),
+                TopicType::ImpedanceParameters(t) => topic_lock(t)?.metrics(),
+                TopicType::HapticFeedback(t) => topic_lock(t)?.metrics(),
+                TopicType::TactileArray(t) => topic_lock(t)?.metrics(),
                 // Diagnostics types (additional)
-                TopicType::DiagnosticValue(t) => read_lock(t)?.metrics(),
-                TopicType::DiagnosticReport(t) => read_lock(t)?.metrics(),
-                TopicType::NodeHeartbeat(t) => read_lock(t)?.metrics(),
-                TopicType::SafetyStatus(t) => read_lock(t)?.metrics(),
+                TopicType::DiagnosticValue(t) => topic_lock(t)?.metrics(),
+                TopicType::DiagnosticReport(t) => topic_lock(t)?.metrics(),
+                TopicType::NodeHeartbeat(t) => topic_lock(t)?.metrics(),
+                TopicType::SafetyStatus(t) => topic_lock(t)?.metrics(),
                 // Navigation types (additional)
-                TopicType::Waypoint(t) => read_lock(t)?.metrics(),
-                TopicType::NavPath(t) => read_lock(t)?.metrics(),
-                TopicType::VelocityObstacle(t) => read_lock(t)?.metrics(),
-                TopicType::VelocityObstacles(t) => read_lock(t)?.metrics(),
-                TopicType::OccupancyGrid(t) => read_lock(t)?.metrics(),
-                TopicType::CostMap(t) => read_lock(t)?.metrics(),
-                TopicType::AudioFrame(t) => read_lock(t)?.metrics(),
-                TopicType::Tensor(t) => read_lock(t)?.metrics(),
-                TopicType::Generic(t) => read_lock(t)?.metrics(),
+                TopicType::Waypoint(t) => topic_lock(t)?.metrics(),
+                TopicType::NavPath(t) => topic_lock(t)?.metrics(),
+                TopicType::VelocityObstacle(t) => topic_lock(t)?.metrics(),
+                TopicType::VelocityObstacles(t) => topic_lock(t)?.metrics(),
+                TopicType::OccupancyGrid(t) => topic_lock(t)?.metrics(),
+                TopicType::CostMap(t) => topic_lock(t)?.metrics(),
+                TopicType::AudioFrame(t) => topic_lock(t)?.metrics(),
+                TopicType::Tensor(t) => topic_lock(t)?.metrics(),
+                TopicType::Generic(t) => topic_lock(t)?.metrics(),
             };
 
             dict.set_item("messages_sent", metrics.messages_sent())?;
@@ -1192,7 +1202,7 @@ impl PyTopic {
         topic_dispatch!(
             &self.topic_type,
             t,
-            read_lock(t).map(|g| g.pending_count()).unwrap_or(0)
+            topic_lock(t).map(|g| g.pending_count()).unwrap_or(0)
         )
     }
 
@@ -1204,7 +1214,7 @@ impl PyTopic {
         topic_dispatch!(
             &self.topic_type,
             t,
-            read_lock(t).map(|g| g.pub_count()).unwrap_or(0)
+            topic_lock(t).map(|g| g.pub_count()).unwrap_or(0)
         )
     }
 
@@ -1216,7 +1226,7 @@ impl PyTopic {
         topic_dispatch!(
             &self.topic_type,
             t,
-            read_lock(t).map(|g| g.sub_count()).unwrap_or(0)
+            topic_lock(t).map(|g| g.sub_count()).unwrap_or(0)
         )
     }
 
@@ -1236,7 +1246,7 @@ impl PyTopic {
         macro_rules! rl {
             ($t:expr, $py:expr, $PyT:ident) => {{
                 let tr = $t.clone();
-                let msg_opt = $py.detach(|| tr.read().expect("topic lock poisoned").read_latest());
+                let msg_opt = $py.detach(|| tr.lock().expect("topic lock poisoned").read_latest());
                 match msg_opt {
                     Some(msg) => Ok(Some(Py::new($py, $PyT { inner: msg })?.into_any())),
                     None => Ok(None),
@@ -1421,30 +1431,30 @@ where
 mod tests {
     use super::*;
 
-    /// read_lock succeeds on a healthy (non-poisoned) lock.
+    /// topic_lock succeeds on a healthy (non-poisoned) lock.
     /// PyResult can be constructed without a Python runtime.
     #[test]
-    fn read_lock_succeeds_on_healthy_lock() {
-        let lock = RwLock::new(42u32);
-        let guard = read_lock(&lock).expect("read_lock should succeed on healthy lock");
+    fn topic_lock_succeeds_on_healthy_lock() {
+        let lock = Mutex::new(42u32);
+        let guard = topic_lock(&lock).expect("topic_lock should succeed on healthy lock");
         assert_eq!(*guard, 42);
     }
 
-    /// read_lock returns Err on a poisoned lock.
+    /// topic_lock returns Err on a poisoned lock.
     #[test]
-    fn read_lock_returns_error_on_poisoned_lock() {
-        let lock = Arc::new(RwLock::new(42u32));
+    fn topic_lock_returns_error_on_poisoned_lock() {
+        let lock = Arc::new(Mutex::new(42u32));
         let lock2 = lock.clone();
 
-        // Poison the lock by panicking while holding a write guard
+        // Poison the lock by panicking while holding the guard
         let _ = std::thread::spawn(move || {
-            let _guard = lock2.write().unwrap();
+            let _guard = lock2.lock().unwrap();
             panic!("intentional poison");
         })
         .join();
 
-        let result = read_lock(&lock);
-        assert!(result.is_err(), "read_lock should fail on poisoned lock");
+        let result = topic_lock(&lock);
+        assert!(result.is_err(), "topic_lock should fail on poisoned lock");
     }
 
     /// log_py_callback does not panic on Err (it logs and swallows).
@@ -1454,17 +1464,24 @@ mod tests {
         log_py_callback(err_result, "test_method", "test_topic");
     }
 
-    /// Multiple concurrent readers can hold read_lock simultaneously.
+    /// INVERTED: this test used to assert that four threads could hold the
+    /// topic guard *simultaneously* — which is precisely the bug. A `Topic`
+    /// method mutates unsynchronised local state through `&self`, so the guard
+    /// must be exclusive. Four threads incrementing under it must produce
+    /// exactly four increments; with the old shared read guard the
+    /// read-modify-write could lose updates (and was UB besides).
     #[test]
-    fn read_lock_allows_concurrent_readers() {
-        let lock = Arc::new(RwLock::new(99u32));
+    fn topic_lock_is_exclusive_not_shared() {
+        let lock = Arc::new(Mutex::new(0u32));
 
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let lock = lock.clone();
                 std::thread::spawn(move || {
-                    let guard = read_lock(&lock).unwrap();
-                    assert_eq!(*guard, 99);
+                    for _ in 0..1000 {
+                        let mut guard = topic_lock(&lock).unwrap();
+                        *guard += 1;
+                    }
                 })
             })
             .collect();
@@ -1472,5 +1489,10 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+        assert_eq!(
+            *topic_lock(&lock).unwrap(),
+            4000,
+            "the topic guard must serialise all access, not just writers"
+        );
     }
 }

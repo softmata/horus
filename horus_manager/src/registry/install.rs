@@ -584,14 +584,23 @@ impl RegistryClient {
         // key, never against the installing user's own key.
         if let Some(ref sig_hex) = pkg_signature {
             verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Package")?;
-        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
-            // A publisher key is on file for this package but it arrived
-            // unsigned — that is a downgrade, and worth saying so.
-            log::warn!(
-                "Package {} is NOT signed, but a publisher key is on file for it. \
-                 Its integrity cannot be verified.",
-                package_name
-            );
+        } else if let Some(key_path) = crate::paths::publisher_key_path(package_name, None) {
+            // A publisher key on file is the user's statement that this
+            // package must verify against it. The signature field comes out of
+            // the registry's own response, so treating its absence as a
+            // fallback let the very party signatures defend against strip them
+            // and walk into the success path — the old code only logged a
+            // log::warn!, invisible at the default level. Missing signature
+            // with a key on file is a verification failure, not a downgrade.
+            return Err(anyhow!(
+                "Package {}@{} arrived UNSIGNED, but a publisher key is on file at {}.\n\
+                 Installing that key means this package must verify against it, so an \
+                 unsigned download is a downgrade, not a fallback. Refusing to install.\n\
+                 If the publisher genuinely stopped signing, remove the key explicitly.",
+                package_name,
+                version_str,
+                key_path.display()
+            ));
         }
 
         // Calculate checksum and verify against server
@@ -1084,15 +1093,23 @@ impl RegistryClient {
         // A same-origin checksum a compromised registry also controls is not
         // authentication; a signature the registry cannot forge (it lacks the private
         // key) is. Same policy as source install: a signed binary MUST verify against a
-        // configured public key; an unsigned binary only warns when a key is configured.
+        // configured public key, and an unsigned binary with a key on file is a
+        // verification FAILURE. It used to only log::warn! — invisible at the default
+        // level — which let whoever shaped the response strip the signature field and
+        // reach the success path, on the fast path most installs take.
         if let Some(ref sig_hex) = pkg_signature {
             verify_against_publisher_key(&bytes, sig_hex, package_name, None, "Pre-built binary")?;
-        } else if crate::paths::publisher_key_path(package_name, None).is_some() {
-            log::warn!(
-                "Pre-built binary for {} is NOT signed, but a publisher key is on file for it. \
-                 Its integrity cannot be verified.",
-                package_name
-            );
+        } else if let Some(key_path) = crate::paths::publisher_key_path(package_name, None) {
+            return Err(anyhow!(
+                "Pre-built binary for {}@{} arrived UNSIGNED, but a publisher key is on \
+                 file at {}.\n\
+                 Installing that key means this package must verify against it, so an \
+                 unsigned download is a downgrade, not a fallback. Refusing to install.\n\
+                 If the publisher genuinely stopped signing, remove the key explicitly.",
+                package_name,
+                version_str,
+                key_path.display()
+            ));
         }
 
         // Determine installation directory (same logic as source install)
@@ -2360,18 +2377,77 @@ impl RegistryClient {
         use crate::workspace::InstallTarget;
         use std::process::Command;
 
+        // `package_name` reaches this from registry/manifest data with no
+        // validation on any install path, and it is about to become a file
+        // name. A distribution name legitimately never contains a separator or
+        // `..`, so reject rather than sanitize — a rewritten name would point
+        // the reference at the wrong package. `validate_package_name` is the
+        // wrong grammar here: it rejects names PyPI allows.
+        if package_name.is_empty()
+            || package_name.contains(['/', '\\'])
+            || package_name.contains("..")
+        {
+            return Err(anyhow!(
+                "Refusing to create a system reference for {:?}: a package name must not \
+                 contain a path separator or '..'",
+                package_name
+            ));
+        }
+
         println!("  {} Creating reference to system package...", "".green());
 
-        // Find actual system package location
+        // Find actual system package location.
+        //
+        // This used to build the program text with
+        // `format!("import {}; print({}.__file__)", ...)`. A PyPI distribution
+        // name is not a Python identifier, so every hyphenated package
+        // (`python-dateutil`) produced a SyntaxError and the misleading
+        // "Failed to locate system package"; and because `package_name` is
+        // never run through any validator on the install paths, a name
+        // carrying a newline made both interpolations land on comment lines
+        // and left an attacker-chosen statement in between. Resolve the
+        // distribution's import name through importlib.metadata instead, with
+        // the name travelling in argv against constant program text — the same
+        // rule `probe_imports` follows.
+        const LOCATE: &str = r#"import sys, importlib, importlib.metadata as md
+name = sys.argv[1]
+cands = []
+try:
+    top = md.distribution(name).read_text("top_level.txt")
+    if top:
+        cands += top.split()
+except Exception:
+    pass
+cands += [name.replace("-", "_"), name]
+for c in cands:
+    try:
+        m = importlib.import_module(c)
+    except Exception:
+        continue
+    f = getattr(m, "__file__", None)
+    if f:
+        print(f)
+        break
+    p = list(getattr(m, "__path__", []) or [])
+    if p:
+        print(p[0] + "/__init__.py")
+        break
+else:
+    sys.exit(1)
+"#;
+
         let output = Command::new("python3")
-            .args([
-                "-c",
-                &format!("import {}; print({}.__file__)", package_name, package_name),
-            ])
+            .arg("-c")
+            .arg(LOCATE)
+            .arg(package_name)
             .output()?;
 
         if !output.status.success() {
-            return Err(anyhow!("Failed to locate system package"));
+            return Err(anyhow!(
+                "Failed to locate system package {}: {}",
+                package_name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
 
         let package_file = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -2655,5 +2731,35 @@ mod python_requirement_tests {
         assert!(!is_safe_python_requirement(""));
         assert!(!is_safe_python_requirement("   "));
         assert!(!is_safe_python_requirement(&"a".repeat(257)));
+    }
+}
+
+#[cfg(test)]
+mod system_reference_tests {
+    use super::*;
+
+    /// Regression: `create_system_reference_python` joined the package name
+    /// straight into `<packages_dir>/<name>.system.json`, and no install path
+    /// validates that name, so registry metadata naming `../..` wrote the
+    /// reference outside the packages directory. The name is now rejected
+    /// before anything is created.
+    #[test]
+    fn system_reference_rejects_path_shaped_names() {
+        let client = RegistryClient::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = crate::workspace::InstallTarget::Local(tmp.path().to_path_buf());
+
+        for bad in ["../evil", "a/b", "..", "", "x/../../y"] {
+            let err = client
+                .create_system_reference_python(bad, "1.0.0", &target)
+                .expect_err("a path-shaped package name must be refused");
+            assert!(
+                err.to_string().contains("path separator"),
+                "unexpected error for {bad:?}: {err}"
+            );
+        }
+
+        // Nothing was written for any of them.
+        assert!(!tmp.path().join(".horus/packages").exists());
     }
 }

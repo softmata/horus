@@ -271,22 +271,33 @@ macro_rules! action {
 
     // Runtime snake_case conversion (fallback)
     (@to_snake_case $s:expr) => {{
-        fn to_snake_case(s: &str) -> String {
-            let mut result = String::new();
-            for (i, c) in s.chars().enumerate() {
-                if c.is_uppercase() {
-                    if i > 0 {
-                        result.push('_');
+        // This expression is the whole body of the generated `Action::name()`,
+        // which is called on every goal, every status log line and every
+        // `*_topic()` lookup. It used to allocate a String and `Box::leak` it
+        // on EVERY call — the "done once" comment was wishful thinking, and
+        // because the memory is deliberately leaked the growth was monotonic
+        // and unreclaimable. The `OnceLock` makes the one-leak-per-type claim
+        // true, matching what `service!` already does.
+        static HORUS_ACTION_NAME: ::std::sync::OnceLock<&'static str> =
+            ::std::sync::OnceLock::new();
+        *HORUS_ACTION_NAME.get_or_init(|| {
+            fn to_snake_case(s: &str) -> String {
+                let mut result = String::new();
+                for (i, c) in s.chars().enumerate() {
+                    if c.is_uppercase() {
+                        if i > 0 {
+                            result.push('_');
+                        }
+                        result.push(c.to_ascii_lowercase());
+                    } else {
+                        result.push(c);
                     }
-                    result.push(c.to_ascii_lowercase());
-                } else {
-                    result.push(c);
                 }
+                result
             }
-            result
-        }
-        // Leak to get 'static lifetime (done once per action type)
-        Box::leak(to_snake_case($s).into_boxed_str()) as &'static str
+            // Leaked once per action type to obtain the 'static lifetime.
+            Box::leak(to_snake_case($s).into_boxed_str()) as &'static str
+        })
     }};
 }
 

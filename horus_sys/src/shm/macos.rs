@@ -1,6 +1,7 @@
 // macOS shared memory: POSIX shm_open() + mmap (Mach shared memory, RAM-backed)
 
 use anyhow::Result;
+use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 
 /// Poll the size of an open SHM fd via fstat.
@@ -37,6 +38,32 @@ fn wait_for_shm_init(fd: i32, expected_size: usize) -> std::result::Result<(), (
     Err(())
 }
 
+/// Take a shared lock that marks this process as a live holder of `name`.
+///
+/// This is the macOS answer to the Linux backend's last-one-out test (see
+/// `shm/linux.rs`'s `Drop`): unlinking on creator-ownership alone orphans every
+/// subscriber that outlives its publisher, and the restarted publisher then
+/// creates a second, unrelated section with nothing on either side detecting it.
+/// Darwin's `flock()` rejects a POSIX shm descriptor, so the shm fd cannot carry
+/// the lock — the topic's `.meta` sidecar can, and every holder opens it.
+///
+/// Best-effort: the sidecar is only metadata, so a failure here degrades to the
+/// old creator-only rule rather than failing the region outright.
+fn acquire_holder_lock(name: &str, create: bool) -> Option<std::fs::File> {
+    let path = super::shm_topics_dir().join(format!("{}.meta", super::sanitize_namespace(name)));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(create)
+        .create(create)
+        .open(&path)
+        .ok()?;
+    // SAFETY: file.as_raw_fd() is a valid open fd; LOCK_SH is a valid flock op.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } != 0 {
+        return None;
+    }
+    Some(file)
+}
+
 /// Cross-platform shared memory region for high-performance IPC.
 ///
 /// macOS backend: POSIX `shm_open()` (Mach shared memory, RAM-backed).
@@ -48,6 +75,9 @@ pub struct ShmRegion {
     topic_name: String,
     size: usize,
     owner: bool,
+    /// Shared flock held for the region's lifetime so `Drop` can tell whether
+    /// anyone else is still mapped. Kept alive until after that check.
+    lock_file: Option<std::fs::File>,
 }
 
 impl ShmRegion {
@@ -80,11 +110,17 @@ impl ShmRegion {
             unsafe { libc::close(fd) };
             anyhow::bail!("existing SHM region is too small");
         }
+        // PROT_READ|PROT_WRITE, not PROT_READ. `ShmRegion` exposes one safe API
+        // across four backends and `as_slice_mut()` promises a writable slice;
+        // mapping read-only here made that slice a reference whose permissions
+        // do not match the memory, so code that works on Linux took SIGBUS on
+        // macOS at the first store. The fd above is already O_RDWR, so the
+        // writable mapping is permitted.
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 size as usize,
-                libc::PROT_READ,
+                libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 fd,
                 0,
@@ -94,6 +130,9 @@ impl ShmRegion {
             unsafe { libc::close(fd) };
             anyhow::bail!("shm mmap failed: {}", std::io::Error::last_os_error());
         }
+        // Join the holder set so the creator cannot unlink this region out from
+        // under us. Attaching must never create the sidecar.
+        let lock_file = acquire_holder_lock(name, false);
         Ok(Self {
             ptr: ptr as *mut u8,
             fd,
@@ -101,6 +140,7 @@ impl ShmRegion {
             topic_name: name.to_string(),
             size: size as usize,
             owner: false,
+            lock_file,
         })
     }
 
@@ -253,6 +293,11 @@ impl ShmRegion {
             let _ = super::write_topic_meta(name, size);
         }
 
+        // Every holder — creator or not — keeps a shared lock on the sidecar for
+        // the lifetime of the region; that is what makes the last-one-out test
+        // in `Drop` correct.
+        let lock_file = acquire_holder_lock(name, is_owner);
+
         Ok(Self {
             ptr: ptr as *mut u8,
             fd,
@@ -260,6 +305,7 @@ impl ShmRegion {
             topic_name: name.to_string(),
             size,
             owner: is_owner,
+            lock_file,
         })
     }
 
@@ -323,10 +369,14 @@ impl ShmRegion {
             std::io::Error::last_os_error()
         );
 
-        // Unmap old region
-        libc::munmap(self.ptr as *mut libc::c_void, self.size);
-
-        // Map the larger region
+        // Map the larger region FIRST; the old mapping stays valid until it
+        // succeeds. Tearing the old one down first meant the `ensure!` below
+        // returned with `self.ptr`/`self.size` still describing address space
+        // that had just been unmapped, so `as_ptr()`/`as_slice()`/
+        // `as_slice_mut()` handed out dangling pointers and `Drop` munmapped the
+        // range a second time. Two MAP_SHARED views of the same shm fd may
+        // coexist, so nothing requires the munmap to come first. This matches
+        // the Linux and Windows backends, which already map before releasing.
         let new_ptr = libc::mmap(
             std::ptr::null_mut(),
             new_size,
@@ -340,6 +390,9 @@ impl ShmRegion {
             "mmap after grow failed: {}",
             std::io::Error::last_os_error()
         );
+
+        // Only now release the old mapping.
+        libc::munmap(self.ptr as *mut libc::c_void, self.size);
 
         self.ptr = new_ptr as *mut u8;
         self.size = new_size;
@@ -356,13 +409,40 @@ impl Drop for ShmRegion {
             libc::close(self.fd);
         }
 
-        if self.owner {
-            super::remove_topic_meta(&self.topic_name);
-            if let Ok(c_name) = std::ffi::CString::new(self.shm_name.clone()) {
-                // SAFETY: c_name is a valid null-terminated CString
-                unsafe { libc::shm_unlink(c_name.as_ptr()) };
-            }
+        // Unlink only if nobody else still has this region open.
+        //
+        // "Owner" records only who won the race to create the section, which
+        // says nothing about who is still using it. Unlinking on that basis
+        // alone broke the ordinary publisher restart: the creator exited, took
+        // the name with it, every subscriber stayed mapped to a section nobody
+        // would write to again, and the restarted publisher's
+        // `shm_open(O_CREAT|O_EXCL)` succeeded against the freed name and
+        // created a *second* one. Neither side saw an error. The Linux backend
+        // fixed this with a non-blocking LOCK_EX last-one-out test; this is the
+        // same test, taken on the `.meta` sidecar because Darwin's `flock()`
+        // rejects a POSIX shm descriptor.
+        //
+        // Deliberately not gated on `self.owner`: whoever turns out to be last
+        // does the cleanup, or a region whose creator left first would survive
+        // until reboot.
+        let sole_holder = match &self.lock_file {
+            // SAFETY: the File is open for the whole lifetime of `self`, so the
+            // fd is valid here; LOCK_EX | LOCK_NB is a valid flock operation.
+            Some(f) => unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 },
+            // No sidecar lock available: fall back to the old creator rule
+            // rather than leaking the region forever.
+            None => self.owner,
+        };
+        if !sole_holder {
+            return;
         }
+
+        super::remove_topic_meta(&self.topic_name);
+        if let Ok(c_name) = std::ffi::CString::new(self.shm_name.clone()) {
+            // SAFETY: c_name is a valid null-terminated CString
+            unsafe { libc::shm_unlink(c_name.as_ptr()) };
+        }
+        // The exclusive lock is released with the fd when `lock_file` drops.
     }
 }
 

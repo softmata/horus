@@ -185,24 +185,55 @@ fi
 
 info "Fetching HORUS source (${BRANCH})..."
 CLONE_DIR=$(mktemp -d)
-if ! git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" 2>&1 | tail -1; then
+CLONE_LOG=$(mktemp)
+# `git clone ... 2>&1 | tail -1` used to be the guard here, but this script sets
+# `set -e` without `set -o pipefail`, so a pipeline reports *tail*'s status: the
+# failure branch was dead code and a failed clone sailed on to the rm -rf below.
+# Redirect to a log instead, test git's own status, and show the real error.
+if ! git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$CLONE_DIR" >"$CLONE_LOG" 2>&1; then
     fail "Failed to clone https://github.com/${REPO}.git (branch: ${BRANCH})"
+    tail -20 "$CLONE_LOG"
+    rm -rf "$CLONE_DIR" "$CLONE_LOG"
+    exit 1
+fi
+rm -f "$CLONE_LOG"
+
+# A clone can also exit 0 with a tree that is unusable to `horus run`.
+# horus/Cargo.toml is the exact marker find_horus_source_dir() looks for
+# (run_rust.rs), and horus_core/Cargo.toml is what SRC_VERSION parses below.
+# Both are checked *before* the destructive rm -rf further down, so a bad fetch
+# can never delete a working cached source tree.
+if [ ! -f "${CLONE_DIR}/horus/Cargo.toml" ] || [ ! -f "${CLONE_DIR}/horus_core/Cargo.toml" ]; then
+    fail "Fetched tree for branch '${BRANCH}' is incomplete (no horus/Cargo.toml)"
     rm -rf "$CLONE_DIR"
     exit 1
 fi
 
 # Version the cache dir by the crate version so multiple installs coexist and
-# find_horus_source_dir() can prefer the tree matching the running CLI.
-SRC_VERSION=$(grep -m1 '^version' "${CLONE_DIR}/horus_core/Cargo.toml" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
-[ -n "$SRC_VERSION" ] || SRC_VERSION="unknown"
+# find_horus_source_dir() can prefer the tree matching the running CLI. An
+# unparseable version used to fall back to "unknown" and cache the tree anyway;
+# that only hid the failure until the first `horus run`.
+SRC_VERSION=$(grep -m1 '^version' "${CLONE_DIR}/horus_core/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+if [ -z "$SRC_VERSION" ]; then
+    fail "Could not parse version from horus_core/Cargo.toml"
+    rm -rf "$CLONE_DIR"
+    exit 1
+fi
 HORUS_SRC_DIR="${HORUS_CACHE}/horus@${SRC_VERSION}"
 
 mkdir -p "$HORUS_CACHE"
 rm -rf "$HORUS_SRC_DIR"
 mv "$CLONE_DIR" "$HORUS_SRC_DIR"
+CLONE_DIR=""
 ok "Source cached at ~/.horus/cache/horus@${SRC_VERSION}"
 
-TMPDIR=$(mktemp -d)
+# NOT the exported POSIX TMPDIR: that is the variable mktemp, cc/ld, rustc,
+# cargo, git and rustup's own installer all consult, and assigning to it here
+# handed every child process a scratch directory that the cleanup below then
+# deleted. Use a private name, and clean up from a single EXIT trap so the temp
+# dir also goes away on the error paths and on a `set -e` abort mid-download.
+HORUS_TMP=$(mktemp -d)
+trap 'rm -rf "${HORUS_TMP:-}" "${CLONE_DIR:-}"' EXIT
 
 # HORUS_BUILD_FROM_SOURCE=1 skips the pre-built binary entirely and compiles the
 # cached source. This is the documented escape hatch when the checksum
@@ -213,7 +244,7 @@ if [ "${HORUS_BUILD_FROM_SOURCE:-0}" = "1" ]; then
     HTTP_CODE="000"
 else
     info "Checking for pre-built binary..."
-    HTTP_CODE=$(curl -fsSL -o "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
+    HTTP_CODE=$(curl -fsSL -o "${HORUS_TMP}/${ASSET_NAME}.${ASSET_EXT}" -w "%{http_code}" "$RELEASE_URL" 2>/dev/null || echo "000")
 fi
 
 # Refuse early on a toolchain that cannot build HORUS.
@@ -240,7 +271,7 @@ check_rust_version() {
     ok "Rust $found (>= $required required)"
 }
 
-if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; then
+if [ "$HTTP_CODE" = "200" ] && [ -s "${HORUS_TMP}/${ASSET_NAME}.${ASSET_EXT}" ]; then
     # --- Fast path: pre-built binary, skip the compile ---
 
     # Verify the download against the release's published SHA256SUMS before
@@ -250,24 +281,21 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
     # installer never fetched it, so a tampered or truncated asset was executed
     # unchecked. TLS alone does not cover a compromised or substituted asset.
     info "Verifying checksum..."
-    if curl -fsSL -o "${TMPDIR}/SHA256SUMS" "$CHECKSUM_URL" 2>/dev/null && [ -s "${TMPDIR}/SHA256SUMS" ]; then
-        EXPECTED=$(grep " ${ASSET_NAME}.${ASSET_EXT}\$" "${TMPDIR}/SHA256SUMS" 2>/dev/null | awk '{print $1}' | head -1)
+    if curl -fsSL -o "${HORUS_TMP}/SHA256SUMS" "$CHECKSUM_URL" 2>/dev/null && [ -s "${HORUS_TMP}/SHA256SUMS" ]; then
+        EXPECTED=$(grep " ${ASSET_NAME}.${ASSET_EXT}\$" "${HORUS_TMP}/SHA256SUMS" 2>/dev/null | awk '{print $1}' | head -1)
         if [ -z "$EXPECTED" ]; then
-            rm -rf "$TMPDIR"
             fail "SHA256SUMS has no entry for ${ASSET_NAME}.${ASSET_EXT}. Refusing to install an unverified binary."
             exit 1
         fi
         if command -v sha256sum >/dev/null 2>&1; then
-            ACTUAL=$(sha256sum "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" | awk '{print $1}')
+            ACTUAL=$(sha256sum "${HORUS_TMP}/${ASSET_NAME}.${ASSET_EXT}" | awk '{print $1}')
         elif command -v shasum >/dev/null 2>&1; then
-            ACTUAL=$(shasum -a 256 "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" | awk '{print $1}')
+            ACTUAL=$(shasum -a 256 "${HORUS_TMP}/${ASSET_NAME}.${ASSET_EXT}" | awk '{print $1}')
         else
-            rm -rf "$TMPDIR"
             fail "Neither sha256sum nor shasum is available, so the download cannot be verified. Install one, or build from source with HORUS_BUILD_FROM_SOURCE=1."
             exit 1
         fi
         if [ "$EXPECTED" != "$ACTUAL" ]; then
-            rm -rf "$TMPDIR"
             fail "Checksum MISMATCH for ${ASSET_NAME}.${ASSET_EXT}"
             fail "  expected: $EXPECTED"
             fail "  actual:   $ACTUAL"
@@ -276,7 +304,6 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
         fi
         ok "Checksum verified"
     else
-        rm -rf "$TMPDIR"
         fail "Could not fetch SHA256SUMS from $CHECKSUM_URL — refusing to install an unverified binary."
         fail "Build from source instead: HORUS_BUILD_FROM_SOURCE=1 $0"
         exit 1
@@ -284,18 +311,16 @@ if [ "$HTTP_CODE" = "200" ] && [ -s "${TMPDIR}/${ASSET_NAME}.${ASSET_EXT}" ]; th
 
     info "Extracting binary..."
     if [ "$OS" = "windows" ]; then
-        unzip -q "${TMPDIR}/${ASSET_NAME}.zip" -d "$TMPDIR"
+        unzip -q "${HORUS_TMP}/${ASSET_NAME}.zip" -d "$HORUS_TMP"
     else
-        tar xzf "${TMPDIR}/${ASSET_NAME}.tar.gz" -C "$TMPDIR"
+        tar xzf "${HORUS_TMP}/${ASSET_NAME}.tar.gz" -C "$HORUS_TMP"
     fi
-    chmod +x "${TMPDIR}/${BINARY_NAME}" 2>/dev/null || true
-    mv "${TMPDIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-    rm -rf "$TMPDIR"
+    chmod +x "${HORUS_TMP}/${BINARY_NAME}" 2>/dev/null || true
+    mv "${HORUS_TMP}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
     ok "Downloaded pre-built binary"
 
 else
     # --- Slow path: compile the cached source ---
-    rm -rf "$TMPDIR"
     warn "No pre-built binary for ${OS}-${ARCH} — building from source (~3-5 min)"
     echo ""
 

@@ -1711,6 +1711,261 @@ pub(crate) fn create_system_reference_python_run(
     Ok(())
 }
 
+/// Whether a crates.io cache directory actually holds an installed binary.
+///
+/// `cargo install --root DIR` puts executables in `DIR/bin/`, so that is what
+/// "installed" means here — unlike the pypi cache, where it means an importable
+/// module.
+fn cargo_cache_is_usable(dir: &Path) -> bool {
+    if !dir.join("metadata.json").is_file() {
+        return false;
+    }
+    fs::read_dir(dir.join("bin"))
+        .map(|mut e| e.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Whether a cache directory actually holds an installed package.
+///
+/// `metadata.json` is written only after pip reports success, so its absence
+/// means the install did not finish. Its presence is necessary and not
+/// sufficient: a metadata file next to nothing is not a package, and an
+/// interrupted run can leave exactly that.
+fn cache_is_usable(dir: &Path) -> bool {
+    if !dir.join("metadata.json").is_file() {
+        return false;
+    }
+    !top_level_modules(dir).is_empty()
+}
+
+/// The importable names a pip `--target` directory provides.
+///
+/// Package name and module name are routinely different — `horus-robotics`
+/// installs `horus` — so this reports what is actually there rather than
+/// guessing an import to try. Directories with an `__init__.py`, bare `.py`
+/// modules, and compiled extensions all count; pip's own bookkeeping
+/// (`*.dist-info`, `*.egg-info`, `__pycache__`, `bin`) does not.
+///
+/// `run_python::push_importable_dirs` asks the same question of the same
+/// directories when it builds PYTHONPATH, which is why this is `pub(super)`:
+/// the set of directories HORUS calls importable and the set it puts on
+/// sys.path have to be the same set, or the install reports a module the
+/// interpreter cannot then find.
+pub(super) fn top_level_modules(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".dist-info")
+            || name.ends_with(".egg-info")
+            || name == "__pycache__"
+            || name == "bin"
+            || name == "metadata.json"
+        {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() && path.join("__init__.py").is_file() {
+            out.push(name);
+        } else if name.ends_with(".py") {
+            out.push(name.trim_end_matches(".py").to_string());
+        } else if name.ends_with(".so") || name.ends_with(".pyd") {
+            // e.g. `_horus.cpython-314-x86_64-linux-gnu.so`
+            out.push(name.split('.').next().unwrap_or(&name).to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+// ── Link and materialization checks (PATH-3) ───────────────────────────────
+//
+// Three gates in this file used to ask `link.exists() || link.read_link().is_ok()`.
+// The second half of that disjunction is true for a *dangling* symlink for as
+// long as the link file exists, so once a cache directory went away — deleted
+// by the user, by a cleanup script, or on the advice this module itself prints
+// — every later run reported "(already linked)" with a green tick and skipped
+// the install that would have repaired it.
+
+/// Remove a link/entry that is present but no longer usable.
+///
+/// Returns whether anything was removed, so callers can say so. Without this
+/// the reinstall would fail on "File exists" when it tried to re-create the
+/// symlink.
+///
+/// Only ever removes a symlink (never its target) or an empty directory. A
+/// non-empty real directory at this path was put there by something other than
+/// this code, and deleting it to "repair" a link would be a far worse bug than
+/// the one being repaired.
+fn clear_broken_link(path: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
+        // remove_file on a symlink unlinks the link itself, not the target.
+        return fs::remove_file(path).is_ok();
+    }
+    if meta.is_dir() {
+        let empty = fs::read_dir(path)
+            .map(|mut e| e.next().is_none())
+            .unwrap_or(false);
+        if empty {
+            return fs::remove_dir(path).is_ok();
+        }
+        log::warn!(
+            "{} is a directory, not a HORUS link — leaving it alone",
+            path.display()
+        );
+        return false;
+    }
+    fs::remove_file(path).is_ok()
+}
+
+/// Whether `.horus/packages/<name>` still resolves to an importable package.
+///
+/// The same predicate the install path uses to decide whether the cache is a
+/// hit, applied through the link: a link into an emptied cache directory is no
+/// more useful than a link into a deleted one.
+fn python_link_is_usable(link: &Path) -> bool {
+    if !link.exists() {
+        return false;
+    }
+    match fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() => cache_is_usable(link),
+        // Not a link into the cache: something else owns this path — an older
+        // HORUS, a copy, a vendored package. It is not this code's to replace,
+        // and it works if it provides a module.
+        _ => !top_level_modules(link).is_empty(),
+    }
+}
+
+/// Whether `.horus/packages/<name>` still resolves to an install HORUS finished.
+///
+/// Deliberately weaker than `python_link_is_usable`, and used only to decide
+/// whether the lockfile may skip resolution. `metadata.json` is written after
+/// pip reports success and is therefore the record that an install completed;
+/// requiring an importable module here as well would send the handful of
+/// distributions that ship only scripts back through pip on every single run,
+/// which is a worse bargain than the case it would catch (a cache directory
+/// emptied by hand but with the marker left in place — `rm -rf` takes the
+/// marker with it, and so does a partial install, because the marker is
+/// written last).
+fn python_link_records_a_finished_install(link: &Path) -> bool {
+    if !link.exists() {
+        return false;
+    }
+    // Either HORUS's own record of a finished install, or a path something
+    // else manages that provides a module anyway.
+    link.join("metadata.json").is_file() || python_link_is_usable(link)
+}
+
+/// Whether `.horus/bin/<name>` still resolves to a binary.
+fn cargo_link_is_usable(link: &Path) -> bool {
+    link.exists()
+}
+
+/// Whether a HORUS registry cache directory holds anything at all.
+///
+/// Registry packages have no metadata.json of our making, so "usable" here can
+/// only mean non-empty — but non-empty is precisely what a failed install is
+/// not.
+fn horus_cache_is_usable(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|mut e| e.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Whether a link created by `resolve_horus_packages` still resolves.
+fn horus_link_is_usable(link: &Path) -> bool {
+    link.exists() && (link.is_file() || horus_cache_is_usable(link))
+}
+
+/// The dependencies horus.lock stands for that are not actually installed.
+///
+/// horus.lock records a config hash and nothing else — no package set, no
+/// versions, no paths. "The hash still matches" therefore says only that the
+/// *inputs* are unchanged; it is not evidence that the outputs survived. This
+/// asks the disk instead, so the lockfile fast path can be taken when it is
+/// true and skipped when it is not.
+///
+/// `root` is the project directory (`.` in normal operation, a tempdir under
+/// test).
+///
+/// `system_reference_usable` answers, for a package that resolved to the
+/// interpreter's own copy, whether that copy is still there. It is a parameter
+/// rather than a call because answering it costs a child interpreter, and
+/// because a filesystem fixture cannot express "installed in Python" — see
+/// `system_reference_is_usable` for the production answer.
+fn unmaterialized_dependencies(
+    root: &Path,
+    horus_packages: &[String],
+    pip_packages: &[PipPackage],
+    cargo_packages: &[CargoPackage],
+    context_language: Option<&str>,
+    system_reference_usable: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let packages_dir = root.join(".horus/packages");
+    let bin_dir = root.join(".horus/bin");
+
+    // A package resolved to the system copy leaves a marker instead of a link.
+    let has_system_reference =
+        |name: &str| packages_dir.join(format!("{}.system.json", name)).is_file();
+
+    // For a *Python* package the marker's existence was the whole of this
+    // check, and a marker is a claim about somewhere else. `pip uninstall`
+    // interrupted halfway, a hand `rm -rf site-packages/<pkg>`, or a Python
+    // minor-version bump leaves the claim behind and the package gone, and this
+    // reported the dependency as installed — so the lockfile fast path printed
+    // "* Dependencies locked (horus.lock is up-to-date)" and the node then
+    // died on `import`, with the code that would have repaired it never
+    // reached. Asking whether the reference still resolves is what makes the
+    // green line true.
+    //
+    // Only the pip loop asks. `create_system_reference_cargo_run` writes into
+    // the same `<name>.system.json` namespace for a crates.io *binary*, and a
+    // binary on PATH is not a Python distribution: putting the import question
+    // to it would answer "missing" every time and re-resolve it on every run.
+    let has_importable_system_reference =
+        |name: &str| has_system_reference(name) && system_reference_usable(name);
+
+    let mut missing = Vec::new();
+
+    for package in horus_packages {
+        // horus_py is linked under the name it is imported by.
+        let link = if package == "horus_py" || package.starts_with("horus_py@") {
+            packages_dir.join("horus")
+        } else {
+            packages_dir.join(package)
+        };
+        if !horus_link_is_usable(&link) && !has_system_reference(package) {
+            missing.push(package.clone());
+        }
+    }
+
+    for pkg in pip_packages {
+        if !python_link_records_a_finished_install(&packages_dir.join(&pkg.name))
+            && !has_importable_system_reference(&pkg.name)
+        {
+            missing.push(pkg.name.clone());
+        }
+    }
+
+    // Mirror the resolver: cargo packages are not installed at all in a Python
+    // project, so their absence is not a missing dependency there.
+    if context_language != Some("python") {
+        for pkg in cargo_packages {
+            if !cargo_link_is_usable(&bin_dir.join(&pkg.name)) && !has_system_reference(&pkg.name) {
+                missing.push(pkg.name.clone());
+            }
+        }
+    }
+
+    missing
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -2865,259 +3120,4 @@ mod tests {
         assert!(written.contains("6.1"), "{written}");
         assert!(written.contains("pypi"), "{written}");
     }
-}
-
-/// Whether a crates.io cache directory actually holds an installed binary.
-///
-/// `cargo install --root DIR` puts executables in `DIR/bin/`, so that is what
-/// "installed" means here — unlike the pypi cache, where it means an importable
-/// module.
-fn cargo_cache_is_usable(dir: &Path) -> bool {
-    if !dir.join("metadata.json").is_file() {
-        return false;
-    }
-    fs::read_dir(dir.join("bin"))
-        .map(|mut e| e.next().is_some())
-        .unwrap_or(false)
-}
-
-/// Whether a cache directory actually holds an installed package.
-///
-/// `metadata.json` is written only after pip reports success, so its absence
-/// means the install did not finish. Its presence is necessary and not
-/// sufficient: a metadata file next to nothing is not a package, and an
-/// interrupted run can leave exactly that.
-fn cache_is_usable(dir: &Path) -> bool {
-    if !dir.join("metadata.json").is_file() {
-        return false;
-    }
-    !top_level_modules(dir).is_empty()
-}
-
-/// The importable names a pip `--target` directory provides.
-///
-/// Package name and module name are routinely different — `horus-robotics`
-/// installs `horus` — so this reports what is actually there rather than
-/// guessing an import to try. Directories with an `__init__.py`, bare `.py`
-/// modules, and compiled extensions all count; pip's own bookkeeping
-/// (`*.dist-info`, `*.egg-info`, `__pycache__`, `bin`) does not.
-///
-/// `run_python::push_importable_dirs` asks the same question of the same
-/// directories when it builds PYTHONPATH, which is why this is `pub(super)`:
-/// the set of directories HORUS calls importable and the set it puts on
-/// sys.path have to be the same set, or the install reports a module the
-/// interpreter cannot then find.
-pub(super) fn top_level_modules(dir: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".dist-info")
-            || name.ends_with(".egg-info")
-            || name == "__pycache__"
-            || name == "bin"
-            || name == "metadata.json"
-        {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() && path.join("__init__.py").is_file() {
-            out.push(name);
-        } else if name.ends_with(".py") {
-            out.push(name.trim_end_matches(".py").to_string());
-        } else if name.ends_with(".so") || name.ends_with(".pyd") {
-            // e.g. `_horus.cpython-314-x86_64-linux-gnu.so`
-            out.push(name.split('.').next().unwrap_or(&name).to_string());
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-// ── Link and materialization checks (PATH-3) ───────────────────────────────
-//
-// Three gates in this file used to ask `link.exists() || link.read_link().is_ok()`.
-// The second half of that disjunction is true for a *dangling* symlink for as
-// long as the link file exists, so once a cache directory went away — deleted
-// by the user, by a cleanup script, or on the advice this module itself prints
-// — every later run reported "(already linked)" with a green tick and skipped
-// the install that would have repaired it.
-
-/// Remove a link/entry that is present but no longer usable.
-///
-/// Returns whether anything was removed, so callers can say so. Without this
-/// the reinstall would fail on "File exists" when it tried to re-create the
-/// symlink.
-///
-/// Only ever removes a symlink (never its target) or an empty directory. A
-/// non-empty real directory at this path was put there by something other than
-/// this code, and deleting it to "repair" a link would be a far worse bug than
-/// the one being repaired.
-fn clear_broken_link(path: &Path) -> bool {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return false;
-    };
-    if meta.file_type().is_symlink() {
-        // remove_file on a symlink unlinks the link itself, not the target.
-        return fs::remove_file(path).is_ok();
-    }
-    if meta.is_dir() {
-        let empty = fs::read_dir(path)
-            .map(|mut e| e.next().is_none())
-            .unwrap_or(false);
-        if empty {
-            return fs::remove_dir(path).is_ok();
-        }
-        log::warn!(
-            "{} is a directory, not a HORUS link — leaving it alone",
-            path.display()
-        );
-        return false;
-    }
-    fs::remove_file(path).is_ok()
-}
-
-/// Whether `.horus/packages/<name>` still resolves to an importable package.
-///
-/// The same predicate the install path uses to decide whether the cache is a
-/// hit, applied through the link: a link into an emptied cache directory is no
-/// more useful than a link into a deleted one.
-fn python_link_is_usable(link: &Path) -> bool {
-    if !link.exists() {
-        return false;
-    }
-    match fs::symlink_metadata(link) {
-        Ok(m) if m.file_type().is_symlink() => cache_is_usable(link),
-        // Not a link into the cache: something else owns this path — an older
-        // HORUS, a copy, a vendored package. It is not this code's to replace,
-        // and it works if it provides a module.
-        _ => !top_level_modules(link).is_empty(),
-    }
-}
-
-/// Whether `.horus/packages/<name>` still resolves to an install HORUS finished.
-///
-/// Deliberately weaker than `python_link_is_usable`, and used only to decide
-/// whether the lockfile may skip resolution. `metadata.json` is written after
-/// pip reports success and is therefore the record that an install completed;
-/// requiring an importable module here as well would send the handful of
-/// distributions that ship only scripts back through pip on every single run,
-/// which is a worse bargain than the case it would catch (a cache directory
-/// emptied by hand but with the marker left in place — `rm -rf` takes the
-/// marker with it, and so does a partial install, because the marker is
-/// written last).
-fn python_link_records_a_finished_install(link: &Path) -> bool {
-    if !link.exists() {
-        return false;
-    }
-    // Either HORUS's own record of a finished install, or a path something
-    // else manages that provides a module anyway.
-    link.join("metadata.json").is_file() || python_link_is_usable(link)
-}
-
-/// Whether `.horus/bin/<name>` still resolves to a binary.
-fn cargo_link_is_usable(link: &Path) -> bool {
-    link.exists()
-}
-
-/// Whether a HORUS registry cache directory holds anything at all.
-///
-/// Registry packages have no metadata.json of our making, so "usable" here can
-/// only mean non-empty — but non-empty is precisely what a failed install is
-/// not.
-fn horus_cache_is_usable(dir: &Path) -> bool {
-    fs::read_dir(dir)
-        .map(|mut e| e.next().is_some())
-        .unwrap_or(false)
-}
-
-/// Whether a link created by `resolve_horus_packages` still resolves.
-fn horus_link_is_usable(link: &Path) -> bool {
-    link.exists() && (link.is_file() || horus_cache_is_usable(link))
-}
-
-/// The dependencies horus.lock stands for that are not actually installed.
-///
-/// horus.lock records a config hash and nothing else — no package set, no
-/// versions, no paths. "The hash still matches" therefore says only that the
-/// *inputs* are unchanged; it is not evidence that the outputs survived. This
-/// asks the disk instead, so the lockfile fast path can be taken when it is
-/// true and skipped when it is not.
-///
-/// `root` is the project directory (`.` in normal operation, a tempdir under
-/// test).
-///
-/// `system_reference_usable` answers, for a package that resolved to the
-/// interpreter's own copy, whether that copy is still there. It is a parameter
-/// rather than a call because answering it costs a child interpreter, and
-/// because a filesystem fixture cannot express "installed in Python" — see
-/// `system_reference_is_usable` for the production answer.
-fn unmaterialized_dependencies(
-    root: &Path,
-    horus_packages: &[String],
-    pip_packages: &[PipPackage],
-    cargo_packages: &[CargoPackage],
-    context_language: Option<&str>,
-    system_reference_usable: &dyn Fn(&str) -> bool,
-) -> Vec<String> {
-    let packages_dir = root.join(".horus/packages");
-    let bin_dir = root.join(".horus/bin");
-
-    // A package resolved to the system copy leaves a marker instead of a link.
-    let has_system_reference =
-        |name: &str| packages_dir.join(format!("{}.system.json", name)).is_file();
-
-    // For a *Python* package the marker's existence was the whole of this
-    // check, and a marker is a claim about somewhere else. `pip uninstall`
-    // interrupted halfway, a hand `rm -rf site-packages/<pkg>`, or a Python
-    // minor-version bump leaves the claim behind and the package gone, and this
-    // reported the dependency as installed — so the lockfile fast path printed
-    // "* Dependencies locked (horus.lock is up-to-date)" and the node then
-    // died on `import`, with the code that would have repaired it never
-    // reached. Asking whether the reference still resolves is what makes the
-    // green line true.
-    //
-    // Only the pip loop asks. `create_system_reference_cargo_run` writes into
-    // the same `<name>.system.json` namespace for a crates.io *binary*, and a
-    // binary on PATH is not a Python distribution: putting the import question
-    // to it would answer "missing" every time and re-resolve it on every run.
-    let has_importable_system_reference =
-        |name: &str| has_system_reference(name) && system_reference_usable(name);
-
-    let mut missing = Vec::new();
-
-    for package in horus_packages {
-        // horus_py is linked under the name it is imported by.
-        let link = if package == "horus_py" || package.starts_with("horus_py@") {
-            packages_dir.join("horus")
-        } else {
-            packages_dir.join(package)
-        };
-        if !horus_link_is_usable(&link) && !has_system_reference(package) {
-            missing.push(package.clone());
-        }
-    }
-
-    for pkg in pip_packages {
-        if !python_link_records_a_finished_install(&packages_dir.join(&pkg.name))
-            && !has_importable_system_reference(&pkg.name)
-        {
-            missing.push(pkg.name.clone());
-        }
-    }
-
-    // Mirror the resolver: cargo packages are not installed at all in a Python
-    // project, so their absence is not a missing dependency there.
-    if context_language != Some("python") {
-        for pkg in cargo_packages {
-            if !cargo_link_is_usable(&bin_dir.join(&pkg.name)) && !has_system_reference(&pkg.name) {
-                missing.push(pkg.name.clone());
-            }
-        }
-    }
-
-    missing
 }

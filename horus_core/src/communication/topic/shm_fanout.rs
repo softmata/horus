@@ -574,7 +574,7 @@ impl ShmFanoutRing {
             }
             std::hint::spin_loop();
             spins += 1;
-            if spins % SPINS_PER_CLOCK_CHECK == 0 && started.elapsed() >= ATTACH_TIMEOUT {
+            if spins.is_multiple_of(SPINS_PER_CLOCK_CHECK) && started.elapsed() >= ATTACH_TIMEOUT {
                 // The owner is never going to finish. Let the caller fall back.
                 return None;
             }

@@ -201,13 +201,43 @@ impl Replicator {
             return;
         }
 
-        let shm_notify_fd = event_loop.shm_notify_fd();
-        self.registry.set_on_change(move || {
-            let val: u64 = 1;
-            unsafe {
-                libc::write(shm_notify_fd, &val as *const u64 as *const libc::c_void, 8);
-            }
-        });
+        // Never hand a raw fd across an ownership boundary. `shm_notify_fd` is
+        // owned by `event_loop`, which lives on this stack frame, but the
+        // callback is installed into the process-lifetime registry singleton and
+        // outlives it: every `Topic<T>` dropped during scheduler shutdown — which
+        // happens AFTER this thread has joined and `EpollLoop::drop` has closed
+        // the descriptor — still wrote 8 bytes to that descriptor *number*. By
+        // then the number may have been reissued to an unrelated file the
+        // shutdown path opened (blackbox WAL flush, crash report), and the
+        // discarded return value made the corruption silent.
+        //
+        // The closure now owns a dup of the eventfd description instead. Writing
+        // into it after shutdown is harmless — nothing reads it — and it is
+        // released when `clear_on_change` below drops the callback.
+        let notify_fd = unsafe { libc::dup(event_loop.shm_notify_fd()) };
+        if notify_fd < 0 {
+            // Not fatal: `handle_timer` drives the export path every tick, so
+            // losing the wakeup only delays a newly registered topic's first
+            // export by up to TIMER_INTERVAL.
+            horus_core::terminal::eprint_line(&format!(
+                "[horus_net] Could not duplicate the export notify fd ({}); topic \
+                 registration will not wake the event loop early",
+                std::io::Error::last_os_error()
+            ));
+        } else {
+            let notify_fd =
+                unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(notify_fd) };
+            self.registry.set_on_change(move || {
+                let val: u64 = 1;
+                unsafe {
+                    libc::write(
+                        std::os::fd::AsRawFd::as_raw_fd(&notify_fd),
+                        &val as *const u64 as *const libc::c_void,
+                        8,
+                    );
+                }
+            });
+        }
 
         while self.running.load(Ordering::Relaxed) {
             let events = match event_loop.wait(1000) {
@@ -234,6 +264,12 @@ impl Replicator {
                 self.handle_timer();
             }
         }
+
+        // Drop the callback before `event_loop` goes out of scope. The registry
+        // is a process-lifetime singleton, so a callback left installed here
+        // survives this thread and keeps firing on every topic unregistered
+        // during scheduler shutdown.
+        self.registry.clear_on_change();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -331,8 +367,17 @@ impl Replicator {
             {
                 return;
             }
-            self.peers.update_peer(&ann);
-            self.heartbeat.add_peer(ann.peer_id, ann.source_addr);
+            // Only register a heartbeat emitter for a peer the table actually
+            // accepted. This used to be unconditional, so every announcement
+            // the (capped) peer table refused still created an uncapped
+            // heartbeat entry keyed on the attacker-chosen peer_id — one that
+            // nothing ever removed and that `tick` used to transmit to the
+            // announcement's spoofable source address every 50 ms, forever.
+            // One forged datagram bought permanent outbound traffic aimed
+            // wherever the sender liked.
+            if self.peers.update_peer(&ann) {
+                self.heartbeat.add_peer(ann.peer_id, ann.source_addr);
+            }
             // Record peer discovery to blackbox
             horus_core::scheduling::record_external_event(
                 horus_core::scheduling::BlackBoxEvent::NetPeerDiscovered {
@@ -378,6 +423,12 @@ impl Replicator {
                     let payload = buf[payload_start..].to_vec();
 
                     let frag = crate::fragment::Fragment {
+                        // The reassembly key includes the sender: `fragment_id`
+                        // is a per-process counter every peer starts at 0, so
+                        // without this two peers publishing the same topic
+                        // reassemble into a single buffer and one message is
+                        // spliced together from both of their fragments.
+                        sender_id_hash: header.sender_id_hash,
                         topic_hash: mh.topic_hash,
                         sequence: mh.sequence,
                         timestamp_ns: mh.timestamp_ns,
@@ -428,6 +479,15 @@ impl Replicator {
     }
 
     /// Process a single incoming data message (shared by regular and reassembled paths).
+    ///
+    /// **Nothing on this path authenticates the sender.** `peer_filter` limits
+    /// *reach*, the import guard limits *which topics*, and the type-hash check
+    /// compares against a hash the sender itself announced — so a host inside the
+    /// allowed peer range can write arbitrary bytes into any importable local SHM
+    /// topic, actuation commands included, and can replay anything it captured.
+    /// Only `_horus.estop` is authenticated (HMAC, `HORUS_ESTOP_KEY`). See the
+    /// crate-level trust model; closing this needs a per-datagram MAC and a
+    /// replay window, which is a wire-format change.
     fn process_incoming_message(
         &mut self,
         header: &PacketHeader,
@@ -546,11 +606,20 @@ impl Replicator {
         let payload_len = payload.len();
         encoding::process_incoming_payload(&mut payload, msg.encoding, payload_len);
 
-        // Write to local SHM
+        // Write to local SHM.
+        //
+        // `write` returns false when the payload does not match the topic's
+        // layout (a POD topic whose type_size differs, most often). The result
+        // used to be discarded and `record_topic_recv` bumped unconditionally,
+        // so a subscriber that never saw another sample still looked, in the
+        // metrics, like it was receiving everything.
         if let Some(writer) = self.find_writer_by_hash(msg.topic_hash) {
-            writer.write(&payload, msg.encoding);
-            self.metrics
-                .record_topic_recv(msg.topic_hash, payload.len());
+            if writer.write(&payload, msg.encoding) {
+                self.metrics
+                    .record_topic_recv(msg.topic_hash, payload.len());
+            } else {
+                self.metrics.record_topic_drop(msg.topic_hash);
+            }
         }
 
         // Send ACK for latched messages
@@ -658,7 +727,23 @@ impl Replicator {
                 };
 
                 let mut send_buf = [0u8; 65536];
-                let len = wire::encode_single(&header, &frag_msg, &mut send_buf);
+                // A fragmented message MUST carry a FragmentHeader. This used
+                // to call `encode_single` for every fragment, which emits none,
+                // while the receive path reads one straight after the
+                // MessageHeader — so it consumed the first 12 bytes of the
+                // chunk as fragment metadata and reassembly of anything over
+                // MAX_FRAGMENT_PAYLOAD never produced the original message.
+                let len = if frag.fragment_count > 1 {
+                    let fh = wire::FragmentHeader {
+                        fragment_id: frag.fragment_id,
+                        fragment_index: frag.fragment_index,
+                        fragment_count: frag.fragment_count,
+                        total_payload_len: frag.total_payload_len,
+                    };
+                    wire::encode_fragment(&header, &frag_msg, &fh, &mut send_buf)
+                } else {
+                    wire::encode_single(&header, &frag_msg, &mut send_buf)
+                };
                 // 0 = did not fit; skip rather than send a truncated packet.
                 if len == 0 {
                     continue;
@@ -797,6 +882,14 @@ impl Replicator {
                 self.peers.remove_dead_peers();
                 self.update_matches();
             }
+
+            // Re-sync heartbeat membership against the peer table every
+            // discovery interval. `remove_peer` above only fires for peers the
+            // peer table reported as newly dead; a peer evicted to make room
+            // for another (peer.rs cap path) is never reported that way, so its
+            // heartbeat entry would otherwise live — and transmit — forever.
+            let known = &self.peers;
+            self.heartbeat.retain_peers(|id| known.get(id).is_some());
 
             if let Some(msg) = check_no_peers_diagnostic(
                 self.peers.alive_count(),
@@ -1151,6 +1244,31 @@ mod tests {
             1,
             "real announcement registers a peer"
         );
+    }
+
+    #[test]
+    fn forged_announcement_flood_cannot_grow_the_heartbeat_table() {
+        // Regression for the UDP-reflector leak: the heartbeat table had no cap
+        // of any kind and was populated unconditionally from every announcement,
+        // including the ones the (capped) peer table refused. A flood of forged
+        // peer ids grew it without bound and made every entry transmit to the
+        // announcement's source address every 50ms, forever.
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        for i in 0..(crate::netfilter::MAX_PEERS * 4) {
+            let mut peer_id = [0u8; 16];
+            peer_id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            let mut buf = [0u8; 4096];
+            let len =
+                crate::discovery::encode_announcement(&peer_id, 9100, &[0u8; 4], &[], &mut buf);
+            rep.process_packet(&buf[..len], from);
+            assert!(
+                rep.heartbeat.peer_count() <= crate::netfilter::MAX_PEERS,
+                "heartbeat table exceeded the peer cap at iteration {i}: {}",
+                rep.heartbeat.peer_count()
+            );
+        }
+        assert!(rep.peers.total_count() <= crate::netfilter::MAX_PEERS);
     }
 
     #[test]

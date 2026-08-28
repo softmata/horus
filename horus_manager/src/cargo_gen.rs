@@ -460,7 +460,7 @@ fn report_lost_edits(path: &Path, lost: &[String], in_workspace_member: bool) {
 #[cfg(test)]
 thread_local! {
     static REPORTED_LOST_EDITS: std::cell::RefCell<Vec<String>> =
-        std::cell::RefCell::new(Vec::new());
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Take (and clear) the warnings emitted on this thread.

@@ -4,6 +4,23 @@
 
 use anyhow::Result;
 
+/// Kernel object name for a topic's file mapping, as a NUL-terminated UTF-16
+/// string.
+///
+/// `new()`, `open_existing()` and `grow_unchecked()` must agree on this string
+/// or they address different kernel objects. `grow_unchecked` built its name
+/// from the bare topic name, omitting the `Local\horus_` prefix, so it created
+/// an unrelated private section and silently forked the topic: the grower
+/// published into the new object while every other process stayed attached to
+/// the real one, frozen at the moment of the grow with no error on either side.
+/// Defining the name once is what stops the three call sites drifting again.
+fn mapping_name_wide(name: &str) -> Vec<u16> {
+    format!("Local\\horus_{}", name)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
 /// Cross-platform shared memory region for high-performance IPC.
 ///
 /// Windows backend: `CreateFileMappingW` with pagefile backing.
@@ -22,26 +39,63 @@ impl ShmRegion {
         anyhow::ensure!(minimum_size > 0, "SHM region size must be > 0");
         super::validate_region_name(name)?;
         use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
-        use windows_sys::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
-        let mapping_name = format!("Local\\horus_{}", name);
-        let wide_name: Vec<u16> = mapping_name.encode_utf16().chain([0]).collect();
-        let handle = unsafe { OpenFileMappingW(FILE_MAP_READ, 0, wide_name.as_ptr()) };
+        use windows_sys::Win32::System::Memory::{
+            MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery, FILE_MAP_ALL_ACCESS,
+            MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
+        };
+        // FILE_MAP_ALL_ACCESS, not FILE_MAP_READ. `as_slice_mut()` promises a
+        // writable slice on every backend and Linux honours it; a read-only view
+        // here turned the first store into an access violation, so safe code
+        // that works on Linux crashed on Windows.
+        let wide_name = mapping_name_wide(name);
+        let handle = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, wide_name.as_ptr()) };
         if handle.is_null() {
             anyhow::bail!("OpenFileMappingW failed: error {}", unsafe {
                 GetLastError()
             });
         }
-        let view = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, minimum_size) };
+        // Map the whole section (length 0) rather than just `minimum_size`, so
+        // `len()`/`as_slice()` describe the region the creator actually made —
+        // the macOS and Linux backends take their size from fstat/metadata, and
+        // storing `minimum_size` here made the same region report different
+        // lengths depending on the platform.
+        let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0) };
         let ptr = view.Value as *mut u8;
         if ptr.is_null() {
+            let err = unsafe { GetLastError() };
             unsafe { CloseHandle(handle) };
-            anyhow::bail!("MapViewOfFile failed: error {}", unsafe { GetLastError() });
+            anyhow::bail!("MapViewOfFile failed: error {}", err);
+        }
+        // VirtualQuery reports the extent of the mapped view; fall back to the
+        // caller's minimum if the query fails rather than claiming a size we did
+        // not measure.
+        let size = unsafe {
+            let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+            let written = VirtualQuery(
+                ptr as *const std::ffi::c_void,
+                &mut info,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            );
+            if written == 0 {
+                minimum_size
+            } else {
+                info.RegionSize
+            }
+        };
+        if size < minimum_size {
+            unsafe {
+                UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: ptr as *mut std::ffi::c_void,
+                });
+                CloseHandle(handle);
+            }
+            anyhow::bail!("existing SHM region is too small");
         }
         Ok(Self {
             ptr,
             handle,
             topic_name: name.to_string(),
-            size: minimum_size,
+            size,
             owner: false,
         })
     }
@@ -57,12 +111,7 @@ impl ShmRegion {
             CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
         };
 
-        let mapping_name = format!("Local\\horus_{}", name);
-
-        let wide_name: Vec<u16> = mapping_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide_name = mapping_name_wide(name);
 
         // SAFETY: INVALID_HANDLE_VALUE creates pagefile-backed mapping; wide_name is valid
         let handle = unsafe {
@@ -152,8 +201,21 @@ impl ShmRegion {
 
     /// Grow the region to `new_size` bytes without synchronization.
     ///
-    /// On Windows, file mappings cannot be resized in place. This creates a new
-    /// mapping with the larger size and copies data from the old mapping.
+    /// # Limitation
+    ///
+    /// A named Windows section cannot be resized, so this call is expected to
+    /// FAIL on Windows: it re-opens `Local\horus_<topic>` — the topic's real
+    /// kernel object — and `MapViewOfFile` refuses a view larger than the
+    /// existing section. Failing loudly is the point. Building the name from the
+    /// bare topic name instead created a private, unrelated section and reported
+    /// success, which forked the topic: the grower published into memory nobody
+    /// else was mapped to, and every subscriber sat on a sequence counter that
+    /// would never advance again.
+    ///
+    /// Real Windows growth needs a generation counter published in the topic
+    /// header (`Local\horus_<topic>_g<n>`), with other processes re-opening the
+    /// new generation by name when they observe the migration epoch change.
+    /// Until that exists, Windows auto-grow is unsupported.
     ///
     /// # Safety
     ///
@@ -173,12 +235,8 @@ impl ShmRegion {
             self.size
         );
 
-        // Create a new file mapping with the larger size
-        let name: Vec<u16> = self
-            .topic_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        // Same name every other call site uses — see `mapping_name_wide`.
+        let name = mapping_name_wide(&self.topic_name);
         let new_handle = CreateFileMappingW(
             INVALID_HANDLE_VALUE,
             std::ptr::null(),
@@ -194,11 +252,18 @@ impl ShmRegion {
         );
 
         let new_ptr = MapViewOfFile(new_handle, FILE_MAP_ALL_ACCESS, 0, 0, new_size);
-        anyhow::ensure!(
-            !new_ptr.Value.is_null(),
-            "MapViewOfFile for grow failed: {}",
-            std::io::Error::last_os_error()
-        );
+        if new_ptr.Value.is_null() {
+            // Capture the error before CloseHandle, which clobbers it. Without
+            // this close, every failed grow leaked a kernel handle and the
+            // pagefile-backed section it keeps alive.
+            let err = std::io::Error::last_os_error();
+            CloseHandle(new_handle);
+            anyhow::bail!(
+                "MapViewOfFile for grow failed: {}. A named Windows section \
+                 cannot be resized in place; Windows auto-grow is unsupported.",
+                err
+            );
+        }
 
         // Copy old data to new mapping
         std::ptr::copy_nonoverlapping(self.ptr, new_ptr.Value as *mut u8, self.size);

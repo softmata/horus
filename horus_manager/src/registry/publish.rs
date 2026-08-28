@@ -383,13 +383,24 @@ impl RegistryClient {
         };
 
         let safe_name = package_name_to_path(&name);
-        let tar_path = std::env::temp_dir().join(format!("{}-{}.tar.gz", safe_name, version));
 
+        // The archive is built in memory rather than at
+        // `<temp_dir>/<name>-<version>.tar.gz`. That path was derived only from
+        // the package name and version — both public, both printed a line
+        // earlier — and `File::create` neither uses O_EXCL nor refuses to
+        // follow symlinks, so on a shared host another user could pre-create it
+        // and control the bytes across the write-then-read-back gap, getting
+        // their tarball signed and uploaded under the publisher's API key.
+        // The bytes were fully buffered for the upload and the signature
+        // anyway, so the round-trip through the filesystem bought nothing; this
+        // also removes the world-readable copy of the source tree in /tmp and
+        // the orphaned file left behind when an early return (the secret scan
+        // below) skipped the cleanup.
         let included_files: Vec<(String, u64)>;
+        let package_data: Vec<u8>;
         {
             let custom_excludes = load_horusignore(current_dir);
-            let tar_file = fs::File::create(&tar_path)?;
-            let encoder = GzEncoder::new(tar_file, Compression::default());
+            let encoder = GzEncoder::new(Vec::new(), Compression::default());
             let mut tar_builder = Builder::new(encoder);
             let mut file_count = 0u64;
             let mut files_list: Vec<(String, u64)> = Vec::new();
@@ -445,7 +456,9 @@ impl RegistryClient {
                 }
             }
 
-            tar_builder.finish()?;
+            // into_inner() finishes the tar stream, then the encoder finish()
+            // flushes the gzip trailer and hands back the buffer.
+            package_data = tar_builder.into_inner()?.finish()?;
             println!(
                 "   Packaged {} files (excluded .git, target, .env, etc.)",
                 file_count
@@ -489,9 +502,6 @@ impl RegistryClient {
                 secret_files.len()
             ));
         }
-
-        let package_data = fs::read(&tar_path)?;
-        fs::remove_file(&tar_path)?;
 
         let size_mb = package_data.len() as f64 / (1024.0 * 1024.0);
         println!("   Package size: {:.2} MB", size_mb);

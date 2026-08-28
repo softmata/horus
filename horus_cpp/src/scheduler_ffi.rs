@@ -50,12 +50,24 @@ pub fn scheduler_new_checked(compiled_abi_version: u32) -> Result<Box<FfiSchedul
 // out of a Box, so we use std::mem::replace to swap the inner scheduler
 // with the builder-modified version.
 
-/// Set the scheduler tick rate in Hz.
+/// Set the scheduler tick rate in Hz. Returns false if `hz` is rejected.
+///
+/// The rate arrives as an f64 because the C++ `Frequency` type carries a
+/// double. It used to be truncated with `(hz as u64).hz()`, which silently
+/// turned 2.5 Hz into 2 Hz and, worse, turned any rate below 1 Hz into 0 —
+/// and `u64::hz()` asserts on 0. That panic was raised inside an `extern "C"`
+/// frame, which aborts the process instead of surfacing an error to C++. So
+/// validate here and keep full f64 precision; the caller reports the
+/// rejection through the ABI.
 ///
 /// C++ usage: `scheduler_tick_rate(sched, 100.0);`
-pub fn scheduler_tick_rate(sched: &mut FfiScheduler, hz: f64) {
+pub fn scheduler_tick_rate(sched: &mut FfiScheduler, hz: f64) -> bool {
+    if !hz.is_finite() || hz <= 0.0 {
+        return false;
+    }
     let inner = std::mem::replace(&mut sched.inner, Scheduler::new());
-    sched.inner = inner.tick_rate((hz as u64).hz());
+    sched.inner = inner.tick_rate(hz.hz());
+    true
 }
 
 /// Set the scheduler name.
@@ -188,8 +200,16 @@ mod tests {
     #[test]
     fn tick_rate_sets_rate() {
         let mut sched = scheduler_new();
-        scheduler_tick_rate(&mut sched, 100.0);
-        // Scheduler stores config internally — verify no panic
+        assert!(scheduler_tick_rate(&mut sched, 100.0));
+        // Fractional rates used to be truncated to u64; sub-1 Hz truncated to
+        // 0 and asserted (an abort across the C boundary). Both are accepted
+        // now, and only genuinely invalid rates are rejected — without panic.
+        assert!(scheduler_tick_rate(&mut sched, 0.5));
+        assert!(scheduler_tick_rate(&mut sched, 2.5));
+        assert!(!scheduler_tick_rate(&mut sched, 0.0));
+        assert!(!scheduler_tick_rate(&mut sched, -1.0));
+        assert!(!scheduler_tick_rate(&mut sched, f64::NAN));
+        assert!(!scheduler_tick_rate(&mut sched, f64::INFINITY));
     }
 
     #[test]
@@ -202,7 +222,7 @@ mod tests {
     #[test]
     fn builder_chain_works() {
         let mut sched = scheduler_new();
-        scheduler_tick_rate(&mut sched, 100.0);
+        assert!(scheduler_tick_rate(&mut sched, 100.0));
         scheduler_prefer_rt(&mut sched);
         scheduler_deterministic(&mut sched, true);
         scheduler_verbose(&mut sched, false);

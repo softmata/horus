@@ -19,12 +19,13 @@
 //! │  ├── slot_alignment: u32                                   │
 //! │  └── next_alloc_offset: AtomicU64                          │
 //! ├────────────────────────────────────────────────────────────┤
-//! │  SlotHeaders[max_slots] (48 bytes each)                    │
+//! │  SlotHeaders[max_slots] (56 bytes each)                    │
 //! │  ├── refcount: AtomicU64                                   │
 //! │  ├── flags: AtomicU32                                      │
 //! │  ├── generation: AtomicU64  (upgraded from U32 in v2)      │
-//! │  ├── offset: u64                                           │
-//! │  ├── size: u64                                             │
+//! │  ├── offset: AtomicU64  (atomic since v4; see SlotHeader)  │
+//! │  ├── size: AtomicU64    (atomic since v4; see SlotHeader)  │
+//! │  ├── capacity: u64      (owner-exclusive, non-atomic)      │
 //! │  └── next_free: AtomicU32                                  │
 //! ├────────────────────────────────────────────────────────────┤
 //! │  Free Stack (lock-free)                                    │
@@ -144,6 +145,36 @@ struct PoolHeader {
 ///
 /// Field ordering ensures `AtomicU64`/`u64` fields land on 8-byte boundaries
 /// without implicit padding.  Changed in POOL_VERSION 3 (refcount upgraded to AtomicU64 from POOL_VERSION 2's 40-byte layout).
+///
+/// # Which fields must be atomic
+///
+/// This header lives in a mapping that peer processes write concurrently, so
+/// "is this field read by anyone other than its exclusive owner?" decides
+/// whether it needs to be an atomic — not whether the value *looks* consistent
+/// on x86.
+///
+/// `offset` and `size` are read by any thread or process holding a wire
+/// descriptor (`data_slice`, `data_slice_mut`, `validate_descriptor`) with no
+/// exclusion against the allocator that writes them, so they are `AtomicU64`.
+/// They were plain `u64` through POOL_VERSION 4 and ThreadSanitizer caught the
+/// resulting race: a publisher inside `alloc()` writing `slot.offset`/`slot.size`
+/// against a subscriber inside `TensorPool::descriptor_within_slot` reading them
+/// off a spilled-message descriptor.  Non-atomic concurrent access is a data
+/// race and therefore UB regardless of the values observed.
+///
+/// `capacity` stays a plain `u64` deliberately.  It is touched at exactly three
+/// places — zeroed in `initialize()` before the pool's magic is published, read
+/// in `alloc()`'s grow-within-capacity reuse test, and written in `alloc()`'s
+/// bump path — and the two `alloc()` sites run only after the thread has won the
+/// Treiber pop for this slot, so no other thread or process may touch the slot
+/// at all.  The release CAS on `free_stack_head` in `return_slot`/`push_free_slot`
+/// and the acquire CAS in `pop_and_claim` carry the previous owner's write to the
+/// next owner, so there is no race to fix and no reason to pay for an atomic.
+///
+/// The `u64` → `AtomicU64` change needs no `POOL_VERSION` bump: `AtomicU64` has
+/// the same size and alignment as `u64`, `SlotHeader` is `repr(C)`, and both
+/// fields already sat on 8-byte boundaries — the SHM bytes are unmoved.  The
+/// `const` assertion below is what actually holds that claim up.
 #[repr(C)]
 struct SlotHeader {
     /// Reference count for this slot.
@@ -161,14 +192,25 @@ struct SlotHeader {
     /// allocations, practical wraparound is impossible.
     generation: AtomicU64,
     /// Byte offset from the data region base to this slot's tensor data.
-    offset: u64,
+    ///
+    /// Atomic because holders of a wire descriptor read it concurrently with
+    /// `alloc()` writing it; see the type-level "Which fields must be atomic".
+    /// Never read on its own — go through `TensorPool::slot_geometry`, which
+    /// pins the `(offset, size)` pair to a generation.
+    offset: AtomicU64,
     /// Logical size of the current allocation, in bytes.
-    size: u64,
+    ///
+    /// Atomic for the same reason as `offset`, and read through the same
+    /// `TensorPool::slot_geometry` pairing helper.
+    size: AtomicU64,
     /// Physical high-water size of this slot's backing region, in bytes — the
     /// largest allocation ever made here (the region is never shrunk). A freed
     /// slot is reused when the new request fits `capacity`, so a grow-after-shrink
     /// reuses this region instead of bumping a fresh one and leaking it (F-MEM1).
     /// Zero until the slot is first bump-allocated.
+    ///
+    /// Plain `u64`, not atomic: only the thread that won this slot's Treiber pop
+    /// ever reads or writes it (see "Which fields must be atomic").
     capacity: u64,
     /// Next free slot index for the Treiber free-stack.
     next_free: AtomicU32,
@@ -178,6 +220,21 @@ struct SlotHeader {
     /// Zero means no owner tracked (pre-v2 pools or freshly initialized).
     owner_pid: AtomicU32,
 }
+
+// The SHM layout is a wire format: every process that attaches computes slot
+// addresses as `slots_offset + slot_id * size_of::<SlotHeader>()`, and a v4 pool
+// written by one build must be readable by another.  Making `offset`/`size`
+// atomic is only a no-op — and only justifies leaving `POOL_VERSION` at 4 — as
+// long as the struct is still 56 bytes with 8-byte alignment.  Assert it here so
+// a future field edit fails the build instead of silently desynchronising two
+// processes' views of the same file.
+const _: () = {
+    assert!(std::mem::size_of::<SlotHeader>() == 56);
+    assert!(std::mem::align_of::<SlotHeader>() == 8);
+    // The property the "no version bump" argument actually rests on.
+    assert!(std::mem::size_of::<AtomicU64>() == std::mem::size_of::<u64>());
+    assert!(std::mem::align_of::<AtomicU64>() == 8);
+};
 
 /// Memory allocator backend for pool data region.
 ///
@@ -296,10 +353,7 @@ impl TensorPool {
                 // depth rather than the only barrier.
                 horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
-                let actual_size = file.metadata()?.len();
-                if actual_size < mmap_size as u64 {
-                    file.set_len(mmap_size as u64)?;
-                }
+                Self::await_pool_file_size(&file, mmap_size as u64, pool_id)?;
                 (file, false)
             }
             Err(e) => return Err(e.into()),
@@ -515,10 +569,7 @@ impl TensorPool {
                 // depth rather than the only barrier.
                 horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
-                let actual_size = file.metadata()?.len();
-                if actual_size < mmap_size as u64 {
-                    file.set_len(mmap_size as u64)?;
-                }
+                Self::await_pool_file_size(&file, mmap_size as u64, pool_id)?;
                 (file, false)
             }
             Err(e) => return Err(e.into()),
@@ -553,6 +604,37 @@ impl TensorPool {
         Ok(pool)
     }
 
+    /// Wait for a pool file created by *another* process to reach `needed` bytes.
+    ///
+    /// This replaced an unconditional `file.set_len(mmap_size)` on the attach
+    /// path. Resizing a file this process did not create is never right: the
+    /// creator's slot array does not move when the file grows, so growing it
+    /// only lets the two processes go on disagreeing about where the data
+    /// region starts — and it did so *before* any header validation, letting a
+    /// mismatched attacher mutate the creator's file on its way to an error.
+    ///
+    /// The creator `set_len()`s to its full geometry immediately after winning
+    /// the `create_new` race, so a short file means either that race is still
+    /// in flight (spin briefly, same ~100ms budget as `validate()`) or the
+    /// creator laid the pool out with a different geometry — which
+    /// `validate_fields()` reports precisely once the header is readable.
+    fn await_pool_file_size(file: &File, needed: u64, pool_id: u32) -> HorusResult<()> {
+        for _ in 0..100 {
+            if file.metadata()?.len() >= needed {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Err(HorusError::Config(ConfigError::Other(format!(
+            "Tensor pool {} exists but is only {} bytes, smaller than the {} bytes this \
+             process's configuration requires — the pool was created with a different \
+             geometry (or its creator has not finished initializing it)",
+            pool_id,
+            file.metadata()?.len(),
+            needed
+        ))))
+    }
+
     /// Initialize a newly created pool
     fn initialize(&mut self) -> HorusResult<()> {
         // NOTE: We do NOT zero the entire region with mmap.fill(0). The OS
@@ -582,8 +664,8 @@ impl TensorPool {
             slot.flags.store(SLOT_FREE, Ordering::Release);
             slot.generation.store(0, Ordering::Release);
             slot.owner_pid.store(0, Ordering::Release);
-            slot.offset = 0;
-            slot.size = 0;
+            slot.offset.store(0, Ordering::Release);
+            slot.size.store(0, Ordering::Release);
             slot.capacity = 0;
             // Link this slot on top of the free stack being built.
             slot.next_free.store(stack_head, Ordering::Release);
@@ -651,7 +733,8 @@ impl TensorPool {
         self.validate_fields()
     }
 
-    /// Validate header fields (version, pool_id). Called after magic is confirmed.
+    /// Validate header fields (version, pool_id, geometry). Called after magic
+    /// is confirmed.
     fn validate_fields(&self) -> HorusResult<()> {
         let header = self.header();
 
@@ -666,6 +749,36 @@ impl TensorPool {
             return Err(HorusError::Config(ConfigError::Other(format!(
                 "Tensor pool ID mismatch: expected {}, got {}",
                 self.pool_id, header.pool_id
+            ))));
+        }
+
+        // Geometry must match, and this used to check only version and pool_id.
+        // On the attach path of `new()`, `data_offset` and the whole slot/data
+        // split are derived from *this caller's* `TensorPoolConfig`, never from
+        // the header already in the file. An attacher configured with fewer
+        // slots than the creator computed a smaller `data_offset` and then
+        // bump-allocated tensor bytes directly on top of the creator's
+        // `SlotHeader` array — each side shredding the other's live data, with
+        // the corrupted `offset`/`size` fields then driving out-of-bounds
+        // dereferences. `open()` has always validated geometry (and documents
+        // why); the create-or-attach path must too.
+        if header.max_slots as usize != self.config.max_slots
+            || header.pool_size as usize != self.config.pool_size
+            || header.slot_alignment as usize != self.config.slot_alignment
+        {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "Tensor pool {} geometry mismatch: the existing pool has \
+                 (max_slots {}, pool_size {}, slot_alignment {}) but this process requested \
+                 (max_slots {}, pool_size {}, slot_alignment {}). \
+                 Use TensorPool::open() to attach with the pool's own geometry, \
+                 or configure every process identically.",
+                self.pool_id,
+                header.max_slots,
+                header.pool_size,
+                header.slot_alignment,
+                self.config.max_slots,
+                self.config.pool_size,
+                self.config.slot_alignment,
             ))));
         }
 
@@ -786,11 +899,25 @@ impl TensorPool {
         if self.backend.is_shared() {
             let slot = self.slot_mut(slot_id);
             if slot.capacity > 0 && aligned_size as u64 <= slot.capacity {
-                let reused_offset = slot.offset;
+                // Relaxed: we won this slot's Treiber pop, so nobody else may
+                // write it, and `pop_and_claim`'s acquire CAS on `free_stack_head`
+                // already ordered us after the previous owner's release.
+                let reused_offset = slot.offset.load(Ordering::Relaxed);
                 // Bump the generation (ABA / stale-descriptor protection) exactly
                 // as the bump path does, so old Tensor handles are rejected.
+                //
+                // The bump MUST stay ahead of the geometry store below.  It is
+                // what invalidates stale descriptors before the geometry they
+                // describe changes, and it is the seqlock counter that
+                // `slot_geometry` re-checks to rule out a torn `(offset, size)`
+                // pair.  `offset` is deliberately left alone here — the region is
+                // reused as-is — so only `size` moves.
                 let generation_u64 = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
-                slot.size = size;
+                // Release: a concurrent reader that acquires this store must also
+                // see the generation bump sequenced before it, which is what lets
+                // `slot_geometry` detect that its snapshot came from a newer
+                // allocation.
+                slot.size.store(size, Ordering::Release);
                 slot.owner_pid.store(std::process::id(), Ordering::Release);
                 slot.refcount.store(1, Ordering::Release);
                 slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
@@ -847,13 +974,21 @@ impl TensorPool {
 
         // Initialize slot — bump 64-bit generation counter to prevent ABA.
         // The returned u64 is split into low/high 32-bit halves in Tensor.
+        // The generation bump stays ahead of the geometry stores: it invalidates
+        // stale descriptors before the geometry they name changes, and it is the
+        // seqlock counter `slot_geometry` re-checks after reading the pair.
         let generation_u64 = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        slot.offset = offset as u64;
-        slot.size = size;
+        // Release on both: a reader that acquires either store is thereby ordered
+        // after the `fetch_add` above, so its follow-up generation load cannot
+        // still read the old generation — that is what makes a torn
+        // (new offset, old size) pair detectable rather than silently accepted.
+        slot.offset.store(offset as u64, Ordering::Release);
+        slot.size.store(size, Ordering::Release);
         // Record the physical region size, alongside offset/size so it rides the
         // same free-stack release/acquire that publishes them cross-thread. Only a
         // real bump sets this; the reuse path leaves it intact, preserving the
-        // high-water capacity for future grow-within-capacity reuse.
+        // high-water capacity for future grow-within-capacity reuse. Non-atomic
+        // is correct here: only the slot's exclusive owner ever touches it.
         slot.capacity = aligned_size as u64;
         slot.owner_pid.store(std::process::id(), Ordering::Release);
         slot.refcount.store(1, Ordering::Release);
@@ -1083,6 +1218,69 @@ impl TensorPool {
         }
     }
 
+    /// Publish payload bytes written into `tensor`'s data region.
+    ///
+    /// Call this after filling a freshly allocated slot and *before* handing the
+    /// descriptor to another thread or process.  It establishes the
+    /// happens-before edge that makes those bytes visible to a reader that later
+    /// pins the slot with [`retain`](Self::retain) / [`try_retain`](Self::try_retain).
+    ///
+    /// # Why the pool has to carry this edge itself
+    ///
+    /// `alloc()` stores `refcount = 1` *before* the owner writes a single
+    /// payload byte, so nothing the pool does orders those bytes against a
+    /// reader.  On the topic spill path the ordering came entirely from the
+    /// topic's ring: the producer copies the payload, then `fence(Release)` and
+    /// release-stores the ring slot's ready flag, and the consumer acquire-loads
+    /// that flag before it follows the descriptor.  That argument is only sound
+    /// while both sides operate on ONE object — and they do not.  Every
+    /// `RingTopic` handle builds its own `ShmRegion`, i.e. its own `mmap` of the
+    /// topic file, so two handles in the same process release and acquire the
+    /// ready flag at two *different virtual addresses* backed by the same
+    /// physical page.  Cache coherence still delivers the bytes on real
+    /// hardware, but the abstract machine derives no synchronizes-with from two
+    /// distinct atomics, and ThreadSanitizer — whose shadow memory is keyed by
+    /// virtual address — sees no edge either.  That is what TSan reported as a
+    /// data race between `dispatch::spill_to_pool`'s `copy_from_slice` and the
+    /// consumer's `bincode::deserialize` of the very same payload.
+    ///
+    /// The pool has no such split: `pool_registry` hands every handle in the
+    /// process the same `Arc<TensorPool>`, hence a single mapping.  An edge
+    /// taken here is therefore one both the memory model and the sanitizer can
+    /// follow.
+    ///
+    /// # How the ordering works
+    ///
+    /// This takes a reference and immediately drops it again — the count is
+    /// unchanged, only the ordering matters.  Both halves are `AcqRel`
+    /// compare-exchanges on `refcount`, the same word a reader's pin touches,
+    /// and the first is sequenced after the caller's payload writes, so it is
+    /// the release half.  A reader's pin is itself a read-modify-write, and an
+    /// RMW always reads the latest value in `refcount`'s modification order, so
+    /// it reads from one of these two operations (or from a later RMW in the
+    /// release sequence they head) and synchronizes-with it.  No blind store is
+    /// used: overwriting `refcount` with its current value would race a
+    /// concurrent `retain` from a peer process.
+    ///
+    /// Cost is two uncontended CAS loops — negligible beside the copy that
+    /// precedes it, on a path that is `#[cold]` to begin with.
+    ///
+    /// # Errors
+    ///
+    /// [`HorusError::Memory`] if `tensor` does not name a live allocation in
+    /// this pool: wrong pool id, out-of-range slot, stale generation, or a
+    /// refcount that has already fallen to zero.  On the error path nothing is
+    /// retained and nothing is released, so the caller keeps whatever reference
+    /// it held.
+    pub fn publish_payload(&self, tensor: &Tensor) -> HorusResult<()> {
+        self.try_retain(tensor)?;
+        // Cannot reach zero: `try_retain` just took a reference on top of the
+        // caller's, so this decrement lands on a count of at least two and can
+        // neither free nor scrub the slot.
+        self.release(tensor);
+        Ok(())
+    }
+
     /// Decrement reference count for a tensor.
     ///
     /// If the count reaches zero, the slot is returned to the free list.
@@ -1217,20 +1415,117 @@ impl TensorPool {
                 .unwrap_or(std::ptr::null_mut());
         }
 
-        // Mmap backends: compute from base + offset. checked_add — a crafted or
-        // corrupt descriptor can carry offset+size that overflows usize, which
-        // would otherwise wrap past the `end > pool_size` gate and yield a valid
-        // base pointer for an out-of-bounds (multi-exabyte) slice.
-        let end = match (tensor.offset as usize).checked_add(tensor.size as usize) {
-            Some(end) => end,
-            None => return std::ptr::null_mut(),
-        };
-        if end > self.config.pool_size {
-            return std::ptr::null_mut();
-        }
+        // Mmap backends: compute from base + offset, bounds-checked.
+        self.checked_data_ptr(tensor.offset, tensor.size)
+    }
 
-        // SAFETY: tensor.offset is within the data region (validated above).
-        unsafe { self.data_base_ptr().add(tensor.offset as usize) as *mut u8 }
+    /// A slot's `(offset, size)` read as one snapshot, pinned to `expected_gen`.
+    ///
+    /// Making the two fields atomic removes the data race but not the *pairing*
+    /// problem: they are two independent atomics, so two plain loads can observe
+    /// a torn pair — a new `offset` with an old `size` — while a peer reallocates
+    /// the slot underneath.  `offset_new + size_old` can describe a region larger
+    /// than anything the pool ever handed out, which is exactly the shape that
+    /// would let a stale descriptor slip through `descriptor_within_slot` and
+    /// read a neighbouring slot's bytes.  So the pair must be read atomically
+    /// *as a pair*, not merely with atomic loads.
+    ///
+    /// `generation` is the seqlock counter that does it, and it works because of
+    /// an invariant the allocator already maintains: **every geometry mutation is
+    /// preceded, in the mutating thread's own program order, by
+    /// `generation.fetch_add(1, AcqRel)`** — the bump path and the
+    /// grow-within-capacity reuse path both do this, `initialize()` runs before
+    /// the pool's magic is published, and nothing else writes geometry.  Given
+    /// that, if one of our acquire loads reads a writer's release store, the
+    /// writer's `fetch_add` happens-before that load and therefore before our
+    /// following generation load; coherence then forbids that load from
+    /// returning the pre-bump value.  Generation only ever increases, so it can
+    /// never come back to `expected_gen`.  An unchanged generation across the
+    /// pair is thus proof that neither field came from a later allocation.
+    ///
+    /// `flags` cannot substitute for the generation here: `pop_and_claim` stores
+    /// `SLOT_ALLOCATED` when it wins the pop, *before* `alloc()` writes the
+    /// geometry, so an ALLOCATED slot is not yet a slot with settled geometry.
+    ///
+    /// Callers must have already compared the slot's generation to the
+    /// descriptor's; this closes the window that opens after that comparison.
+    ///
+    /// Returns `None` if the slot was reallocated during the read, in which case
+    /// the descriptor is stale by definition and there is nothing to validate.
+    ///
+    /// # Not a lifetime guarantee
+    ///
+    /// A `Some` result says the pair was consistent *at the moment it was read*.
+    /// It says nothing about the instant after: a caller that holds no refcount
+    /// on the slot (the spill-descriptor read path is one) can still have the
+    /// region freed, scrubbed and reallocated under the pointer it derives from
+    /// this snapshot.  Preventing that needs the reader to hold a reference, not
+    /// a stronger read here.
+    #[inline]
+    fn slot_geometry(slot: &SlotHeader, expected_gen: u64) -> Option<(u64, u64)> {
+        // Acquire, not Relaxed: the argument above needs each load to
+        // synchronize-with the writer's release store, which is what drags the
+        // writer's preceding generation bump into our happens-before order.
+        let offset = slot.offset.load(Ordering::Acquire);
+        let size = slot.size.load(Ordering::Acquire);
+        // Acquire, and sequenced after both loads: this is the seqlock re-check.
+        if slot.generation.load(Ordering::Acquire) != expected_gen {
+            return None;
+        }
+        Some((offset, size))
+    }
+
+    /// Whether a wire descriptor's byte range lies inside the slot's own region.
+    ///
+    /// `slot.offset`/`slot.size` are what the pool actually handed out; the
+    /// descriptor's pair travelled over a topic and can say anything. A view
+    /// (`Tensor::slice_first_dim`) or a spill (`SpillDescriptor`, whose `size` is
+    /// the serialized length, not the allocation) is a legitimate sub-range, so
+    /// containment — not equality — is the property. Rejects on overflow.
+    ///
+    /// Takes `expected_gen` — the generation the caller has already matched
+    /// against the descriptor — and reads the slot's geometry through
+    /// `slot_geometry`, so a slot reallocated mid-check fails the bound rather
+    /// than being compared against half of two different allocations. That makes
+    /// this strictly stricter than the plain-`u64` version it replaces; it is a
+    /// bounds check against hostile descriptors and must never loosen.
+    #[inline]
+    fn descriptor_within_slot(tensor: &Tensor, slot: &SlotHeader, expected_gen: u64) -> bool {
+        let Some((slot_offset, slot_size)) = Self::slot_geometry(slot, expected_gen) else {
+            return false;
+        };
+        match (
+            tensor.offset.checked_add(tensor.size),
+            slot_offset.checked_add(slot_size),
+        ) {
+            (Some(desc_end), Some(slot_end)) => {
+                tensor.offset >= slot_offset && desc_end <= slot_end
+            }
+            _ => false,
+        }
+    }
+
+    /// Bounds-checked `data_base + offset` for the shared mmap data region.
+    ///
+    /// Returns null if `offset + size` overflows or leaves the data region.
+    /// `offset`/`size` reach this function straight from a wire descriptor or
+    /// from a `SlotHeader` in peer-writable shared memory, so a crafted or
+    /// torn value can carry an `offset + size` that overflows usize — which
+    /// would otherwise wrap past the `end > pool_size` gate and yield a valid
+    /// base pointer for an out-of-bounds (multi-exabyte) slice.  Every caller
+    /// that turns those two fields into a pointer must come through here; they
+    /// used to be checked in `data_ptr` and *not* in `return_slot`, which is
+    /// how the one site that writes ended up the one site that did not check.
+    #[inline]
+    fn checked_data_ptr(&self, offset: u64, size: u64) -> *mut u8 {
+        let (offset, size) = (offset as usize, size as usize);
+        match offset.checked_add(size) {
+            Some(end) if end <= self.config.pool_size => {
+                // SAFETY: offset..offset+size validated to lie in the data region.
+                unsafe { self.data_base_ptr().add(offset) as *mut u8 }
+            }
+            _ => std::ptr::null_mut(),
+        }
     }
 
     /// Get data as a byte slice.
@@ -1278,6 +1573,36 @@ impl TensorPool {
                     "generation mismatch in data_slice: descriptor generation {} != slot generation {} \
                      (slot was freed and reallocated — stale spill descriptor)",
                     tensor.generation_full(), slot_gen
+                )
+                .into(),
+            ));
+        }
+
+        // `offset`/`size` arrive over the wire, and nothing compared them to what
+        // the pool actually allocated for this slot: a descriptor could name slot
+        // N's live generation while pointing at a *different* slot's bytes with an
+        // arbitrary length, bounded only by the whole data region. The check that
+        // catches that lived in `validate_descriptor`, which had no production
+        // caller at all — so it is folded in here, where the slot is already
+        // loaded. Containment rather than equality: `Tensor::slice_first_dim`
+        // legitimately shifts `offset` and `SpillDescriptor` legitimately carries
+        // a `size` smaller than the allocation, and any range inside this slot's
+        // own region is safe.
+        if !Self::descriptor_within_slot(tensor, slot, slot_gen) {
+            // The slot geometry quoted here is re-read for the message only, and
+            // Relaxed because a diagnostic string carries no ordering
+            // requirement. It can differ from the pair the check actually
+            // rejected if a peer reallocated the slot in between — which is
+            // itself one of the reasons the check can fail.
+            return Err(HorusError::Memory(
+                format!(
+                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}) \
+                     is not contained in slot records (offset {}, size {})",
+                    tensor.slot_id,
+                    tensor.offset,
+                    tensor.size,
+                    slot.offset.load(Ordering::Relaxed),
+                    slot.size.load(Ordering::Relaxed)
                 )
                 .into(),
             ));
@@ -1346,6 +1671,36 @@ impl TensorPool {
             ));
         }
 
+        // `offset`/`size` arrive over the wire, and nothing compared them to what
+        // the pool actually allocated for this slot: a descriptor could name slot
+        // N's live generation while pointing at a *different* slot's bytes with an
+        // arbitrary length, bounded only by the whole data region. The check that
+        // catches that lived in `validate_descriptor`, which had no production
+        // caller at all — so it is folded in here, where the slot is already
+        // loaded. Containment rather than equality: `Tensor::slice_first_dim`
+        // legitimately shifts `offset` and `SpillDescriptor` legitimately carries
+        // a `size` smaller than the allocation, and any range inside this slot's
+        // own region is safe.
+        if !Self::descriptor_within_slot(tensor, slot, slot_gen) {
+            // The slot geometry quoted here is re-read for the message only, and
+            // Relaxed because a diagnostic string carries no ordering
+            // requirement. It can differ from the pair the check actually
+            // rejected if a peer reallocated the slot in between — which is
+            // itself one of the reasons the check can fail.
+            return Err(HorusError::Memory(
+                format!(
+                    "descriptor/slot mismatch for slot {}: descriptor (offset {}, size {}) \
+                     is not contained in slot records (offset {}, size {})",
+                    tensor.slot_id,
+                    tensor.offset,
+                    tensor.size,
+                    slot.offset.load(Ordering::Relaxed),
+                    slot.size.load(Ordering::Relaxed)
+                )
+                .into(),
+            ));
+        }
+
         let size = tensor.size as usize;
         let ptr = self.data_ptr(tensor);
         if ptr.is_null() {
@@ -1380,8 +1735,14 @@ impl TensorPool {
     /// Returns `Ok(())` only when all checks pass.
     /// Returns [`HorusError::InvalidDescriptor`] on any violation.
     ///
-    /// Callers **must** call this before invoking [`data_slice`] or
-    /// [`data_slice_mut`] on descriptors received from untrusted processes.
+    /// Note: [`data_slice`] and [`data_slice_mut`] perform the pool_id, slot
+    /// range, generation and offset/size checks themselves, so they are safe on
+    /// an untrusted descriptor without a prior call here.  This function is not
+    /// a precondition for them — it used to claim it was, while having no
+    /// production caller at all.  What it adds over them is check 3, the
+    /// `SLOT_ALLOCATED` flag: deliberately *not* folded into `data_slice`,
+    /// because reading a freed-but-still-mapped slot is a supported diagnostic
+    /// (see `tests/memory_safety.rs`).
     pub fn validate_descriptor(&self, tensor: &Tensor) -> HorusResult<()> {
         // 1. Pool ID
         if tensor.pool_id != self.pool_id {
@@ -1422,19 +1783,34 @@ impl TensorPool {
             )));
         }
 
+        // 5/6. Offset and size must match the slot's records.
+        //
+        // Read as one generation-pinned pair rather than field-by-field: two
+        // independent loads can straddle a reallocation and compare the
+        // descriptor against half of one allocation and half of the next, which
+        // can pass both equality checks for a slot that is now neither. A slot
+        // that moves under us is a stale descriptor by definition, so say so.
+        let Some((slot_offset, slot_size)) = Self::slot_geometry(slot, slot_gen) else {
+            return Err(HorusError::InvalidDescriptor(format!(
+                "slot {} was freed and reallocated while its descriptor was being validated \
+                 (generation moved past {})",
+                tensor.slot_id, slot_gen
+            )));
+        };
+
         // 5. Offset must match slot's recorded offset
-        if tensor.offset != slot.offset {
+        if tensor.offset != slot_offset {
             return Err(HorusError::InvalidDescriptor(format!(
                 "offset mismatch for slot {}: descriptor has {}, slot records {}",
-                tensor.slot_id, tensor.offset, slot.offset
+                tensor.slot_id, tensor.offset, slot_offset
             )));
         }
 
         // 6. Size must match slot's recorded size
-        if tensor.size != slot.size {
+        if tensor.size != slot_size {
             return Err(HorusError::InvalidDescriptor(format!(
                 "size mismatch for slot {}: descriptor has {}, slot records {}",
-                tensor.slot_id, tensor.size, slot.size
+                tensor.slot_id, tensor.size, slot_size
             )));
         }
 
@@ -1566,17 +1942,26 @@ impl TensorPool {
     #[allow(clippy::mut_from_ref)]
     fn slot_mut(&self, index: u32) -> &mut SlotHeader {
         let offset = self.slots_offset + (index as usize) * std::mem::size_of::<SlotHeader>();
-        // SAFETY: mmap region outlives self. Each slot is accessed exclusively:
-        // - alloc() pops a slot from the atomic Treiber free-stack (only one thread wins)
-        // - release()/return_slot() only touches slots the caller owns (refcount CAS)
-        // - No two threads can hold the same slot_id simultaneously
-        // The non-atomic writes to offset/size are safe because the Treiber stack
-        // SAFETY: returns &mut from &self via mmap raw pointer. Sound because:
-        // (1) slot_mut is never called concurrently for the same slot index —
-        //     atomic CAS on free_stack_head provides mutual exclusion per-slot.
-        // (2) SlotHeader is repr(C) in mmap — Rust aliasing optimizations don't apply
-        //     to memory-mapped regions accessed through raw pointers.
-        // (3) offset is bounds-checked: slot_id < max_slots, verified by caller.
+        // SAFETY: returns &mut from &self via a raw pointer into the mmap. Sound
+        // because:
+        // (1) The *mutating* callers hold the slot exclusively: alloc() only
+        //     reaches a slot it won from the atomic Treiber free-stack, and
+        //     release()/return_slot() only a slot whose refcount CAS it won. So
+        //     no two threads mutate the same slot_id concurrently.
+        // (2) SlotHeader is repr(C) in mmap — Rust aliasing optimizations don't
+        //     apply to memory-mapped regions accessed through raw pointers.
+        // (3) The byte offset is bounds-checked: every caller verifies
+        //     slot_id < max_slots via slot_id_in_range() first.
+        //
+        // What (1) does NOT give — and what an earlier version of this comment
+        // wrongly claimed — is exclusion against *readers*. `slot()` hands out a
+        // shared reference to the same header, and data_slice()/
+        // validate_descriptor() read `offset`/`size` from a descriptor that
+        // arrived over a topic, with no refcount and no lock, while an allocator
+        // is writing them. That is why those two fields are atomics: the writes
+        // here and the reads there genuinely overlap, and ThreadSanitizer proved
+        // it. Any new field that readers touch must be an atomic too; only fields
+        // confined to the slot's exclusive owner (`capacity`) may stay plain.
         unsafe { &mut *(self.mmap.as_ptr().add(offset) as *mut SlotHeader) }
     }
 
@@ -1627,6 +2012,20 @@ impl TensorPool {
             let tagged_head = header.free_stack_head.load(Ordering::Acquire);
             let (generation, slot_id) = unpack_tagged_head(tagged_head);
             if slot_id == INVALID_SLOT {
+                return None;
+            }
+            // The free-stack head lives in peer-writable shared memory, so a
+            // corrupt or torn head hands back an arbitrary index that `slot()`
+            // would turn into an out-of-bounds dereference. Every other reader
+            // of a slot index bounds-checks; this one did not.
+            if !self.slot_id_in_range(slot_id) {
+                log::error!(
+                    "tensor pool {}: free stack head names slot {} but the pool has {} slots \
+                     — refusing to allocate; pool metadata is corrupt",
+                    self.pool_id,
+                    slot_id,
+                    self.config.max_slots
+                );
                 return None;
             }
             let slot = self.slot(slot_id);
@@ -1729,7 +2128,22 @@ impl TensorPool {
         //   1. backend.zero()  — scrub all data bytes
         //   2. slot.flags = SLOT_FREE  — now visible to other allocators
         //   3. push to free stack  — slot becomes allocatable
-        let data_size = slot.size as usize;
+        // `slot.offset` / `slot.size` live in the shared mapping, so a peer
+        // process, a crashed writer, or a pool laid out with a different geometry
+        // can leave them pointing far outside this mapping.  Making them atomic
+        // rules out a torn *value*; it does not rule out a hostile one.  Snapshot
+        // them once and bounds-check before handing the pointer to
+        // `backend.zero()`, which *writes* `size` bytes: unchecked, this scrub was
+        // an arbitrary-address zero-fill.  Snapshot rather than re-read, so a
+        // peer cannot change the value between the check and the use.
+        //
+        // Relaxed is enough: we are here only because this thread won the
+        // refcount 1 -> 0 `compare_exchange(AcqRel)`, which already ordered us
+        // after every prior operation on the slot and makes us its sole owner
+        // until it is pushed back onto the free stack below.
+        let slot_offset = slot.offset.load(Ordering::Relaxed);
+        let slot_size = slot.size.load(Ordering::Relaxed);
+        let data_size = slot_size as usize;
         if data_size > 0 {
             // Get the data pointer — works for both mmap and non-mmap backends
             let data_ptr = if !self.backend.is_shared() {
@@ -1739,7 +2153,19 @@ impl TensorPool {
                     .copied()
                     .unwrap_or(std::ptr::null_mut())
             } else {
-                unsafe { self.data_base_ptr().add(slot.offset as usize) as *mut u8 }
+                let p = self.checked_data_ptr(slot_offset, slot_size);
+                if p.is_null() {
+                    log::error!(
+                        "tensor pool {}: slot {} has out-of-range offset {} size {} \
+                         (pool_size {}) — skipping the free-scrub; pool metadata is corrupt",
+                        self.pool_id,
+                        slot_id,
+                        slot_offset,
+                        data_size,
+                        self.config.pool_size
+                    );
+                }
+                p
             };
 
             if !data_ptr.is_null() {
@@ -2107,6 +2533,25 @@ mod tests {
 
     // ── validate_descriptor tests ──────────────────────────────────────────
 
+    /// Remove any pool file left behind at `id` before creating one.
+    ///
+    /// Tests pin literal pool ids, and a run that panicked (or was killed)
+    /// before its trailing `remove_file` leaves the SHM file behind. That used
+    /// to be harmless because `TensorPool::new` `set_len()`'d whatever it found
+    /// to the caller's own geometry. It no longer does — resizing a pool this
+    /// process did not create is how one process laid its tensor data on top of
+    /// another's slot headers — so an attacher now ADOPTS the geometry it finds.
+    /// A stale file from a differently-configured run therefore silently gives
+    /// the test a pool with the wrong `max_slots`, which is exactly what made
+    /// `test_alloc_with_timeout_zero_expires_immediately` fail against a 16 MB
+    /// leftover while asking for 1 MB. Clean first, so each test creates.
+    fn clear_stale_pool(id: u32) {
+        let path = shm_base_dir()
+            .join("tensors")
+            .join(format!("tensor_pool_{id}"));
+        std::fs::remove_file(path).ok();
+    }
+
     fn make_test_pool(id: u32) -> TensorPool {
         let config = TensorPoolConfig {
             pool_size: 1024 * 1024,
@@ -2114,6 +2559,7 @@ mod tests {
             slot_alignment: 64,
             allocator: Default::default(),
         };
+        clear_stale_pool(id);
         TensorPool::new(id, config).expect("Failed to create test pool")
     }
 
@@ -2834,6 +3280,7 @@ mod tests {
             slot_alignment: 64,
             allocator: Default::default(),
         };
+        clear_stale_pool(9791);
         let pool = TensorPool::new(9791, config).expect("Failed to create pool");
 
         // Exhaust the pool
@@ -4307,6 +4754,155 @@ mod tests {
     }
 
     #[test]
+    fn return_slot_skips_the_scrub_when_the_slot_header_is_out_of_range() {
+        // `slot.offset`/`slot.size` are peer-writable shared memory.
+        // `return_slot` turned them into `data_base + offset` with no bounds check
+        // and handed the result to `backend.zero()`, which *writes* `size` bytes —
+        // an arbitrary-address zero-fill driven by whatever a peer (or a torn
+        // write, or a geometry-mismatched attacher) left in the header. It must
+        // now skip the scrub and still return the slot to the free stack.
+        let pool = make_test_pool(9975);
+        let tensor = pool
+            .alloc(&[32], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        let slot_id = tensor.slot_id;
+
+        {
+            let slot = pool.slot_mut(slot_id);
+            slot.offset.store(u64::MAX - 4095, Ordering::Release);
+            slot.size.store(4096, Ordering::Release);
+        }
+
+        pool.release(&tensor); // must not fault, and must not zero-fill out of bounds
+
+        assert_eq!(
+            pool.slot(slot_id).flags.load(Ordering::Acquire),
+            SLOT_FREE,
+            "the slot must still be freed after a rejected scrub"
+        );
+        let (_gen, head) =
+            unpack_tagged_head(pool.header().free_stack_head.load(Ordering::Acquire));
+        assert_eq!(
+            head, slot_id,
+            "the slot must still be pushed back onto the free stack"
+        );
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn attaching_with_a_different_geometry_is_rejected() {
+        // Two processes calling TensorPool::new() on the same pool_id with
+        // different max_slots used to produce two *different* layouts of the same
+        // file: the attacher derived data_offset from its own config, so its data
+        // region landed on top of the creator's SlotHeader array and each side
+        // shredded the other's live state. validate_fields() checked only version
+        // and pool_id; it must reject any geometry difference.
+        let creator = make_test_pool(9976); // max_slots 8, pool_size 1 MiB
+        let file_len_before = std::fs::metadata(&creator.shm_path).unwrap().len();
+
+        // Fewer slots than the creator: the file is big enough to map, so the
+        // header is readable and validate_fields() must reject the mismatch.
+        let fewer = TensorPool::new(
+            9976,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots: 4, // creator laid the file out for 8
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        );
+        assert!(
+            fewer.is_err(),
+            "attaching with a different max_slots must be rejected, not silently re-laid-out"
+        );
+
+        // More slots than the creator: this used to `set_len()` the creator's
+        // file — growing a file this process did not create, before any
+        // validation had run. It must fail and leave the file untouched.
+        let more = TensorPool::new(
+            9976,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots: 64,
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        );
+        assert!(more.is_err(), "attaching with more slots must be rejected");
+        assert_eq!(
+            std::fs::metadata(&creator.shm_path).unwrap().len(),
+            file_len_before,
+            "a failed attach must not resize the creator's pool file"
+        );
+
+        // Same geometry still attaches.
+        let same = TensorPool::new(
+            9976,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots: 8,
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        );
+        assert!(
+            same.is_ok(),
+            "an identically configured attach must succeed"
+        );
+
+        drop(same);
+        std::fs::remove_file(&creator.shm_path).ok();
+    }
+
+    #[test]
+    fn data_slice_rejects_a_descriptor_pointing_outside_its_own_slot() {
+        // A descriptor carries offset/size over the wire. Nothing compared them
+        // to the slot's own records, so a descriptor with slot 0's live
+        // generation but another region's offset/size handed out a slice
+        // spanning other tensors' buffers — bounded only by the whole data
+        // region. The comparison lived in `validate_descriptor`, which had no
+        // production caller.
+        let pool = make_test_pool(9977);
+        let a = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc a");
+        let b = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc b");
+        assert_ne!(
+            a.offset, b.offset,
+            "the two slots must occupy distinct regions"
+        );
+
+        let mut forged = a;
+        forged.offset = b.offset; // slot a's identity, slot b's bytes
+        assert!(
+            pool.data_slice(&forged).is_err(),
+            "a descriptor pointing outside its own slot must be rejected"
+        );
+        assert!(
+            pool.data_slice_mut(&forged).is_err(),
+            "the write path must reject it too"
+        );
+
+        // An oversized length inside the right slot is rejected as well.
+        let mut too_long = a;
+        too_long.size = a.size + 1;
+        pool.data_slice(&too_long).unwrap_err();
+
+        // A legitimate sub-view of the same slot still works.
+        let sub = a.slice_first_dim(0, 32).expect("sub-view");
+        assert!(
+            pool.data_slice(&sub).is_ok(),
+            "a view contained in the slot's own region must still be readable"
+        );
+
+        pool.release(&a);
+        pool.release(&b);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
     fn alloc_rejects_size_overflowing_alignment() {
         // align_up(u64::MAX, 64) wraps to 0, so alloc would 'succeed' for an
         // impossible u64::MAX-byte allocation (backend.alloc(0) is Ok) and record
@@ -4714,6 +5310,81 @@ mod tests {
         pool.release(&tensor);
         assert_eq!(pool.stats().allocated_slots, 0);
 
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn publish_payload_leaves_the_refcount_untouched() {
+        // `publish_payload` exists for its ORDERING, not for its accounting: it
+        // retains and releases so that the writes preceding it are ordered before
+        // any reader's pin. If it ever changed the count, the spill path would
+        // either leak the slot (pool fills, large messages silently dropped) or
+        // free it under a live reader.
+        let pool = make_test_pool(8818);
+        let tensor = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        assert_eq!(pool.refcount(&tensor), 1, "alloc hands back one reference");
+
+        pool.publish_payload(&tensor).expect("publish a live slot");
+        assert_eq!(
+            pool.refcount(&tensor),
+            1,
+            "publish_payload must be refcount-neutral"
+        );
+        assert_eq!(
+            pool.stats().allocated_slots,
+            1,
+            "publish_payload must not free the slot"
+        );
+
+        pool.release(&tensor);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn publish_payload_rejects_a_freed_or_stale_slot() {
+        // The spill producer publishes only what it just allocated, so an error
+        // here means the descriptor no longer names that allocation. It must
+        // report rather than silently order nothing — the caller drops the spill
+        // instead of putting a descriptor on the wire for unordered bytes.
+        // max_slots = 1 forces the realloc below to reuse the same slot, so the
+        // stale descriptor names a LIVE slot at the wrong generation — the case
+        // that matters — rather than a still-free one.
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 1,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        clear_stale_pool(8819);
+        let pool = TensorPool::new(8819, config).expect("create pool");
+
+        let freed = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+        pool.release(&freed);
+        assert!(
+            pool.publish_payload(&freed).is_err(),
+            "a released slot has no payload to publish"
+        );
+
+        // Reallocation bumps the generation, so the old descriptor is stale even
+        // though the slot is live again.
+        let live = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("realloc");
+        assert!(
+            pool.publish_payload(&freed).is_err(),
+            "a stale generation must not publish over the slot's new owner"
+        );
+        assert_eq!(
+            pool.refcount(&live),
+            1,
+            "a rejected publish must not disturb the live allocation's refcount"
+        );
+
+        pool.release(&live);
         std::fs::remove_file(&pool.shm_path).ok();
     }
 }

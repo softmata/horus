@@ -363,7 +363,7 @@ impl PyTensorHandle {
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
 
         // Type string
-        let typestr = dtype_numpy_typestr(tensor.dtype);
+        let typestr = dtype_numpy_typestr(tensor.dtype());
         dict.set_item("typestr", typestr)?;
 
         // Data pointer and read-only flag
@@ -433,7 +433,7 @@ impl PyTensorHandle {
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
 
         // Type string
-        let typestr = dtype_numpy_typestr(tensor.dtype);
+        let typestr = dtype_numpy_typestr(tensor.dtype());
         dict.set_item("typestr", typestr)?;
 
         // Use handle.data_ptr() which goes through pool.data_ptr().

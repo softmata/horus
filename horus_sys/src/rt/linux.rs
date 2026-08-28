@@ -157,8 +157,70 @@ pub(super) fn set_deadline_scheduling(
     }
 }
 
+/// Snapshot of the calling thread's scheduling policy and parameters.
+///
+/// Capability probes here mutate the *calling* thread, and the caller is not a
+/// throwaway: `RuntimeCapabilities::detect()` runs on whichever thread builds a
+/// `Scheduler`, which on a hard-RT deployment (`chrt -f 80 ./node`, or an
+/// earlier `RtConfig::apply()`) is already SCHED_FIFO. The probes used to
+/// "restore" a hardcoded SCHED_OTHER/priority 0, so detection silently demoted
+/// the very thread it then reported as RT-capable. Every probe must therefore
+/// either be reversible against what was really there, or not run at all.
+struct SchedSnapshot {
+    policy: i32,
+    param: libc::sched_param,
+}
+
+/// Read the current thread's scheduling policy and parameters.
+///
+/// Returns `None` when either query fails, which is the signal to decline the
+/// probe rather than guess at a restore target.
+fn snapshot_scheduling() -> Option<SchedSnapshot> {
+    // SAFETY: pid 0 = current thread; both calls only read, and `param` is a
+    // local POD struct for which all-zero is a valid bit pattern.
+    unsafe {
+        let policy = libc::sched_getscheduler(0);
+        if policy < 0 {
+            return None;
+        }
+        let mut param: libc::sched_param = std::mem::zeroed();
+        if libc::sched_getparam(0, &mut param) != 0 {
+            return None;
+        }
+        Some(SchedSnapshot { policy, param })
+    }
+}
+
+/// Put the calling thread back exactly where `snapshot_scheduling` found it.
+fn restore_scheduling(snapshot: &SchedSnapshot) {
+    // SAFETY: pid 0 = current thread; policy and param came from this thread.
+    let ret = unsafe { libc::sched_setscheduler(0, snapshot.policy, &snapshot.param) };
+    if ret != 0 {
+        // A demotion must never be silent — it costs the caller its RT guarantee.
+        log::warn!(
+            "RT capability probe failed to restore scheduling policy {} priority {}: {}",
+            snapshot.policy,
+            snapshot.param.sched_priority,
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// Check if SCHED_DEADLINE is available on this kernel.
 pub(super) fn has_deadline_capability() -> bool {
+    // A thread already running SCHED_DEADLINE proves the kernel supports it,
+    // and probing would clobber its reservation.
+    // SAFETY: pid 0 = current thread; sched_getscheduler only reads.
+    if unsafe { libc::sched_getscheduler(0) } == SCHED_DEADLINE_POLICY as i32 {
+        return true;
+    }
+
+    // The probe below can unexpectedly succeed and move this thread onto
+    // SCHED_DEADLINE, so it is only safe to run if it can be undone exactly.
+    let Some(snapshot) = snapshot_scheduling() else {
+        return false;
+    };
+
     // Try with minimal valid params — kernel will reject with EPERM (no privilege)
     // or EBUSY (admission) but NOT ENOSYS (unsupported). ENOSYS means no support.
     let attr = SchedAttr {
@@ -174,11 +236,9 @@ pub(super) fn has_deadline_capability() -> bool {
     // SAFETY: dry-run probe — we expect this to fail (EPERM) but not ENOSYS.
     let result = unsafe { libc::syscall(SYS_SCHED_SETATTR, 0i32, &attr as *const _, 0u32) };
     if result == 0 {
-        // Unexpectedly succeeded — restore to SCHED_OTHER
-        let normal = sched_param_with_priority(0);
-        unsafe {
-            libc::sched_setscheduler(0, libc::SCHED_OTHER, &normal);
-        }
+        // Unexpectedly succeeded — put back the policy the thread actually had,
+        // not a hardcoded SCHED_OTHER.
+        restore_scheduling(&snapshot);
         return true;
     }
     let err = std::io::Error::last_os_error();
@@ -203,19 +263,59 @@ pub(super) fn lock_memory() -> anyhow::Result<()> {
     }
 }
 
-/// Check whether RT priority can be set (dry-run via sched_setscheduler).
+/// Check whether RT priority can be set.
+///
+/// Answered read-only wherever possible. The previous implementation probed by
+/// calling `sched_setscheduler(0, SCHED_FIFO, 1)` on the caller and then forcing
+/// SCHED_OTHER priority 0, so a thread deployed the normal hard-RT way was
+/// stripped of its real-time class by the very check that reported RT as
+/// available — and the scheduler's tick loop, which runs on that thread, then
+/// ran time-shared while `rt_priority_available` said otherwise.
 pub(super) fn can_set_rt_priority() -> bool {
-    // Try to set a low RT priority — if it succeeds, we have permission.
-    // Immediately restore to SCHED_OTHER afterward.
+    // A thread already on an RT policy demonstrably holds the privilege, so
+    // there is nothing to probe — and probing is exactly what used to break it.
+    // SAFETY: pid 0 = current thread; sched_getscheduler only reads.
+    let current_policy = unsafe { libc::sched_getscheduler(0) };
+    if current_policy == libc::SCHED_FIFO
+        || current_policy == libc::SCHED_RR
+        || current_policy == SCHED_DEADLINE_POLICY as i32
+    {
+        return true;
+    }
+
+    // Root can always raise the scheduling class.
+    // SAFETY: geteuid cannot fail and mutates nothing.
+    if unsafe { libc::geteuid() } == 0 {
+        return true;
+    }
+
+    // A non-zero RLIMIT_RTPRIO ceiling means unprivileged SCHED_FIFO is allowed.
+    // SAFETY: getrlimit only writes into the local rlimit struct.
+    let rtprio_allowed = unsafe {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        libc::getrlimit(libc::RLIMIT_RTPRIO, &mut rlim) == 0 && rlim.rlim_cur > 0
+    };
+    if rtprio_allowed {
+        return true;
+    }
+
+    // Inconclusive — e.g. CAP_SYS_NICE granted with no RTPRIO ceiling. Fall back
+    // to the live probe, but only when it can be undone exactly; if the thread's
+    // current policy cannot be read back, decline to probe rather than risk
+    // leaving the caller on a scheduling class it never chose.
+    let Some(snapshot) = snapshot_scheduling() else {
+        return false;
+    };
+
     let param = sched_param_with_priority(1);
     // SAFETY: pid 0 = current thread; params are valid
     let result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
 
     if result == 0 {
-        // Restore normal scheduling
-        let normal_param = sched_param_with_priority(0);
-        // SAFETY: restoring to SCHED_OTHER
-        unsafe { libc::sched_setscheduler(0, libc::SCHED_OTHER, &normal_param) };
+        restore_scheduling(&snapshot);
         true
     } else {
         false

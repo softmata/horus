@@ -10,48 +10,65 @@ use crate::error::HorusResult;
 /// Delegates to [`horus_sys::shm::ShmRegion`] for platform-specific implementation.
 /// This wrapper converts `anyhow::Error` to `HorusError::Memory` for compatibility
 /// with the horus_core error hierarchy.
+///
+/// The inner region is wrapped in an `UnsafeCell` because [`Self::grow_unchecked`]
+/// mutates it through a shared reference.  It used to be a plain field that
+/// `grow_unchecked` cast from `&T` to `&mut T` — undefined behaviour regardless
+/// of how exclusive the caller's access is, and silenced with
+/// `#[allow(invalid_reference_casting)]`.  `horus_sys::shm::ShmRegion` holds no
+/// `UnsafeCell` of its own, so it is `Freeze`: rustc lowers `&self` with
+/// `noalias readonly` and is entitled to cache `self.0.mmap` / `self.0.size`
+/// across the call.  `grow_unchecked` replaces both (dropping the old `MmapMut`,
+/// i.e. `munmap`), so a cached pointer is a dangling one — a miscompilation
+/// hazard that comes and goes with inlining.  `UnsafeCell` is the only sound
+/// way to mutate behind `&self`, and it also removes the `Freeze` assumption.
 #[derive(Debug)]
-pub struct ShmRegion(horus_sys::shm::ShmRegion);
+pub struct ShmRegion(std::cell::UnsafeCell<horus_sys::shm::ShmRegion>);
 
 impl ShmRegion {
     /// Create or open a shared memory region.
     pub fn new(name: &str, size: usize) -> HorusResult<Self> {
         horus_sys::shm::ShmRegion::new(name, size)
-            .map(Self)
+            .map(|region| Self(std::cell::UnsafeCell::new(region)))
             .map_err(|e| crate::error::HorusError::Memory(e.to_string().into()))
     }
 
     /// Raw pointer to the mapped memory.
     #[inline]
     pub fn as_ptr(&self) -> *const u8 {
-        self.0.as_ptr()
+        // SAFETY: see the `Sync` impl below — readers and `grow_unchecked` are
+        // serialized by the caller's exclusive-access contract.
+        unsafe { (*self.0.get()).as_ptr() }
     }
 
     /// View the mapped memory as a byte slice.
     #[inline]
     #[allow(dead_code)]
     pub fn as_slice(&self) -> &[u8] {
-        self.0.as_slice()
+        // SAFETY: as for `as_ptr`.
+        unsafe { (*self.0.get()).as_slice() }
     }
 
     /// View the mapped memory as a mutable byte slice.
     #[inline]
     #[allow(dead_code)]
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        self.0.as_slice_mut()
+        self.0.get_mut().as_slice_mut()
     }
 
     /// Size of the mapped region in bytes.
     #[inline]
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.0.len()
+        // SAFETY: as for `as_ptr`.
+        unsafe { (*self.0.get()).len() }
     }
 
     /// Whether this handle is the original creator (responsible for cleanup on drop).
     #[inline]
     pub fn is_owner(&self) -> bool {
-        self.0.is_owner()
+        // SAFETY: as for `as_ptr`.
+        unsafe { (*self.0.get()).is_owner() }
     }
 
     /// Grow the underlying SHM region without reallocating.
@@ -64,20 +81,30 @@ impl ShmRegion {
     /// only called during migration which holds the migration lock.
     ///
     /// Violating this invariant is undefined behavior (data race on mmap).
-    #[allow(invalid_reference_casting)] // Single-thread contract: caller guarantees exclusive access
+    ///
+    /// **Known limitation** — the contract above is *not* enforced anywhere.
+    /// This call replaces the mapping, so every concurrent reader's
+    /// [`as_ptr`](Self::as_ptr) / [`len`](Self::len) result is invalidated.
+    /// Callers must hold the topic header's migration lock across both the grow
+    /// and the re-derivation of any cached pointers; the current callers in
+    /// `communication/topic` do not, which is tracked separately.
     pub unsafe fn grow_unchecked(&self, new_size: usize) -> HorusResult<()> {
         // SAFETY: Caller guarantees exclusive access per the contract above.
-        // UnsafeCell would be preferable but requires restructuring the wrapper
-        // and all callers. The migration lock serializes all grow operations.
-        let ptr = &self.0 as *const horus_sys::shm::ShmRegion as *mut horus_sys::shm::ShmRegion;
-        let inner = &mut *ptr;
-        inner
+        (*self.0.get())
             .grow_unchecked(new_size)
             .map_err(|e| crate::error::HorusError::Memory(e.to_string().into()))
     }
 }
 
-// Thread safety — delegates to horus_sys::shm::ShmRegion which is Send + Sync
+// Thread safety.
+//
+// `UnsafeCell` is `!Sync`, so this impl is load-bearing rather than the
+// redundant delegation its old comment claimed ("delegates to
+// horus_sys::shm::ShmRegion which is Send + Sync").  The real invariant it
+// asserts: every method except `grow_unchecked` only *reads* the inner region,
+// and `grow_unchecked` is `unsafe` precisely because the caller must guarantee
+// no other thread is touching this region while it runs.  Sharing an
+// `Arc<ShmRegion>` across threads is sound only under that contract.
 unsafe impl Send for ShmRegion {}
 unsafe impl Sync for ShmRegion {}
 

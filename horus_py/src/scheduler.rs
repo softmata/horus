@@ -89,6 +89,11 @@ struct PyNodeAdapter {
     cached_info: Option<Py<PyNodeInfo>>,
     stop_requested: Arc<AtomicBool>,
     scheduler_running: Arc<AtomicBool>,
+    /// Whether each callback takes the `NodeInfo` argument, decided once from
+    /// its signature (see `resolve_takes_info`) and never re-derived.
+    init_takes_info: Option<bool>,
+    tick_takes_info: Option<bool>,
+    shutdown_takes_info: Option<bool>,
 }
 
 /// Render a Python exception the way Python renders it: type, message, and the
@@ -116,6 +121,81 @@ fn describe_py_error(py: Python<'_>, err: &PyErr) -> String {
     }
 }
 
+/// Does `obj.<name>` take the `NodeInfo` argument? Resolved once from the
+/// callable's signature and cached in `cache`.
+///
+/// This used to be decided by catching a `TypeError` from the one-argument
+/// call and retrying with no arguments. That is not a sound test: a
+/// `TypeError` raised by arbitrary user code *inside* the callback body —
+/// `None + 1`, `int(None)`, a wrong argument to a library call — is
+/// indistinguishable from the arity error the call machinery raises *before*
+/// the body runs. So a node whose `tick` sent a command and then hit a
+/// `TypeError` had its whole body executed a second time, putting a duplicate
+/// command on the wire before the error finally propagated; and for the
+/// equally common `def tick(self, info):` the retry failed with "missing 1
+/// required positional argument", and that — not the real exception and its
+/// traceback — is what reached the operator.
+///
+/// `inspect.signature` on a bound method already excludes `self`, and asking
+/// the signature to bind a single positional argument answers the question
+/// exactly, including for `*args`, keyword-only and `**kwargs` forms.
+/// Callables `inspect` cannot introspect (C functions, some builtins) get the
+/// documented one-argument form; a real mismatch there now fails loudly
+/// instead of silently re-running the body.
+fn resolve_takes_info(
+    cache: &mut Option<bool>,
+    py: Python<'_>,
+    obj: &Py<PyAny>,
+    name: &str,
+) -> bool {
+    if let Some(known) = *cache {
+        return known;
+    }
+    let takes_info = match obj.bind(py).getattr(name) {
+        Ok(bound) => py
+            .import("inspect")
+            .and_then(|inspect| inspect.call_method1("signature", (bound,)))
+            .map(|sig| sig.call_method1("bind", (py.None(),)).is_ok())
+            .unwrap_or(true),
+        // No such attribute: let the call itself raise the AttributeError.
+        Err(_) => true,
+    };
+    *cache = Some(takes_info);
+    takes_info
+}
+
+/// Invoke `obj.<name>`, with or without the `NodeInfo` argument, according to
+/// the cached arity decision.
+///
+/// The one retry left here is safe where the old blanket `TypeError` retry was
+/// not: it fires only when the `TypeError` carries no traceback, which means
+/// the call machinery rejected the arguments *before* entering any Python
+/// frame, so no user code can have run — let alone run twice. An exception
+/// raised inside the callback body always carries a traceback and is passed
+/// straight through. In practice only callables `inspect` could not introspect
+/// reach this path.
+fn call_node_callback(
+    cache: &mut Option<bool>,
+    py: Python<'_>,
+    obj: &Py<PyAny>,
+    name: &str,
+    info: Py<PyNodeInfo>,
+) -> PyResult<Py<PyAny>> {
+    if !resolve_takes_info(cache, py, obj, name) {
+        return obj.call_method0(py, name);
+    }
+    match obj.call_method1(py, name, (info,)) {
+        Err(e)
+            if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py)
+                && e.traceback(py).is_none() =>
+        {
+            *cache = Some(false);
+            obj.call_method0(py, name)
+        }
+        other => other,
+    }
+}
+
 impl CoreNode for PyNodeAdapter {
     fn name(&self) -> &str {
         &self.node_name
@@ -134,21 +214,29 @@ impl CoreNode for PyNodeAdapter {
 
             self.cached_info = Some(py_info.clone_ref(py));
 
-            let result = self
-                .py_object
-                .call_method1(py, "init", (py_info,))
-                .or_else(|e| {
-                    // Only fall back to no-arg if the method doesn't accept info parameter.
-                    // TypeError = wrong signature. All other errors propagate.
-                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
-                        self.py_object.call_method0(py, "init")
-                    } else {
-                        Err(e)
-                    }
-                });
+            let result = call_node_callback(
+                &mut self.init_takes_info,
+                py,
+                &self.py_object,
+                "init",
+                py_info,
+            );
 
             match result {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    // Resolve the other two callbacks' arity here: the GIL is
+                    // already held, `init` has had its chance to bind them,
+                    // and the tick path then never pays for `inspect`.
+                    let _ =
+                        resolve_takes_info(&mut self.tick_takes_info, py, &self.py_object, "tick");
+                    let _ = resolve_takes_info(
+                        &mut self.shutdown_takes_info,
+                        py,
+                        &self.py_object,
+                        "shutdown",
+                    );
+                    Ok(())
+                }
                 Err(e) => {
                     if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
                         self.stop_requested.store(true, Ordering::Relaxed);
@@ -200,16 +288,13 @@ impl CoreNode for PyNodeAdapter {
             // (see module-level GIL/lock safety comment).  If the Python code
             // calls back into Rust (e.g., topic.send()), that is safe because
             // node_context and self.inner are unlocked.
-            let result = self
-                .py_object
-                .call_method1(py, "tick", (py_info,))
-                .or_else(|e| {
-                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
-                        self.py_object.call_method0(py, "tick")
-                    } else {
-                        Err(e)
-                    }
-                });
+            let result = call_node_callback(
+                &mut self.tick_takes_info,
+                py,
+                &self.py_object,
+                "tick",
+                py_info,
+            );
 
             match result {
                 Ok(_) => {
@@ -291,16 +376,13 @@ impl CoreNode for PyNodeAdapter {
                 .map_err(|e| HorusError::node(&self.node_name, e.to_string()))?
             };
 
-            let result = self
-                .py_object
-                .call_method1(py, "shutdown", (py_info,))
-                .or_else(|e| {
-                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
-                        self.py_object.call_method0(py, "shutdown")
-                    } else {
-                        Err(e)
-                    }
-                });
+            let result = call_node_callback(
+                &mut self.shutdown_takes_info,
+                py,
+                &self.py_object,
+                "shutdown",
+                py_info,
+            );
 
             match result {
                 Ok(_) => Ok(()),
@@ -656,6 +738,9 @@ impl PyScheduler {
             cached_info: None,
             stop_requested: self.stop_requested.clone(),
             scheduler_running: self.scheduler_running.clone(),
+            init_takes_info: None,
+            tick_takes_info: None,
+            shutdown_takes_info: None,
         };
 
         let mut config = NodeRegistration::new(Box::new(adapter)).order(order);

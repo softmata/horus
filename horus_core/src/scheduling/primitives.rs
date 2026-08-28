@@ -274,6 +274,57 @@ pub(crate) fn clear_node_tick_context() {
     crate::core::hlog::clear_node_context();
 }
 
+/// Maximum time an executor thread gets to exit during shutdown before it is
+/// detached.
+///
+/// `RtExecutor::stop` documents the guarantee this constant backs: shutdown
+/// always completes within `SHUTDOWN_TIMEOUT_PER_THREAD x num_threads`, so a
+/// single stalled node cannot block the process from exiting.
+pub(crate) const SHUTDOWN_TIMEOUT_PER_THREAD: Duration = Duration::from_secs(3);
+
+/// Join `handle` with a bounded deadline, returning `None` if it does not
+/// finish in time (the handle is dropped and the thread detached) or panicked.
+///
+/// Every executor must use this rather than a bare `handle.join()`. The
+/// compute, event and async executors used to join unbounded, and their loops
+/// only re-check `running` BETWEEN ticks — so a node blocked inside `tick()`
+/// (an unplugged device read with no timeout, a deadlocked mutex, an infinite
+/// loop) hung the whole shutdown. Because `run_with_filter` calls the executor
+/// stops before `shutdown_filtered_nodes` and `finalize_run`, that also meant
+/// no OTHER node was ever shut down or safed, and the blackbox was never
+/// flushed: the process had to be SIGKILLed with actuators left at their last
+/// commanded value.
+pub(crate) fn join_with_timeout<T>(
+    handle: std::thread::JoinHandle<T>,
+    label: &str,
+    timeout: Duration,
+) -> Option<T> {
+    let start = Instant::now();
+    loop {
+        if handle.is_finished() {
+            return match handle.join() {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    crate::terminal::print_line(&format!("[{label}] thread panicked during stop"));
+                    None
+                }
+            };
+        }
+        if start.elapsed() > timeout {
+            crate::terminal::print_line(&format!(
+                "[{label}] thread did not exit within {timeout:?} — detaching \
+                 (possible stalled tick); its nodes are not reclaimed. The \
+                 thread dies when the process exits."
+            ));
+            // Drop the JoinHandle without joining: the thread keeps running but
+            // no longer holds shutdown hostage.
+            drop(handle);
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Action to take after a budget violation is detected.
 #[derive(Debug)]
 pub(crate) struct BudgetViolationResult {

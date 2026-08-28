@@ -260,7 +260,7 @@ fn parse_all_python_imports(line: &str) -> Vec<String> {
             .split(',')
             .filter_map(|item| {
                 // `numpy as np` -> `numpy`; `os.path` -> `os`
-                let name = item.trim().split_whitespace().next()?.split('.').next()?;
+                let name = item.split_whitespace().next()?.split('.').next()?;
                 keep_package(name)
             })
             .collect();

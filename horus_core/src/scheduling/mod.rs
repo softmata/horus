@@ -112,6 +112,15 @@ pub(crate) mod blackbox {
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
 
+    /// Mirror of the real `BlackBoxEvent` in `blackbox.rs`.
+    ///
+    /// The call sites that build these events (schedulers, executors, horus_net)
+    /// are *not* feature-gated — they construct `BlackBoxEvent` unconditionally and
+    /// let `record()` throw it away when the feature is off.  That makes this stub a
+    /// silent shadow of the real enum: any variant or field added there but not here
+    /// compiles fine in the default build and only explodes in a
+    /// `--no-default-features` build (E0559/E0599), typically much later in CI.
+    /// Keep the two definitions field-for-field identical.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum BlackBoxEvent {
         SchedulerStart {
@@ -135,6 +144,7 @@ pub(crate) mod blackbox {
         NodeError {
             name: String,
             error: String,
+            severity: crate::error::Severity,
         },
         DeadlineMiss {
             name: String,
@@ -153,14 +163,24 @@ pub(crate) mod blackbox {
         EmergencyStop {
             reason: String,
         },
+        NetPeerDiscovered {
+            peer_addr: String,
+            topic_count: usize,
+        },
+        NetPeerLost {
+            peer_addr: String,
+            reason: String,
+        },
+        NetReplicationStarted {
+            peer_count: usize,
+        },
+        NetImportRejected {
+            topic: String,
+            peer_addr: String,
+        },
         Custom {
             category: String,
             message: String,
-        },
-        PodSnapshot {
-            data: Vec<u8>,
-            type_name: String,
-            context: String,
         },
     }
 
@@ -184,7 +204,7 @@ pub(crate) mod blackbox {
         }
         pub fn flush_wal(&mut self) {}
         pub fn record(&mut self, _event: BlackBoxEvent) {}
-        pub fn tick(&mut self) {}
+        pub(crate) fn tick(&mut self) {}
         pub fn events(&self) -> Vec<BlackBoxRecord> {
             Vec::new()
         }
@@ -197,21 +217,22 @@ pub(crate) mod blackbox {
         pub fn load(&mut self) -> std::io::Result<()> {
             Ok(())
         }
-        pub fn record_pod_snapshot<T: crate::communication::PodMessage>(
-            &mut self,
-            _msg: &T,
-            _context: &str,
-        ) {
-        }
-        pub fn read_pod_snapshot<T: crate::communication::PodMessage>(_data: &[u8]) -> Option<T> {
-            None
-        }
         pub fn clear(&mut self) {}
         pub fn len(&self) -> usize {
             0
         }
         pub fn is_empty(&self) -> bool {
             true
+        }
+        /// Always 0 — the stub never buffers, so it can never evict a record.
+        pub fn get_loss_count(&self) -> u64 {
+            0
+        }
+    }
+
+    impl Default for BlackBox {
+        fn default() -> Self {
+            Self::new(0) // Disabled by default
         }
     }
 

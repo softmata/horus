@@ -291,7 +291,10 @@ pub struct NetworkConfig {
     /// Shared secret for peer filtering (NOT security).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
-    /// Enabled optimizers (e.g., ["fusion", "delta"]).
+    /// Enabled optimizers (e.g., ["fusion", "spatial"]).
+    ///
+    /// "delta" is NOT supported: it encodes but never decodes, so enabling it
+    /// corrupts replicated data. `OptimizerChain::from_config` refuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimize: Option<Vec<String>>,
     /// Safety heartbeat settings.
@@ -1183,8 +1186,17 @@ fn table_header(content: &str, span: &std::ops::Range<usize>) -> Option<String> 
 /// `public/` directory is live at this address on the next merge, and
 /// `published_schema_is_current` in `tests/docs_manifest.rs` fails the build if
 /// the committed copy stops matching what the structs generate.
+///
+/// The host is the documentation site's own, because that site is what serves
+/// `public/`. It read `docs.horus-registry.dev` long after horus-docs made
+/// `docs.horusrobotics.dev` canonical (its commit 2adcb0c pointed the
+/// canonicals, sitemap and robots there), which left the one URL `horus schema`
+/// stamps into every `$schema` field as the only address in this repository
+/// that no longer resolved to the docs — and made
+/// `the_configuration_page_publishes_the_schema_url` fail against a page that
+/// was in fact publishing the right one.
 pub const MANIFEST_SCHEMA_URL: &str =
-    "https://docs.horus-registry.dev/schema/horus.toml.schema.json";
+    "https://docs.horusrobotics.dev/schema/horus.toml.schema.json";
 
 // ─── Unknown-key warning on load ────────────────────────────────────────────
 

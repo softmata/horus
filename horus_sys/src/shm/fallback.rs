@@ -28,6 +28,19 @@ impl ShmRegion {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let size = file.metadata()?.len() as usize;
         anyhow::ensure!(size >= minimum_size, "existing SHM region is too small");
+        // Take the same shared lock `new()` does. The module contract is that
+        // *every* holder keeps LOCK_SH for the lifetime of its region — that is
+        // what makes the last-one-out check in `drop` correct. A holder that
+        // joined here without the lock was invisible to it.
+        //
+        // SAFETY: file.as_raw_fd() is a valid open fd; LOCK_SH is a valid flock op.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } != 0 {
+            anyhow::bail!(
+                "Failed to acquire shared lock on SHM file '{}': {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
         Ok(Self {
             mmap,
@@ -177,9 +190,34 @@ impl ShmRegion {
 
 impl Drop for ShmRegion {
     fn drop(&mut self) {
-        if self.owner && self.path.exists() {
+        // Remove the backing file only if nobody else still has it open.
+        //
+        // "Owner" records only who won the race to create the file, which says
+        // nothing about who is still using it. Removing on that basis alone
+        // broke the ordinary publisher restart: the creator exited, took the
+        // file with it, every subscriber stayed mapped to an orphaned inode that
+        // nobody would write to again, and the next publisher created a fresh
+        // file — two groups on different memory, no error on either side. This
+        // is the same non-blocking LOCK_EX last-one-out test the Linux backend
+        // uses; the LOCK_SH taken in `new()`/`open_existing()` is what it reads.
+        //
+        // Deliberately not gated on `self.owner`: whoever turns out to be last
+        // does the cleanup, or a region whose creator left first would survive
+        // until the filesystem is cleaned by hand.
+        //
+        // SAFETY: `_file` is open for the whole lifetime of `self`, so the fd is
+        // valid here; LOCK_EX | LOCK_NB is a valid flock operation.
+        let sole_holder =
+            unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 };
+        if !sole_holder {
+            // Another holder still has it mapped — leave the region alone.
+            return;
+        }
+
+        if self.path.exists() {
             let _ = std::fs::remove_file(&self.path);
         }
+        // The exclusive lock is released with the fd when `_file` drops.
     }
 }
 

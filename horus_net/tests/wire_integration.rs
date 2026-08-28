@@ -260,7 +260,11 @@ fn fnv1a_hash_10k_no_collisions() {
 fn fragment_header_roundtrip_over_udp() {
     let (sender, receiver, recv_addr) = loopback_pair();
 
-    // Simulate a fragment packet: packet header + message header + fragment header + payload
+    // The real fragment layout, produced by the encoder the replicator uses:
+    // [PacketHeader][MessageHeader][FragmentHeader][chunk]. This test used to
+    // hand-roll a PacketHeader+FragmentHeader packet with no MessageHeader —
+    // a third layout matching neither the sender nor the receiver, which is
+    // how the missing FragmentHeader on the send path stayed hidden.
     let pkt_header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::FRAGMENT), 0x5555, 1);
     let frag = FragmentHeader {
         fragment_id: 42,
@@ -268,29 +272,45 @@ fn fragment_header_roundtrip_over_udp() {
         fragment_count: 3,
         total_payload_len: 4200,
     };
+    let payload = b"fragment zero data".to_vec();
+    let msg = OutMessage {
+        topic_name: "pointcloud".into(),
+        topic_hash: topic_hash("pointcloud"),
+        payload: payload.clone(),
+        timestamp_ns: 777,
+        sequence: 9,
+        priority: Priority::Normal,
+        reliability: Reliability::None,
+        encoding: Encoding::PodLe,
+    };
 
     let mut send_buf = [0u8; 256];
-    pkt_header.encode(&mut send_buf[..PacketHeader::SIZE]);
-    frag.encode(&mut send_buf[PacketHeader::SIZE..PacketHeader::SIZE + FragmentHeader::SIZE]);
-    let payload = b"fragment zero data";
-    let data_start = PacketHeader::SIZE + FragmentHeader::SIZE;
-    send_buf[data_start..data_start + payload.len()].copy_from_slice(payload);
-    let total = data_start + payload.len();
+    let total = encode_fragment(&pkt_header, &msg, &frag, &mut send_buf);
+    assert_eq!(
+        total,
+        PacketHeader::SIZE + MessageHeader::SIZE + FragmentHeader::SIZE + payload.len()
+    );
 
     sender.send_to(&send_buf[..total], recv_addr).unwrap();
 
     let mut recv_buf = [0u8; 256];
     let (n, _) = receiver.recv_from(&mut recv_buf).unwrap();
 
+    // Decode exactly the way Replicator::process_packet does.
     let header = PacketHeader::decode(&recv_buf[..n]).unwrap();
     assert!(header.flags.fragment());
 
-    let decoded_frag = FragmentHeader::decode(&recv_buf[PacketHeader::SIZE..]).unwrap();
+    let mh = MessageHeader::decode(&recv_buf[PacketHeader::SIZE..n]).unwrap();
+    assert_eq!(mh.topic_hash, topic_hash("pointcloud"));
+    assert_eq!(mh.sequence, 9);
+
+    let fh_start = PacketHeader::SIZE + MessageHeader::SIZE;
+    let decoded_frag = FragmentHeader::decode(&recv_buf[fh_start..n]).unwrap();
     assert_eq!(decoded_frag.fragment_id, 42);
     assert_eq!(decoded_frag.fragment_index, 0);
     assert_eq!(decoded_frag.fragment_count, 3);
     assert_eq!(decoded_frag.total_payload_len, 4200);
 
-    let recv_payload = &recv_buf[data_start..data_start + payload.len()];
-    assert_eq!(recv_payload, payload);
+    let data_start = fh_start + FragmentHeader::SIZE;
+    assert_eq!(&recv_buf[data_start..n], &payload[..]);
 }

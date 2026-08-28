@@ -68,7 +68,7 @@ macro_rules! impl_tensor_accessors {
         /// Element data type.
         #[inline]
         pub fn dtype(&self) -> $crate::types::TensorDtype {
-            self.inner.dtype
+            self.inner.dtype()
         }
 
         /// Total bytes of data.

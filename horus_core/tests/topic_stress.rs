@@ -253,14 +253,27 @@ fn test_topic_stress_alternating_send_recv() {
 // Test 5: Overwrite ring buffer — send more than capacity
 // ============================================================================
 
-/// INTENT: When a producer sends more messages than the ring buffer can hold
-/// without the consumer draining, excess messages are dropped (fire-and-forget).
-/// The ring buffer saturates at capacity and the consumer sees at most
-/// `capacity` messages.
+/// INTENT: When a producer sends more messages than the ring can hold and
+/// nothing is draining it, `send` — the lossy publish — retires the OLDEST
+/// slot and takes it. A consumer that attaches afterwards is handed the
+/// newest `capacity` messages, not the first `capacity` ever sent.
 ///
-/// This is the correct behavior for robotics: dropping stale sensor data is
-/// preferable to blocking the producer or corrupting the ring. The consumer
-/// gets the oldest unread data up to ring capacity.
+/// This is the correct behavior for robotics: a subscriber attaching to a
+/// sensor topic wants the most recent sample, and a ring nobody is reading
+/// must not hold the newest data hostage. `Topic::send`'s contract spells
+/// this out — see the keep-last-N reclaim in `send_lossy_retry`, and
+/// `Topic::missed_count` ("drop-oldest under overload is by design").
+/// `try_send` and `send_blocking` are the calls that refuse instead of
+/// dropping; `send` never fails and never blocks, so it drops.
+///
+/// NOTE — THIS TEST'S OLD EXPECTATION WAS WRONG. It used to assert
+/// `drained[0] == 0`, "FIFO — earliest messages kept", which pins the
+/// pre-keep-last-N behaviour: an unattended full ring froze holding the FIRST
+/// `capacity` messages for the life of the segment while the publisher kept
+/// counting sends, so `topic list` showed a live rate while `topic echo`
+/// replayed minutes-old payloads. The assertions below pin what the topic
+/// actually guarantees, including the part that matters most — the newest
+/// message IS present.
 #[test]
 fn test_topic_stress_overwrite_ring_buffer() {
     let _shm_guard = cleanup_stale_shm();
@@ -270,6 +283,7 @@ fn test_topic_stress_overwrite_ring_buffer() {
     let topic = Topic::<u64>::new(&name).expect("create topic");
 
     let send_count = 1_000u64;
+    const RING_CAPACITY: u64 = 512;
 
     for i in 0..send_count {
         topic.send(i);
@@ -281,17 +295,17 @@ fn test_topic_stress_overwrite_ring_buffer() {
         drained.push(val);
     }
 
-    // We sent 1000 messages to a 512-slot ring. Only 512 should have been
-    // accepted (the ring is bounded, excess sends are dropped).
+    // The ring is bounded: it cannot have kept all 1000.
     assert!(
         !drained.is_empty(),
         "Should have received at least some messages after sending {}",
         send_count
     );
     assert!(
-        drained.len() <= 512,
-        "Drained {} messages but ring capacity should be at most 512",
-        drained.len()
+        drained.len() as u64 <= RING_CAPACITY,
+        "Drained {} messages but ring capacity should be at most {}",
+        drained.len(),
+        RING_CAPACITY
     );
     assert!(
         (drained.len() as u64) < send_count,
@@ -301,17 +315,7 @@ fn test_topic_stress_overwrite_ring_buffer() {
         send_count
     );
 
-    // Verify FIFO ordering — messages within the ring must be in order
-    for window in drained.windows(2) {
-        assert!(
-            window[1] > window[0],
-            "Drained values must be monotonically increasing, got {} after {}",
-            window[1],
-            window[0]
-        );
-    }
-
-    // All values must be valid (within the range we sent)
+    // Every value must be one we actually sent.
     for &val in &drained {
         assert!(
             val < send_count,
@@ -321,9 +325,41 @@ fn test_topic_stress_overwrite_ring_buffer() {
         );
     }
 
-    // The first value should be 0 (oldest messages accepted first)
+    // What survived is a CONTIGUOUS ascending run of the sent sequence. The
+    // ring retires whole messages off one end; it never reorders them, never
+    // duplicates one, and never leaves a hole in the middle of what it kept.
+    for window in drained.windows(2) {
+        assert_eq!(
+            window[1],
+            window[0] + 1,
+            "Drained values must be a contiguous ascending run, got {} after {}",
+            window[1],
+            window[0]
+        );
+    }
+
+    // ...and the end it retires from is the OLD end. The newest message must
+    // be in the ring: that is the entire point of retiring the oldest slot
+    // instead of refusing the send. If this regresses, an unread topic
+    // silently freezes on stale data while the publisher keeps counting sends
+    // — the failure keep-last-N exists to prevent.
     assert_eq!(
-        drained[0], 0,
-        "First drained value should be 0 (FIFO — earliest messages kept)"
+        *drained.last().unwrap(),
+        send_count - 1,
+        "Newest message must survive on an undrained ring (keep-last-N); \
+         drained {} messages, {}..={}",
+        drained.len(),
+        drained[0],
+        drained.last().unwrap()
+    );
+
+    // The inverse of the old, wrong assertion, stated explicitly so a
+    // regression back to "keep the first N forever" cannot pass silently.
+    assert!(
+        drained[0] > 0,
+        "Oldest messages must have been retired, not kept — \
+         first drained value was {} after sending {}",
+        drained[0],
+        send_count
     );
 }

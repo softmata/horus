@@ -591,14 +591,38 @@ impl RuntimeParams {
         Ok(())
     }
 
-    /// Load parameters from YAML file
+    /// Load parameters from a YAML file, overlaying it onto the current store.
+    ///
+    /// Keys present in the file are set; keys absent from it are left alone.
+    /// This used to be `*params = loaded`, which replaced the WHOLE map — so
+    /// `horus param load ./tuning.yaml` with a one-key file dropped every other
+    /// parameter, and the `save_to_disk()` that follows it wrote that deletion
+    /// back over `.horus/config/params.yaml`. It is the same whole-map-replace
+    /// mistake `new()` documents having fixed for its three layers.
+    ///
+    /// Routing each key through `set()` also restores the read-only check,
+    /// `validate_value`, the version counters and the `on_change` callbacks,
+    /// all of which the direct map assignment bypassed.
+    ///
+    /// Note: because `set()` refuses a read-only or invalid key, a bad file
+    /// aborts the load partway, with the keys before it already applied. That
+    /// matches `new()`'s stance of refusing rather than running on limits
+    /// nobody chose.
     pub fn load_from_disk(&self, path: &Path) -> Result<(), HorusError> {
         if path.exists() {
             let yaml_str = std::fs::read_to_string(path)?;
-            let loaded: BTreeMap<String, Value> = serde_yaml::from_str(&yaml_str)?;
+            // An empty file parses to `null`, not to an empty map — same
+            // treatment as `new()` gives it, so a zero-byte params.yaml is
+            // "no overrides" here too instead of an "invalid type: unit value".
+            let loaded: BTreeMap<String, Value> = if yaml_str.trim().is_empty() {
+                BTreeMap::new()
+            } else {
+                serde_yaml::from_str(&yaml_str)?
+            };
 
-            let mut params = self.params.write()?;
-            *params = loaded;
+            for (key, value) in loaded {
+                self.set(&key, value)?;
+            }
         }
         Ok(())
     }
@@ -1418,6 +1442,53 @@ mod tests {
         assert!((v.unwrap().as_f64().unwrap() - 2.75).abs() < 0.001);
         let v: Option<Value> = params2.get("bool_param");
         assert_eq!(v.unwrap().as_bool(), Some(true));
+    }
+
+    /// Regression: `load_from_disk` must OVERLAY the file's keys, never replace
+    /// the whole map. It used to do `*params = loaded`, so `horus param load`
+    /// with a small tuning file erased every other parameter — and the
+    /// `save_to_disk()` that follows it persisted the erasure.
+    #[test]
+    fn load_from_disk_overlays_instead_of_replacing() {
+        let params = create_test_params();
+        params.set("gripper_max_current", 3.5_f64).unwrap();
+        params.set("max_speed", 1.0_f64).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("speed_tuning.yaml");
+        std::fs::write(&path, "max_speed: 2.0\n").unwrap();
+
+        params.load_from_disk(&path).unwrap();
+
+        let speed: Option<f64> = params.get("max_speed");
+        assert_eq!(speed, Some(2.0), "the file's key must be applied");
+        let current: Option<f64> = params.get("gripper_max_current");
+        assert_eq!(
+            current,
+            Some(3.5),
+            "a key absent from the file must survive the load"
+        );
+        // The overlay goes through set(), so versions advance as for any change.
+        assert!(
+            params.get_version("max_speed") > 0,
+            "loading a key must bump its version like any other set()"
+        );
+    }
+
+    /// An empty params file means "no overrides", not a parse error — `new()`
+    /// already treats it that way and `load_from_disk` must agree.
+    #[test]
+    fn load_from_disk_tolerates_an_empty_file() {
+        let params = create_test_params();
+        params.set("keep_me", 7_i64).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.yaml");
+        std::fs::write(&path, "").unwrap();
+
+        params.load_from_disk(&path).expect("empty file must load");
+        let kept: Option<i64> = params.get("keep_me");
+        assert_eq!(kept, Some(7));
     }
 
     #[test]

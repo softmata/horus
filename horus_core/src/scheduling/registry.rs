@@ -7,7 +7,7 @@
 //! metrics directly.
 
 use crate::memory::platform::shm_scheduler_dir;
-use memmap2::MmapMut;
+use memmap2::MmapRaw;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -120,8 +120,34 @@ pub struct NodeSlotSnapshot {
 }
 
 /// Live node registry backed by a shared-memory file.
+///
+/// The mapping is held unwrapped rather than behind a `Mutex`. It used to be
+/// `Mutex<MmapMut>`, which put a process-wide `std::sync::Mutex` on
+/// `update_node` — a function called at the end of EVERY tick of EVERY node on
+/// EVERY executor, including the SCHED_FIFO RT threads. An RT thread then
+/// blocked on a futex held by a normal-priority compute or event thread:
+/// textbook priority inversion, on the one path this module promises is never
+/// blocked by compute or event nodes (and which the call sites document as
+/// "~5ns atomic writes"). The lock bought nothing there: every field
+/// `update_node` writes is an atomic at a fixed offset inside a slot owned by
+/// exactly one node, so lock-free concurrent stores are already correct.
+///
+/// `write_lock` serializes only the paths that do non-atomic writes
+/// (`init_header`, `register_node`); both run on the main thread at startup.
+///
+/// The mapping is a `MmapRaw`, not a `MmapMut`: `MmapRaw` hands out
+/// `*mut u8` from `&self` with the mapping's own provenance, whereas
+/// `MmapMut` only reaches a mutable pointer through `DerefMut`, i.e. `&mut
+/// self`. Casting `MmapMut::as_ptr()` (a pointer derived from a shared `&[u8]`)
+/// to `*mut` and storing through it is what the previous code did inside the
+/// lock; that is not sound to keep doing once the `&mut` is gone. `MmapRaw` is
+/// `Send + Sync`, so this type's auto traits are preserved; caching a bare
+/// `*mut u8` in a field instead would have made it `!Send`/`!Sync`. The base is
+/// re-derived per call, which is stable because the region is never remapped or
+/// resized after `open()`.
 pub struct SchedulerRegistry {
-    mmap: Mutex<MmapMut>,
+    mmap: MmapRaw,
+    write_lock: Mutex<()>,
     path: PathBuf,
 }
 
@@ -154,17 +180,19 @@ impl SchedulerRegistry {
             file.set_len(REGISTRY_FILE_SIZE as u64)?;
         }
 
-        // SAFETY: file is valid, size set to REGISTRY_FILE_SIZE.
-        let mmap = unsafe {
-            MmapMut::map_mut(&file).map_err(|e| {
-                crate::error::HorusError::Memory(crate::error::MemoryError::MmapFailed {
-                    reason: e.to_string(),
-                })
-            })?
-        };
+        // `MmapRaw::map_raw` is the writable mapping that never materialises a
+        // reference to the region — the right primitive for a shared-memory
+        // area written concurrently by several threads and read by other
+        // processes. It is a safe fn for that reason.
+        let mmap = MmapRaw::map_raw(&file).map_err(|e| {
+            crate::error::HorusError::Memory(crate::error::MemoryError::MmapFailed {
+                reason: e.to_string(),
+            })
+        })?;
 
         let registry = Self {
-            mmap: Mutex::new(mmap),
+            mmap,
+            write_lock: Mutex::new(()),
             path,
         };
 
@@ -175,8 +203,10 @@ impl SchedulerRegistry {
     }
 
     fn init_header(&self) {
-        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
-        let base = guard.as_ptr() as *mut u8;
+        // Non-atomic writes (version, pid, magic) — serialized against
+        // `register_node`. Off the hot path: startup only.
+        let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let base = self.mmap.as_mut_ptr();
         // SAFETY: mmap is at least REGISTRY_FILE_SIZE bytes, HEADER_SIZE=64.
         unsafe {
             // Version first
@@ -192,16 +222,40 @@ impl SchedulerRegistry {
     }
 
     /// Register a node and return its slot index.
-    pub fn register_node(&self, name: &str, order: u8, rate_hz: f64, execution_class: u8) -> usize {
-        let mut guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
-        let base = guard.as_mut_ptr();
+    ///
+    /// Returns `None` when the registry is full: there is no slot to hand out,
+    /// and the caller must not record one.
+    pub fn register_node(
+        &self,
+        name: &str,
+        order: u8,
+        rate_hz: f64,
+        execution_class: u8,
+    ) -> Option<usize> {
+        // Serialized: this writes the name bytes and the class/order fields
+        // non-atomically, and does a load-then-fetch_add on the header count.
+        // Startup only, so the lock is off the tick path.
+        let _g = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let base = self.mmap.as_mut_ptr();
 
         // SAFETY: mmap covers REGISTRY_FILE_SIZE bytes.
         let count =
             unsafe { (*(base.add(12) as *const AtomicU32)).load(Ordering::Acquire) } as usize;
 
+        // A full registry used to return `MAX_REGISTRY_NODES - 1` — the slot
+        // legitimately owned by node #64. Every node past the 64th was handed
+        // that same index, so they all raced writing each other's tick counts,
+        // health and timings into one slot that still carried node #64's name:
+        // `horus node list` attributed another node's metrics to it, and a
+        // failing node could be masked by a healthy one sharing the slot.
+        // No slot is better than someone else's slot.
         if count >= MAX_REGISTRY_NODES {
-            return count.min(MAX_REGISTRY_NODES - 1);
+            log::warn!(
+                "SHM registry full ({} slots): node '{}' will have no live registry slot",
+                MAX_REGISTRY_NODES,
+                name
+            );
+            return None;
         }
 
         let slot_offset = HEADER_SIZE + count * SLOT_SIZE;
@@ -245,12 +299,18 @@ impl SchedulerRegistry {
             (*(base.add(12) as *const AtomicU32)).fetch_add(1, Ordering::Release);
         }
 
-        count
+        Some(count)
     }
 
     /// Update a node's live metrics (called by scheduler on every tick).
     ///
     /// All writes are `Relaxed` — counters and timing don't need ordering.
+    ///
+    /// This must stay lock-free. It runs on the SCHED_FIFO RT threads, which
+    /// must never block on a futex a normal-priority thread can hold; the
+    /// surrounding RT code uses `try_lock` for the profiler and blackbox for
+    /// exactly this reason. Every store below is an atomic at a fixed offset in
+    /// a slot owned by a single node, so no mutual exclusion is required.
     // 10 arguments mirror distinct fields in the SHM node-registry entry that are
     // updated atomically on every tick. A wrapper struct would add a stack copy
     // on the hot path with no semantic benefit.
@@ -272,8 +332,7 @@ impl SchedulerRegistry {
         if slot_idx >= MAX_REGISTRY_NODES {
             return;
         }
-        let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
-        let base = guard.as_ptr() as *mut u8;
+        let base = self.mmap.as_mut_ptr();
         let slot_offset = HEADER_SIZE + slot_idx * SLOT_SIZE;
 
         // SAFETY: slot_idx < MAX, so slot_offset + SLOT_SIZE <= REGISTRY_FILE_SIZE.
@@ -490,7 +549,9 @@ mod tests {
     fn register_single_node_roundtrip() {
         let name = test_name("single");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let idx = reg.register_node("motor_ctrl", 0, 100.0, 0);
+        let idx = reg
+            .register_node("motor_ctrl", 0, 100.0, 0)
+            .expect("registry not full");
         assert_eq!(idx, 0, "first node should get slot 0");
 
         let slots = SchedulerRegistry::read_all_slots(&name).expect("read");
@@ -512,11 +573,21 @@ mod tests {
         let name = test_name("multi");
         let reg = SchedulerRegistry::open(&name).expect("open");
 
-        let idx0 = reg.register_node("motor", 0, 100.0, 0);
-        let idx1 = reg.register_node("sensor", 1, 200.0, 1);
-        let idx2 = reg.register_node("planner", 5, 10.0, 2);
-        let idx3 = reg.register_node("logger", 10, 1.0, 4);
-        let idx4 = reg.register_node("telemetry", 20, 0.5, 3);
+        let idx0 = reg
+            .register_node("motor", 0, 100.0, 0)
+            .expect("registry not full");
+        let idx1 = reg
+            .register_node("sensor", 1, 200.0, 1)
+            .expect("registry not full");
+        let idx2 = reg
+            .register_node("planner", 5, 10.0, 2)
+            .expect("registry not full");
+        let idx3 = reg
+            .register_node("logger", 10, 1.0, 4)
+            .expect("registry not full");
+        let idx4 = reg
+            .register_node("telemetry", 20, 0.5, 3)
+            .expect("registry not full");
 
         assert_eq!(idx0, 0);
         assert_eq!(idx1, 1);
@@ -542,7 +613,9 @@ mod tests {
     fn update_node_changes_visible() {
         let name = test_name("update");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let idx = reg.register_node("sensor", 1, 200.0, 1);
+        let idx = reg
+            .register_node("sensor", 1, 200.0, 1)
+            .expect("registry not full");
 
         reg.update_node(
             idx, 2,         // health: Unhealthy
@@ -574,7 +647,9 @@ mod tests {
     fn update_node_multiple_times() {
         let name = test_name("multi_upd");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        let idx = reg.register_node("ctrl", 0, 100.0, 0);
+        let idx = reg
+            .register_node("ctrl", 0, 100.0, 0)
+            .expect("registry not full");
 
         for tick in 1..=10u64 {
             reg.update_node(idx, 0, tick * 100, 0, 0, 0, 0, 500, 500, 500, 0);
@@ -593,7 +668,8 @@ mod tests {
         let name = test_name("trunc");
         let reg = SchedulerRegistry::open(&name).expect("open");
         let long_name = "X".repeat(60);
-        reg.register_node(&long_name, 0, 50.0, 0);
+        reg.register_node(&long_name, 0, 50.0, 0)
+            .expect("registry not full");
 
         let slots = SchedulerRegistry::read_all_slots(&name).expect("read");
         assert_eq!(
@@ -624,7 +700,8 @@ mod tests {
     fn remove_deletes_file() {
         let name = test_name("rm");
         let reg = SchedulerRegistry::open(&name).expect("open");
-        reg.register_node("node", 0, 10.0, 0);
+        reg.register_node("node", 0, 10.0, 0)
+            .expect("registry not full");
         let path = shm_scheduler_dir().join(&name);
         assert!(path.exists());
 
@@ -651,6 +728,44 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Regression: nodes past the 64th must get NO slot rather than a shared
+    /// one. `register_node` used to return `MAX_REGISTRY_NODES - 1` when full,
+    /// so every overflow node aliased slot 63 and race-wrote node #64's live
+    /// metrics under node #64's name.
+    #[test]
+    fn registry_overflow_returns_none_instead_of_aliasing_the_last_slot() {
+        let name = test_name("overflow");
+        let reg = SchedulerRegistry::open(&name).expect("open");
+
+        for i in 0..MAX_REGISTRY_NODES {
+            let slot = reg
+                .register_node(&format!("node_{i}"), 0, 100.0, 0)
+                .expect("registry has room");
+            assert_eq!(slot, i, "node {i} should get slot {i}");
+        }
+
+        assert!(
+            reg.register_node("overflow_node", 0, 100.0, 0).is_none(),
+            "the 65th node must get no slot, not slot 63"
+        );
+
+        let slots = SchedulerRegistry::read_all_slots(&name).expect("read");
+        assert_eq!(slots.len(), MAX_REGISTRY_NODES);
+        let names: std::collections::HashSet<&str> =
+            slots.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names.len(),
+            MAX_REGISTRY_NODES,
+            "every occupied slot must still name a distinct node"
+        );
+        assert!(
+            !names.contains("overflow_node"),
+            "the rejected node must not have overwritten anyone"
+        );
+
+        reg.remove().expect("cleanup");
+    }
+
     // ── Cross-process simulation ───────────────────────────────────────
 
     #[test]
@@ -660,8 +775,10 @@ mod tests {
         let name = test_name("xproc");
         let reg = SchedulerRegistry::open(&name).expect("open");
 
-        reg.register_node("motor", 0, 100.0, 0);
-        reg.register_node("sensor", 1, 200.0, 1);
+        reg.register_node("motor", 0, 100.0, 0)
+            .expect("registry not full");
+        reg.register_node("sensor", 1, 200.0, 1)
+            .expect("registry not full");
         reg.update_node(0, 0, 10000, 0, 0, 0, 0, 800_000, 750_000, 1_500_000, 0);
         reg.update_node(1, 1, 20000, 5, 3, 1, 0, 400_000, 380_000, 900_000, 0);
 
@@ -689,8 +806,10 @@ mod tests {
         let reg1 = SchedulerRegistry::open(&name1).expect("open 1");
         let reg2 = SchedulerRegistry::open(&name2).expect("open 2");
 
-        reg1.register_node("node_a", 0, 50.0, 0);
-        reg2.register_node("node_b", 0, 60.0, 0);
+        reg1.register_node("node_a", 0, 50.0, 0)
+            .expect("registry not full");
+        reg2.register_node("node_b", 0, 60.0, 0)
+            .expect("registry not full");
 
         let all = SchedulerRegistry::read_all_registries();
         let found_a = all

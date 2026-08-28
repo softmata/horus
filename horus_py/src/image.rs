@@ -247,7 +247,7 @@ impl PyImage {
         }
 
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
-        dict.set_item("typestr", tensor.dtype.numpy_typestr())?;
+        dict.set_item("typestr", tensor.dtype().numpy_typestr())?;
 
         let ptr = this.inner.pool().data_ptr(tensor) as usize;
         dict.set_item("data", (ptr, false))?;

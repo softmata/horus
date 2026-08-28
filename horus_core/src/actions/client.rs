@@ -245,6 +245,22 @@ where
     }
 }
 
+/// The map entry inside the client exists purely to route status, feedback and
+/// result messages to a handle the caller still holds, so dropping the handle is
+/// the point at which the entry becomes unobservable. Without this, a handle for
+/// a goal that never reaches a terminal status (a server that is down, or one
+/// that silently discards the goal) left an entry in `ActionClientInner::goals`
+/// for the lifetime of the process.
+///
+/// Consequence to be aware of: after the handle is dropped, `goal_status()` and
+/// `active_goals()` on the client no longer report that goal. Keep the handle
+/// alive for as long as you intend to track the goal.
+impl<A: Action> Drop for ClientGoalHandle<A> {
+    fn drop(&mut self) {
+        self.client.forget_goal(self.goal_id);
+    }
+}
+
 impl<A: Action> Debug for ClientGoalHandle<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientGoalHandle")
@@ -272,12 +288,20 @@ struct ActionClientInner<A: Action> {
     /// Active goal handles
     goals: RwLock<HashMap<GoalId, Arc<RwLock<ClientGoalState<A>>>>>,
 
-    /// Communication links
-    goal_link: RwLock<Option<Topic<GoalRequest<A::Goal>>>>,
-    cancel_link: RwLock<Option<Topic<CancelRequest>>>,
-    result_link: RwLock<Option<Topic<ActionResult<A::Result>>>>,
-    feedback_link: RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>,
-    status_link: RwLock<Option<Topic<GoalStatusUpdate>>>,
+    /// Communication links.
+    ///
+    /// `Mutex`, not `RwLock`: `Topic` is `!Sync`, because `send`/`recv` take
+    /// `&self` and mutate unsynchronised per-handle cursor state. An `RwLock`
+    /// read guard hands out concurrent `&Topic`, which is exactly the race —
+    /// and `RwLock<Option<Topic<..>>>` would no longer even be `Sync`, so
+    /// `Arc<ActionClientInner<A>>` would stop being `Send` and this client
+    /// could not be a `Node`. `Mutex<T>: Sync` needs only `T: Send`, and
+    /// exclusive access is what a `Topic` actually requires.
+    goal_link: Mutex<Option<Topic<GoalRequest<A::Goal>>>>,
+    cancel_link: Mutex<Option<Topic<CancelRequest>>>,
+    result_link: Mutex<Option<Topic<ActionResult<A::Result>>>>,
+    feedback_link: Mutex<Option<Topic<ActionFeedback<A::Feedback>>>>,
+    status_link: Mutex<Option<Topic<GoalStatusUpdate>>>,
 
     /// Callbacks
     feedback_callback: RwLock<Option<FeedbackCallback<A>>>,
@@ -295,6 +319,22 @@ struct ActionClientInner<A: Action> {
     pump_lock: Mutex<()>,
 }
 
+/// Bookkeeping that must be callable without the payload trait bounds — notably
+/// from `ClientGoalHandle`'s `Drop`, whose bounds are fixed by the struct.
+impl<A: Action> ActionClientInner<A> {
+    /// Drop a goal's bookkeeping entry.
+    ///
+    /// Called when ownership of the goal is provably abandoned — the blocking
+    /// helpers give up on it, or the caller's handle is dropped. `sweep_*` only
+    /// collects goals that reached a TERMINAL status, so a goal that never got
+    /// an answer at all (no server, or a server that dropped it) used to sit in
+    /// the map for the life of the process, and `ActionClientNode::tick` locked
+    /// and scanned every one of those corpses on every tick.
+    fn forget_goal(&self, goal_id: GoalId) {
+        self.goals.write().remove(&goal_id);
+    }
+}
+
 impl<A: Action> ActionClientInner<A>
 where
     A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
@@ -304,11 +344,11 @@ where
     fn new() -> Self {
         Self {
             goals: RwLock::new(HashMap::new()),
-            goal_link: RwLock::new(None),
-            cancel_link: RwLock::new(None),
-            result_link: RwLock::new(None),
-            feedback_link: RwLock::new(None),
-            status_link: RwLock::new(None),
+            goal_link: Mutex::new(None),
+            cancel_link: Mutex::new(None),
+            result_link: Mutex::new(None),
+            feedback_link: Mutex::new(None),
+            status_link: Mutex::new(None),
             feedback_callback: RwLock::new(None),
             result_callback: RwLock::new(None),
             status_callback: RwLock::new(None),
@@ -324,23 +364,23 @@ where
         }
 
         // Create links with proper TopicKind for discovery
-        *self.goal_link.write() = Some(Topic::new_with_kind(
+        *self.goal_link.lock() = Some(Topic::new_with_kind(
             A::goal_topic(),
             TopicKind::ActionGoal as u8,
         )?);
-        *self.cancel_link.write() = Some(Topic::new_with_kind(
+        *self.cancel_link.lock() = Some(Topic::new_with_kind(
             A::cancel_topic(),
             TopicKind::ActionCancel as u8,
         )?);
-        *self.result_link.write() = Some(Topic::new_with_kind(
+        *self.result_link.lock() = Some(Topic::new_with_kind(
             A::result_topic(),
             TopicKind::ActionResult as u8,
         )?);
-        *self.feedback_link.write() = Some(Topic::new_with_kind(
+        *self.feedback_link.lock() = Some(Topic::new_with_kind(
             A::feedback_topic(),
             TopicKind::ActionFeedback as u8,
         )?);
-        *self.status_link.write() = Some(Topic::new_with_kind(
+        *self.status_link.lock() = Some(Topic::new_with_kind(
             A::status_topic(),
             TopicKind::ActionStatus as u8,
         )?);
@@ -365,7 +405,7 @@ where
         let request = GoalRequest::with_priority(goal, priority);
         let goal_id = request.goal_id;
 
-        if let Some(ref link) = *self.goal_link.read() {
+        if let Some(ref link) = *self.goal_link.lock() {
             link.send(request);
 
             log::debug!("ActionClient '{}': Sent goal {}", A::name(), goal_id);
@@ -377,7 +417,7 @@ where
 
     /// Send a cancel request.
     fn cancel_goal(&self, goal_id: GoalId) {
-        if let Some(ref link) = *self.cancel_link.read() {
+        if let Some(ref link) = *self.cancel_link.lock() {
             let request = CancelRequest::new(goal_id);
             link.send(request);
             log::debug!("ActionClient '{}': Sent cancel for {}", A::name(), goal_id);
@@ -392,25 +432,31 @@ where
         let _pump = self.pump_lock.lock();
 
         // Process status updates
-        if let Some(ref link) = *self.status_link.read() {
+        if let Some(ref link) = *self.status_link.lock() {
             while let Some(update) = link.recv() {
                 self.handle_status_update(update);
             }
         }
 
         // Process feedback
-        if let Some(ref link) = *self.feedback_link.read() {
+        if let Some(ref link) = *self.feedback_link.lock() {
             while let Some(feedback_msg) = link.recv() {
                 self.handle_feedback(feedback_msg);
             }
         }
 
         // Process results
-        if let Some(ref link) = *self.result_link.read() {
+        if let Some(ref link) = *self.result_link.lock() {
             while let Some(result_msg) = link.recv() {
                 self.handle_result(result_msg);
             }
         }
+
+        // The sweep used to hang off `handle_status_update`, so it only ever ran
+        // when a status message arrived — exactly the case a dead or silent
+        // server never produces. Running it here means every pump collects
+        // stale entries, whether or not the server is answering.
+        self.sweep_stale_terminal_goals();
     }
 
     /// Handle a status update.
@@ -440,11 +486,11 @@ where
         //
         // Goals that go terminal without a result for any other reason — e.g.
         // the server abandoning a non-cooperative goal after `goal_timeout` —
-        // are collected by the sweep below rather than raced here.
+        // are collected by `sweep_stale_terminal_goals`, which every pump runs
+        // at the end of `process_messages`, rather than raced here.
         if update.status == GoalStatus::Rejected {
             self.goals.write().remove(&update.goal_id);
         }
-        self.sweep_stale_terminal_goals();
 
         // Call status callback
         if let Some(ref callback) = *self.status_callback.read() {
@@ -838,8 +884,13 @@ where
             std::thread::sleep(poll_interval);
         }
 
-        // Timed out - cancel the goal
+        // Timed out - cancel the goal.
+        // Also drop its map entry: neither the id nor the state handle escapes
+        // this function, so after `Err(GoalTimeout)` nothing can ever observe
+        // the entry again and leaving it behind is a pure leak — one per call
+        // for a caller polling a server that is down.
         self.inner.cancel_goal(goal_id);
+        self.inner.forget_goal(goal_id);
         Err(ActionError::GoalTimeout)
     }
 
@@ -893,8 +944,13 @@ where
             std::thread::sleep(poll_interval);
         }
 
-        // Timed out - cancel the goal
+        // Timed out - cancel the goal.
+        // Also drop its map entry: neither the id nor the state handle escapes
+        // this function, so after `Err(GoalTimeout)` nothing can ever observe
+        // the entry again and leaving it behind is a pure leak — one per call
+        // for a caller polling a server that is down.
         self.inner.cancel_goal(goal_id);
+        self.inner.forget_goal(goal_id);
         Err(ActionError::GoalTimeout)
     }
 
@@ -1089,6 +1145,48 @@ mod tests {
             handle.status(),
             GoalStatus::Succeeded,
             "await_result must pump the client so a standalone goal leaves Pending (F-ACT1)"
+        );
+    }
+
+    /// Regression: the client's goal map must not accumulate entries for goals
+    /// nobody can observe any more. Pruning only ever happened for goals that
+    /// reached a TERMINAL status, so a goal that never got an answer at all —
+    /// a server that is down, the `send_goal_and_wait` timeout path — stayed in
+    /// the map for the life of the process, and `ActionClientNode::tick` locked
+    /// and scanned every one of them on every tick.
+    #[test]
+    fn abandoned_goals_leave_no_entry_in_the_goal_map() {
+        let client = Arc::new(ActionClientInner::<TestAction>::new());
+        let gid = GoalId::new();
+        let state = client.register_goal(gid);
+
+        {
+            let _handle = ClientGoalHandle::<TestAction> {
+                goal_id: gid,
+                priority: GoalPriority::NORMAL,
+                state: state.clone(),
+                client: Arc::clone(&client),
+                sent_at: Instant::now(),
+            };
+            assert_eq!(
+                client.goals.read().len(),
+                1,
+                "the goal is tracked for as long as its handle lives"
+            );
+        }
+        assert!(
+            client.goals.read().is_empty(),
+            "dropping the handle must evict the goal — the entry exists only to \
+             route messages to that handle"
+        );
+
+        // The same eviction the blocking helpers use on their timeout path.
+        let other = GoalId::new();
+        client.register_goal(other);
+        client.forget_goal(other);
+        assert!(
+            client.goals.read().is_empty(),
+            "a goal given up on must not stay in the map"
         );
     }
 

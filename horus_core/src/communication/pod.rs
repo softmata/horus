@@ -5,7 +5,25 @@
 //! ## Automatic POD Detection
 //!
 //! HORUS automatically detects POD types using `std::mem::needs_drop::<T>()`.
-//! **No registration or special traits required!**
+//! No registration or special traits required.
+//!
+//! ### ⚠️ This detection is a heuristic, and it is not sound for every type
+//!
+//! `!needs_drop` proves a type owns no heap allocation. It does NOT prove every
+//! bit pattern is a valid value of that type. A struct containing a `bool`, a
+//! fieldless enum, or a `NonZeroU32` passes the heuristic and is then
+//! transported by raw byte reinterpretation out of shared memory that a peer
+//! process — possibly a different build, a stale region, or horus_net's
+//! unauthenticated network feed — wrote. Materialising a `bool` holding `0x02`
+//! or an out-of-range discriminant is undefined behaviour, and nothing on this
+//! path validates it.
+//!
+//! Until the zero-copy path is gated on an explicit `PodMessage` opt-in (whose
+//! `bytemuck::Pod` bound rejects exactly these field types at compile time),
+//! **prefer integer fields with explicit encodings over `bool`/enum fields in
+//! messages you intend to send as fixed-size** — `u8` flags, as
+//! `horus_types::diagnostics` already does. This paragraph used to advertise
+//! the heuristic without the caveat.
 //!
 //! ```rust,ignore
 //! // Just define your struct - HORUS auto-detects it as POD
@@ -23,9 +41,11 @@
 //!
 //! A type is POD if:
 //! - `!std::mem::needs_drop::<T>()` - No destructor (no heap pointers)
-//! - `std::mem::size_of::<T>() > 0` - Not a zero-sized type
+//! - `std::mem::size_of::<T>() > 1` - Not a ZST, and not a single byte
 //!
 //! This automatically excludes String, Vec, Box, and any type containing them.
+//! It does NOT exclude a larger type that *contains* a field with a validity
+//! invariant — see the warning above.
 //!
 //! ## Performance Characteristics
 //!
@@ -74,10 +94,27 @@ use crate::core::LogSummary;
 /// - It's not a single byte (excludes `bool` which has validity invariants —
 ///   only 0/1 are valid, arbitrary SHM bytes like 0x02 would be instant UB)
 ///
-/// **Limitation**: This heuristic cannot detect enums with limited discriminant
-/// values or types like `NonZeroU32` that have validity invariants but pass
-/// `!needs_drop`. For such types, use the explicit `PodMessage` trait (which
-/// requires `bytemuck::Pod + Zeroable`) instead of relying on auto-detection.
+/// # Known unsoundness (not a mere limitation)
+///
+/// The `size > 1` filter only rejects types that are *themselves* one byte. A
+/// struct whose FIELD is a `bool`, a fieldless enum, or a `NonZeroU32` is
+/// larger than one byte and has no destructor, so it is classified POD here and
+/// routed to the raw byte-reinterpretation path — which builds a `T` out of
+/// bytes another process wrote, with no validation and no `bytemuck::Pod` bound
+/// to catch it. An invalid `bool` or discriminant is UB the moment it is
+/// materialised.
+///
+/// This cannot be fixed inside this function: dispatch is a runtime `bool` and
+/// `RingTopic<T>` is generic over serde bounds, so there is no `PodMessage`
+/// bound available to test. The real fix is an explicit opt-in registry keyed
+/// on `TypeId`, populated only by types that assert `PodMessage` (and a
+/// `message! { #[fixed] }` macro arm that derives `bytemuck::Pod`, making a
+/// `bool` field a compile error). Until then, callers must not put fields with
+/// validity invariants in fixed-size messages; the module header says so.
+///
+/// The torn-read window is separately closed on the seqlock consumer path,
+/// which keeps a slot copy as `MaybeUninit<T>` until after its stamp re-check
+/// (`simd_aware_read_uninit`), so a discarded torn read never becomes a `T`.
 ///
 /// Types with destructors (String, Vec, Box, etc.) contain heap pointers
 /// that become invalid in cross-process communication, so they're excluded.

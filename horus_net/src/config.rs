@@ -26,7 +26,10 @@ pub struct NetConfig {
     /// Posture for acting on authenticated remote e-stop packets.
     /// `HORUS_ESTOP_KEY` is mandatory. Env: HORUS_ESTOP_REMOTE = warn | off.
     pub estop_remote: EstopRemotePolicy,
-    /// Enabled optimizers (e.g., ["fusion", "delta"]).
+    /// Enabled optimizers (e.g., ["fusion", "spatial"]).
+    ///
+    /// "delta" is NOT supported: it encodes but never decodes, so enabling it
+    /// corrupts replicated data. `OptimizerChain::from_config` refuses it.
     pub optimizers: Vec<String>,
     /// Per-topic overrides.
     pub topic_overrides: std::collections::HashMap<String, TopicNetConfig>,
@@ -63,11 +66,23 @@ impl EstopRemotePolicy {
 }
 
 /// Import control configuration.
+///
+/// This is reach reduction, NOT an authorization control: the data plane is
+/// unauthenticated (see the crate docs' trust model), so whatever this admits,
+/// *any* host that can send UDP to this process can write into local SHM —
+/// including actuation topics. The shipped default is [`ImportConfig::Auto`],
+/// which is what makes zero-config LAN replication work; choose
+/// [`ImportConfig::Deny`] (`HORUS_NET_IMPORT=deny`) on any network where an
+/// untrusted host might be reachable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ImportConfig {
-    /// Deny all imports.
+    /// Deny all imports. The only setting that keeps a remote host from writing
+    /// into local SHM on a network you do not fully control.
     Deny,
     /// Auto: import topics we subscribe to but don't publish.
+    ///
+    /// Admits any topic this process subscribes to, from any peer that passes
+    /// the source-address filter, with no proof of the sender's identity.
     #[default]
     Auto,
     /// Explicit list of allowed topic patterns.

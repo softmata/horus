@@ -82,15 +82,17 @@ impl AsyncExecutor {
             print_line("[Async I/O] Warning: thread handle already consumed — nothing to join");
             return Vec::new();
         };
-        match handle.join() {
-            Ok(nodes) => nodes,
-            Err(_) => {
-                print_line(
-                    "[Async I/O] Warning: executor thread panicked; its nodes could not be reclaimed",
-                );
-                Vec::new()
-            }
-        }
+        // Bounded join, matching the guarantee RtExecutor::stop documents. A
+        // bare `handle.join()` here hung the entire shutdown whenever an async
+        // node blocked inside `tick()`, because this loop only re-checks
+        // `running` between ticks — and `run_with_filter` calls this before it
+        // shuts down or safes any other node.
+        super::primitives::join_with_timeout(
+            handle,
+            "Async I/O",
+            super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
+        )
+        .unwrap_or_default()
     }
 
     /// Main function for the async I/O thread.
@@ -191,8 +193,13 @@ impl AsyncExecutor {
                 let mut handles = Vec::with_capacity(ready_indices.len());
 
                 for &i in &ready_indices {
-                    // SAFETY: Each task accesses a distinct index into the nodes vec.
-                    // We await all handles before nodes can be mutated again.
+                    // SAFETY: each task gets a `&mut` to a distinct element of
+                    // `nodes`, so the tasks never alias each other. The lifetime
+                    // erasure (spawn_blocking demands 'static) is sound only
+                    // because EVERY handle below is awaited to completion before
+                    // `nodes` is reborrowed or dropped — see the two-phase drain
+                    // after this loop. Reborrowing while a task is still running
+                    // would invalidate that task's pointer.
                     let node_ref = unsafe { &mut *nodes_ptr.add(i) };
                     // FIX #5: the tick runs on a tokio blocking-pool thread, so the
                     // thread-local context is set INSIDE the closure. spawn_blocking
@@ -217,26 +224,40 @@ impl AsyncExecutor {
                     handles.push(handle);
                 }
 
-                // Await all results
+                // Two phases, deliberately. This used to await and process one
+                // handle at a time, but `&mut nodes[i]` goes through
+                // `<Vec<T>>::index_mut`, which takes a unique borrow of the
+                // WHOLE buffer — invalidating every pointer the still-running
+                // sibling tasks derived from `nodes_ptr`. Aliasing UB, and the
+                // resulting `noalias` slice pointer let the compiler reorder
+                // reads of a node another blocking thread was still writing.
+                // `ComputeExecutor::compute_thread_main` gets this right by
+                // joining its crossbeam scope before touching results.
+                //
+                // Draining first also closes the unwind window: no user code
+                // (`on_error`, `apply_failure_policy_after_panic`) runs — and so
+                // cannot unwind and drop `nodes` — while a blocking thread still
+                // holds a pointer into it.
+
+                // Phase 1: drain every handle, touching `nodes` not at all.
+                let mut results = Vec::with_capacity(handles.len());
                 for handle in handles {
                     match handle.await {
-                        Ok(ar) => {
-                            let tr = super::primitives::TickResult {
-                                tick_start: ar.tick_start,
-                                duration: ar.duration,
-                                result: ar.result,
-                            };
-                            Self::process_node_result(
-                                &mut nodes[ar.index],
-                                tr,
-                                &running,
-                                &monitors,
-                            );
-                        }
+                        Ok(ar) => results.push(ar),
                         Err(e) => {
                             print_line(&format!("[AsyncIO] spawn_blocking panicked: {}", e));
                         }
                     }
+                }
+
+                // Phase 2: no task is live any more, so `nodes` may be reborrowed.
+                for ar in results {
+                    let tr = super::primitives::TickResult {
+                        tick_start: ar.tick_start,
+                        duration: ar.duration,
+                        result: ar.result,
+                    };
+                    Self::process_node_result(&mut nodes[ar.index], tr, &running, &monitors);
                 }
 
                 // Sleep until next tick period
@@ -368,8 +389,15 @@ impl AsyncExecutor {
 
 impl Drop for AsyncExecutor {
     fn drop(&mut self) {
+        // Bounded here too: an early return or a panic can drop the executor
+        // without ever calling `stop()`, and an unbounded join on that path
+        // hangs exactly as badly.
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            let _ = super::primitives::join_with_timeout(
+                handle,
+                "Async I/O",
+                super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
+            );
         }
     }
 }

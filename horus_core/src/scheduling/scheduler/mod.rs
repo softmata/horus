@@ -2663,13 +2663,21 @@ impl Scheduler {
                                         crate::scheduling::types::ExecutionClass::BestEffort => 4,
                                     };
                                     let rate = node.rate_hz.unwrap_or(0.0);
-                                    let slot = reg.register_node(
+                                    // `register_node` returns None when the SHM
+                                    // registry is full. Recording a slot anyway
+                                    // used to alias every overflow node onto
+                                    // slot 63. With no entry here,
+                                    // `SharedMonitors::update_registry` and
+                                    // `update_registry_slot` both return early,
+                                    // so the node simply has no live slot.
+                                    if let Some(slot) = reg.register_node(
                                         &node.name,
                                         node.priority as u8,
                                         rate,
                                         exec_class,
-                                    );
-                                    self.registry_slots.insert(node.name.to_string(), slot);
+                                    ) {
+                                        self.registry_slots.insert(node.name.to_string(), slot);
+                                    }
                                 }
                             }
                             Some(Arc::new(reg))
@@ -2792,46 +2800,27 @@ impl Scheduler {
 
                     // Split RT nodes into isolated threads for safety.
                     //
-                    // DEFAULT: One thread per RT node. If node A stalls in tick(),
+                    // One thread per RT node, always. If node A stalls in tick(),
                     // node B keeps ticking on its own thread. This prevents a single
                     // stalled node from blocking all RT siblings — critical for robots
                     // where each actuator must be independently controllable.
                     //
-                    // If a dependency graph is available AND has explicit ordering
-                    // constraints, nodes with dependencies are grouped into chains
-                    // (sequential on same thread). Independent nodes get their own threads.
-                    let rt_chains = if let Some(ref graph) = self.dependency_graph {
-                        let rt_indices: Vec<usize> = (0..groups.rt_nodes.len()).collect();
-                        let chain_groups = graph.independent_chains(&rt_indices);
-                        if chain_groups.len() > 1 {
-                            print_line(&format!(
-                                "RT executor: {} independent chains → {} threads",
-                                chain_groups.len(),
-                                chain_groups.len()
-                            ));
-                            // Distribute nodes into chain groups
-                            let mut chains: Vec<Vec<super::types::RegisteredNode>> =
-                                chain_groups.iter().map(|_| Vec::new()).collect();
-                            let mut rt_nodes = groups.rt_nodes;
-                            // Reverse so we can pop from the end
-                            rt_nodes.reverse();
-                            for (chain_idx, group) in chain_groups.iter().enumerate() {
-                                for _ in group {
-                                    if let Some(node) = rt_nodes.pop() {
-                                        chains[chain_idx].push(node);
-                                    }
-                                }
-                            }
-                            chains
-                        } else {
-                            // Single chain from dependency graph — isolate each node
-                            groups.rt_nodes.into_iter().map(|n| vec![n]).collect()
-                        }
-                    } else {
-                        // No dependency graph — isolate each RT node on its own thread.
-                        // This is the safe default: a stalled node cannot block siblings.
-                        groups.rt_nodes.into_iter().map(|n| vec![n]).collect()
-                    };
+                    // This block used to claim that dependent RT nodes were grouped
+                    // into chains and ticked sequentially on one thread. They never
+                    // were: `DependencyGraph::independent_chains` read no edges and
+                    // returned one singleton group per node for every input, and it
+                    // was queried against the post-partition graph, whose indices
+                    // describe the BestEffort nodes, not these. The dead branch and
+                    // its "N independent chains" log line are gone; the behaviour is
+                    // unchanged.
+                    //
+                    // Consequence, stated plainly: the executor provides NO ordering
+                    // guarantee between RT nodes. An RT consumer may read its RT
+                    // producer's previous-tick value. Nodes that need ordering must
+                    // be in the same execution class as each other and sequenced by
+                    // the main loop, or synchronise through the data they exchange.
+                    let rt_chains: Vec<Vec<super::types::RegisteredNode>> =
+                        groups.rt_nodes.into_iter().map(|n| vec![n]).collect();
 
                     rt_executor = Some(
                         super::rt_executor::RtExecutor::start_pool(
@@ -3026,8 +3015,18 @@ impl Scheduler {
         if let Err(e) = ctrlc::set_handler(move || {
             print_line("\nCtrl+C received! Shutting down HORUS scheduler...");
             running.store(false, Ordering::SeqCst);
-            std::thread::spawn(|| {
-                std::thread::sleep(2_u64.secs());
+            // The force-exit grace must EXCEED the orderly shutdown budget, or
+            // it kills a shutdown that was still within it. It was 2s while
+            // every executor is allowed up to `SHUTDOWN_TIMEOUT_PER_THREAD`
+            // (3s) to reclaim a stalled thread, so a single stalled tick meant
+            // the process was force-exited before `shutdown_filtered_nodes`
+            // ever ran — no node shut down, no actuator safed, no blackbox
+            // flush. Doubling the per-thread budget covers one stalled executor
+            // class with headroom; a graph that stalls several RT threads at
+            // once can still exceed it, and is force-exited as before.
+            let grace = super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD * 2;
+            std::thread::spawn(move || {
+                std::thread::sleep(grace);
                 print_line("Force terminating - cleaning up session...");
                 // Clean up session before forced exit to prevent stale files
                 Self::cleanup_session();
@@ -3937,7 +3936,7 @@ impl Scheduler {
         if !suggestions.is_empty() {
             crate::terminal::eprint_line("\nSuggestions:");
             for s in &suggestions {
-                crate::terminal::eprint_line(&s);
+                crate::terminal::eprint_line(s);
             }
         }
 

@@ -315,17 +315,60 @@ fn topic_new_returns_result() {
 
 #[test]
 fn topic_try_send_and_dropped_count() {
-    let topic: Topic<u64> = Topic::with_capacity("test_dx_try_send", 2, None).unwrap();
-    // Fill the ring
-    topic.send(1);
-    topic.send(2);
-    // try_send should fail when full
-    assert!(topic.try_send(3).is_err());
-    // dropped_count reflects send() failures (not try_send — try_send returns the msg)
+    // A full ring only drops if somebody is subscribed to it.
+    //
+    // `send()` is the lossy publish, and on a ring that is full with NOTHING
+    // draining it, `send_lossy_retry` keeps the last N: it retires the oldest
+    // slot and takes it, so the message is delivered and no drop is counted.
+    // That is deliberate — a producer whose subscriber died (or never existed)
+    // must not hold the newest data hostage — and horus_core pins it in
+    // `send_fire_and_forget_keeps_the_newest_on_a_full_unread_ring`. This test
+    // predates that behaviour and used to lean on the old drop-newest path, so
+    // with no subscriber registered it asserted a drop that can no longer
+    // happen.
+    //
+    // Backpressure — and the drop this test is about — exists to protect a real
+    // consumer's unread data, so the subscriber has to be registered BEFORE the
+    // ring fills: `nothing_is_draining()` is only consulted on the full-ring
+    // path. A unique topic name keeps that decision from being made against a
+    // header some earlier run left in /dev/shm (participant registrations and
+    // the stall clock outlive the process that wrote them).
+    let name = format!("test_dx_try_send_{}", std::process::id());
+    let topic: Topic<u64> = Topic::with_capacity(&name, 2, None).unwrap();
+    let subscriber: Topic<u64> = Topic::with_capacity(&name, 2, None).unwrap();
+    // First recv() registers the handle as a consumer; it then never drains,
+    // which is exactly the slow-subscriber case dropped_count() reports on.
+    assert_eq!(subscriber.recv(), None, "a fresh ring starts empty");
+
+    // Fill the ring by sending until it says it is full, rather than assuming a
+    // capacity request of 2 yields exactly two usable slots — `with_capacity`
+    // rounds to a power of two, and the usable window is a property of the
+    // backend that gets selected. The bound only exists so a ring that stopped
+    // applying backpressure fails the assert below instead of looping forever.
+    const FILL_LIMIT: u64 = 64;
+    let mut sent = 0u64;
+    while sent < FILL_LIMIT && topic.try_send(sent).is_ok() {
+        sent += 1;
+    }
+    assert!(
+        sent < FILL_LIMIT,
+        "ring accepted {sent} messages without ever reporting full — try_send has lost its backpressure"
+    );
+
+    // try_send hands the message back instead of dropping it, so a rejected
+    // try_send is not a drop and must not be counted as one.
+    assert_eq!(topic.try_send(sent).unwrap_err(), sent);
     assert_eq!(topic.dropped_count(), 0);
-    // Force a dropped send via the lossy path
-    topic.send(4); // this will spin+yield then drop
-    assert!(topic.dropped_count() > 0 || topic.metrics().send_failures() > 0);
+
+    // send() on a full ring whose subscriber is not draining: spin, yield, then
+    // drop — and that drop is what dropped_count() reports.
+    topic.send(sent);
+    assert!(
+        topic.dropped_count() > 0,
+        "send() on a full ring with a registered subscriber must count the dropped message"
+    );
+    // dropped_count() is the publisher-facing name for the same counter.
+    assert_eq!(topic.metrics().send_failures(), topic.dropped_count());
 }
 
 // ============================================================================

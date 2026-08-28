@@ -64,8 +64,16 @@ pub struct Tensor {
     pub size: u64,
 
     // === Tensor metadata (8 bytes) ===
-    /// Element data type
-    pub dtype: TensorDtype,
+    /// Element data type, held as the raw `repr(u8)` discriminant byte.
+    ///
+    /// This was `pub dtype: TensorDtype`, and it was unsound: the descriptor is
+    /// read byte-for-byte out of peer-writable shared memory, so a byte outside
+    /// `0..=TensorDtype::MAX_DISCRIMINANT` materialised an invalid enum
+    /// discriminant — undefined behaviour committed *before* any sanitiser
+    /// could run.  The byte is private now and every reader goes through
+    /// [`Tensor::dtype`], which launders it via `TensorDtype::from_raw`.
+    /// Same offset and size, so the 168-byte wire layout is unchanged.
+    dtype_raw: u8,
     /// Number of dimensions (1-8)
     pub ndim: u8,
     /// Device type: 0=CPU, 1=CUDA (part of flattened Device)
@@ -83,7 +91,9 @@ pub struct Tensor {
 }
 
 // Safety: Tensor is repr(C) with explicit padding, no implicit padding exists.
-// All fields are Pod types (u8, u32, u64, [u8; N], [u64; N], TensorDtype which is repr(u8)).
+// Every field is a plain integer or an array of them (u8, u32, u64, [u64; N]) —
+// including the dtype discriminant, which is stored as a raw `u8` precisely so
+// that every one of the 256 byte values really is valid, as `Pod` requires.
 unsafe impl Pod for Tensor {}
 unsafe impl Zeroable for Tensor {}
 
@@ -96,7 +106,7 @@ impl Default for Tensor {
             generation_hi: 0,
             offset: 0,
             size: 0,
-            dtype: TensorDtype::F32,
+            dtype_raw: TensorDtype::F32 as u8,
             ndim: 0,
             device_type: DEVICE_TYPE_CPU,
             _pad1: 0,
@@ -108,16 +118,44 @@ impl Default for Tensor {
 }
 
 impl Tensor {
+    /// Element data type.
+    ///
+    /// Launders the stored discriminant byte through [`TensorDtype::from_raw`],
+    /// so a corrupt or hostile wire descriptor yields `F32` rather than an
+    /// invalid enum value.  This is the only way to read the dtype.
+    #[inline]
+    pub const fn dtype(&self) -> TensorDtype {
+        TensorDtype::from_raw(self.dtype_raw)
+    }
+
+    /// Set the element data type.
+    #[inline]
+    pub fn set_dtype(&mut self, dtype: TensorDtype) {
+        self.dtype_raw = dtype as u8;
+    }
+
+    /// Plant a raw discriminant byte, valid or not.
+    ///
+    /// **Test-only**: deliberately `#[doc(hidden)]` — the same pattern as
+    /// `SharedLogBuffer::corrupt_slot_seqlock`.  Tests outside this crate use it
+    /// to simulate the corrupt wire descriptor that the private `dtype_raw`
+    /// field otherwise makes unreachable.  Production code must use
+    /// [`set_dtype`](Self::set_dtype).
+    #[doc(hidden)]
+    pub fn set_dtype_raw_for_test(&mut self, raw: u8) {
+        self.dtype_raw = raw;
+    }
+
     /// Sanitize a Tensor read from untrusted bytes (SHM, network, file).
     ///
-    /// Clamps `ndim` and `dtype` to valid ranges to prevent UB from invalid
-    /// enum discriminants or out-of-bounds array slicing.
+    /// Clamps `ndim` to the shape/strides array bound and normalises the raw
+    /// dtype byte to a valid discriminant.  [`dtype`](Self::dtype) already
+    /// launders the byte on every read — this only makes the *stored* byte
+    /// agree, so a descriptor forwarded on the wire carries the clamped value.
     #[inline]
     pub fn sanitize_from_shm(&mut self) {
         self.ndim = self.ndim.min(MAX_TENSOR_DIMS as u8);
-        // SAFETY: read the raw discriminant byte to avoid UB from matching an invalid enum
-        let dtype_raw = unsafe { *(&self.dtype as *const TensorDtype as *const u8) };
-        self.dtype = TensorDtype::from_raw(dtype_raw);
+        self.dtype_raw = self.dtype() as u8;
     }
 
     /// Create a new tensor descriptor
@@ -170,7 +208,7 @@ impl Tensor {
             generation_hi: (generation_full >> 32) as u32,
             offset,
             size,
-            dtype,
+            dtype_raw: dtype as u8,
             ndim,
             device_type: device.device_type,
             _pad1: 0,
@@ -220,7 +258,7 @@ impl Tensor {
     /// Returns `None` on overflow.
     #[inline]
     pub fn addressed_extent_bytes(&self) -> Option<u64> {
-        let elem = self.dtype.element_size() as u64;
+        let elem = self.dtype().element_size() as u64;
         let mut extent: u64 = elem;
         for (&dim, &stride) in self.shape().iter().zip(self.strides().iter()) {
             if dim == 0 {
@@ -241,7 +279,7 @@ impl Tensor {
     /// past the end of the pool slot.
     #[inline]
     pub fn element_count_fits(&self, count: u64) -> bool {
-        match count.checked_mul(self.dtype.element_size() as u64) {
+        match count.checked_mul(self.dtype().element_size() as u64) {
             Some(bytes) => bytes <= self.size,
             None => false, // overflow — reject
         }
@@ -276,7 +314,7 @@ impl Tensor {
             return true;
         }
 
-        let mut expected_stride = self.dtype.element_size() as u64;
+        let mut expected_stride = self.dtype().element_size() as u64;
         for i in (0..(self.ndim as usize).min(MAX_TENSOR_DIMS)).rev() {
             if self.strides[i] != expected_stride {
                 return false;
@@ -324,7 +362,7 @@ impl Tensor {
             self.generation_full(),
             self.offset,
             new_shape,
-            self.dtype,
+            self.dtype(),
             self.device(),
         ))
     }
@@ -341,7 +379,7 @@ impl Tensor {
         let new_numel: u64 = new_tensor.shape[..new_tensor.ndim as usize]
             .iter()
             .product();
-        new_tensor.size = new_numel * self.dtype.element_size() as u64;
+        new_tensor.size = new_numel * self.dtype().element_size() as u64;
 
         Some(new_tensor)
     }
@@ -361,7 +399,7 @@ impl Serialize for Tensor {
         state.serialize_field("generation_hi", &self.generation_hi)?;
         state.serialize_field("offset", &self.offset)?;
         state.serialize_field("size", &self.size)?;
-        state.serialize_field("dtype", &self.dtype)?;
+        state.serialize_field("dtype", &self.dtype())?;
         state.serialize_field("ndim", &self.ndim)?;
         state.serialize_field("device", &self.device())?;
         state.serialize_field("shape", &self.shape[..])?;
@@ -400,7 +438,10 @@ impl<'de> Deserialize<'de> for Tensor {
                         "generation_hi" => tensor.generation_hi = map.next_value()?,
                         "offset" => tensor.offset = map.next_value()?,
                         "size" => tensor.size = map.next_value()?,
-                        "dtype" => tensor.dtype = map.next_value()?,
+                        "dtype" => {
+                            let dtype: TensorDtype = map.next_value()?;
+                            tensor.dtype_raw = dtype as u8;
+                        }
                         "ndim" => {
                             let raw: u8 = map.next_value()?;
                             tensor.ndim = raw.min(MAX_TENSOR_DIMS as u8);
@@ -553,7 +594,7 @@ mod tests {
 
         // Roundtrip through bytes
         let recovered: &Tensor = bytemuck::from_bytes(bytes);
-        assert_eq!(recovered.dtype, TensorDtype::F32);
+        assert_eq!(recovered.dtype(), TensorDtype::F32);
         assert_eq!(recovered.ndim, 0);
         assert!(recovered.is_cpu());
     }
@@ -578,7 +619,7 @@ mod tests {
         assert_eq!(recovered.generation, tensor.generation);
         assert_eq!(recovered.offset, tensor.offset);
         assert_eq!(recovered.size, tensor.size);
-        assert_eq!(recovered.dtype, tensor.dtype);
+        assert_eq!(recovered.dtype(), tensor.dtype());
         assert_eq!(recovered.ndim, tensor.ndim);
         assert_eq!(recovered.device(), tensor.device());
         assert_eq!(recovered.shape(), tensor.shape());
@@ -595,7 +636,7 @@ mod tests {
         assert_eq!(tensor.generation_full(), 0);
         assert_eq!(tensor.offset, 0);
         assert_eq!(tensor.size, 0);
-        assert_eq!(tensor.dtype, TensorDtype::F32);
+        assert_eq!(tensor.dtype(), TensorDtype::F32);
         assert_eq!(tensor.ndim, 0);
         assert!(tensor.is_cpu());
         assert_eq!(tensor.device(), Device::cpu());
@@ -633,6 +674,39 @@ mod tests {
         _copy.shape[0] = 1;
         assert_eq!(t.pool_id, 1, "original must be unaffected by copy mutation");
         assert_eq!(t.shape[0], 480);
+    }
+
+    /// `Tensor` used to carry `pub dtype: TensorDtype` under `unsafe impl Pod`,
+    /// so a descriptor byte-copied out of peer-writable SHM could hold a
+    /// discriminant no variant names — undefined behaviour the moment anything
+    /// matched on it.  The byte is private and laundered now, so the same input
+    /// is merely wrong, not unsound; and it must still sit at the same offset,
+    /// because the wire layout is a cross-process contract.
+    #[test]
+    fn an_invalid_dtype_byte_is_laundered_and_stays_at_its_wire_offset() {
+        const DTYPE_BYTE_OFFSET: usize = 32; // 16 (ids) + 16 (offset/size)
+
+        let t = Tensor::new(1, 0, 0, 0, &[4, 4], TensorDtype::U8, Device::CPU);
+        assert_eq!(
+            bytemuck::bytes_of(&t)[DTYPE_BYTE_OFFSET],
+            TensorDtype::U8 as u8,
+            "the dtype discriminant must stay at wire offset 32"
+        );
+
+        let mut corrupt = t;
+        corrupt.set_dtype_raw_for_test(200);
+        assert_eq!(
+            corrupt.dtype(),
+            TensorDtype::F32,
+            "a discriminant no variant names must read back as the F32 fallback"
+        );
+        // The reader is what makes it safe, but sanitize_from_shm must also
+        // rewrite the stored byte so a forwarded descriptor carries the fallback.
+        corrupt.sanitize_from_shm();
+        assert_eq!(
+            bytemuck::bytes_of(&corrupt)[DTYPE_BYTE_OFFSET],
+            TensorDtype::F32 as u8
+        );
     }
 
     #[test]

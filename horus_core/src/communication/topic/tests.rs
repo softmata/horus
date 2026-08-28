@@ -4155,16 +4155,24 @@ fn expired_slot_reclaimed_by_new_registration() {
         .store(current_time_ms().saturating_sub(5000), Ordering::Release); // expired 5s ago
     h.publisher_count.store(1, Ordering::Release);
 
-    // New producer registration should reclaim the expired slot
-    let slot = h.register_producer().expect("should reclaim expired slot");
-    assert_eq!(slot, 0, "Should reclaim slot 0 (the expired one)");
-    // Publisher count should remain 1 (decremented old, incremented new)
-    assert_eq!(h.pub_count(), 1);
-    // Verify the slot now has our PID
+    // INVERTED, for the reason spelled out on the twin test in header.rs: an
+    // expired lease is not on its own evidence that a participant is gone.
+    // Leases are refreshed by traffic, so an idle-but-live participant reads as
+    // expired, and evicting it silently deregistered working publishers and
+    // subscribers. A new registration must take a free slot while one exists.
+    let slot = h
+        .register_producer()
+        .expect("a free slot is available, so registration must succeed");
+    assert_ne!(slot, 0, "must not evict slot 0 while free slots remain");
     assert_eq!(
         p.pid.load(Ordering::Acquire),
+        99999,
+        "the expired participant must be left alone"
+    );
+    assert_eq!(
+        h.participants[slot].pid.load(Ordering::Acquire),
         std::process::id(),
-        "Reclaimed slot should have our PID"
+        "the new producer owns the slot it claimed"
     );
 }
 
@@ -4964,9 +4972,11 @@ fn rapid_topology_changes_detected_via_check() {
     }
 }
 
-/// Housekeeping fires after LEASE_REFRESH_INTERVAL (1024) messages on SpscShm.
+/// Housekeeping survives a long send/recv run on SpscShm.
 /// Verified by sending >1024 messages with periodic drain (ring capacity = 512).
-/// In a real robot, lease refresh happens ~once per second at 1kHz.
+/// Lease refresh itself is clock-gated now, so this no longer asserts a
+/// message-count boundary — it asserts the housekeeping path stays healthy
+/// across the volume that used to trigger it.
 #[test]
 fn housekeeping_fires_after_lease_refresh_interval() {
     let name = unique("hkeep_lease");
@@ -8975,13 +8985,16 @@ fn local_state_default_slot_size_is_8kb() {
     assert_eq!(local_state::DEFAULT_SLOT_SIZE, 8 * 1024);
 }
 
-/// LEASE_REFRESH_INTERVAL and EPOCH_CHECK_INTERVAL have expected values.
+/// EPOCH_CHECK_INTERVAL has its expected value and is a power of two — the
+/// housekeeping macros gate on it with a bitmask, so a non-power-of-two would
+/// silently never fire.
+///
+/// The `LEASE_REFRESH_INTERVAL` assertions that used to sit here are gone with
+/// the constant: lease refresh is clock-gated now, not counted.
 #[test]
 fn local_state_constants() {
-    assert_eq!(local_state::LEASE_REFRESH_INTERVAL, 1024);
     assert_eq!(local_state::EPOCH_CHECK_INTERVAL, 4);
     assert!(local_state::EPOCH_CHECK_INTERVAL.is_power_of_two());
-    assert!(local_state::LEASE_REFRESH_INTERVAL.is_power_of_two());
 }
 
 /// LocalState fields can be mutated directly.
@@ -9027,25 +9040,24 @@ fn local_state_epoch_staleness_detection() {
     assert!(is_stale3, "epoch 1 should be stale vs header epoch 2");
 }
 
-/// LocalState msg_counter wraps correctly for lease refresh checks.
+/// LocalState msg_counter is a plain wrapping counter.
+///
+/// This replaces `local_state_msg_counter_lease_refresh_boundary`, which
+/// asserted that `msg_counter % LEASE_REFRESH_INTERVAL == 0` triggered a lease
+/// refresh. That mechanism is gone — refresh is decided by the wall clock in
+/// `refresh_lease_if_due` — so the test was pinning behaviour the code no
+/// longer has. What still matters is that the counter wraps rather than
+/// overflowing, since the housekeeping macros mask it.
 #[test]
-fn local_state_msg_counter_lease_refresh_boundary() {
+fn local_state_msg_counter_wraps_without_overflow() {
     let mut ls = local_state::LocalState::default();
-
-    // Simulate counting up to lease refresh interval
-    for _ in 0..local_state::LEASE_REFRESH_INTERVAL {
-        ls.msg_counter = ls.msg_counter.wrapping_add(1);
-    }
-    assert_eq!(ls.msg_counter, local_state::LEASE_REFRESH_INTERVAL);
-
-    // Check modulo-based refresh trigger
-    let should_refresh = ls.msg_counter % local_state::LEASE_REFRESH_INTERVAL == 0;
-    assert!(should_refresh);
-
-    // One more message — should NOT trigger
+    ls.msg_counter = u32::MAX;
     ls.msg_counter = ls.msg_counter.wrapping_add(1);
-    let should_refresh2 = ls.msg_counter % local_state::LEASE_REFRESH_INTERVAL == 0;
-    assert!(!should_refresh2);
+    assert_eq!(ls.msg_counter, 0, "msg_counter must wrap, not overflow");
+
+    // The epoch gate is a bitmask on this counter, so wrapping must land it
+    // back on a firing boundary rather than skipping one.
+    assert_eq!(ls.msg_counter & (local_state::EPOCH_CHECK_INTERVAL - 1), 0);
 }
 
 // ============================================================================
@@ -9961,10 +9973,18 @@ fn e2e_registry_write_read_roundtrip() {
     let reg_name = unique("e2e_reg");
     let reg = SchedulerRegistry::open(&reg_name).expect("open registry");
 
-    // Register 3 nodes
-    let idx0 = reg.register_node("motor", 0, 100.0, 0);
-    let idx1 = reg.register_node("sensor", 1, 200.0, 1);
-    let _idx2 = reg.register_node("planner", 5, 10.0, 2);
+    // Register 3 nodes. `register_node` returns Option since overflow past
+    // MAX_REGISTRY_NODES yields None rather than aliasing the last slot; three
+    // nodes in a fresh registry always fit, so unwrapping asserts exactly that.
+    let idx0 = reg
+        .register_node("motor", 0, 100.0, 0)
+        .expect("registry not full");
+    let idx1 = reg
+        .register_node("sensor", 1, 200.0, 1)
+        .expect("registry not full");
+    let _idx2 = reg
+        .register_node("planner", 5, 10.0, 2)
+        .expect("registry not full");
 
     // Update with different metrics
     reg.update_node(idx0, 0, 10000, 0, 0, 0, 0, 800_000, 750_000, 1_500_000, 0);

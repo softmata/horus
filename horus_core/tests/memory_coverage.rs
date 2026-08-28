@@ -204,13 +204,16 @@ fn tensor_sanitize_clamps_invalid_dtype() {
     use horus_core::types::Tensor;
 
     let mut t = Tensor::default();
-    // Set dtype to an invalid raw value by writing directly to the byte
-    let dtype_ptr = &mut t.dtype as *mut TensorDtype as *mut u8;
-    unsafe { *dtype_ptr = 200 }; // Invalid discriminant
+    // This used to plant the byte through `&mut t.dtype as *mut TensorDtype`,
+    // which only compiled because the discriminant was a public field of enum
+    // type — the very hole that let peer-written SHM bytes become an invalid
+    // enum value. The field is a private `u8` now, so planting an invalid byte
+    // from outside the crate goes through the deliberate test-only hook.
+    t.set_dtype_raw_for_test(200); // Invalid discriminant
     t.sanitize_from_shm();
     // from_raw falls back to F32 for invalid discriminants
     assert_eq!(
-        t.dtype,
+        t.dtype(),
         TensorDtype::F32,
         "invalid dtype should fall back to F32"
     );
@@ -221,9 +224,14 @@ fn tensor_sanitize_preserves_valid_dtype() {
     use horus_core::types::Tensor;
 
     let mut t = Tensor::default();
-    t.dtype = TensorDtype::U8;
+    // `t.dtype = ...` before the discriminant became a private byte.
+    t.set_dtype(TensorDtype::U8);
     t.sanitize_from_shm();
-    assert_eq!(t.dtype, TensorDtype::U8, "valid dtype should be preserved");
+    assert_eq!(
+        t.dtype(),
+        TensorDtype::U8,
+        "valid dtype should be preserved"
+    );
 }
 
 // ============================================================

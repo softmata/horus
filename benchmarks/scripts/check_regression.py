@@ -15,17 +15,23 @@ Options:
     --output-markdown <path>  Write markdown summary to file
     --absolute-thresholds     Enable absolute latency thresholds for critical paths
 
-Absolute Thresholds (nanoseconds) - CI-safe ceilings (~3x target):
-    - DirectChannel: 20ns (same-thread, target ~3ns)
-    - SpscIntra: 60ns (same-process 1P1C, target ~18ns)
-    - SpmcIntra: 80ns (same-process 1PMC, target ~24ns)
-    - MpscIntra: 80ns (same-process MP1C, target ~26ns)
-    - MpmcIntra: 120ns (same-process MPMC, target ~36ns)
-    - PodShm: 150ns (cross-process POD MPMC, target ~50ns)
-    - MpscShm: 200ns (cross-process MP1C, target ~65ns)
-    - SpmcShm: 200ns (cross-process 1PMC, target ~70ns)
-    - SpscShm: 250ns (cross-process 1P1C, target ~85ns)
-    - MpmcShm: 600ns (cross-process non-POD MPMC, target ~167ns)
+Absolute thresholds are keyed on the exact Criterion benchmark id — the path
+Criterion writes under target/criterion, e.g. "native_shm_latency/small/16B".
+They used to be keyed on backend names (DirectChannel, SpscIntra, PodShm, ...)
+and matched by substring. No Criterion bench emits those names — six of them
+name backends that no longer exist at all — so the substring test was never
+true, zero checks ran, and the gate reported "All benchmarks pass" for every
+change, including one that tripled Topic::send latency. Two consequences of
+that are guarded against below: an id in the table that no run produces is an
+error, and a run in which zero checks fired is an error.
+
+The ceilings themselves are deliberately loose. There is no published
+baseline.json in this tree, so they are provisional: wide enough not to fire on
+a shared CI runner's noise (a suite that fails for reasons outside the
+repository teaches people to ignore it), tight enough to catch an order-of-
+magnitude regression. Tighten them once --save-baseline has produced a real
+baseline; the percentage check against that baseline, not these ceilings, is
+the gate that should catch a 10% regression.
 """
 
 import argparse
@@ -35,34 +41,27 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Absolute latency thresholds (nanoseconds) — CI-safe ceilings (~3x target)
+# Absolute latency ceilings (nanoseconds), keyed on the exact Criterion
+# benchmark id. Keys are matched exactly, not by substring: a renamed bench must
+# drop out of the table loudly (see check_absolute_thresholds) rather than
+# silently stop being checked.
 ABSOLUTE_THRESHOLDS = {
-    "DirectChannel": 20,
-    "DirectChannel_unchecked": 20,
-    "SpscIntra": 60,
-    "SpmcIntra": 80,
-    "MpscIntra": 80,
-    "MpmcIntra": 120,
-    "PodShm": 150,
-    "MpscShm": 200,
-    "SpmcShm": 200,
-    "SpscShm": 250,
-    "MpmcShm": 600,
+    "native_shm_latency/small/16B": 500,
+    "native_shm_latency/medium/128B": 700,
+    "native_shm_latency/large/4KB": 3000,
+    "latency_comparison/native_shm_16B": 500,
+    "pubsub_roundtrip/native_roundtrip_16B": 500,
+    "pubsub_roundtrip/native_roundtrip_1KB": 2000,
 }
 
-# Backend descriptions for reporting
-BACKEND_DESCRIPTIONS = {
-    "DirectChannel": "Same-thread pipeline (~3ns)",
-    "DirectChannel_unchecked": "Same-thread unchecked (~3ns)",
-    "SpscIntra": "Same-process 1P-1C (~18ns)",
-    "SpmcIntra": "Same-process 1P-MC (~24ns)",
-    "MpscIntra": "Same-process MP-1C (~26ns)",
-    "MpmcIntra": "Same-process MPMC (~36ns)",
-    "PodShm": "Cross-process POD MPMC (~50ns)",
-    "MpscShm": "Cross-process MP-1C (~65ns)",
-    "SpmcShm": "Cross-process 1P-MC (~70ns)",
-    "SpscShm": "Cross-process 1P-1C (~85ns)",
-    "MpmcShm": "Cross-process non-POD MPMC (~167ns)",
+# What each checked benchmark actually times, for the report.
+BENCH_DESCRIPTIONS = {
+    "native_shm_latency/small/16B": "SHM topic send+recv, 16B POD",
+    "native_shm_latency/medium/128B": "SHM topic send+recv, 128B POD",
+    "native_shm_latency/large/4KB": "SHM topic send+recv, 4KB POD",
+    "latency_comparison/native_shm_16B": "SHM topic send+recv, 16B POD",
+    "pubsub_roundtrip/native_roundtrip_16B": "Pub-sub round trip, 16B",
+    "pubsub_roundtrip/native_roundtrip_1KB": "Pub-sub round trip, 1KB",
 }
 
 
@@ -77,41 +76,44 @@ def find_benchmark_results(criterion_dir: Path) -> Dict[str, Dict]:
         print(f"Warning: Criterion directory not found: {criterion_dir}")
         return results
 
-    # Criterion stores results in: criterion/<group>/<bench>/new/estimates.json
-    for group_dir in criterion_dir.iterdir():
-        if not group_dir.is_dir() or group_dir.name.startswith("."):
+    # Criterion nests one directory per BenchmarkId component, so a bench
+    # declared as BenchmarkId::new("small", "16B") inside group
+    # "native_shm_latency" lands at native_shm_latency/small/16B/new/. The old
+    # two-level `for group_dir / for bench_dir` walk only ever saw the flat
+    # `group/bench` case, so every parameterised benchmark — which is most of
+    # them — was invisible to the checker. Recurse instead, and key each result
+    # on its full Criterion path.
+    for estimates_path in sorted(criterion_dir.rglob("new/estimates.json")):
+        bench_dir = estimates_path.parent.parent
+        parts = bench_dir.relative_to(criterion_dir).parts
+
+        # "report" holds Criterion's generated HTML, not measurements.
+        if not parts or parts[0] == "report" or any(p.startswith(".") for p in parts):
             continue
 
-        for bench_dir in group_dir.iterdir():
-            if not bench_dir.is_dir():
-                continue
+        full_name = "/".join(parts)
 
-            estimates_path = bench_dir / "new" / "estimates.json"
-            if estimates_path.exists():
-                try:
-                    with open(estimates_path) as f:
-                        data = json.load(f)
+        try:
+            with open(estimates_path) as f:
+                data = json.load(f)
 
-                    bench_name = bench_dir.name
-                    group_name = group_dir.name
+            # Extract median (point estimate)
+            median_ns = data.get("median", {}).get("point_estimate", 0)
 
-                    # Extract median (point estimate)
-                    median_ns = data.get("median", {}).get("point_estimate", 0)
+            # Also get mean and stddev if available
+            mean_ns = data.get("mean", {}).get("point_estimate", 0)
+            stddev_ns = data.get("std_dev", {}).get("point_estimate", 0)
 
-                    # Also get mean and stddev if available
-                    mean_ns = data.get("mean", {}).get("point_estimate", 0)
-                    stddev_ns = data.get("std_dev", {}).get("point_estimate", 0)
+            results[full_name] = {
+                "group": parts[0],
+                "name": bench_dir.name,
+                "median_ns": median_ns,
+                "mean_ns": mean_ns,
+                "stddev_ns": stddev_ns,
+            }
 
-                    results[f"{group_name}/{bench_name}"] = {
-                        "group": group_name,
-                        "name": bench_name,
-                        "median_ns": median_ns,
-                        "mean_ns": mean_ns,
-                        "stddev_ns": stddev_ns,
-                    }
-
-                except (json.JSONDecodeError, KeyError) as e:
-                    print(f"Warning: Failed to parse {estimates_path}: {e}")
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Failed to parse {estimates_path}: {e}")
 
     return results
 
@@ -120,19 +122,27 @@ def check_absolute_thresholds(results: Dict[str, Dict]) -> List[Tuple[str, float
     """
     Check results against absolute latency thresholds.
     Returns list of (benchmark, actual_ns, threshold_ns, status) tuples.
+
+    Matching is exact on the full Criterion id. It used to be a substring test
+    against backend names no bench emits, which matched nothing and made the
+    gate unconditionally green. A threshold entry with no matching result is
+    reported as MISSING and counted as a failure, so renaming a bench cannot
+    quietly drop it out of the gate.
     """
     violations = []
 
     for full_name, data in results.items():
-        bench_name = data["name"]
-        median_ns = data["median_ns"]
+        threshold = ABSOLUTE_THRESHOLDS.get(full_name)
+        if threshold is None:
+            continue
 
-        # Check if this benchmark has an absolute threshold
-        for backend_name, threshold in ABSOLUTE_THRESHOLDS.items():
-            if backend_name in bench_name or backend_name in full_name:
-                status = "PASS" if median_ns <= threshold else "FAIL"
-                violations.append((full_name, median_ns, threshold, status))
-                break
+        median_ns = data["median_ns"]
+        status = "PASS" if median_ns <= threshold else "FAIL"
+        violations.append((full_name, median_ns, threshold, status))
+
+    for name, threshold in ABSOLUTE_THRESHOLDS.items():
+        if name not in results:
+            violations.append((name, float("nan"), threshold, "MISSING"))
 
     return violations
 
@@ -184,24 +194,35 @@ def generate_markdown_report(
     # Absolute threshold section
     if absolute_checks:
         lines.append("### Critical Path Latencies\n")
-        lines.append("| Backend | Latency | Threshold | Status |")
-        lines.append("|---------|---------|-----------|--------|")
+        lines.append("| Benchmark | What it times | Latency | Threshold | Status |")
+        lines.append("|-----------|---------------|---------|-----------|--------|")
 
         for full_name, actual, threshold, status in sorted(absolute_checks, key=lambda x: x[0]):
             emoji = "✅" if status == "PASS" else "❌"
-            bench_name = full_name.split("/")[-1]
-            desc = BACKEND_DESCRIPTIONS.get(bench_name, "")
-            lines.append(f"| {bench_name} | {actual:.1f}ns | {threshold}ns | {emoji} {status} |")
+            desc = BENCH_DESCRIPTIONS.get(full_name, "")
+            actual_str = "—" if status == "MISSING" else f"{actual:.1f}ns"
+            lines.append(
+                f"| `{full_name}` | {desc} | {actual_str} | {threshold}ns | {emoji} {status} |"
+            )
 
         lines.append("")
 
         # Check for any failures
         failures = [c for c in absolute_checks if c[3] == "FAIL"]
         if failures:
-            lines.append("⚠️ **Absolute threshold violations detected!** The following backends exceed their maximum allowed latency:\n")
+            lines.append("⚠️ **Absolute threshold violations detected!** The following benchmarks exceed their maximum allowed latency:\n")
             for full_name, actual, threshold, _ in failures:
-                bench_name = full_name.split("/")[-1]
-                lines.append(f"- **{bench_name}**: {actual:.1f}ns (max: {threshold}ns)")
+                lines.append(f"- **`{full_name}`**: {actual:.1f}ns (max: {threshold}ns)")
+            lines.append("")
+
+        # A benchmark that the threshold table names but the run never produced
+        # is a hole in the gate, not a pass: the bench was renamed or removed
+        # and nothing is checking that path any more.
+        missing = [c for c in absolute_checks if c[3] == "MISSING"]
+        if missing:
+            lines.append("⚠️ **Benchmarks in the threshold table produced no results.** They were renamed or removed, and are no longer gated:\n")
+            for full_name, _actual, _threshold, _ in missing:
+                lines.append(f"- **`{full_name}`**")
             lines.append("")
 
     # Percentage regression section
@@ -225,8 +246,10 @@ def generate_markdown_report(
 
         lines.append("")
 
-    # Summary
-    abs_failures = sum(1 for c in absolute_checks if c[3] == "FAIL")
+    # Summary. MISSING counts as a failure: an ungated critical path is not a
+    # pass, and treating it as one is how this gate stayed green for every
+    # change ever made to it.
+    abs_failures = sum(1 for c in absolute_checks if c[3] in ("FAIL", "MISSING"))
     regressions = sum(1 for c in regression_checks if c[4] == "REGRESSION")
 
     if abs_failures > 0 or regressions > 0:
@@ -281,6 +304,17 @@ def main():
         absolute_checks = check_absolute_thresholds(results)
         print(f"Ran {len(absolute_checks)} absolute threshold checks")
 
+        # The whole point of the gate. Absolute checks are on by default, so a
+        # run that fired none of them means the threshold table no longer
+        # matches any benchmark id — which is exactly the state this file was
+        # in, silently, while printing "All benchmarks pass".
+        if not absolute_checks:
+            print(
+                "ERROR: 0 absolute threshold checks ran — the threshold table "
+                "matches no benchmark id.\n  Known ids: " + ", ".join(sorted(results))
+            )
+            sys.exit(1)
+
     if baseline:
         regression_checks = check_percentage_regression(results, baseline, args.threshold)
         print(f"Ran {len(regression_checks)} regression checks")
@@ -296,7 +330,7 @@ def main():
     print("\n" + report)
 
     # Determine exit code
-    abs_failures = sum(1 for c in absolute_checks if c[3] == "FAIL")
+    abs_failures = sum(1 for c in absolute_checks if c[3] in ("FAIL", "MISSING"))
     regressions = sum(1 for c in regression_checks if c[4] == "REGRESSION")
 
     if abs_failures > 0 or regressions > 0:

@@ -12,7 +12,7 @@ extern "C" {
     // Scheduler
     void* horus_scheduler_new();
     void  horus_scheduler_destroy(void* sched);
-    void  horus_scheduler_tick_rate(void* sched, double hz);
+    int   horus_scheduler_tick_rate(void* sched, double hz);
     void  horus_scheduler_prefer_rt(void* sched);
     void  horus_scheduler_stop(const void* sched);
     bool  horus_scheduler_is_running(const void* sched);
@@ -80,7 +80,9 @@ TEST(Cabi, NodeTickCallbackInvoked) {
 TEST(Cabi, NullSafety) {
     // None of these must crash
     horus_scheduler_destroy(nullptr);
-    horus_scheduler_tick_rate(nullptr, 100.0);
+    // tick_rate reports invalid input through its return value now, rather
+    // than returning void: -1 for a null scheduler.
+    EXPECT_EQ(horus_scheduler_tick_rate(nullptr, 100.0), -1);
     horus_scheduler_stop(nullptr);
     EXPECT_FALSE(horus_scheduler_is_running(nullptr)) << "null is_running returns false";
 }

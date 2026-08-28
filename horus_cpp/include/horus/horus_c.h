@@ -33,7 +33,9 @@ typedef struct HorusSubscriber HorusSubscriber;
 
 HorusScheduler* horus_scheduler_new(void);
 void            horus_scheduler_destroy(HorusScheduler* sched);
-void            horus_scheduler_tick_rate(HorusScheduler* sched, double hz);
+/* Returns 0 on success, -1 if sched is NULL or hz is not finite and positive.
+ * Fractional rates (e.g. 0.5) are honored exactly. */
+int             horus_scheduler_tick_rate(HorusScheduler* sched, double hz);
 void            horus_scheduler_name(HorusScheduler* sched, const char* name);
 void            horus_scheduler_prefer_rt(HorusScheduler* sched);
 void            horus_scheduler_require_rt(HorusScheduler* sched);

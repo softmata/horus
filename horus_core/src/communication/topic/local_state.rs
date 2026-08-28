@@ -9,9 +9,13 @@ use super::types::{BackendMode, TopicRole};
 /// Default serialized message slot size (8KB)
 pub(crate) const DEFAULT_SLOT_SIZE: usize = 8 * 1024;
 
-/// Lease refresh interval - refresh every N messages instead of every message
-/// This avoids calling SystemTime::now() syscall on the hot path
-pub(crate) const LEASE_REFRESH_INTERVAL: u32 = 1024;
+// `LEASE_REFRESH_INTERVAL` (1024 messages) lived here. Lease refresh is no
+// longer driven by a message count at all: refreshing strictly every N messages
+// made liveness a function of throughput, so a healthy but slow participant
+// spent most of its life looking expired to the reaper. It is now gated on the
+// wall clock in `RingTopic::refresh_lease_if_due`, which fires at half the
+// lease timeout regardless of rate; `dispatch::LEASE_CHECK_INTERVAL` only keeps
+// the clock read off the per-message hot path.
 
 /// Epoch check interval — reads migration_epoch from SHM header every N messages.
 /// Must be a power of two (used with bitmask).

@@ -247,6 +247,22 @@ pub fn node_builder_build(
     let config = builder.config;
     let node_name = config.name.clone();
 
+    // Validate the rate before touching the scheduler. The rate arrives as an
+    // f64 (the C++ `Frequency` carries a double) and used to be applied as
+    // `(hz as u64).hz()`: that truncated 2.5 Hz to 2 Hz and truncated anything
+    // below 1 Hz to 0, where `u64::hz()` asserts — a panic inside an
+    // `extern "C"` frame, which aborts the whole process instead of returning
+    // an error C++ can see. Reject only genuinely invalid rates, and keep the
+    // f64 so fractional rates survive.
+    let rate_hz = match config.rate_hz {
+        Some(hz) if !hz.is_finite() || hz <= 0.0 => {
+            return Err(format!(
+                "node '{node_name}': tick rate must be finite and positive (got {hz})"
+            ));
+        }
+        other => other,
+    };
+
     // Create node with the C++ tick callback (or no-op if none set).
     // The callback is an extern "C" fn() — panics across extern "C" abort
     // the process (Rust 2024 behavior). Our catch_unwind in CppNode::tick()
@@ -271,8 +287,8 @@ pub fn node_builder_build(
     let mut nb = sched.inner.add(node);
 
     // Apply configuration
-    if let Some(hz) = config.rate_hz {
-        nb = nb.rate((hz as u64).hz());
+    if let Some(hz) = rate_hz {
+        nb = nb.rate(hz.hz());
     }
     if let Some(us) = config.budget_us {
         nb = nb.budget(Duration::from_micros(us));
@@ -351,6 +367,29 @@ mod tests {
         let result = node_builder_build(builder, &mut sched);
         assert!(result.is_ok(), "build failed: {:?}", result);
         assert!(scheduler_node_list(&sched).contains(&"motor_ctrl".to_string()));
+    }
+
+    // Regression: a sub-1 Hz rate used to truncate to 0 and hit the `assert!`
+    // in `u64::hz()` — a panic raised inside an `extern "C"` frame, i.e. an
+    // abort of the whole process. Fractional rates must build, and invalid
+    // ones must come back as an ordinary error.
+    #[test]
+    fn fractional_rate_builds_and_invalid_rate_is_an_error() {
+        let mut sched = scheduler_new();
+        let mut slow = node_builder_new("telemetry");
+        node_builder_rate(&mut slow, 0.5);
+        node_builder_build(slow, &mut sched).unwrap();
+        assert!(scheduler_node_list(&sched).contains(&"telemetry".to_string()));
+
+        for bad in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {
+            let mut b = node_builder_new("bad_rate");
+            node_builder_rate(&mut b, bad);
+            assert!(
+                node_builder_build(b, &mut sched).is_err(),
+                "rate {bad} should be rejected, not applied"
+            );
+        }
+        assert!(!scheduler_node_list(&sched).contains(&"bad_rate".to_string()));
     }
 
     #[test]

@@ -366,11 +366,11 @@ mod tests {
         let cm = CostMapDescriptor::new(grid_t, cost_t, 0.1, 100, 100);
 
         // Grid tensor is I8
-        assert_eq!(cm.grid_tensor().dtype, TensorDtype::I8);
+        assert_eq!(cm.grid_tensor().dtype(), TensorDtype::I8);
         assert_eq!(cm.grid_tensor().shape(), &[100, 100]);
 
         // Cost tensor is U8
-        assert_eq!(cm.cost_tensor().dtype, TensorDtype::U8);
+        assert_eq!(cm.cost_tensor().dtype(), TensorDtype::U8);
         assert_eq!(cm.cost_tensor().shape(), &[100, 100]);
 
         // They have different slot IDs
