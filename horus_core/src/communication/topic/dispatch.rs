@@ -487,9 +487,30 @@ fn deserialize_spill_slot<T: DeserializeOwned>(
 fn read_spilled_once<T: DeserializeOwned>(spill: SpillDescriptor, topic_name: &str) -> Option<T> {
     let tensor = spill.to_tensor();
     let pool = super::pool_registry::get_or_create_pool(topic_name);
+    // Pin the slot across the read, exactly as `read_spilled_retained` does.
+    //
+    // "There is exactly one reader" was true and still is; what it did not cover
+    // is the SAME reader arriving at one ring position twice. The first read
+    // released the producer's alloc refcount, `return_slot` freed the slot and
+    // `backend.zero()` began writing volatile zeroes over it — and the second
+    // read then validated a descriptor whose generation had not yet been bumped
+    // (generation moves on alloc, not on free) and handed the region to bincode
+    // while it was being zeroed. That is a data race on the payload itself, and
+    // it is what ThreadSanitizer caught under `auto_grow_cross_thread_no_crash`.
+    //
+    // `try_retain` closes it: it refuses on a zero refcount, so a position that
+    // has already been consumed reads as a clean miss instead of a torn read.
+    if pool.try_retain(&tensor).is_err() {
+        return None;
+    }
     let msg = deserialize_spill_slot::<T>(&pool, &tensor, spill.size as usize);
-    // Single consumer owns the alloc refcount; free it now (gen-checked no-op if stale).
-    pool.release(&tensor);
+    // Two references are outstanding and both are ours to drop: the pin above,
+    // and the producer's alloc refcount that this single consumer inherits. The
+    // second release is the COMM-H3 reclaim that keeps the spill pool from
+    // leaking; together they take the slot to zero and free it, which is the
+    // same end state as the single release this replaced.
+    pool.release(&tensor); // our read pin
+    pool.release(&tensor); // the producer's alloc refcount
     msg
 }
 

@@ -1598,9 +1598,20 @@ fn fault_child_publisher() {
     t.check_migration_now();
     std::thread::sleep(Duration::from_millis(100));
 
-    // Publish monotonically increasing values
-    for i in 0u64.. {
+    // Publish monotonically increasing values until the parent SIGKILLs us.
+    //
+    // Written as an explicit `loop` with its own counter rather than the more
+    // obvious `for i in 0u64..`: the unbounded-range form trips clippy's
+    // `for_unbounded_range`, which is new in 1.98 and denied by CI's
+    // `-D warnings`. An `#[allow]` is not an option — it would be an
+    // unknown-lint warning (so, also an error) on older toolchains that predate
+    // the lint. The semantics are identical; `RangeFrom`'s iterator does this
+    // same `+= 1`. Overflow is unreachable in either form: at ~2ms per message
+    // a u64 counter needs ~10^9 years to wrap, and this child lives ~1.5s.
+    let mut i: u64 = 0;
+    loop {
         t.send(i);
+        i += 1;
         // Pace at ~2ms to match cross-process pattern
         std::thread::sleep(Duration::from_millis(2));
     }

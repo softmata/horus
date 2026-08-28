@@ -339,10 +339,25 @@ fn create_python_wrapper() -> Result<(tempfile::TempDir, PathBuf)> {
     // O_NOFOLLOW: in a shared /tmp another local user could pre-create the
     // path as a symlink, or simply rewrite the file in the window before the
     // interpreter opens it — and this file is then executed. A private
-    // per-invocation directory (mode 0700, random name, created exclusively)
+    // per-invocation directory (random name, mode 0700, created exclusively)
     // puts the script out of other users' reach entirely.
-    let dir = tempfile::Builder::new()
-        .prefix("horus_wrapper_")
+    //
+    // The 0700 has to be asked for explicitly: `tempdir()` on its own creates
+    // the directory with a plain `mkdir` at 0o777 & !umask, i.e. 0755 under
+    // the usual umask 022 — owned by us, but *enterable and readable* by every
+    // local user, which defeats the whole point of moving the script here.
+    // `Builder::permissions` passes the mode down to `mkdir(2)` itself, so the
+    // directory is never visible to anyone else even momentarily; chmod-ing
+    // after the fact would leave a window with the loose mode. umask can only
+    // clear further bits, never add them, so the result is at most 0700.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("horus_wrapper_");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let dir = builder
         .tempdir()
         .context("creating a private temporary directory for the Python wrapper")?;
     let wrapper_path = dir.path().join("wrapper.py");
@@ -392,7 +407,28 @@ if __name__ == "__main__":
     scheduler.run_node()
 "#;
 
-    fs::write(&wrapper_path, wrapper_content)?;
+    // Defence in depth for the script itself. The 0700 directory above is what
+    // actually keeps other users out, but the file inherits nothing from it:
+    // `fs::write` would create it 0o666 & !umask, so a wrapper.py that ever
+    // ended up somewhere less protected (a differently-configured TMPDIR, a
+    // future caller passing in its own directory) would be world-readable.
+    // `create_new` adds O_EXCL, so this never opens a path that already exists
+    // — no pre-planted symlink or file can be written through.
+    use std::io::Write;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut wrapper_file = opts
+        .open(&wrapper_path)
+        .with_context(|| format!("creating the Python wrapper {}", wrapper_path.display()))?;
+    wrapper_file
+        .write_all(wrapper_content.as_bytes())
+        .with_context(|| format!("writing the Python wrapper {}", wrapper_path.display()))?;
+
     Ok((dir, wrapper_path))
 }
 
@@ -817,7 +853,11 @@ mod tests {
         // Regression: the wrapper was written to a predictable
         // `/tmp/horus_wrapper_<nanos>.py` and then executed, so any local user
         // could pre-create or rewrite it. It must now sit inside its own
-        // directory, which tempfile creates with mode 0700.
+        // directory — and that directory has to be created 0700 *explicitly*:
+        // tempfile's default is a plain `mkdir` at 0o777 & !umask, which is
+        // 0755 under the usual umask 022 and leaves the script readable by
+        // every local user. This assertion is what catches a regression back
+        // to the default, so it checks the mode rather than trusting tempfile.
         let (dir, wrapper) = create_python_wrapper().unwrap();
         assert_eq!(
             wrapper.parent().unwrap(),
@@ -834,6 +874,16 @@ mod tests {
                 0,
                 "wrapper directory must not be group/world accessible: {:o}",
                 mode
+            );
+
+            // The script is what actually gets executed, so it carries its own
+            // restriction rather than relying on the directory's mode alone.
+            let file_mode = fs::metadata(&wrapper).unwrap().permissions().mode();
+            assert_eq!(
+                file_mode & 0o077,
+                0,
+                "wrapper script must not be group/world accessible: {:o}",
+                file_mode
             );
         }
     }
