@@ -84,7 +84,7 @@ fn latency_figures(body: &str) -> Vec<String> {
             .collect();
         if cleaned.contains('-') || cleaned.contains('\u{2013}') {
             let parts: Vec<&str> = cleaned
-                .split(|c| c == '-' || c == '\u{2013}')
+                .split(['-', '\u{2013}'])
                 .filter(|s| !s.is_empty())
                 .collect();
             if parts.len() == 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {

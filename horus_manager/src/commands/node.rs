@@ -688,12 +688,12 @@ mod tests {
     #[test]
     fn a_rate_far_below_target_is_painted_red() {
         assert_eq!(
-            paint_rate_shortfall("15.9 Hz".to_string(), 100.0, 15.9).fgcolor(),
+            paint_rate_shortfall("15.9 Hz".to_string(), 100.0, 15.9).fgcolor,
             Some(Color::Red),
             "16% of the configured rate is the case the column exists for"
         );
         assert_eq!(
-            paint_rate_shortfall("0.0 Hz".to_string(), 100.0, 0.0).fgcolor(),
+            paint_rate_shortfall("0.0 Hz".to_string(), 100.0, 0.0).fgcolor,
             Some(Color::Red)
         );
     }
@@ -701,13 +701,13 @@ mod tests {
     #[test]
     fn a_rate_that_is_keeping_up_is_painted_green() {
         assert_eq!(
-            paint_rate_shortfall("99.8 Hz".to_string(), 100.0, 99.8).fgcolor(),
+            paint_rate_shortfall("99.8 Hz".to_string(), 100.0, 99.8).fgcolor,
             Some(Color::Green),
             "the sampling window is about a second, so a couple of percent of \
              wander is not a finding"
         );
         assert_eq!(
-            paint_rate_shortfall("30.0 Hz".to_string(), 30.0, 30.0).fgcolor(),
+            paint_rate_shortfall("30.0 Hz".to_string(), 30.0, 30.0).fgcolor,
             Some(Color::Green)
         );
     }
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn a_partial_shortfall_is_painted_amber() {
         assert_eq!(
-            paint_rate_shortfall("75.0 Hz".to_string(), 100.0, 75.0).fgcolor(),
+            paint_rate_shortfall("75.0 Hz".to_string(), 100.0, 75.0).fgcolor,
             Some(Color::Yellow)
         );
     }
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn a_node_with_no_configured_rate_gets_no_verdict() {
         assert_eq!(
-            paint_rate_shortfall("12.0 Hz".to_string(), 0.0, 12.0).fgcolor(),
+            paint_rate_shortfall("12.0 Hz".to_string(), 0.0, 12.0).fgcolor,
             None
         );
     }

@@ -5,7 +5,7 @@
 //!
 //! Run: cargo run --release -p horus_benchmarks --bin iceoryx2_comparison --features iceoryx2
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
@@ -290,74 +290,13 @@ fn bench_iox2_throughput_u64() -> f64 {
 // Cross-thread benchmarks (forces SHM/atomic backends)
 // ---------------------------------------------------------------------------
 
-fn bench_horus_cross_thread_u64() -> (u64, u64, u64, u64, u64) {
-    let ready = Arc::new(AtomicBool::new(false));
-    let done = Arc::new(AtomicBool::new(false));
-
-    let ready_pub = ready.clone();
-    let done_pub = done.clone();
-
-    // Publisher thread
-    let pub_handle = thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new("bench.horus.ct.u64").expect("topic");
-        ready_pub.store(true, Ordering::Release);
-
-        // Wait for subscriber to be ready
-        while !ready_pub.load(Ordering::Acquire) {}
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        for i in 0..(WARMUP + ITERATIONS) as u64 {
-            topic.send(i);
-            // Pace to avoid overwhelming ring buffer
-            while topic.recv().is_none() {
-                std::hint::spin_loop();
-            }
-        }
-        done_pub.store(true, Ordering::Release);
-    });
-
-    // Subscriber thread — measures roundtrip on its own topic
-    let sub_handle = thread::spawn(move || {
-        let topic: Topic<u64> = Topic::new("bench.horus.ct.u64.sub").expect("topic");
-        // Give publisher time to create topic first
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let mut latencies = Vec::with_capacity(ITERATIONS);
-
-        // Use a separate ping-pong approach:
-        // Publisher sends on topic A, subscriber reads from topic A
-        // This forces cross-thread atomic path
-        let pub_topic: Topic<u64> = Topic::new("bench.horus.ct.u64").expect("topic");
-
-        for i in 0..(WARMUP + ITERATIONS) {
-            let start = Instant::now();
-            pub_topic.send(i as u64);
-            while pub_topic.recv().is_none() {
-                std::hint::spin_loop();
-            }
-            if i >= WARMUP {
-                latencies.push(start.elapsed().as_nanos() as u64);
-            }
-        }
-
-        latencies
-    });
-
-    // Actually — the above approach has both threads on same Topic which IS cross-thread.
-    // But both threads call send+recv on their own Topic clone, which horus detects as
-    // same-thread (each Topic instance is thread-local).
-    //
-    // For TRUE cross-thread: publisher sends, subscriber on different thread receives.
-    // Let me use a proper ping-pong pattern.
-
-    pub_handle.join().unwrap();
-    let latencies = sub_handle.join().unwrap();
-
-    if latencies.is_empty() {
-        return (0, 0, 0, 0, 0);
-    }
-    compute_stats(latencies)
-}
+// An earlier `bench_horus_cross_thread_u64` lived here. It had both threads
+// calling send+recv on their own `Topic` instance, which horus resolves to the
+// thread-local backend — so it measured the same-thread path twice under a
+// "cross-thread" label, as its own trailing comment admitted. It was never
+// wired into `main`; `bench_horus_cross_thread_pingpong` below is the correct
+// replacement (A sends on one topic, B receives on it and replies on another,
+// which is the only shape that forces the cross-thread SpscShm backend).
 
 /// Cross-thread ping-pong: thread A sends on topic1, thread B receives on topic1,
 /// thread B sends on topic2, thread A receives on topic2. Measures full roundtrip.
@@ -625,7 +564,7 @@ fn bench_horus_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u6
 
     // Subscriber threads — each measures its own receive latency
     let mut sub_handles = Vec::new();
-    for s in 0..num_subs {
+    for _ in 0..num_subs {
         let barrier_s = barrier.clone();
         let total_sent_s = total_sent.clone();
         sub_handles.push(thread::spawn(move || {
@@ -642,6 +581,14 @@ fn bench_horus_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u6
                 if topic.recv().is_some() {
                     latencies.push(t0.elapsed().as_nanos() as u64);
                     received += 1;
+                } else if total_sent_s.load(Ordering::Acquire) >= expected {
+                    // Every publisher has finished and the ring still came up
+                    // empty, so this subscriber's `expected / num_subs` quota is
+                    // never going to arrive: the MPMC split is not guaranteed
+                    // even, and ring overflow can drop messages outright. Stop
+                    // here instead of spinning out the full 30s deadline, which
+                    // is what `total_sent` was counting for.
+                    break;
                 } else {
                     std::hint::spin_loop();
                 }
@@ -662,7 +609,11 @@ fn bench_horus_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u6
 
             for i in 0..msgs_per_pub {
                 topic.send((p * msgs_per_pub + i) as u64);
-                total_sent_p.fetch_add(1, Ordering::Relaxed);
+                // Release pairs with the subscribers' Acquire load: once a
+                // subscriber observes the count reach `expected`, every send
+                // that produced it is already visible, so an empty ring really
+                // does mean nothing more is coming.
+                total_sent_p.fetch_add(1, Ordering::Release);
             }
         }));
     }
@@ -688,7 +639,7 @@ fn bench_iox2_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64
 
     // Subscriber threads
     let mut sub_handles = Vec::new();
-    for s in 0..num_subs {
+    for _ in 0..num_subs {
         let barrier_s = barrier.clone();
         sub_handles.push(thread::spawn(move || {
             let node = NodeBuilder::new().create::<ipc::Service>().expect("node");

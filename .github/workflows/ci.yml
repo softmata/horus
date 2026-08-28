@@ -63,8 +63,19 @@ jobs:
           key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-check-
 
+      # horus_py cannot ride along in an --all-targets sweep: --all-targets
+      # builds the lib TEST target, and horus_py/src/lib.rs raises a
+      # compile_error! whenever cfg(test) and the default `extension-module`
+      # feature are both on (pyo3 leaves Python's symbols to the interpreter
+      # that dlopens the .so, so a test binary has nothing to link them
+      # against). Cargo cannot vary features per target, so the crate gets a
+      # second pass with the feature off instead — it is excluded from the
+      # sweep, never from coverage. Same split the test job uses below.
       - name: Cargo Check
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --exclude horus_py
+
+      - name: Cargo Check (horus_py)
+        run: cargo check -p horus_py --all-targets --no-default-features
 
   fmt:
     name: Format
@@ -114,10 +125,18 @@ jobs:
         run: |
           # See the RUSTFLAGS comment at the top: a PR event never has
           # github.ref == refs/heads/main, so also honour the PR target branch.
+          #
+          # horus_py is linted in its own pass with --no-default-features for
+          # the reason spelled out in the check job: --all-targets builds its
+          # lib test target, and the `extension-module` default feature makes
+          # that a compile_error!. Splitting it out keeps it linted rather than
+          # dropping it from coverage.
           if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.base_ref }}" == "main" ]]; then
-            cargo clippy --workspace --all-targets -- -D warnings
+            cargo clippy --workspace --all-targets --exclude horus_py -- -D warnings
+            cargo clippy -p horus_py --all-targets --no-default-features -- -D warnings
           else
-            cargo clippy --workspace --all-targets
+            cargo clippy --workspace --all-targets --exclude horus_py
+            cargo clippy -p horus_py --all-targets --no-default-features
           fi
 
   test:
@@ -270,6 +289,12 @@ jobs:
         run: |
           # Exclude horus_manager to avoid filename collision with horus library
           # (both would create target/doc/horus/ due to binary named 'horus')
+          #
+          # horus_py needs NO split here, unlike the check and clippy jobs:
+          # rustdoc never sets cfg(test) and never links a test binary, so the
+          # `extension-module` guard in horus_py/src/lib.rs does not fire. It is
+          # also the right call — docs should describe the crate as it ships,
+          # i.e. with its default features on.
           cargo doc --workspace --no-deps --exclude horus_manager
         env:
           RUSTDOCFLAGS: ${{ (github.ref == 'refs/heads/main' || github.base_ref == 'main') && '-D warnings' || '' }}

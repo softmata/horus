@@ -113,7 +113,17 @@ jobs:
       - name: Install Rust Nightly
         uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:
-          components: rust-src
+          # rust-src is what -Zbuild-std needs to rebuild std instrumented.
+          # rustfmt is a *test* dependency: this job runs the whole workspace,
+          # and horus_manager's every_template_is_already_formatted shells out
+          # to `rustfmt --check` to prove the scaffolded templates ship
+          # formatted. Its tool_on_path("rustfmt") guard cannot skip the test
+          # here — rustup's shim is always on PATH on a GitHub runner, so a
+          # missing component is not "absent", it is a shim that exits with
+          # "'rustfmt' is not installed for the toolchain 'nightly-...'" and
+          # trips the assertion. The tsan job excludes horus_manager, so it
+          # does not need this component.
+          components: rust-src, rustfmt
 
       # Setup shared memory for HORUS tests
       - name: Setup Shared Memory

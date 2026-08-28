@@ -4633,7 +4633,7 @@ mod tests {
         // An oversized length inside the right slot is rejected as well.
         let mut too_long = a;
         too_long.size = a.size + 1;
-        assert!(pool.data_slice(&too_long).is_err());
+        pool.data_slice(&too_long).unwrap_err();
 
         // A legitimate sub-view of the same slot still works.
         let sub = a.slice_first_dim(0, 32).expect("sub-view");

@@ -520,7 +520,7 @@ mod tests {
         fs::create_dir_all(project.join(".horus/packages")).unwrap();
         horus_sys::fs::symlink(&pkg_dir, &project.join(".horus/packages/horus-fixture")).unwrap();
 
-        let entries = collect_python_path_entries(&project, &[cache.clone()]);
+        let entries = collect_python_path_entries(&project, std::slice::from_ref(&cache));
         let python_path = entries.join(PYTHON_PATH_SEP);
 
         let output = Command::new("python3")

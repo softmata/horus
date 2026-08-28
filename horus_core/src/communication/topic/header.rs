@@ -1009,12 +1009,115 @@ pub struct TopicSlotRead {
     pub topic_kind: u8,
 }
 
-/// Read the latest message payload from a topic's shared-memory backing file.
+/// A read-only view of a topic's shared region, opened the way the running
+/// platform actually backs it.
+///
+/// The path-based readers below address a topic by its `topic_shm_path`, which
+/// was correct back when every backend was a file: `/dev/shm/horus_<ns>/topics/
+/// <name>` on Linux, `/tmp/…` on macOS and on the generic fallback. The Windows
+/// backend is not a file at all — `ShmRegion::new` calls
+/// `CreateFileMappingW(INVALID_HANDLE_VALUE, …)`, a pagefile-backed section
+/// named `Local\horus_<name>`, and `ShmRegion::backing_path()` correspondingly
+/// reports `None` there. Nothing is ever created at the topic path, so
+/// `File::open` failed with `NotFound` and every reader here returned `None`
+/// for every live topic on Windows: `horus topic echo` and `horus topic hz`
+/// printed nothing and horus_net's SHM reader exported nothing, on a platform
+/// where the ring itself works — the cross-process half is fine there, it is
+/// only the region's *address* that differs.
+///
+/// The path stays the public address because it is the address wherever there
+/// is one, and it still *names* the topic where there is not: `topic_shm_path`
+/// is `<topics dir>/<name>`, so the name is recoverable from the path and the
+/// section can be opened by it.
+enum TopicRegion {
+    /// A file-backed region (Linux, macOS, the generic fallback), mapped
+    /// read-only.
+    Mapped(memmap2::Mmap),
+    /// A Windows named section. The handle is held for the life of the view.
+    #[cfg(target_os = "windows")]
+    Section(horus_sys::shm::ShmRegion),
+}
+
+impl std::ops::Deref for TopicRegion {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Mapped(mmap) => &mmap[..],
+            #[cfg(target_os = "windows")]
+            Self::Section(region) => region.as_slice(),
+        }
+    }
+}
+
+/// Map a topic's shared region read-only, or `None` when it is absent, too
+/// small to hold a header, or unmappable.
+///
+/// Every reader in this file goes through here, so the guarantee they all rely
+/// on is made once: the returned view is at least `TOPIC_HEADER_SIZE` bytes.
+///
+/// The file is tried first on every platform, because where one exists it *is*
+/// the region. Only when there is none does the Windows section lookup run, so
+/// nothing about the file-backed platforms changes.
+fn map_topic_region(path: &std::path::Path) -> Option<TopicRegion> {
+    use memmap2::MmapOptions;
+    use std::fs::File;
+
+    if let Ok(file) = File::open(path) {
+        if file.metadata().ok()?.len() < TOPIC_HEADER_SIZE as u64 {
+            return None;
+        }
+        // SAFETY: the file is opened read-only; the mapping is read-only.
+        let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+        return Some(TopicRegion::Mapped(mmap));
+    }
+
+    open_named_section(path)
+}
+
+/// Open the Windows named section a topic path refers to.
+///
+/// `topic_shm_path` is `shm_topics_dir().join(name)` and a topic name may
+/// itself contain separators, so the name is the whole remainder of the path
+/// rather than just its last component — `file_name()` on `robot/cmd_vel`
+/// would ask the kernel for a section called `cmd_vel`, which is either absent
+/// or, worse, a different topic.
+#[cfg(target_os = "windows")]
+fn open_named_section(path: &std::path::Path) -> Option<TopicRegion> {
+    let name = path
+        .strip_prefix(horus_sys::shm::shm_topics_dir())
+        .ok()?
+        .to_str()?;
+    let region = horus_sys::shm::ShmRegion::open_existing(name, TOPIC_HEADER_SIZE).ok()?;
+    // `open_existing` already refuses a region smaller than the minimum, but it
+    // falls back to *assuming* the minimum when `VirtualQuery` fails rather
+    // than measuring it. Re-check what we were actually handed, because the
+    // readers below index into it on the strength of that guarantee.
+    if region.len() < TOPIC_HEADER_SIZE {
+        return None;
+    }
+    Some(TopicRegion::Section(region))
+}
+
+/// Non-Windows counterpart of the section lookup: every other backend is
+/// file-backed, so a missing file is a missing topic and there is nowhere else
+/// to look.
+#[cfg(not(target_os = "windows"))]
+fn open_named_section(_path: &std::path::Path) -> Option<TopicRegion> {
+    None
+}
+
+/// Read the latest message payload from a topic's shared-memory region.
+///
+/// `path` is the topic's `topic_shm_path`. It is the backing file itself on
+/// Linux, macOS and the fallback backend; on Windows, where the region is a
+/// pagefile-backed named section with nothing on disk, it names the section
+/// instead.
 ///
 /// Returns `None` when:
-/// - `path` does not exist or cannot be opened,
-/// - the file is too small to contain a valid header,
-/// - the magic-number check fails (file not a HORUS topic),
+/// - no region exists at `path`, or it cannot be mapped,
+/// - the region is too small to contain a valid header,
+/// - the magic-number check fails (not a HORUS topic),
 /// - `write_idx == last_write_idx` (no new message since the previous call), or
 /// - `write_idx == 0` (no message has ever been written on this topic).
 ///
@@ -1044,17 +1147,10 @@ fn read_slot_inner(
     last_write_idx: u64,
     ordinal: Option<u64>,
 ) -> Option<TopicSlotRead> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    // ── 1. Open and memory-map the file ──────────────────────────────────────
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    // SAFETY: the file is opened read-only; the mapping is read-only.
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    // ── 1. Map the topic's shared region ─────────────────────────────────────
+    // File-backed on Linux/macOS, a named section on Windows; either way at
+    // least TOPIC_HEADER_SIZE bytes, which is what everything below assumes.
+    let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
 
     // ── 2. Validate magic ─────────────────────────────────────────────────────
@@ -1337,16 +1433,7 @@ fn slot_stamp(
 /// rates without needing a typed `Topic<T>`.  Returns `None` when the file
 /// cannot be opened, is too small, or has an invalid magic number.
 pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    // SAFETY: the file is opened read-only; the mapping is read-only.
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
 
     // SAFETY: mmap is at least TOPIC_HEADER_SIZE (640) bytes.
@@ -1368,15 +1455,7 @@ pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
 /// (offset 56) which is atomically incremented on **every** send() regardless
 /// of backend type. Use this for accurate rate measurement.
 pub fn read_topic_messages_total(path: &std::path::Path) -> Option<u64> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
 
     let magic = unsafe { std::ptr::read_unaligned(base as *const u64) };
@@ -1424,8 +1503,10 @@ pub struct TopicHeaderInfo {
 /// Callers comparing a type name against a header must compare *this*, not the
 /// full name. Doing otherwise reported a type as mismatching itself:
 ///
-///   Existing type 'ActionFeedback<CancelTopicFeedb',
-///   attempted 'ActionFeedback<CancelTopicFeedback>'
+/// ```text
+/// Existing type 'ActionFeedback<CancelTopicFeedb',
+/// attempted 'ActionFeedback<CancelTopicFeedback>'
+/// ```
 pub(crate) fn type_name_as_stored(name: &str) -> &str {
     const USABLE: usize = 31;
     if name.len() <= USABLE {
@@ -1439,16 +1520,7 @@ pub(crate) fn type_name_as_stored(name: &str) -> &str {
 }
 
 pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo> {
-    use memmap2::MmapOptions;
-    use std::fs::File;
-
-    let file = File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() < TOPIC_HEADER_SIZE as u64 {
-        return None;
-    }
-    // SAFETY: read-only mmap.
-    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let mmap = map_topic_region(path)?;
     let base = mmap.as_ptr();
 
     // SAFETY: mmap >= TOPIC_HEADER_SIZE (640) bytes.
@@ -3663,6 +3735,6 @@ mod stored_type_name_tests {
         let name = format!("{}é", "a".repeat(30)); // 'é' straddles byte 30..32
         let stored = type_name_as_stored(&name);
         assert_eq!(stored, "a".repeat(30));
-        assert!(std::str::from_utf8(stored.as_bytes()).is_ok());
+        std::str::from_utf8(stored.as_bytes()).unwrap();
     }
 }

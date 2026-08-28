@@ -3936,7 +3936,7 @@ impl Scheduler {
         if !suggestions.is_empty() {
             crate::terminal::eprint_line("\nSuggestions:");
             for s in &suggestions {
-                crate::terminal::eprint_line(&s);
+                crate::terminal::eprint_line(s);
             }
         }
 

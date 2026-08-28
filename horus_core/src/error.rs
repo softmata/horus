@@ -731,7 +731,7 @@ pub enum HorusError {
     /// Error with preserved source chain for context propagation.
     /// Use `.horus_context()` on Results to create these.
     ///
-    /// Rendered by [`fmt_contextual`], which suppresses the `Caused by:` clause
+    /// Rendered by `fmt_contextual`, which suppresses the `Caused by:` clause
     /// when it would only restate the message the user has already read.
     #[error(fmt = fmt_contextual)]
     Contextual {

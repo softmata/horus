@@ -157,6 +157,65 @@ fn test_pid_start_time_stable() {
     assert_eq!(st1, st2, "start time must be stable for same PID");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Zombie (exited-but-unreaped) Processes
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Ask the operating system — never `horus_sys` — whether `pid` is a zombie.
+///
+/// This is the precondition for the test below, so it has to come from outside
+/// the code under test: asking `is_zombie()` whether the fixture is a zombie
+/// would let a broken liveness check certify its own bug, and asking
+/// `is_alive()` would make the test tautological.
+///
+/// Both branches read the kernel's own state character, which is the technique
+/// `process::spawn_unreaped_zombie` uses for the unit tests. That helper is
+/// `pub(crate)` and cannot be reached from an integration test, so it is
+/// mirrored here rather than answering "is this a zombie" a third way — if the
+/// two ever disagree, the unit and parity suites would be testing different
+/// things.
+///
+/// Linux publishes the state in the third field of `/proc/{pid}/stat`, read
+/// after the *last* `)` because the comm field sitting in front of it may
+/// itself contain spaces and parentheses. macOS has no `/proc`, so `ps` reports
+/// the same letter out of the kernel's `p_stat` (`Z`, usually suffixed: `Z+`).
+#[cfg(unix)]
+fn os_reports_zombie(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        stat.rfind(')')
+            .and_then(|i| stat[i + 1..].split_whitespace().next())
+            .is_some_and(|state| state == "Z")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::process::Command::new("ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .is_some_and(|out| String::from_utf8_lossy(&out.stdout).trim().starts_with('Z'))
+    }
+}
+
+/// Block until `pid` is observably a zombie, or give up after five seconds.
+///
+/// Exit is asynchronous from the parent's point of view, so the state has to be
+/// polled rather than assumed to have arrived by some sleep.
+#[cfg(unix)]
+fn wait_for_zombie(pid: u32) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if os_reports_zombie(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A killed-but-unreaped process is not alive.
 ///
 /// `kill(pid, 0)` succeeds for a zombie: the process has exited, but its entry
@@ -167,6 +226,15 @@ fn test_pid_start_time_stable() {
 ///
 /// Under `horus run` the parent reaps within milliseconds, which is why this
 /// looked like a brief blip rather than the unbounded state it is.
+///
+/// This test used to detect the zombie state through `/proc` alone and return
+/// early with a "SKIP" line everywhere else, which meant the one suite whose
+/// job is catching cross-platform divergence asserted nothing at all on macOS —
+/// and stayed green for the whole time `is_zombie()` was answering "not a
+/// zombie" for every zombie there (LIVE-12). A platform this fixture cannot be
+/// built on is a result to report, not a test to drop, so the fallback below
+/// asks `ps` instead of skipping, and failing to observe the state is a
+/// failure.
 #[cfg(unix)]
 #[test]
 fn a_killed_but_unreaped_process_is_not_alive() {
@@ -185,28 +253,15 @@ fn a_killed_but_unreaped_process_is_not_alive() {
     let handle = ProcessHandle::from_pid(pid);
 
     // Wait for it to actually become a zombie rather than assuming a timing.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut became_zombie = false;
-    while std::time::Instant::now() < deadline {
-        let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
-        let is_z = state
-            .as_deref()
-            .and_then(|c| c.rfind(')').map(|i| &c[i + 1..]))
-            .and_then(|rest| rest.split_whitespace().next())
-            .map(|s| s == "Z")
-            .unwrap_or(false);
-        if is_z {
-            became_zombie = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-
-    if !became_zombie {
-        // Not all platforms expose /proc; nothing to assert about.
+    if !wait_for_zombie(pid) {
+        // Reap first: the panic must not also leak the child.
         let _ = child.wait();
-        eprintln!("SKIP: could not observe the child as a zombie on this platform");
-        return;
+        panic!(
+            "pid {pid} never showed up as a zombie within 5s, so this test could not \
+             put the platform in the state it exists to check. Nothing has reaped the \
+             child — this process is its parent and has not waited on it — so either \
+             the state query above is wrong for this platform or the child never ran."
+        );
     }
 
     assert!(

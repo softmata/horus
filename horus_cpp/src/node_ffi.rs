@@ -378,7 +378,7 @@ mod tests {
         let mut sched = scheduler_new();
         let mut slow = node_builder_new("telemetry");
         node_builder_rate(&mut slow, 0.5);
-        assert!(node_builder_build(slow, &mut sched).is_ok());
+        node_builder_build(slow, &mut sched).unwrap();
         assert!(scheduler_node_list(&sched).contains(&"telemetry".to_string()));
 
         for bad in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {

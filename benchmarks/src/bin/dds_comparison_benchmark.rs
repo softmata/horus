@@ -51,6 +51,11 @@ const DEFAULT_ITERATIONS: usize = 100_000;
 /// with `-F dds` and CycloneDDS installed to measure instead of quote.
 const REP2014_SOURCE: &str =
     "ROS 2 REP 2014 (Benchmarking Performance), published reference latencies";
+/// Only the no-`dds` branch quotes iceoryx — the `dds` feature drives
+/// CycloneDDS/FastDDS and never reaches this figure — so the constant carries
+/// the same cfg as its single use site rather than sitting dead under
+/// `--all-features`.
+#[cfg(not(feature = "dds"))]
 const ICEORYX_SOURCE: &str = "eclipse-iceoryx published benchmarks (eclipse.org)";
 const DEFAULT_WARMUP: usize = 10_000;
 
@@ -524,10 +529,19 @@ fn benchmark_cyclonedds(
     _iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    // This would use cyclonedds-rs crate
-    // For now, return a placeholder
+    // This would use cyclonedds-rs crate. Until it does, the only numbers we
+    // have are the same REP 2014 figures the no-`dds` path quotes, so they go
+    // out tagged `Literature` under a `_reference` name. Enabling the feature
+    // must not relabel a quoted figure as a measurement just because the
+    // feature is named for measuring.
     eprintln!("CycloneDDS benchmark not yet implemented");
-    create_reference_result("CycloneDDS_measured", 1500.0, 5000, platform)
+    create_reference_result(
+        "CycloneDDS_reference",
+        1500.0,
+        5000,
+        REP2014_SOURCE,
+        platform,
+    )
 }
 
 #[cfg(feature = "dds")]
@@ -535,8 +549,8 @@ fn benchmark_fastdds(
     _iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    // This would use fastdds-rs crate
-    // For now, return a placeholder
+    // This would use fastdds-rs crate. Same as CycloneDDS above: unimplemented,
+    // so the REP 2014 figure is quoted rather than measured.
     eprintln!("FastDDS benchmark not yet implemented");
-    create_reference_result("FastDDS_measured", 2000.0, 8000, platform)
+    create_reference_result("FastDDS_reference", 2000.0, 8000, REP2014_SOURCE, platform)
 }

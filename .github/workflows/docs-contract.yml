@@ -8,10 +8,13 @@
 #
 # This workflow closes that direction. Three tiers, cheapest first:
 #
-#   1. contract-hermetic  — every PR, no network. Runs against the snapshot
-#                           committed at horus_manager/tests/fixtures/.
+#   1. contract-hermetic  — every PR, no network, no docs checkout. Everything
+#                           that can be asserted from this repository alone.
+#                           A test that has to open a documentation page is
+#                           `#[ignore]`d and belongs to tier 2, not here.
 #   2. contract-live      — every PR, clones horus-docs at a pinned commit and
-#                           re-extracts, so docs changes are seen too.
+#                           re-extracts, so docs changes are seen too. Runs the
+#                           tier-1 binaries again with --include-ignored.
 #   3. examples-compile   — nightly + manual. Compiles the documented Rust
 #                           examples against the real horus crate.
 #
@@ -53,7 +56,34 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Pinned so a docs edit can never turn this repo's CI red on its own. Bump it
-  # deliberately (and regenerate the snapshot — see the contract-live summary).
+  # deliberately, to the newest docs commit that is *verified* to pass — a pin
+  # is a claim about a specific tree, so check it before changing it:
+  #
+  #     HORUS_DOCS_DIR=<horus-docs checkout> \
+  #       cargo test -p horus_manager --test docs_contract -- --include-ignored
+  #     HORUS_DOCS_DIR=<horus-docs checkout> \
+  #       cargo test -p horus_manager --test docs_cli_contract
+  #
+  # 2adcb0c ("fix(seo): point canonicals, sitemap and robots at
+  # docs.horusrobotics.dev") was verified that way: docs_contract 14/14 and
+  # docs_cli_contract 7/7. The previous pin, b16c640, had gone stale — ten of
+  # docs_contract's fourteen failed against it, all of them real drift that
+  # horus-docs has since fixed.
+  #
+  # This deliberately stops short of docs main. main is three commits further
+  # on, and two of them — ad67082 and 5288fbf — add eight section landing pages
+  # (advanced, cpp, development, learn, operations, performance, reference,
+  # stdlib) without adding them to `sections` in components/DocsSidebar.tsx, so
+  # nothing links to them and `every_docs_page_is_reachable_from_the_navigation`
+  # fails: 13/14 at ad67082 (its four pages), and 13/14 again at 5288fbf and at
+  # main's tip 5c83485 (all eight). That is drift in horus-docs, which no choice
+  # of pin here can paper over; once the sidebar there lists those pages, move
+  # this to that commit rather than to main's tip as it stands today.
+  #
+  # Verified locally at this ref means those two steps, not the whole job: the
+  # "Manifest and environment contract" step still fails 2 of 6 here. Those two
+  # are older than this bump — b16c640 failed 4 of the same 6 — so they are a
+  # separate problem in the manifest/schema contract, not a regression from it.
   #
   # This is also a trust boundary, which is why there is no `docs_ref` input to
   # override it. `schedule` and `workflow_dispatch` run in default-branch
@@ -63,7 +93,7 @@ env:
   # an escalation across repos that this repo's own review never sees.
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
-  DOCS_PINNED_REF: b16c640c9d0169f30bcd502d835777eef52d29dd
+  DOCS_PINNED_REF: 2adcb0c704875c398a7f3921cf41ed80b817f1f1
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────
@@ -107,11 +137,17 @@ jobs:
       - name: C++ headers are self-contained
         run: cargo test -p horus_manager --test docs_examples_cpp public_headers_are_self_contained
 
-      # `docs_contract` asserts manifest tables and hook phases; `docs_cli_contract`
-      # is the one that checks the CLI reference. Both steps here used to run
-      # `docs_contract` under a "CLI contract" name, so the CLI reference was
-      # advertised as covered while nothing checked it.
-      - name: Manifest and hook contract
+      # `docs_contract`'s page-reading tests are `#[ignore]`d, because they need
+      # a horus-docs checkout and this tier by definition has none: running them
+      # here failed all eleven every day rather than checking anything. What is
+      # left runs without a checkout — the skip-or-fail policy itself, and the
+      # guard that contract-live below really does pass --include-ignored, which
+      # is what keeps the `#[ignore]` from becoming the silent skip it replaced.
+      #
+      # `docs_cli_contract` is the one that checks the CLI reference. Both steps
+      # here used to run `docs_contract` under a "CLI contract" name, so the CLI
+      # reference was advertised as covered while nothing checked it.
+      - name: Docs contract policy and wiring
         run: cargo test -p horus_manager --test docs_contract
 
       # `horus new` must produce the tree the quick-starts tell readers to open.
@@ -165,10 +201,16 @@ jobs:
           key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-docs-
 
+      # `--include-ignored`, not `--ignored`: the page-reading tests carry
+      # `#[ignore]` so the hermetic tier can leave them alone, and the two
+      # skip-policy tests that do not carry it are worth running against a real
+      # checkout as well. This is the only job that opens a page, so a step that
+      # loses the flag stops checking the docs entirely while staying green —
+      # `the_live_docs_job_runs_the_tests_this_file_ignores` fails if it does.
       - name: Manifest and hook contract against live docs
         env:
           HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
-        run: cargo test -p horus_manager --test docs_contract
+        run: cargo test -p horus_manager --test docs_contract -- --include-ignored
 
       # Every `horus ...` invocation in the docs, resolved against the real clap
       # tree. Cheap: one `--help` per distinct command, not one per invocation.

@@ -23,7 +23,21 @@
 //! it has not run, and for months every "live docs" job in
 //! `.github/workflows/docs-contract.yml` did exactly that.
 //!
-//! Run: `cargo test -p horus_manager --test docs_contract`
+//! That rule collides with tier 1 of the same workflow, which is hermetic by
+//! definition — it checks out this repository and nothing else — so every test
+//! here that opens a page is `#[ignore]`d, the way `docs_manifest.rs` and
+//! `docs_examples_cpp.rs` already mark theirs. Tier 1 then runs what it can
+//! genuinely run (the skip-or-fail policy, and the wiring guard below) and
+//! tier 2 runs everything with `--include-ignored`. Without that split the
+//! hermetic job ran eleven docs tests against no docs and failed all eleven,
+//! daily, on main.
+//!
+//! `#[ignore]` is the same lever that hid these tests before, so it gets the
+//! guard `install_contract.rs` puts on its network tests:
+//! [`the_live_docs_job_runs_the_tests_this_file_ignores`] fails if the live job
+//! stops asking for them. Skipping is still never silent on CI.
+//!
+//! Run: `cargo test -p horus_manager --test docs_contract -- --include-ignored`
 
 use horus_manager::manifest_lint::KNOWN_TOP_LEVEL;
 use std::path::{Path, PathBuf};
@@ -109,6 +123,114 @@ fn a_missing_checkout_is_fatal_under_ci() {
     resolve_docs(None, true);
 }
 
+// ─── The workflow wiring ─────────────────────────────────────────────────────
+//
+// The two tests above are the whole reason a docs test cannot simply run in the
+// hermetic tier, and the `#[ignore]` that keeps it out of there is the reason
+// the next test exists.
+
+/// The body of one job in a workflow file.
+///
+/// Jobs are the two-space-indented keys under `jobs:`; the block runs to the
+/// next one. Same shape as `workflow_job` in `examples_contract.rs` — copied
+/// rather than shared because integration tests are separate binaries and this
+/// is nine lines.
+fn workflow_job(workflow: &str, job: &str) -> String {
+    let header = format!("  {job}:");
+    let mut body = Vec::new();
+    let mut inside = false;
+    for line in workflow.lines() {
+        if line.trim_end() == header {
+            inside = true;
+            continue;
+        }
+        if inside {
+            let next_key = line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#');
+            if next_key {
+                break;
+            }
+            body.push(line);
+        }
+    }
+    assert!(!body.is_empty(), "no job `{job}` in docs-contract.yml");
+    body.join("\n")
+}
+
+/// The `run:` lines in one job that invoke this test binary.
+///
+/// Comments are dropped: the workflow discusses `--test docs_contract` in prose
+/// in both jobs, including one comment quoting an `--ignored` invocation that
+/// no longer exists.
+fn docs_contract_steps(job: &str) -> Vec<&str> {
+    job.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && l.contains("--test docs_contract"))
+        .collect()
+}
+
+/// Ignoring the docs tests is only acceptable if something still runs them.
+///
+/// This is the guarantee `docs_root_or_skip` makes, restated at the level the
+/// `#[ignore]` moved it to. A missing checkout still cannot pass silently — but
+/// a *missing invocation* now can, because an ignored test that nobody asks for
+/// is reported by cargo as `ok. 11 ignored` and by the job as green. That is
+/// the exact failure mode the module comment describes for `SKIP:`, one layer
+/// out, so it gets a check rather than a promise.
+#[test]
+fn the_live_docs_job_runs_the_tests_this_file_ignores() {
+    let workflow = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("horus_manager has a parent")
+        .join(".github/workflows/docs-contract.yml");
+    let wf = std::fs::read_to_string(&workflow)
+        .unwrap_or_else(|e| panic!("{} must be readable: {e}", workflow.display()));
+
+    let live = workflow_job(&wf, "contract-live");
+    let live_steps = docs_contract_steps(&live);
+    assert!(
+        !live_steps.is_empty(),
+        "contract-live no longer runs docs_contract at all, so nothing reads \
+         the pages: the tests here are `#[ignore]`d and the hermetic job has no \
+         checkout to read."
+    );
+    // `--include-ignored`, not `--ignored`: the skip-policy tests above are not
+    // ignored and are worth running against a real checkout too.
+    assert!(
+        live_steps.iter().any(|l| l.contains("--include-ignored")),
+        "contract-live runs docs_contract without `--include-ignored`, so every \
+         page-reading test here is skipped and the job reports success for \
+         checking nothing:\n  {}",
+        live_steps.join("\n  ")
+    );
+    assert!(
+        live.contains("HORUS_DOCS_DIR"),
+        "contract-live does not point HORUS_DOCS_DIR at its horus-docs \
+         checkout, so the docs tests would fail on the missing-checkout \
+         assertion instead of reading the pages"
+    );
+
+    // The other direction. The hermetic tier checks out this repository and
+    // nothing else, so asking it for the ignored tests puts it straight back
+    // into failing all of them by design.
+    let hermetic = workflow_job(&wf, "contract-hermetic");
+    let hermetic_steps = docs_contract_steps(&hermetic);
+    assert!(
+        !hermetic_steps.is_empty(),
+        "contract-hermetic no longer runs docs_contract, so this guard and the \
+         skip-policy tests do not run on a PR"
+    );
+    for step in &hermetic_steps {
+        assert!(
+            !step.contains("ignored"),
+            "contract-hermetic asks docs_contract for ignored tests, but it \
+             checks out no docs — every one of them fails on the \
+             missing-checkout assertion:\n  {step}"
+        );
+    }
+}
+
 fn config_reference() -> Option<String> {
     let path = docs_root_or_skip()?.join("content/docs/package-management/configuration.mdx");
     std::fs::read_to_string(path).ok()
@@ -116,6 +238,7 @@ fn config_reference() -> Option<String> {
 
 /// Every table the manifest accepts must appear in the reference.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn the_configuration_reference_covers_every_manifest_table() {
     // `config_reference` goes through `docs_root_or_skip`, so a missing
     // checkout has already failed the test if this is CI.
@@ -151,6 +274,7 @@ fn the_configuration_reference_covers_every_manifest_table() {
 /// The reference should show each table in use, not merely name it in a list.
 /// A key that only appears inside the Quick Reference block is not documented.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn each_table_gets_a_section_not_just_a_mention() {
     // `config_reference` goes through `docs_root_or_skip`, so a missing
     // checkout has already failed the test if this is CI.
@@ -199,6 +323,7 @@ fn each_table_gets_a_section_not_just_a_mention() {
 /// The lifecycle hooks are the most recently added surface and the easiest to
 /// ship undocumented, so they get their own check.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn every_hook_phase_is_documented() {
     // `config_reference` goes through `docs_root_or_skip`, so a missing
     // checkout has already failed the test if this is CI.
@@ -222,6 +347,7 @@ fn every_hook_phase_is_documented() {
 /// A guard on the guard: if the reference file moves or is renamed, the tests
 /// above would skip forever and report nothing. This fails instead.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn the_configuration_reference_is_where_we_think_it_is() {
     let Some(root) = docs_root_or_skip() else {
         return;
@@ -245,6 +371,7 @@ fn the_configuration_reference_is_where_we_think_it_is() {
 /// read about what it will do to their machine — and it installs a kernel
 /// package and edits `/etc/security/limits.conf`.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn commands_the_cli_suggests_are_documented() {
     let Some(root) = docs_root_or_skip() else {
         return;
@@ -297,6 +424,7 @@ fn commands_the_cli_suggests_are_documented() {
 /// Also asserts the two lists stay identical. `PrevNextNav.tsx` says in a
 /// comment that it "must match DocsSidebar.tsx", and nothing checked it.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn every_docs_page_is_reachable_from_the_navigation() {
     let Some(root) = docs_root_or_skip() else {
         return;
@@ -423,6 +551,7 @@ fn every_docs_page_is_reachable_from_the_navigation() {
 /// Encoded as a test rather than as prose in a config file because prose in a
 /// config file is what was there before.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn every_tutorial_exists_in_every_language() {
     let Some(root) = docs_root_or_skip() else {
         return;
@@ -757,6 +886,7 @@ fn environment_surface(repo: &Path) -> EnvSurface {
 /// 2. The scan covered one language and one direction. See
 ///    [`environment_surface`].
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn every_environment_variable_is_in_the_reference_page() {
     let Some(root) = docs_root_or_skip() else {
         return;
@@ -917,6 +1047,7 @@ fn subject_headings(text: &str) -> std::collections::BTreeSet<String> {
 /// share a heading or two, and the failure this catches is a page growing back
 /// a whole second copy of another one.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn concepts_pages_do_not_restate_the_language_references() {
     let Some(root) = docs_root_or_skip() else {
         return;
@@ -1019,6 +1150,7 @@ fn concepts_pages_do_not_restate_the_language_references() {
 /// A route resolves as `<slug>.mdx` or `<slug>/index.mdx` — the same two
 /// lookups `lib/mdx.tsx` performs.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn every_navigation_link_resolves_to_a_page() {
     let Some(docs) = docs_root_or_skip() else {
         return;
@@ -1076,6 +1208,7 @@ fn every_navigation_link_resolves_to_a_page() {
 /// a reader in the Rust section was sent past the Rust Guide into Examples and
 /// only reached the guide after all of Python.
 #[test]
+#[ignore = "needs a horus-docs checkout; wired into the docs-contract workflow"]
 fn prev_next_navigation_is_derived_from_the_sidebar() {
     let Some(docs) = docs_root_or_skip() else {
         return;

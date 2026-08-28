@@ -317,16 +317,38 @@ pub fn is_zombie(pid: u32) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: proc_pidinfo with PROC_PIDTBSDINFO fills a proc_bsdinfo for a
-        // pid we already know exists; the same call is used by
-        // pid_start_time_macos below.
+        // The third argument is not spare padding: for the bsdinfo flavors a
+        // non-zero `arg` is precisely what asks XNU to look in the zombie list.
+        //
+        //     if (flavor == PROC_PIDTBSDINFO || ...) { if (arg) findzomb = 1; }
+        //     if ((p = proc_find(pid)) == PROC_NULL) {
+        //             if (findzomb) p = proc_find_zombref(pid);
+        //             if (p == PROC_NULL) { error = ESRCH; goto out; }
+        //             zombie = 1;
+        //     }
+        //
+        // and proc_find() deliberately refuses a process whose p_stat is SZOMB.
+        // So with arg = 0 the call returns ESRCH for exactly the processes this
+        // function exists to recognise — libproc turns that into a 0 return, the
+        // size check below fails, and every zombie was answered "not a zombie".
+        // macOS was therefore still running the pre-LIVE-12 behaviour Linux was
+        // fixed out of: a SIGKILLed node under a parent that never waits stayed
+        // Running forever and its SHM namespace was never reclaimed. Passing 1
+        // makes the zombie reachable, with pbi_status carrying the p_stat we
+        // came for. (pid_start_time_macos below deliberately keeps arg = 0: an
+        // unreadable start time reads as 0 there, which already means "treat
+        // this pid as gone", so a zombie needs no special case.)
+        //
+        // SAFETY: proc_pidinfo fills a caller-owned proc_bsdinfo; we hand it the
+        // struct's real size and only read the result back when the kernel
+        // reports having written exactly that many bytes.
         unsafe {
             let mut info: libc::proc_bsdinfo = std::mem::zeroed();
             let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
             let n = libc::proc_pidinfo(
                 pid as libc::c_int,
                 libc::PROC_PIDTBSDINFO,
-                0,
+                1, // non-zero = also search the zombie list; see above
                 &mut info as *mut _ as *mut libc::c_void,
                 size,
             );

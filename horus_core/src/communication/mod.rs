@@ -51,31 +51,137 @@ pub use topic::{set_topic_lifecycle_hook, TopicLifecycleEvent};
 // Topic-Node automatic association registry
 pub use topic::{topic_node_registry, NodeTopicRole, TopicAssociation, TopicNodeRegistry};
 
-/// Write raw bytes into the latest slot of a topic SHM file (used by replay).
+/// A writable view of a topic's shared region, opened the way the running
+/// platform actually backs it.
 ///
-/// This is the write counterpart to `read_latest_slot_bytes`.  It writes
-/// `data` into the next slot of the ring buffer and bumps the sequence counter.
-/// Returns `true` on success.
-#[doc(hidden)]
-pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
+/// This is the write-side counterpart of `topic::header::TopicRegion`, and it
+/// exists for the same reason. The path-based API addresses a topic by its
+/// `topic_shm_path`, which is only a real file where the backend is file-backed:
+/// `/dev/shm/horus_<ns>/topics/<name>` on Linux, `/tmp/…` on macOS and on the
+/// generic fallback. The Windows backend is not a file at all — `ShmRegion::new`
+/// calls `CreateFileMappingW(INVALID_HANDLE_VALUE, …)` for a pagefile-backed
+/// section named `Local\horus_<name>`, and `ShmRegion::backing_path()`
+/// correspondingly reports `None` there. Nothing is ever created at the topic
+/// path, so the `OpenOptions::new().read(true).write(true).open(path)` this
+/// function used to start with failed with `NotFound` and
+/// `write_topic_slot_bytes` returned `false` for every live topic on Windows —
+/// on a platform where the ring itself works. Everything publishing through
+/// this seam went silent there: record/replay, and horus_net's cross-process
+/// tests, which use it as the writer half of the SHM seam.
+///
+/// The read helper cannot simply be reused for this: it hands back a read-only
+/// `memmap2::Mmap` on the file-backed platforms, which is the wrong mapping for
+/// in-place stores. Only the file arm actually differs — the Windows arm is
+/// identical because `ShmRegion::open_existing` already maps the section
+/// `FILE_MAP_ALL_ACCESS`, so one handle serves both directions.
+enum TopicRegionMut {
+    /// A file-backed region (Linux, macOS, the generic fallback), mapped
+    /// read-write.
+    Mapped(memmap2::MmapMut),
+    /// A Windows named section. The handle is held for the life of the view.
+    #[cfg(target_os = "windows")]
+    Section(horus_sys::shm::ShmRegion),
+}
+
+impl std::ops::Deref for TopicRegionMut {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Mapped(mmap) => &mmap[..],
+            #[cfg(target_os = "windows")]
+            Self::Section(region) => region.as_slice(),
+        }
+    }
+}
+
+impl std::ops::DerefMut for TopicRegionMut {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Mapped(mmap) => &mut mmap[..],
+            #[cfg(target_os = "windows")]
+            Self::Section(region) => region.as_slice_mut(),
+        }
+    }
+}
+
+/// Map a topic's shared region read-write, or `None` when it is absent, too
+/// small to hold a header, or unmappable.
+///
+/// Mirrors `topic::header::map_topic_region`, including the guarantee the
+/// caller leans on: the returned view is at least `TOPIC_HEADER_SIZE` bytes.
+///
+/// The file is tried first on every platform, because where one exists it *is*
+/// the region. Only when there is none does the Windows section lookup run, so
+/// nothing about the file-backed platforms changes.
+fn map_topic_region_mut(path: &std::path::Path) -> Option<TopicRegionMut> {
     use memmap2::MmapOptions;
     use std::fs::OpenOptions;
 
-    let file = match OpenOptions::new().read(true).write(true).open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let meta = match file.metadata() {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    if meta.len() < topic::header::TOPIC_HEADER_SIZE as u64 {
-        return false;
+    if let Ok(file) = OpenOptions::new().read(true).write(true).open(path) {
+        if file.metadata().ok()?.len() < topic::header::TOPIC_HEADER_SIZE as u64 {
+            return None;
+        }
+        // SAFETY: the file is opened read-write; the mapping is shared, which is
+        // what makes the stores below visible to every other process attached
+        // to the same topic.
+        let mmap = unsafe { MmapOptions::new().map_mut(&file).ok()? };
+        return Some(TopicRegionMut::Mapped(mmap));
     }
-    // SAFETY: file is opened read-write; mmap is used for in-place writes to SHM.
-    let mut mmap = match unsafe { MmapOptions::new().map_mut(&file) } {
-        Ok(m) => m,
-        Err(_) => return false,
+
+    open_named_section_mut(path)
+}
+
+/// Open, writable, the Windows named section a topic path refers to.
+///
+/// `topic_shm_path` is `shm_topics_dir().join(name)` and a topic name may
+/// itself contain separators, so the name is the whole remainder of the path
+/// rather than just its last component — `file_name()` on `robot/cmd_vel`
+/// would ask the kernel for a section called `cmd_vel`, which is either absent
+/// or, worse, a different topic that we would then publish into.
+#[cfg(target_os = "windows")]
+fn open_named_section_mut(path: &std::path::Path) -> Option<TopicRegionMut> {
+    let name = path
+        .strip_prefix(horus_sys::shm::shm_topics_dir())
+        .ok()?
+        .to_str()?;
+    let region =
+        horus_sys::shm::ShmRegion::open_existing(name, topic::header::TOPIC_HEADER_SIZE).ok()?;
+    // `open_existing` already refuses a region smaller than the minimum, but it
+    // falls back to *assuming* the minimum when `VirtualQuery` fails rather
+    // than measuring it. Re-check what we were actually handed, because every
+    // store below is bounds-checked against `len()` and against nothing else.
+    if region.len() < topic::header::TOPIC_HEADER_SIZE {
+        return None;
+    }
+    Some(TopicRegionMut::Section(region))
+}
+
+/// Non-Windows counterpart of the section lookup: every other backend is
+/// file-backed, so a missing file is a missing topic and there is nowhere else
+/// to look.
+#[cfg(not(target_os = "windows"))]
+fn open_named_section_mut(_path: &std::path::Path) -> Option<TopicRegionMut> {
+    None
+}
+
+/// Write raw bytes into the latest slot of a topic's shared region (used by
+/// replay).
+///
+/// This is the write counterpart to `read_latest_slot_bytes`, and it addresses
+/// the topic exactly the way that one does: `path` is the topic's
+/// `topic_shm_path`, which is the backing file itself on Linux, macOS and the
+/// fallback backend, and names the pagefile-backed section on Windows.  It
+/// writes `data` into the next slot of the ring buffer and bumps the sequence
+/// counter.  Returns `true` on success.
+#[doc(hidden)]
+pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
+    // Map the topic's shared region read-write. File-backed on Linux/macOS, a
+    // named section on Windows; either way at least TOPIC_HEADER_SIZE bytes,
+    // which is what the header reads below assume.
+    let mut mmap = match map_topic_region_mut(path) {
+        Some(m) => m,
+        None => return false,
     };
     let base = mmap.as_mut_ptr();
     let len = mmap.len();
