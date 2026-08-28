@@ -64,26 +64,32 @@ env:
   #     HORUS_DOCS_DIR=<horus-docs checkout> \
   #       cargo test -p horus_manager --test docs_cli_contract
   #
-  # 2adcb0c ("fix(seo): point canonicals, sitemap and robots at
-  # docs.horusrobotics.dev") was verified that way: docs_contract 14/14 and
-  # docs_cli_contract 7/7. The previous pin, b16c640, had gone stale — ten of
-  # docs_contract's fourteen failed against it, all of them real drift that
-  # horus-docs has since fixed.
+  # f1b9762 is verified that way: docs_contract 14/14, docs_cli_contract 7/7
+  # and docs_manifest 6/6 — the whole live tier, not a subset.
   #
-  # This deliberately stops short of docs main. main is three commits further
-  # on, and two of them — ad67082 and 5288fbf — add eight section landing pages
-  # (advanced, cpp, development, learn, operations, performance, reference,
-  # stdlib) without adding them to `sections` in components/DocsSidebar.tsx, so
-  # nothing links to them and `every_docs_page_is_reachable_from_the_navigation`
-  # fails: 13/14 at ad67082 (its four pages), and 13/14 again at 5288fbf and at
-  # main's tip 5c83485 (all eight). That is drift in horus-docs, which no choice
-  # of pin here can paper over; once the sidebar there lists those pages, move
-  # this to that commit rather than to main's tip as it stands today.
+  # The two pins before it were each stale in a different direction, and the
+  # difference is worth keeping because it decides what "bump the pin" can and
+  # cannot fix. b16c640 failed ten of docs_contract's fourteen: ordinary drift,
+  # already fixed in horus-docs, and a bump was the whole remedy. Moving to
+  # docs main did not work, though — ad67082 and 5288fbf had added eight
+  # section landing pages (advanced, cpp, development, learn, operations,
+  # performance, reference, stdlib) without listing them in `sections` in
+  # components/DocsSidebar.tsx, so nothing linked to them and
+  # every_docs_page_is_reachable_from_the_navigation failed 13/14 at every
+  # commit from ad67082 through main's tip 5c83485. No choice of pin fixes
+  # that, because there was no commit anywhere in horus-docs where those pages
+  # were reachable. It had to be fixed there, and f1b9762 is that fix.
   #
-  # Verified locally at this ref means those two steps, not the whole job: the
-  # "Manifest and environment contract" step still fails 2 of 6 here. Those two
-  # are older than this bump — b16c640 failed 4 of the same 6 — so they are a
-  # separate problem in the manifest/schema contract, not a regression from it.
+  # f1b9762 also republishes public/schema/horus.toml.schema.json, which had
+  # drifted from what the manifest structs generate and was failing
+  # the_published_schema_matches_the_generator in docs_manifest.
+  #
+  # f1b9762 is the head of softmata/horus-docs#6, not a commit on main. Pinning
+  # to an unmerged commit is deliberate and temporary: this repo's CI cannot go
+  # green until those docs changes exist somewhere fetchable, and a full SHA on
+  # a live branch is fetchable. When #6 merges, move this to the resulting main
+  # commit — and do not delete that branch before you do, because this pin is
+  # the only ref keeping f1b9762 reachable.
   #
   # This is also a trust boundary, which is why there is no `docs_ref` input to
   # override it. `schedule` and `workflow_dispatch` run in default-branch
@@ -93,7 +99,7 @@ env:
   # an escalation across repos that this repo's own review never sees.
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
-  DOCS_PINNED_REF: 2adcb0c704875c398a7f3921cf41ed80b817f1f1
+  DOCS_PINNED_REF: f1b97620af06ac737c87adcaa5e99490e772b695
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────
