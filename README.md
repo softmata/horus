@@ -371,15 +371,38 @@ than relabelled. The REP 2014 figure above is cited, not measured here. Any
 number that matters to your decision is worth measuring on your own hardware
 and message sizes.
 
-| vs iceoryx2   | HORUS      | iceoryx2   | Speedup  |
-|---------------|------------|------------|----------|
-| Same-thread   | 11 ns      | 69 ns      | **6.3x** |
-| Cross-process | 170 ns     | 361 ns     | **2.1x** |
-| Throughput    | 95 M msg/s | 22 M msg/s | **4.3x** |
+| vs iceoryx2 (median)      | HORUS      | iceoryx2   | Ratio    |
+|---------------------------|------------|------------|----------|
+| Cross-process RTT (8 B)   | 289 ns     | 928 ns     | **3.2x** |
+| Cross-thread RTT (8 B)    | 314 ns     | 926 ns     | **3.0x** |
+| Same-thread (8 B)         | 104 ns     | 301 ns     | **2.9x** |
+| Same-thread (1 KB)        | 225 ns     | 380 ns     | **1.7x** |
+| Same-thread (4 KB)        | 1018 ns    | 470 ns     | **0.5x** |
+| MPMC 4P/4S recv cost      | 71 ns      | 171 ns     | **2.4x** |
+| Throughput (same loop)    | 10.0 M/s   | 3.1 M/s    | **3.2x** |
 
-Unlike the ROS 2 row above, this one is measured on both sides: reproduce with
-`cargo run --release -p horus_benchmarks --bin iceoryx2_comparison --features iceoryx2`, which links
-iceoryx2 and times it in the same harness.
+**iceoryx2 is about twice as fast as HORUS at 4 KB**, on the median and by
+roughly 6x on the maximum. HORUS's advantage is at small payloads, which is
+where robotics control traffic lives — a CmdVel is 16 bytes — and it inverts
+somewhere between 1 KB and 4 KB. If your messages are images or point clouds,
+measure before choosing.
+
+The round-trip rows are full round trips, not halved. Halving reports a
+one-sided stall as half a stall on each leg, which understates exactly the tail
+that matters. The same-thread rows are one thread writing and then reading its
+own ring: a lower bound on IPC cost with no cross-core transfer in it, for
+either library. Prefer the cross-process row when quoting a number.
+
+This table replaces one claiming 6.3x / 2.1x / 4.3x. Those came from a harness
+that gave the two libraries different topologies: the HORUS arm sent and
+received on a single handle, which selects an inlined same-instance fast path
+with no dispatch and no ring publication, while the iceoryx2 arm used a real
+publisher and subscriber. Both arms now use separate handles.
+
+Reproduce with `cargo run --release -p horus_benchmarks --bin iceoryx2_comparison
+--features iceoryx2`, which links iceoryx2 and times it in the same harness.
+Measured on an i7-10750H under the `powersave` governor; absolute values will
+differ on your hardware, ratios less so.
 
 Scales near-linearly to 100 nodes (14% degradation) and O(1) to 1,000 topics.
 
