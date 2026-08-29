@@ -81,6 +81,19 @@ fn run(rep: usize, cpus: (usize, usize)) -> Vec<u64> {
     let total = WARMUP + SAMPLES;
     let ack = std::sync::atomic::AtomicU64::new(0);
 
+    // Report the backend actually selected. Which dispatch path this exercises
+    // decides what the number means, and a benchmark that does not say cannot
+    // be compared against a run that chose differently — `all_paths_latency`
+    // has a row whose selected backend does not match the one its label claims.
+    // Read before the handles are moved into the threads.
+    if rep == 0 {
+        eprintln!(
+            "  backend: {} (producer), {} (consumer)",
+            tx.backend_name(),
+            rx.backend_name()
+        );
+    }
+
     std::thread::scope(|s| {
         let ack = &ack;
         let consumer = s.spawn(move || {
@@ -100,25 +113,103 @@ fn run(rep: usize, cpus: (usize, usize)) -> Vec<u64> {
         });
 
         pin(cpus.0);
+        // The send timestamp is also the start of the send-cost measurement, so
+        // splitting the one-way time into "enqueue" and "transfer + receive"
+        // costs one extra clock read per message and no extra apparatus. Doing
+        // it here rather than in a free-running loop matters: with the producer
+        // paced by the ack, the ring never fills, so this is unloaded enqueue
+        // cost. An unthrottled producer measures the backpressure re-read of
+        // `header.tail` — a line the consumer owns — on nearly every send, and
+        // reports ~95ns instead of the truth.
+        let mut send_ns: Vec<u64> = Vec::with_capacity(total);
         for i in 0..total {
+            let t0 = now_ns();
             let msg = CmdVel {
-                timestamp_ns: now_ns(),
+                timestamp_ns: t0,
                 linear: 1.0,
                 angular: 0.5,
             };
             tx.send(msg);
+            send_ns.push(now_ns().wrapping_sub(t0));
             let want = i as u64 + 1;
             while ack.load(std::sync::atomic::Ordering::Acquire) < want {
                 std::hint::spin_loop();
             }
         }
+        let mut sv = send_ns.split_off(WARMUP);
+        sv.sort_unstable();
+        if rep == 0 {
+            eprintln!(
+                "  unloaded send() p50={}ns p99={}ns (inside the one-way figure below)",
+                pct(&sv, 0.50),
+                pct(&sv, 0.99)
+            );
+        }
         consumer.join().expect("consumer thread")
     })
+}
+
+/// Cost of the `send()` call alone, with a consumer draining so the ring never
+/// fills. This is NOT a latency — it is the producer-side enqueue cost, and the
+/// distinction matters: `all_paths_latency` labels these rows `[send]` and they
+/// have been quoted as though they were end-to-end times.
+fn send_only(reps: usize, cpus: (usize, usize)) {
+    println!();
+    println!("  send() call cost alone (NOT a latency — enqueue cost only)");
+    println!("  rep      p50      p99    p99.9");
+    for rep in 0..reps {
+        let name = format!("probe_s_{}_{}", std::process::id(), rep);
+        let tx: Topic<CmdVel> = Topic::new(&name).expect("producer handle");
+        let rx: Topic<CmdVel> = Topic::new(&name).expect("consumer handle");
+        assert!(rx.recv().is_none(), "nothing published yet");
+
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let total = WARMUP + SAMPLES;
+        std::thread::scope(|s| {
+            let stop = &stop;
+            let drain = s.spawn(move || {
+                pin(cpus.1);
+                let mut n = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if rx.recv().is_some() {
+                        n += 1;
+                    } else {
+                        std::hint::spin_loop();
+                    }
+                }
+                n
+            });
+            pin(cpus.0);
+            let mut out: Vec<u64> = Vec::with_capacity(total);
+            for i in 0..total {
+                let msg = CmdVel {
+                    timestamp_ns: 0,
+                    linear: 1.0,
+                    angular: i as f32,
+                };
+                let t0 = now_ns();
+                tx.send(msg);
+                out.push(now_ns().wrapping_sub(t0));
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            drain.join().expect("drain thread");
+            let mut v = out.split_off(WARMUP);
+            v.sort_unstable();
+            println!(
+                "  {:>3}  {:>7}  {:>7}  {:>7}",
+                rep,
+                pct(&v, 0.50),
+                pct(&v, 0.99),
+                pct(&v, 0.999)
+            );
+        });
+    }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let raw = args.iter().any(|a| a == "--raw");
+    let send_only_mode = args.iter().any(|a| a == "--send-only");
     let reps: usize = args
         .iter()
         .skip(1)
@@ -151,6 +242,11 @@ fn main() {
     );
     println!("clock overhead ~{clock_probe:.1}ns (inside every sample); cpus {cpus:?}; unfiltered");
     println!();
+
+    if send_only_mode {
+        send_only(reps, cpus);
+        return;
+    }
 
     let mut medians = Vec::new();
     println!("  rep      p50      p99    p99.9      max");
