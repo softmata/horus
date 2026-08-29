@@ -776,7 +776,7 @@ mod tests {
     /// passed by the mechanism this replaced.
     #[test]
     fn wake_comes_from_the_publisher_not_from_the_backstop() {
-        const TRIPS: u64 = 50;
+        const TRIPS: u64 = 10;
 
         let count = Arc::new(AtomicU64::new(0));
         let nodes = vec![make_event_node(
@@ -803,8 +803,36 @@ mod tests {
             "the first notification never produced a tick"
         );
 
-        let start = Instant::now();
+        // Time each round trip and take the MEDIAN.
+        //
+        // This used to SUM all 49 trips against a 12 ms budget. A sum is decided
+        // by its outliers: one scheduling hiccup on a loaded box blows the budget
+        // and a correct implementation is reported as a regression, which is the
+        // flake this replaces. The median needs MOST trips to be fast, which is
+        // exactly the claim, and a handful of descheduled trips cannot move it.
+        //
+        // Not the minimum, which was the first thing tried and is wrong here:
+        // `notify_event` skips the syscall when nobody is parked (see
+        // `notify_event_registered`), so a watcher caught mid-loop returns
+        // quickly WITHOUT a wake. With the FUTEX_WAKE deleted the minimum still
+        // passed — the fastest trip was one of those. The median is not fooled,
+        // because the parked trips dominate it.
+        let mut trips = Vec::with_capacity(TRIPS as usize);
         for trip in 2..=TRIPS {
+            // Let the watcher actually PARK before timing the wake.
+            //
+            // This is load-bearing, and its absence is why the test as originally
+            // written proved nothing. `notify_event` skips the syscall when
+            // nobody is parked, so in a tight notify loop the watcher observes
+            // the new generation on its way round and answers fast WITHOUT a
+            // wake. Confirmed by deleting the FUTEX_WAKE: the original form
+            // still passed, so it could only ever fail spuriously under load,
+            // never truly. The backstop walks 1 -> 2 -> 4 -> 8 -> 16 -> 32 ms
+            // while idle, so 50 ms of quiet puts the waiter solidly at the
+            // ceiling, where a missing wake costs tens of milliseconds.
+            std::thread::sleep(50_u64.ms());
+
+            let t0 = Instant::now();
             assert!(
                 crate::core::NodeInfo::notify_event("evt_wake_latency"),
                 "notifier vanished from the registry mid-test"
@@ -813,24 +841,35 @@ mod tests {
                 await_count(&count, trip, 2_000_u64.ms()),
                 "tick {trip} never arrived"
             );
+            trips.push(t0.elapsed());
         }
-        let elapsed = start.elapsed();
+        trips.sort();
+        let median = trips[trips.len() / 2];
 
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
         assert_eq!(returned.len(), 1);
 
-        let budget = Duration::from_millis(12);
+        // 5 ms, sitting between the two regimes rather than hugging one of them.
+        // With the waiter genuinely parked the broken case is the backstop
+        // CEILING, measured at 30.5 ms with the FUTEX_WAKE deleted — not the
+        // ~500 us sleep-poll the old 250 us budget was chosen against. A healthy
+        // wake is microseconds, so 5 ms clears it by orders of magnitude while
+        // staying 6x below the failure it has to catch; at 250 us the median
+        // still tripped on a box with 10 spinners, which is the scheduler
+        // talking, not the wake path.
+        let budget = Duration::from_millis(5);
         assert!(
-            elapsed < budget,
-            "{} serial notify->tick round trips took {:?} ({:?} each). The old \
-             sleep-poll averaged ~500us per trip (~{:?} for this many), so this \
-             is the signature of the watcher waiting out WAKE_BACKSTOP instead \
-             of being woken by the publisher's FUTEX_WAKE.",
+            median < budget,
+            "the median of {} serial notify->tick round trips was {:?}. Each is \
+             preceded by 50 ms of quiet so the waiter is parked, and a parked \
+             waiter that is not woken cannot be served faster than the backstop's \
+             own interval — so a median above {:?} is the signature of the watcher \
+             waiting out WAKE_BACKSTOP rather than being woken by the publisher's \
+             FUTEX_WAKE.",
             TRIPS - 1,
-            elapsed,
-            elapsed / (TRIPS as u32 - 1),
-            Duration::from_micros(500) * (TRIPS as u32 - 1),
+            median,
+            budget,
         );
     }
 
@@ -934,27 +973,37 @@ mod tests {
             "the first notification never produced a tick"
         );
 
-        // Long enough for the backstop to walk 1 -> 2 -> 4 -> 8 -> 16 -> 32 ms
-        // and sit at the ceiling for several more waits.
-        std::thread::sleep(250_u64.ms());
+        // Repeat the measurement and keep the FASTEST wake, for the reason given
+        // in `wake_comes_from_the_publisher_not_from_the_backstop`: an absolute
+        // wall-clock bound measures the scheduler, whereas the minimum measures
+        // the mechanism. A notification found by the escalated 32 ms timeout
+        // cannot come back in single-digit milliseconds even once.
+        const ROUNDS: u64 = 4;
+        let mut latency = Duration::MAX;
+        for round in 0..ROUNDS {
+            // Long enough for the backstop to walk 1 -> 2 -> 4 -> 8 -> 16 -> 32 ms
+            // and sit at the ceiling for several more waits.
+            std::thread::sleep(250_u64.ms());
 
-        let start = Instant::now();
-        assert!(crate::core::NodeInfo::notify_event("evt_backoff"));
-        assert!(
-            await_count(&count, 2, 2_000_u64.ms()),
-            "the tick after a quiet period never arrived"
-        );
-        let latency = start.elapsed();
+            let start = Instant::now();
+            assert!(crate::core::NodeInfo::notify_event("evt_backoff"));
+            assert!(
+                await_count(&count, 2 + round, 2_000_u64.ms()),
+                "the tick after a quiet period never arrived"
+            );
+            latency = latency.min(start.elapsed());
+        }
 
         running.store(false, Ordering::SeqCst);
         assert_eq!(executor.stop().len(), 1);
 
         assert!(
             latency < 5_u64.ms(),
-            "waking a node after 250 ms of silence took {latency:?}. The escalated \
-             backstop is up to 32 ms, so this is the signature of the notification \
-             being found by the timeout rather than delivered by FUTEX_WAKE — the \
-             idle backoff has turned into a latency regression."
+            "the fastest wake after 250 ms of silence took {latency:?}. The escalated \
+             backstop is up to 32 ms, so not one round being under 5 ms is the \
+             signature of the notification being found by the timeout rather than \
+             delivered by FUTEX_WAKE — the idle backoff has turned into a latency \
+             regression."
         );
     }
 
