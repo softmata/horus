@@ -2614,11 +2614,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         //     this line deleted                        ~67ns
         //     plain `store` to the SAME address        ~70ns
         //
-        // So the cost is ~28ns — near 30% of a send — and the third row is the
-        // one that matters: a plain store to the same address is as cheap as
-        // deleting the line, so none of it is the pointer chase or the cache
-        // line. It is entirely the `lock` prefix, which drains the store buffer
-        // and stops one send from overlapping the next.
+        // So the cost is ~28ns in that loop, and the third row says where it
+        // goes: a plain store to the same address is as cheap as deleting the
+        // line, so none of it is the pointer chase or the cache line. It is
+        // entirely the `lock` prefix, which drains the store buffer and stops
+        // one send from overlapping the next.
+        //
+        // But that last clause is also the limit of the result, and the number
+        // does NOT generalise to latency. `--send-only` issues sends
+        // back-to-back, which is exactly the shape the barrier penalises.
+        // Measured on the round-trip-paced one-way test instead — one send per
+        // cycle, which is what a control loop does — deleting this same line
+        // changes nothing: ~159ns median with it, ~162ns without, interleaved,
+        // well inside the noise. By the time the peer has answered, the store
+        // buffer has drained anyway and the barrier is free.
+        //
+        // So this is worth ~28ns to burst THROUGHPUT and approximately nothing
+        // to control-loop LATENCY. Anyone trading correctness for it should be
+        // chasing the former.
         //
         // The comment here used to say the remainder after moving the counter
         // off `migration_epoch`'s cache line "is the lock prefix itself and is
