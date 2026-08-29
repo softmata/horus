@@ -25,9 +25,29 @@
 
 use horus_core::communication::Topic;
 use horus_robotics::messages::CmdVel;
+use serde::{Deserialize, Serialize};
+
+/// A payload with the send timestamp in its first word, so the one-way
+/// measurement works the same way it does for `CmdVel`.
+///
+/// `Topic<T>` requires Serialize/Deserialize for its bounds, but a POD type
+/// never takes the serde path.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct Bulk<const N: usize> {
+    ts: u64,
+    #[serde(with = "serde_arrays")]
+    data: [u64; N],
+}
 
 const WARMUP: usize = 20_000;
 const SAMPLES: usize = 200_000;
+/// Fewer samples for bulk payloads: a 4 KB ring at capacity 16 is 64 KB, and
+/// the run is memory-bound rather than latency-bound past a point.
+const SAMPLES_BULK: usize = 50_000;
+/// Image frames allocate from a pool per send, so fewer samples.
+const SAMPLES_IMG: usize = 20_000;
+const WARMUP_IMG: usize = 2_000;
 
 #[repr(C)]
 struct Timespec {
@@ -65,6 +85,153 @@ fn pct(sorted: &[u64], p: f64) -> u64 {
         return 0;
     }
     sorted[((sorted.len() - 1) as f64 * p).round() as usize]
+}
+
+/// One rep on a bulk payload. Same method as `run`; separated because the
+/// timestamp lives in a different field.
+fn run_bulk<const N: usize>(rep: usize, cpus: (usize, usize)) -> Vec<u64>
+where
+    Bulk<N>: Serialize + for<'d> Deserialize<'d>,
+{
+    let name = format!("probe_b{}_{}_{}", N, std::process::id(), rep);
+    let tx: Topic<Bulk<N>> = Topic::new(&name).expect("producer handle");
+    let rx: Topic<Bulk<N>> = Topic::new(&name).expect("consumer handle");
+    assert!(rx.recv().is_none(), "nothing published yet");
+
+    let total = WARMUP + SAMPLES_BULK;
+    let ack = std::sync::atomic::AtomicU64::new(0);
+    if rep == 0 {
+        eprintln!(
+            "  payload {} B, backend: {} (producer), {} (consumer)",
+            core::mem::size_of::<Bulk<N>>(),
+            tx.backend_name(),
+            rx.backend_name()
+        );
+    }
+
+    std::thread::scope(|s| {
+        let ack = &ack;
+        let consumer = s.spawn(move || {
+            pin(cpus.1);
+            let mut out: Vec<u64> = Vec::with_capacity(total);
+            let mut seen = 0u64;
+            while (seen as usize) < total {
+                if let Some(msg) = rx.recv() {
+                    out.push(now_ns().wrapping_sub(msg.ts));
+                    seen += 1;
+                    ack.store(seen, std::sync::atomic::Ordering::Release);
+                } else {
+                    std::hint::spin_loop();
+                }
+            }
+            out.split_off(WARMUP)
+        });
+
+        pin(cpus.0);
+        let mut send_ns: Vec<u64> = Vec::with_capacity(total);
+        for i in 0..total {
+            let t0 = now_ns();
+            let msg = Bulk::<N> {
+                ts: t0,
+                data: [i as u64; N],
+            };
+            tx.send(msg);
+            send_ns.push(now_ns().wrapping_sub(t0));
+            let want = i as u64 + 1;
+            while ack.load(std::sync::atomic::Ordering::Acquire) < want {
+                std::hint::spin_loop();
+            }
+        }
+        let mut sv = send_ns.split_off(WARMUP);
+        sv.sort_unstable();
+        if rep == 0 {
+            eprintln!(
+                "  unloaded send() p50={}ns p99={}ns",
+                pct(&sv, 0.50),
+                pct(&sv, 0.99)
+            );
+        }
+        consumer.join().expect("consumer thread")
+    })
+}
+
+/// One rep on the tensor-backed `Image` path — HORUS's actual answer for bulk
+/// payloads.
+///
+/// `Image` is `{ descriptor, pool: Arc<TensorPool> }`: the pixels live in a
+/// shared-memory pool and the topic carries only the 224-byte descriptor. So
+/// publishing is genuinely zero-copy and the latency should be flat in frame
+/// size — which is the property worth measuring, and the reason a
+/// `Topic<[u64; 512]>` row is not the right comparison against a loan/publish
+/// API. Sending 4 KB by value copies 4 KB; this does not.
+///
+/// The timestamp travels in the descriptor's own `timestamp_ns` field.
+fn run_image(rep: usize, w: u32, h: u32, cpus: (usize, usize)) -> Vec<u64> {
+    use horus_core::memory::Image;
+    use horus_core::types::ImageEncoding;
+
+    let name = format!("probe_img{}x{}_{}_{}", w, h, std::process::id(), rep);
+    let tx: Topic<Image> = Topic::new(&name).expect("producer handle");
+    let rx: Topic<Image> = Topic::new(&name).expect("consumer handle");
+    assert!(rx.recv().is_none(), "nothing published yet");
+
+    let total = WARMUP_IMG + SAMPLES_IMG;
+    let ack = std::sync::atomic::AtomicU64::new(0);
+    if rep == 0 {
+        let probe = Image::new(w, h, ImageEncoding::Mono8).expect("alloc probe");
+        eprintln!(
+            "  {}x{} Mono8 = {} B of pixels, descriptor on the wire; backend: {}",
+            w,
+            h,
+            probe.nbytes(),
+            tx.backend_name()
+        );
+    }
+
+    std::thread::scope(|s| {
+        let ack = &ack;
+        let consumer = s.spawn(move || {
+            pin(cpus.1);
+            let mut out: Vec<u64> = Vec::with_capacity(total);
+            let mut seen = 0u64;
+            while (seen as usize) < total {
+                if let Some(img) = rx.recv() {
+                    out.push(now_ns().wrapping_sub(img.timestamp_ns()));
+                    seen += 1;
+                    ack.store(seen, std::sync::atomic::Ordering::Release);
+                } else {
+                    std::hint::spin_loop();
+                }
+            }
+            out.split_off(WARMUP_IMG)
+        });
+
+        pin(cpus.0);
+        // Allocate ONCE, outside the loop, and clone per send.
+        //
+        // `Image::new` zero-initialises the pixel buffer, so allocating inside
+        // the loop measures a memset of the whole frame: with a fresh 1920x1080
+        // frame per iteration this reported 82us, which is the cost of clearing
+        // 2 MB, not of publishing anything. Cloning bumps the tensor refcount
+        // and copies only the descriptor, which is what a camera pipeline
+        // reusing its buffers actually does — and what makes the transport cost
+        // visible.
+        let frame = Image::new(w, h, ImageEncoding::Mono8).expect("alloc frame");
+        frame.data_mut()[0] = 1;
+        for i in 0..total {
+            let mut img = frame.clone();
+            // Touch one pixel through the shared buffer so the send cannot be
+            // optimised away.
+            img.data_mut()[0] = i as u8;
+            img.set_timestamp_ns(now_ns());
+            tx.send(img);
+            let want = i as u64 + 1;
+            while ack.load(std::sync::atomic::Ordering::Acquire) < want {
+                std::hint::spin_loop();
+            }
+        }
+        consumer.join().expect("consumer thread")
+    })
 }
 
 /// One rep. Returns the sorted per-message one-way latencies in ns.
@@ -210,6 +377,19 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let raw = args.iter().any(|a| a == "--raw");
     let send_only_mode = args.iter().any(|a| a == "--send-only");
+    let image_dims: Option<(u32, u32)> = args
+        .iter()
+        .position(|a| a == "--image")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        });
+    let bulk_bytes: Option<usize> = args
+        .iter()
+        .position(|a| a == "--bulk")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok());
     let reps: usize = args
         .iter()
         .skip(1)
@@ -245,6 +425,47 @@ fn main() {
 
     if send_only_mode {
         send_only(reps, cpus);
+        return;
+    }
+
+    if let Some((w, h)) = image_dims {
+        println!("  rep      p50      p99    p99.9      max");
+        for rep in 0..reps {
+            let mut v = run_image(rep, w, h, cpus);
+            v.sort_unstable();
+            println!(
+                "  {:>3}  {:>7}  {:>7}  {:>7}  {:>7}",
+                rep,
+                pct(&v, 0.50),
+                pct(&v, 0.99),
+                pct(&v, 0.999),
+                v[v.len() - 1]
+            );
+        }
+        return;
+    }
+
+    if let Some(bytes) = bulk_bytes {
+        println!("  rep      p50      p99    p99.9      max");
+        for rep in 0..reps {
+            let mut v = match bytes {
+                1024 => run_bulk::<128>(rep, cpus),
+                4096 => run_bulk::<512>(rep, cpus),
+                _ => {
+                    eprintln!("--bulk accepts 1024 or 4096");
+                    return;
+                }
+            };
+            v.sort_unstable();
+            println!(
+                "  {:>3}  {:>7}  {:>7}  {:>7}  {:>7}",
+                rep,
+                pct(&v, 0.50),
+                pct(&v, 0.99),
+                pct(&v, 0.999),
+                v[v.len() - 1]
+            );
+        }
         return;
     }
 
