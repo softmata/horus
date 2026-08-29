@@ -2605,14 +2605,47 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        // Always-on metric. The increment is Relaxed, but it is a LOCKed
-        // read-modify-write into shared memory, not the "~1ns" this comment
-        // used to claim: measured against a build with the line removed, it
-        // was worth ~35ns of a ~170ns one-way latency, because the counter
-        // shared cache line 1 with `migration_epoch` and every consumer polls
-        // that on every recv. The counter now lives on the low-traffic line
-        // (see `TopicHeader`), which recovers most of it; the remainder is the
-        // lock prefix itself and is the price of an exact count.
+        // Always-on metric, and the single most expensive instruction left on
+        // the publish path. Measured with `topic_probe --send-only`, which has
+        // no consumer and therefore no coherence traffic, so it prices local
+        // work at +/-4ns instead of the +/-60ns an end-to-end figure gives:
+        //
+        //     baseline                                 ~95ns
+        //     this line deleted                        ~67ns
+        //     plain `store` to the SAME address        ~70ns
+        //
+        // So the cost is ~28ns — near 30% of a send — and the third row is the
+        // one that matters: a plain store to the same address is as cheap as
+        // deleting the line, so none of it is the pointer chase or the cache
+        // line. It is entirely the `lock` prefix, which drains the store buffer
+        // and stops one send from overlapping the next.
+        //
+        // The comment here used to say the remainder after moving the counter
+        // off `migration_epoch`'s cache line "is the lock prefix itself and is
+        // the price of an exact count", which read as though it were small. It
+        // is not, and this is what a future attempt has to work with:
+        //
+        //   * `messages_total` is NOT only a metric. `SubscriptionFreshness`
+        //     (scheduling/types.rs) watches it as the "new data exists" signal
+        //     behind `.subscribe_with_timeout()`, which drives `StalePolicy::
+        //     SafeState` and `Stop`. So it cannot be batched every N sends the
+        //     way `header.tail` is: a 1 Hz topic with N=32 would look dead for
+        //     32 seconds and safe-state a healthy robot.
+        //   * It is nonetheless REDUNDANT. Measured across all five backends
+        //     (SpscShm, MpscShm, SpmcShm, PodShm, FanoutShm), 100 sends move
+        //     `sequence_or_head` by exactly 100 and `messages_total` by exactly
+        //     100 — the protocol already maintains this count for free.
+        //   * The catch is that they are not the same quantity: this increment
+        //     runs BEFORE dispatch, so it counts send *attempts*, while
+        //     `sequence_or_head` counts successful claims. They diverge exactly
+        //     when a send is dropped on a full ring.
+        //
+        // Removing it therefore means deciding whether the watchdog should
+        // observe attempts or deliveries, and repointing both it and
+        // `read_topic_messages_total` at the head — a semantic change on a
+        // safety path, not a micro-optimisation. That is the work; it is worth
+        // ~28ns of ~95ns, and it should be done on purpose rather than by
+        // flipping this line.
         self.header().messages_total.fetch_add(1, Ordering::Relaxed);
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
