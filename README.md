@@ -371,17 +371,23 @@ than relabelled. The REP 2014 figure above is cited, not measured here. Any
 number that matters to your decision is worth measuring on your own hardware
 and message sizes.
 
-|  vs iceoryx2              | HORUS med | iox2 med | median   | p99      |
-|---------------------------|-----------|----------|----------|----------|
-| Cross-process RTT (8 B)   | 315 ns    | 1035 ns  | **3.3x** | **2.8x** |
-| Cross-thread RTT (8 B)    | 277 ns    |  998 ns  | **3.6x** | **3.1x** |
-| Same-thread (8 B)         |  98 ns    |  320 ns  | **3.3x** | **2.6x** |
-| Same-thread (1 KB)        | 223 ns    |  362 ns  | **1.6x** | 1.1x     |
-| Same-thread (4 KB)        | 530 ns    |  452 ns  | 0.85x    | 0.61x    |
-| MPMC 4P/4S recv cost      |  71 ns    |  213 ns  | **3.0x** | **3.1x** |
-| Throughput (same loop)    | 10.0 M/s  | 3.1 M/s  | **3.2x** | —        |
+|  vs iceoryx2              | HORUS med | iox2 med | median    | p99      |
+|---------------------------|-----------|----------|-----------|----------|
+| Same-thread (8 B)         |   55 ns   |  416 ns  | **7.6x**  | **5.8x** |
+| Cross-thread RTT (8 B)    |  371 ns   | 1716 ns  | **4.6x**  | **3.9x** |
+| Cross-process RTT (8 B)   |  413 ns   | 1622 ns  | **3.9x**  | **3.4x** |
+| Same-thread (1 KB)        |  169 ns   |  448 ns  | **2.7x**  | **2.7x** |
+| Same-thread (4 KB)        |  574 ns   |  550 ns  | 0.96x     | 0.93x    |
+| MPMC 4P/4S recv cost      |   35 ns   |  216 ns  | **6.2x**  | **3.0x** |
+| Throughput (same loop)    | 37.8 M/s  |  3.0 M/s | **12.8x** | —        |
 
-Ratios above 1 favour HORUS.
+Ratios above 1 favour HORUS. Both columns come from the same run, which is what
+makes the ratio trustworthy; the absolute nanoseconds drift with machine load
+and thermal state, so compare ratios across runs, not absolutes.
+
+4 KB is now roughly a tie (0.96x median). It used to be 0.46x — see the
+zero-copy note below for why a 4 KB POD sent **by value** is the wrong shape for
+bulk data in the first place.
 
 **Bulk payloads do not go through `Topic<[u8; N]>`.** `Image`, `PointCloud`,
 `DepthImage` and `Tensor` keep their buffers in a shared-memory pool and put
@@ -409,11 +415,10 @@ cleared before it is handed out — but it means allocating a frame per capture
 puts that cost on your critical path. Allocate once and clone; a clone is a
 refcount bump and a descriptor copy, which is what the numbers above measure.
 
-**iceoryx2 is still faster at 4 KB** — by 1.2x on the median and 1.6x on the
-p99 — and the crossover sits between 1 KB and 4 KB. HORUS's advantage is at
-small payloads, which is where robotics control traffic lives: a CmdVel is 16
-bytes. If your messages are camera frames or point clouds, measure before
-choosing.
+HORUS's advantage is largest at small payloads, which is where robotics control
+traffic lives: a CmdVel is 16 bytes. If your messages are camera frames or point
+clouds, use the tensor-backed types below rather than sending them by value, and
+measure on your own hardware either way.
 
 The round-trip rows are full round trips, not halved. Halving reports a
 one-sided stall as half a stall on each leg, which understates exactly the tail
