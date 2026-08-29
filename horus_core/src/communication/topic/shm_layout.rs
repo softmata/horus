@@ -73,7 +73,9 @@ pub const OFF_IS_POD: usize = 20;
 /// `topic_kind: u8`
 pub const OFF_TOPIC_KIND: usize = 48;
 /// `messages_total: AtomicU64`
-pub const OFF_MESSAGES_TOTAL: usize = 56;
+pub const OFF_MESSAGES_TOTAL: usize = 136;
+/// `migration_epoch: AtomicU64` — polled by every consumer on every recv.
+pub const OFF_MIGRATION_EPOCH: usize = 40;
 /// `sequence_or_head: AtomicU64` — the producer's publish point.
 pub const OFF_SEQUENCE_OR_HEAD: usize = 64;
 /// `capacity: u32`
@@ -279,15 +281,26 @@ mod static_asserts {
         assert!(offset_of!(TopicHeader, topic_kind) == OFF_TOPIC_KIND);
         assert!(offset_of!(TopicHeader, layout_kind) == OFF_LAYOUT_KIND);
         assert!(offset_of!(TopicHeader, messages_total) == OFF_MESSAGES_TOTAL);
+        assert!(offset_of!(TopicHeader, migration_epoch) == OFF_MIGRATION_EPOCH);
         assert!(offset_of!(TopicHeader, sequence_or_head) == OFF_SEQUENCE_OR_HEAD);
         assert!(offset_of!(TopicHeader, capacity) == OFF_CAPACITY);
         assert!(offset_of!(TopicHeader, capacity_mask) == OFF_CAPACITY_MASK);
         assert!(offset_of!(TopicHeader, slot_size) == OFF_SLOT_SIZE);
 
-        // `topic_kind` is a single byte followed by 7 bytes of padding; a
-        // 64-bit store at its offset would clobber both. horus_net did exactly
-        // that, believing offset 48 held `messages_total`.
-        assert!(OFF_MESSAGES_TOTAL == OFF_TOPIC_KIND + 8);
+        // `topic_kind` is a single byte followed by padding; a 64-bit store at
+        // its offset would clobber both. horus_net did exactly that, believing
+        // offset 48 held `messages_total`. It never did, and as of v4
+        // `messages_total` is not even on this cache line.
+        assert!(OFF_TOPIC_KIND < OFF_MESSAGES_TOTAL);
+
+        // `messages_total` must NOT share a cache line with `migration_epoch`.
+        // The producer does a locked read-modify-write on the counter every
+        // send; `migration_check!` Acquire-loads the epoch on every recv. On one
+        // line those false-share and the line ping-pongs once per message —
+        // ~36ns of a ~150ns one-way latency when measured. It belongs on the
+        // producer line, which consumers do not poll.
+        assert!(OFF_MESSAGES_TOTAL / CACHE_LINE != OFF_MIGRATION_EPOCH / CACHE_LINE);
+        assert!(OFF_MESSAGES_TOTAL / CACHE_LINE != OFF_SEQUENCE_OR_HEAD / CACHE_LINE);
 
         // The header must be a whole number of cache lines, and the producer's
         // publish word must start its own line (false-sharing invariant).

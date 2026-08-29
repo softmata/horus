@@ -2472,7 +2472,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        // Always-on metric: ~1ns Relaxed atomic increment
+        // Always-on metric. The increment is Relaxed, but it is a LOCKed
+        // read-modify-write into shared memory, not the "~1ns" this comment
+        // used to claim: measured against a build with the line removed, it
+        // was worth ~35ns of a ~170ns one-way latency, because the counter
+        // shared cache line 1 with `migration_epoch` and every consumer polls
+        // that on every recv. The counter now lives on the low-traffic line
+        // (see `TopicHeader`), which recovers most of it; the remainder is the
+        // lock prefix itself and is the price of an exact count.
         self.header().messages_total.fetch_add(1, Ordering::Relaxed);
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);

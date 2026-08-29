@@ -267,9 +267,16 @@ pub(crate) struct TopicHeader {
     pub(crate) layout_kind: AtomicU8,
     /// Alignment padding for messages_total
     pub(crate) _pad1a: [u8; 6],
-    /// Total messages ever sent on this topic (always-on atomic counter).
-    /// Incremented on every send() regardless of verbose flag.
-    pub(crate) messages_total: AtomicU64,
+    /// Padding where `messages_total` used to live.
+    ///
+    /// It moved to the producer line below. This cache line is read by
+    /// consumers on the hot path — `migration_check!` Acquire-loads
+    /// `migration_epoch` at offset 40 on EVERY recv — and a producer doing a
+    /// locked read-modify-write here on every send made the two false-share,
+    /// ping-ponging the line between cores once per message. Measured at ~36ns
+    /// of a ~150ns one-way latency on an i7-10750H, against a comment that
+    /// claimed the increment cost ~1ns.
+    pub(crate) _pad1b: [u8; 8],
 
     // === Cache line 2 (bytes 64-127): PRODUCER WRITE LINE ===
     // This cache line is ONLY written by producers (senders)
@@ -297,13 +304,48 @@ pub(crate) struct TopicHeader {
     /// Padding to fill cache line (64 - 8 - 4 - 4 - 4 - 4 - 8 - 8 = 24 bytes)
     pub(crate) _pad_producer: [u8; 24],
 
-    // === Cache line 3 (bytes 128-191): CONSUMER WRITE LINE ===
-    // This cache line is ONLY written by consumers (receivers)
-    // NEVER put producer-written fields here!
+    // === Cache line 3 (bytes 128-191): LOW-TRAFFIC LINE ===
+    //
+    // This was "CONSUMER WRITE LINE / NEVER put producer-written fields here",
+    // and `messages_total` below breaks that rule deliberately. The rule was
+    // aimed at the right problem — keep the per-message writers of the two
+    // roles off one line — but `tail` is not a per-message write: a consumer
+    // stores it once per `capacity / 2` messages (see the `flush_mask` sites in
+    // dispatch.rs), and a producer loads it only when its local view says the
+    // ring is full. So this line is idle almost all the time, which is exactly
+    // what `messages_total` needs and what neither of the two lines above can
+    // offer: line 1 carries `migration_epoch`, polled by every consumer on
+    // every recv, and line 2 carries `sequence_or_head`, read by the broadcast
+    // recv path on every recv.
+    //
+    // Measured, best-of-6-reps one-way on an i7-10750H, Topic<CmdVel>:
+    // counter on line 1 gave a scattered 160-201ns, on line 2 a flat
+    // 166-175ns, here 139-187ns with a 135ns floor when the counter is removed
+    // outright. The scatter is the tell — a locked RMW against a line the peer
+    // is reading stalls for a variable time, which is why the median moved
+    // further than the floor did.
+    //
+    // The invariant to preserve is therefore "no two PER-MESSAGE writers from
+    // different roles on one line", not "one role per line".
     /// Read tail (for ring backends) - CONSUMER ONLY
     pub(crate) tail: AtomicU64,
-    /// Padding to fill cache line (64 - 8 = 56 bytes)
-    pub(crate) _pad_consumer: [u8; 56],
+    /// Total messages ever sent on this topic (always-on atomic counter).
+    /// Incremented on every send() regardless of verbose flag.
+    ///
+    /// Placed here, on the consumer line, because the two lines that look like
+    /// its natural home are both read by consumers on EVERY recv: line 1 holds
+    /// `migration_epoch`, which `migration_check!` polls per recv, and line 2
+    /// holds `sequence_or_head`, which the broadcast recv path reads per recv.
+    /// A producer doing a locked read-modify-write on either made the line
+    /// ping-pong once per message. Both placements were measured; line 1 gave a
+    /// scattered 132-191ns against a 127-133ns floor without the counter, and
+    /// line 2 was worse still at a flat 166-175ns.
+    ///
+    /// `tail` is the only other word here and a consumer stores it once per
+    /// `capacity / 2` messages, so this line is very nearly producer-exclusive.
+    pub(crate) messages_total: AtomicU64,
+    /// Padding to fill cache line (64 - 8 - 8 = 48 bytes)
+    pub(crate) _pad_consumer: [u8; 48],
 
     // === Cache line 4 (bytes 192-255): Counters and metadata ===
     /// Number of active publishers
@@ -397,7 +439,7 @@ impl TopicHeader {
             topic_kind: 0,
             layout_kind: AtomicU8::new(0),
             _pad1a: [0; 6],
-            messages_total: AtomicU64::new(0),
+            _pad1b: [0; 8],
             // Cache line 2: Producer write line
             sequence_or_head: AtomicU64::new(0),
             capacity: 0,
@@ -409,7 +451,8 @@ impl TopicHeader {
             _pad_producer: [0; 24],
             // Cache line 3: Consumer write line
             tail: AtomicU64::new(0),
-            _pad_consumer: [0; 56],
+            messages_total: AtomicU64::new(0),
+            _pad_consumer: [0; 48],
             // Cache line 4: Counters
             publisher_count: AtomicU32::new(0),
             subscriber_count: AtomicU32::new(0),
@@ -3309,14 +3352,51 @@ mod tests {
 
     // ── messages_total offset ──────────────────────────────────────────
 
+    /// `messages_total` sits where `shm_layout` says, and off every line a
+    /// consumer reads per message.
+    ///
+    /// The offset alone is already asserted at compile time against
+    /// `OFF_MESSAGES_TOTAL`; what this adds is the *reason* the field is where
+    /// it is. It used to be pinned to 56 by literal, which said nothing about
+    /// why 56, and so could not tell the difference between a deliberate move
+    /// and an accidental one. At 56 it shared cache line 1 with
+    /// `migration_epoch`, which every consumer Acquire-loads on every recv via
+    /// `migration_check!`, so the producer's per-send locked increment
+    /// ping-ponged that line between cores.
     #[test]
-    fn messages_total_offset_is_56() {
+    fn messages_total_is_off_every_per_recv_line() {
         let h = TopicHeader::zeroed();
         let base = &h as *const TopicHeader as *const u8;
         let field_ptr = &h.messages_total as *const AtomicU64 as *const u8;
         // SAFETY: both pointers derive from the same TopicHeader allocation.
         let offset = unsafe { field_ptr.offset_from(base) } as usize;
-        assert_eq!(offset, 56, "messages_total should be at byte offset 56");
+        assert_eq!(
+            offset,
+            super::super::shm_layout::OFF_MESSAGES_TOTAL,
+            "messages_total must be where shm_layout tells out-of-crate readers \
+             it is"
+        );
+
+        const LINE: usize = 64;
+        let epoch =
+            unsafe { (&h.migration_epoch as *const AtomicU64 as *const u8).offset_from(base) }
+                as usize;
+        let head =
+            unsafe { (&h.sequence_or_head as *const AtomicU64 as *const u8).offset_from(base) }
+                as usize;
+        assert_ne!(
+            offset / LINE,
+            epoch / LINE,
+            "messages_total shares a cache line with migration_epoch, which \
+             every consumer polls on every recv — the producer's per-send \
+             locked increment will ping-pong it"
+        );
+        assert_ne!(
+            offset / LINE,
+            head / LINE,
+            "messages_total shares a cache line with sequence_or_head, which \
+             the broadcast recv path reads on every recv"
+        );
     }
 
     // ── topic_kind field ───────────────────────────────────────────────
@@ -3449,6 +3529,16 @@ mod untrusted_header_tests {
 
     /// Build a topic file whose header declares `capacity` but a DIFFERENT
     /// `cap_mask` — the shape a hostile file takes.
+    use super::super::shm_layout as layout;
+
+    fn put_u64(buf: &mut [u8], off: usize, v: u64) {
+        buf[off..off + 8].copy_from_slice(&v.to_ne_bytes());
+    }
+
+    fn put_u32(buf: &mut [u8], off: usize, v: u32) {
+        buf[off..off + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+
     fn write_header(path: &std::path::Path, capacity: u32, cap_mask: u32, type_size: u32) {
         let total = TOPIC_HEADER_SIZE
             + (capacity as usize) * 8
@@ -3458,14 +3548,19 @@ mod untrusted_header_tests {
         buf[12..16].copy_from_slice(&type_size.to_ne_bytes());
         buf[20] = POD_YES;
         // Both counters, as a real file has them before the ring wraps.
-        // `read_latest_slot_bytes` keys on messages_total (offset 56);
-        // sequence_or_head (offset 64) is kept in sync here so the fixture
-        // stays faithful.
-        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
-        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
-        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
-        buf[76..80].copy_from_slice(&cap_mask.to_ne_bytes());
-        buf[80..84].copy_from_slice(&type_size.to_ne_bytes());
+        // `read_latest_slot_bytes` keys on messages_total; sequence_or_head is
+        // kept in sync here so the fixture stays faithful.
+        //
+        // Offsets come from `shm_layout`, never from literals. These fixtures
+        // ARE a second implementation of the wire format, and a second copy of
+        // the offsets is exactly what drifted in horus_net for four months —
+        // and what silently broke these tests when `messages_total` moved off
+        // cache line 1.
+        put_u64(&mut buf, layout::OFF_MESSAGES_TOTAL, 1);
+        put_u64(&mut buf, layout::OFF_SEQUENCE_OR_HEAD, 1);
+        put_u32(&mut buf, layout::OFF_CAPACITY, capacity);
+        put_u32(&mut buf, layout::OFF_CAPACITY_MASK, cap_mask);
+        put_u32(&mut buf, layout::OFF_SLOT_SIZE, type_size);
         let mut f = std::fs::File::create(path).unwrap();
         f.write_all(&buf).unwrap();
     }
@@ -3510,11 +3605,11 @@ mod untrusted_header_tests {
         buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
         buf[12..16].copy_from_slice(&8u32.to_ne_bytes()); // type_size (unused on the serde path)
         buf[20] = POD_NO;
-        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
-        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
-        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
-        buf[76..80].copy_from_slice(&(capacity - 1).to_ne_bytes()); // cap_mask
-        buf[80..84].copy_from_slice(&slot_size.to_ne_bytes());
+        put_u64(&mut buf, layout::OFF_MESSAGES_TOTAL, 1);
+        put_u64(&mut buf, layout::OFF_SEQUENCE_OR_HEAD, 1);
+        put_u32(&mut buf, layout::OFF_CAPACITY, capacity);
+        put_u32(&mut buf, layout::OFF_CAPACITY_MASK, capacity - 1);
+        put_u32(&mut buf, layout::OFF_SLOT_SIZE, slot_size);
         let slot_start = TOPIC_HEADER_SIZE + (capacity as usize) * 8;
         buf[slot_start + 8..slot_start + 16].copy_from_slice(&data_len.to_ne_bytes());
         let mut f = std::fs::File::create(path).unwrap();
