@@ -554,8 +554,68 @@ fn hlog_latency_p99_under_50us() {
     );
 }
 
+/// Run one timing test in a child process with stderr on `/dev/null`.
+///
+/// Returns `true` in the child, meaning "do the measurement"; in the parent it
+/// spawns that child, asserts it passed, and returns `false`.
+///
+/// The two tests below time `hlog!()`, whose per-call cost includes one
+/// blocking, unbuffered `write_all` + `flush` to raw fd 2 —
+/// `write_console_line`, whose own doc says it "blocks for as long as the reader
+/// takes". Under `cargo test` fd 2 is a pipe drained by the harness while 27
+/// other tests in this binary log into it concurrently, so what these tests
+/// actually measured was that reader: the same 1000-call loop takes 8.4ms with
+/// stderr on `/dev/null` and 278ms through the pipe. The bound had already been
+/// walked from the 50ms in this test's own name to 200ms chasing it.
+///
+/// Calibrating against a bare write does not rescue it, which is worth writing
+/// down because it is the obvious fix: the backpressure is bursty and
+/// order-dependent, so `hlog!()` absorbs the stall and a paired control write
+/// lands after the reader has drained. Measured that way, hlog showed 286ms
+/// against 0.9ms of "sink" — the subtraction attributes the sink's cost to hlog.
+///
+/// Isolating the process is what makes the measurement deterministic: no
+/// concurrent writers, and a sink that never blocks.
+fn measure_in_isolated_child(test_name: &str) -> bool {
+    const MARKER: &str = "HORUS_HLOG_TIMING_CHILD";
+    if std::env::var(MARKER).is_ok() {
+        return true;
+    }
+    let exe = std::env::current_exe().expect("current_exe");
+    // A private namespace as well as a private stderr. `GLOBAL_LOG_BUFFER` lives
+    // in shared memory keyed by namespace, so without this the child's thousands
+    // of benchmark entries evict the parent's and the buffer-filtering tests in
+    // this same file start failing — which is exactly what happened.
+    let ns = format!("hlogbench_{}_{}", std::process::id(), test_name);
+    let out = std::process::Command::new(exe)
+        .args([test_name, "--exact", "--test-threads=1"])
+        .env(MARKER, "1")
+        .env("HORUS_NAMESPACE", &ns)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .expect("spawn isolated child");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{test_name} failed in an isolated child process (stderr on /dev/null, no \
+         concurrent writers), so this is hlog's own cost and not the test \
+         harness's stderr pipe:\n{stdout}"
+    );
+    // Anti-vacuity: a filter that stops matching would run zero tests and exit
+    // zero, and this whole test would pass while measuring nothing.
+    assert!(
+        stdout.contains("1 passed"),
+        "the isolated child ran no test — `--exact {test_name}` matched nothing, so \
+         this test was about to pass without measuring anything:\n{stdout}"
+    );
+    false
+}
+
 #[test]
 fn hlog_throughput_1000_calls_under_50ms() {
+    if !measure_in_isolated_child("hlog_throughput_1000_calls_under_50ms") {
+        return;
+    }
     let node = uid("throughput_bench");
     let count = 1000;
 
@@ -574,16 +634,23 @@ fn hlog_throughput_1000_calls_under_50ms() {
         count as f64 / elapsed.as_millis().max(1) as f64
     );
 
-    // CI bound: 200ms. WSL2 adds overhead. Native Linux should be < 30ms.
+    // 50ms — the bound this test is named for. It had been walked to 200ms while
+    // the measurement was really of the harness's stderr pipe; isolated, this
+    // measures 9.6-10.1ms run to run, so 50ms is 5x headroom on a deterministic
+    // number rather than a guess about someone else's I/O.
     assert!(
-        elapsed.as_millis() < 200,
-        "1000 sequential hlog!() calls must complete in < 200ms on CI, took {:?}",
+        elapsed.as_millis() < 50,
+        "1000 sequential hlog!() calls must complete in < 50ms, took {:?} \
+         (measured in an isolated process, so this is hlog, not the stderr pipe)",
         elapsed
     );
 }
 
 #[test]
 fn hlog_latency_under_contention_4_threads() {
+    if !measure_in_isolated_child("hlog_latency_under_contention_4_threads") {
+        return;
+    }
     let base = uid("contention_bench");
     let per_thread = 2_500;
     let thread_count = 4;
