@@ -100,7 +100,12 @@ fn rt_pool_multiple_nodes_all_tick_in_run_mode() {
             .unwrap();
     }
 
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30ms — see `core_pinning_invalid_core_no_crash`. These assert
+    // that a tick HAPPENS, not that it happens quickly, and a 100Hz scheduler
+    // given a 30ms window budgets three ticks; a thread on a box running the rest
+    // of the workspace suite in parallel loses that easily. A real regression
+    // (never ticking) fails no matter how long the window is.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     for (i, c) in counts.iter().enumerate() {
         let ticks = c.load(Ordering::Relaxed);
@@ -209,7 +214,12 @@ fn priority_without_permissions_no_crash() {
         .build()
         .unwrap();
 
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30ms — see `core_pinning_invalid_core_no_crash`. These assert
+    // that a tick HAPPENS, not that it happens quickly, and a 100Hz scheduler
+    // given a 30ms window budgets three ticks; a thread on a box running the rest
+    // of the workspace suite in parallel loses that easily. A real regression
+    // (never ticking) fails no matter how long the window is.
+    scheduler.run_for(500_u64.ms()).unwrap();
     assert!(
         count.load(Ordering::Relaxed) > 0,
         "Should tick despite priority failure"
@@ -287,7 +297,12 @@ fn watchdog_on_non_rt_node_no_crash() {
         .build()
         .unwrap();
 
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30ms — see `core_pinning_invalid_core_no_crash`. These assert
+    // that a tick HAPPENS, not that it happens quickly, and a 100Hz scheduler
+    // given a 30ms window budgets three ticks; a thread on a box running the rest
+    // of the workspace suite in parallel loses that easily. A real regression
+    // (never ticking) fails no matter how long the window is.
+    scheduler.run_for(500_u64.ms()).unwrap();
     assert!(count.load(Ordering::Relaxed) > 0);
 }
 
