@@ -93,6 +93,15 @@ pub(crate) struct LocalState {
     /// SAFETY: Valid for Topic lifetime (points into `Arc<ShmRegion>`)
     pub cached_seq_ptr: *mut u8, // offset 56
 
+    /// Bytes between consecutive slots under the co-located layout, or 0 when
+    /// this topic uses the historical split layout.
+    ///
+    /// Nonzero doubles as the "is colo" predicate. Cached rather than read from
+    /// the header per message so the hot path branches on a register that is
+    /// constant for the life of the mapping — a perfectly predicted branch,
+    /// not a shared-line load.
+    pub cached_colo_stride: u64,
+
     // ========== SECOND CACHE LINE (64+ bytes) - COLD PATH ==========
     /// Our slot index in the participant array (-1 if not registered)
     pub slot_index: i32,
@@ -222,6 +231,7 @@ impl Default for LocalState {
             cached_capacity: 0,
             cached_header_ptr: std::ptr::null(),
             cached_seq_ptr: std::ptr::null_mut(),
+            cached_colo_stride: 0,
             slot_index: -1,
             slot_size: DEFAULT_SLOT_SIZE,
             cached_epoch: 0,

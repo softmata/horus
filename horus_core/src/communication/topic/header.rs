@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use crate::error::{HorusError, HorusResult};
 
+use super::shm_layout as layout;
 use super::types::BackendMode;
 
 // ============================================================================
@@ -23,11 +24,21 @@ pub(crate) const TOPIC_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE" (kept for 
 /// Header version for compatibility checking
 /// v2: Added slot_size field for large message support
 /// v3: Added per-slot sequence array for multi-producer write-completion tracking
-/// v4: Every millisecond timestamp in this header — participant leases,
-///     `last_topology_change_ms`, `stall_since_ms` — moved from `CLOCK_REALTIME`
-///     to `CLOCK_MONOTONIC`. See [`current_time_ms`].
+/// v4: Two independent breaking changes, shipped together.
+///
+///     (a) Every millisecond timestamp in this header — participant leases,
+///         `last_topology_change_ms`, `stall_since_ms` — moved from
+///         `CLOCK_REALTIME` to `CLOCK_MONOTONIC`. See [`current_time_ms`].
+///     (b) Added `layout_kind`, selecting the co-located slot geometry for
+///         small POD types. It is carved out of `_pad1a`, so no existing field
+///         moves, but a v3 reader does not know to consult it: it would address
+///         a colo region with the split layout's offsets and read payload bytes
+///         as readiness stamps. That is the same class of silent corruption the
+///         horus_net offset drift produced once already.
 ///
 /// # Why v4 is a hard break and not a soft migration
+///
+/// Neither change is detectable in-band by a v3 process.
 ///
 /// The timestamps did not change layout, size or alignment; they changed
 /// MEANING. A v3 process stamps a lease at ~1.75e12 (ms since 1970) and a v4
@@ -37,10 +48,13 @@ pub(crate) const TOPIC_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE" (kept for 
 /// in both directions at once — the v3 writer's leases look permanently expired
 /// to the v4 reader (its slot is reclaimed underneath a live process), and the
 /// v4 writer's leases look ~55 years in the future to the v3 reader (a crashed
-/// process is never reaped). There is no in-band discriminator that could make
-/// this safe, so the only correct handling is to refuse the segment: `Topic`'s
-/// open path rejects a version mismatch outright, which turns a silent
-/// liveness corruption into a startup error naming both versions.
+/// process is never reaped).
+///
+/// The geometry is worse still: a v3 reader has no `layout_kind` concept at
+/// all, so it cannot even ask. There is no in-band discriminator that could
+/// make either safe, so the only correct handling is to refuse the segment:
+/// `Topic`'s open path rejects a version mismatch outright, which turns a
+/// silent corruption into a startup error naming both versions.
 ///
 /// The practical consequence is that a v4 binary will not attach to a topic
 /// segment created by a v3 binary still running, and vice versa. Segments live
@@ -244,8 +258,15 @@ pub(crate) struct TopicHeader {
     /// Topic kind: Data=0, ServiceRequest=1, ServiceResponse=2, etc.
     /// Set once at topic creation. Used by discovery to classify topics.
     pub(crate) topic_kind: u8,
+    /// Which slot geometry the data region uses: `LAYOUT_SPLIT` or
+    /// `LAYOUT_COLO` (see `shm_layout`).
+    ///
+    /// Carved out of `_pad1a`, so `messages_total` keeps offset 56 and every
+    /// constant in `shm_layout` is unchanged. Atomic because a reader in
+    /// another process loads it while attaching.
+    pub(crate) layout_kind: AtomicU8,
     /// Alignment padding for messages_total
-    pub(crate) _pad1a: [u8; 7],
+    pub(crate) _pad1a: [u8; 6],
     /// Total messages ever sent on this topic (always-on atomic counter).
     /// Incremented on every send() regardless of verbose flag.
     pub(crate) messages_total: AtomicU64,
@@ -374,7 +395,8 @@ impl TopicHeader {
             creator_thread_id_hash: 0,
             migration_epoch: AtomicU64::new(0),
             topic_kind: 0,
-            _pad1a: [0; 7],
+            layout_kind: AtomicU8::new(0),
+            _pad1a: [0; 6],
             messages_total: AtomicU64::new(0),
             // Cache line 2: Producer write line
             sequence_or_head: AtomicU64::new(0),
@@ -413,6 +435,17 @@ impl TopicHeader {
     // All 7 arguments are required by the SHM header wire format — grouping them
     // into a struct would add overhead at the only call site (topic open/create).
     #[allow(clippy::too_many_arguments)]
+    /// Whether this region uses the co-located slot geometry.
+    ///
+    /// Read from SHM rather than re-derived from `type_size`: the creator
+    /// decided the geometry once, and a later attacher that re-derived it
+    /// could disagree (different `horus_core` build, different eligibility
+    /// bound) and then read payload bytes as a stamp.
+    #[inline]
+    pub(crate) fn is_colo(&self) -> bool {
+        self.layout_kind.load(Ordering::Acquire) == layout::LAYOUT_COLO
+    }
+
     pub fn init(
         &mut self,
         type_size: u32,
@@ -442,6 +475,19 @@ impl TopicHeader {
         self.creator_thread_id_hash = hash_thread_id(std::thread::current().id());
         self.migration_epoch.store(0, Ordering::Release);
         self.topic_kind = topic_kind;
+        // Pick the slot geometry once, at creation, and record it. Every later
+        // attach reads this rather than re-deriving it from type_size, so a
+        // producer and a consumer can never disagree about where a stamp
+        // lives — the disagreement mode that made the horus_net offset drift
+        // a silent corruption instead of a loud failure.
+        self.layout_kind.store(
+            if layout::colo_eligible(is_pod, type_size as usize) {
+                layout::LAYOUT_COLO
+            } else {
+                layout::LAYOUT_SPLIT
+            },
+            Ordering::Release,
+        );
         self.messages_total.store(0, Ordering::Release);
 
         // Cache line 2: Producer write line
@@ -1409,6 +1455,12 @@ fn read_slot_inner(
     }
 
     let is_pod = is_pod_raw == POD_YES;
+    // Which slot geometry the creator chose. Read from the region rather than
+    // re-derived from type_size: a reader that re-derived it could disagree
+    // with the writer and then read payload bytes as a stamp.
+    // SAFETY: OFF_LAYOUT_KIND (49) is inside the validated 640-byte header.
+    let colo = unsafe { std::ptr::read_unaligned(base.add(super::shm_layout::OFF_LAYOUT_KIND)) }
+        == super::shm_layout::LAYOUT_COLO;
 
     // ── 3b. Which counter actually indexes the ring ───────────────────────────
     //
@@ -1447,6 +1499,7 @@ fn read_slot_inner(
             ((head - 1) as usize) & cap_mask,
             is_pod,
             slot_size,
+            colo,
         )
         .is_some_and(|stamp| stamp != 0)
     {
@@ -1477,15 +1530,29 @@ fn read_slot_inner(
         if type_size == 0 || capacity == 0 {
             return None;
         }
-        // Pod layout (same as serde): [HEADER (640)] [SEQ_ARRAY (cap * 8)] [DATA (cap * type_size)]
-        let seq_array_size = capacity * std::mem::size_of::<u64>();
-        let data_region_start = TOPIC_HEADER_SIZE + seq_array_size;
-        let required = data_region_start + capacity * type_size;
-        if mmap.len() < required {
-            return None;
+        if colo {
+            // Colo layout: [HEADER (640)] [SLOTS (cap * slot_size)], each slot
+            // being [stamp (8) | payload | pad to a cache line]. No sequence
+            // array, so the data starts immediately after the header.
+            let required = super::shm_layout::colo_required_region_len(capacity, slot_size);
+            if slot_size < super::shm_layout::COLO_PAYLOAD_OFF + type_size || mmap.len() < required
+            {
+                return None;
+            }
+            let slot_start = super::shm_layout::colo_payload_offset(last_written, slot_size);
+            let end = slot_start.checked_add(type_size)?;
+            mmap.get(slot_start..end)?.to_vec()
+        } else {
+            // Split layout: [HEADER (640)] [SEQ_ARRAY (cap * 8)] [DATA (cap * type_size)]
+            let seq_array_size = capacity * std::mem::size_of::<u64>();
+            let data_region_start = TOPIC_HEADER_SIZE + seq_array_size;
+            let required = data_region_start + capacity * type_size;
+            if mmap.len() < required {
+                return None;
+            }
+            let slot_start = data_region_start + last_written * type_size;
+            mmap[slot_start..slot_start + type_size].to_vec()
         }
-        let slot_start = data_region_start + last_written * type_size;
-        mmap[slot_start..slot_start + type_size].to_vec()
     } else {
         if slot_size < 16 || capacity == 0 {
             return None;
@@ -1587,11 +1654,17 @@ fn slot_stamp(
     index: usize,
     is_pod: bool,
     slot_size: usize,
+    colo: bool,
 ) -> Option<u64> {
     use super::shm_layout as layout;
 
     let offset = if is_pod {
-        layout::seq_slot_offset(index)
+        if colo {
+            // Colo has no sequence array: the stamp is the slot's first word.
+            layout::colo_stamp_offset(index, slot_size)
+        } else {
+            layout::seq_slot_offset(index)
+        }
     } else {
         if slot_size < layout::SERDE_SLOT_OVERHEAD {
             return None;
@@ -2405,7 +2478,11 @@ mod tests {
 
         plant_participant(&h, 0, dead, 2, 1);
         h.reap_dead_participants(t0);
-        assert_eq!(h.sub_count(), 0, "precondition: this sweep reclaimed a slot");
+        assert_eq!(
+            h.sub_count(),
+            0,
+            "precondition: this sweep reclaimed a slot"
+        );
 
         // A second one dies a millisecond later — far inside the window a
         // fruitless sweep would have opened.

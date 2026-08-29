@@ -779,7 +779,11 @@ mod tests {
         const TRIPS: u64 = 50;
 
         let count = Arc::new(AtomicU64::new(0));
-        let nodes = vec![make_event_node("evt_wake_latency", "wake_topic", count.clone())];
+        let nodes = vec![make_event_node(
+            "evt_wake_latency",
+            "wake_topic",
+            count.clone(),
+        )];
         let running = Arc::new(AtomicBool::new(true));
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
 
@@ -908,7 +912,11 @@ mod tests {
     #[test]
     fn the_idle_backoff_costs_nothing_when_the_wake_arrives() {
         let count = Arc::new(AtomicU64::new(0));
-        let nodes = vec![make_event_node("evt_backoff", "backoff_topic", count.clone())];
+        let nodes = vec![make_event_node(
+            "evt_backoff",
+            "backoff_topic",
+            count.clone(),
+        )];
         let running = Arc::new(AtomicBool::new(true));
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
 
@@ -982,7 +990,11 @@ mod tests {
         let baseline = voluntary_context_switches() - before;
 
         let count = Arc::new(AtomicU64::new(0));
-        let nodes = vec![make_event_node("evt_idle_cpu", "idle_cpu_topic", count.clone())];
+        let nodes = vec![make_event_node(
+            "evt_idle_cpu",
+            "idle_cpu_topic",
+            count.clone(),
+        )];
         let running = Arc::new(AtomicBool::new(true));
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
 

@@ -1482,11 +1482,17 @@ mod tests {
         // 256 channels at this stride put the last one gigabytes past a ~300 KB
         // mapping; the first send through any of them writes there.
         let huge = attach_accepts_after(|m| m.channel_stride = 1 << 26);
-        assert!(!huge, "a stride that does not fit the mapping must be refused");
+        assert!(
+            !huge,
+            "a stride that does not fit the mapping must be refused"
+        );
         // A stride SMALLER than the layout implies is equally wrong: channel i's
         // slots then overlap channel i-1's version stamps.
         let small = attach_accepts_after(|m| m.channel_stride = 128);
-        assert!(!small, "a stride that overlaps neighbouring channels must be refused");
+        assert!(
+            !small,
+            "a stride that overlaps neighbouring channels must be refused"
+        );
     }
 
     #[test]

@@ -1467,11 +1467,7 @@ mod tests {
     /// invocation it builds.
     #[test]
     fn identity_that_injects_ssh_arguments_is_refused() {
-        for identity in [
-            "/home/u/k -oProxyCommand=id",
-            "-oProxyCommand=id",
-            "",
-        ] {
+        for identity in ["/home/u/k -oProxyCommand=id", "-oProxyCommand=id", ""] {
             assert!(
                 validate_ssh_inputs("pi@robot", Some(Path::new(identity))).is_err(),
                 "identity {identity:?} must not reach rsync -e"
@@ -1482,13 +1478,15 @@ mod tests {
     /// Everything a real deploy.yaml holds still works.
     #[test]
     fn ordinary_deploy_targets_are_accepted() {
-        assert!(validate_ssh_inputs("pi@192.168.1.100", None).is_ok());
-        assert!(validate_ssh_inputs("robot", None).is_ok());
-        assert!(validate_ssh_inputs(
+        // `unwrap` rather than `assert!(..is_ok())`: on a regression the panic
+        // carries the rejection reason, which is the whole diagnostic.
+        validate_ssh_inputs("pi@192.168.1.100", None).unwrap();
+        validate_ssh_inputs("robot", None).unwrap();
+        validate_ssh_inputs(
             "nvidia@jetson.local",
-            Some(Path::new("/home/u/.ssh/robot_key"))
+            Some(Path::new("/home/u/.ssh/robot_key")),
         )
-        .is_ok());
+        .unwrap();
     }
 
     // ── DeployYaml parsing ───────────────────────────────────────────────

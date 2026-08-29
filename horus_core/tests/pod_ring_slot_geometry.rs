@@ -1,34 +1,39 @@
 //! What a POD topic's ring actually looks like in shared memory.
 //!
-//! `RingTopic::with_capacity_and_kind` allocates **64 bytes per slot** for any
-//! POD type with `size_of::<T>() + 8 <= 64`, and its comment describes a
-//! co-located `[seq(8) | data(T) | pad to 64]` slot. No POD path implements
-//! that layout. Every POD writer and every POD reader addresses the data region
-//! as `(cached_data_ptr as *T).add(index)` — a stride of `size_of::<T>()` — and
-//! the sequence numbers live in their own array between the header and the data
-//! (`shm_layout::seq_slot_offset`), not inside the slots.
+//! Small POD topics use the **co-located** slot geometry: the readiness stamp
+//! and its payload occupy one cache line, so receiving a message costs a single
+//! coherence miss.
 //!
-//! Writers and readers therefore agree with each other, so this is **not**
-//! corruption. What it is:
+//! ```text
+//! [ HEADER 640 ][ SLOT 0 ][ SLOT 1 ] ...   slot = [ stamp u64 | payload | pad ]
+//! ```
 //!
-//!   * the data region is over-allocated by `64 / size_of::<T>()` — 4x for a
-//!     16-byte message, 8x for an 8-byte one; and
-//!   * consecutive slots are `size_of::<T>()` apart, so four 16-byte slots
-//!     share one 64-byte cache line and a producer writing slot `i` invalidates
-//!     the line a consumer is reading slot `i-1` from, three times in four —
-//!     the false sharing the 64-byte allocation was evidently meant to prevent.
+//! This file used to pin the opposite. `with_capacity_and_kind` allocated 64
+//! bytes per slot and its comment described exactly the layout above, but the
+//! stamps were allocated in a separate array between the header and the data,
+//! and every POD path addressed the data as `(cached_data_ptr as *T).add(index)`
+//! — a stride of `size_of::<T>()`. So the padding was paid for and the
+//! co-location never happened: the data region was over-allocated 4x for a
+//! 16-byte message, and four consecutive slots shared one cache line, which is
+//! the false sharing the 64-byte allocation was evidently meant to prevent.
 //!
-//! The same comment claims the 64-byte geometry is part of the Python↔Rust wire
-//! contract ("horus_py computes slot size the same way"). `horus_py` is a PyO3
-//! wrapper: `Topic(CmdVel)` calls `horus_core::Topic::<CmdVel>::with_capacity`,
-//! the very code under test here, so there is no second implementation to
-//! disagree with. The implementations that *do* compute this stride
-//! independently are in Rust — `horus_net::ShmRingWriter` and
-//! `topic::header::read_latest_slot_bytes` — and both use `type_size` for POD,
-//! matching the dispatch paths rather than the 64. Any future change to the POD
-//! stride has to move those two with it.
+//! `colo_layout_selected_for_small_pod_types` "verified" that layout by
+//! asserting `size_of::<T>() + 8 <= 64` — the branch condition restated, true
+//! at compile time, and never once reading shared memory.
 //!
-//! These tests pin that truth so a one-sided change cannot land quietly.
+//! The stride was changed to match the allocation only after the two
+//! implementations that compute it independently were moved with it:
+//! `communication::write_topic_slot_bytes` (the writer `horus_net`'s
+//! `ShmRingWriter` drives, fed by unauthenticated network data) and
+//! `topic::header::{read_slot_inner, slot_stamp}`. Both now read `layout_kind`
+//! out of the region rather than re-deriving it, because a reader that
+//! disagreed with the writer about where a stamp lives would read payload bytes
+//! as a stamp.
+//!
+//! These tests read the backing file byte for byte, so they fail if any one of
+//! those pieces moves alone. `a_large_pod_type_stays_on_the_split_layout` is
+//! the control: without it, a build that applied colo unconditionally would
+//! satisfy every other test here.
 //!
 //! Run: `cargo test -p horus_core --test pod_ring_slot_geometry -- --test-threads=1`
 
@@ -39,12 +44,30 @@ use horus_core::communication::Topic;
 use horus_core::memory::shm_topics_dir;
 
 // 16 bytes, no Drop — POD by `communication::pod::is_pod`, and comfortably
-// inside the `type_size + 8 <= 64` branch that allocates 64-byte slots.
+// inside the `type_size + 8 <= 64` bound that selects the colo geometry.
 horus_core::message! {
     #[fixed]
     GeomProbe {
         tag: u64,
         echo: u64,
+    }
+}
+
+// 72 bytes: past COLO_MAX_PAYLOAD (56), so this one must stay on the split
+// layout. It is what stops the rest of this file passing under a build that
+// co-located everything unconditionally.
+horus_core::message! {
+    #[fixed]
+    BigProbe {
+        tag: u64,
+        a: u64,
+        b: u64,
+        c: u64,
+        d: u64,
+        e: u64,
+        f: u64,
+        g: u64,
+        h: u64,
     }
 }
 
@@ -110,20 +133,25 @@ fn filled_ring(name: &str) -> (Topic<GeomProbe>, Vec<u8>) {
 }
 
 // ---------------------------------------------------------------------------
-// The allocated geometry
+// The declared geometry
 // ---------------------------------------------------------------------------
 
-/// The header advertises 64-byte slots for a 16-byte POD message.
+/// The header declares the colo layout, and a 64-byte slot for a 16-byte POD.
 #[test]
-fn header_advertises_sixty_four_byte_slots_for_a_small_pod_type() {
+fn header_declares_the_colo_layout_for_a_small_pod_type() {
     assert!(
-        size_of::<GeomProbe>() + 8 <= CACHE_LINE,
-        "this test only means anything inside the `type_size + 8 <= 64` branch"
+        size_of::<GeomProbe>() <= shm_layout::COLO_MAX_PAYLOAD,
+        "this test only means anything for a colo-eligible type"
     );
 
     let name = unique("hdr");
     let (_tx, region) = filled_ring(&name);
 
+    assert_eq!(
+        region[shm_layout::OFF_LAYOUT_KIND],
+        shm_layout::LAYOUT_COLO,
+        "a small POD topic must record the colo layout in its header"
+    );
     assert_eq!(
         u32_at(&region, shm_layout::OFF_TYPE_SIZE) as usize,
         size_of::<GeomProbe>(),
@@ -132,7 +160,7 @@ fn header_advertises_sixty_four_byte_slots_for_a_small_pod_type() {
     assert_eq!(
         u32_at(&region, shm_layout::OFF_SLOT_SIZE) as usize,
         CACHE_LINE,
-        "with_capacity_and_kind pins slot_size to 64 for a small POD type"
+        "slot_size is the colo stride: stamp + payload rounded to a line"
     );
     assert_eq!(
         u32_at(&region, shm_layout::OFF_CAPACITY) as usize,
@@ -141,145 +169,194 @@ fn header_advertises_sixty_four_byte_slots_for_a_small_pod_type() {
     );
 }
 
+/// A POD type too large to share a line with its stamp keeps the split layout.
+///
+/// The control case. Every other test here would also pass if colo were applied
+/// to every POD type regardless of size, which would put a 72-byte payload
+/// across two lines and buy nothing.
+#[test]
+fn a_large_pod_type_stays_on_the_split_layout() {
+    assert!(
+        size_of::<BigProbe>() > shm_layout::COLO_MAX_PAYLOAD,
+        "BigProbe must be past the colo bound for this to be a control"
+    );
+
+    let name = unique("big");
+    let tx: Topic<BigProbe> =
+        Topic::with_capacity(&name, CAPACITY, None).expect("create big POD topic");
+    tx.send(BigProbe {
+        tag: tag_of(0),
+        a: 0,
+        b: 0,
+        c: 0,
+        d: 0,
+        e: 0,
+        f: 0,
+        g: 0,
+        h: 0,
+    });
+    let region = read_region(&name);
+
+    assert_eq!(
+        region[shm_layout::OFF_LAYOUT_KIND],
+        shm_layout::LAYOUT_SPLIT,
+        "a {}-byte payload cannot share a 64-byte line with an 8-byte stamp",
+        size_of::<BigProbe>()
+    );
+    // And it really is the split geometry: the payload sits past the stamp
+    // array, not eight bytes past the header.
+    let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
+    let type_size = u32_at(&region, shm_layout::OFF_TYPE_SIZE) as usize;
+    assert_eq!(
+        u64_at(
+            &region,
+            shm_layout::data_slot_offset(capacity, 0, type_size)
+        ),
+        tag_of(0),
+        "split payload must live at the split offset"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The geometry the writer actually uses
 // ---------------------------------------------------------------------------
 
-/// The POD send path strides by `size_of::<T>()`, not by the header's 64.
+/// Every payload lands at its colo slot, and nowhere else.
 ///
-/// If this ever fails because the payloads land 64 bytes apart, the stride has
-/// been changed to match the allocation — which is the intended optimize-phase
-/// fix, but only lands correctly if `horus_net::ShmRingWriter` (`stride =
-/// type_size` for POD) and `topic::header::read_latest_slot_bytes` (same) moved
-/// with it. Update this test *after* checking those two, not before.
+/// The tagged scan walks the whole ring because slot 0 aliases under either
+/// geometry — a single-message test cannot tell them apart, which is how the
+/// original version of this check came to be worthless.
 #[test]
-fn pod_writer_strides_by_size_of_t_not_by_the_header_slot_size() {
+fn every_payload_lands_at_its_colo_slot() {
     let name = unique("stride");
     let (_tx, region) = filled_ring(&name);
 
     let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
     let type_size = u32_at(&region, shm_layout::OFF_TYPE_SIZE) as usize;
     let slot_size = u32_at(&region, shm_layout::OFF_SLOT_SIZE) as usize;
-    let data = shm_layout::data_region_offset(capacity);
 
-    // Does message `i` sit at `data + i * stride` for every i?
-    let holds = |stride: usize| -> bool {
-        (0..capacity).all(|i| u64_at(&region, data + i * stride) == tag_of(i as u64))
-    };
+    for i in 0..capacity {
+        assert_eq!(
+            u64_at(&region, shm_layout::colo_payload_offset(i, slot_size)),
+            tag_of(i as u64),
+            "message {i} must sit at its colo payload offset"
+        );
+    }
 
+    // The old split geometry must NOT also hold, or this test cannot fail.
+    let split_data = shm_layout::data_region_offset(capacity);
+    let split_holds =
+        (0..capacity).all(|i| u64_at(&region, split_data + i * type_size) == tag_of(i as u64));
     assert!(
-        holds(type_size),
-        "every POD dispatch path indexes `(cached_data_ptr as *T).add(index)`, \
-         so the payloads must be {type_size} bytes apart"
-    );
-    assert!(
-        !holds(slot_size),
-        "payloads are NOT {slot_size} bytes apart — the header's slot_size is \
-         the allocation stride only, never the index stride"
-    );
-
-    // Slot 0 is where the two geometries agree, and it is the only place they
-    // do. A single-message test cannot tell them apart; that is why the tagged
-    // scan above walks the whole ring.
-    assert_eq!(
-        u64_at(&region, data),
-        tag_of(0),
-        "slot 0 aliases under either stride"
-    );
-    assert_ne!(
-        type_size, slot_size,
-        "the allocation stride and the index stride currently disagree"
+        !split_holds,
+        "payloads still satisfy the split geometry — the scan is not discriminating"
     );
 }
 
-/// The disagreement is pure over-allocation, never an out-of-bounds write.
+/// The stamp and its payload occupy the same cache line.
 ///
-/// This is the invariant that must hold whichever way the geometry is settled:
-/// the region has to be at least as large as `capacity * index_stride`, and the
-/// allocation stride has to be at least the index stride.
+/// This is the entire claim of the layout. It is what turns a receive from two
+/// coherence misses into one.
 #[test]
-fn the_over_allocation_is_in_bounds_and_costs_four_x() {
-    let name = unique("bounds");
+fn the_stamp_shares_a_cache_line_with_its_payload() {
+    let name = unique("colo");
     let (_tx, region) = filled_ring(&name);
 
     let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
-    let type_size = u32_at(&region, shm_layout::OFF_TYPE_SIZE) as usize;
     let slot_size = u32_at(&region, shm_layout::OFF_SLOT_SIZE) as usize;
-    let data = shm_layout::data_region_offset(capacity);
 
-    assert!(
-        slot_size >= type_size,
-        "allocation stride {slot_size} is smaller than the index stride \
-         {type_size} — that would be an out-of-bounds ring write"
-    );
-    assert!(
-        region.len() >= data + capacity * slot_size,
-        "region ({} bytes) is smaller than the geometry the header declares \
-         ({} bytes)",
-        region.len(),
-        data + capacity * slot_size
-    );
-
-    let used = capacity * type_size;
-    let allocated = capacity * slot_size;
-    assert_eq!(
-        allocated / used,
-        4,
-        "a 16-byte POD message gets 64 bytes of ring per slot: {allocated} \
-         bytes allocated for {used} bytes of messages"
-    );
+    for i in 0..capacity {
+        let stamp_off = shm_layout::colo_stamp_offset(i, slot_size);
+        let payload_off = shm_layout::colo_payload_offset(i, slot_size);
+        assert_eq!(
+            stamp_off / CACHE_LINE,
+            payload_off / CACHE_LINE,
+            "slot {i}: stamp at {stamp_off} and payload at {payload_off} must \
+             share one cache line"
+        );
+        // The stamp is real, not incidentally-zero memory: the producer
+        // published `sequence + 1` there, with SLOT_WRITING cleared.
+        assert_eq!(
+            u64_at(&region, stamp_off),
+            i as u64 + 1,
+            "slot {i} must carry its published stamp"
+        );
+    }
 }
 
-/// Four consecutive POD slots land in one cache line.
+/// No two slots share a cache line.
 ///
-/// This is the false-sharing cost of the stride/allocation mismatch: the
-/// 64-byte allocation was meant to give each slot its own line, and the
-/// `size_of::<T>()` stride puts four of them back on the same one.
+/// The split layout strided payloads by `size_of::<T>()` while allocating 64
+/// bytes each, so four 16-byte slots landed in one line and a producer writing
+/// slot `i` invalidated the line a consumer was reading slot `i-1` from, three
+/// times in four.
 #[test]
-fn four_consecutive_pod_slots_share_one_cache_line() {
+fn no_two_slots_share_a_cache_line() {
     let name = unique("line");
     let (_tx, region) = filled_ring(&name);
 
     let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
-    let type_size = u32_at(&region, shm_layout::OFF_TYPE_SIZE) as usize;
-    let data = shm_layout::data_region_offset(capacity);
+    let slot_size = u32_at(&region, shm_layout::OFF_SLOT_SIZE) as usize;
 
     assert_eq!(
-        data % CACHE_LINE,
+        shm_layout::HEADER_SIZE % CACHE_LINE,
         0,
-        "the data region starts on a cache-line boundary ({data})"
+        "slots start on a cache-line boundary"
     );
+    assert_eq!(slot_size % CACHE_LINE, 0, "a slot is whole cache lines");
 
-    let line_of = |i: usize| (data + i * type_size) / CACHE_LINE;
+    let mut lines: Vec<usize> = (0..capacity)
+        .map(|i| shm_layout::colo_slot_offset(i, slot_size) / CACHE_LINE)
+        .collect();
+    let before = lines.len();
+    lines.sort_unstable();
+    lines.dedup();
     assert_eq!(
-        line_of(0),
-        line_of(3),
-        "slots 0..=3 are {type_size} bytes apart, so all four are in one line"
+        lines.len(),
+        before,
+        "every slot must own its cache line, so no two may collide"
     );
-    assert_ne!(line_of(0), line_of(4), "slot 4 starts the next line");
+}
 
-    // Per-slot sequence numbers live in their own array, not co-located with
-    // the data the way `with_capacity_and_kind`'s comment describes.
+/// Colo has no sequence array, and no over-allocation.
+#[test]
+fn colo_has_no_sequence_array_and_no_over_allocation() {
+    let name = unique("bounds");
+    let (_tx, region) = filled_ring(&name);
+
+    let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
+    let slot_size = u32_at(&region, shm_layout::OFF_SLOT_SIZE) as usize;
+
+    // Slot 0's stamp begins immediately after the header. Under the split
+    // layout this offset held the first entry of a `capacity * 8` stamp array
+    // and the data began `capacity * 8` bytes later.
+    assert_eq!(
+        shm_layout::colo_slot_offset(0, slot_size),
+        shm_layout::HEADER_SIZE,
+        "colo slots start at the header's end — there is no stamp array"
+    );
+
+    let required = shm_layout::colo_required_region_len(capacity, slot_size);
     assert!(
-        shm_layout::seq_slot_offset(capacity - 1) < data,
-        "the whole sequence array precedes the data region"
+        region.len() >= required,
+        "region ({} bytes) is smaller than the geometry the header declares \
+         ({required} bytes)",
+        region.len()
     );
-    assert_eq!(
-        shm_layout::seq_slot_offset(1) - shm_layout::seq_slot_offset(0),
-        8,
-        "sequence stamps are a bare u64 array, not a per-slot header"
+    // The split layout would have needed the stamp array on top of the same
+    // slots, so colo is strictly smaller for the identical ring.
+    let split_equivalent = required + capacity * core::mem::size_of::<u64>();
+    assert!(
+        required < split_equivalent,
+        "colo must not be larger than the split layout it replaces"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Reader and writer agree — so this is waste, not corruption
+// Reader and writer agree
 // ---------------------------------------------------------------------------
 
 /// A consumer reads back exactly what the producer wrote, in order.
-///
-/// The POD recv paths use the same `(cached_data_ptr as *T).add(index)` stride
-/// as the send paths, so the mismatch with the 64-byte allocation costs memory
-/// and cache lines but never a byte of data.
 #[test]
 fn pod_reader_and_writer_agree_on_the_stride() {
     let name = unique("agree");
@@ -298,23 +375,16 @@ fn pod_reader_and_writer_agree_on_the_stride() {
     }
 
     let mut got = Vec::new();
-    for _ in 0..(CAPACITY as usize * 8) {
-        match rx.recv() {
-            Some(m) => got.push(m),
-            None if got.len() == CAPACITY as usize => break,
-            None => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
+    while let Some(v) = rx.recv() {
+        got.push(v);
     }
-
     assert_eq!(
         got.len(),
         CAPACITY as usize,
-        "expected every published message back, got {}",
-        got.len()
+        "every published message must be readable"
     );
-    for (i, m) in got.iter().enumerate() {
-        let i = i as u64;
-        assert_eq!(m.tag, tag_of(i), "message {i} tag");
-        assert_eq!(m.echo, !tag_of(i), "message {i} echo");
+    for (i, v) in got.iter().enumerate() {
+        assert_eq!(v.tag, tag_of(i as u64), "message {i} tag");
+        assert_eq!(v.echo, !tag_of(i as u64), "message {i} echo");
     }
 }

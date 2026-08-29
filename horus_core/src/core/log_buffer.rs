@@ -879,7 +879,11 @@ mod tests {
             buf.capacity, SMALL,
             "a freshly created file must give exactly the requested capacity"
         );
-        assert!(
+        // Both operands are constants, so this belongs at compile time: as a
+        // runtime assert it could only ever fire in a build that already
+        // compiled, and it is a statement about the test's premise rather than
+        // about anything the run observes.
+        const _: () = assert!(
             SMALL < MAX_LOG_ENTRIES,
             "this test only means anything while the constant is the looser bound"
         );

@@ -541,7 +541,8 @@ mod tests {
 
         let written = content.matches("\"rate_hz\"").count();
         assert_eq!(
-            written, MAX_NODES_PER_BROADCAST,
+            written,
+            MAX_NODES_PER_BROADCAST,
             "a broadcast claiming {} nodes must be truncated to the cap, not written whole",
             refs.len()
         );

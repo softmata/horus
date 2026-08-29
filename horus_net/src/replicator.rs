@@ -1445,11 +1445,7 @@ mod tests {
 
         // A batch of zero-payload latched message headers, all naming topics
         // this node has no writer for.
-        let header = PacketHeader::new(
-            PacketFlags::empty().with(PacketFlags::BATCH),
-            0x1234,
-            1,
-        );
+        let header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::BATCH), 0x1234, 1);
         let msgs: Vec<wire::OutMessage> = (0..64u32)
             .map(|i| wire::OutMessage {
                 topic_name: String::new(),

@@ -854,7 +854,9 @@ fn page_align(ptr: *const u8, len: usize) -> Option<(*mut libc::c_void, usize)> 
     }
     let addr = ptr as usize;
     let base = addr & !(page - 1);
-    let span = (addr - base).checked_add(len)?.checked_next_multiple_of(page)?;
+    let span = (addr - base)
+        .checked_add(len)?
+        .checked_next_multiple_of(page)?;
     Some((base as *mut libc::c_void, span))
 }
 
@@ -902,7 +904,11 @@ mod residency_tests {
             assert_eq!(parse_bool_flag(on), Some(true), "{on:?} should read as on");
         }
         for off in ["0", "false", "OFF", " no "] {
-            assert_eq!(parse_bool_flag(off), Some(false), "{off:?} should read as off");
+            assert_eq!(
+                parse_bool_flag(off),
+                Some(false),
+                "{off:?} should read as off"
+            );
         }
     }
 
@@ -967,7 +973,10 @@ mod residency_tests {
         // The cap is what keeps a 1 GiB pool from committing 1 GiB at attach.
         // Assert it is a real, finite number rather than re-reading the env.
         let policy = residency_policy();
-        assert!(policy.max_bytes > 0, "a zero cap would disable pre-faulting");
+        assert!(
+            policy.max_bytes > 0,
+            "a zero cap would disable pre-faulting"
+        );
         assert!(
             policy.max_bytes <= DEFAULT_PREFAULT_MAX_BYTES
                 || std::env::var_os("HORUS_SHM_PREFAULT_MAX_BYTES").is_some(),

@@ -218,7 +218,11 @@ fn main() {
         ("CmdVel", "CmdVel    (1kHz  control)", CMDVEL_DEADLINE_NS),
         ("CmdVel", "CmdVel    (10kHz control)", 100_000u64),
         ("Imu", "Imu       (500Hz fusion) ", IMU_DEADLINE_NS),
-        ("LaserScan", "LaserScan (40Hz  lidar)  ", LASERSCAN_DEADLINE_NS),
+        (
+            "LaserScan",
+            "LaserScan (40Hz  lidar)  ",
+            LASERSCAN_DEADLINE_NS,
+        ),
         (
             "JointCommand",
             "JointCmd  (500Hz control)",

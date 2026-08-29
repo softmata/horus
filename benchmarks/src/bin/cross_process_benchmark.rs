@@ -668,7 +668,7 @@ impl IdleGuard {
     #[inline(always)]
     fn empty_poll(&mut self) -> bool {
         self.idle += 1;
-        if self.idle % IDLE_CLOCK_CHECK == 0 {
+        if self.idle.is_multiple_of(IDLE_CLOCK_CHECK) {
             let now = Instant::now();
             match self.deadline {
                 None => self.deadline = Some(now + self.timeout),
@@ -2280,7 +2280,7 @@ fn main() {
     // A stream sample costs a publish *period*, so the ping-pong warmup would
     // dominate the run. Both floors stay above the 256 `resolve_owner` retries
     // that a shorter warmup would otherwise measure.
-    let stream_warmup = warmup.min(20_000).max(1_024).min(stream_iterations);
+    let stream_warmup = warmup.clamp(1_024, 20_000).min(stream_iterations);
 
     let (mut cpu_a, mut cpu_b, sampler_cpu, mut cpu_choice) = pick_cpus();
     if let Some((a, b)) = cpu_override {

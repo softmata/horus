@@ -934,7 +934,8 @@ impl TensorPool {
             self.scan_cursor.store(0, Ordering::Release);
         } else {
             self.scan_partial_slots.store(slots, Ordering::Relaxed);
-            self.scan_partial_refcount.store(refcount, Ordering::Relaxed);
+            self.scan_partial_refcount
+                .store(refcount, Ordering::Relaxed);
             self.scan_cursor.store(end, Ordering::Release);
         }
     }
@@ -5731,5 +5732,4 @@ mod tests {
         pool.release(&t);
         std::fs::remove_file(&pool.shm_path).ok();
     }
-
 }

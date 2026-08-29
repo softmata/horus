@@ -123,6 +123,7 @@ pub(crate) mod migration;
 /// and writers (`horus_net`). Offsets are `offset_of!`-asserted against
 /// `TopicHeader`, so drift is a build failure.
 pub mod shm_layout;
+use shm_layout as layout;
 pub mod types;
 
 // Per-path optimized backend modules
@@ -971,15 +972,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let type_size = mem::size_of::<T>() as u32;
         let type_align = mem::align_of::<T>() as u32;
 
+        // Does this topic get the co-located geometry? See `shm_layout`: the
+        // stamp shares a cache line with its payload, so a receive costs one
+        // coherence miss instead of two.
+        //
+        // This branch used to allocate the same 64 bytes per slot with a
+        // comment describing that layout — but the stamps were allocated
+        // separately below, and the POD paths indexed the data by
+        // `size_of::<T>()` rather than by the 64-byte slot. So the padding was
+        // paid for and the co-location never happened; `colo_layout_selected_
+        // for_small_pod_types` "proved" it by asserting `size_of::<T>() + 8 <=
+        // 64`, which is just this branch condition restated.
+        //
+        // The comment also claimed the 64-byte geometry was a Python<->Rust
+        // wire contract that could not be changed on one side. It is not:
+        // horus_py contains no slot-size computation at all (nor does
+        // horus_cpp) — both are FFI wrappers over this same Rust code, so
+        // there is only one side.
+        let colo = layout::colo_eligible(is_pod, type_size as usize);
         let actual_slot_size = if is_pod {
             let ts = type_size as usize;
-            if ts + 8 <= 64 {
-                // Co-located layout: [seq(8) | data(T) | pad to 64]
-                // Seq + data on SAME cache line for non-SPSC recv paths.
-                // NOTE: this 64-byte slot geometry is part of the cross-LANGUAGE
-                // (Python<->Rust) SHM wire contract — horus_py computes slot size the
-                // same way. Do NOT change it on one side alone (breaks cross_language_ipc).
-                64
+            if colo {
+                layout::colo_slot_size(ts)
             } else {
                 ts
             }
@@ -988,7 +1002,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         };
 
         let actual_capacity = capacity.next_power_of_two() as usize;
-        let seq_array_size = actual_capacity * mem::size_of::<u64>();
+        // Colo carries readiness inside each slot, so it has no separate
+        // sequence array; that array is exactly the second cache line the
+        // layout exists to remove.
+        let seq_array_size = if colo {
+            0
+        } else {
+            actual_capacity * mem::size_of::<u64>()
+        };
         let data_size = actual_capacity * actual_slot_size;
         let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
@@ -1272,24 +1293,47 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 "shared header declares slot_size 0 — every slot would alias slot 0".to_string(),
             ));
         }
-        // The POD path addresses slots as `(cached_data_ptr as *mut T).add(index)`,
-        // so its stride is `size_of::<T>()` while the region was sized in units of
-        // `slot_size`. The owner always writes `slot_size >= type_size`; a header
-        // that does not is one where each write runs into the following slot.
-        if header.is_pod_type() && slot_size < type_size as usize {
+        // A colo region carries the readiness stamp inside each slot, so a slot
+        // must hold the stamp AND the payload, and the region has no sequence
+        // array at all. Both differences change what a valid geometry is, and
+        // getting either backwards is not a rejected topic but a misaddressed
+        // one: validating a colo header with the split formula demands the
+        // `capacity * 8` bytes a colo region correctly does not have, and
+        // rejects every valid one.
+        let colo = header.is_colo();
+
+        // The split POD path addresses slots as
+        // `(cached_data_ptr as *mut T).add(index)`, so its stride is
+        // `size_of::<T>()` while the region was sized in units of `slot_size`.
+        // The colo path strides by the whole slot and starts the payload eight
+        // bytes in, so it needs room for both. The owner always writes a
+        // slot_size that satisfies this; a header that does not is one where
+        // each write runs into the following slot.
+        let min_slot = if colo {
+            (type_size as usize).saturating_add(shm_layout::COLO_PAYLOAD_OFF)
+        } else {
+            type_size as usize
+        };
+        if header.is_pod_type() && slot_size < min_slot {
             return Err(refuse(format!(
                 "shared header declares slot_size {slot_size} for a {type_size}-byte POD \
-                 message — each write would run past its slot"
+                 message under the {} layout, which needs at least {min_slot} — each write \
+                 would run past its slot",
+                if colo { "co-located" } else { "split" }
             )));
         }
 
-        let required = shm_layout::required_region_len_checked(capacity, slot_size)
-            .ok_or_else(|| {
-                refuse(format!(
-                    "shared header declares a ring geometry (capacity {capacity} x slot_size \
-                     {slot_size}) whose size overflows the address space"
-                ))
-            })?;
+        let required = if colo {
+            shm_layout::colo_required_region_len_checked(capacity, slot_size)
+        } else {
+            shm_layout::required_region_len_checked(capacity, slot_size)
+        }
+        .ok_or_else(|| {
+            refuse(format!(
+                "shared header declares a ring geometry (capacity {capacity} x slot_size \
+                 {slot_size}) whose size overflows the address space"
+            ))
+        })?;
         if required > region_len {
             return Err(refuse(format!(
                 "shared header declares a {required}-byte ring (capacity {capacity}, slot_size \
@@ -1328,11 +1372,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if slot_size == 0 {
             return false;
         }
-        if header.is_pod_type() && slot_size < mem::size_of::<T>() {
+        // Must agree with `validate_ring_geometry` on both counts, or the
+        // debug_assert there fires: a colo slot holds the stamp as well as the
+        // payload, and a colo region has no sequence array to account for.
+        let colo = header.is_colo();
+        let min_slot = if colo {
+            mem::size_of::<T>().saturating_add(shm_layout::COLO_PAYLOAD_OFF)
+        } else {
+            mem::size_of::<T>()
+        };
+        if header.is_pod_type() && slot_size < min_slot {
             return false;
         }
-        shm_layout::required_region_len_checked(capacity, slot_size)
-            .is_some_and(|required| required <= region_len)
+        if colo {
+            shm_layout::colo_required_region_len_checked(capacity, slot_size)
+        } else {
+            shm_layout::required_region_len_checked(capacity, slot_size)
+        }
+        .is_some_and(|required| required <= region_len)
     }
 
     /// Check if T is a POD type (auto-detected via needs_drop)
@@ -1355,6 +1412,33 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // SAFETY: header_ptr points into the Arc<ShmRegion> storage which outlives self;
         // the header is initialized before construction completes.
         unsafe { (*self.header_ptr.get()).is_verbose() }
+    }
+
+    /// Point `cached_seq_ptr`, `cached_data_ptr` and `cached_colo_stride` at
+    /// the slot geometry this region actually uses.
+    ///
+    /// Single writer for all three, because they must agree: a colo stride
+    /// paired with a split data pointer reads payload bytes as stamps. Every
+    /// site that maps or re-maps the region calls this instead of recomputing
+    /// the offsets locally — four such sites had already been copy-pasted, and
+    /// independently-maintained copies of layout arithmetic are precisely what
+    /// `shm_layout` exists to stop drifting.
+    #[inline]
+    fn point_at_slots(&self, local: &mut LocalState, capacity: usize, colo: bool, stride: usize) {
+        let base = self.storage.as_ptr();
+        // SAFETY: both offsets lie within the region sized by `new`/auto-grow
+        // for this capacity and layout; `base` is a valid non-null mapping.
+        unsafe {
+            local.cached_seq_ptr = base.add(Self::HEADER_SIZE) as *mut u8;
+            if colo {
+                local.cached_colo_stride = stride as u64;
+                local.cached_data_ptr =
+                    base.add(Self::HEADER_SIZE + layout::COLO_PAYLOAD_OFF) as *mut u8;
+            } else {
+                local.cached_colo_stride = 0;
+                local.cached_data_ptr = base.add(Self::data_region_offset(capacity)) as *mut u8;
+            }
+        }
     }
 
     /// Compute the byte offset from storage start to the data region.
@@ -1535,13 +1619,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // message is ever sent.
         Self::sync_local(local, header, false, self.storage.len());
         let cap = local.cached_capacity as usize;
-        // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
-        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        // SAFETY: `cap` is the capacity `sync_local` accepted, so the whole ring
-        // (`HEADER_SIZE + cap * 8 + cap * slot_size`) fits inside `storage.len()`
-        // and `data_region_offset(cap)` is inside the mapping.
-        local.cached_data_ptr =
-            unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
+        // `cap` is the capacity `sync_local` accepted, so the whole ring fits
+        // inside `storage.len()` under whichever geometry the header declares.
+        self.point_at_slots(local, cap, header.is_colo(), header.slot_size as usize);
         // Set role LAST — this gates the fast path via can_send()/can_recv()
         local.role = if is_producer {
             if local.role == TopicRole::Consumer {
@@ -1930,15 +2010,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             local.cached_mode = mode;
         }
         let cap = local.cached_capacity as usize;
-        // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
-        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        // SAFETY: data_region_offset(cap) is within the storage bounds because
-        // `validate_ring_geometry` refused this header at attach time unless
-        // `HEADER_SIZE + capacity * 8 + capacity * slot_size <= storage.len()`.
-        // `cap` comes from that same validated header field; storage.as_ptr() is
-        // a valid non-null pointer.
-        local.cached_data_ptr =
-            unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
+        // Both offsets are within storage bounds because `validate_ring_geometry`
+        // refused this header at attach time unless the ring it declares fits the
+        // mapping — under whichever geometry it declares. `cap` comes from that
+        // same validated header field; storage.as_ptr() is a valid non-null
+        // pointer.
+        let hdr = self.header();
+        self.point_at_slots(local, cap, hdr.is_colo(), hdr.slot_size as usize);
     }
 
     /// Set dispatch function pointers based on the current backend mode and POD status.
@@ -2066,7 +2144,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return false;
         }
 
-        let seq_array_size = capacity * std::mem::size_of::<u64>();
+        // A colo region has no sequence array, and growing must not
+        // reintroduce one: the offsets of every slot would shift by
+        // `capacity * 8` and every already-published message would be read
+        // from the wrong address.
+        let seq_array_size = if self.header().is_colo() {
+            0
+        } else {
+            capacity * std::mem::size_of::<u64>()
+        };
         let new_data_size = capacity * new_slot_size;
         let new_total = Self::HEADER_SIZE + seq_array_size + new_data_size;
 
@@ -2108,12 +2194,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         // Re-derive ALL cached pointers from the (possibly moved) mmap.
         local.cached_header_ptr = new_header_ptr;
-        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        local.cached_data_ptr = unsafe {
-            self.storage
-                .as_ptr()
-                .add(Self::data_region_offset(capacity)) as *mut u8
-        };
+        {
+            let hdr = self.header();
+            self.point_at_slots(local, capacity, hdr.is_colo(), hdr.slot_size as usize);
+        }
 
         self.initialize_backend();
 
@@ -2258,7 +2342,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     // — deriving them here from `declared_capacity` would let them
                     // describe a different ring than the mask and slot size in use
                     // if the header changed once more in between.
-                    self.header_ptr.set(self.storage.as_ptr() as *const TopicHeader);
+                    self.header_ptr
+                        .set(self.storage.as_ptr() as *const TopicHeader);
                 }
             }
         }
@@ -2289,13 +2374,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // agreement is what every `SAFETY: index < capacity` claim in dispatch.rs
         // rests on.
         local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
-        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        local.cached_data_ptr = unsafe {
-            self.storage
-                .as_ptr()
-                .add(Self::data_region_offset(local.cached_capacity as usize))
-                as *mut u8
-        };
+        self.point_at_slots(
+            local,
+            local.cached_capacity as usize,
+            header.is_colo(),
+            header.slot_size as usize,
+        );
 
         self.initialize_backend();
 
@@ -2421,8 +2505,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // masked to ring capacity, so it is always in bounds. The capacity check above
                 // ensures the slot is not occupied (no unconsumed data will be overwritten).
                 unsafe {
-                    let base = local.cached_data_ptr as *mut T;
-                    std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
+                    let idx = (head & local.cached_capacity_mask) as usize;
+                    let (stamp, data) = dispatch::slot_ptrs::<T>(local, idx);
+                    if local.cached_colo_stride != 0 {
+                        // Under the colo geometry a reader gates on the slot's
+                        // own stamp, so this path has to publish one. The split
+                        // geometry's readers gate on the head, which is
+                        // published just below — that asymmetry is why this
+                        // path could previously skip stamping entirely.
+                        let seq = head.wrapping_add(1);
+                        (*stamp).store(seq | layout::SLOT_WRITING, Ordering::Release);
+                        std::ptr::write(data, msg);
+                        (*stamp).store(seq, Ordering::Release);
+                    } else {
+                        std::ptr::write(data, msg);
+                    }
                 }
                 local.local_head = head.wrapping_add(1);
                 // Publish the ring head. This path used to advance `local_head`
@@ -2774,8 +2871,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // masked to ring capacity, so it is always in bounds. The head-tail check above
                 // ensures the slot contains a valid, initialized message written by send().
                 let msg = unsafe {
-                    let base = local.cached_data_ptr as *const T;
-                    std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
+                    let (_, data) = dispatch::slot_ptrs::<T>(
+                        local,
+                        (tail & local.cached_capacity_mask) as usize,
+                    );
+                    std::ptr::read(data as *const T)
                 };
                 local.local_tail = tail.wrapping_add(1);
                 local.msg_counter = local.msg_counter.wrapping_add(1);
@@ -2908,8 +3008,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // SAFETY: idx is masked in-bounds; the slot in [tail, head) was
                 // written by send() and is initialized. T: Copy — bitwise read.
                 let msg = unsafe {
-                    let base = local.cached_data_ptr as *const T;
-                    simd_aware_read(base.add(idx))
+                    let (_, data) = dispatch::slot_ptrs::<T>(local, idx);
+                    simd_aware_read(data as *const T)
                 };
                 return Some(msg);
             }
@@ -2954,8 +3054,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // from a geometry validated against this mapping, so
         // `latest_index < capacity` and the slot is inside the data region.
         let msg = unsafe {
-            let base = local.cached_data_ptr as *const T;
-            simd_aware_read(base.add(latest_index))
+            let (_, data) = dispatch::slot_ptrs::<T>(local, latest_index);
+            simd_aware_read(data as *const T)
         };
         Some(msg)
     }
@@ -4074,8 +4174,7 @@ mod untrusted_ring_geometry_tests {
         header.creator_pid = 0;
         poison(&mut header);
 
-        let total =
-            TOPIC_HEADER_SIZE + CAPACITY as usize * 8 + CAPACITY as usize * SLOT as usize;
+        let total = TOPIC_HEADER_SIZE + CAPACITY as usize * 8 + CAPACITY as usize * SLOT as usize;
         let mut buf = vec![0u8; total];
         // SAFETY: `TopicHeader` is repr(C) and this is exactly the byte image the
         // SHM region holds; `buf` is larger than the header.
@@ -4185,9 +4284,10 @@ mod untrusted_ring_geometry_tests {
             eprintln!("skipping: shared memory unavailable");
             return;
         }
-        let topic = RingTopic::<u64>::new(&name)
-            .expect("a well-formed region must still open — the guard is not allowed to \
-                     break ordinary joining");
+        let topic = RingTopic::<u64>::new(&name).expect(
+            "a well-formed region must still open — the guard is not allowed to \
+                     break ordinary joining",
+        );
         topic.send(7);
         assert_eq!(topic.recv(), Some(7));
         drop(topic);

@@ -5602,46 +5602,37 @@ fn sequence_wrap_u64_max_large_type() {
     );
 }
 
-/// A small POD topic allocates a whole cache line per slot and then indexes at
-/// `size_of::<T>()`. The co-located `[seq(8) | data(T) | pad to 64]` slot that
-/// `RingTopic::with_capacity_and_kind`'s comment describes is not implemented
-/// anywhere, so this test asserts the geometry that is actually built:
+/// A small POD topic co-locates each readiness stamp with its own payload.
 ///
-///   * `with_capacity_and_kind` pins `slot_size = 64` for every POD type with
-///     `size_of::<T>() + 8 <= 64`. That is the **allocation** stride, and it is
-///     what the header advertises.
-///   * Every POD dispatch path, send and recv alike, addresses the data region
-///     as `(cached_data_ptr as *T).add(index)` — an **index** stride of
-///     `size_of::<T>()`. See `dispatch::send_shm_sp_pod`, `send_shm_mp_pod`,
-///     `send_shm_pod_broadcast` and their recv twins.
-///   * The per-slot sequence stamps live in their own `u64` array between the
-///     header and the data region (`shm_layout::seq_slot_offset`), never inside
-///     a slot.
+/// The out-of-crate twin `horus_core/tests/pod_ring_slot_geometry.rs` pins the
+/// same geometry by reading the backing file; this one pins the cached pointers
+/// `LocalState` hands the dispatch paths, which only an in-crate test can reach.
+/// Both matter: the file says what was written, this says where the hot path
+/// will look.
 ///
-/// Writers and readers use the same index stride, so the mismatch costs memory
-/// (4x over-allocation for a 16-byte message) and cache lines (four consecutive
-/// slots share one, which is the false sharing the 64-byte allocation was
-/// evidently meant to prevent) — it is not corruption. The out-of-crate twin
-/// `horus_core/tests/pod_ring_slot_geometry.rs` pins the same geometry by
-/// reading the backing file; this one pins the cached pointers `LocalState`
-/// hands the dispatch paths, which only an in-crate test can reach.
+/// This test previously asserted the opposite, and was right to at the time.
+/// `with_capacity_and_kind` allocated 64 bytes per slot for every POD type with
+/// `size_of::<T>() + 8 <= 64` and its comment described a co-located
+/// `[stamp(8) | data(T) | pad]` slot, but the stamps were allocated in their own
+/// array between the header and the data, and every POD path indexed the data at
+/// `size_of::<T>()`. So the padding was paid for and the co-location never
+/// happened: four 16-byte slots shared a cache line, which is the false sharing
+/// the padding was meant to prevent. The version before THAT asserted
+/// `size_of::<T>() + 8 <= 64` — a compile-time tautology about the type — and
+/// was green either way.
 ///
 /// The ring is scanned end to end on purpose: slot 0 sits at the same address
-/// under either stride, so a single-message check cannot tell them apart. That
-/// is exactly how the previous version of this test passed — it asserted
-/// `size_of::<T>() + 8 <= 64`, a compile-time tautology about the *type*, and
-/// then did a plain round trip, so it was green whether or not the co-located
-/// layout it was named for existed.
+/// under either geometry, so a single-message check cannot tell them apart.
 #[test]
-fn pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t() {
+fn pod_ring_colocates_each_stamp_with_its_payload() {
     const CACHE_LINE: usize = 64;
     const CAPACITY: u32 = 16;
     // Strictly below CAPACITY: the ring never fills, so no slot is retired and
     // every tag written below is still in place when the scan runs.
     const MESSAGES: u64 = 8;
 
-    // 16 bytes, no Drop → POD by `communication::pod::is_pod`, and inside the
-    // `type_size + 8 <= 64` branch that pins the allocation stride to 64.
+    // 16 bytes, no Drop -> POD by `communication::pod::is_pod`, and inside the
+    // `type_size <= COLO_MAX_PAYLOAD` bound that selects the colo geometry.
     #[repr(C)]
     #[derive(
         Clone,
@@ -5684,57 +5675,56 @@ fn pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t() {
         "header type_size must be the Rust type's size"
     );
     assert_eq!(hdr.capacity, CAPACITY, "capacity is already a power of two");
+    assert!(
+        hdr.is_colo(),
+        "a 16-byte POD topic must select the colo layout"
+    );
     assert_eq!(
         hdr.slot_size as usize, CACHE_LINE,
-        "with_capacity_and_kind pins slot_size to 64 for a small POD type. If \
-         this now reports {type_size}, the allocation stride was changed to \
-         match the index stride — check that horus_net::ShmRingWriter and \
-         topic::header::read_latest_slot_bytes moved with it before updating \
-         this test"
+        "the colo slot is stamp + payload rounded up to a whole cache line"
     );
 
     // ---- where the dispatch paths are actually pointed ----------------------
     let base = hdr as *const super::header::TopicHeader as usize;
-    let (seq_ptr, data_ptr) = {
+    let (seq_ptr, data_ptr, stride) = {
         let local = t.ring.local();
         assert!(
             !local.cached_seq_ptr.is_null() && !local.cached_data_ptr.is_null(),
             "the sends above must have registered this handle and cached both \
              region pointers"
         );
-        (local.cached_seq_ptr, local.cached_data_ptr)
+        (
+            local.cached_seq_ptr,
+            local.cached_data_ptr,
+            local.cached_colo_stride,
+        )
     };
     let seq_off = seq_ptr as usize - base;
     let data_off = data_ptr as usize - base;
 
     assert_eq!(
-        seq_off,
-        super::shm_layout::seq_array_offset(),
-        "the sequence array starts immediately after the header"
+        stride as usize, CACHE_LINE,
+        "the cached stride is what every POD path multiplies the index by; a \
+         zero here would silently put the hot path back on the split layout"
     );
     assert_eq!(
-        data_off,
-        super::shm_layout::data_region_offset(CAPACITY as usize),
-        "the data region starts after the whole sequence array"
+        seq_off,
+        super::shm_layout::HEADER_SIZE,
+        "colo slots begin where the header ends — there is no stamp array"
     );
     assert_eq!(
         data_off - seq_off,
-        CAPACITY as usize * mem::size_of::<u64>(),
-        "the {CAPACITY} sequence stamps are one contiguous u64 array in front \
-         of the data region — not one 8-byte word inside each 64-byte slot, \
-         which is what a co-located layout would mean"
-    );
-    assert_eq!(
-        super::shm_layout::seq_slot_offset(1) - super::shm_layout::seq_slot_offset(0),
-        mem::size_of::<u64>(),
-        "consecutive sequence stamps are 8 bytes apart, not {CACHE_LINE}"
+        super::shm_layout::COLO_PAYLOAD_OFF,
+        "a payload sits 8 bytes after its OWN stamp. Under the split layout \
+         this difference was `capacity * 8` — the whole stamp array — which is \
+         the second cache line the colo layout exists to remove"
     );
 
     // ---- the stride the payloads actually landed on -------------------------
     // SAFETY: `data_ptr` is the live mapping the POD send path just wrote
     // through. Every offset read below is under `MESSAGES * CACHE_LINE`, well
-    // inside the `CAPACITY * slot_size` bytes the data region was allocated at,
-    // and `read_unaligned` needs no alignment guarantee.
+    // inside the `CAPACITY * slot_size` bytes the region was allocated at, and
+    // `read_unaligned` needs no alignment guarantee.
     let tag_at = |byte_off: usize| -> u64 {
         unsafe { std::ptr::read_unaligned(data_ptr.add(byte_off) as *const u64) }
     };
@@ -5742,58 +5732,60 @@ fn pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t() {
         |stride: usize| -> bool { (0..MESSAGES).all(|i| tag_at(i as usize * stride) == tag_of(i)) };
 
     assert!(
-        holds(type_size),
-        "every POD dispatch path indexes `(cached_data_ptr as *T).add(index)`, \
-         so consecutive payloads must be {type_size} bytes apart"
+        holds(CACHE_LINE),
+        "every POD path strides by the whole colo slot, so consecutive payloads \
+         must be {CACHE_LINE} bytes apart"
     );
     assert!(
-        !holds(CACHE_LINE),
-        "payloads are NOT {CACHE_LINE} bytes apart — the header's slot_size is \
-         the allocation stride only, never the index stride"
-    );
-    // A `[seq(8) | data(T) | pad to 64]` slot would put message i's tag at
-    // `i * 64 + 8`, immediately after its own sequence word. Nothing writes there.
-    assert!(
-        (1..MESSAGES).any(|i| tag_at(i as usize * CACHE_LINE + mem::size_of::<u64>()) != tag_of(i)),
-        "message tags were found at i*64+8 — a co-located slot layout now \
-         exists, and this test (plus the 13 POD dispatch sites it describes) \
-         has to be rewritten around it"
+        !holds(type_size),
+        "payloads are still {type_size} bytes apart — the index stride did not \
+         move with the allocation, so this is the old split geometry"
     );
     assert_eq!(
         tag_at(0),
         tag_of(0),
-        "slot 0 sits at the same address under either stride — which is why \
+        "slot 0 sits at the same address under either geometry — which is why \
          this test scans the whole ring instead of checking one message"
     );
 
-    // ---- what the mismatch costs -------------------------------------------
+    // ---- each stamp is real, and shares its payload's line ------------------
+    // SAFETY: same mapping and bounds as `tag_at`; the stamp for slot i is at
+    // `seq_ptr + i * slot`, inside the region for i < CAPACITY.
+    let stamp_at = |i: usize| -> u64 {
+        unsafe { std::ptr::read_unaligned(seq_ptr.add(i * CACHE_LINE) as *const u64) }
+    };
+    for i in 0..MESSAGES as usize {
+        assert_eq!(
+            stamp_at(i),
+            i as u64 + 1,
+            "slot {i} must carry its published stamp, not incidentally-zero memory"
+        );
+        let stamp_off = seq_off + i * CACHE_LINE;
+        let payload_off = data_off + i * CACHE_LINE;
+        assert_eq!(
+            stamp_off / CACHE_LINE,
+            payload_off / CACHE_LINE,
+            "slot {i}: the stamp and its payload must share one cache line — \
+             that single coherence miss is the whole point of the layout"
+        );
+    }
+
+    // ---- no two slots share a line -----------------------------------------
     assert_eq!(
         data_off % CACHE_LINE,
-        0,
-        "the data region starts on a cache-line boundary ({data_off})"
+        super::shm_layout::COLO_PAYLOAD_OFF,
+        "payloads sit 8 bytes into their own cache-line-aligned slot"
     );
-    let line_of = |i: usize| (data_off + i * type_size) / CACHE_LINE;
-    assert_eq!(
+    let line_of = |i: usize| (seq_off + i * CACHE_LINE) / CACHE_LINE;
+    assert_ne!(
         line_of(0),
-        line_of(3),
-        "slots 0..=3 are {type_size} bytes apart, so a producer writing slot i \
-         invalidates the line a consumer is reading slot i-1 from, three times \
-         in four"
-    );
-    assert_ne!(line_of(0), line_of(4), "slot 4 starts the next line");
-    assert!(
-        hdr.slot_size as usize >= type_size,
-        "the allocation stride must never be smaller than the index stride — \
-         that would be an out-of-bounds ring write"
-    );
-    assert_eq!(
-        CACHE_LINE / type_size,
-        4,
-        "a 16-byte POD message gets 64 bytes of ring per slot, so the data \
-         region is 4x the size of the messages it can hold"
+        line_of(1),
+        "adjacent slots must not share a line: under the split layout four \
+         16-byte slots did, so a producer writing slot i invalidated the line a \
+         consumer was reading slot i-1 from, three times in four"
     );
 
-    // ---- reader and writer agree, so this is waste and not corruption -------
+    // ---- reader and writer agree -------------------------------------------
     let mut got = Vec::new();
     while let Some(m) = t.recv() {
         got.push(m);
@@ -5801,8 +5793,8 @@ fn pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t() {
     assert_eq!(
         got.len(),
         MESSAGES as usize,
-        "every published message must come back: the recv paths use the same \
-         `size_of::<T>()` stride as the send paths"
+        "every published message must come back: the recv paths stride the same \
+         way the send paths do"
     );
     for (i, m) in got.iter().enumerate() {
         let i = i as u64;
