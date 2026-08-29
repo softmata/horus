@@ -243,7 +243,14 @@ fn core_pinning_invalid_core_no_crash() {
         .build()
         .unwrap();
 
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30ms. The property under test is that an unsatisfiable
+    // `.core(9999)` degrades gracefully instead of preventing ticks — nothing
+    // about how quickly. At 100Hz a 30ms window budgets 3 ticks, and a scheduler
+    // thread on a box running the rest of this suite in parallel can lose that
+    // easily, which turned graceful degradation into an intermittent failure.
+    // The window is generous so it measures the property; a genuine regression
+    // (no ticks at all) still fails no matter how long it runs.
+    scheduler.run_for(500_u64.ms()).unwrap();
     assert!(
         count.load(Ordering::Relaxed) > 0,
         "Should tick despite invalid core"
