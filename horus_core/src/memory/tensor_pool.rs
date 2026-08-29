@@ -67,6 +67,25 @@ use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+/// Take a shared `flock` for the life of this handle.
+///
+/// This is what makes "is the creator still alive?" answerable: with every
+/// holder on `LOCK_SH`, a non-blocking `LOCK_EX` upgrade succeeds only when
+/// nobody else has the file open. See `TensorPool::validate_or_reclaim`.
+/// Best-effort — a filesystem without `flock` support simply means abandoned
+/// pools are never reclaimed, which is the behaviour that existed before.
+#[cfg(unix)]
+fn hold_shared_lock(file: &File) {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `file` is a valid open descriptor; LOCK_SH is a valid flock op.
+    unsafe {
+        libc::flock(file.as_raw_fd(), libc::LOCK_SH);
+    }
+}
+
+#[cfg(not(unix))]
+fn hold_shared_lock(_file: &File) {}
+
 /// `OpenOptions` for creating a pool file: exclusive create, owner-only.
 ///
 /// Without an explicit mode, `create_new` yields `0o666 & !umask` — 0o664 under
@@ -382,6 +401,7 @@ impl TensorPool {
         let (file, is_owner) = match shm_create_new_opts().open(&shm_path) {
             Ok(file) => {
                 file.set_len(mmap_size as u64)?;
+                hold_shared_lock(&file);
                 (file, true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -391,6 +411,7 @@ impl TensorPool {
                 // depth rather than the only barrier.
                 horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+                hold_shared_lock(&file);
                 Self::await_pool_file_size(&file, mmap_size as u64, pool_id)?;
                 (file, false)
             }
@@ -443,7 +464,7 @@ impl TensorPool {
         if is_owner {
             pool.initialize()?;
         } else {
-            pool.validate()?;
+            pool.validate_or_reclaim()?;
         }
 
         Ok(pool)
@@ -611,6 +632,7 @@ impl TensorPool {
         let (file, is_owner) = match shm_create_new_opts().open(&shm_path) {
             Ok(file) => {
                 file.set_len(mmap_size as u64)?;
+                hold_shared_lock(&file);
                 (file, true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -620,6 +642,7 @@ impl TensorPool {
                 // depth rather than the only barrier.
                 horus_sys::shm::harden_shm_file(&shm_path);
                 let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+                hold_shared_lock(&file);
                 Self::await_pool_file_size(&file, mmap_size as u64, pool_id)?;
                 (file, false)
             }
@@ -655,7 +678,7 @@ impl TensorPool {
         if is_owner {
             pool.initialize()?;
         } else {
-            pool.validate()?;
+            pool.validate_or_reclaim()?;
         }
 
         Ok(pool)
@@ -755,6 +778,78 @@ impl TensorPool {
         self.mmap.flush()?;
 
         Ok(())
+    }
+
+    /// Validate an attached pool, reclaiming it if its creator died mid-init.
+    ///
+    /// `initialize()` writes the magic LAST, so a creator that is killed between
+    /// `O_CREAT|O_EXCL` and that write leaves a correctly-sized file whose magic
+    /// is zero. `validate()` waits ~100 ms for a slow creator and then gives up —
+    /// and since nothing ever repairs the file, EVERY later process fails with
+    /// "Invalid tensor pool magic", for the lifetime of the file. The pool is
+    /// poisoned until somebody deletes it by hand. That is the same shape as the
+    /// FanoutShm attach that used to strand a subscriber permanently, and it is
+    /// worse here: on a robot it takes one crash during startup to make a topic
+    /// unusable until the machine is cleaned.
+    ///
+    /// Reclaiming is only safe if the creator is genuinely GONE rather than slow,
+    /// and `flock` answers exactly that. Every holder takes `LOCK_SH` for the
+    /// life of its handle, so upgrading our own descriptor to `LOCK_EX` succeeds
+    /// only when no other open file description holds the file — the same
+    /// last-one-out test `ShmRegion::drop` uses to decide whether to unlink. A
+    /// creator still initializing holds its `LOCK_SH`, so the upgrade fails and
+    /// we correctly refuse to touch its file. If two attachers race, neither can
+    /// take `LOCK_EX` while the other holds `LOCK_SH`, so neither reclaims and
+    /// no two processes can initialize concurrently.
+    fn validate_or_reclaim(&mut self) -> HorusResult<()> {
+        match self.validate() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Reclaim ONLY the never-initialized case. A version or geometry
+                // mismatch is a real disagreement with a live peer and must stay
+                // an error rather than be overwritten.
+                // SAFETY: header pointer from our mmap; volatile so we re-read
+                // rather than reuse a value cached across the wait in validate().
+                let magic = unsafe { std::ptr::read_volatile(&self.header().magic as *const u64) };
+                if magic != 0 || !self.is_sole_holder() {
+                    return Err(e);
+                }
+                log::warn!(
+                    "tensor pool {}: creator died before writing the header; \
+                     reclaiming the abandoned file",
+                    self.pool_id
+                );
+                self.is_owner = true;
+                self.initialize()
+            }
+        }
+    }
+
+    /// Whether this process is the only one holding the pool file open.
+    ///
+    /// Upgrades our own `LOCK_SH` to `LOCK_EX` non-blockingly and drops straight
+    /// back to `LOCK_SH`, so the answer costs nothing and leaves the lock state
+    /// as it found it.
+    #[cfg(unix)]
+    fn is_sole_holder(&self) -> bool {
+        use std::os::unix::io::AsRawFd;
+        let fd = self._file.as_raw_fd();
+        // SAFETY: `fd` is a valid open descriptor owned by `self`; LOCK_EX|LOCK_NB
+        // and LOCK_SH are valid flock operations.
+        unsafe {
+            if libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                return false;
+            }
+            libc::flock(fd, libc::LOCK_SH);
+        }
+        true
+    }
+
+    /// Without `flock` there is no way to tell a dead creator from a slow one,
+    /// so never reclaim.
+    #[cfg(not(unix))]
+    fn is_sole_holder(&self) -> bool {
+        false
     }
 
     /// Validate an existing pool.
@@ -2584,6 +2679,65 @@ pub use crate::types::{Device, Tensor, TensorDtype};
 
 #[cfg(test)]
 mod tests {
+    /// A pool whose creator died before writing the header must be reclaimable.
+    ///
+    /// `initialize()` writes the magic LAST, so a process killed between
+    /// `O_CREAT|O_EXCL` and that write leaves a correctly-sized file with a zero
+    /// magic. Nothing repaired it: `validate()` waited ~100 ms for a slow creator
+    /// and then failed, so every later process failed the same way for the
+    /// lifetime of the file, and the pool stayed poisoned until somebody deleted
+    /// it by hand. On a robot that is one crash during startup away from a topic
+    /// that cannot be used again until the machine is cleaned.
+    ///
+    /// This is not hypothetical — it is how it was found. Killing test processes
+    /// mid-run left abandoned pool files behind, and 54 unrelated tests then
+    /// failed with "Invalid tensor pool magic" on every subsequent run.
+    ///
+    /// The file here is left with NO `flock` holder, which is what proves the
+    /// creator is gone rather than slow.
+    #[test]
+    fn a_pool_abandoned_before_its_header_was_written_is_reclaimed() {
+        let pool_id = 10105;
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+
+        let dir = shm_base_dir().join("tensors");
+        std::fs::create_dir_all(&dir).expect("create tensors dir");
+        let path = dir.join(format!("tensor_pool_{}", pool_id));
+        let _ = std::fs::remove_file(&path);
+
+        // Exactly what a creator leaves behind after ftruncate but before
+        // initialize(): right size, zero magic, nobody holding the lock.
+        let metadata_size = std::mem::size_of::<PoolHeader>()
+            + config.max_slots * std::mem::size_of::<SlotHeader>();
+        let data_offset = TensorPool::align_up(metadata_size, config.slot_alignment);
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .read(true)
+            .open(&path)
+            .expect("plant abandoned pool file");
+        f.set_len((data_offset + config.pool_size) as u64)
+            .expect("size the abandoned file");
+        drop(f);
+
+        let pool = TensorPool::new(pool_id, config)
+            .expect("an abandoned pool must be reclaimed, not poisoned forever");
+
+        // Reclaimed means usable, not merely constructed.
+        let t = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("allocate from the reclaimed pool");
+        let _ = t;
+        drop(pool);
+        let _ = std::fs::remove_file(&path);
+    }
+
     use super::*;
     use crate::core::duration_ext::DurationExt;
 
