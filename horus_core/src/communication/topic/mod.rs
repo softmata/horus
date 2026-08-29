@@ -1441,6 +1441,30 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
+    /// Adopt the header's geometry AND re-derive the pointers that address it.
+    ///
+    /// These two must happen together. `sync_local` installs a new
+    /// `cached_capacity` / `slot_size` / colo-ness into `LocalState`;
+    /// `point_at_slots` is what makes `cached_seq_ptr` / `cached_data_ptr` /
+    /// `cached_colo_stride` describe that same geometry in this mapping. Run one
+    /// without the other and the handle addresses slot `i` at
+    /// `old_base + i * new_stride` — off the end of the mapping it actually
+    /// holds, because a geometry change is exactly when the region was grown.
+    ///
+    /// `check_migration` had two branches that called `sync_local` alone and
+    /// relied on the trailing `initialize_backend()` to re-point. That works
+    /// only when the backend is *replaced*: `initialize_backend` short-circuits
+    /// on `backend_matches_mode`, so a resync that keeps the same mode (the
+    /// migration-lock contention path) adopted the new geometry and kept the old
+    /// pointers. Pairing them here removes the chance to forget, which is the
+    /// same reason `point_at_slots` was made the single writer of those three
+    /// fields in the first place.
+    fn sync_local_and_point(&self, local: &mut LocalState, header: &TopicHeader, strict: bool) {
+        Self::sync_local(local, header, strict, self.storage.len());
+        let capacity = local.cached_capacity as usize;
+        self.point_at_slots(local, capacity, header.is_colo(), header.slot_size as usize);
+    }
+
     /// Compute the byte offset from storage start to the data region.
     ///
     /// Layout: [HEADER (640)] [SEQ_ARRAY (capacity * 8)] [DATA (capacity * slot_size)]
@@ -1699,7 +1723,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             const MAX_EPOCH_RETRIES: u32 = 4;
             let mut stable_epoch = current_epoch;
             local.cached_epoch = stable_epoch;
-            Self::sync_local(local, header, true, self.storage.len());
+            self.sync_local_and_point(local, header, true);
             for _ in 0..MAX_EPOCH_RETRIES {
                 let reloaded = header.migration_epoch.load(Ordering::Acquire);
                 if reloaded == stable_epoch {
@@ -1709,7 +1733,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // syncing; re-sync to the newer epoch and check again.
                 stable_epoch = reloaded;
                 local.cached_epoch = stable_epoch;
-                Self::sync_local(local, header, true, self.storage.len());
+                self.sync_local_and_point(local, header, true);
             }
             // Re-initialize backend for the new (stable) epoch.
             //
@@ -1746,7 +1770,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 match migrator.migrate_to_optimal() {
                     MigrationResult::Success { new_epoch } => {
                         local.cached_epoch = new_epoch;
-                        Self::sync_local(local, header, true, self.storage.len());
+                        self.sync_local_and_point(local, header, true);
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         // Notify all same-process Topics of the epoch change
                         registry::notify_epoch_change(&self.name, new_epoch);
@@ -1769,7 +1793,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         let new_epoch = header.migration_epoch.load(Ordering::Acquire);
                         if new_epoch != local.cached_epoch {
                             local.cached_epoch = new_epoch;
-                            Self::sync_local(local, header, true, self.storage.len());
+                            self.sync_local_and_point(local, header, true);
                             registry::notify_epoch_change(&self.name, new_epoch);
                             self.process_epoch.fetch_max(new_epoch, Ordering::Release);
                         }
@@ -2174,9 +2198,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let new_total = Self::HEADER_SIZE + seq_array_size + new_data_size;
 
         // Grow the backing SHM file and remap.
-        // SAFETY: single-thread ownership — no concurrent readers/writers on the raw
-        // pointer at this point (we're in the send path, post-serialization, pre-write).
-        if unsafe { self.storage.grow_unchecked(new_total) }.is_err() {
+        //
+        // The claim that used to sit here — "single-thread ownership, no
+        // concurrent readers/writers" — was false, and it was the bug: this runs
+        // on the send path of a `Topic` that is routinely cloned across threads,
+        // so sibling clones are reading the mapping while it is replaced.
+        // `ShmRegion::grow` now serializes grows and keeps the replaced mapping
+        // alive; what remains is ours to do, below — re-derive every cached
+        // pointer, because the base address has moved.
+        if self.storage.grow(new_total).is_err() {
             log::warn!(
                 "Topic '{}': failed to grow SHM from {} to {} bytes for slot_size {}",
                 self.name,
@@ -2373,8 +2403,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // `required` itself), so this grows only for a geometry that would
             // be usable once the mapping matches it.
             if required > self.storage.len() && Self::geometry_is_addressable(header, required) {
-                // SAFETY: single-thread ownership, no concurrent reads on the mmap.
-                if unsafe { self.storage.grow_unchecked(required) }.is_ok() {
+                // No longer a safety claim: `ShmRegion::grow` is safe under
+                // concurrent readers and concurrent growers. The base address
+                // still moves, so the pointer re-derivation below is required.
+                if self.storage.grow(required).is_ok() {
                     // Only the header pointer moves here. The cached ring pointers
                     // are re-derived below, from the geometry `sync_local` accepts
                     // — deriving them here from `declared_capacity` would let them

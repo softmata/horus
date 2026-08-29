@@ -14,6 +14,11 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub struct ShmRegion {
     mmap: MmapMut,
+    /// Mappings that `grow_unchecked` replaced, deliberately kept alive.
+    /// See the Linux backend's `retired` field for the full rationale: dropping
+    /// these `munmap`s address space that other threads still hold pointers
+    /// into, because `Topic` shares one `Arc<ShmRegion>` across clones.
+    retired: Vec<MmapMut>,
     _file: File,
     path: PathBuf,
     size: usize,
@@ -52,6 +57,7 @@ impl ShmRegion {
 
         Ok(Self {
             mmap,
+            retired: Vec::new(),
             _file: file,
             path,
             size,
@@ -122,6 +128,7 @@ impl ShmRegion {
 
         Ok(Self {
             mmap,
+            retired: Vec::new(),
             size,
             path,
             _file: file,
@@ -163,9 +170,27 @@ impl ShmRegion {
     ///
     /// # Safety
     ///
-    /// The caller must ensure no other thread is concurrently reading from or
-    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    /// `&mut self` already excludes concurrent access to this struct's fields.
+    /// What the caller still owes is about the *mapped bytes*: the grow publishes
+    /// a mapping at a new address, so any pointer previously handed out by
+    /// `as_ptr()` now addresses the retained older mapping. That is safe to read
+    /// — the replaced mapping is kept alive and is a coherent view of the same
+    /// file — but it describes the PRE-GROW geometry, so a caller must re-derive
+    /// cached offsets before using the new slot layout.
+    ///
+    /// The previous contract here ("no other thread is concurrently reading ...
+    /// guaranteed by the single-thread ownership contract and the migration
+    /// lock") was false: `Topic` shares one region across clones on different
+    /// threads and held no such lock. It was a live use-after-free.
     pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.retired.len() < super::MAX_RETIRED_MAPPINGS,
+            "refusing to grow: {} mappings already retained (cap {}); \
+             see MAX_RETIRED_MAPPINGS",
+            self.retired.len(),
+            super::MAX_RETIRED_MAPPINGS
+        );
+
         use memmap2::MmapOptions;
 
         anyhow::ensure!(
@@ -196,7 +221,9 @@ impl ShmRegion {
                 )
             })?;
 
-        self.mmap = new_mmap;
+        // Retain, do not drop: see the `retired` field.
+        let old_mmap = std::mem::replace(&mut self.mmap, new_mmap);
+        self.retired.push(old_mmap);
         self.size = new_size;
 
         // The remap is a brand-new mapping with empty page tables, so without

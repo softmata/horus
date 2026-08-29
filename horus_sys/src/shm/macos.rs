@@ -70,6 +70,12 @@ fn acquire_holder_lock(name: &str, create: bool) -> Option<std::fs::File> {
 #[derive(Debug)]
 pub struct ShmRegion {
     ptr: *mut u8,
+    /// `(ptr, size)` of every mapping `grow_unchecked` replaced, deliberately
+    /// kept mapped. See the Linux backend's `retired` field for the rationale:
+    /// `Topic` shares one `Arc<ShmRegion>` across clones and each clone caches
+    /// pointers derived from the base address, so `munmap`ing the old view on
+    /// grow leaves those dangling. Released together in `Drop`.
+    retired: Vec<(*mut u8, usize)>,
     fd: i32,
     shm_name: String,
     topic_name: String,
@@ -142,6 +148,7 @@ impl ShmRegion {
         let lock_file = acquire_holder_lock(name, false);
         Ok(Self {
             ptr: ptr as *mut u8,
+            retired: Vec::new(),
             fd,
             shm_name,
             topic_name: name.to_string(),
@@ -313,6 +320,7 @@ impl ShmRegion {
 
         Ok(Self {
             ptr: ptr as *mut u8,
+            retired: Vec::new(),
             fd,
             shm_name,
             topic_name: name.to_string(),
@@ -364,9 +372,27 @@ impl ShmRegion {
     ///
     /// # Safety
     ///
-    /// The caller must ensure no other thread is concurrently reading from or
-    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    /// `&mut self` already excludes concurrent access to this struct's fields.
+    /// What the caller still owes is about the *mapped bytes*: the grow publishes
+    /// a mapping at a new address, so any pointer previously handed out by
+    /// `as_ptr()` now addresses the retained older mapping. That is safe to read
+    /// — the replaced mapping is kept alive and is a coherent view of the same
+    /// file — but it describes the PRE-GROW geometry, so a caller must re-derive
+    /// cached offsets before using the new slot layout.
+    ///
+    /// The previous contract here ("no other thread is concurrently reading ...
+    /// guaranteed by the single-thread ownership contract and the migration
+    /// lock") was false: `Topic` shares one region across clones on different
+    /// threads and held no such lock. It was a live use-after-free.
     pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.retired.len() < super::MAX_RETIRED_MAPPINGS,
+            "refusing to grow: {} mappings already retained (cap {}); \
+             see MAX_RETIRED_MAPPINGS",
+            self.retired.len(),
+            super::MAX_RETIRED_MAPPINGS
+        );
+
         anyhow::ensure!(
             new_size > self.size,
             "grow_unchecked: new_size ({}) must be > current size ({})",
@@ -404,8 +430,10 @@ impl ShmRegion {
             std::io::Error::last_os_error()
         );
 
-        // Only now release the old mapping.
-        libc::munmap(self.ptr as *mut libc::c_void, self.size);
+        // Retain the old mapping rather than releasing it: see the `retired`
+        // field. Two MAP_SHARED views of the same fd are coherent, so a reader
+        // still on the old base reads the same bytes, and stops faulting.
+        self.retired.push((self.ptr, self.size));
 
         self.ptr = new_ptr as *mut u8;
         self.size = new_size;
@@ -429,6 +457,10 @@ impl Drop for ShmRegion {
         // self.fd is a valid open file descriptor
         unsafe {
             libc::munmap(self.ptr as *mut libc::c_void, self.size);
+            // Mappings retained across grows (see `retired`).
+            for (ptr, size) in self.retired.drain(..) {
+                libc::munmap(ptr as *mut libc::c_void, size);
+            }
             libc::close(self.fd);
         }
 

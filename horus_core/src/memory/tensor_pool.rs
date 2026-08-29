@@ -5171,7 +5171,15 @@ mod tests {
             slot_alignment: 64,
             allocator: Default::default(),
         };
-        let pool = TensorPool::new(8810, config).expect("Failed to create pool");
+        // Pool id 8810 was shared with `data_slice_mut_rejects_stale_descriptor_after_realloc`,
+        // which builds a `max_slots: 1` pool where this one wants 2. The id is the
+        // `/dev/shm` path, the namespace is per-target rather than per-process, and
+        // neither test calls `clear_stale_pool`, so whichever ran first created the
+        // file and the other failed in `TensorPool::new` — before reaching a single
+        // assertion. Sorted test order put the 1-slot pool first, so the 100 ms
+        // `await_pool_file_size` poll always timed out here (it needs 64 bytes more
+        // metadata than the 1-slot geometry will ever have).
+        let pool = TensorPool::new(10104, config).expect("Failed to create pool");
 
         let tensor = pool
             .alloc(&[256], TensorDtype::U8, Device::cpu())

@@ -8875,6 +8875,107 @@ fn partial_write_concurrent_writers_no_partial_data() {
     );
 }
 
+/// A clone that grows the shared mapping must not strand its siblings.
+///
+/// `Topic::clone` shares one `Arc<ShmRegion>` but gives each clone its own
+/// `header_ptr` and its own cached slot pointers, all derived from the mapping's
+/// base address. The geometry-resync path replaces that mapping when the backend
+/// migrates to multi-producer mode, and the replacement lands at a NEW address.
+/// The old mapping used to be unmapped on the spot, which turned every sibling's
+/// cached pointers into dangling ones.
+///
+/// This is the shape that actually crashed. Roughly half of all lib-suite runs on
+/// an oversubscribed box died here, with two faulting sites in the cores: a load
+/// in `TopicHeader::is_verbose` through a stale `header_ptr` (`0x780510d2b000`,
+/// while the live mapping was at `0x780510d37000`), and an atomic **store**
+/// inside `BackendMigrator::perform_migration` — a wild write, which faulted only
+/// because that address happened to be unmapped rather than recycled. The `Arc`
+/// strong count was 3, so nothing had been dropped: the mapping moved out from
+/// under a live `Arc`.
+///
+/// The fix is in `ShmRegion`: grows are serialized, the base is published
+/// atomically, and the replaced mapping is retained rather than unmapped (it is a
+/// second `MAP_SHARED` view of the same file, so a sibling still on the old base
+/// reads coherent bytes until it re-points). Removing the retention alone puts
+/// this test back to SIGSEGV.
+///
+/// The length assertion is what keeps this test honest: without it the test would
+/// still pass if the migration stopped resizing the mapping, and would then be
+/// guarding nothing.
+#[test]
+fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
+    // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
+    // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
+    // to a multi-producer backend has to make room for the separate stamp array
+    // (+ capacity*8 = 9856). Which backend the migration settles on depends on
+    // how the writers and the reader interleave, so a single round does not
+    // reliably reach it — hence the retries, and the assertion afterwards that
+    // at least one round actually did.
+    let mut grew = false;
+    for _ in 0..16 {
+        if run_one_grow_race_round() {
+            grew = true;
+        }
+    }
+    assert!(
+        grew,
+        "no round grew the mapping, so this test exercised none of the remap \
+         race it exists to guard"
+    );
+}
+
+/// One round of the race. Returns whether the mapping was actually replaced.
+fn run_one_grow_race_round() -> bool {
+    let name = unique("grow_strands_siblings");
+    let t: Topic<[u64; 4]> = Topic::new(&name).unwrap();
+    let len_before = t.ring.storage.len();
+
+    let n_writers = 3;
+    let barrier = Arc::new(Barrier::new(n_writers + 1));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let writers: Vec<_> = (0..n_writers)
+        .map(|w| {
+            let t = t.clone();
+            let b = barrier.clone();
+            test_spawn(move || {
+                b.wait();
+                for i in 0..400u64 {
+                    let v = (w as u64) * 10_000 + i;
+                    t.send([v, v, v, v]);
+                }
+            })
+        })
+        .collect();
+
+    let reader = {
+        let t = t.clone();
+        let b = barrier.clone();
+        let stop = stop.clone();
+        test_spawn(move || {
+            b.wait();
+            let mut seen = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                // `recv()` opens with `is_verbose()` — the load that faulted.
+                if let Some(v) = t.recv() {
+                    assert_eq!(v[0], v[3], "torn read across the remap");
+                    seen += 1;
+                }
+                std::hint::spin_loop();
+            }
+            seen
+        })
+    };
+
+    for h in writers {
+        h.join().unwrap();
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _seen = reader.join().unwrap();
+
+    t.ring.storage.len() > len_before
+}
+
 /// Serializable type with nested heap allocation — no panic on corrupted data.
 #[test]
 fn corrupted_nested_struct_deserialization() {

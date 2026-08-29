@@ -741,6 +741,28 @@ fn parse_bool_flag(raw: &str) -> Option<bool> {
     }
 }
 
+/// Hard cap on the number of mappings a region retains across grows.
+///
+/// Growing retains the mapping it replaces rather than unmapping it, because
+/// other threads still hold pointers into it (see each backend's `retired`
+/// field). Retention has to be bounded, and geometric growth alone does not
+/// bound it: `handle_epoch_change` grows to a size derived from *another
+/// process's* header fields, so a peer that bumps `slot_size` by one and bumps
+/// the epoch, repeatedly, drives one retained mapping per iteration. Left
+/// uncapped that walks into `max_map_count` (65530 by default) and every
+/// subsequent `mmap` in the process fails — a local denial of service.
+///
+/// Exceeding the cap fails the grow. It never unmaps to make room: unmapping is
+/// precisely the bug retention exists to prevent, so the degradation here is to
+/// liveness (`auto_grow_slot_size` returns false and the caller spills or drops;
+/// `handle_epoch_change` skips the grow and `sync_local` then refuses the
+/// unaddressable geometry) and never to soundness.
+///
+/// 32 is generous against legitimate use: growth through `auto_grow_slot_size`
+/// is geometric and stops at the spill threshold, so a topic reaches its final
+/// slot size in at most ~13 grows, and a default-sized topic never grows at all.
+pub const MAX_RETIRED_MAPPINGS: usize = 32;
+
 /// Make a mapping resident under the process [`ResidencyPolicy`]: pre-fault
 /// (and optionally lock) up to `max_bytes` of it, starting at `ptr`.
 ///
