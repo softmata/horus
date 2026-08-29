@@ -2232,22 +2232,43 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         pool
     }
 
-    /// Periodic migration check — reads migration_epoch from SHM header.
+    /// Migration check — reads `migration_epoch` from the SHM header and calls
+    /// the cold handler only when it has moved.
     ///
-    /// Uses `self.header_ptr` (stable pointer to the SHM TopicHeader) instead
-    /// of `local.cached_header_ptr`, which is repurposed by the role=Both
-    /// same-instance fast path. This ensures cross-process migration is detected
-    /// even when the topic is running that local fast path (issue #37).
-    #[cold]
-    #[inline(never)]
-    fn check_migration_periodic(&self) {
+    /// Uses `self.header_ptr` (the stable pointer to the SHM `TopicHeader`)
+    /// rather than `local.cached_header_ptr`, which the role=Both same-instance
+    /// fast path repurposes. That is what lets cross-process migration be
+    /// detected even while the topic is on that local fast path (issue #37).
+    ///
+    /// This used to be `check_migration_periodic`, a `#[cold] #[inline(never)]`
+    /// function — so its three instructions cost a
+    /// `call` into `.text.unlikely`, an extra I-cache line, a possible iTLB miss
+    /// and register spills across the call, and it marks the calling block cold
+    /// so the surrounding code is laid out for a path that is not taken.
+    ///
+    /// That is affordable at the amortised call sites. It is not affordable on
+    /// the EMPTY-recv path, which `recv()` reached on every poll under a comment
+    /// reading "Cost: ~50ns ... negligible on the empty-recv path which is
+    /// already a 'nothing to do' path". The empty path is not a nothing-to-do
+    /// path: it is what a subscriber spins on while waiting, so its cost IS the
+    /// detection latency. A 50ns poll means a message published 1ns after a poll
+    /// returns is not seen for another 50ns, however fast the transport was.
+    ///
+    /// Measured: an empty `recv()` cost ~55ns against a raw ring's ~2ns
+    /// single-load poll.
+    ///
+    /// `dispatch::migration_check!` already made exactly this split for the
+    /// dispatched paths; this is the same fix for the outer wrapper, which the
+    /// macro could not reach.
+    #[inline(always)]
+    fn check_migration_inline(&self) {
         // SAFETY: header_ptr always points to the real SHM TopicHeader, valid
-        // for the topic's lifetime (backed by the Arc<ShmRegion> in `storage`).
-        let header = unsafe { &*self.header_ptr.get() };
-        let shm_epoch = header.migration_epoch.load(Ordering::Acquire);
-        let local = self.local();
-
-        if shm_epoch != local.cached_epoch {
+        // for the topic's lifetime (backed by the Arc<ShmRegion> in `storage`),
+        // and is re-pointed by auto-grow whenever the mmap moves.
+        let shm_epoch = unsafe { &*self.header_ptr.get() }
+            .migration_epoch
+            .load(Ordering::Acquire);
+        if unlikely(shm_epoch != self.local().cached_epoch) {
             self.handle_epoch_change(shm_epoch);
         }
     }
@@ -2558,7 +2579,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     .fetch_max(local.local_head, Ordering::Release);
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                    self.check_migration_periodic();
+                    self.check_migration_inline();
                 }
                 // Notify event nodes watching this topic, by topic name.
                 //
@@ -2684,7 +2705,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // on the role=Both fast path with no consumer draining it, a cross-process
         // migration will switch to a SHM backend where the remote subscriber is waiting.
         // (GitHub issue #37)
-        self.check_migration_periodic();
+        self.check_migration_inline();
 
         // First retry immediately — handles the common "buffer was full for
         // a microsecond" case without any spin overhead.
@@ -2887,14 +2908,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 local.local_tail = tail.wrapping_add(1);
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                    self.check_migration_periodic();
+                    self.check_migration_inline();
                 }
                 return Some(msg);
             }
             // Empty — amortized epoch check
             local.msg_counter = local.msg_counter.wrapping_add(1);
             if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                self.check_migration_periodic();
+                self.check_migration_inline();
             }
             return None;
         }
@@ -2912,7 +2933,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // Cost: ~50ns (single Acquire load from mmap header). Negligible
             // on the empty-recv path which is already a "nothing to do" path.
             // (GitHub issue #37)
-            self.check_migration_periodic();
+            self.check_migration_inline();
         }
         result
     }
@@ -3360,8 +3381,7 @@ impl<T: TopicMessage> Topic<T> {
         // The bound is generous on purpose: a node's topic resolves on its
         // first send inside `tick()`, so only genuinely ownerless topics ever
         // count past one.
-        const MAX_ATTEMPTS: u16 = 256;
-        if self.owner_attempts.get() >= MAX_ATTEMPTS {
+        if self.owner_attempts.get() >= Self::OWNER_MAX_ATTEMPTS {
             return None;
         }
         // Checked without allocating; `current_node_name` builds a String and
@@ -3396,6 +3416,58 @@ impl<T: TopicMessage> Topic<T> {
                 type_name,
             );
             self.registered_pub.set(true);
+        }
+    }
+
+    /// Register this handle's role, computing the type name only if it is
+    /// actually needed.
+    ///
+    /// The call sites all read `self.register_sub(Self::registered_type_name())`.
+    /// Rust evaluates arguments eagerly, so `registered_type_name()` —
+    /// `std::any::type_name::<T>()` followed by an `rsplit("::")` scan — ran on
+    /// EVERY send and EVERY recv, including the overwhelming majority where
+    /// `register_sub` immediately returned because the handle was already
+    /// registered. The work was done and then discarded.
+    ///
+    /// Measured on an empty `recv()` against a raw ring: 55ns with the eager
+    /// argument, 17ns without — i.e. the whole rest of the receive path,
+    /// dispatch and all, cost less than this prefix. It is the same shape as the
+    /// `ok_or` vs `ok_or_else` slip fixed in `TensorPool::alloc`, on the hottest
+    /// path in the crate.
+    ///
+    /// The `Cell<bool>` check is one load, so the lazy-registration contract is
+    /// unchanged: the first call still registers, every later call still does
+    /// nothing — it just no longer pays to find out.
+    /// Attempts to resolve an owning node before giving up permanently.
+    ///
+    /// Generous on purpose: a node's topic resolves on its first send inside
+    /// `tick()`, so only genuinely ownerless topics — created by a test, a CLI
+    /// tool or a helper thread — ever count past one.
+    const OWNER_MAX_ATTEMPTS: u16 = 256;
+
+    #[inline(always)]
+    fn register_sub_lazy(&self) {
+        if unlikely(self.wants_registration(&self.registered_sub)) {
+            self.register_sub(Self::registered_type_name());
+        }
+    }
+
+    /// Whether calling the registration path could still accomplish anything.
+    ///
+    /// Two `Cell` loads. False once the handle is registered, and false once
+    /// `resolve_owner` has given up — at which point it returns `None`
+    /// immediately, so the registration call is a no-op whose only effect is the
+    /// cost of the argument it was passed.
+    #[inline(always)]
+    fn wants_registration(&self, latch: &std::cell::Cell<bool>) -> bool {
+        !latch.get() && self.owner_attempts.get() < Self::OWNER_MAX_ATTEMPTS
+    }
+
+    /// Producer-side twin of [`Self::register_sub_lazy`].
+    #[inline(always)]
+    fn register_pub_lazy(&self) {
+        if unlikely(self.wants_registration(&self.registered_pub)) {
+            self.register_pub(Self::registered_type_name());
         }
     }
 
@@ -3801,7 +3873,7 @@ where
     #[inline(always)]
     pub fn send(&self, msg: T) {
         // Lazy registration: first send() registers as Publisher.
-        self.register_pub(Self::registered_type_name());
+        self.register_pub_lazy();
         self.ring.send(msg)
     }
 
@@ -3809,7 +3881,7 @@ where
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         // Lazy registration: first recv() registers as Subscriber.
-        self.register_sub(Self::registered_type_name());
+        self.register_sub_lazy();
         self.ring.recv()
     }
 
@@ -3821,7 +3893,7 @@ where
         // A `read_latest()` consumer is a subscriber. This carried no
         // registration at all, so a node that only ever peeks at the newest
         // sample was invisible to `horus topic info`.
-        self.register_sub(Self::registered_type_name());
+        self.register_sub_lazy();
         self.ring.read_latest()
     }
 
@@ -3830,7 +3902,7 @@ where
     pub fn try_send(&self, msg: T) -> Result<(), T> {
         // A backpressure-aware publisher is still a publisher; this had no
         // registration block, so `try_send`-only nodes were unattributed.
-        self.register_pub(Self::registered_type_name());
+        self.register_pub_lazy();
         self.ring.try_send(msg)
     }
 
@@ -3847,7 +3919,7 @@ where
         msg: T,
         timeout: std::time::Duration,
     ) -> Result<(), SendBlockingError> {
-        self.register_pub(Self::registered_type_name());
+        self.register_pub_lazy();
         self.ring.send_blocking(msg, timeout)
     }
 
@@ -3858,7 +3930,7 @@ where
     #[doc(hidden)]
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
-        self.register_sub(Self::registered_type_name());
+        self.register_sub_lazy();
         self.ring.try_recv()
     }
 }

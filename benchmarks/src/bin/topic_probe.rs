@@ -234,6 +234,92 @@ fn run_image(rep: usize, w: u32, h: u32, cpus: (usize, usize)) -> Vec<u64> {
     })
 }
 
+/// The same ping-pong against a minimal co-located ring, with no HORUS on the
+/// path at all.
+///
+/// This is the floor for this harness: same two pinned threads, same clock,
+/// same ack protocol, same sample count, same 16-byte payload, same
+/// stamp-beside-payload slot geometry. The ONLY difference is that a `Topic`
+/// send/recv is replaced by three stores and a load.
+///
+/// Comparing HORUS against a floor measured by a *different* harness confuses
+/// framework overhead with methodology, which is exactly the mistake this file
+/// exists to avoid making. Whatever separates this row from the `Topic` row is
+/// what HORUS actually costs.
+fn run_raw(rep: usize, cpus: (usize, usize)) -> Vec<u64> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const CAP: usize = 256;
+    const SLOT: usize = 64; // stamp + 16B payload, padded to one cache line
+    const WRITING: u64 = 1 << 63;
+
+    // One cache-line-aligned block, slots laid out [stamp u64 | payload | pad].
+    let layout = std::alloc::Layout::from_size_align(CAP * SLOT, 64).expect("layout");
+    // SAFETY: non-zero size, valid alignment.
+    let base = unsafe { std::alloc::alloc_zeroed(layout) };
+    assert!(!base.is_null(), "raw ring allocation failed");
+    struct Ring(*mut u8);
+    // The two threads below share it through atomics and volatile writes.
+    unsafe impl Send for Ring {}
+    unsafe impl Sync for Ring {}
+    let ring = Ring(base);
+    let _ = rep;
+
+    let total = WARMUP + SAMPLES;
+    let ack = AtomicU64::new(0);
+
+    let out = std::thread::scope(|s| {
+        let ring = &ring;
+        let ack = &ack;
+        let consumer = s.spawn(move || {
+            pin(cpus.1);
+            let mut out: Vec<u64> = Vec::with_capacity(total);
+            for i in 0..total {
+                let want = i as u64 + 1;
+                let off = (i % CAP) * SLOT;
+                // SAFETY: off + SLOT <= CAP * SLOT, inside the block.
+                let stamp = unsafe { &*(ring.0.add(off) as *const AtomicU64) };
+                loop {
+                    if stamp.load(Ordering::Acquire) == want {
+                        // SAFETY: the Acquire above observed the producer's
+                        // Release of this sequence, so the payload is written.
+                        let t0 = unsafe { (ring.0.add(off + 8) as *const u64).read_volatile() };
+                        out.push(now_ns().wrapping_sub(t0));
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+                ack.store(want, Ordering::Release);
+            }
+            out.split_off(WARMUP)
+        });
+
+        pin(cpus.0);
+        for i in 0..total {
+            let seq = i as u64 + 1;
+            let off = (i % CAP) * SLOT;
+            // SAFETY: same bounds as the consumer.
+            let stamp = unsafe { &*(ring.0.add(off) as *const AtomicU64) };
+            stamp.store(WRITING | seq, Ordering::Release);
+            let t0 = now_ns();
+            // SAFETY: 16 bytes of payload inside a 64-byte slot.
+            unsafe {
+                (ring.0.add(off + 8) as *mut u64).write_volatile(t0);
+                (ring.0.add(off + 16) as *mut u64).write_volatile(seq);
+            }
+            stamp.store(seq, Ordering::Release);
+            while ack.load(Ordering::Acquire) < seq {
+                std::hint::spin_loop();
+            }
+        }
+        consumer.join().expect("consumer thread")
+    });
+
+    // SAFETY: same pointer and layout used to allocate; both threads have joined.
+    unsafe { std::alloc::dealloc(base, layout) };
+    out
+}
+
 /// One rep. Returns the sorted per-message one-way latencies in ns.
 fn run(rep: usize, cpus: (usize, usize)) -> Vec<u64> {
     let name = format!("probe_{}_{}", std::process::id(), rep);
@@ -412,10 +498,95 @@ fn alloc_only(reps: usize, w: u32, h: u32) {
     }
 }
 
+/// Cost of ONE empty `recv()` — the poll a subscriber spins on while waiting.
+///
+/// This sets detection latency, and it is the number a one-way figure hides. A
+/// consumer that takes N ns to ask "is there anything?" notices a message on
+/// average N/2 late and at worst N late, no matter how fast the producer was.
+/// The raw-ring arm's wait loop is a single inlined atomic load; if a dispatched
+/// `recv()` costs an order of magnitude more, that difference IS the gap.
+fn empty_poll_cost(reps: usize, cpus: (usize, usize)) {
+    println!();
+    println!("  cost of one EMPTY recv() — sets detection latency");
+    println!("  rep      p50      p99      max");
+    for rep in 0..reps {
+        let name = format!("probe_e_{}_{}", std::process::id(), rep);
+        let tx: Topic<CmdVel> = Topic::new(&name).expect("pub");
+        let rx: Topic<CmdVel> = Topic::new(&name).expect("sub");
+        // Register both roles, then drain so the ring is empty.
+        tx.send(CmdVel {
+            timestamp_ns: 0,
+            linear: 0.0,
+            angular: 0.0,
+        });
+        while rx.recv().is_some() {}
+        pin(cpus.1);
+
+        let n = 200_000usize;
+        let mut v: Vec<u64> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t0 = now_ns();
+            let got = rx.recv();
+            v.push(now_ns().wrapping_sub(t0));
+            debug_assert!(got.is_none());
+            std::hint::black_box(&got);
+        }
+        v.sort_unstable();
+
+        // Same loop against `try_recv`, which skips the outer wrapper
+        // (`is_verbose`, the role=Both branch, the migration check) and goes
+        // straight to the dispatched fn pointer. The difference between the two
+        // rows is what the wrapper costs.
+        let mut w: Vec<u64> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t0 = now_ns();
+            let got = rx.try_recv();
+            w.push(now_ns().wrapping_sub(t0));
+            std::hint::black_box(&got);
+        }
+        w.sort_unstable();
+
+        // And the measurement floor: two clock reads with nothing between them.
+        let mut c: Vec<u64> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t0 = now_ns();
+            c.push(now_ns().wrapping_sub(t0));
+        }
+        c.sort_unstable();
+
+        // Calibration: ONE Acquire load of an atomic, bracketed the same way.
+        // This is what the raw ring's wait loop does per poll. If it measures at
+        // the clock floor, the apparatus resolves a few ns and the `try_recv`
+        // figure above is real work rather than measurement overhead.
+        let probe_atomic = std::sync::atomic::AtomicU64::new(7);
+        let mut a: Vec<u64> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t0 = now_ns();
+            let x = probe_atomic.load(std::sync::atomic::Ordering::Acquire);
+            a.push(now_ns().wrapping_sub(t0));
+            std::hint::black_box(x);
+        }
+        a.sort_unstable();
+
+        println!(
+            "  {:>3}  recv={:>4}  p99={:>4}  max={:>6}  try_recv={:>4}  1-atomic-load={:>3}  clock-floor={:>3}",
+            rep,
+            pct(&v, 0.50),
+            pct(&v, 0.99),
+            v[v.len() - 1],
+            pct(&w, 0.50),
+            pct(&a, 0.50),
+            pct(&c, 0.50)
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let raw = args.iter().any(|a| a == "--raw");
     let send_only_mode = args.iter().any(|a| a == "--send-only");
+    let raw_mode = args.iter().any(|a| a == "--raw-ring");
+    let poll_mode = args.iter().any(|a| a == "--empty-poll");
     let alloc_dims: Option<(u32, u32)> = args
         .iter()
         .position(|a| a == "--alloc")
@@ -472,6 +643,37 @@ fn main() {
 
     if send_only_mode {
         send_only(reps, cpus);
+        return;
+    }
+
+    if poll_mode {
+        empty_poll_cost(reps, cpus);
+        return;
+    }
+
+    if raw_mode {
+        println!("  rep      p50      p99    p99.9      max   (raw ring, no HORUS)");
+        let mut meds = Vec::new();
+        for rep in 0..reps {
+            let mut v = run_raw(rep, cpus);
+            v.sort_unstable();
+            meds.push(pct(&v, 0.50));
+            println!(
+                "  {:>3}  {:>7}  {:>7}  {:>7}  {:>7}",
+                rep,
+                pct(&v, 0.50),
+                pct(&v, 0.99),
+                pct(&v, 0.999),
+                v[v.len() - 1]
+            );
+        }
+        meds.sort_unstable();
+        println!();
+        println!(
+            "  median-of-medians {}ns   best-rep {}ns",
+            meds[meds.len() / 2],
+            meds[0]
+        );
         return;
     }
 
