@@ -2052,6 +2052,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // message one, so there is no incompatible-protocol window on the shared
             // ring and no multi-producer convergence loss (softmata-brain 1327). The
             // 1P case is safe (loom_sp_mp_flag).
+            //
+            // What it costs, measured, so the trade is not re-litigated from
+            // guesswork: routing SpscShm to `send_shm_sp_pod` instead — a plain
+            // Release store of the head rather than a CAS claim — takes an
+            // unloaded `send()` from 55ns to 25ns on an i7-10750H. The locked
+            // read-modify-write is ~30ns, and it is the largest single cost left
+            // on the publish path.
+            //
+            // It is still the right choice. The alternative needs the sole
+            // producer to stop using plain stores BEFORE a second producer's
+            // first send, and nothing provides that barrier: a joining producer
+            // registers and bumps the epoch, but a send already past
+            // `epoch_guard_send` is committed to the old protocol. That one-send
+            // window is precisely 1327 — two producers claiming the same slot —
+            // and it is a silent corruption on a control topic, which is not
+            // worth 30ns. Buying the 30ns back means building the handshake, not
+            // flipping this line.
             BackendMode::SpscShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::SpscShm => dispatch::send_shm_mp_serde::<T>,
             // SpmcShm KEEPS the single-producer send path: its multi-consumer CAS
