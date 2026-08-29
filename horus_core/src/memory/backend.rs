@@ -136,11 +136,10 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
     /// tenant of the same slot — possibly in another process — cannot read the
     /// previous tenant's bytes.
     ///
-    /// The default implementation writes the region with *word*-sized volatile
-    /// stores (see [`volatile_zero_bytes`]). Volatile is what makes the write
-    /// unelidable; the word width is what makes it affordable. See that
-    /// function's docs for why the width matters and why it is still a
-    /// guarantee rather than an argument.
+    /// The default implementation is [`scrub_bytes`]: a `write_bytes` kept
+    /// alive by an inline-assembly barrier, so it cannot be optimised away and
+    /// is still free to vectorise. See that function's docs for why the
+    /// guarantee matters here and what the volatile version it replaced cost.
     ///
     /// GPU backends may override to use `cudaMemset` or skip zeroing
     /// entirely if cross-process data leaks are not a concern.
@@ -152,7 +151,7 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
         // the contract of `alloc()`, and `TensorPool::return_slot` additionally
         // bounds-checks a shared-backend pointer against the mapping before
         // building the `BackendAllocation` handed here.
-        unsafe { volatile_zero_bytes(alloc.cpu_ptr, alloc.size) };
+        unsafe { scrub_bytes(alloc.cpu_ptr, alloc.size) };
         // Ensure the zero writes are ordered before the slot is marked free.
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
@@ -162,109 +161,107 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
 // Scrub primitive
 // ---------------------------------------------------------------------------
 
-/// Number of words written per unrolled iteration of the scrub body.
+/// Overwrite `len` bytes at `ptr` with zeros, guaranteed not to be optimised
+/// away.
 ///
-/// 8 × `usize` is one 64-byte cache line on a 64-bit target, so the body loop
-/// closes exactly one line per branch.
-const SCRUB_UNROLL: usize = 8;
-
-/// Overwrite `len` bytes at `ptr` with zeros using volatile word stores.
-///
-/// # Why volatile, and why *not* byte-at-a-time
+/// # Why this needs a guarantee at all
 ///
 /// This is the slot scrub that stands between two tenants of the same pool
-/// slot, so the bytes have to actually reach memory: the compiler must not be
-/// allowed to decide the stores are dead. Volatile gives that as a *language
-/// guarantee* — a volatile store is an observable side effect and LLVM may
-/// neither remove it nor merge it with its neighbours.
+/// slot, possibly in different processes. If the compiler removes it, the next
+/// tenant reads the previous one's bytes out of shared memory. The scrub is
+/// therefore not an optimisation detail — it is the whole security property,
+/// and "the optimiser probably will not remove it" is not the standard to hold
+/// it to.
 ///
-/// That last clause is also the reason the old byte-at-a-time form was so
-/// expensive. Because volatile stores cannot be merged or vectorised, one
-/// `write_volatile::<u8>` is one store *instruction*, so scrubbing a 1080p RGB
-/// frame (~6 MB) cost ~6 million stores — and on the default `MmapBackend` that
-/// ran synchronously inside `Topic<Image>::send`, on the publisher's thread.
+/// # Why `memcpy`-family stores rather than `write_volatile`
 ///
-/// Widening the unit to `usize` keeps the guarantee exactly (each store is
-/// still volatile, still unelidable) while cutting the instruction count by
-/// `size_of::<usize>()`. What is left is the memory system: a multi-megabyte
-/// region has to be written once no matter how, so large scrubs bottom out on
-/// write bandwidth rather than on store issue.
+/// This used to be a hand-unrolled loop of eight `write_volatile::<usize>` per
+/// cache line. Volatile did give the guarantee, but it also forbids
+/// vectorisation and forbids the platform `memset` from choosing non-temporal
+/// stores above its shared-cache threshold, and that costs most of the
+/// throughput. Measured on an i7-10750H:
 ///
-/// # Why not `ptr::write_bytes` / `memset`
+/// | region  | volatile words | `write_bytes` + barrier |
+/// |---------|----------------|-------------------------|
+/// | 4 KB    | 127 ns         |  56 ns                  |
+/// | 300 KB  | 11.2 us        | 6.3 us                  |
+/// | 2 MB    | 84.2 us        | 45.3 us                 |
 ///
-/// A plain `memset` would be somewhat faster still (glibc can reach for
-/// non-temporal stores above its shared-cache threshold, which also avoids
-/// evicting the caller's working set). It was deliberately not used here: a
-/// non-volatile store is only kept alive by the argument that LLVM cannot prove
-/// the region unread, and on this particular function that argument is doing
-/// security work. Volatile makes it a guarantee instead. See the module docs of
-/// the tensor pool for the trade if it is ever revisited.
+/// Widening the volatile store does not recover it — `write_volatile::<u128>`
+/// measured within noise of the `usize` version (25 vs 25 GB/s at 2 MB),
+/// because what costs the bandwidth is that each volatile store must be
+/// emitted individually, not how wide it is.
 ///
-/// # Alignment
+/// A 2 MB frame is a 1920x1080 Mono8 image, and this runs on the drop path, so
+/// the difference is ~39 us per frame returned to the pool.
 ///
-/// `write_volatile::<usize>` requires a properly aligned pointer — misaligned
-/// is UB in Rust even on ISAs that tolerate it — so the head is scrubbed a byte
-/// at a time until the cursor is word-aligned, and the tail likewise. Both are
-/// bounded by `size_of::<usize>() - 1` bytes.
+/// # How the guarantee survives
+///
+/// `asm!` without `options(nomem)` must be assumed by the compiler to read and
+/// write every byte of memory it could reach. The stores above are therefore
+/// observable and cannot be dead-code eliminated — the same guarantee volatile
+/// gives, obtained without constraining how the stores are emitted.
+///
+/// On a target where inline assembly is unavailable this falls back to the
+/// volatile loop: slower, and still correct.
 ///
 /// # Safety
 ///
 /// `ptr..ptr + len` must be valid for writes and exclusively owned by the
 /// caller for the duration of the call.
 #[inline]
-pub unsafe fn volatile_zero_bytes(ptr: *mut u8, len: usize) {
-    const WORD: usize = core::mem::size_of::<usize>();
-    const BLOCK: usize = WORD * SCRUB_UNROLL;
-    // The body below is unrolled by hand; keep the constant and the code in step.
-    const _: () = assert!(SCRUB_UNROLL == 8);
-
+pub unsafe fn scrub_bytes(ptr: *mut u8, len: usize) {
     if len == 0 {
         return;
     }
 
-    let mut offset = 0usize;
-
-    // ── Head: byte stores until the cursor is word-aligned ──────────────────
-    let misalign = ptr as usize & (WORD - 1);
-    let head = if misalign == 0 { 0 } else { WORD - misalign };
-    let head = head.min(len);
-    while offset < head {
-        // SAFETY: offset < head <= len, so ptr.add(offset) is inside the region.
-        unsafe { ptr.add(offset).write_volatile(0u8) };
-        offset += 1;
-    }
-
-    // ── Body: SCRUB_UNROLL word stores per branch ───────────────────────────
-    // `offset` is word-aligned from here on, so every `*mut usize` below is too.
-    let body_end = head + ((len - head) / BLOCK) * BLOCK;
-    while offset < body_end {
-        // SAFETY: offset + BLOCK <= body_end <= len, and offset is word-aligned.
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+    ))]
+    {
+        // SAFETY: the caller guarantees the region is valid for writes.
+        unsafe { core::ptr::write_bytes(ptr, 0, len) };
+        // SAFETY: an empty asm block. No `nomem`, so the compiler must treat it
+        // as reading the region written above and cannot elide those stores.
         unsafe {
-            let p = ptr.add(offset) as *mut usize;
-            p.write_volatile(0);
-            p.add(1).write_volatile(0);
-            p.add(2).write_volatile(0);
-            p.add(3).write_volatile(0);
-            p.add(4).write_volatile(0);
-            p.add(5).write_volatile(0);
-            p.add(6).write_volatile(0);
-            p.add(7).write_volatile(0);
+            core::arch::asm!("/* scrub {0} */", in(reg) ptr, options(nostack, preserves_flags));
         }
-        offset += BLOCK;
     }
 
-    // ── Remaining whole words ───────────────────────────────────────────────
-    while len - offset >= WORD {
-        // SAFETY: at least WORD bytes remain and offset is word-aligned.
-        unsafe { (ptr.add(offset) as *mut usize).write_volatile(0) };
-        offset += WORD;
-    }
-
-    // ── Tail: fewer than WORD bytes left ────────────────────────────────────
-    while offset < len {
-        // SAFETY: offset < len, so ptr.add(offset) is inside the region.
-        unsafe { ptr.add(offset).write_volatile(0u8) };
-        offset += 1;
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+    )))]
+    {
+        const WORD: usize = core::mem::size_of::<usize>();
+        let mut offset = 0usize;
+        let misalign = ptr as usize & (WORD - 1);
+        let head = if misalign == 0 { 0 } else { WORD - misalign };
+        let head = head.min(len);
+        while offset < head {
+            // SAFETY: offset < head <= len.
+            unsafe { ptr.add(offset).write_volatile(0u8) };
+            offset += 1;
+        }
+        while len - offset >= WORD {
+            // SAFETY: at least WORD bytes remain and offset is word-aligned.
+            unsafe { (ptr.add(offset) as *mut usize).write_volatile(0) };
+            offset += WORD;
+        }
+        while offset < len {
+            // SAFETY: offset < len.
+            unsafe { ptr.add(offset).write_volatile(0u8) };
+            offset += 1;
+        }
     }
 }
 
@@ -478,7 +475,7 @@ mod tests {
     fn scrub_exactly(buf: &mut [u8], start: usize, len: usize) {
         buf.fill(0xAB);
         // SAFETY: start + len <= buf.len() is checked by the caller's slicing.
-        unsafe { volatile_zero_bytes(buf.as_mut_ptr().add(start), len) };
+        unsafe { scrub_bytes(buf.as_mut_ptr().add(start), len) };
 
         let short: Vec<usize> = buf[start..start + len]
             .iter()
@@ -511,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_zero_bytes_covers_every_alignment_and_length() {
+    fn scrub_covers_every_alignment_and_length() {
         // The head/body/tail split means the interesting cases are every
         // combination of start misalignment and length remainder around the
         // 8-word block. 0..=40 crosses two full blocks on a 64-bit target and
@@ -525,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn volatile_zero_bytes_handles_a_multi_block_region() {
+    fn scrub_handles_a_multi_block_region() {
         // A length well past the unrolled body, at an odd start and an odd
         // length, so head, body, the whole-word remainder and the tail all run.
         let mut buf = vec![0u8; 4096];
@@ -535,10 +532,10 @@ mod tests {
     }
 
     #[test]
-    fn volatile_zero_bytes_of_zero_length_writes_nothing() {
+    fn scrub_of_zero_length_writes_nothing() {
         let mut buf = vec![0xABu8; 64];
         // SAFETY: a zero-length write through a valid pointer.
-        unsafe { volatile_zero_bytes(buf.as_mut_ptr(), 0) };
+        unsafe { scrub_bytes(buf.as_mut_ptr(), 0) };
         assert!(buf.iter().all(|&b| b == 0xAB), "len=0 must write nothing");
     }
 
