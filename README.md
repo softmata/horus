@@ -371,21 +371,23 @@ than relabelled. The REP 2014 figure above is cited, not measured here. Any
 number that matters to your decision is worth measuring on your own hardware
 and message sizes.
 
-| vs iceoryx2 (median)      | HORUS      | iceoryx2   | Ratio    |
-|---------------------------|------------|------------|----------|
-| Cross-process RTT (8 B)   | 289 ns     | 928 ns     | **3.2x** |
-| Cross-thread RTT (8 B)    | 314 ns     | 926 ns     | **3.0x** |
-| Same-thread (8 B)         | 104 ns     | 301 ns     | **2.9x** |
-| Same-thread (1 KB)        | 225 ns     | 380 ns     | **1.7x** |
-| Same-thread (4 KB)        | 1018 ns    | 470 ns     | **0.5x** |
-| MPMC 4P/4S recv cost      | 71 ns      | 171 ns     | **2.4x** |
-| Throughput (same loop)    | 10.0 M/s   | 3.1 M/s    | **3.2x** |
+|  vs iceoryx2              | HORUS med | iox2 med | median   | p99      |
+|---------------------------|-----------|----------|----------|----------|
+| Cross-process RTT (8 B)   | 315 ns    | 1035 ns  | **3.3x** | **2.8x** |
+| Cross-thread RTT (8 B)    | 277 ns    |  998 ns  | **3.6x** | **3.1x** |
+| Same-thread (8 B)         |  98 ns    |  320 ns  | **3.3x** | **2.6x** |
+| Same-thread (1 KB)        | 223 ns    |  362 ns  | **1.6x** | 1.1x     |
+| Same-thread (4 KB)        | 530 ns    |  452 ns  | 0.85x    | 0.61x    |
+| MPMC 4P/4S recv cost      |  71 ns    |  213 ns  | **3.0x** | **3.1x** |
+| Throughput (same loop)    | 10.0 M/s  | 3.1 M/s  | **3.2x** | —        |
 
-**iceoryx2 is about twice as fast as HORUS at 4 KB**, on the median and by
-roughly 6x on the maximum. HORUS's advantage is at small payloads, which is
-where robotics control traffic lives — a CmdVel is 16 bytes — and it inverts
-somewhere between 1 KB and 4 KB. If your messages are images or point clouds,
-measure before choosing.
+Ratios above 1 favour HORUS.
+
+**iceoryx2 is still faster at 4 KB** — by 1.2x on the median and 1.6x on the
+p99 — and the crossover sits between 1 KB and 4 KB. HORUS's advantage is at
+small payloads, which is where robotics control traffic lives: a CmdVel is 16
+bytes. If your messages are camera frames or point clouds, measure before
+choosing.
 
 The round-trip rows are full round trips, not halved. Halving reports a
 one-sided stall as half a stall on each leg, which understates exactly the tail
