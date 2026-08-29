@@ -130,6 +130,13 @@ impl ShmRegion {
             unsafe { libc::close(fd) };
             anyhow::bail!("shm mmap failed: {}", std::io::Error::last_os_error());
         }
+        // Pay the page faults at attach instead of inside the first receive
+        // loop; see `horus_sys::shm::make_resident` for the policy and its
+        // opt-outs.
+        // SAFETY: `ptr` is a live mapping of `size` bytes that outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(ptr as *const u8, size as usize) };
+
         // Join the holder set so the creator cannot unlink this region out from
         // under us. Attaching must never create the sidecar.
         let lock_file = acquire_holder_lock(name, false);
@@ -293,6 +300,12 @@ impl ShmRegion {
             let _ = super::write_topic_meta(name, size);
         }
 
+        // As in `open_existing`: wire the page tables now rather than one
+        // minor fault at a time in the publish loop.
+        // SAFETY: `ptr` is a live mapping of `size` bytes that outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(ptr as *const u8, size) };
+
         // Every holder — creator or not — keeps a shared lock on the sidecar for
         // the lifetime of the region; that is what makes the last-one-out test
         // in `Drop` correct.
@@ -396,6 +409,16 @@ impl ShmRegion {
 
         self.ptr = new_ptr as *mut u8;
         self.size = new_size;
+
+        // The remap is a brand-new mapping with empty page tables, so without
+        // this every page of the grown region would fault again on first touch
+        // — and a grow happens *because* a large message is arriving, i.e. at
+        // the worst possible moment. Re-establish residency before anyone
+        // publishes into it.
+        // SAFETY: the new mapping is live and `new_size` bytes long; the call
+        // neither reads nor writes it.
+        super::make_resident(self.ptr as *const u8, new_size);
+
         Ok(())
     }
 }

@@ -494,9 +494,30 @@ impl Replicator {
         msg: wire::InMessage,
         from: SocketAddr,
     ) {
-        // Track sequence gaps for flow control
-        self.flow_control
-            .on_received(header.sender_id_hash, msg.topic_hash, msg.sequence);
+        // Track sequence gaps for flow control.
+        //
+        // Only for a datagram we can attribute to a peer we actually know at this
+        // source address. This is the one place where inbound, unauthenticated
+        // wire fields feed a decision on the OUTBOUND side: `handle_export` gates
+        // every non-Immediate send on `flow_control.should_send(peer_id_hash,
+        // topic_hash)`. Recording unconditionally meant any host the source
+        // filter admits could file a fabricated loss statistic under a legitimate
+        // peer's id hash — a 16-bit value it can simply read out of that peer's
+        // cleartext announcements — for any topic hash it liked, and thereby
+        // throttle this robot's replication of a topic it cannot write.
+        //
+        // That is an effect on a topic the import guard exists to protect: a
+        // topic we PUBLISH is denied to remote writers precisely so a peer cannot
+        // fight the commands produced here, and suppressing our sends reaches the
+        // same subscriber with the same staleness. `sender_id_hash` names nobody
+        // on its own, so it must not be a key we act on by itself.
+        if self
+            .peers
+            .id_hash_announced_from(from, header.sender_id_hash)
+        {
+            self.flow_control
+                .on_received(header.sender_id_hash, msg.topic_hash, msg.sequence);
+        }
 
         // System topic dispatch — bypass normal import guard
         let presence_hash = wire::topic_hash(crate::registry::SYSTEM_TOPIC_PRESENCE);
@@ -613,8 +634,10 @@ impl Replicator {
         // used to be discarded and `record_topic_recv` bumped unconditionally,
         // so a subscriber that never saw another sample still looked, in the
         // metrics, like it was receiving everything.
+        let mut accepted = false;
         if let Some(writer) = self.find_writer_by_hash(msg.topic_hash) {
             if writer.write(&payload, msg.encoding) {
+                accepted = true;
                 self.metrics
                     .record_topic_recv(msg.topic_hash, payload.len());
             } else {
@@ -622,8 +645,34 @@ impl Replicator {
             }
         }
 
-        // Send ACK for latched messages
-        if msg.reliability == Reliability::Latched {
+        // Send ACK for latched messages — but only for a message we actually
+        // accepted, and only to a peer we know at this source address.
+        //
+        // This used to fire on the reliability BYTE alone, whatever became of the
+        // message. Two consequences, and the first is the worse one:
+        //
+        // 1. It ACKed messages this node DISCARDED. `Reliability::Latched` is the
+        //    tier that exists to guarantee delivery of safety-critical state
+        //    changes: the sender resends every 10ms until acknowledged. But an
+        //    ACK went out even when `find_writer_by_hash` found nothing, or when
+        //    `ShmRingWriter::write` refused the payload (a POD topic whose
+        //    type_size does not match — the check that stops a wrong-sized write).
+        //    The sender then cancelled its latch, satisfied. Silent loss of a
+        //    safety message, carrying a delivery confirmation, on the one tier
+        //    built to make that impossible.
+        //
+        // 2. It was a reflector. `decode_packet` accepts a batch and a message
+        //    header with `payload_len = 0` is 24 bytes, so one 65507-byte datagram
+        //    carries ~2700 of them — each drawing a separate 20-byte ACK datagram
+        //    to the packet's spoofable source address. ~2x in bytes but ~2700x in
+        //    packet COUNT, aimable at any host the peer filter admits, including
+        //    the robot's own control station.
+        //
+        // Both conditions are free for legitimate traffic: a latched import only
+        // reaches here at all once discovery has matched the topic, which means
+        // the sender is already in the peer table. An ACK withheld meanwhile is
+        // exactly what latching is for — the sender resends.
+        if accepted && self.peers.has_peer_at(from) && msg.reliability == Reliability::Latched {
             let ack = wire::AckPayload {
                 acked_topic_hash: msg.topic_hash,
                 acked_sequence: msg.sequence,
@@ -1269,6 +1318,167 @@ mod tests {
             );
         }
         assert!(rep.peers.total_count() <= crate::netfilter::MAX_PEERS);
+    }
+
+    /// Build one data packet carrying a single message with the given fields.
+    fn data_packet(
+        sender_id_hash: u16,
+        topic_hash: u32,
+        sequence: u32,
+        reliability: Reliability,
+    ) -> Vec<u8> {
+        let header = PacketHeader::new(PacketFlags::empty(), sender_id_hash, 1);
+        let msg = wire::OutMessage {
+            topic_name: String::new(),
+            topic_hash,
+            payload: vec![0u8; 8],
+            timestamp_ns: 0,
+            sequence,
+            priority: Priority::Normal,
+            reliability,
+            encoding: Encoding::PodLe,
+        };
+        let mut buf = [0u8; 256];
+        let len = wire::encode_single(&header, &msg, &mut buf);
+        buf[..len].to_vec()
+    }
+
+    /// THE REGRESSION. `flow_control.on_received` was fed from every datagram
+    /// that cleared the source filter, keyed on the packet's 16-bit
+    /// `sender_id_hash` and its topic hash — both bare wire fields. `handle_export`
+    /// then gates every non-Immediate send on
+    /// `flow_control.should_send(subscriber_id_hash, topic_hash)`.
+    ///
+    /// So an unauthenticated host could file a fabricated loss statistic under a
+    /// legitimate peer's identity — a value it reads straight out of that peer's
+    /// cleartext announcements — and throttle this robot's export of a topic it
+    /// has no other way to touch. Two datagrams were enough, and the state was
+    /// only ever mutated from `on_received`, so it never recovered.
+    ///
+    /// A datagram that names no peer we know must leave the throttle untouched.
+    #[test]
+    fn an_unattributable_datagram_cannot_seed_flow_control_state() {
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        let topic = wire::topic_hash("cmd_vel");
+        const VICTIM_HASH: u16 = 0xBEEF;
+
+        // The two-packet poisoning burst, from a host in no peer table.
+        rep.process_packet(&data_packet(VICTIM_HASH, topic, 1, Reliability::None), from);
+        rep.process_packet(
+            &data_packet(VICTIM_HASH, topic, 1_000_000, Reliability::None),
+            from,
+        );
+
+        assert_eq!(
+            rep.flow_control.tracked_count(),
+            0,
+            "an unknown source must not create per-peer send-throttle state"
+        );
+        assert!(
+            rep.flow_control.should_send(VICTIM_HASH, topic),
+            "export to a legitimate peer must not be throttled by a stranger's packets"
+        );
+    }
+
+    /// Positive control: a datagram that IS attributable still feeds the
+    /// throttle, so the fix above is a binding, not a disablement.
+    #[test]
+    fn an_attributable_datagram_still_feeds_flow_control() {
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        // A peer id whose truncated hash is NOT zero, so this test would fail if
+        // the attribution check degenerated to "always true" or to comparing
+        // against a default.
+        let peer_id = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let real_hash = crate::discovery::peer_id_hash(&peer_id);
+        assert_ne!(real_hash, 0, "fixture must exercise a distinguishing hash");
+
+        let mut ann_buf = [0u8; 4096];
+        let ann_len =
+            crate::discovery::encode_announcement(&peer_id, 9100, &[0u8; 4], &[], &mut ann_buf);
+        rep.process_packet(&ann_buf[..ann_len], from);
+        assert_eq!(rep.peers.alive_count(), 1);
+
+        let topic = wire::topic_hash("imu");
+
+        // Same source address, but a sender hash this peer does not stamp: the
+        // attacker's case, from inside an address the peer table knows.
+        rep.process_packet(
+            &data_packet(real_hash ^ 0x5A5A, topic, 1, Reliability::None),
+            from,
+        );
+        assert_eq!(
+            rep.flow_control.tracked_count(),
+            0,
+            "a hash no peer at this address announced must not be measured"
+        );
+
+        // The peer's own packet does get measured.
+        rep.process_packet(&data_packet(real_hash, topic, 1, Reliability::None), from);
+        assert_eq!(
+            rep.flow_control.tracked_count(),
+            1,
+            "a known peer's own packets must still be measured"
+        );
+    }
+
+    /// THE REGRESSION, in both of its forms. The ACK fired on the reliability
+    /// byte alone, whatever became of the message.
+    ///
+    /// Correctness: `Reliability::Latched` is the tier that resends every 10ms
+    /// until acknowledged, for safety-critical state changes. ACKing a message
+    /// this node found no writer for — or that `ShmRingWriter::write` refused —
+    /// told the sender its safety message had landed when it had been thrown
+    /// away. This test drives the `no writer` half of that path; the refused-write
+    /// half shares the same `accepted` flag.
+    ///
+    /// Amplification: `decode_packet` accepts a batch and a zero-payload message
+    /// header is 24 bytes, so one 65507-byte datagram carries ~2700 of them — and
+    /// every one drew a separate 20-byte ACK datagram to the packet's (spoofable)
+    /// source address. ~2700x packet-count amplification, aimable at any host the
+    /// peer filter admits.
+    #[test]
+    fn a_batch_of_latched_messages_for_unknown_topics_emits_no_acks() {
+        let mut rep = test_replicator();
+        let from: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+
+        // A batch of zero-payload latched message headers, all naming topics
+        // this node has no writer for.
+        let header = PacketHeader::new(
+            PacketFlags::empty().with(PacketFlags::BATCH),
+            0x1234,
+            1,
+        );
+        let msgs: Vec<wire::OutMessage> = (0..64u32)
+            .map(|i| wire::OutMessage {
+                topic_name: String::new(),
+                topic_hash: 0xF000_0000 + i,
+                payload: Vec::new(),
+                timestamp_ns: 0,
+                sequence: i,
+                priority: Priority::Normal,
+                reliability: Reliability::Latched,
+                encoding: Encoding::PodLe,
+            })
+            .collect();
+        let mut buf = [0u8; 4096];
+        let len = wire::encode_batch(&header, &msgs, &mut buf);
+
+        let before = rep.packet_seq;
+        rep.process_packet(&buf[..len], from);
+
+        // `next_packet_seq` is called once per ACK sent, so the counter is an
+        // exact record of how many this datagram elicited.
+        assert_eq!(
+            rep.packet_seq, before,
+            "a datagram naming topics we do not import must draw no reply at all — \
+             it used to draw one ACK per message header"
+        );
+        assert!(
+            rep.writers.is_empty(),
+            "fixture sanity: nothing was importable here"
+        );
     }
 
     #[test]

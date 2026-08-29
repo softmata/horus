@@ -375,11 +375,29 @@ impl Tensor {
 
         let mut new_tensor = *self;
         new_tensor.shape[0] = end - start;
-        new_tensor.offset += start * self.strides[0];
-        let new_numel: u64 = new_tensor.shape[..new_tensor.ndim as usize]
+        new_tensor.offset = new_tensor
+            .offset
+            .checked_add(start.checked_mul(self.strides[0])?)?;
+
+        // Clamp `ndim` the way `shape()`, `strides()` and `is_contiguous()`
+        // already do. `ndim` is a public field of a descriptor that arrives from
+        // another process (or from horus_net), and `sanitize_from_shm` is not on
+        // the recv path — so the raw byte reaches here. `shape[..ndim]` with
+        // `ndim > 8` was an out-of-bounds slice of the 8-element array: a panic
+        // inside a node's tick, triggerable by any peer that can write the
+        // descriptor. Every other reader of `ndim` in this file clamps; this one
+        // did not.
+        //
+        // The extent arithmetic is checked for the same reason: `shape` is peer-
+        // written, so the product and the byte size can overflow `u64`, which
+        // panics in a debug build and silently wraps to a small `size` in a
+        // release one — and a wrapped `size` is exactly what the pool's
+        // containment check is there to reject. Refuse the slice instead.
+        let ndim = (new_tensor.ndim as usize).min(MAX_TENSOR_DIMS);
+        let new_numel = new_tensor.shape[..ndim]
             .iter()
-            .product();
-        new_tensor.size = new_numel * self.dtype().element_size() as u64;
+            .try_fold(1u64, |acc, &dim| acc.checked_mul(dim))?;
+        new_tensor.size = new_numel.checked_mul(self.dtype().element_size() as u64)?;
 
         Some(new_tensor)
     }

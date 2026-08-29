@@ -1,9 +1,41 @@
 //! horus Topic<T> vs iceoryx2 pub/sub latency benchmark
 //!
 //! Measures same-thread send/recv latency and throughput.
-//! Payload sizes: 16B, 1KB, 4KB
+//! Payload sizes: 8B, 1KB, 4KB
 //!
 //! Run: cargo run --release -p horus_benchmarks --bin iceoryx2_comparison --features iceoryx2
+//!
+//! # Topology, and why it decides the result
+//!
+//! The same-thread sections used to be structurally unfair to iceoryx2, in
+//! horus's favour, by a large factor:
+//!
+//! - the horus arm called `send` and `recv` on **one** `Topic` handle. A single
+//!   handle that does both acquires `role == Both`, which selects horus's
+//!   same-instance fast path: an inlined write and read through
+//!   `cached_data_ptr` with no dispatch, no epoch check, and no ring
+//!   publication. Both halves hit the same L1 line the same thread just wrote.
+//! - the iceoryx2 arm used a real publisher and a real subscriber and spun
+//!   `while receive().is_none()`, i.e. the full queue path.
+//!
+//! Those are not the same measurement, and the horus half is not a path any
+//! two-node system takes: a publisher and a subscriber are never the same
+//! handle. The horus arms below now use a separate publisher handle and
+//! subscriber handle and spin until the message is actually received, which is
+//! the same shape as the iceoryx2 arm.
+//!
+//! Even so, **every "same-thread" section measures one thread writing and then
+//! reading a ring it just wrote**, for both libraries. That is a lower bound on
+//! IPC cost, not IPC cost: there is no cross-core cache-line transfer in it.
+//! The cross-thread and cross-process sections are the ones that measure a real
+//! transfer; prefer those when quoting a number.
+//!
+//! # `l / 2` is an estimate, not a one-way latency
+//!
+//! The ping-pong sections divide a round trip by two. That is only a one-way
+//! latency if the two legs are symmetric. A stall on one leg is reported as
+//! half a stall on each, so RTT/2 systematically **understates the tail** —
+//! exactly the figure of merit here. The raw RTT max is printed alongside.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -61,23 +93,71 @@ fn print_row(label: &str, min: u64, avg: u64, median: u64, p99: u64, max: u64) {
     );
 }
 
+/// Compare two arms on the tail first, then the median.
+///
+/// Every section used to print `Winner: X (Ny faster)` decided purely on the
+/// **mean**. This project ranks on worst-case and jitter: a change that
+/// improves the mean and widens the tail is a regression, and a single-number
+/// "winner" from the mean cannot express that. There is no winner line any
+/// more — the three ratios are printed and disagreement between them is the
+/// interesting result, not something to collapse.
+///
+/// Arguments are `(median, p99, max)` for each arm.
+fn print_comparison(horus: (u64, u64, u64), iox2: (u64, u64, u64)) {
+    let ratio = |h: u64, i: u64| {
+        if h == 0 {
+            f64::NAN
+        } else {
+            i as f64 / h as f64
+        }
+    };
+    println!(
+        "  iox2/horus ratio:  median={:.2}x  p99={:.2}x  max={:.2}x  (>1 favours horus)",
+        ratio(horus.0, iox2.0),
+        ratio(horus.1, iox2.1),
+        ratio(horus.2, iox2.2),
+    );
+    if ratio(horus.1, iox2.1) < 1.0 && ratio(horus.0, iox2.0) > 1.0 {
+        println!("  NOTE: horus wins the median and loses the p99 — a tail regression.");
+    }
+    println!();
+}
+
 // ---------------------------------------------------------------------------
 // horus benchmarks — use u64 as payload (simplest POD)
 // ---------------------------------------------------------------------------
 
+/// Same-thread publisher-handle -> subscriber-handle round trip.
+///
+/// Two handles, not one. A single handle doing both send and recv takes horus's
+/// `role == Both` same-instance fast path, which bypasses dispatch entirely and
+/// is not a path any publisher/subscriber pair can reach; measuring it beside
+/// iceoryx2's real queue path is what made the horus column look several times
+/// faster than it is.
+///
+/// The recv spins until the message actually arrives, so a delivery failure
+/// hangs rather than being recorded as a very fast sample. The old
+/// `let _ = topic.recv();` discarded the result: had recv returned `None` every
+/// time — a total failure to deliver — the benchmark would have reported its
+/// best numbers ever.
 fn bench_horus_u64() -> (u64, u64, u64, u64, u64) {
-    let topic: Topic<u64> = Topic::new("bench.horus.u64").expect("topic");
+    let tx: Topic<u64> = Topic::new("bench.horus.u64").expect("topic");
+    let rx: Topic<u64> = Topic::new("bench.horus.u64").expect("topic");
 
     for _ in 0..WARMUP {
-        topic.send(42u64);
-        let _ = topic.recv();
+        tx.send(42u64);
+        while rx.recv().is_none() {
+            std::hint::spin_loop();
+        }
     }
 
     let mut latencies = Vec::with_capacity(ITERATIONS);
     for i in 0..ITERATIONS {
         let start = Instant::now();
-        topic.send(i as u64);
-        let _ = topic.recv();
+        tx.send(i as u64);
+        while rx.recv().is_none() {
+            std::hint::spin_loop();
+        }
         latencies.push(start.elapsed().as_nanos() as u64);
     }
 
@@ -85,19 +165,24 @@ fn bench_horus_u64() -> (u64, u64, u64, u64, u64) {
 }
 
 fn bench_horus_1kb() -> (u64, u64, u64, u64, u64) {
-    let topic: Topic<HorusData1K> = Topic::new("bench.horus.1kb.pod").expect("topic");
+    let tx: Topic<HorusData1K> = Topic::new("bench.horus.1kb.pod").expect("topic");
+    let rx: Topic<HorusData1K> = Topic::new("bench.horus.1kb.pod").expect("topic");
     let msg = HorusData1K { data: [0u64; 128] };
 
     for _ in 0..WARMUP {
-        topic.send(msg);
-        let _ = topic.recv();
+        tx.send(msg);
+        while rx.recv().is_none() {
+            std::hint::spin_loop();
+        }
     }
 
     let mut latencies = Vec::with_capacity(ITERATIONS);
     for _ in 0..ITERATIONS {
         let start = Instant::now();
-        topic.send(msg);
-        let _ = topic.recv();
+        tx.send(msg);
+        while rx.recv().is_none() {
+            std::hint::spin_loop();
+        }
         latencies.push(start.elapsed().as_nanos() as u64);
     }
 
@@ -105,36 +190,49 @@ fn bench_horus_1kb() -> (u64, u64, u64, u64, u64) {
 }
 
 fn bench_horus_4kb() -> (u64, u64, u64, u64, u64) {
-    let topic: Topic<HorusData4K> = Topic::new("bench.horus.4kb.pod").expect("topic");
+    let tx: Topic<HorusData4K> = Topic::new("bench.horus.4kb.pod").expect("topic");
+    let rx: Topic<HorusData4K> = Topic::new("bench.horus.4kb.pod").expect("topic");
     let msg = HorusData4K { data: [0u64; 512] };
 
     for _ in 0..WARMUP {
-        topic.send(msg);
-        let _ = topic.recv();
+        tx.send(msg);
+        while rx.recv().is_none() {
+            std::hint::spin_loop();
+        }
     }
 
     let mut latencies = Vec::with_capacity(ITERATIONS);
     for _ in 0..ITERATIONS {
         let start = Instant::now();
-        topic.send(msg);
-        let _ = topic.recv();
+        tx.send(msg);
+        while rx.recv().is_none() {
+            std::hint::spin_loop();
+        }
         latencies.push(start.elapsed().as_nanos() as u64);
     }
 
     compute_stats(latencies)
 }
 
+/// Messages per second for a send-then-drain-every-8 loop.
+///
+/// NOT a send-only rate. The horus arm has always drained 8 messages for every
+/// 8 sends inside the timed region, while the iceoryx2 arm ran a bare send loop
+/// with no subscriber attached — so the two arms were timing different loops
+/// and the section was labelled "send-only throughput" for the one that was
+/// not. `bench_iox2_throughput_u64` now drains identically.
 fn bench_horus_throughput_u64() -> f64 {
-    let topic: Topic<u64> = Topic::new("bench.horus.tp.u64").expect("topic");
+    let tx: Topic<u64> = Topic::new("bench.horus.tp.u64").expect("topic");
+    let rx: Topic<u64> = Topic::new("bench.horus.tp.u64").expect("topic");
     // Drain as we go to avoid ring buffer full
     let n = 1_000_000usize;
     let start = Instant::now();
     for i in 0..n {
-        topic.send(i as u64);
+        tx.send(i as u64);
         // Drain periodically to avoid full ring
         if i % 8 == 7 {
             for _ in 0..8 {
-                let _ = topic.recv();
+                let _ = rx.recv();
             }
         }
     }
@@ -267,6 +365,13 @@ fn bench_iox2_4kb() -> (u64, u64, u64, u64, u64) {
     compute_stats(latencies)
 }
 
+/// Same loop shape as `bench_horus_throughput_u64`: send, and drain 8 every 8.
+///
+/// This arm used to be a bare send loop with no subscriber attached at all,
+/// which times a different amount of work than the horus arm it was printed
+/// against — and with no subscriber, iceoryx2 has nowhere to deliver to, so it
+/// was not even doing the same job. The subscriber and the drain make the two
+/// arms comparable.
 fn bench_iox2_throughput_u64() -> f64 {
     let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
 
@@ -277,11 +382,17 @@ fn bench_iox2_throughput_u64() -> f64 {
         .expect("service");
 
     let publisher = service.publisher_builder().create().expect("pub");
+    let subscriber = service.subscriber_builder().create().expect("sub");
 
     let n = 1_000_000usize;
     let start = Instant::now();
     for i in 0..n {
         publisher.send_copy(i as u64).unwrap();
+        if i % 8 == 7 {
+            for _ in 0..8 {
+                let _ = subscriber.receive();
+            }
+        }
     }
     n as f64 / start.elapsed().as_secs_f64()
 }
@@ -350,9 +461,14 @@ fn bench_horus_cross_thread_pingpong() -> (u64, u64, u64, u64, u64) {
     if latencies.is_empty() {
         return (0, 0, 0, 0, 0);
     }
-    // Divide by 2 for one-way latency
-    let one_way: Vec<u64> = latencies.iter().map(|&l| l / 2).collect();
-    compute_stats(one_way)
+    // ROUND TRIP, not halved.
+    //
+    // This used to return `l / 2` per sample under a "one-way latency" label.
+    // Halving is only valid if the two legs are symmetric; a stall on one leg
+    // is reported as half a stall on each, so the halved p99 and max understate
+    // the tail — the figure this project ranks on. The round trip is what was
+    // actually observed, so that is what is reported.
+    compute_stats(latencies)
 }
 
 /// Cross-thread ping-pong for iceoryx2
@@ -430,13 +546,14 @@ fn bench_iox2_cross_thread_pingpong() -> (u64, u64, u64, u64, u64) {
     if latencies.is_empty() {
         return (0, 0, 0, 0, 0);
     }
-    let one_way: Vec<u64> = latencies.iter().map(|&l| l / 2).collect();
-    compute_stats(one_way)
+    // Round trip, not halved — see `bench_horus_cross_thread_pingpong`.
+    compute_stats(latencies)
 }
 
 /// Cross-process benchmark using fork()
 fn bench_cross_process() {
-    println!("--- Cross-Process (fork) Ping-Pong ---");
+    println!("--- Cross-Process (fork) Ping-Pong (ROUND TRIP, not halved) ---");
+    println!("  The only section here that measures a real cross-address-space transfer.");
     println!();
 
     // horus cross-process
@@ -478,8 +595,8 @@ fn bench_cross_process() {
             libc::waitpid(pid, &mut status, 0);
         }
 
-        let one_way: Vec<u64> = latencies.iter().map(|&l| l / 2).collect();
-        let (min, avg, med, p99, max) = compute_stats(one_way);
+        // Round trip, not halved — see `bench_horus_cross_thread_pingpong`.
+        let (min, avg, med, p99, max) = compute_stats(latencies);
         print_row("horus  cross-process u64", min, avg, med, p99, max);
     }
 
@@ -545,8 +662,8 @@ fn bench_cross_process() {
             libc::waitpid(pid, &mut status, 0);
         }
 
-        let one_way: Vec<u64> = latencies.iter().map(|&l| l / 2).collect();
-        let (min, avg, med, p99, max) = compute_stats(one_way);
+        // Round trip, not halved — see `bench_horus_cross_thread_pingpong`.
+        let (min, avg, med, p99, max) = compute_stats(latencies);
         print_row("iox2   cross-process u64", min, avg, med, p99, max);
     }
 
@@ -636,11 +753,18 @@ fn bench_horus_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u6
 fn bench_iox2_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64) {
     let msgs_per_pub = 10_000; // Reduced for MPMC (iceoryx2 is slow to set up)
     let barrier = Arc::new(std::sync::Barrier::new(num_pubs + num_subs));
+    // Mirrors the horus arm's `total_sent`. Without it, this arm had no early
+    // exit: when overflow dropped messages (and `enable_safe_overflow(true)`
+    // means it does), every subscriber spun out the full 30 s deadline while
+    // the horus arm returned as soon as the publishers were done. Two arms with
+    // different stopping rules are not a like-for-like comparison.
+    let total_sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     // Subscriber threads
     let mut sub_handles = Vec::new();
     for _ in 0..num_subs {
         let barrier_s = barrier.clone();
+        let total_sent_s = total_sent.clone();
         sub_handles.push(thread::spawn(move || {
             let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
             let service = node
@@ -667,6 +791,12 @@ fn bench_iox2_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64
                         latencies.push(t0.elapsed().as_nanos() as u64);
                         received += 1;
                     }
+                    _ if total_sent_s.load(Ordering::Acquire) >= expected => {
+                        // Every publisher has finished and the queue came up
+                        // empty: the rest of this subscriber's quota is not
+                        // coming. Same stopping rule as the horus arm.
+                        break;
+                    }
                     _ => {
                         std::hint::spin_loop();
                     }
@@ -681,6 +811,7 @@ fn bench_iox2_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64
     let mut pub_handles = Vec::new();
     for p in 0..num_pubs {
         let barrier_p = barrier.clone();
+        let total_sent_p = total_sent.clone();
         pub_handles.push(thread::spawn(move || {
             let node = NodeBuilder::new().create::<ipc::Service>().expect("node");
             let service = node
@@ -697,6 +828,7 @@ fn bench_iox2_mpmc(num_pubs: usize, num_subs: usize) -> (u64, u64, u64, u64, u64
 
             for i in 0..msgs_per_pub {
                 let _ = publisher.send_copy((p * msgs_per_pub + i) as u64);
+                total_sent_p.fetch_add(1, Ordering::Release);
             }
         }));
     }
@@ -728,104 +860,84 @@ fn main() {
     println!();
     println!("  All times in nanoseconds (ns)");
     println!();
+    println!("  Ranked on p99 and max first, median second. There is deliberately no");
+    println!("  single 'winner' line: it used to be decided on the MEAN, which cannot");
+    println!("  express a change that improves the median and widens the tail.");
+    println!();
+
+    // Stale SHM from a previous run of this binary would otherwise be reused:
+    // the topic names below are fixed strings with no per-run suffix, so a
+    // segment left behind by an earlier run — complete with its registered but
+    // dead participants — is what the next run opens.
+    let _ = std::fs::remove_dir_all(horus_core::memory::shm_topics_dir());
 
     // --- u64 (8 bytes) ---
-    println!("--- 8B payload (u64) ---");
+    println!("--- 8B payload (u64), SAME THREAD: pub handle -> sub handle ---");
+    println!("  (one thread writes then reads its own ring; no cross-core transfer)");
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_u64();
     let (imin, iavg, imed, ip99, imax) = bench_iox2_u64();
     print_row("horus  Topic<u64>", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   PubSub<u64>", imin, iavg, imed, ip99, imax);
-    let winner8 = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio8 = if havg <= iavg {
-        iavg as f64 / havg.max(1) as f64
-    } else {
-        havg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", winner8, ratio8);
+    print_comparison((hmed, hp99, hmax), (imed, ip99, imax));
 
     // --- 1KB ---
-    println!("--- 1KB payload ---");
+    println!("--- 1KB payload, SAME THREAD ---");
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_1kb();
     let (imin, iavg, imed, ip99, imax) = bench_iox2_1kb();
     print_row("horus  Topic<[u64;128]>", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   PubSub<[u64;128]>", imin, iavg, imed, ip99, imax);
-    let winner1k = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio1k = if havg <= iavg {
-        iavg as f64 / havg.max(1) as f64
-    } else {
-        havg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", winner1k, ratio1k);
+    print_comparison((hmed, hp99, hmax), (imed, ip99, imax));
 
     // --- 4KB ---
-    println!("--- 4KB payload ---");
+    println!("--- 4KB payload, SAME THREAD ---");
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_4kb();
     let (imin, iavg, imed, ip99, imax) = bench_iox2_4kb();
     print_row("horus  Topic<[u64;512]>", hmin, havg, hmed, hp99, hmax);
     print_row("iox2   PubSub<[u64;512]>", imin, iavg, imed, ip99, imax);
-    let winner4k = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio4k = if havg <= iavg {
-        iavg as f64 / havg.max(1) as f64
-    } else {
-        havg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", winner4k, ratio4k);
+    print_comparison((hmed, hp99, hmax), (imed, ip99, imax));
 
     // --- Cross-thread (forces atomic/SHM backend) ---
-    println!("--- Cross-Thread Ping-Pong (one-way latency) ---");
-    println!("  (Forces horus onto the cross-thread SpscShm backend)");
+    println!("--- Cross-Thread Ping-Pong (ROUND TRIP, not halved) ---");
+    println!("  A sends on topic1, B replies on topic2. Values are full round trips:");
+    println!("  halving them would report a one-sided stall as half a stall on each leg.");
+    println!("  Backend is chosen by Topic::new at runtime and is not verified here.");
     println!();
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_cross_thread_pingpong();
     let (imin, iavg, imed, ip99, imax) = bench_iox2_cross_thread_pingpong();
-    print_row("horus  cross-thread u64", hmin, havg, hmed, hp99, hmax);
-    print_row("iox2   cross-thread u64", imin, iavg, imed, ip99, imax);
-    let winner_ct = if havg <= iavg { "horus" } else { "iox2" };
-    let ratio_ct = if havg <= iavg {
-        iavg as f64 / havg.max(1) as f64
-    } else {
-        havg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", winner_ct, ratio_ct);
+    print_row("horus  cross-thread u64 RTT", hmin, havg, hmed, hp99, hmax);
+    print_row("iox2   cross-thread u64 RTT", imin, iavg, imed, ip99, imax);
+    print_comparison((hmed, hp99, hmax), (imed, ip99, imax));
 
     // --- Cross-process (true IPC via SHM) ---
     bench_cross_process();
 
     // --- MPMC ---
     println!("--- MPMC: 2 publishers, 2 subscribers ---");
+    println!("  These are recv() CALL COSTS on an already-backlogged queue, not");
+    println!("  publish-to-receive latencies: publishers are joined before the");
+    println!("  subscribers are, so most receives return from a full ring. Both arms");
+    println!("  are measured the same way, so they compare, but neither is a latency.");
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_mpmc(2, 2);
     let (imin, iavg, imed, ip99, imax) = bench_iox2_mpmc(2, 2);
-    print_row("horus  2P/2S", hmin, havg, hmed, hp99, hmax);
-    print_row("iox2   2P/2S", imin, iavg, imed, ip99, imax);
-    let w22 = if havg <= iavg { "horus" } else { "iox2" };
-    let r22 = if havg <= iavg {
-        iavg as f64 / havg.max(1) as f64
-    } else {
-        havg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", w22, r22);
+    print_row("horus  2P/2S recv cost", hmin, havg, hmed, hp99, hmax);
+    print_row("iox2   2P/2S recv cost", imin, iavg, imed, ip99, imax);
+    print_comparison((hmed, hp99, hmax), (imed, ip99, imax));
 
     println!("--- MPMC: 4 publishers, 4 subscribers ---");
     let (hmin, havg, hmed, hp99, hmax) = bench_horus_mpmc(4, 4);
     let (imin, iavg, imed, ip99, imax) = bench_iox2_mpmc(4, 4);
-    print_row("horus  4P/4S", hmin, havg, hmed, hp99, hmax);
-    print_row("iox2   4P/4S", imin, iavg, imed, ip99, imax);
-    let w44 = if havg <= iavg { "horus" } else { "iox2" };
-    let r44 = if havg <= iavg {
-        iavg as f64 / havg.max(1) as f64
-    } else {
-        havg as f64 / iavg.max(1) as f64
-    };
-    println!("  Winner: {} ({:.1}x faster)\n", w44, r44);
+    print_row("horus  4P/4S recv cost", hmin, havg, hmed, hp99, hmax);
+    print_row("iox2   4P/4S recv cost", imin, iavg, imed, ip99, imax);
+    print_comparison((hmed, hp99, hmax), (imed, ip99, imax));
 
     // --- Throughput ---
-    println!("--- Send-only throughput (msgs/sec) ---");
+    println!("--- send + drain-8-every-8 loop throughput (msgs/sec) ---");
+    println!("  Both arms run the same loop shape. This is not a send-only rate.");
     let ht = bench_horus_throughput_u64();
     let it = bench_iox2_throughput_u64();
     println!("  horus:  {:.2}M msgs/sec", ht / 1e6);
     println!("  iox2:   {:.2}M msgs/sec", it / 1e6);
-    let tw = if ht >= it { "horus" } else { "iox2" };
-    let tr = if ht >= it { ht / it } else { it / ht };
-    println!("  Winner: {} ({:.1}x)\n", tw, tr);
+    println!("  iox2/horus ratio: {:.2}x (<1 favours horus)\n", it / ht);
 }
 
 // Cross-process MPMC uses the SHM fan-out path (ShmFanoutRing / FanoutShm).

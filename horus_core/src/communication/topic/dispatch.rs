@@ -76,7 +76,8 @@ use super::shm_layout::SLOT_WRITING;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::local_state::EPOCH_CHECK_INTERVAL;
+use super::header::{current_time_ms, TopicHeader};
+use super::local_state::{LocalState, EPOCH_CHECK_INTERVAL};
 use super::RingTopic;
 use super::{simd_aware_read, simd_aware_read_uninit, simd_aware_write};
 use crate::utils::unlikely;
@@ -469,6 +470,388 @@ macro_rules! housekeep_recv {
 }
 
 // ============================================================================
+// Serde staging — one allocation per handle instead of one per message
+// ============================================================================
+
+/// Serialize `msg` into this handle's reusable staging buffer.
+///
+/// Replaces `bincode::serialize(&msg)`, which returns a fresh `Vec<u8>` and so
+/// put one `malloc` and one `free` on every non-POD publish. Allocator latency
+/// has no useful bound — the fast path pops a free-list head, the slow path
+/// takes an arena lock, refills a bin or calls `mmap` — so that made the WCET of
+/// a serde send a property of the allocator's state rather than of the message.
+/// `bincode::serialize_into` appends into a buffer that keeps its capacity, so
+/// after warm-up the steady state allocates nothing.
+///
+/// On error the buffer is left cleared, never holding a half-written message
+/// that a later `len()` could mistake for a valid payload.
+///
+/// This does NOT make the serde publish path bounded-WCET: `Serialize` still
+/// walks the value, so its cost is data-dependent, and an oversized message
+/// still takes `auto_grow_slot_size` (`ftruncate` + `mremap` + a full
+/// migration). It removes the allocator, and only the allocator. See
+/// `LocalState::serde_scratch` for the memory-footprint trade.
+#[inline(always)]
+fn serialize_into_scratch<T: Serialize>(local: &mut LocalState, msg: &T) -> bool {
+    let buf = &mut local.serde_scratch;
+    buf.clear();
+    if bincode::serialize_into(&mut *buf, msg).is_ok() {
+        true
+    } else {
+        buf.clear();
+        false
+    }
+}
+
+// ============================================================================
+// Bounded slot claim — capping the multi-producer CAS loop
+// ============================================================================
+
+/// Maximum CAS attempts a producer will make to claim a ring slot before giving
+/// up and returning the message to the caller.
+///
+/// The claim loop is lock-free but NOT wait-free, and the two are different
+/// promises. "Bounded by the number of concurrent producers" — which the loop's
+/// old comment claimed — is a *system-wide* progress guarantee: it says someone
+/// always advances, not that THIS thread ever does. Two things break the
+/// per-thread bound outright:
+///
+/// * `compare_exchange_weak` may fail spuriously, and on LL/SC architectures
+///   (ARM, RISC-V) a reservation can be lost to any interfering write to the
+///   line. There is no static bound on that even with a single producer.
+/// * Each retry re-loads a cache line every other producer is actively CASing,
+///   so a retry is a full coherence round trip (~150 ns), not a few cycles.
+///
+/// 64 is four times `MAX_PARTICIPANTS`, so genuine contention among the most
+/// producers a topic can hold never exhausts it; reaching 64 means spurious
+/// failure or livelock. The resulting WCET bound is ~64 × 150 ns ≈ 10 µs for
+/// one `try_send`, against the previous bound of infinity.
+///
+/// The consumer side of the same pattern already caps at 8
+/// (`recv_shm_spmc_pod`); this is deliberately looser because a dropped publish
+/// is more expensive than a deferred receive.
+const MAX_CLAIM_CAS_RETRIES: u32 = 64;
+
+/// How long a handle stays quiet after reporting a claim-loop exhaustion.
+const CLAIM_CAS_WARN_QUIET_MS: u64 = 60_000;
+
+/// Report a claim-loop exhaustion, rate-limited to once a minute per handle.
+///
+/// The DROP itself is counted where every other lossy-publish drop is counted —
+/// `metrics.send_failures`, incremented by `RingTopic::send_lossy_retry` once it
+/// gives up — so this deliberately does NOT touch that counter and double-count.
+/// What the counter cannot say is *why*, and "the ring was full" and "the claim
+/// CAS livelocked" call for opposite responses from an operator, so the reason
+/// is logged.
+///
+/// The gate lives in `LocalState` rather than in the process-wide map
+/// `should_report_endpoint_exhaustion` uses, for two reasons: `send()` funnels a
+/// failed `try_send` through ~70 more attempts, so this can be reached in a
+/// tight loop, and a global `Mutex` on the publish path is exactly the kind of
+/// unbounded wait this whole change exists to remove. A `u64` compare against
+/// the wall clock costs neither.
+#[cold]
+#[inline(never)]
+fn warn_claim_cas_exhausted(local: &mut LocalState, topic_name: &str) {
+    let now_ms = current_time_ms();
+    if local.claim_cas_warn_ms != 0
+        && now_ms >= local.claim_cas_warn_ms
+        && now_ms - local.claim_cas_warn_ms < CLAIM_CAS_WARN_QUIET_MS
+    {
+        return;
+    }
+    local.claim_cas_warn_ms = now_ms.max(1);
+    log::warn!(
+        "Topic '{}': slot-claim CAS failed {} times in a row — returning the message \
+         rather than spinning without bound. Under `send()` this becomes a counted \
+         drop (TopicMetrics::send_failures); under `try_send()` the caller gets it \
+         back. Expect this only under extreme producer contention or livelock.",
+        topic_name,
+        MAX_CLAIM_CAS_RETRIES,
+    );
+}
+
+// ============================================================================
+// Abandoned-claim escape — bounding the MpscShm consumer's head-of-line stall
+// ============================================================================
+
+/// How many consecutive not-ready polls at the same `tail` are free before the
+/// consumer starts timing the stall, minus one (used as a bitmask).
+///
+/// A claimed-but-unpublished slot is the ORDINARY transient state: between a
+/// producer's slot-claiming CAS and its `Release` store of the ready flag there
+/// is nothing but a `simd_aware_write` (POD) or a `memcpy` (serde) — no
+/// syscall, no allocation, no lock — so the window is a few nanoseconds wide. A
+/// consumer spinning on that window must not pay for a `current_time_ms()`
+/// (~25 ns of vDSO) to discover something it will learn in one more load.
+///
+/// 16 polls of the recv path is comfortably longer than any live producer's
+/// claim→publish window, so a transient not-ready NEVER reaches a clock read
+/// and the spin-to-first-message latency is untouched. The cost is granularity
+/// at the other extreme: a 1 Hz poller waits 16 s before the stall clock even
+/// starts. That is the right side of the trade — this exists to turn an
+/// infinite stall into a finite one, not to be prompt.
+const CLAIM_STALL_POLL_MASK: u32 = 15;
+
+/// Absolute escape bound, expressed in lease timeouts (default 5 s ⇒ 20 s).
+///
+/// The primary rule is the two-condition one `TopicHeader::reap_dead_participants`
+/// argues for — lease expired AND the pid is gone — because an expired lease
+/// alone does not mean dead. But that rule has a hole this must cover: it can
+/// only see producers that are still *registered*. If a third party (any
+/// `register_role` that ran out of slots) already reaped the dead producer's
+/// entry while another producer is still live, no dead pid is visible anywhere
+/// and the consumer would block forever again.
+///
+/// So after this many lease timeouts with the same slot claimed and unpublished
+/// the consumer gives up regardless of what the participant table says. A LIVE
+/// producer cannot sit inside its claim→publish window for 20 seconds — that
+/// window contains no blocking operation at all — so reaching this bound means
+/// either the producer is gone or it has been `SIGSTOP`ped, and on a control
+/// topic those are the same thing to the subscriber.
+const CLAIM_STALL_MAX_LEASES: u64 = 4;
+
+/// Is there no producer left that could ever publish the stuck slot?
+///
+/// Applies the same two-condition rule as `TopicHeader::reap_dead_participants`
+/// (expired lease is the cheap filter; a dead pid is the proof) but answers a
+/// different question, because the ready-flag protocol does not record WHICH
+/// producer claimed a slot. Two situations both mean "nobody will finish it":
+///
+/// * a registered local producer whose process is gone — it may well be the one
+///   holding the claim, and if it is not, the escape is still bounded by the
+///   caller's absolute bound; or
+/// * no live local producer registered at all — whoever claimed the slot has
+///   already been reaped.
+///
+/// Deliberately treats our OWN pid as live: `reap_dead_participants` refuses to
+/// judge our own process for exactly the same reason (a departed thread is
+/// indistinguishable from a busy one), and a same-process producer thread that
+/// has wedged is caught by [`CLAIM_STALL_MAX_LEASES`] instead. Network-replicated
+/// participants (`source_host != 0`) carry another host's pid, which means
+/// nothing here, so they are skipped in both directions.
+///
+/// Cost: up to `MAX_PARTICIPANTS` liveness probes. Called at most once per
+/// lease timeout per stalled consumer, on a path that is already returning
+/// `None`, so it never delays a delivered message.
+#[cold]
+#[inline(never)]
+fn no_producer_can_finish(header: &TopicHeader) -> bool {
+    let me = std::process::id();
+    let mut live_local_producer = false;
+    for p in header.participants.iter() {
+        // 1 = live entry. 0 = free, 2 = mid-claim by another thread; neither is
+        // ours to judge (same rule as `reap_dead_participants`).
+        if p.active.load(Ordering::Acquire) != 1 {
+            continue;
+        }
+        // role bit 0 = producer (0=none, 1=producer, 2=consumer, 3=both).
+        if p.role.load(Ordering::Acquire) & 1 == 0 {
+            continue;
+        }
+        if p.source_host.load(Ordering::Acquire) != 0 {
+            continue;
+        }
+        let pid = p.pid.load(Ordering::Acquire);
+        if pid == 0 {
+            continue;
+        }
+        if pid == me {
+            live_local_producer = true;
+            continue;
+        }
+        if horus_sys::discover::is_process_alive(pid) {
+            live_local_producer = true;
+        } else {
+            // A dead registered producer: proof that a publisher died, which is
+            // the only way this slot gets claimed and abandoned.
+            return true;
+        }
+    }
+    !live_local_producer
+}
+
+/// Report an abandoned-claim skip.
+///
+/// A skipped message is a real gap in a subscriber's stream. It is counted in
+/// `LocalState::missed` (surfaced by `Topic::missed_count`), and it is also said
+/// out loud, because "my control topic has a hole in it" is not something an
+/// operator should have to go looking for a counter to discover.
+///
+/// Deliberately NOT rate-limited: the escape it reports is already limited by
+/// construction. It cannot fire until a slot has been stuck for a whole lease
+/// timeout, each firing advances `tail` past that slot, and a producer holds
+/// only one claim at a time — so with all `MAX_PARTICIPANTS` producers dead at
+/// once this still prints at most once per lease timeout (5 s by default). A
+/// limiter would only add a lock or a clock read to buy nothing.
+#[cold]
+#[inline(never)]
+fn warn_abandoned_claim(topic_name: &str, tail: u64, stalled_ms: u64, why: ClaimEscape) {
+    log::warn!(
+        "Topic '{}': ring slot {} was claimed by a producer that never published it \
+         ({} ms, {}). Skipping it — this is a DROPPED MESSAGE, counted in \
+         Topic::missed_count(). The alternative was blocking this subscriber forever.",
+        topic_name,
+        tail,
+        stalled_ms,
+        match why {
+            ClaimEscape::NoProducerLeft => "no producer left that could finish it",
+            ClaimEscape::AbsoluteBound => "absolute stall bound reached",
+        },
+    );
+}
+
+/// Why [`claimed_slot_escape`] gave up on a slot. Diagnostic only — both
+/// outcomes are the same skip — but the two mean very different things to
+/// whoever reads the log, so they are not collapsed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClaimEscape {
+    /// The two-condition rule fired: no producer remains that could publish it.
+    NoProducerLeft,
+    /// [`CLAIM_STALL_MAX_LEASES`] elapsed with a live producer still registered
+    /// — the third-party-reap hole, or a `SIGSTOP`ped publisher.
+    AbsoluteBound,
+}
+
+/// Decide whether a consumer should skip a slot that a producer claimed and
+/// never published. `Some(reason)` means the caller must skip it (via
+/// [`take_claimed_slot_escape`]); `None` means keep waiting.
+///
+/// # The defect this bounds
+///
+/// `MpscShm` publishes in two steps: a CAS on `sequence_or_head` claims slot
+/// `seq`, then a `Release` store of `seq + 1` into the per-slot ready flag makes
+/// it readable. The ring is strictly in-order, so a consumer at `tail == seq`
+/// waits on that ready flag. If the producer process dies in between — SIGKILL,
+/// segfault, OOM-killer — no live process will ever set that flag. Nothing
+/// re-checks it, nothing times out, and no lap detection applies (unlike the
+/// PodShm path's `SLOT_WRITING` marker). The topic goes silent forever, with no
+/// error and no counter. On a robot that is a control subscriber that simply
+/// stops, while `topic list` still shows the topic and the publisher's
+/// registration still sits in the participant table.
+///
+/// It cascades, too: the bare `return None` this replaces skipped the recv
+/// housekeeping, so the wedged consumer also stopped refreshing its lease and
+/// stopped observing migrations. The callers now run `housekeep_epoch!` on this
+/// path for that reason.
+///
+/// # The trade, stated plainly
+///
+/// This converts an UNBOUNDED STALL into a BOUNDED MESSAGE LOSS. That is the
+/// right trade for a worst-case-latency figure of merit — but only because the
+/// loss is counted (`LocalState::missed`, read back through
+/// `Topic::missed_count`) and logged. A silent drop would be worse than the
+/// stall it replaces.
+///
+/// It also widens one pre-existing hazard by a hair, which is worth naming: a
+/// producer that was merely `SIGSTOP`ped, not dead, can wake after the escape
+/// and write into a slot the ring has since reused. The exact-match ready-flag
+/// check contains that — a zombie stamps `old_seq + 1`, and every future
+/// expectation at that index is `old_seq + k*capacity + 1`, strictly greater —
+/// so the zombie's stamp reads as "not ready" rather than as a valid message,
+/// and the outcome is another counted skip, not a torn read. The same zombie
+/// could already clobber a reused slot's payload today; this does not create
+/// that window, it only makes reaching it possible without the consumer having
+/// wedged first.
+///
+/// # Cost
+///
+/// Zero on the delivery path — this is only ever called after the ready flag
+/// has already been observed unset, and the first `CLAIM_STALL_POLL_MASK + 1`
+/// such observations do nothing but bump a counter in `LocalState`. The stall
+/// state is keyed on `tail`, which is monotonic, so nothing has to be cleared
+/// when a message does arrive.
+///
+/// `#[cold]` is honest here, unlike on the migration check this file had to
+/// split apart: a consumer only reaches the ready-flag test when `head > tail`,
+/// and a poller waiting on an empty ring returns from the occupancy check well
+/// before that. Out-of-lining keeps the recv body — which is `#[inline(always)]`
+/// into every call site — from carrying this state machine.
+#[cold]
+#[inline(never)]
+fn claimed_slot_escape(
+    local: &mut LocalState,
+    header: &TopicHeader,
+    tail: u64,
+) -> Option<ClaimEscape> {
+    // New stall (or the first one at this position): arm the counter without
+    // reading the clock. `tail` is monotonic, so this is also how a stall that
+    // resolved on its own gets forgotten — the hot path never clears anything.
+    if local.claim_stall_tail != tail || local.claim_stall_polls == 0 {
+        local.claim_stall_tail = tail;
+        local.claim_stall_polls = 1;
+        local.claim_stall_since_ms = 0;
+        return None;
+    }
+
+    local.claim_stall_polls = local.claim_stall_polls.wrapping_add(1);
+    if local.claim_stall_polls & CLAIM_STALL_POLL_MASK != 0 {
+        return None;
+    }
+
+    let now_ms = current_time_ms();
+    // First clock reading for this stall: start the timer, decide nothing.
+    if local.claim_stall_since_ms == 0 || now_ms < local.claim_stall_since_ms {
+        // `now_ms < since` is a clock that went backwards; restarting is the
+        // only honest response, and it can only ever delay the escape.
+        local.claim_stall_since_ms = now_ms.max(1);
+        return None;
+    }
+
+    let stalled_ms = now_ms - local.claim_stall_since_ms;
+    let lease = header.lease_timeout();
+    if stalled_ms < lease {
+        return None;
+    }
+
+    // Condition 2: a producer is provably gone. An expired lease alone is not
+    // evidence of death — refresh is clock-gated, and an idle-but-healthy
+    // participant reads as expired.
+    if no_producer_can_finish(header) {
+        return Some(ClaimEscape::NoProducerLeft);
+    }
+
+    // Fallback: the absolute bound, for the case a third party already reaped
+    // the dead producer's entry. See `CLAIM_STALL_MAX_LEASES`.
+    if stalled_ms >= lease.saturating_mul(CLAIM_STALL_MAX_LEASES) {
+        return Some(ClaimEscape::AbsoluteBound);
+    }
+    None
+}
+
+/// Perform the skip decided by [`claimed_slot_escape`]: count the loss, advance
+/// past the abandoned slot, and publish the new frontier immediately.
+///
+/// The `header.tail` store is unbatched on purpose. The batched flush every
+/// `capacity / 2` reads exists to keep a store off the hot path; this path fires
+/// at most once per lease timeout, and leaving the freed slot invisible to the
+/// producer's backpressure check for up to half a ring would be a second stall
+/// on top of the one just escaped. Sound for both callers because they are the
+/// single-consumer (MpscShm/SpscShm) paths, where `header.tail` is read only by
+/// producers for backpressure.
+#[cold]
+#[inline(never)]
+fn take_claimed_slot_escape(
+    local: &mut LocalState,
+    header: &TopicHeader,
+    tail: u64,
+    name: &str,
+    why: ClaimEscape,
+) {
+    let stalled_ms = current_time_ms().saturating_sub(local.claim_stall_since_ms);
+    warn_abandoned_claim(name, tail, stalled_ms, why);
+
+    local.missed = local.missed.wrapping_add(1);
+    let new_tail = tail.wrapping_add(1);
+    local.local_tail = new_tail;
+    header.tail.store(new_tail, Ordering::Release);
+    // Disarm: the next poll starts a fresh stall at the new position if the
+    // slot behind this one is also abandoned.
+    local.claim_stall_polls = 0;
+    local.claim_stall_since_ms = 0;
+}
+
+// ============================================================================
 // Shared helpers — #[inline(always)] for zero-overhead extraction
 // ============================================================================
 
@@ -675,10 +1058,16 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
         // into SHM slots via SIMD-aware copy (invariant 6). pub_id identifies this
         // producer's SPSC channel within the fanout matrix.
         unsafe { ring.send_pod(&msg, pub_id) }
+    } else if !serialize_into_scratch(local, &msg) {
+        // Serialization failed — nothing to broadcast. `serialize_into_scratch`
+        // has already cleared the buffer.
+        false
     } else {
-        // Serde path: serialize once, send bytes to all subscribers.
-        match bincode::serialize(&msg) {
-            Ok(bytes) if bytes.len() > SPILL_THRESHOLD => {
+        // Serde path: serialized once into the reusable staging buffer (see
+        // `serialize_into_scratch`), then sent to all subscribers.
+        let bytes_len = local.serde_scratch.len();
+        if bytes_len > SPILL_THRESHOLD {
+            {
                 // Large serde message: spill the bytes to the TensorPool ONCE and
                 // broadcast a 40-byte SpillDescriptor through every subscriber
                 // channel (fits the fixed 8 KiB fanout slot). Without this, a
@@ -699,7 +1088,11 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                         pool.release(&old);
                     }
                 }
-                match spill_to_pool(topic, &bytes) {
+                // Hoisted out of the `match` scrutinee so the shared borrow of
+                // `local.serde_scratch` provably ends before the arms mutate
+                // `local.spill_keepalive`.
+                let spilled = spill_to_pool(topic, &local.serde_scratch);
+                match spilled {
                     Some(desc) => {
                         // Hold the alloc refcount until the ring overwrites this slot.
                         local.spill_keepalive.push_back(desc.to_tensor());
@@ -716,12 +1109,12 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                     }
                     // Spill failed (pool full/OOM): fall back to inline. Still
                     // bounded by the fixed slot, but preserves prior behavior.
-                    None => unsafe { ring.send_serde(&bytes, pub_id) },
+                    None => unsafe { ring.send_serde(&local.serde_scratch, pub_id) },
                 }
             }
+        } else {
             // SAFETY: same as send_pod — writes serialized bytes into SHM slots.
-            Ok(bytes) => unsafe { ring.send_serde(&bytes, pub_id) },
-            Err(_) => false,
+            unsafe { ring.send_serde(&local.serde_scratch, pub_id) }
         }
     };
 
@@ -896,6 +1289,9 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     // targets a live slot. On a genuinely full ring we return Err (the non-blocking
     // try_send contract is preserved — we never wait on the consumer). `header.tail`
     // lags (batched), which is conservative: it can only make us reject early.
+    // `retries` lives in a register and is only touched on the CAS-failure arm,
+    // so the uncontended claim — one load, one successful CAS — is unchanged.
+    let mut retries: u32 = 0;
     let seq = loop {
         let head = header.sequence_or_head.load(Ordering::Acquire);
         if head.wrapping_sub(local.local_tail) >= capacity {
@@ -911,10 +1307,21 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
             Ordering::Relaxed,
         ) {
             Ok(_) => break head,
-            // Another producer claimed between our load and CAS (or a spurious weak
-            // failure). Retry with a fresh head — bounded by the number of concurrent
-            // producers, which all make progress.
-            Err(_) => std::hint::spin_loop(),
+            // Another producer claimed between our load and CAS, or the weak CAS
+            // failed spuriously. Retry with a fresh head — but under a CAP, because
+            // "someone makes progress" is not "this thread makes progress" and a
+            // spurious LL/SC failure is not statically bounded at all. Exhaustion
+            // takes exactly the same path as a full ring: hand the message back, and
+            // let `send_lossy_retry` turn it into a counted `send_failures` drop.
+            // See `MAX_CLAIM_CAS_RETRIES`.
+            Err(_) => {
+                retries += 1;
+                if unlikely(retries >= MAX_CLAIM_CAS_RETRIES) {
+                    warn_claim_cas_exhausted(local, topic.name());
+                    return Err(msg);
+                }
+                std::hint::spin_loop();
+            }
         }
     };
 
@@ -1003,12 +1410,17 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
 
-    let bytes = match bincode::serialize(&msg) {
-        Ok(b) => b,
-        Err(_) => return Err(msg),
-    };
-
     let local = topic.local();
+
+    // Serialize into this handle's reusable staging buffer (no per-message
+    // allocation). `bytes_len` is carried by value from here on so that nothing
+    // holds a borrow of `local` across `spill_to_pool` or `auto_grow_slot_size`
+    // — the latter re-enters `topic.local()`. See `serialize_into_scratch`.
+    if !serialize_into_scratch(local, &msg) {
+        return Err(msg);
+    }
+    let bytes_len = local.serde_scratch.len();
+
     // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
     // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
@@ -1027,7 +1439,7 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     let slot_offset = index * slot_size;
     let max_data_len = slot_size.saturating_sub(16);
 
-    if bytes.len() > SPILL_THRESHOLD {
+    if bytes_len > SPILL_THRESHOLD {
         // ── Spill path: large message → TensorPool ──────────────────────
         // SpillDescriptor is 40 bytes; slot must have at least 48 usable
         // (8B ready flag + 40B descriptor). Minimum slot_size is 64, so
@@ -1035,31 +1447,38 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         if slot_size < 48 {
             return Err(msg);
         }
-        let spill_result = spill_to_pool(topic, &bytes);
+        // The shared borrow of `local.serde_scratch` ends with this call:
+        // `spill_to_pool` returns an owned descriptor and never touches
+        // `topic.local()` itself (only `topic.spill_pool`).
+        let spill_result = spill_to_pool(topic, &local.serde_scratch);
         let spill = match spill_result {
             Some(s) => s,
             None => {
                 log::warn!(
                     "Topic '{}': spill to pool failed for {} bytes, falling back to auto-grow",
                     topic.name(),
-                    bytes.len()
+                    bytes_len
                 );
                 // Fall back to auto-grow if pool alloc fails
-                if bytes.len() > max_data_len {
-                    let _ = topic.auto_grow_slot_size(bytes.len());
+                if bytes_len > max_data_len {
+                    let _ = topic.auto_grow_slot_size(bytes_len);
                     return Err(msg);
                 }
                 // If it fits inline despite being above threshold, just inline it
                 // (this shouldn't happen, but handle gracefully)
                 // SAFETY: cached_data_ptr points into SHM data region (invariant 2).
-                // slot_offset < capacity * slot_size (invariant 3). bytes.len() <= max_data_len
+                // slot_offset < capacity * slot_size (invariant 3). bytes_len <= max_data_len
                 // (checked above). Writes length header + data into serde slot layout.
                 unsafe {
                     let slot_ptr = local.cached_data_ptr.add(slot_offset);
                     let len_ptr = slot_ptr.add(8) as *mut u64;
-                    std::ptr::write_volatile(len_ptr, bytes.len() as u64);
+                    std::ptr::write_volatile(len_ptr, bytes_len as u64);
                     let data_ptr = slot_ptr.add(16);
-                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+                    std::ptr::copy_nonoverlapping(
+                        local.serde_scratch.as_ptr(),
+                        data_ptr,
+                        bytes_len,
+                    );
                 }
                 std::sync::atomic::fence(Ordering::Release);
                 let new_seq = seq.wrapping_add(1);
@@ -1088,13 +1507,13 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         return Ok(());
     }
 
-    if bytes.len() > max_data_len {
+    if bytes_len > max_data_len {
         // ── Auto-grow path: message fits threshold but exceeds current slot ─
-        if !topic.auto_grow_slot_size(bytes.len()) {
+        if !topic.auto_grow_slot_size(bytes_len) {
             log::warn!(
                 "Topic: serialized message ({} bytes) exceeds slot limit ({} bytes). \
                  Auto-grow failed. Use Topic::with_capacity(name, cap, Some(slot_size)).",
-                bytes.len(),
+                bytes_len,
                 max_data_len,
             );
         }
@@ -1104,13 +1523,13 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     // ── Inline path: small message → write directly to ring buffer slot ─
     // SAFETY: cached_data_ptr + slot_offset points to a valid slot within the SHM data
     // region. slot_offset < capacity * slot_size (index < capacity via mask). The slot
-    // layout is [8B ready | 8B length | data...], and bytes.len() <= max_data_len.
+    // layout is [8B ready | 8B length | data...], and bytes_len <= max_data_len.
     unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let len_ptr = slot_ptr.add(8) as *mut u64;
-        std::ptr::write_volatile(len_ptr, bytes.len() as u64);
+        std::ptr::write_volatile(len_ptr, bytes_len as u64);
         let data_ptr = slot_ptr.add(16);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+        std::ptr::copy_nonoverlapping(local.serde_scratch.as_ptr(), data_ptr, bytes_len);
     }
     // Ensure volatile data writes are visible before publishing the new sequence.
     // The Release store below provides this on most architectures, but the explicit
@@ -1136,12 +1555,15 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
 
-    let bytes = match bincode::serialize(&msg) {
-        Ok(b) => b,
-        Err(_) => return Err(msg),
-    };
-
     let local = topic.local();
+
+    // Reusable staging buffer — see `serialize_into_scratch` and the note in
+    // `send_shm_sp_serde` on why the length is carried by value.
+    if !serialize_into_scratch(local, &msg) {
+        return Err(msg);
+    }
+    let bytes_len = local.serde_scratch.len();
+
     // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
     // (set by ensure_producer). Valid for Topic's lifetime. Single-thread access.
     let header = unsafe { &*local.cached_header_ptr };
@@ -1160,32 +1582,35 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     let max_data_len = slot_size.saturating_sub(16);
 
     // ── Spill check (before CAS — can't unclaim a slot after fetch_add) ──
-    let spill_desc = if bytes.len() > SPILL_THRESHOLD {
+    let spill_desc = if bytes_len > SPILL_THRESHOLD {
         if slot_size < 48 {
             return Err(msg);
         }
-        match spill_to_pool(topic, &bytes) {
+        // Hoisted out of the `match` scrutinee so the shared borrow of
+        // `local.serde_scratch` provably ends before the arms touch `local`.
+        let spilled = spill_to_pool(topic, &local.serde_scratch);
+        match spilled {
             Some(s) => Some(s),
             None => {
                 log::warn!(
                     "Topic '{}': spill to pool failed for {} bytes, falling back to auto-grow",
                     topic.name(),
-                    bytes.len()
+                    bytes_len
                 );
-                if bytes.len() > max_data_len {
-                    let _ = topic.auto_grow_slot_size(bytes.len());
+                if bytes_len > max_data_len {
+                    let _ = topic.auto_grow_slot_size(bytes_len);
                     return Err(msg);
                 }
                 None // will inline below
             }
         }
-    } else if bytes.len() > max_data_len {
+    } else if bytes_len > max_data_len {
         // Small message but exceeds current slot — auto-grow
-        if !topic.auto_grow_slot_size(bytes.len()) {
+        if !topic.auto_grow_slot_size(bytes_len) {
             log::warn!(
                 "Topic: serialized message ({} bytes) exceeds slot limit ({} bytes). \
                  Auto-grow failed. Use Topic::with_capacity(name, cap, Some(slot_size)).",
-                bytes.len(),
+                bytes_len,
                 max_data_len,
             );
         }
@@ -1201,6 +1626,9 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     // the ring turns out full here, that pool slot is orphaned — the pool reclaims it
     // by generation-tagged reallocation (spill is rare; matches the existing
     // best-effort spill lifetime), so it is a self-healing soft leak, not corruption.
+    // Capped exactly as in `send_shm_mp_pod` — see `MAX_CLAIM_CAS_RETRIES`. The
+    // orphaned-spill note above applies unchanged to an exhaustion return.
+    let mut retries: u32 = 0;
     let seq = loop {
         let head = header.sequence_or_head.load(Ordering::Acquire);
         if head.wrapping_sub(local.local_tail) >= capacity {
@@ -1216,7 +1644,14 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
             Ordering::Relaxed,
         ) {
             Ok(_) => break head,
-            Err(_) => std::hint::spin_loop(),
+            Err(_) => {
+                retries += 1;
+                if unlikely(retries >= MAX_CLAIM_CAS_RETRIES) {
+                    warn_claim_cas_exhausted(local, topic.name());
+                    return Err(msg);
+                }
+                std::hint::spin_loop();
+            }
         }
     };
     let index = (seq & mask) as usize;
@@ -1236,9 +1671,9 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         } else {
             // Normal inline write: [8B ready | 8B length | data...]
             let len_ptr = slot_ptr.add(8) as *mut u64;
-            std::ptr::write_volatile(len_ptr, bytes.len() as u64);
+            std::ptr::write_volatile(len_ptr, bytes_len as u64);
             let data_ptr = slot_ptr.add(16);
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+            std::ptr::copy_nonoverlapping(local.serde_scratch.as_ptr(), data_ptr, bytes_len);
         }
         std::sync::atomic::fence(Ordering::Release);
         let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
@@ -1376,6 +1811,19 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
+        // The producer has CLAIMED this slot but not published it. Ordinarily
+        // that resolves in nanoseconds; if the producer died in that window it
+        // never resolves at all, and an in-order consumer blocks on it forever.
+        // `claimed_slot_escape` bounds that — see its docs for the trade (an
+        // unbounded stall becomes a COUNTED message loss).
+        if let Some(why) = claimed_slot_escape(local, header, tail) {
+            take_claimed_slot_escape(local, header, tail, topic.name(), why);
+        }
+        // Housekeeping used to be skipped here, so a consumer blocked on an
+        // unpublished slot also stopped refreshing its lease and stopped
+        // observing migrations — after one lease timeout the producer could
+        // start retiring slots it had never read.
+        housekeep_epoch!(local, topic);
         return None;
     }
 
@@ -1780,6 +2228,13 @@ pub(super) fn recv_shm_mpsc_serde<
         ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
+        // Same abandoned-claim escape as `recv_shm_mpsc_pod`; the serde slot
+        // simply carries its ready flag in its own first 8 bytes rather than in
+        // the separate seq array. See `claimed_slot_escape` for the trade.
+        if let Some(why) = claimed_slot_escape(local, header, tail) {
+            take_claimed_slot_escape(local, header, tail, topic.name(), why);
+        }
+        housekeep_epoch!(local, topic);
         return None;
     }
 
@@ -2465,5 +2920,288 @@ mod tests {
             assert_eq!(recovered.offset, 0x0102_0304_0506_0708);
             assert_eq!(recovered.size, 0x0A0B_0C0D_0E0F_1011);
         }
+    }
+
+    // ── Abandoned-claim escape (research 1.14) ──────────────────────────
+    //
+    // These drive `claimed_slot_escape` / `take_claimed_slot_escape` directly,
+    // because the defect they bound needs a producer to be SIGKILLed inside a
+    // window a few instructions wide — not something an in-process test can
+    // stage. The state machine is the part that has to be right.
+
+    /// A `LocalState` already stalled at `tail`, with the poll counter and the
+    /// stall clock placed where the test needs them.
+    fn stalled_local(tail: u64, polls: u32, since_ms: u64) -> LocalState {
+        LocalState {
+            claim_stall_tail: tail,
+            claim_stall_polls: polls,
+            claim_stall_since_ms: since_ms,
+            ..Default::default()
+        }
+    }
+
+    /// A header with no participants registered at all — nobody could ever
+    /// publish the stuck slot.
+    fn header_with_no_producers() -> TopicHeader {
+        TopicHeader::zeroed()
+    }
+
+    /// A header advertising THIS process as a live producer. `no_producer_can_finish`
+    /// must refuse to judge our own pid, exactly as `reap_dead_participants` does.
+    fn header_with_live_self_producer() -> TopicHeader {
+        let h = TopicHeader::zeroed();
+        h.participants[0]
+            .pid
+            .store(std::process::id(), Ordering::Release);
+        h.participants[0].role.store(1, Ordering::Release); // producer
+        h.participants[0].active.store(1, Ordering::Release);
+        h
+    }
+
+    #[test]
+    fn claim_escape_first_observation_only_arms() {
+        let header = header_with_no_producers();
+        let mut local = LocalState::default();
+        // Even with a header that would satisfy every escape condition, the very
+        // first not-ready observation must decide nothing and — critically — must
+        // not read the clock, because a transient mid-write slot lands here.
+        assert!(claimed_slot_escape(&mut local, &header, 7).is_none());
+        assert_eq!(local.claim_stall_tail, 7);
+        assert_eq!(local.claim_stall_polls, 1);
+        assert_eq!(
+            local.claim_stall_since_ms, 0,
+            "arming must not start the clock"
+        );
+    }
+
+    #[test]
+    fn claim_escape_stays_silent_below_the_poll_mask() {
+        let header = header_with_no_producers();
+        let mut local = LocalState::default();
+        // A spin-waiting consumer must get all the way to the mask boundary
+        // without any escape and without the clock being read.
+        for _ in 0..=CLAIM_STALL_POLL_MASK {
+            assert!(claimed_slot_escape(&mut local, &header, 7).is_none());
+        }
+        assert_eq!(
+            local.claim_stall_polls, CLAIM_STALL_POLL_MASK + 1,
+            "the mask boundary is where the clock first gets read"
+        );
+        assert_ne!(
+            local.claim_stall_since_ms, 0,
+            "reaching the boundary must start the stall clock"
+        );
+    }
+
+    #[test]
+    fn claim_escape_needs_a_full_lease_timeout() {
+        let header = header_with_no_producers();
+        header.set_lease_timeout_ms(50);
+        // Clock started "just now": no producer is registered, yet the escape
+        // must still wait out the lease. A momentarily-empty participant table
+        // is not on its own a reason to drop a message.
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms());
+        assert!(claimed_slot_escape(&mut local, &header, 7).is_none());
+    }
+
+    #[test]
+    fn claim_escape_fires_when_no_producer_can_finish() {
+        let header = header_with_no_producers();
+        header.set_lease_timeout_ms(50);
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms() - 500);
+        assert_eq!(
+            claimed_slot_escape(&mut local, &header, 7),
+            Some(ClaimEscape::NoProducerLeft),
+        );
+    }
+
+    #[test]
+    fn claim_escape_defers_to_a_live_producer_until_the_absolute_bound() {
+        let header = header_with_live_self_producer();
+        header.set_lease_timeout_ms(50);
+
+        // Past one lease but well inside the absolute bound: a live producer is
+        // registered, so keep waiting rather than drop a message that may yet
+        // arrive.
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms() - 100);
+        assert!(claimed_slot_escape(&mut local, &header, 7).is_none());
+
+        // Past CLAIM_STALL_MAX_LEASES: give up anyway. This is the hole the
+        // two-condition rule cannot see — a dead producer already reaped by a
+        // third party while another producer is still live.
+        let overrun = 50 * CLAIM_STALL_MAX_LEASES + 50;
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms() - overrun);
+        assert_eq!(
+            claimed_slot_escape(&mut local, &header, 7),
+            Some(ClaimEscape::AbsoluteBound),
+        );
+    }
+
+    #[test]
+    fn claim_escape_restarts_when_the_ring_moves_on() {
+        let header = header_with_no_producers();
+        header.set_lease_timeout_ms(50);
+        // Fully expired at position 7 …
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms() - 500);
+        // … but the consumer is now asking about position 8. The old timer must
+        // not carry over, or one stall would authorise a second, unrelated drop.
+        assert!(claimed_slot_escape(&mut local, &header, 8).is_none());
+        assert_eq!(local.claim_stall_tail, 8);
+        assert_eq!(local.claim_stall_since_ms, 0);
+    }
+
+    #[test]
+    fn claim_escape_survives_a_backwards_clock() {
+        let header = header_with_no_producers();
+        header.set_lease_timeout_ms(50);
+        // A stall clock in the future (wall clock stepped backwards). Trusting
+        // it would underflow the elapsed-time subtraction; the escape must
+        // restart the timer instead, which can only ever delay a drop.
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms() + 60_000);
+        assert!(claimed_slot_escape(&mut local, &header, 7).is_none());
+        assert!(local.claim_stall_since_ms <= current_time_ms());
+    }
+
+    #[test]
+    fn taking_the_escape_counts_the_loss_and_frees_the_slot() {
+        let header = header_with_no_producers();
+        let mut local = stalled_local(7, CLAIM_STALL_POLL_MASK, current_time_ms() - 500);
+        local.local_tail = 7;
+
+        take_claimed_slot_escape(
+            &mut local,
+            &header,
+            7,
+            "test_topic",
+            ClaimEscape::NoProducerLeft,
+        );
+
+        // The whole trade rests on this: the drop is VISIBLE.
+        assert_eq!(local.missed, 1, "an abandoned-claim skip must be counted");
+        assert_eq!(local.local_tail, 8, "the consumer must advance past the slot");
+        assert_eq!(
+            header.tail.load(Ordering::Acquire),
+            8,
+            "the freed slot must be published to producers immediately, not \
+             batched — a second stall on top of the one just escaped",
+        );
+        assert_eq!(local.claim_stall_polls, 0, "the stall timer must disarm");
+        assert_eq!(local.claim_stall_since_ms, 0);
+    }
+
+    #[test]
+    fn no_producer_can_finish_ignores_remote_and_inactive_entries() {
+        let header = TopicHeader::zeroed();
+        // A network-replicated producer: its pid belongs to another host and
+        // means nothing to a local liveness probe, so it must not count as a
+        // live local producer keeping the consumer blocked.
+        header.participants[0].pid.store(4242, Ordering::Release);
+        header.participants[0].role.store(1, Ordering::Release);
+        header.participants[0].active.store(1, Ordering::Release);
+        header.participants[0].source_host.store(9, Ordering::Release);
+        assert!(no_producer_can_finish(&header));
+
+        // A consumer-only registration is not a producer either.
+        header.participants[0].source_host.store(0, Ordering::Release);
+        header.participants[0]
+            .pid
+            .store(std::process::id(), Ordering::Release);
+        header.participants[0].role.store(2, Ordering::Release);
+        assert!(no_producer_can_finish(&header));
+
+        // Same entry, now claiming the producer role: we refuse to judge our
+        // own pid, so this DOES block the two-condition escape.
+        header.participants[0].role.store(3, Ordering::Release); // both
+        assert!(!no_producer_can_finish(&header));
+    }
+
+    // ── Bounded slot claim (research 1.20) ──────────────────────────────
+
+    #[test]
+    fn claim_cas_cap_is_above_the_worst_real_contention() {
+        // The cap exists to bound spurious/livelocked retries, not to reject
+        // genuine contention: every producer a topic can hold must be able to
+        // lose the race and still get in.
+        assert!(
+            MAX_CLAIM_CAS_RETRIES as usize > super::super::header::MAX_PARTICIPANTS,
+            "a cap at or below MAX_PARTICIPANTS would drop messages under \
+             ordinary multi-producer contention",
+        );
+    }
+
+    #[test]
+    fn claim_cas_warning_is_rate_limited_per_handle() {
+        let mut local = LocalState::default();
+        warn_claim_cas_exhausted(&mut local, "test_topic");
+        let first = local.claim_cas_warn_ms;
+        assert_ne!(first, 0, "the first exhaustion must be reported");
+        // `send()` funnels one rejected try_send into ~70 more attempts; the
+        // gate must survive that without a lock or an allocation.
+        for _ in 0..128 {
+            warn_claim_cas_exhausted(&mut local, "test_topic");
+        }
+        assert_eq!(
+            local.claim_cas_warn_ms, first,
+            "a burst must not re-arm the quiet period",
+        );
+    }
+
+    // ── Serde staging buffer (research 1.18) ────────────────────────────
+
+    #[test]
+    fn serde_scratch_is_reused_across_sends() {
+        let mut local = LocalState::default();
+        assert_eq!(
+            local.serde_scratch.capacity(),
+            0,
+            "a POD topic must not pay for a buffer it never uses",
+        );
+
+        let big: Vec<u64> = (0..512).collect();
+        assert!(serialize_into_scratch(&mut local, &big));
+        let first_len = local.serde_scratch.len();
+        let warm_capacity = local.serde_scratch.capacity();
+        assert!(first_len > 0);
+        assert!(warm_capacity >= first_len);
+
+        // The point of the change: a second, smaller message must reuse the
+        // capacity rather than allocate again.
+        let small: Vec<u64> = (0..4).collect();
+        assert!(serialize_into_scratch(&mut local, &small));
+        assert!(local.serde_scratch.len() < first_len);
+        assert_eq!(
+            local.serde_scratch.capacity(),
+            warm_capacity,
+            "steady-state serde sends must not touch the allocator",
+        );
+    }
+
+    #[test]
+    fn serde_scratch_round_trips_through_bincode() {
+        // serialize_into must produce exactly what bincode::serialize did, or
+        // the wire format has silently changed for every existing subscriber.
+        let mut local = LocalState::default();
+        let value = ("cmd_vel".to_string(), 1.5f64, vec![1u8, 2, 3]);
+        assert!(serialize_into_scratch(&mut local, &value));
+        assert_eq!(
+            local.serde_scratch.as_slice(),
+            bincode::serialize(&value).unwrap().as_slice(),
+            "the staging buffer must not change the wire format",
+        );
+    }
+
+    #[test]
+    fn serde_scratch_is_cleared_between_messages() {
+        // A stale tail from a longer previous message would be published as
+        // part of the next one — silent corruption on the wire.
+        let mut local = LocalState::default();
+        let long: Vec<u8> = vec![0xAB; 300];
+        assert!(serialize_into_scratch(&mut local, &long));
+        let short: Vec<u8> = vec![0x01; 3];
+        assert!(serialize_into_scratch(&mut local, &short));
+        assert_eq!(
+            local.serde_scratch.as_slice(),
+            bincode::serialize(&short).unwrap().as_slice(),
+        );
     }
 }

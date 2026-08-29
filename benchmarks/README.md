@@ -17,7 +17,8 @@ cargo run --release -p horus_benchmarks --bin all_paths_latency
 | `robotics_messages_benchmark` | Real message types (CmdVel, Imu, LaserScan, JointCommand)               |
 | `determinism_benchmark`       | Jitter and real-time suitability                                        |
 | `scalability_benchmark`       | Multi-thread/multi-process scaling                                      |
-| `dds_comparison_benchmark`    | Comparison against DDS middleware                                       |
+| `competitor_comparison`       | HORUS vs raw UDP loopback (single-thread; see the file header)          |
+| `topic_probe`                 | One POD path, ~2s — the fast loop for hot-path work                     |
 
 Run any benchmark with:
 

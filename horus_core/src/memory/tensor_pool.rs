@@ -110,6 +110,28 @@ const SLOT_ALLOCATED: u32 = 1;
 /// Invalid slot index (sentinel for free list)
 const INVALID_SLOT: u32 = u32::MAX;
 
+/// Slots examined per step of the incremental occupancy sweep.
+///
+/// The pool-pressure check used to call `stats()`, which walks *every* slot
+/// header — 1024 by default, ~57 KiB of mmap'd metadata, ~900 cache lines —
+/// on every 64th allocation.  That is a deterministic spike on 1.5 % of
+/// allocations, which is precisely the density that builds a shelf at
+/// p98.5–p99, and its cost grew with `max_slots` without bound.  Sweeping a
+/// fixed-size window instead makes the worst case of an allocation a constant
+/// 16 slot headers however large the pool is.
+const OCCUPANCY_SCAN_WINDOW: usize = 16;
+
+/// Allocations between sweep steps.
+const OCCUPANCY_SCAN_INTERVAL: u64 = 64;
+
+/// Cursor value meaning "a sweep step is in flight on some other thread".
+///
+/// Doubles as the claim: a thread swaps this in, and whoever gets it back
+/// instead of a real index simply skips its step.  Dropping a step costs
+/// nothing — the sweep is advisory — and it keeps the allocation path
+/// lock-free, with no mutex a SCHED_FIFO publisher could block on.
+const OCCUPANCY_SCAN_BUSY: usize = usize::MAX;
+
 /// Pack a generation counter and slot index into a single u64 for ABA-safe CAS.
 /// Upper 32 bits: generation counter, lower 32 bits: slot index.
 fn pack_tagged_head(generation: u32, slot_id: u32) -> u64 {
@@ -315,6 +337,22 @@ pub struct TensorPool {
     alloc_count: AtomicU64,
     /// Whether the utilization warning has been emitted.
     warned_pressure: std::sync::atomic::AtomicBool,
+
+    // Incremental slot-occupancy sweep (see `check_utilization`).  All of this
+    // is process-local: it is a sampling artefact, not pool state, so it adds
+    // no shared cache line for peer processes to contend on.
+    /// Next slot index the sweep will examine, or [`OCCUPANCY_SCAN_BUSY`] while
+    /// a step is in flight.
+    scan_cursor: std::sync::atomic::AtomicUsize,
+    /// Occupied slots counted so far by the pass in flight.
+    scan_partial_slots: std::sync::atomic::AtomicUsize,
+    /// Refcounts summed so far by the pass in flight.
+    scan_partial_refcount: AtomicU64,
+    /// Occupied slots seen by the last *completed* pass.  Up to one pass stale,
+    /// which is harmless for a "your pool is filling up" hint.
+    slot_occupancy: std::sync::atomic::AtomicUsize,
+    /// Refcount total seen by the last completed pass.
+    slot_refcount: AtomicU64,
 }
 
 impl TensorPool {
@@ -361,6 +399,7 @@ impl TensorPool {
 
         // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
         let mmap = unsafe { MmapOptions::new().len(mmap_size).map_mut(&file)? };
+        Self::make_pool_resident(&mmap, data_offset);
 
         // Create MmapBackend pointing into the data region of this mmap.
         // SAFETY: mmap is valid for mmap_size bytes; data_base = mmap_ptr + data_offset
@@ -394,6 +433,11 @@ impl TensorPool {
             slot_data_ptrs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             alloc_count: AtomicU64::new(0),
             warned_pressure: std::sync::atomic::AtomicBool::new(false),
+            scan_cursor: std::sync::atomic::AtomicUsize::new(0),
+            scan_partial_slots: std::sync::atomic::AtomicUsize::new(0),
+            scan_partial_refcount: AtomicU64::new(0),
+            slot_occupancy: std::sync::atomic::AtomicUsize::new(0),
+            slot_refcount: AtomicU64::new(0),
         };
 
         if is_owner {
@@ -487,6 +531,8 @@ impl TensorPool {
             ))));
         }
 
+        Self::make_pool_resident(&mmap, data_offset);
+
         // SAFETY: same reasoning as new() — mmap is valid, header is initialized.
         let backend: Box<dyn PoolBackend> = unsafe {
             let data_base = mmap.as_ptr().add(data_offset) as *mut u8;
@@ -516,6 +562,11 @@ impl TensorPool {
             slot_data_ptrs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             alloc_count: AtomicU64::new(0),
             warned_pressure: std::sync::atomic::AtomicBool::new(false),
+            scan_cursor: std::sync::atomic::AtomicUsize::new(0),
+            scan_partial_slots: std::sync::atomic::AtomicUsize::new(0),
+            scan_partial_refcount: AtomicU64::new(0),
+            slot_occupancy: std::sync::atomic::AtomicUsize::new(0),
+            slot_refcount: AtomicU64::new(0),
         })
     }
 
@@ -576,6 +627,7 @@ impl TensorPool {
         };
 
         let mmap = unsafe { MmapOptions::new().len(mmap_size).map_mut(&file)? };
+        Self::make_pool_resident(&mmap, data_offset);
 
         let mut pool = Self {
             config: config.clone(),
@@ -593,6 +645,11 @@ impl TensorPool {
             slot_data_ptrs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             alloc_count: AtomicU64::new(0),
             warned_pressure: std::sync::atomic::AtomicBool::new(false),
+            scan_cursor: std::sync::atomic::AtomicUsize::new(0),
+            scan_partial_slots: std::sync::atomic::AtomicUsize::new(0),
+            scan_partial_refcount: AtomicU64::new(0),
+            slot_occupancy: std::sync::atomic::AtomicUsize::new(0),
+            slot_refcount: AtomicU64::new(0),
         };
 
         if is_owner {
@@ -785,17 +842,39 @@ impl TensorPool {
         Ok(())
     }
 
-    /// Check pool utilization and emit a warning if under pressure.
+    /// Check pool utilization and emit a one-shot warning if under pressure.
     ///
-    /// Called periodically (every 64 allocations) to avoid per-alloc overhead.
+    /// This runs on the allocation path, so its worst case is part of every
+    /// publisher's worst case.  Two things keep that worst case constant:
+    ///
+    /// * The **data axis** is O(1): one relaxed load of the bump pointer. It is
+    ///   exact and never stale.
+    /// * The **slot axis** is swept incrementally — [`OCCUPANCY_SCAN_WINDOW`]
+    ///   slot headers per step — and the pressure test reads the last
+    ///   *completed* pass.  The count is therefore up to one pass old.  For a
+    ///   "your pool is filling up" hint that is harmless, and it is the
+    ///   difference between a bounded cost and one proportional to `max_slots`.
+    ///
+    /// It used to call [`stats()`](Self::stats), which walks the whole slot
+    /// table, on every 64th allocation — and went on doing so forever after the
+    /// warning had already fired, discarding the result.  [`stats()`](Self::stats)
+    /// still does the exact full-table walk for the diagnostic API, where no
+    /// control loop is waiting on it.
     fn check_utilization(&self) {
-        let count = self.alloc_count.fetch_add(1, Ordering::Relaxed);
-        // Check every 64 allocations
-        if !count.is_multiple_of(64) {
+        // The warning fires at most once, so once it has fired there is nothing
+        // left for this path to compute.
+        if self.warned_pressure.load(Ordering::Relaxed) {
             return;
         }
 
-        let stats = self.stats();
+        let count = self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        if !count.is_multiple_of(OCCUPANCY_SCAN_INTERVAL) {
+            return;
+        }
+
+        self.step_occupancy_sweep();
+
+        let stats = self.sampled_stats();
         if stats.is_under_pressure()
             && !self
                 .warned_pressure
@@ -807,6 +886,110 @@ impl TensorPool {
                  pool_size or max_slots in TensorPoolConfig.",
                 stats.summary(),
             ));
+        }
+    }
+
+    /// Advance the incremental slot-occupancy sweep by one bounded window.
+    ///
+    /// Examines at most [`OCCUPANCY_SCAN_WINDOW`] slot headers.  When the
+    /// window reaches the end of the table the accumulated totals are published
+    /// as the sweep's answer and the next pass starts from slot 0.
+    ///
+    /// Concurrency: a thread claims the cursor by swapping in
+    /// [`OCCUPANCY_SCAN_BUSY`]; a thread that finds the cursor already claimed
+    /// returns immediately rather than waiting.  Nothing here blocks, so an
+    /// allocation never parks behind another thread's sampling — the property
+    /// that matters when the allocator is called from a SCHED_FIFO tick.
+    fn step_occupancy_sweep(&self) {
+        let start = self
+            .scan_cursor
+            .swap(OCCUPANCY_SCAN_BUSY, Ordering::Acquire);
+        if start == OCCUPANCY_SCAN_BUSY {
+            return; // another thread is mid-step; skipping a step costs nothing
+        }
+
+        let max_slots = self.config.max_slots;
+        let end = start.saturating_add(OCCUPANCY_SCAN_WINDOW).min(max_slots);
+        let mut slots = self.scan_partial_slots.load(Ordering::Relaxed);
+        let mut refcount = self.scan_partial_refcount.load(Ordering::Relaxed);
+
+        for i in start..end {
+            let slot = self.slot(i as u32);
+            // Relaxed throughout: this is a sample of a value that other
+            // processes are changing underneath us by construction.  An
+            // acquire here would buy ordering against writes we are not
+            // synchronizing with anyway, and cost a fence on the alloc path.
+            if slot.flags.load(Ordering::Relaxed) != SLOT_FREE {
+                slots += 1;
+                refcount = refcount.saturating_add(slot.refcount.load(Ordering::Relaxed));
+            }
+        }
+
+        if end >= max_slots {
+            // Pass complete — publish it and start the next one.
+            self.slot_occupancy.store(slots, Ordering::Relaxed);
+            self.slot_refcount.store(refcount, Ordering::Relaxed);
+            self.scan_partial_slots.store(0, Ordering::Relaxed);
+            self.scan_partial_refcount.store(0, Ordering::Relaxed);
+            self.scan_cursor.store(0, Ordering::Release);
+        } else {
+            self.scan_partial_slots.store(slots, Ordering::Relaxed);
+            self.scan_partial_refcount.store(refcount, Ordering::Relaxed);
+            self.scan_cursor.store(end, Ordering::Release);
+        }
+    }
+
+    /// Pay the pool's page faults here, at attach, rather than in whichever
+    /// control loop touches each page first.
+    ///
+    /// A fresh `mmap` has no page-table entries, so the first store to each
+    /// page is a minor fault — microseconds, landing in the tail of whatever
+    /// loop is running.  Nothing removes that work; this only moves it to
+    /// startup, where it is free.
+    ///
+    /// Two spans, treated differently:
+    ///
+    /// * **Metadata** (`PoolHeader` + the whole `SlotHeader` table) is
+    ///   pre-faulted unconditionally.  Every allocation touches slot headers,
+    ///   the table is small and bounded by `max_slots`, and it is the span the
+    ///   occupancy sweep walks.
+    /// * **Data region** goes through the process residency policy, which caps
+    ///   how much of it is pre-faulted (`HORUS_SHM_PREFAULT_MAX_BYTES`,
+    ///   default 64 MiB).  A pool defaults to a **1 GiB** data region, and
+    ///   pre-faulting all of it would commit a gigabyte of tmpfs at attach for
+    ///   a process that may only ever use a few megabytes.  The cap is what
+    ///   keeps this a latency change rather than a memory-footprint change.
+    ///
+    /// Neither call writes to the region, so this is safe to run on a pool a
+    /// peer process is already publishing into.  See
+    /// `horus_sys::shm::make_resident` for the policy, the `mlock` opt-in, and
+    /// the `HORUS_SHM_PREFAULT=0` opt-out.
+    fn make_pool_resident(mmap: &MmapMut, data_offset: usize) {
+        let base = mmap.as_ptr();
+        let total = mmap.len();
+        let metadata = data_offset.min(total);
+        // SAFETY: `base`/`total` describe the live mapping `mmap` owns, which
+        // outlives both calls; neither reads nor writes a byte of it.
+        unsafe {
+            horus_sys::shm::prefault_span(base, metadata);
+            horus_sys::shm::make_resident(base.add(metadata), total - metadata);
+        }
+    }
+
+    /// Pool statistics assembled without walking the slot table: the exact,
+    /// live data-region figures plus the slot figures from the last completed
+    /// sweep pass.  Used by the on-allocation pressure check; callers who need
+    /// an exact slot count call [`stats()`](Self::stats).
+    fn sampled_stats(&self) -> TensorPoolStats {
+        let used_bytes = self.header().next_alloc_offset.load(Ordering::Relaxed) as usize;
+        TensorPoolStats {
+            pool_id: self.pool_id,
+            pool_size: self.config.pool_size,
+            max_slots: self.config.max_slots,
+            allocated_slots: self.slot_occupancy.load(Ordering::Relaxed),
+            total_refcount: self.slot_refcount.load(Ordering::Relaxed),
+            used_bytes,
+            free_bytes: self.config.pool_size.saturating_sub(used_bytes),
         }
     }
 
@@ -5387,4 +5570,166 @@ mod tests {
         pool.release(&live);
         std::fs::remove_file(&pool.shm_path).ok();
     }
+
+    // ── Incremental occupancy sweep (pool-pressure sampling) ───────────────
+
+    fn sweep_test_pool(id: u32, max_slots: usize) -> TensorPool {
+        clear_stale_pool(id);
+        TensorPool::new(
+            id,
+            TensorPoolConfig {
+                pool_size: 1024 * 1024,
+                max_slots,
+                slot_alignment: 64,
+                allocator: Default::default(),
+            },
+        )
+        .expect("Failed to create pool")
+    }
+
+    /// The regression guard for the p99 shelf this sweep exists to remove: one
+    /// step must examine a bounded number of slot headers, no matter how many
+    /// the pool has. The old code walked all `max_slots` of them.
+    #[test]
+    fn occupancy_sweep_step_is_bounded_by_the_window() {
+        let pool = sweep_test_pool(10200, 512);
+        assert!(
+            pool.config.max_slots > OCCUPANCY_SCAN_WINDOW,
+            "the test only means something if a full pass needs several steps"
+        );
+
+        pool.step_occupancy_sweep();
+        assert_eq!(
+            pool.scan_cursor.load(Ordering::Relaxed),
+            OCCUPANCY_SCAN_WINDOW,
+            "one step must advance by exactly one window, not sweep the table"
+        );
+
+        pool.step_occupancy_sweep();
+        assert_eq!(
+            pool.scan_cursor.load(Ordering::Relaxed),
+            2 * OCCUPANCY_SCAN_WINDOW
+        );
+
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// Spreading the walk must not change the answer it eventually gives.
+    #[test]
+    fn occupancy_sweep_converges_on_the_exact_slot_count() {
+        let max_slots = 64;
+        let pool = sweep_test_pool(10201, max_slots);
+
+        let tensors: Vec<_> = (0..40)
+            .map(|_| {
+                pool.alloc(&[32], TensorDtype::U8, Device::cpu())
+                    .expect("alloc")
+            })
+            .collect();
+
+        // Drive at least two full passes so the published value is not the
+        // initial zero left over from construction.
+        for _ in 0..(2 * max_slots.div_ceil(OCCUPANCY_SCAN_WINDOW)) {
+            pool.step_occupancy_sweep();
+        }
+
+        let exact = pool.stats();
+        let sampled = pool.sampled_stats();
+        assert_eq!(
+            sampled.allocated_slots, exact.allocated_slots,
+            "a completed sweep must agree with the full-table walk"
+        );
+        assert_eq!(sampled.total_refcount, exact.total_refcount);
+
+        for t in &tensors {
+            pool.release(t);
+        }
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// The data axis is O(1), so it has no reason to be stale — and it is the
+    /// axis that matters for a pool whose slots are few and large.
+    #[test]
+    fn sampled_stats_data_axis_is_exact_without_a_sweep() {
+        let pool = sweep_test_pool(10202, 64);
+        let t = pool
+            .alloc(&[4096], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+
+        assert_eq!(
+            pool.sampled_stats().used_bytes,
+            pool.stats().used_bytes,
+            "used_bytes comes straight from the bump pointer, never from a sweep"
+        );
+        assert!(pool.sampled_stats().used_bytes > 0);
+
+        pool.release(&t);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// The pressure warning is one-shot. Once it has fired, the sampling path
+    /// must stop doing work entirely — it used to keep walking the whole slot
+    /// table every 64 allocations and throw the result away.
+    #[test]
+    fn check_utilization_does_no_work_once_the_warning_has_fired() {
+        let pool = sweep_test_pool(10203, 64);
+
+        pool.warned_pressure
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let allocs_before = pool.alloc_count.load(Ordering::Relaxed);
+        let cursor_before = pool.scan_cursor.load(Ordering::Relaxed);
+
+        let t = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+
+        assert_eq!(
+            pool.alloc_count.load(Ordering::Relaxed),
+            allocs_before,
+            "the sampler must return before even touching its own counter"
+        );
+        assert_eq!(
+            pool.scan_cursor.load(Ordering::Relaxed),
+            cursor_before,
+            "no sweep step may run after the warning has fired"
+        );
+
+        pool.release(&t);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// Pre-faulting must be invisible in the data. The obvious implementation —
+    /// touch one byte per page — is a read-modify-write, and on a pool a peer
+    /// process is publishing into that is a lost update. This pins the property
+    /// that we never write to the region to make it resident.
+    #[test]
+    fn making_the_pool_resident_does_not_disturb_its_contents() {
+        let pool = sweep_test_pool(10204, 8);
+        let t = pool
+            .alloc(&[256], TensorDtype::U8, Device::cpu())
+            .expect("alloc");
+
+        let pattern: Vec<u8> = (0..256u32).map(|i| (i % 251) as u8).collect();
+        pool.data_slice_mut(&t)
+            .expect("data slice")
+            .copy_from_slice(&pattern);
+        let generation_before = pool.slot(t.slot_id).generation.load(Ordering::Relaxed);
+
+        TensorPool::make_pool_resident(&pool.mmap, pool.data_offset);
+
+        assert_eq!(
+            pool.data_slice(&t).expect("data slice"),
+            &pattern[..],
+            "making pages resident must not alter a single byte of tensor data"
+        );
+        assert_eq!(
+            pool.slot(t.slot_id).generation.load(Ordering::Relaxed),
+            generation_before,
+            "nor a single byte of slot metadata"
+        );
+
+        pool.release(&t);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
 }

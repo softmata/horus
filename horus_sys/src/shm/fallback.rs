@@ -42,6 +42,14 @@ impl ShmRegion {
             );
         }
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
+
+        // Pay the page faults at attach instead of inside the first receive
+        // loop; see `horus_sys::shm::make_resident` for the policy and its
+        // opt-outs.
+        // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(mmap.as_ptr(), size) };
+
         Ok(Self {
             mmap,
             _file: file,
@@ -105,6 +113,12 @@ impl ShmRegion {
         if is_owner {
             mmap.fill(0);
         }
+
+        // As in `open_existing`. For the creator the `fill(0)` above has
+        // already wired every page, so this restates the invariant cheaply.
+        // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(mmap.as_ptr(), size) };
 
         Ok(Self {
             mmap,
@@ -184,6 +198,16 @@ impl ShmRegion {
 
         self.mmap = new_mmap;
         self.size = new_size;
+
+        // The remap is a brand-new mapping with empty page tables, so without
+        // this every page of the grown region would fault again on first touch
+        // — and a grow happens *because* a large message is arriving, i.e. at
+        // the worst possible moment. Re-establish residency before anyone
+        // publishes into it.
+        // SAFETY: the new mapping is live and `new_size` bytes long; the call
+        // neither reads nor writes it.
+        unsafe { super::make_resident(self.mmap.as_ptr(), new_size) };
+
         Ok(())
     }
 }

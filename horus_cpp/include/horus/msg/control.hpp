@@ -120,8 +120,16 @@ struct JointCommand {
 static_assert(sizeof(JointCommand::joint_names) == 512, "JointCommand::joint_names must be 512 bytes");
 static_assert(sizeof(JointCommand::joint_names[0]) == 32, "JointCommand::joint_names inner dim must be 32 (Rust [[u8; 32]; 16])");
 
-// CmdVel and DifferentialDriveCommand are not covered by the generated
-// layout_contract.hpp, so pin them here.
+// CmdVel is not covered by the generated layout_contract.hpp: it does not go
+// through `impl_pod_topic_c_api!` but through the hand-written HorusCmdVel C
+// API, which copies field by field rather than reinterpreting raw bytes. Pin it
+// here anyway.
+//
+// DifferentialDriveCommand IS now in the generated contract (it was missing
+// because the coverage test that is supposed to catch that could only parse
+// single-line macro invocations, and this one is rustfmt-wrapped). These
+// duplicates are kept as a local pin for translation units that include this
+// header without layout_contract.hpp.
 static_assert(sizeof(CmdVel) == 16, "CmdVel size mismatch");
 static_assert(offsetof(CmdVel, timestamp_ns) == 0, "CmdVel::timestamp_ns offset");
 static_assert(offsetof(CmdVel, linear) == 8, "CmdVel::linear offset");

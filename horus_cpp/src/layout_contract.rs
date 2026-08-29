@@ -65,6 +65,7 @@ macro_rules! layout_contract_types {
     horus_robotics::ContactInfo => { state contact_force contact_normal contact_point stiffness damping confidence contact_start_time frame_id timestamp_ns },
     horus_robotics::Detection => { bbox confidence class_id class_name instance_id },
     horus_robotics::Detection3D => { bbox confidence class_id class_name velocity_x velocity_y velocity_z instance_id },
+    horus_robotics::DifferentialDriveCommand => { left_velocity right_velocity max_acceleration enable timestamp_ns },
     horus_robotics::FluidPressure => { fluid_pressure variance frame_id timestamp_ns },
     horus_robotics::ForceCommand => { target_force target_torque force_mode position_setpoint orientation_setpoint max_deviation gains timeout_seconds frame_id timestamp_ns },
     horus_robotics::GoalResult => { goal_id status distance_to_goal eta_seconds progress error_message timestamp_ns },
@@ -138,14 +139,14 @@ pub fn layout_contract() -> String {
                     let full = full_raw.replace(" :: ", "::");
                     let name = full.rsplit("::").next().unwrap_or(&full).to_string();
                     out.push_str(&format!(
-                        "\n// {full}\nstatic_assert(sizeof(horus::msg::{name}) == {size}, \n    \"horus::msg::{name} must match Rust {full} ({size} bytes)\");\n",
+                        "\n// {full}\nstatic_assert(sizeof(horus::msg::{name}) == {size},\n    \"horus::msg::{name} must match Rust {full} ({size} bytes)\");\n",
                         full = full,
                         name = name,
                         size = ::std::mem::size_of::<$path>(),
                     ));
                     $(
                         out.push_str(&format!(
-                            "static_assert(offsetof(horus::msg::{name}, {field}) == {off}, \n    \"horus::msg::{name}::{field} must be at Rust offset {off}\");\n",
+                            "static_assert(offsetof(horus::msg::{name}, {field}) == {off},\n    \"horus::msg::{name}::{field} must be at Rust offset {off}\");\n",
                             name = name,
                             field = stringify!($field),
                             off = ::std::mem::offset_of!($path, $field),
@@ -277,6 +278,77 @@ mod tests {
         }
     }
 
+    /// Every `impl_pod_topic_c_api!` invocation in `c_api.rs`, as
+    /// `(snake_name, RustTypeName)`.
+    ///
+    /// The scan is over the whole file rather than line by line, because
+    /// rustfmt wraps a long invocation across three lines:
+    ///
+    /// ```text
+    /// impl_pod_topic_c_api!(
+    ///     differential_drive_command,
+    ///     horus_robotics::DifferentialDriveCommand
+    /// );
+    /// ```
+    ///
+    /// A line-oriented scan saw `impl_pod_topic_c_api!(` with nothing after it,
+    /// found no comma, and skipped the entry — so every wrapped invocation was
+    /// invisible to the coverage gate below. That is exactly how
+    /// `DifferentialDriveCommand` — a base-motion command — ended up bound to
+    /// the C ABI with no cross-language layout pin at all.
+    ///
+    /// `//` comments are stripped first so the deliberately withdrawn
+    /// (commented-out) invocations stay excluded.
+    fn bound_types(c_api: &str) -> Vec<(String, String)> {
+        let source = c_api
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            })
+            .collect::<Vec<&str>>()
+            .join(" ");
+
+        let mut found = Vec::new();
+        for call in source.split("impl_pod_topic_c_api!(").skip(1) {
+            let Some((args, _)) = call.split_once(')') else {
+                continue;
+            };
+            let Some((snake, ty)) = args.split_once(',') else {
+                continue;
+            };
+            let ty = ty.trim();
+            let name = ty.rsplit("::").next().unwrap_or(ty).trim();
+            found.push((snake.trim().to_string(), name.to_string()));
+        }
+        found
+    }
+
+    /// The scan itself must keep seeing wrapped invocations.
+    ///
+    /// Without this, a future reformat could quietly return the parser to a
+    /// line-oriented reading and the coverage test below would pass vacuously
+    /// for every type whose invocation happens to be wrapped.
+    #[test]
+    fn bound_type_scan_sees_wrapped_invocations() {
+        let found = bound_types(include_str!("c_api.rs"));
+        let saw_wrapped = found.iter().any(|(snake, ty)| {
+            snake.as_str() == "differential_drive_command"
+                && ty.as_str() == "DifferentialDriveCommand"
+        });
+        assert!(
+            saw_wrapped,
+            "the multi-line impl_pod_topic_c_api!(differential_drive_command, ...) \
+             invocation was not seen by the scan — the coverage gate is blind again. \
+             Found: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|(_, ty)| ty.as_str() == "CameraInfo"),
+            "CameraInfo is commented out in c_api.rs (repr(Rust), withdrawn from the \
+             C ABI) and must not be picked up by the scan"
+        );
+    }
+
     /// The contract must actually cover every type the C ABI exposes.
     ///
     /// Without this, deleting a line from the macro list would silently drop a
@@ -284,23 +356,14 @@ mod tests {
     /// the first place.
     #[test]
     fn contract_covers_every_bound_type() {
-        let c_api = include_str!("c_api.rs");
         let rendered = layout_contract();
 
-        let mut missing = Vec::new();
-        for line in c_api.lines() {
-            let Some(rest) = line.trim().strip_prefix("impl_pod_topic_c_api!(") else {
-                continue;
-            };
-            let Some((_, ty)) = rest.split_once(',') else {
-                continue;
-            };
-            let ty = ty.trim().trim_end_matches(");").trim();
-            let name = ty.rsplit("::").next().unwrap_or(ty);
-            if !rendered.contains(&format!("sizeof(horus::msg::{name})")) {
-                missing.push(name.to_string());
-            }
-        }
+        let missing: Vec<String> = bound_types(include_str!("c_api.rs"))
+            .into_iter()
+            .map(|(_, name)| name)
+            .filter(|name| !rendered.contains(&format!("sizeof(horus::msg::{name})")))
+            .collect();
+
         assert!(
             missing.is_empty(),
             "these types are exposed over the C ABI but absent from the layout contract, \

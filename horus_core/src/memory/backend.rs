@@ -341,9 +341,34 @@ impl MmapBackend {
         }
     }
 
+    /// Round `value` up to the next multiple of `alignment`.
+    ///
+    /// Returns `None` rather than wrapping. The old body was
+    /// `value.wrapping_add(alignment - 1) & !(alignment - 1)`, and both halves
+    /// were unsound against the value it is actually fed: `value` is
+    /// `next_alloc_offset`, an atomic in the pool's shared header that every
+    /// process on the pool can write.
+    ///
+    /// * `wrapping_add` turned a large `value` into a SMALL aligned result —
+    ///   `usize::MAX` with a 64-byte alignment aligned to 0 — which then passed
+    ///   the `new_offset > pool_size` bounds check and won the CAS, *rewinding*
+    ///   the shared bump cursor to the front of the data region. Every
+    ///   subsequent allocation then handed out memory already owned by a live
+    ///   tensor: two publishers writing the same bytes, with no error anywhere.
+    ///   That is silent cross-process data corruption, not a crash.
+    /// * `!(alignment - 1)` is only a valid mask for a power-of-two alignment.
+    ///   `alignment` comes from `TensorPoolConfig::slot_alignment`; at 0 it
+    ///   underflows to `usize::MAX`, whose mask is 0, so every allocation
+    ///   returns offset 0 — the same aliasing, reached from a config typo.
     #[inline]
-    fn align_up(value: usize, alignment: usize) -> usize {
-        value.wrapping_add(alignment - 1) & !(alignment - 1)
+    fn align_up(value: usize, alignment: usize) -> Option<usize> {
+        // `is_power_of_two` is false for 0, which also rejects the underflow.
+        if !alignment.is_power_of_two() {
+            return None;
+        }
+        value
+            .checked_add(alignment - 1)
+            .map(|v| v & !(alignment - 1))
     }
 }
 
@@ -354,8 +379,27 @@ impl PoolBackend for MmapBackend {
         let offset_atomic = unsafe { &*self.next_alloc_offset };
 
         loop {
-            let current = offset_atomic.load(Ordering::Acquire) as usize;
-            let aligned_current = Self::align_up(current, self.alignment);
+            let current_raw = offset_atomic.load(Ordering::Acquire);
+            // A bump cursor past the end of the data region cannot have been
+            // produced by this code (every store is bounds-checked below), so it
+            // is corruption in the shared header — a peer process, a stale
+            // region, or a torn write. Refuse rather than fold it back into
+            // range: `align_up` used to wrap such a value to a small offset and
+            // hand out memory that a live tensor already owns.
+            if current_raw > self.pool_size as u64 {
+                return Err(format!(
+                    "mmap pool bump cursor is {} but the data region is only {} bytes — \
+                     the shared PoolHeader is corrupt; refusing to allocate",
+                    current_raw, self.pool_size
+                ));
+            }
+            let current = current_raw as usize;
+            let aligned_current = Self::align_up(current, self.alignment).ok_or_else(|| {
+                format!(
+                    "cannot align bump cursor {} to {} bytes (alignment must be a power of two)",
+                    current, self.alignment
+                )
+            })?;
 
             let new_offset = aligned_current
                 .checked_add(size)
@@ -533,6 +577,33 @@ mod tests {
             buf.iter().all(|&b| b == 0),
             "PoolBackend::zero must scrub the whole allocation"
         );
+    }
+
+    /// `align_up` is fed `next_alloc_offset`, an atomic in the pool's shared
+    /// header that any process on the pool can write. It must never turn a
+    /// hostile or corrupt value into a small, plausible-looking offset.
+    #[test]
+    fn align_up_refuses_to_wrap_a_corrupt_bump_cursor() {
+        // The ordinary cases still work.
+        assert_eq!(MmapBackend::align_up(0, 64), Some(0));
+        assert_eq!(MmapBackend::align_up(1, 64), Some(64));
+        assert_eq!(MmapBackend::align_up(64, 64), Some(64));
+        assert_eq!(MmapBackend::align_up(65, 64), Some(128));
+
+        // The old `wrapping_add` body aligned this to 0 — the front of the data
+        // region — and the caller then CAS'd the shared cursor back to a small
+        // value and handed out memory a live tensor already owns.
+        assert_eq!(
+            MmapBackend::align_up(usize::MAX, 64),
+            None,
+            "a bump cursor near usize::MAX must be refused, not wrapped to 0"
+        );
+        assert_eq!(MmapBackend::align_up(usize::MAX - 62, 64), None);
+
+        // A non-power-of-two alignment has no valid `!(n - 1)` mask; 0 also
+        // underflowed to usize::MAX, whose mask is 0 (every offset becomes 0).
+        assert_eq!(MmapBackend::align_up(4096, 0), None);
+        assert_eq!(MmapBackend::align_up(4096, 48), None);
     }
 
     #[test]

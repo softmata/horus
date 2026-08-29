@@ -100,8 +100,19 @@ impl ShmRingWriter {
         // The whole ring must be inside the mapping. Checking once here means the
         // per-message path cannot compute an in-bounds-looking offset from a
         // truncated file.
+        //
+        // `capacity` and `stride` come out of a header another local process
+        // wrote, and a compromised or simply buggy node on the same /dev/shm can
+        // store any u32 in either. The unchecked `required_region_len` multiplies
+        // them, and the release profile a robot ships has no `overflow-checks`:
+        // on a 32-bit controller `capacity = 65536, stride = 65536` wraps the
+        // product to 0, so the required length comes back as just the header plus
+        // the sequence array and a small file passes a check for a ring that does
+        // not fit in the mapping at all. `required_region_len_checked` refuses
+        // instead of wrapping.
         let stride = if is_pod { type_size } else { slot_size };
-        if stride == 0 || mmap.len() < layout::required_region_len(capacity, stride) {
+        let required = layout::required_region_len_checked(capacity, stride)?;
+        if stride == 0 || mmap.len() < required {
             return None;
         }
 
@@ -188,7 +199,12 @@ impl ShmRingWriter {
         let head = self.load_head();
         let index = (head as usize) & self.cap_mask;
         let slot_start = layout::data_slot_offset(self.capacity, index, self.type_size);
-        let slot_end = slot_start + self.type_size;
+        // `checked_add`, not `+`: on a 32-bit controller these offsets are u32
+        // arithmetic over header-supplied geometry, and a wrapped `slot_end`
+        // compares as in-bounds while naming a slot that is not. See `open_path`.
+        let Some(slot_end) = slot_start.checked_add(self.type_size) else {
+            return false;
+        };
 
         if slot_end > self.mmap.len() {
             return false; // SHM file too small (should be unreachable after open_path)
@@ -237,7 +253,11 @@ impl ShmRingWriter {
         let index = (head as usize) & self.cap_mask;
         let slot_start = layout::data_slot_offset(self.capacity, index, self.slot_size);
 
-        if slot_start + self.slot_size > self.mmap.len() {
+        // `checked_add` — see `write_pod` and `open_path`.
+        let Some(slot_end) = slot_start.checked_add(self.slot_size) else {
+            return false;
+        };
+        if slot_end > self.mmap.len() {
             return false; // should be unreachable after open_path
         }
 

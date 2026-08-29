@@ -153,6 +153,23 @@ pub const fn required_region_len(capacity: usize, stride: usize) -> usize {
     data_region_offset(capacity) + capacity * stride
 }
 
+/// [`required_region_len`], refusing to wrap.
+///
+/// The unchecked form is fine for a geometry this process computed. It is NOT
+/// fine for one read out of a shared header, where `capacity` and `stride` are
+/// whatever another process stored: with `overflow-checks` off — the release
+/// profile a robot ships — `capacity * stride` wraps and the total comes back
+/// *smaller* than the header itself, so a containment check written against it
+/// passes for a ring that does not fit in the mapping at all. Every caller
+/// validating an attacker-controlled header must use this one.
+#[inline]
+pub fn required_region_len_checked(capacity: usize, stride: usize) -> Option<usize> {
+    capacity
+        .checked_mul(core::mem::size_of::<u64>())?
+        .checked_add(capacity.checked_mul(stride)?)?
+        .checked_add(HEADER_SIZE)
+}
+
 // ─── Compile-time drift detection ───────────────────────────────────────────
 
 /// Ties every constant above to the actual `TopicHeader` field it describes.
@@ -233,6 +250,29 @@ mod tests {
         assert_eq!(SERDE_SLOT_LEN_OFF, 8);
         assert_eq!(SERDE_SLOT_DATA_OFF, 16);
         assert_eq!(SERDE_SLOT_OVERHEAD, 16);
+    }
+
+    #[test]
+    fn the_checked_length_agrees_with_the_plain_one_when_nothing_wraps() {
+        for (capacity, stride) in [(1usize, 8usize), (8, 64), (512, 4096)] {
+            assert_eq!(
+                required_region_len_checked(capacity, stride),
+                Some(required_region_len(capacity, stride))
+            );
+        }
+    }
+
+    /// The case the unchecked form gets wrong: a geometry out of an untrusted
+    /// header whose product wraps. `required_region_len` returns a SMALL number
+    /// there, so `required <= mapped_len` passes and the caller maps a ring it
+    /// cannot address.
+    #[test]
+    fn a_wrapping_geometry_is_refused_rather_than_reported_small() {
+        let capacity = 1usize << 40;
+        let stride = 1usize << 40;
+        assert_eq!(required_region_len_checked(capacity, stride), None);
+        // capacity alone can overflow the sequence array, before any stride.
+        assert_eq!(required_region_len_checked(usize::MAX, 1), None);
     }
 
     #[test]

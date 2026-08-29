@@ -51,8 +51,22 @@ pub(crate) struct TickContext {
     pub budget: Option<Duration>,
 }
 
-// SAFETY: TickContext is only accessed from the thread that owns the thread-local.
-// The clock pointer is valid for the duration of tick() — guaranteed by the scheduler.
+// SAFETY: this impl is a promise that a `TickContext` may be MOVED to another
+// thread, and the previous comment ("only accessed from the thread that owns the
+// thread-local") argued the opposite — it is the reason the impl is not needed,
+// not a reason it is sound. What actually makes it sound is narrower, and worth
+// writing down because it is also the invariant that keeps `clock` from
+// dangling: the only `TickContext` that ever exists lives in `TICK_CTX`, a
+// thread-local, and is written solely by `set_tick_context` and cleared solely
+// by `clear_tick_context` on the same thread; nothing in this crate hands one
+// out, boxes it, or sends it. `clock` is therefore only ever dereferenced on the
+// thread whose `set_tick_context` installed it, inside the enter..clear window
+// the scheduler brackets each `tick()` with (`primitives::TickContextGuard`
+// clears it even when the tick unwinds).
+//
+// If a future change ever does move a `TickContext` across a thread boundary,
+// this impl is what will let it compile, and the `clock` pointer's validity
+// argument does NOT survive that move. Delete the impl rather than widen it.
 unsafe impl Send for TickContext {}
 
 // ─── Set / Clear ─────────────────────────────────────────────────────────────
@@ -72,12 +86,26 @@ pub fn set_tick_context(
 ) {
     let seed = deterministic_seed(tick_number, node_name);
     let rng = SmallRng::seed_from_u64(seed);
-    // Erase lifetime to store in 'static thread-local.
-    // SAFETY: caller (scheduler) guarantees `clock` outlives the tick() call.
-    // clear_tick_context() sets this to None before the reference becomes invalid.
-    let clock_ptr: *const dyn Clock = clock;
-    let clock_ptr: *const dyn Clock =
-        unsafe { std::mem::transmute::<*const dyn Clock, *const dyn Clock>(clock_ptr) };
+    // Erase the trait object's lifetime so the pointer can live in a `'static`
+    // thread-local.
+    //
+    // The `&dyn Clock -> *const dyn Clock` coercion is NOT sufficient on its
+    // own, and it is worth being precise about why, because this transmute was
+    // once removed as a no-op and the crate stopped compiling. A raw pointer to
+    // a trait object still carries the object's lifetime bound: the coercion
+    // gives `*const (dyn Clock + '_)`, borrowed from the argument, while
+    // `TickContext::clock` is `*const (dyn Clock + 'static)`. Both spell
+    // `*const dyn Clock` in source, which is exactly what makes the old pair of
+    // identically-annotated bindings read as an identity transmute — lifetime
+    // elision was filling in two different lifetimes.
+    //
+    // SAFETY: the `'static` is a storage requirement, not a claim that the clock
+    // lives forever. The pointer is only ever dereferenced on this thread inside
+    // the enter..clear window the scheduler brackets each `tick()` with:
+    // `clear_tick_context` nulls it before `clock`'s borrow ends, and
+    // `primitives::TickContextGuard` runs that on the unwinding path too.
+    let clock_ptr = clock as *const dyn Clock;
+    let clock_ptr: *const (dyn Clock + 'static) = unsafe { std::mem::transmute(clock_ptr) };
 
     TICK_CTX.with(|ctx| {
         let mut slot = ctx.borrow_mut();

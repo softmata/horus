@@ -110,20 +110,28 @@ fn benchmark_results_record_their_provenance() {
     );
 }
 
-/// Quoted competitor figures must be tagged, or they read as measurements.
+/// No benchmark may invent a competitor's distribution.
+///
+/// This used to require only that `dds_comparison_benchmark`'s quoted ROS 2 and
+/// DDS figures carried `Provenance::Literature` rather than being emitted as
+/// measurements. That was the narrow fix, and it left the fiction in place with
+/// a better label: the binary synthesised a full percentile distribution
+/// (p1 through p99.99, plus confidence bounds and `std_dev = 0`, `cv = 0`) from
+/// two hardcoded constants, and its three "Real-Time Control Suitability" gates
+/// graded the p99 of a ~50 ns `send()` against 1 ms / 100 us / 10 us thresholds
+/// — none of which could fail, by four to five orders of magnitude.
+///
+/// The binary is deleted. The invariant is now the stronger one: nothing under
+/// `benchmarks/` manufactures a competitor's percentiles. A DDS comparison may
+/// come back, but it has to measure DDS.
 #[test]
-fn quoted_competitor_figures_are_tagged_as_literature() {
-    let bench =
-        read("benchmarks/src/bin/dds_comparison_benchmark.rs").expect("dds benchmark must exist");
-
+fn no_benchmark_invents_a_competitor_distribution() {
     assert!(
-        bench.contains("Provenance::Literature"),
-        "the synthetic ROS2/DDS reference results are still emitted as if \
-         measured"
-    );
-    assert!(
-        bench.contains("REP2014_SOURCE") || bench.contains("REP 2014"),
-        "a quoted figure must name its source specifically enough to look up"
+        read("benchmarks/src/bin/dds_comparison_benchmark.rs").is_none(),
+        "dds_comparison_benchmark is back. It built ROS2/CycloneDDS/FastDDS \
+         distributions arithmetically from two constants and wrote them into \
+         the report beside real measurements. If a DDS comparison returns, it \
+         must measure DDS rather than quote it."
     );
 }
 

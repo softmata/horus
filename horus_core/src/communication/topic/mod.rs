@@ -1106,7 +1106,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 }
                 backoff_ms = (backoff_ms * 2).min(50);
             }
-            return Ok(header.slot_size as usize);
+            // The owner has stamped the magic; its geometry is now this
+            // process's ring geometry, and it is untrusted for exactly the same
+            // reason as the already-initialized case below.
+            return Self::validate_ring_geometry(name, storage, header, type_size);
         }
 
         // Header already initialized — validate compatibility.
@@ -1194,7 +1197,142 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 },
             ));
         }
-        Ok(header.slot_size as usize)
+
+        Self::validate_ring_geometry(name, storage, header, type_size)
+    }
+
+    /// Check the ring geometry an existing header declares against the mapping
+    /// this process actually holds, and return the validated `slot_size`.
+    ///
+    /// Every field of a topic header is written by another process, and on a
+    /// robot every node shares `/dev/shm`, so one compromised — or merely buggy
+    /// — process can put any 32-bit value in `capacity`, `capacity_mask` and
+    /// `slot_size` of a topic it can open. The data path then consumes all
+    /// three completely unchecked, and says so:
+    ///
+    /// * `dispatch.rs` lists "index bounds" among its safety invariants —
+    ///   "`capacity_mask = capacity - 1` and capacity is always a power of two.
+    ///   This guarantees `index < capacity` without bounds checks";
+    /// * `init_shm_backend` derives `cached_data_ptr` with the comment
+    ///   "capacity was validated when the SHM region was mapped".
+    ///
+    /// Neither was true. `ensure_role` turns `header.capacity` straight into
+    /// `cached_data_ptr` (`HEADER_SIZE + capacity * 8` from the mapping base),
+    /// `sync_local` copies `capacity_mask` and `slot_size` into the local state,
+    /// and every send/recv computes its slot as `(seq & capacity_mask) *
+    /// stride` from that pointer with no further check. A header declaring
+    /// `capacity_mask = 0xFFFF_FFFF` therefore puts a `simd_aware_write` up to
+    /// `4G * size_of::<T>()` bytes past the end of the mapping — a wild write at
+    /// an offset the writer chooses, on a control topic, in another process.
+    ///
+    /// This function is the single point every attaching process passes
+    /// through, so this is where that invariant gets established rather than
+    /// assumed. A header that fails is refused: the topic does not open, which
+    /// is a loud startup failure instead of a silent one that moves an
+    /// actuator.
+    ///
+    /// The bound is the mapping this process really has (`storage.len()`), not
+    /// the size it asked for: `ShmRegion::new` maps `max(requested, file len)`,
+    /// so a legitimate joiner of a larger ring — or of one another process
+    /// auto-grew — is already mapped over the whole file and passes.
+    fn validate_ring_geometry(
+        name: &str,
+        storage: &ShmRegion,
+        header: &TopicHeader,
+        type_size: u32,
+    ) -> HorusResult<usize> {
+        let capacity = header.capacity as usize;
+        let capacity_mask = header.capacity_mask;
+        let slot_size = header.slot_size as usize;
+        let region_len = storage.len();
+
+        let refuse = |reason: String| {
+            HorusError::Communication(crate::error::CommunicationError::TopicCreationFailed {
+                topic: name.to_string(),
+                reason,
+            })
+        };
+
+        if capacity == 0 || !capacity.is_power_of_two() {
+            return Err(refuse(format!(
+                "shared header declares ring capacity {capacity}, which is not a power of \
+                 two — slot indices are computed as `seq & capacity_mask` with no bounds \
+                 check, so this ring cannot be addressed safely"
+            )));
+        }
+        if capacity_mask as usize != capacity - 1 {
+            return Err(refuse(format!(
+                "shared header declares capacity {capacity} with capacity_mask {capacity_mask:#x} \
+                 (must be capacity - 1) — indexing with that mask reads and writes outside \
+                 the ring"
+            )));
+        }
+        if slot_size == 0 {
+            return Err(refuse(
+                "shared header declares slot_size 0 — every slot would alias slot 0".to_string(),
+            ));
+        }
+        // The POD path addresses slots as `(cached_data_ptr as *mut T).add(index)`,
+        // so its stride is `size_of::<T>()` while the region was sized in units of
+        // `slot_size`. The owner always writes `slot_size >= type_size`; a header
+        // that does not is one where each write runs into the following slot.
+        if header.is_pod_type() && slot_size < type_size as usize {
+            return Err(refuse(format!(
+                "shared header declares slot_size {slot_size} for a {type_size}-byte POD \
+                 message — each write would run past its slot"
+            )));
+        }
+
+        let required = shm_layout::required_region_len_checked(capacity, slot_size)
+            .ok_or_else(|| {
+                refuse(format!(
+                    "shared header declares a ring geometry (capacity {capacity} x slot_size \
+                     {slot_size}) whose size overflows the address space"
+                ))
+            })?;
+        if required > region_len {
+            return Err(refuse(format!(
+                "shared header declares a {required}-byte ring (capacity {capacity}, slot_size \
+                 {slot_size}) but only {region_len} bytes are mapped — the data path would \
+                 address {} bytes past the end of the mapping",
+                required - region_len
+            )));
+        }
+
+        debug_assert!(
+            Self::geometry_is_addressable(header, region_len),
+            "validate_ring_geometry accepted a header geometry_is_addressable rejects — \
+             the two have drifted apart"
+        );
+        Ok(slot_size)
+    }
+
+    /// The geometry invariant every slot index depends on, as a predicate.
+    ///
+    /// [`Self::validate_ring_geometry`] is this same test with the diagnostics
+    /// for refusing to OPEN a topic; this is the form used as a filter on what a
+    /// later header rewrite is allowed to install (see [`Self::sync_local`]).
+    /// Validating only at attach would guard the harder attack and leave the
+    /// easy one open: a process that can write the header can rewrite the
+    /// geometry of a topic that is already running and bump `migration_epoch`,
+    /// and every peer re-reads all three fields on the next epoch check.
+    fn geometry_is_addressable(header: &TopicHeader, region_len: usize) -> bool {
+        let capacity = header.capacity as usize;
+        if capacity == 0 || !capacity.is_power_of_two() {
+            return false;
+        }
+        if header.capacity_mask as usize != capacity - 1 {
+            return false;
+        }
+        let slot_size = header.slot_size as usize;
+        if slot_size == 0 {
+            return false;
+        }
+        if header.is_pod_type() && slot_size < mem::size_of::<T>() {
+            return false;
+        }
+        shm_layout::required_region_len_checked(capacity, slot_size)
+            .is_some_and(|required| required <= region_len)
     }
 
     /// Check if T is a POD type (auto-detected via needs_drop)
@@ -1239,18 +1377,40 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// and during initial registration to cache header values for zero-overhead
     /// dispatch. When `skip_stale_broadcast` is true, PodShm consumers reset
     /// tail = head to skip stale data from the previous era.
+    ///
+    /// `region_len` is the length of the mapping this handle holds. It is what
+    /// bounds the ring geometry the header declares: this function is the ONE
+    /// place where `capacity`, `capacity_mask` and `slot_size` cross from shared
+    /// memory into the local state that every send and recv indexes with, so it
+    /// is where a geometry the mapping cannot hold gets refused.
     #[inline(always)]
-    fn sync_local(local: &mut LocalState, header: &TopicHeader, skip_stale_broadcast: bool) {
+    fn sync_local(
+        local: &mut LocalState,
+        header: &TopicHeader,
+        skip_stale_broadcast: bool,
+        region_len: usize,
+    ) {
         // Capture the pre-sync capacity to decide whether this resync crosses
         // a data-plane boundary (a capacity grow; see the local_tail logic below).
         let old_capacity = local.cached_capacity;
 
         local.is_same_process = header.is_same_process();
         local.is_pod = header.is_pod_type();
-        local.slot_size = header.slot_size as usize;
         local.cached_mode = header.mode();
-        local.cached_capacity = header.capacity as u64;
-        local.cached_capacity_mask = header.capacity_mask as u64;
+        // The geometry is adopted only if it is addressable inside this mapping.
+        // Refusing leaves the handle on the geometry it last validated, and every
+        // caller derives `cached_data_ptr` from whichever geometry ends up
+        // installed here — so the pointer, the mask and the slot size always
+        // describe one ring inside one mapping. Adopting unconditionally instead
+        // would point `(seq & capacity_mask) * stride` outside the region: a wild
+        // write on a control topic, at an offset chosen by whichever process
+        // wrote the header. A refusal is not silent — `handle_epoch_change` logs
+        // it.
+        if Self::geometry_is_addressable(header, region_len) {
+            local.slot_size = header.slot_size as usize;
+            local.cached_capacity = header.capacity as u64;
+            local.cached_capacity_mask = header.capacity_mask as u64;
+        }
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         let shared_tail = header.tail.load(Ordering::Acquire);
 
@@ -1365,14 +1525,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         local.slot_index = slot as i32;
         local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
-        let cap = header.capacity as usize;
+        local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
+        // Sync BEFORE deriving the data pointer, and derive it from the synced
+        // capacity rather than from `header.capacity` directly. The header is
+        // shared memory: it was validated when this topic was opened, but another
+        // process can have rewritten it since, and `sync_local` is what refuses a
+        // geometry this mapping cannot hold. Reading `header.capacity` here
+        // instead would put `cached_data_ptr` outside the region before the first
+        // message is ever sent.
+        Self::sync_local(local, header, false, self.storage.len());
+        let cap = local.cached_capacity as usize;
         // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        // SAFETY: data_region_offset(cap) is within bounds of allocated storage region
+        // SAFETY: `cap` is the capacity `sync_local` accepted, so the whole ring
+        // (`HEADER_SIZE + cap * 8 + cap * slot_size`) fits inside `storage.len()`
+        // and `data_region_offset(cap)` is inside the mapping.
         local.cached_data_ptr =
             unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
-        local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
-        Self::sync_local(local, header, false);
         // Set role LAST — this gates the fast path via can_send()/can_recv()
         local.role = if is_producer {
             if local.role == TopicRole::Consumer {
@@ -1450,7 +1619,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             const MAX_EPOCH_RETRIES: u32 = 4;
             let mut stable_epoch = current_epoch;
             local.cached_epoch = stable_epoch;
-            Self::sync_local(local, header, true);
+            Self::sync_local(local, header, true, self.storage.len());
             for _ in 0..MAX_EPOCH_RETRIES {
                 let reloaded = header.migration_epoch.load(Ordering::Acquire);
                 if reloaded == stable_epoch {
@@ -1460,7 +1629,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // syncing; re-sync to the newer epoch and check again.
                 stable_epoch = reloaded;
                 local.cached_epoch = stable_epoch;
-                Self::sync_local(local, header, true);
+                Self::sync_local(local, header, true, self.storage.len());
             }
             // Re-initialize backend for the new (stable) epoch.
             //
@@ -1497,7 +1666,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 match migrator.migrate_to_optimal() {
                     MigrationResult::Success { new_epoch } => {
                         local.cached_epoch = new_epoch;
-                        Self::sync_local(local, header, true);
+                        Self::sync_local(local, header, true, self.storage.len());
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         // Notify all same-process Topics of the epoch change
                         registry::notify_epoch_change(&self.name, new_epoch);
@@ -1520,7 +1689,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         let new_epoch = header.migration_epoch.load(Ordering::Acquire);
                         if new_epoch != local.cached_epoch {
                             local.cached_epoch = new_epoch;
-                            Self::sync_local(local, header, true);
+                            Self::sync_local(local, header, true, self.storage.len());
                             registry::notify_epoch_change(&self.name, new_epoch);
                             self.process_epoch.fetch_max(new_epoch, Ordering::Release);
                         }
@@ -1633,7 +1802,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Every topic is SHM-backed — the data plane always lives in the SHM region.
         self.init_shm_backend(backend);
 
-        self.set_dispatch_fn_ptrs(mode, is_pod);
+        // Re-read the mode: `init_shm_backend` takes it from the SHM header
+        // again, so the backend it built can be for a DIFFERENT mode than the
+        // `mode` above (another process migrating between the two reads, or the
+        // FanoutShm fallback). Dispatch must match the backend that actually
+        // exists — `send_fanout_shm`/`recv_fanout_shm` are the only dispatch
+        // functions that destructure `BackendStorage`, and their mismatch arm is
+        // `unreachable_unchecked()` in release builds, so a FanoutShm function
+        // pointer over a `ShmData` backend is undefined behaviour rather than a
+        // panic. `init_shm_backend` keeps `cached_mode` in step for exactly this.
+        let built_mode = self.local().cached_mode;
+        self.set_dispatch_fn_ptrs(built_mode, is_pod);
     }
 
     /// Check if the current backend storage already matches the requested mode.
@@ -1668,7 +1847,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if mode == BackendMode::FanoutShm {
             let is_pod = crate::communication::pod::is_pod::<T>();
             let type_size = mem::size_of::<T>();
-            let capacity = self.header().capacity;
+            // Prefer the capacity `sync_local` validated over a fresh read of the
+            // shared header: this number sizes an mmap, and a header rewritten to
+            // `u32::MAX` would have every peer ask the kernel for a petabyte-scale
+            // region on each fanout init. Before this handle has synced (capacity
+            // 0) there is nothing validated to use, and both sides of the size
+            // computation clamp to the 16-slot minimum there anyway.
+            let capacity = match self.local().cached_capacity as u32 {
+                0 => self.header().capacity,
+                cached => cached,
+            };
             let total_size =
                 shm_fanout::ShmFanoutRing::required_file_size(type_size, is_pod, capacity as usize);
             let fanout_name = format!("{}_fanout", self.name);
@@ -1686,13 +1874,27 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         // COMM-H1: `attach` returns None when the region carries an
                         // older/incompatible layout version (the v3 meta bump) —
                         // reject-and-fall-back instead of reinterpreting a stale
-                        // region with the new strides.
-                        shm_fanout::ShmFanoutRing::attach(shm_base, is_pod, type_size)
+                        // region with the new strides. It also refuses dimensions
+                        // that do not fit the mapping we actually have, which is
+                        // why it needs that length: every channel pointer is
+                        // derived from numbers another process wrote.
+                        shm_fanout::ShmFanoutRing::attach(
+                            shm_base,
+                            fanout_storage.len(),
+                            is_pod,
+                            type_size,
+                        )
                     }
                 };
                 if let Some(ring) = ring {
                     // Store the SHM region in local state so it stays alive
-                    self.local().fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
+                    let local = self.local();
+                    local.fanout_shm_storage = Some(std::sync::Arc::new(fanout_storage));
+                    // The backend now IS a fanout ring; record that as the mode
+                    // dispatch is resolved against. `cached_mode` came from an
+                    // earlier read of the same header word and can already be a
+                    // migration behind.
+                    local.cached_mode = BackendMode::FanoutShm;
                     *backend = BackendStorage::FanoutShm(Box::new(ring));
                     return;
                 }
@@ -1718,11 +1920,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // mmap'd storage region (they may have been left pointing elsewhere by a
         // prior init, e.g. a FanoutShm fallback).
         let local = self.local();
+        // Reaching here with `cached_mode == FanoutShm` means the header said
+        // FanoutShm when `sync_local` read it and something else when this
+        // function re-read it a moment ago — a concurrent migration. The backend
+        // built is `ShmData`, so the cached mode must say so too: otherwise
+        // `set_dispatch_fn_ptrs` installs `send_fanout_shm`, whose "not a
+        // FanoutShm backend" arm is `unreachable_unchecked()` in release.
+        if local.cached_mode == BackendMode::FanoutShm {
+            local.cached_mode = mode;
+        }
         let cap = local.cached_capacity as usize;
         // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        // SAFETY: data_region_offset(cap) is within the storage bounds (capacity was validated
-        // when the SHM region was mapped); storage.as_ptr() is a valid non-null pointer.
+        // SAFETY: data_region_offset(cap) is within the storage bounds because
+        // `validate_ring_geometry` refused this header at attach time unless
+        // `HEADER_SIZE + capacity * 8 + capacity * slot_size <= storage.len()`.
+        // `cap` comes from that same validated header field; storage.as_ptr() is
+        // a valid non-null pointer.
         local.cached_data_ptr =
             unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
     }
@@ -1887,8 +2101,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let migrator = crate::communication::topic::migration::BackendMigrator::new(header);
         let _ = migrator.migrate_to_optimal();
 
-        // Re-sync local state from the updated header.
-        Self::sync_local(local, header, false);
+        // Re-sync local state from the updated header. The mapping was already
+        // grown to `new_total` above, so the geometry just published fits it and
+        // `sync_local` adopts it.
+        Self::sync_local(local, header, false, self.storage.len());
 
         // Re-derive ALL cached pointers from the (possibly moved) mmap.
         local.cached_header_ptr = new_header_ptr;
@@ -2001,33 +2217,85 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // value, preserving `process_epoch <= migration_epoch`.
         self.process_epoch
             .fetch_max(actual_epoch, Ordering::Release);
-        Self::sync_local(local, header, true);
-
-        // If slot_size grew (auto-grow from another process), grow our mmap to match.
-        let new_slot_size = local.slot_size;
-        let capacity = local.cached_capacity as usize;
-        if capacity > 0 && new_slot_size > 0 {
-            let needed_total = Self::HEADER_SIZE
-                + capacity * std::mem::size_of::<u64>()
-                + capacity * new_slot_size;
-            if needed_total > self.storage.len() {
+        // An epoch change is the second way an untrusted header reaches the index
+        // arithmetic, and the easier one: everything below installs `capacity`,
+        // `capacity_mask` and `slot_size` from shared memory into the local state
+        // that every send and recv indexes with. Attaching is a one-time event a
+        // hostile writer has to win a race for; rewriting the geometry of a
+        // RUNNING topic and bumping `migration_epoch` is something it can do at
+        // any moment.
+        //
+        // Order matters here. The legitimate reason a peer publishes a geometry
+        // larger than this mapping is `auto_grow_slot_size` in another process,
+        // and the answer to that is to grow this mapping to match — so the grow
+        // comes FIRST, and `sync_local` then sees the mapping this handle will
+        // actually use when it decides whether the geometry is addressable. A
+        // geometry that is still not addressable afterwards is refused by
+        // `sync_local`, which leaves this handle on the last one it validated,
+        // and the cached pointers are then re-derived from whichever geometry
+        // ended up installed — so the pointer, the mask and the slot size always
+        // describe one ring inside one mapping.
+        //
+        // Every size here is computed with checked arithmetic. The previous form
+        // was `HEADER_SIZE + capacity * 8 + capacity * slot_size` unchecked: with
+        // `overflow-checks` off — the release profile a robot ships — a capacity
+        // and slot size whose product wraps produced a SMALL total, so the grow
+        // was skipped and the wrapped geometry was installed anyway.
+        let declared_capacity = header.capacity as usize;
+        let declared_slot = header.slot_size as usize;
+        let declared_len =
+            shm_layout::required_region_len_checked(declared_capacity, declared_slot);
+        if let Some(required) = declared_len {
+            // `geometry_is_addressable(header, required)` is every part of the
+            // invariant EXCEPT containment (it holds trivially against
+            // `required` itself), so this grows only for a geometry that would
+            // be usable once the mapping matches it.
+            if required > self.storage.len() && Self::geometry_is_addressable(header, required) {
                 // SAFETY: single-thread ownership, no concurrent reads on the mmap.
-                if unsafe { self.storage.grow_unchecked(needed_total) }.is_ok() {
-                    // Update header_ptr to point into the (possibly moved) new mmap.
-                    let new_header_ptr = self.storage.as_ptr() as *const TopicHeader;
-                    self.header_ptr.set(new_header_ptr);
-                    local.cached_header_ptr = new_header_ptr;
-                    local.cached_seq_ptr =
-                        unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-                    local.cached_data_ptr = unsafe {
-                        self.storage
-                            .as_ptr()
-                            .add(Self::data_region_offset(capacity))
-                            as *mut u8
-                    };
+                if unsafe { self.storage.grow_unchecked(required) }.is_ok() {
+                    // Only the header pointer moves here. The cached ring pointers
+                    // are re-derived below, from the geometry `sync_local` accepts
+                    // — deriving them here from `declared_capacity` would let them
+                    // describe a different ring than the mask and slot size in use
+                    // if the header changed once more in between.
+                    self.header_ptr.set(self.storage.as_ptr() as *const TopicHeader);
                 }
             }
         }
+
+        // The grow above may have remapped the region, so `header` is re-derived
+        // rather than reused.
+        let header = unsafe { &*self.header_ptr.get() };
+        let region_len = self.storage.len();
+        if !Self::geometry_is_addressable(header, region_len) {
+            log::error!(
+                "Topic '{}': ignoring the ring geometry published with epoch {} \
+                 (capacity {}, mask {:#x}, slot_size {}) — it is not addressable \
+                 inside this process's {region_len}-byte mapping. Another process \
+                 wrote a header this one cannot index; keeping the last valid \
+                 geometry.",
+                self.name,
+                actual_epoch,
+                header.capacity,
+                header.capacity_mask,
+                header.slot_size,
+            );
+        }
+        Self::sync_local(local, header, true, region_len);
+
+        // Re-derive the cached pointers from the mapping as it is NOW and the
+        // capacity `sync_local` actually accepted, so the pointer, the mask and
+        // the slot size always describe one ring inside one mapping. That
+        // agreement is what every `SAFETY: index < capacity` claim in dispatch.rs
+        // rests on.
+        local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
+        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_data_ptr = unsafe {
+            self.storage
+                .as_ptr()
+                .add(Self::data_region_offset(local.cached_capacity as usize))
+                as *mut u8
+        };
 
         self.initialize_backend();
 
@@ -2671,11 +2939,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return None;
         }
 
-        let mask = header.capacity_mask as u64;
+        let local = self.local();
+        // The mask must be the one `sync_local` validated against this mapping,
+        // NOT a fresh read of `header.capacity_mask`. Both the mask and `head`
+        // above come out of shared memory, so reading the mask here let another
+        // process choose `latest_index` outright — `(head - 1) & 0xFFFF_FFFF`
+        // scaled by `size_of::<T>()` — and this function RETURNS what it finds
+        // there as the message. That is a wrong value delivered to a caller, not
+        // just a crash, which on a control topic is the worse of the two.
+        let mask = local.cached_capacity_mask;
         let latest_index = ((head.wrapping_sub(1)) & mask) as usize;
 
-        let local = self.local();
-        // SAFETY: data_ptr set from valid storage pointer; latest_index within ring bounds
+        // SAFETY: `cached_data_ptr` and `cached_capacity_mask` are set together
+        // from a geometry validated against this mapping, so
+        // `latest_index < capacity` and the slot is inside the data region.
         let msg = unsafe {
             let base = local.cached_data_ptr as *const T;
             simd_aware_read(base.add(latest_index))
@@ -3754,5 +4031,166 @@ mod resync_tail_tests {
             assert!(resynced_tail(local, shared, head, true) <= head);
             assert!(resynced_tail(local, shared, head, false) <= head);
         }
+    }
+}
+
+/// The ring geometry in a topic's SHM header, treated as untrusted input.
+///
+/// `header.rs`'s `untrusted_header_tests` cover the FILE reader
+/// (`read_latest_slot_bytes`, what `horus topic echo` uses). These cover the
+/// other consumer of the same bytes and the far more dangerous one: the ATTACH
+/// path, where a process maps the region and hands `capacity`, `capacity_mask`
+/// and `slot_size` to the dispatch functions, which index with them and never
+/// bounds-check. Every one of these headers is one a process sharing
+/// `/dev/shm` can write.
+#[cfg(test)]
+mod untrusted_ring_geometry_tests {
+    use super::header::{TopicHeader, TOPIC_HEADER_SIZE};
+    use super::RingTopic;
+
+    const CAPACITY: u32 = 64;
+    const SLOT: u32 = 64;
+
+    /// Write a topic region by hand, with `poison` applied to an otherwise
+    /// well-formed header. Returns false when shared memory is unavailable in
+    /// this environment (the sandbox), in which case the test skips.
+    fn plant_region(name: &str, poison: impl FnOnce(&mut TopicHeader)) -> bool {
+        // Let the SHM layer build its directory tree with the ownership and
+        // permissions it insists on before writing a region into it by hand.
+        // The seed handle is the sole holder, so it unlinks its own file.
+        match RingTopic::<u64>::new(name) {
+            Ok(seed) => drop(seed),
+            Err(_) => return false,
+        }
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(name) else {
+            return false;
+        };
+
+        let mut header = TopicHeader::zeroed();
+        header.init(8, 8, true, CAPACITY, SLOT, "", 0);
+        // A zero creator_pid is never treated as stale, so the opener takes this
+        // header as live and goes down the validate-an-existing-header branch —
+        // the one a joining node uses.
+        header.creator_pid = 0;
+        poison(&mut header);
+
+        let total =
+            TOPIC_HEADER_SIZE + CAPACITY as usize * 8 + CAPACITY as usize * SLOT as usize;
+        let mut buf = vec![0u8; total];
+        // SAFETY: `TopicHeader` is repr(C) and this is exactly the byte image the
+        // SHM region holds; `buf` is larger than the header.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &header as *const TopicHeader as *const u8,
+                buf.as_mut_ptr(),
+                TOPIC_HEADER_SIZE,
+            );
+        }
+        std::fs::write(&path, &buf).is_ok()
+    }
+
+    fn cleanup(name: &str) {
+        if let Some(path) = horus_sys::shm::topic_shm_path_checked(name) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// The mask is the ONLY bound on a slot index: every send computes
+    /// `(seq & capacity_mask)` and writes at that index from `cached_data_ptr`
+    /// with no further check (`dispatch::send_shm_mp_pod`). A mask wider than
+    /// the capacity puts that write outside the mapping.
+    #[test]
+    fn a_capacity_mask_wider_than_the_capacity_is_refused() {
+        let name = format!("untrusted_geom_mask_{}", std::process::id());
+        if !plant_region(&name, |h| h.capacity_mask = u32::MAX) {
+            eprintln!("skipping: shared memory unavailable");
+            return;
+        }
+        assert!(
+            RingTopic::<u64>::new(&name).is_err(),
+            "a mask inconsistent with the capacity must be refused at attach, not \
+             handed to the index arithmetic"
+        );
+        cleanup(&name);
+    }
+
+    /// A capacity that is not a power of two has no mask that keeps
+    /// `seq & mask` inside the ring, so the whole `& mask` scheme is void.
+    #[test]
+    fn a_capacity_that_is_not_a_power_of_two_is_refused() {
+        let name = format!("untrusted_geom_cap_{}", std::process::id());
+        if !plant_region(&name, |h| {
+            h.capacity = 63;
+            h.capacity_mask = 62;
+        }) {
+            eprintln!("skipping: shared memory unavailable");
+            return;
+        }
+        assert!(RingTopic::<u64>::new(&name).is_err());
+        cleanup(&name);
+    }
+
+    /// `ensure_role` turns `capacity` straight into `cached_data_ptr`
+    /// (`HEADER_SIZE + capacity * 8` from the mapping base). A capacity larger
+    /// than the mapping puts that pointer past the end of the region before a
+    /// single message is sent.
+    #[test]
+    fn a_capacity_larger_than_the_mapping_is_refused() {
+        let name = format!("untrusted_geom_big_{}", std::process::id());
+        if !plant_region(&name, |h| {
+            h.capacity = 1 << 20;
+            h.capacity_mask = (1 << 20) - 1;
+        }) {
+            eprintln!("skipping: shared memory unavailable");
+            return;
+        }
+        assert!(
+            RingTopic::<u64>::new(&name).is_err(),
+            "a ring the mapping cannot hold must be refused, not addressed"
+        );
+        cleanup(&name);
+    }
+
+    /// The serde path multiplies the slot index by `slot_size`, so an oversized
+    /// slot walks off the region just as an oversized capacity does.
+    #[test]
+    fn a_slot_size_larger_than_the_mapping_is_refused() {
+        let name = format!("untrusted_geom_slot_{}", std::process::id());
+        if !plant_region(&name, |h| h.slot_size = 1 << 24) {
+            eprintln!("skipping: shared memory unavailable");
+            return;
+        }
+        assert!(RingTopic::<u64>::new(&name).is_err());
+        cleanup(&name);
+    }
+
+    /// Zero slots would make every slot alias slot 0 — and the geometry it
+    /// implies is not one any owner writes.
+    #[test]
+    fn a_zero_slot_size_is_refused() {
+        let name = format!("untrusted_geom_zero_{}", std::process::id());
+        if !plant_region(&name, |h| h.slot_size = 0) {
+            eprintln!("skipping: shared memory unavailable");
+            return;
+        }
+        assert!(RingTopic::<u64>::new(&name).is_err());
+        cleanup(&name);
+    }
+
+    /// The guard must not reject a region a real publisher wrote.
+    #[test]
+    fn a_consistent_header_still_opens() {
+        let name = format!("untrusted_geom_good_{}", std::process::id());
+        if !plant_region(&name, |_| {}) {
+            eprintln!("skipping: shared memory unavailable");
+            return;
+        }
+        let topic = RingTopic::<u64>::new(&name)
+            .expect("a well-formed region must still open — the guard is not allowed to \
+                     break ordinary joining");
+        topic.send(7);
+        assert_eq!(topic.recv(), Some(7));
+        drop(topic);
+        cleanup(&name);
     }
 }

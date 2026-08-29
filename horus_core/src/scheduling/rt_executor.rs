@@ -21,9 +21,10 @@
 //!  └──────────────────────┘       └──────────────────────┘
 //! ```
 
+use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use super::types::Diag;
@@ -46,12 +47,320 @@ fn monotonic_nanos() -> u64 {
 ///
 /// The count is what keeps throttling honest: an operator sees both that the
 /// fault is happening and how often, without the log being destroyed by it.
-fn suppressed_suffix(hidden: u32) -> String {
-    if hidden == 0 {
-        String::new()
-    } else {
-        format!(" (+{hidden} more in the last second)")
+///
+/// A `Display` adapter rather than a `-> String` helper: this is rendered from
+/// the RT thread on the deadline-miss path, and returning a `String` meant a
+/// heap allocation — an allocator lock, on the loop that just reported it was
+/// late. Formatted in place it costs nothing but the digits.
+struct SuppressedSuffix(u32);
+
+impl fmt::Display for SuppressedSuffix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == 0 {
+            Ok(())
+        } else {
+            write!(f, " (+{} more in the last second)", self.0)
+        }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Non-blocking RT diagnostics
+// ════════════════════════════════════════════════════════════════════════════
+//
+// # What this replaces, and why
+//
+// The RT thread's response to a DEADLINE MISS used to be, literally,
+// `print_line(&format!(...))`. That is:
+//
+//   * a `format!` — a heap allocation, i.e. the allocator's lock;
+//   * `is_raw_mode()` — `isatty` plus `tcgetattr`, two syscalls, per line;
+//   * the **process-global** stdout lock, shared with every other thread;
+//   * a `write(2)` and a `flush`.
+//
+// If stdout is a pipe whose reader is slow or stopped — an operator piping
+// `horus run` into `less`, a supervisor that stopped reading, a serial console
+// at 115200 baud — that write blocks until the pipe drains. Unbounded, by
+// construction. So the mechanism that reported a timing failure of a few
+// microseconds manufactured one of milliseconds, inside the loop that had just
+// missed by microseconds. Positive feedback under distress: the report cost
+// more than the event it reported.
+//
+// The surrounding code already knew the rule. The profiler and the blackbox
+// take their locks with `try_lock` and say "avoid RT priority inversion" while
+// doing it. The console prints were the one gap in that discipline.
+//
+// # The replacement
+//
+// A fixed-size, statically allocated, multi-producer ring. A producer claims a
+// slot with one `fetch_add`, formats DIRECTLY INTO that slot's inline byte
+// array through `core::fmt` (no `format!`, so no allocation and no allocator
+// lock), and publishes it with a seqlock store. No syscall, no lock, no
+// allocation, no unbounded wait — the emit is a few hundred nanoseconds of
+// stores and it cannot block on anything. A drain thread, started with the
+// executor and never running on an RT thread, does the blocking print.
+//
+// # What this costs, stated rather than buried
+//
+// * **Latency of the report.** A diagnostic now reaches the console up to
+//   `RT_DIAG_POLL` late. It is a line for a human; the machine-readable record
+//   (`RtStats`, the `SafetyMonitor` ladder, the blackbox) is still written
+//   synchronously on the same code paths and is unaffected.
+// * **Loss on abrupt death.** If the process is killed between the emit and the
+//   drain, queued lines are lost. `RtExecutor::stop` flushes, so this only
+//   affects a hard kill or an abort — and the blackbox holds the same events,
+//   so what is lost is the console copy, not the record of truth.
+// * **Loss under a storm.** The ring overwrites its oldest entry rather than
+//   blocking the producer; blocking the producer is the entire defect being
+//   removed. Drops are counted exactly and reported by the drain, so output is
+//   compressed under load, never silently thinned.
+
+/// Bytes reserved for one queued diagnostic line. Longer lines are truncated
+/// on a UTF-8 boundary and counted; the RT path never grows a buffer.
+const RT_DIAG_LINE_CAP: usize = 192;
+
+/// Slots in the diagnostic ring. Must be a power of two.
+///
+/// Sized against the throttle that feeds it: `DiagThrottle` already caps the
+/// per-node, per-kind rate at one line per second, so 128 slots drained every
+/// `RT_DIAG_POLL` leaves ~5000 lines/second of headroom — orders of magnitude
+/// above what a healthy or even a badly degraded robot can produce.
+const RT_DIAG_SLOTS: usize = 128;
+
+const RT_DIAG_SLOT_MASK: u64 = RT_DIAG_SLOTS as u64 - 1;
+
+/// How often the drain thread empties the ring.
+///
+/// The only thing this delays is a console line for a human. Making it shorter
+/// buys nothing an operator can perceive and costs a wakeup.
+const RT_DIAG_POLL: Duration = Duration::from_millis(25);
+
+/// One queued diagnostic line.
+struct DiagSlot {
+    /// Seqlock. `0` = never written, odd = write in progress, even and nonzero
+    /// = complete. Derived from the global claim index, so a slot's sequence is
+    /// strictly increasing across reuse and a reader can tell "this is the line
+    /// I asked for" from "this slot has already been recycled".
+    seq: AtomicU64,
+    len: AtomicU32,
+    /// Payload. `AtomicU8` rather than `UnsafeCell<[u8; N]>` deliberately: a
+    /// producer that is lapped mid-write by `RT_DIAG_SLOTS` other producers
+    /// would otherwise be a data race, which is undefined behaviour in this
+    /// language whether or not anyone reads the result. With atomic bytes the
+    /// worst case is a garbled line that the seqlock discards. The cost is that
+    /// the copy is a byte loop instead of a `memcpy` — about one store per
+    /// character, still far below a single syscall, and paid only when a
+    /// diagnostic actually fires.
+    bytes: [AtomicU8; RT_DIAG_LINE_CAP],
+}
+
+impl DiagSlot {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            len: AtomicU32::new(0),
+            bytes: [const { AtomicU8::new(0) }; RT_DIAG_LINE_CAP],
+        }
+    }
+}
+
+static RT_DIAG_RING: [DiagSlot; RT_DIAG_SLOTS] = [const { DiagSlot::new() }; RT_DIAG_SLOTS];
+/// Next claim index. Monotonic; slot is `index & RT_DIAG_SLOT_MASK`.
+static RT_DIAG_HEAD: AtomicU64 = AtomicU64::new(0);
+/// Lines the ring overwrote before a drain reached them.
+static RT_DIAG_DROPPED: AtomicU64 = AtomicU64::new(0);
+/// Lines that exceeded `RT_DIAG_LINE_CAP`.
+static RT_DIAG_TRUNCATED: AtomicU64 = AtomicU64::new(0);
+/// Index of the next line to print, and the lock that serialises the two
+/// drainers (the drain thread and `RtExecutor::stop`'s final flush).
+///
+/// **Producers never touch this.** That is the point: an RT thread emitting a
+/// diagnostic can never wait on a drainer, which is the priority inversion the
+/// blocking `print_line` had.
+static RT_DIAG_TAIL: Mutex<u64> = Mutex::new(0);
+
+static RT_DIAG_DRAIN_STARTED: Once = Once::new();
+
+/// Formats `core::fmt` output straight into a slot's byte array.
+struct SlotWriter<'a> {
+    slot: &'a DiagSlot,
+    len: usize,
+    truncated: bool,
+}
+
+impl fmt::Write for SlotWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = RT_DIAG_LINE_CAP - self.len;
+        if room == 0 {
+            self.truncated = true;
+            return Err(fmt::Error);
+        }
+        let n = if s.len() <= room {
+            s.len()
+        } else {
+            self.truncated = true;
+            // Never split a multi-byte character: the drain reads the slot back
+            // as UTF-8 and would discard the whole line.
+            let mut n = room;
+            while n > 0 && (s.as_bytes()[n] & 0xC0) == 0x80 {
+                n -= 1;
+            }
+            n
+        };
+        for (i, b) in s.as_bytes()[..n].iter().enumerate() {
+            self.slot.bytes[self.len + i].store(*b, Ordering::Relaxed);
+        }
+        self.len += n;
+        // Returning `Err` once the slot is full stops `core::fmt` from
+        // evaluating the remaining arguments — the truncation is already
+        // recorded, so continuing would be pure cost on the RT thread.
+        if self.truncated {
+            Err(fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Queue one diagnostic line for the drain thread. Never blocks, never
+/// allocates, never enters the kernel.
+///
+/// This is what the RT thread calls instead of `print_line(&format!(...))`.
+/// Call it as `rt_diag(format_args!("..."))`.
+pub(crate) fn rt_diag(args: fmt::Arguments<'_>) {
+    let idx = RT_DIAG_HEAD.fetch_add(1, Ordering::Relaxed);
+    let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+
+    // Odd sequence: a reader that lands here mid-write discards the slot.
+    //
+    // The store is `Relaxed` and the ORDERING comes from the fence after it. A
+    // `Release` store orders everything *before* it, which is the wrong
+    // direction — what this needs is for the odd marker to be visible before the
+    // byte stores that follow, and only a release fence gives that. (Free on
+    // x86: a compiler barrier, no instruction.)
+    slot.seq
+        .store(idx.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+    std::sync::atomic::fence(Ordering::Release);
+
+    let mut w = SlotWriter {
+        slot,
+        len: 0,
+        truncated: false,
+    };
+    let _ = fmt::Write::write_fmt(&mut w, args);
+    if w.truncated {
+        RT_DIAG_TRUNCATED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    slot.len.store(w.len as u32, Ordering::Relaxed);
+    // Release publishes both the byte stores and `len` to any reader that
+    // acquires this sequence value.
+    slot.seq
+        .store(idx.wrapping_mul(2).wrapping_add(2), Ordering::Release);
+}
+
+/// Copy the line claimed at `idx` out of the ring, or `None` if that slot is
+/// still being written or has already been recycled by a later producer.
+///
+/// The seqlock check is the whole safety argument: `idx` names a *generation*,
+/// not just a slot, so a reader can always tell "the line I asked for" from
+/// "some newer line that happens to live here now".
+fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> Option<usize> {
+    let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+    let want = idx.wrapping_mul(2).wrapping_add(2);
+    if slot.seq.load(Ordering::Acquire) != want {
+        return None;
+    }
+    let len = (slot.len.load(Ordering::Relaxed) as usize).min(RT_DIAG_LINE_CAP);
+    for (i, dst) in out[..len].iter_mut().enumerate() {
+        *dst = slot.bytes[i].load(Ordering::Relaxed);
+    }
+    // Re-check: a producer that started writing during the copy invalidates
+    // everything read above. The acquire fence is what keeps those reads from
+    // being reordered past this load — an `Acquire` *load* would only order
+    // what comes after it.
+    std::sync::atomic::fence(Ordering::Acquire);
+    if slot.seq.load(Ordering::Relaxed) != want {
+        return None;
+    }
+    Some(len)
+}
+
+/// Print every queued diagnostic through `emit`, then report what was lost.
+/// Returns the number of lines emitted.
+///
+/// Runs OFF the RT thread — this is where the blocking write deliberately
+/// lives. `emit` may block for as long as it likes; only other drainers wait.
+fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
+    let mut tail = RT_DIAG_TAIL.lock().unwrap_or_else(|e| e.into_inner());
+    let head = RT_DIAG_HEAD.load(Ordering::Acquire);
+
+    // Anything older than `head - RT_DIAG_SLOTS` has been overwritten. Count it
+    // exactly and skip forward: a storm compresses the output but never hides
+    // that it happened.
+    let oldest = head.saturating_sub(RT_DIAG_SLOTS as u64);
+    if *tail < oldest {
+        RT_DIAG_DROPPED.fetch_add(oldest - *tail, Ordering::Relaxed);
+        *tail = oldest;
+    }
+
+    let mut line = [0u8; RT_DIAG_LINE_CAP];
+    let mut printed = 0usize;
+    for idx in *tail..head {
+        let Some(len) = read_slot(idx, &mut line) else {
+            continue;
+        };
+        if let Ok(text) = std::str::from_utf8(&line[..len]) {
+            emit(text);
+            printed += 1;
+        }
+    }
+    *tail = head;
+    drop(tail);
+
+    let dropped = RT_DIAG_DROPPED.swap(0, Ordering::Relaxed);
+    if dropped > 0 {
+        emit(&format!(
+            "[RT-thread] {dropped} diagnostic line(s) dropped — the RT thread \
+             produced them faster than the console could take them"
+        ));
+    }
+    let truncated = RT_DIAG_TRUNCATED.swap(0, Ordering::Relaxed);
+    if truncated > 0 {
+        emit(&format!(
+            "[RT-thread] {truncated} diagnostic line(s) truncated at {RT_DIAG_LINE_CAP} bytes"
+        ));
+    }
+    printed
+}
+
+/// Start the diagnostic drain thread, once per process.
+///
+/// Called from `start_pool`, on the CALLER's thread. Never from an RT thread:
+/// spawning is a `clone(2)` plus a stack mapping, which is exactly the class of
+/// cost this whole mechanism exists to keep off the tick loop.
+///
+/// The thread runs for the life of the process. It is one wakeup every
+/// `RT_DIAG_POLL` and it must outlive any individual executor, because an
+/// executor that is being torn down is precisely when its last diagnostics
+/// matter.
+fn start_rt_diag_drain() {
+    RT_DIAG_DRAIN_STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new()
+            .name("horus-rt-diag".to_string())
+            .spawn(|| loop {
+                rt_diag_drain(print_line);
+                std::thread::sleep(RT_DIAG_POLL);
+            });
+        if spawned.is_err() {
+            // Out of threads. Say so on the caller's thread — RT diagnostics
+            // will now only appear at `stop()`, which is worth knowing.
+            print_line(
+                "[RT-thread] WARNING: could not spawn the diagnostic drain thread; \
+                 RT diagnostics will only be flushed at shutdown",
+            );
+        }
+    });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -156,6 +465,21 @@ const SPIN_GUARD_PERIOD_SHIFT: u32 = 4;
 /// `CyclicWaiter::new` warns once when the configured rate is in that regime,
 /// because a spin-dominated loop plus a real RT policy is the throttle case.
 const MIN_SLEEP_SLACK_NS: u64 = 10_000;
+
+/// Selects the cyclic wait strategy. Read in two places — `CyclicWaiter::new`,
+/// which implements it, and `RtExecutor::start_pool`, which must know whether
+/// the loop will ever yield before it decides how dangerous a shared core is.
+const RT_WAIT_ENV: &str = "HORUS_RT_WAIT";
+const RT_WAIT_SPIN: &str = "spin";
+
+/// Whether the operator asked for the pure busy-wait.
+///
+/// Load-bearing for the core-collision check: an absolute-sleep loop gives the
+/// CPU back every period, so two SCHED_FIFO chains sharing a core interfere; a
+/// spin loop never yields, so the same configuration is a livelock.
+fn spin_wait_requested() -> bool {
+    matches!(std::env::var(RT_WAIT_ENV).as_deref(), Ok(RT_WAIT_SPIN))
+}
 
 /// How often the per-thread wait counters are published to the process-wide
 /// totals. The counters are plain integers in the hot path (a few register
@@ -333,8 +657,8 @@ impl CyclicWaiter {
         } else {
             WaitMode::PortableSleep
         };
-        match std::env::var("HORUS_RT_WAIT").as_deref() {
-            Ok("spin") => mode = WaitMode::Spin,
+        match std::env::var(RT_WAIT_ENV).as_deref() {
+            Ok(RT_WAIT_SPIN) => mode = WaitMode::Spin,
             Ok("sleep") => {}
             Ok(other) => print_line(&format!(
                 "[RT-thread] HORUS_RT_WAIT='{other}' not recognised (expected 'sleep' or 'spin') — using 'sleep'"
@@ -512,6 +836,184 @@ use super::primitives::{DeadlineAction, NodeRunner, TimingEnforcer};
 use super::types::{RegisteredNode, SharedMonitors};
 use crate::core::DurationExt;
 
+// ════════════════════════════════════════════════════════════════════════════
+// CPU assignment: one core, one RT chain
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Every RT chain gets its own thread, and each thread is pinned to one core —
+// round-robin over the scheduler's RT CPU list, or to whatever a node's
+// `.core(n)` names. Nothing checked that two chains did not land on the SAME
+// core, and that configuration is not a mild inefficiency:
+//
+//   * SCHED_FIFO does not time-slice between threads of equal priority. The
+//     lower-numbered chain runs until it blocks; the other runs in whatever is
+//     left. Every tick of one chain is therefore added, in full, to the other
+//     chain's worst-case wake latency — the exact quantity this runtime is
+//     optimised for.
+//   * With `HORUS_RT_WAIT=spin` the tick loop never blocks at all, so the
+//     second chain does not run. Its watchdog reaches its limit and latches an
+//     emergency stop. That is the livelock shape, and it is a real
+//     configuration, not a hypothetical.
+//
+// It is reachable two ways: an operator naming the same core twice with
+// `.core(n)`, or simply having more RT chains than the scheduler has RT CPUs to
+// hand out, at which point the round-robin wraps and silently doubles up.
+//
+// The two are not the same mistake, so they do not get the same answer. An
+// explicit duplicate `.core(n)` is refused: the operator stated an intent that
+// cannot be satisfied, and there is no fallback to infer. A round-robin wrap is
+// a shortage, not a statement — refusing would mean a two-core controller
+// cannot run two RT chains at all — so it warns, loudly and unconditionally,
+// with the remediation. Under `HORUS_RT_WAIT=spin` both are refused, because
+// both are then the livelock rather than interference.
+//
+// `HORUS_RT_ALLOW_CORE_SHARING=1` downgrades every refusal to a warning, for
+// the deliberate case (two light chains, one core, and an operator who has
+// measured it).
+
+/// Environment escape hatch for a deliberately shared RT core.
+const ALLOW_CORE_SHARING_ENV: &str = "HORUS_RT_ALLOW_CORE_SHARING";
+
+/// The core one chain will actually pin to, and where that came from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ChainCore {
+    /// `None` when the chain runs unpinned — no core is being claimed, so no
+    /// collision exists to report.
+    cpu: Option<usize>,
+    /// True when a node's `.core(n)` named this core; false when it came from
+    /// round-robin over the scheduler's RT CPU list.
+    explicit: bool,
+}
+
+/// Resolve each chain's effective core.
+///
+/// This resolution used to be split: `start_pool` computed the round-robin
+/// assignment and the RT thread then silently overrode it from `.core(n)`. That
+/// split is why no collision check was possible — the only place that could see
+/// every chain's core did not know what it would be. It is resolved once, here,
+/// and the thread is told rather than asked.
+fn resolve_chain_cores(chains: &[Vec<RegisteredNode>], rt_cpus: &[usize]) -> Vec<ChainCore> {
+    let mut cores = Vec::with_capacity(chains.len());
+    for (idx, nodes) in chains.iter().enumerate() {
+        cores.push(match nodes.iter().find_map(|n| n.pinned_core) {
+            // An explicit `.core(n)` on any node in the chain claims the core
+            // for the whole chain — they share one thread.
+            Some(core) => ChainCore {
+                cpu: Some(core),
+                explicit: true,
+            },
+            // Round-robin over the scheduler's RT CPU list. This wraps silently
+            // once there are more chains than CPUs; that is the collision
+            // `check_core_collisions` reports.
+            None if !rt_cpus.is_empty() => ChainCore {
+                cpu: Some(rt_cpus[idx % rt_cpus.len()]),
+                explicit: false,
+            },
+            // No RT CPU list and no explicit pin: unpinned, claiming nothing.
+            None => ChainCore {
+                cpu: None,
+                explicit: false,
+            },
+        });
+    }
+    cores
+}
+
+/// A chain's name for diagnostics: its first node, which is the highest-priority
+/// one after the sort in `start_pool`.
+fn chain_label(chain: &[RegisteredNode]) -> &str {
+    chain.first().map(|n| n.name.as_ref()).unwrap_or("<empty>")
+}
+
+/// Refuse or loudly report two RT chains pinned to the same core.
+///
+/// Runs at executor start, on the caller's thread, so a blocking print here is
+/// correct — this is startup, not the tick loop.
+fn check_core_collisions(chains: &[Vec<RegisteredNode>], cores: &[ChainCore]) -> Result<()> {
+    // Within a single chain, two nodes naming different cores is also a config
+    // error — one silently wins. Report it; it is not fatal, because the chain
+    // does get a core and does run.
+    for nodes in chains {
+        let mut named = nodes.iter().filter_map(|n| n.pinned_core);
+        if let Some(first) = named.next() {
+            if named.any(|c| c != first) {
+                print_line(&format!(
+                    "[RT] WARNING: chain '{}' contains nodes pinned to different cores; \
+                     the whole chain shares one thread, so CPU {} (the first named) wins \
+                     and the others are ignored. Split them into separate chains to give \
+                     them separate cores.",
+                    chain_label(nodes),
+                    first,
+                ));
+            }
+        }
+    }
+
+    let spin = spin_wait_requested();
+    let allow_sharing = std::env::var(ALLOW_CORE_SHARING_ENV)
+        .is_ok_and(|v| !v.is_empty() && v != "0" && v != "false");
+    let mut refuse: Option<String> = None;
+
+    for i in 0..cores.len() {
+        let Some(cpu_i) = cores[i].cpu else { continue };
+        for j in (i + 1)..cores.len() {
+            if cores[j].cpu != Some(cpu_i) {
+                continue;
+            }
+            let both_explicit = cores[i].explicit && cores[j].explicit;
+            let (a, b) = (chain_label(&chains[i]), chain_label(&chains[j]));
+            let cause = if both_explicit {
+                "both chains name it with .core()"
+            } else {
+                "there are more RT chains than RT CPUs, so the round-robin wrapped"
+            };
+            let remedy = if both_explicit {
+                "give them different .core() values, or merge them into one chain"
+            } else {
+                "widen the scheduler's RT CPU list, or reduce the number of RT chains"
+            };
+            print_line(&format!(
+                "[RT] WARNING: RT chains '{a}' and '{b}' are both pinned to CPU {cpu_i} \
+                 ({cause}). SCHED_FIFO does not time-slice between equal priorities, so \
+                 each chain's tick is added in full to the other's worst-case wake \
+                 latency{}. Fix: {remedy}.",
+                if spin {
+                    ", and with HORUS_RT_WAIT=spin the tick loop never yields at all, so \
+                     the second chain will not run and its watchdog will latch an \
+                     emergency stop"
+                } else {
+                    ""
+                }
+            ));
+
+            if (both_explicit || spin) && refuse.is_none() {
+                refuse = Some(format!(
+                    "RT chains '{a}' and '{b}' are both pinned to CPU {cpu_i} ({cause}). \
+                     Two SCHED_FIFO chains on one core cannot both meet their deadlines. \
+                     Fix: {remedy}. To run this configuration anyway, set \
+                     {ALLOW_CORE_SHARING_ENV}=1."
+                ));
+            }
+        }
+    }
+
+    match refuse {
+        Some(message) if !allow_sharing => Err(Error::Internal {
+            message,
+            file: file!(),
+            line: line!(),
+        }),
+        Some(_) => {
+            print_line(&format!(
+                "[RT] {ALLOW_CORE_SHARING_ENV} is set — starting with a shared RT core \
+                 anyway. Deadline misses on the affected chains are expected."
+            ));
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
 /// Dedicated RT thread executor.
 ///
 /// Owns RT nodes and ticks them on isolated OS thread(s) at the rate of
@@ -544,13 +1046,28 @@ impl RtExecutor {
         monitors: SharedMonitors,
         rt_cpus: Vec<usize>,
     ) -> Result<Self> {
+        let mut chains = chains;
         let num_chains = chains.len();
         let mut handles = Vec::with_capacity(num_chains);
 
-        for (chain_idx, mut nodes) in chains.into_iter().enumerate() {
-            // Sort by priority before handing off to the thread
+        // Sort every chain before resolving cores: `chain_label` names a chain
+        // by its highest-priority node, and the diagnostics below must name the
+        // same node the thread will report as.
+        for nodes in &mut chains {
             nodes.sort_by_key(|n| n.priority);
+        }
 
+        // One core, one RT chain. Resolved and checked before a single thread is
+        // spawned, so a refusal is a clean startup failure rather than a
+        // half-started executor.
+        let chain_cores = resolve_chain_cores(&chains, &rt_cpus);
+        check_core_collisions(&chains, &chain_cores)?;
+
+        // The blocking half of RT diagnostics lives on its own thread, started
+        // here — on the caller's thread, never on an RT thread.
+        start_rt_diag_drain();
+
+        for (chain_idx, nodes) in chains.into_iter().enumerate() {
             // Determine tick period from the fastest node in this chain
             let max_rate_hz = nodes
                 .iter()
@@ -563,12 +1080,9 @@ impl RtExecutor {
                 fallback_period
             };
 
-            // Assign CPU core: round-robin across available RT CPUs
-            let thread_cpus = if !rt_cpus.is_empty() {
-                vec![rt_cpus[chain_idx % rt_cpus.len()]]
-            } else {
-                vec![]
-            };
+            // Already resolved above — `.core(n)` if a node named one, else the
+            // round-robin slot.
+            let thread_cpus: Vec<usize> = chain_cores[chain_idx].cpu.into_iter().collect();
 
             let thread_name = if num_chains == 1 {
                 "horus-rt".to_string()
@@ -620,6 +1134,11 @@ impl RtExecutor {
                 all_nodes.extend(nodes);
             }
         }
+        // Final flush, after every RT thread has stopped producing. Without it a
+        // run shorter than `RT_DIAG_POLL` — or one whose last deadline miss came
+        // in the final milliseconds, which is the interesting case — would exit
+        // with its diagnostics still sitting in the ring.
+        rt_diag_drain(print_line);
         all_nodes
     }
 
@@ -734,12 +1253,12 @@ impl RtExecutor {
                 if monitors.verbose {
                     if let Some(hidden) = node.diag.allow(Diag::BudgetViolation, monotonic_nanos())
                     {
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] budget violation in '{}': {:?} > {:?}{}",
                             node.name,
                             budget_result.violation.actual(),
                             budget_result.violation.budget(),
-                            suppressed_suffix(hidden)
+                            SuppressedSuffix(hidden)
                         ));
                     }
                 }
@@ -766,7 +1285,7 @@ impl RtExecutor {
                     BudgetPolicy::Enforce => {
                         // Stop node if tick exceeded 2x budget
                         if tr.duration > tick_budget * 2 {
-                            print_line(&format!(
+                            rt_diag(format_args!(
                                 "[RT-thread] BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                 node.name, tr.duration, tick_budget * 2
                             ));
@@ -776,7 +1295,7 @@ impl RtExecutor {
                     }
                     BudgetPolicy::EmergencyStop => {
                         // Any budget violation triggers e-stop
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] BUDGET E-STOP: '{}' budget violation ({:?} > {:?})",
                             node.name, tr.duration, tick_budget
                         ));
@@ -812,22 +1331,25 @@ impl RtExecutor {
                 // the first miss.
                 node.in_safe_mode = false;
                 if let Some(hidden) = node.diag.allow(Diag::SafeStateLeave, monotonic_nanos()) {
-                    print_line(&format!(
+                    rt_diag(format_args!(
                         "[RT-thread] SafeMode: '{}' met its deadline again, leaving safe state{}",
                         node.name,
-                        suppressed_suffix(hidden)
+                        SuppressedSuffix(hidden)
                     ));
                 }
             }
             if let Some(dm) = miss {
                 if monitors.verbose {
                     if let Some(hidden) = node.diag.allow(Diag::DeadlineMiss, monotonic_nanos()) {
-                        print_line(&format!(
+                        // The report of a timing failure must not cost more
+                        // than the failure. This queues into a preallocated
+                        // ring; the blocking write happens on the drain thread.
+                        rt_diag(format_args!(
                             "[RT-thread] Deadline miss in '{}': {:?} > {:?}{}",
                             node.name,
                             dm.elapsed,
                             dm.deadline,
-                            suppressed_suffix(hidden)
+                            SuppressedSuffix(hidden)
                         ));
                     }
                 }
@@ -852,7 +1374,7 @@ impl RtExecutor {
                     let action =
                         monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
                     if !matches!(action, super::safety_monitor::DegradationAction::None) {
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] Degradation for '{}': {:?} after {} consecutive misses",
                             node.name, action, consecutive
                         ));
@@ -895,17 +1417,17 @@ impl RtExecutor {
                             if let Some(hidden) =
                                 node.diag.allow(Diag::SafeStateEnter, monotonic_nanos())
                             {
-                                print_line(&format!(
+                                rt_diag(format_args!(
                                     "[RT-thread] SafeMode: '{}' entering safe state after deadline miss{}",
                                     node.name,
-                                    suppressed_suffix(hidden)
+                                    SuppressedSuffix(hidden)
                                 ));
                             }
                             node.node.enter_safe_state();
                         }
                     }
                     DeadlineAction::EmergencyStop => {
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] Emergency stop triggered by '{}'",
                             node.name
                         ));
@@ -1123,18 +1645,13 @@ impl RtExecutor {
             }
         }
 
-        // Per-node core override: if any node in this chain specifies .core(), use that
-        let effective_cpus = {
-            let node_core = nodes.iter().filter_map(|n| n.pinned_core).next();
-            if let Some(core) = node_core {
-                vec![core]
-            } else {
-                rt_cpus.clone()
-            }
-        };
+        // `rt_cpus` arrives already resolved: `start_pool` applied the `.core(n)`
+        // override and the round-robin assignment together, because only it can
+        // see every chain at once and therefore only it can detect two chains
+        // claiming one core. Re-deriving it here would put the two halves of that
+        // decision back out of sync.
 
         // Pin to recommended RT CPU(s) to avoid cache thrashing and timer interrupts
-        let rt_cpus = effective_cpus;
         if !rt_cpus.is_empty() {
             match super::rt::set_thread_affinity(&rt_cpus) {
                 Ok(()) => {
@@ -1275,9 +1792,12 @@ impl RtExecutor {
                 match infra_result {
                     Ok(()) => {} // normal completion
                     Err(_) => {
+                        // Queued, not printed: this runs on the RT thread, and
+                        // the comment that used to sit here claimed the
+                        // `format!` was being avoided while calling `format!`
+                        // and a blocking `print_line`.
                         if monitors.verbose {
-                            // Avoid format!() heap allocation in RT path — write directly to stderr
-                            crate::terminal::print_line(&format!(
+                            rt_diag(format_args!(
                                 "[RT-thread] Infrastructure panic for '{}' — node stopped",
                                 node.name
                             ));
@@ -3721,6 +4241,291 @@ mod tests {
             "the tick loop must sleep to an absolute deadline by default; \
              busy-waiting is opt-in via HORUS_RT_WAIT=spin"
         );
+    }
+
+    // ========================================================================
+    // Non-blocking RT diagnostics
+    // ========================================================================
+
+    /// Search the claims made in `range` for a queued line matching `pred`.
+    ///
+    /// Reads the ring by claim index rather than through `rt_diag_drain`, for
+    /// two reasons: the drain thread other tests start would otherwise consume
+    /// the line first, and bracketing the emit with the head counter keeps the
+    /// assertion exact even when other tests emit concurrently.
+    fn find_queued(range: std::ops::Range<u64>, pred: impl Fn(&str) -> bool) -> Option<String> {
+        let mut buf = [0u8; RT_DIAG_LINE_CAP];
+        for idx in range {
+            let Some(len) = read_slot(idx, &mut buf) else {
+                continue;
+            };
+            if let Ok(text) = std::str::from_utf8(&buf[..len]) {
+                if pred(text) {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// A queued diagnostic must come back out byte-for-byte — the queue carries
+    /// the same information the blocking print used to, just not on this thread.
+    #[test]
+    fn test_rt_diag_queues_the_line_without_printing_it() {
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        rt_diag(format_args!("[RT-thread] marker {} {:?}", 4242, 1_u64.ms()));
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        let found = find_queued(before..after, |t| t.starts_with("[RT-thread] marker "))
+            .expect("the emitted line must be in the ring");
+        assert_eq!(
+            found, "[RT-thread] marker 4242 1ms",
+            "the queued bytes must be exactly what a print would have produced"
+        );
+    }
+
+    /// The ring is BOUNDED and the producer never waits on the consumer.
+    ///
+    /// That is the whole point: a deadline miss must not be able to block the
+    /// loop that missed. The cost of that guarantee is that a flood overwrites
+    /// its own oldest entries — so this asserts both halves, that the newest
+    /// survive and that the oldest are gone rather than queued forever.
+    #[test]
+    fn test_rt_diag_ring_is_bounded_and_drops_the_oldest() {
+        let start = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        let flood = RT_DIAG_SLOTS * 4;
+        for i in 0..flood - 1 {
+            rt_diag(format_args!("[RT-thread] flood {i}"));
+        }
+
+        let before_last = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        rt_diag(format_args!("[RT-thread] flood {}", flood - 1));
+        let after_last = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        let mut buf = [0u8; RT_DIAG_LINE_CAP];
+        assert!(
+            read_slot(start, &mut buf).is_none(),
+            "after {flood} emits into {RT_DIAG_SLOTS} slots the first line must have \
+             been recycled — an unbounded queue is a memory leak on the RT path"
+        );
+        assert!(
+            find_queued(before_last..after_last, |t| t
+                .ends_with(&format!("flood {}", flood - 1)))
+            .is_some(),
+            "the ring must keep the most recent line"
+        );
+    }
+
+    /// A line longer than a slot is truncated on a character boundary, not
+    /// dropped and not allowed to corrupt the slot.
+    #[test]
+    fn test_rt_diag_truncates_on_a_utf8_boundary() {
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        // Multi-byte characters straddling the cap: a naive byte cut produces
+        // invalid UTF-8 and the drain would discard the whole line entirely.
+        let long: String = "é".repeat(RT_DIAG_LINE_CAP);
+        rt_diag(format_args!("{long}"));
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        let text = find_queued(before..after, |t| !t.is_empty() && t.starts_with('é'))
+            .expect("a too-long line must still be queued, truncated");
+        assert!(
+            text.chars().all(|c| c == 'é'),
+            "truncation must land on a character boundary, got {text:?}"
+        );
+        assert!(text.len() <= RT_DIAG_LINE_CAP);
+    }
+
+    /// The RT tick path must reach the queue, not `print_line`.
+    ///
+    /// Runs a node that blows its deadline every tick and asserts the ring's
+    /// claim counter advanced — i.e. the deadline-miss report went through the
+    /// non-blocking sink. Before this change the same path called
+    /// `print_line(&format!(...))`, which takes the process-global stdout lock
+    /// and can block for as long as a slow reader wants.
+    #[test]
+    fn test_deadline_miss_reports_through_the_nonblocking_sink() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        // Sleeps 3 ms against a 200 us deadline: every tick misses. The budget
+        // is deliberately generous so only the deadline path reports.
+        let mut node = make_slow_rt_node(
+            "diag_late_node",
+            count.clone(),
+            3_000,
+            Duration::from_millis(100),
+            super::super::safety_monitor::BudgetPolicy::Warn,
+        );
+        node.deadline = Some(Duration::from_micros(200));
+        node.miss_policy = Miss::Warn;
+
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        std::thread::sleep(60_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "the node must have ticked at all"
+        );
+        assert!(
+            find_queued(before..after, |t| t.contains("Deadline miss")
+                && t.contains("diag_late_node"))
+            .is_some(),
+            "a deadline miss must queue its report instead of writing to stdout \
+             from the RT thread"
+        );
+    }
+
+    // ========================================================================
+    // One core, one RT chain
+    // ========================================================================
+
+    fn pinned_chain(name: &str, core: usize) -> Vec<RegisteredNode> {
+        let mut node = make_rt_registered(name, Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        node.pinned_core = Some(core);
+        vec![node]
+    }
+
+    /// Two chains explicitly pinned to the same core is a configuration the
+    /// system must not accept silently.
+    ///
+    /// SCHED_FIFO does not time-slice between equal priorities, so the second
+    /// chain runs only in whatever the first leaves — every tick of one is added
+    /// in full to the other's worst-case wake latency. The operator named the
+    /// core twice; there is no fallback intent to infer, so this is refused
+    /// rather than warned about.
+    #[test]
+    fn test_two_chains_on_one_explicit_core_are_refused() {
+        if std::env::var(ALLOW_CORE_SHARING_ENV).is_ok() {
+            return; // operator opted out of the check
+        }
+        let running = Arc::new(AtomicBool::new(true));
+        let started = RtExecutor::start_pool(
+            vec![pinned_chain("pin_a", 0), pinned_chain("pin_b", 0)],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        let err = match started {
+            Ok(executor) => {
+                running.store(false, Ordering::SeqCst);
+                let _ = executor.stop();
+                panic!(
+                    "two RT chains pinned to CPU 0 must be refused at startup, not \
+                     discovered later as a watchdog e-stop"
+                );
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("CPU 0"), "{err}");
+        assert!(
+            err.contains(ALLOW_CORE_SHARING_ENV),
+            "the refusal must name its escape hatch: {err}"
+        );
+    }
+
+    /// Distinct explicit cores are the correct configuration and must start.
+    #[test]
+    fn test_two_chains_on_distinct_explicit_cores_start() {
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![pinned_chain("pin_c", 0), pinned_chain("pin_d", 1)],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .expect("one core per chain is exactly the supported configuration");
+
+        std::thread::sleep(20_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(executor.stop().len(), 2);
+    }
+
+    /// More chains than RT CPUs is a shortage, not a statement of intent.
+    ///
+    /// Refusing would mean a two-core controller cannot run three RT chains at
+    /// all, and with the absolute-sleep wait the chains do interleave. It warns
+    /// loudly and starts — the distinction from the explicit case is deliberate.
+    #[test]
+    fn test_round_robin_core_exhaustion_warns_but_starts() {
+        if spin_wait_requested() {
+            return; // under a pure spin this configuration is refused instead
+        }
+        let counts: Vec<_> = (0..3)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .collect();
+        let chains: Vec<Vec<RegisteredNode>> = counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| vec![make_rt_registered(&format!("rr_node_{i}"), c.clone())])
+            .collect();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            chains,
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            vec![0], // three chains, one CPU: the round-robin wraps twice
+        )
+        .expect("a CPU shortage must degrade, not refuse to start");
+
+        std::thread::sleep(40_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(executor.stop().len(), 3);
+    }
+
+    /// The core each chain lands on must be resolved in one place.
+    ///
+    /// It used to be split — `start_pool` did the round-robin and the RT thread
+    /// silently overrode it from `.core(n)` — which is precisely why no
+    /// collision check was possible: the only code that could see every chain
+    /// did not know what core any of them would end up on.
+    #[test]
+    fn test_chain_core_resolution_prefers_an_explicit_pin() {
+        let chains = vec![
+            pinned_chain("explicit", 7),
+            vec![make_rt_registered(
+                "implicit",
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            )],
+        ];
+        let cores = resolve_chain_cores(&chains, &[3, 4]);
+        assert_eq!(
+            cores[0],
+            ChainCore {
+                cpu: Some(7),
+                explicit: true
+            },
+            ".core(7) must win over the round-robin slot"
+        );
+        assert_eq!(
+            cores[1],
+            ChainCore {
+                cpu: Some(4),
+                explicit: false
+            },
+            "an unpinned chain takes its round-robin slot"
+        );
+
+        // No RT CPU list and no explicit pin: nothing is being claimed, so there
+        // is no collision to report.
+        let cores = resolve_chain_cores(&chains[1..], &[]);
+        assert_eq!(cores[0].cpu, None);
     }
 
     /// The median-for-tail trade must be measurable, not merely asserted in a

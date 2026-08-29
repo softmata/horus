@@ -238,11 +238,28 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
+      # The key carries an ISO week so the gate's own binary cannot be frozen.
+      # `actions/cache` writes only on a MISS, and the previous key
+      # (`${{ runner.os }}-cargo-audit-bin`) contained nothing that ever
+      # changes: the first run to populate it pinned cargo-audit at whatever
+      # version was current that day, permanently — the install step below is
+      # guarded by `command -v`, so it never ran again, and the cache never
+      # missed again, so it was never re-saved either. That matters because a
+      # cargo-audit older than an advisory-db format change SKIPS the entries
+      # it cannot parse and still exits 0: the gate goes quietly blind while
+      # CI stays green, which is the same failure mode as a stale entry in
+      # .cargo/audit.toml. Rotating the key weekly bounds the staleness at one
+      # week and costs one `cargo install` per week. No `restore-keys` — a
+      # prefix fallback would hit last week's entry and defeat the rotation.
+      - name: Cache epoch for cargo-audit
+        id: audit_epoch
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo-audit
         uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-audit
-          key: ${{ runner.os }}-cargo-audit-bin
+          key: ${{ runner.os }}-cargo-audit-${{ steps.audit_epoch.outputs.week }}
 
       - name: Install cargo-audit
         run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked

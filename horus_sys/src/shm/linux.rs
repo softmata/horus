@@ -49,6 +49,17 @@ impl ShmRegion {
         }
 
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
+
+        // Pay the page faults here, at attach, instead of in whichever loop
+        // touches the ring first. This path is the one that needed it: the
+        // creator below already wires every page as a side effect of its
+        // `fill(0)`, so before this call an attaching subscriber was the only
+        // holder taking minor faults mid-receive. See
+        // `horus_sys::shm::make_resident` for the policy and its opt-outs.
+        // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(mmap.as_ptr(), size) };
+
         Ok(Self {
             mmap,
             _file: file,
@@ -160,6 +171,14 @@ impl ShmRegion {
             let _ = super::write_topic_meta(name, size);
         }
 
+        // Attachers get their page tables populated here rather than one minor
+        // fault at a time inside the first publish or receive loop. (For the
+        // creator the `fill(0)` above has already done it, so this is a cheap
+        // no-op restatement of the invariant rather than duplicated work.)
+        // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(mmap.as_ptr(), size) };
+
         Ok(Self {
             mmap,
             size,
@@ -253,6 +272,15 @@ impl ShmRegion {
 
         self.mmap = new_mmap;
         self.size = new_size;
+
+        // The remap is a brand-new mapping with empty page tables, so without
+        // this every page of the grown region would fault again on first touch
+        // — and a grow happens *because* a large message is arriving, i.e. at
+        // the worst possible moment. Re-establish residency before anyone
+        // publishes into it.
+        // SAFETY: the new mapping is live and `new_size` bytes long; the call
+        // neither reads nor writes it.
+        unsafe { super::make_resident(self.mmap.as_ptr(), new_size) };
 
         Ok(())
     }

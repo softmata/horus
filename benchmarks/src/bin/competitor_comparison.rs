@@ -1,7 +1,29 @@
 //! Competitor Comparison Benchmark
 //!
-//! Measures identical workloads on HORUS, raw UDP, and optionally Zenoh.
-//! Uses the same timing method for all competitors for fair comparison.
+//! Measures HORUS against raw UDP on the loopback interface. Both arms use the
+//! same timing method and the same loop shape.
+//!
+//! There is no Zenoh arm. The header used to say "and optionally Zenoh"; no
+//! such code has ever existed in this file, and there is no feature flag that
+//! adds one.
+//!
+//! # Topology — read before quoting the speedup
+//!
+//! Both arms run **entirely on one thread**: send, then block until the message
+//! comes back to the same thread. So:
+//!
+//! - the HORUS arm is a userspace ring write followed by a read of a line that
+//!   thread just wrote, almost always an L1 hit. There is no cross-core cache
+//!   transfer and no second process in it. It is a lower bound on IPC cost, not
+//!   IPC cost.
+//! - the UDP arm is a real trip through the kernel network stack (two sockets,
+//!   two syscalls, softirq) even though it too stays on one thread.
+//!
+//! The ratio between them is therefore "userspace ring vs kernel loopback",
+//! which is a real and large difference, but it is NOT "HORUS end-to-end vs UDP
+//! end-to-end". A HORUS publisher and subscriber in two processes on two cores
+//! pay a cache-line transfer this benchmark never makes them pay. Use
+//! `cross_process_benchmark` for that number.
 //!
 //! Run:   cargo run --release -p horus_benchmarks --bin competitor_comparison
 //! CSV:   cargo run --release -p horus_benchmarks --bin competitor_comparison -- --csv comparison.csv
@@ -216,7 +238,7 @@ fn main() {
         let label = format!("{}B", size);
         println!(
             "{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-            "HORUS SHM",
+            "HORUS same-thd",
             label,
             horus_stats.count / 1000,
             horus_stats.p50,
@@ -225,14 +247,14 @@ fn main() {
             horus_stats.p999,
             horus_stats.max
         );
-        csv_rows.push(("HORUS_SHM".into(), size, horus_stats));
+        csv_rows.push(("HORUS_same_thread".into(), size, horus_stats));
 
         // Raw UDP
         let mut udp_samples = bench_raw_udp(size, duration);
         let udp_stats = compute_stats(&mut udp_samples);
         println!(
             "{:<16} {:>6} {:>9}K {:>7}ns {:>7}ns {:>7}ns {:>7}ns {:>7}ns",
-            "Raw UDP",
+            "Raw UDP loopbk",
             label,
             udp_stats.count / 1000,
             udp_stats.p50,
@@ -241,24 +263,31 @@ fn main() {
             udp_stats.p999,
             udp_stats.max
         );
-        csv_rows.push(("Raw_UDP".into(), size, udp_stats));
+        csv_rows.push(("Raw_UDP_loopback".into(), size, udp_stats));
 
         println!("{}", "─".repeat(80));
     }
 
-    // Speedup summary
+    // Ratio summary.
+    //
+    // This used to print a single "Nx faster" from the p50 alone. A median-only
+    // ratio cannot show a tail regression: HORUS could double its p999 and this
+    // line would not move. The p99, p999 and max ratios are printed beside it.
     println!();
-    println!("Speedup (HORUS vs Raw UDP):");
+    println!("Ratio, UDP loopback / HORUS same-thread (higher = HORUS cheaper).");
+    println!("Different topologies — see the module header before quoting these.");
     for i in (0..csv_rows.len()).step_by(2) {
         let horus = &csv_rows[i];
         let udp = &csv_rows[i + 1];
         if udp.2.p50 > 0 {
+            let r = |u: u64, h: u64| u as f64 / h.max(1) as f64;
             println!(
-                "  {}B: {:.0}x faster ({}ns vs {}ns p50)",
+                "  {:>4}B: p50 {:>6.0}x  p99 {:>6.0}x  p999 {:>6.0}x  max {:>6.1}x",
                 horus.1,
-                udp.2.p50 as f64 / horus.2.p50.max(1) as f64,
-                horus.2.p50,
-                udp.2.p50
+                r(udp.2.p50, horus.2.p50),
+                r(udp.2.p99, horus.2.p99),
+                r(udp.2.p999, horus.2.p999),
+                r(udp.2.max, horus.2.max),
             );
         }
     }

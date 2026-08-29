@@ -109,18 +109,56 @@ pub(crate) struct LocalState {
     /// SHM FanoutRing subscriber ID (registered on first recv when mode is FanoutShm)
     pub fanout_shm_sub_id: Option<usize>,
 
+    /// Messages this consumer skipped past without delivering them.
+    ///
+    /// Two causes, both counted here because both are the same thing to a
+    /// subscriber — a gap in the stream:
+    ///
+    /// * **Lapped.** Drop-oldest is the designed behaviour under overload — a
+    ///   10 Hz node reading a 1 kHz sensor is ordinary multi-rate robotics —
+    ///   but the loss used to be completely invisible: `dropped_count()`
+    ///   reports *send* failures, and a producer that overwrites never fails a
+    ///   send.
+    /// * **Abandoned claim.** A slot an MpscShm producer claimed and then died
+    ///   before publishing. The consumer skips it rather than head-of-line
+    ///   blocking on it forever (`dispatch::claimed_slot_escape`). That escape
+    ///   is only defensible because the loss lands here: a silent drop would be
+    ///   worse than the stall it replaces.
+    ///
+    /// This is the consumer's own count, so it needs no atomics.
+    pub missed: u64,
+
+    /// Ring position (`tail`) the consumer is currently stuck on because the
+    /// slot is claimed-but-unpublished, and the wall clock when the stall was
+    /// first timed. `claim_stall_since_ms == 0` means "no stall timed yet".
+    ///
+    /// Purely consumer-local bookkeeping for `dispatch::claimed_slot_escape`:
+    /// no atomics, no shared memory, and — critically — never touched on the
+    /// successful-recv path. Staleness is keyed on `tail`, which is monotonic,
+    /// so a later stall at a different position resets the timer on its own and
+    /// the hot path never has to clear these.
+    pub claim_stall_tail: u64,
+    /// Wall clock (ms since epoch) at which the current claim stall started
+    /// being timed; 0 = not timing. See [`Self::claim_stall_tail`].
+    pub claim_stall_since_ms: u64,
+    /// Consecutive not-ready polls at `claim_stall_tail`. Only every 16th one
+    /// pays for a clock read — see `dispatch::CLAIM_STALL_POLL_MASK`.
+    pub claim_stall_polls: u32,
+
+    /// Wall clock (ms) of this handle's last "slot-claim CAS exhausted" warning;
+    /// 0 = never warned. Producer-side counterpart of the `claim_stall_*` fields.
+    ///
+    /// Per handle and clock-based on purpose. The obvious alternative — the
+    /// process-wide `Mutex<HashMap<..>>` limiter in `dispatch` — would put a
+    /// lock acquisition on the publish path, and `send()` funnels a rejected
+    /// `try_send` through ~70 further attempts, so it is reachable in a tight
+    /// loop. See `dispatch::warn_claim_cas_exhausted`.
+    pub claim_cas_warn_ms: u64,
+
     /// COMM-H1: exclusive `flock` proving this process holds the FanoutShm publisher
     /// endpoint slot. Held for the endpoint's lifetime — its Drop (or process death)
     /// releases the lock, which is what lets a peer reclaim a crashed owner's slot.
     /// `None` for every non-FanoutShm backend.
-    /// Messages this consumer skipped past because the producer lapped it.
-    ///
-    /// Drop-oldest is the designed behaviour under overload — a 10 Hz node
-    /// reading a 1 kHz sensor is ordinary multi-rate robotics — but the loss
-    /// used to be completely invisible: `dropped_count()` reports *send*
-    /// failures, and a producer that overwrites never fails a send. This is the
-    /// consumer's own count, so it needs no atomics.
-    pub missed: u64,
     pub fanout_pub_lock: Option<horus_sys::fs::FileLock>,
 
     /// COMM-H1: exclusive `flock` proving this process holds the FanoutShm
@@ -140,6 +178,33 @@ pub(crate) struct LocalState {
     /// Empty for every non-FanoutShm backend. See `dispatch::spill_to_pool` /
     /// `read_spilled_retained`.
     pub spill_keepalive: std::collections::VecDeque<crate::types::Tensor>,
+
+    /// Reusable serialization staging buffer for non-POD (serde) sends.
+    ///
+    /// Every serde send used to call `bincode::serialize(&msg)`, which returns
+    /// a fresh `Vec<u8>`: one `malloc` and one `free` per message, on the
+    /// publish path. Allocator latency is not bounded — a `malloc` that has to
+    /// take the arena lock, refill a bin or go to `mmap` is orders of magnitude
+    /// slower than one that pops a free-list head — so the WCET of a serde
+    /// publish was a property of the allocator's state, not of the message.
+    /// `bincode::serialize_into` writing into this buffer keeps the capacity
+    /// between messages, so after warm-up a steady-state serde send performs no
+    /// allocation at all.
+    ///
+    /// TRADE, stated plainly: the buffer is never shrunk, so this handle's
+    /// footprint grows to the largest message it has ever serialized and stays
+    /// there. That is deliberate — shrinking would put the `realloc` back on the
+    /// publish path, which is the exact cost being removed — but it means a
+    /// topic that sends one 10 MB message holds 10 MB per publishing handle for
+    /// the handle's lifetime. Bounded by the message type's largest realistic
+    /// value, which is working set the topic needs anyway.
+    ///
+    /// This does NOT make serde publish a bounded-WCET operation: serialization
+    /// time is still a function of the value, and a message that outgrows its
+    /// slot still takes the `auto_grow_slot_size` path (`ftruncate` + `mremap` +
+    /// migration). It removes the allocator from the steady state, nothing more.
+    /// POD topics never touch this buffer.
+    pub serde_scratch: Vec<u8>,
 }
 
 impl Default for LocalState {
@@ -163,10 +228,17 @@ impl Default for LocalState {
             fanout_shm_pub_id: None,
             fanout_shm_sub_id: None,
             missed: 0,
+            claim_stall_tail: 0,
+            claim_stall_since_ms: 0,
+            claim_stall_polls: 0,
+            claim_cas_warn_ms: 0,
             fanout_pub_lock: None,
             fanout_sub_lock: None,
             fanout_shm_storage: None,
             spill_keepalive: std::collections::VecDeque::new(),
+            // Deliberately empty: a POD topic must never pay for a serde
+            // staging buffer it will never use. The first serde send grows it.
+            serde_scratch: Vec::new(),
         }
     }
 }

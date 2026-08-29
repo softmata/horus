@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -306,8 +307,11 @@ pub struct NodeInfo {
     // Thread safety for metrics updates
     metrics_lock: Arc<Mutex<()>>,
 
-    // Event notification counter — bumped by publishers to trigger event-driven nodes
-    event_notifier: Option<Arc<std::sync::atomic::AtomicU64>>,
+    // Event notification channel — bumped by publishers to trigger event-driven
+    // nodes, and (unlike the bare counter this used to be) able to *wake* the
+    // watcher thread parked on it. Held here so the registry entry outlives any
+    // single publish.
+    event_notifier: Option<Arc<EventNotifier>>,
 
     // Consecutive failed ticks, reset by any success.
     //
@@ -549,7 +553,7 @@ impl NodeInfo {
     /// since Topic knows its own name but not which event nodes subscribe to it.
     pub(crate) fn set_event_notifier_with_topic(
         &mut self,
-        notifier: Arc<std::sync::atomic::AtomicU64>,
+        notifier: Arc<EventNotifier>,
         topic_name: &str,
     ) {
         let mut registry = EVENT_NOTIFIER_REGISTRY
@@ -634,13 +638,242 @@ impl NodeInfo {
         let registry = EVENT_NOTIFIER_REGISTRY
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if let Some(notifier) = registry.get(node_name) {
-            notifier.fetch_add(1, std::sync::atomic::Ordering::Release);
-            true
-        } else {
-            false
+        let Some(notifier) = registry.get(node_name) else {
+            return false;
+        };
+
+        // Bump the generation under the lock — one atomic RMW, the same cost
+        // this path always paid — and find out whether anybody is parked on it.
+        if !notifier.publish() {
+            // Nobody parked: the watcher is awake and ticking, or between
+            // ticks, and will read the new generation on its own. This is the
+            // common case and it costs the publisher exactly what it cost
+            // before: no syscall. Research 1.16's one hard constraint is that
+            // waking must never become unconditional on the publish path.
+            return true;
+        }
+
+        // Somebody IS parked, so this publish owes a FUTEX_WAKE — without it
+        // the waiter sleeps out its backstop and we are back to millisecond
+        // event latency. Drop the registry lock FIRST: `wake_all` is a
+        // syscall, and holding a process-global `Mutex` across one would widen
+        // the residual priority-inversion edge documented on
+        // `EVENT_NOTIFIER_REGISTRY` from a hash probe into a trip through the
+        // kernel. The `Arc` clone that buys the lock release is two refcount
+        // RMWs, paid only on the path that was about to enter the kernel
+        // anyway.
+        let notifier = Arc::clone(notifier);
+        drop(registry);
+        notifier.wake_all();
+        true
+    }
+}
+
+/// One event node's wake-up channel: a generation counter publishers bump, plus
+/// the parked-waiter count that decides whether bumping it costs a syscall.
+///
+/// # Why a futex and not a `Condvar`
+///
+/// The watcher thread in `scheduling::event_executor` used to `sleep(1 ms)` and
+/// re-read the counter, so an "event-driven" node reacted `uniform(0, 1 ms)`
+/// after the publish that should have woken it — three to four orders of
+/// magnitude above the ~300 ns the transport itself delivers, with the whole
+/// 1 ms as jitter. Replacing that with a real blocking wait has three
+/// constraints, and a futex is the only candidate that meets all of them:
+///
+/// * **Zero CPU when idle.** A spin or a sleep-poll is a wake-up per
+///   millisecond per event node, forever, on a robot that is doing nothing.
+/// * **Nothing extra on the publish side.** A `Condvar` needs an associated
+///   `Mutex` that the publisher must also take — a second priority-inversion
+///   edge on the exact path [`NodeInfo::notify_event`] just spent an effort
+///   removing one from.
+/// * **Survives a move into shared memory.** `Condvar`, `thread::park` and
+///   `parking_lot` are process-private by construction. This counter *is*
+///   process-private today (see the cross-process note on
+///   [`EVENT_NOTIFIER_REGISTRY`]), but the fix for that is to relocate this
+///   word into the topic's SHM segment, and a futex is the one primitive that
+///   survives the move unchanged: its identity is the address.
+///
+/// # Layout
+///
+/// `generation` must stay a `u32`: `FUTEX_WAIT` compares exactly 32 bits at the
+/// address it is handed. `#[repr(C)]` and the 64-byte alignment are for that
+/// same future SHM move — the offsets have to be stable across separate
+/// compilations, and the line must not be shared with unrelated hot data.
+#[repr(C, align(64))]
+pub(crate) struct EventNotifier {
+    /// Bumped once per notification. The watcher ticks once per increment it
+    /// missed, so this is a *generation*, not a flag: it is never reset, and
+    /// wrap-around is the read side's problem (`wrapping_sub`, never `-`).
+    generation: AtomicU32,
+    /// Threads currently inside [`EventNotifier::wait_for_change`].
+    ///
+    /// This is the gate that keeps `FUTEX_WAKE` off the publish path. Zero —
+    /// the case whenever the event node is awake and ticking, and the only
+    /// case in a process whose event nodes are all busy — means the publisher
+    /// bumps `generation` and returns without entering the kernel.
+    waiters: AtomicU32,
+}
+
+impl EventNotifier {
+    pub(crate) const fn new() -> Self {
+        Self {
+            generation: AtomicU32::new(0),
+            waiters: AtomicU32::new(0),
         }
     }
+
+    /// The current generation. Compare it against the last one you acted on
+    /// with `wrapping_sub`: the counter is 32 bits and is allowed to wrap.
+    #[inline]
+    pub(crate) fn generation(&self) -> u32 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Publisher side. Bumps the generation; returns `true` if a waiter is
+    /// parked and therefore owed a [`EventNotifier::wake_all`].
+    ///
+    /// Deliberately split from the wake so the caller can release the registry
+    /// lock before the syscall.
+    #[inline]
+    fn publish(&self) -> bool {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        // SeqCst on both halves of this pair — publisher bumps then reads
+        // `waiters`, waiter writes `waiters` then re-reads `generation` — is
+        // what makes "no waiter, no syscall" provable: in the single total
+        // order at least one of the two sees the other's write.
+        //
+        // A lost wake-up would still be impossible with a Relaxed load here,
+        // because `FUTEX_WAIT` re-compares the word against the waiter's
+        // expected value under the kernel's bucket lock and returns `EAGAIN`
+        // if it has moved. That is the real backstop. This ordering is what
+        // makes the fast path something you can reason about rather than
+        // something that happens to work.
+        self.waiters.load(Ordering::SeqCst) != 0
+    }
+
+    /// Wake every parked waiter *without* moving the generation.
+    ///
+    /// A waiter woken this way sees no new generation, re-tests its run flag
+    /// and either exits or parks again — so the shutdown path can use this to
+    /// stop an idle event node promptly without fabricating a tick for it.
+    pub(crate) fn wake_all(&self) {
+        futex::wake_all(&self.generation);
+    }
+
+    /// Park until `generation` leaves `expected`, `timeout` elapses, or
+    /// `keep_waiting` reads `false` — whichever comes first. May also return
+    /// spuriously; the caller re-reads the generation regardless.
+    ///
+    /// `timeout` is a **backstop, not the mechanism**. If a wake is ever lost —
+    /// a platform with no futex, a notifier that moved to a mapping this
+    /// process cannot be woken on, a publisher that skipped the syscall on a
+    /// stale waiter count — the caller degrades to polling at `timeout`
+    /// cadence. It can never degrade to a node that stops ticking.
+    pub(crate) fn wait_for_change(
+        &self,
+        expected: u32,
+        timeout: std::time::Duration,
+        keep_waiting: &AtomicBool,
+    ) {
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        // Both re-checks MUST come after the count above is published, or they
+        // race the very events they exist to catch:
+        //
+        //   generation   — a publish between the caller's read and this point.
+        //                  (`FUTEX_WAIT`'s own compare would also catch this;
+        //                  the load just avoids the syscall.)
+        //   keep_waiting — a `stop()` between the same two points. Whoever
+        //                  stops us stores `false` and *then* wakes; if that
+        //                  wake lands before we are parked it is a no-op, and
+        //                  this load is what keeps us from parking anyway.
+        //
+        // Residual window: a stop that lands between this load and the kernel
+        // entry below still costs one `timeout` of shutdown latency — which is
+        // exactly what the unconditional `sleep(POLL_INTERVAL)` this replaced
+        // cost on *every* shutdown. Never worse, usually far better.
+        if self.generation.load(Ordering::SeqCst) == expected && keep_waiting.load(Ordering::SeqCst)
+        {
+            futex::wait(&self.generation, expected, timeout);
+        }
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Futex shims for [`EventNotifier`].
+///
+/// Linux only. Everywhere else the wait degrades to the timed sleep the event
+/// executor used to do unconditionally, so those platforms keep their old
+/// wake latency — a missing optimisation, not a missing guarantee.
+mod futex {
+    use std::sync::atomic::AtomicU32;
+    use std::time::Duration;
+
+    /// `FUTEX_PRIVATE_FLAG` is correct **only while the futex word lives in
+    /// process-private memory**, which it does today: an `Arc<EventNotifier>`
+    /// on the heap, reachable through a process-local `static` registry. The
+    /// flag lets the kernel key the wait queue on the mm rather than pinning
+    /// the page, which is materially cheaper on both sides.
+    ///
+    /// If [`super::EventNotifier`] is ever relocated into a topic's shared
+    /// memory segment to close the cross-process gap, this flag must be
+    /// dropped. A private futex on a shared mapping does not fail loudly — it
+    /// simply never wakes the other process, and the caller's backstop absorbs
+    /// it as silent millisecond polling.
+    #[cfg(target_os = "linux")]
+    const PRIVATE: libc::c_int = libc::FUTEX_PRIVATE_FLAG;
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn wait(word: &AtomicU32, expected: u32, timeout: Duration) {
+        // Relative timeout, measured by the kernel against CLOCK_MONOTONIC, so
+        // it cannot be dragged by an NTP step the way a CLOCK_REALTIME
+        // deadline could.
+        let ts = libc::timespec {
+            tv_sec: timeout.as_secs().min(libc::time_t::MAX as u64) as libc::time_t,
+            tv_nsec: timeout.subsec_nanos() as _,
+        };
+        // SAFETY: `word` is a live, naturally aligned `AtomicU32` borrowed for
+        // the duration of the call. FUTEX_WAIT reads exactly 32 bits at that
+        // address to compare against `expected` and otherwise uses it only as
+        // a wait-queue key; `ts` is read before the syscall returns. Every
+        // error it can report — EAGAIN (value already moved), ETIMEDOUT,
+        // EINTR, ENOSYS — means "re-check and loop", which is what the caller
+        // does unconditionally, so the return value carries nothing we act on.
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                word.as_ptr(),
+                libc::FUTEX_WAIT | PRIVATE,
+                expected,
+                &ts as *const libc::timespec,
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn wake_all(word: &AtomicU32) {
+        // SAFETY: as above. FUTEX_WAKE uses the address purely as a key and
+        // never dereferences it.
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                word.as_ptr(),
+                libc::FUTEX_WAKE | PRIVATE,
+                libc::c_int::MAX,
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn wait(_word: &AtomicU32, _expected: u32, timeout: Duration) {
+        // No futex here: fall back to precisely the sleep this change removed
+        // on Linux, so behaviour on these platforms is unchanged rather than
+        // broken.
+        std::thread::sleep(timeout);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn wake_all(_word: &AtomicU32) {}
 }
 
 /// Bit this name occupies in [`EVENT_NOTIFIER_FILTER`].
@@ -707,7 +940,7 @@ static EVENT_NOTIFIER_FILTER: std::sync::atomic::AtomicU64 = std::sync::atomic::
 /// adopts, or a restarted scheduler replays every notification the previous
 /// run delivered.
 static EVENT_NOTIFIER_REGISTRY: std::sync::LazyLock<
-    Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
+    Mutex<std::collections::HashMap<String, Arc<EventNotifier>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Topic metadata for monitoring and introspection
@@ -1255,7 +1488,7 @@ mod failure_attribution_tests {
 #[cfg(test)]
 mod event_notifier_gate_tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     /// The safety property of the publish-side gate: anything the registry
     /// holds must still be reachable through `notify_event`.
@@ -1279,7 +1512,7 @@ mod event_notifier_gate_tests {
         );
         assert!(!NodeInfo::notify_event(&topic_name));
 
-        let notifier = Arc::new(AtomicU64::new(0));
+        let notifier = Arc::new(EventNotifier::new());
         let mut info = NodeInfo::new(node_name.clone());
         info.set_event_notifier_with_topic(notifier.clone(), &topic_name);
 
@@ -1302,9 +1535,124 @@ mod event_notifier_gate_tests {
             "the key Topic::send() uses did not resolve"
         );
         assert_eq!(
-            notifier.load(Ordering::Acquire),
+            notifier.generation(),
             2,
             "one notification per call — the watcher ticks once per generation"
+        );
+    }
+
+    /// The point of the whole change: a publish must *wake* a parked waiter,
+    /// not merely bump the counter and leave it to time out.
+    ///
+    /// The backstop here is 30 s, three orders of magnitude above the 1 ms the
+    /// event executor uses, so the assertion cannot be satisfied by the
+    /// timeout path — only by `notify_event` actually delivering a
+    /// `FUTEX_WAKE` to the waiter. If the wake is ever dropped (a publisher
+    /// that stops checking `waiters`, a private-vs-shared futex mismatch) this
+    /// test takes 30 s and fails, rather than silently reverting event nodes
+    /// to millisecond latency the way the old sleep-poll did.
+    #[test]
+    fn a_publish_wakes_a_parked_waiter_rather_than_letting_it_time_out() {
+        let name = format!("wake_node_{}", std::process::id());
+        let notifier = Arc::new(EventNotifier::new());
+        let mut info = NodeInfo::new(name.clone());
+        info.set_event_notifier_with_topic(Arc::clone(&notifier), &format!("{name}_topic"));
+
+        let keep_waiting = Arc::new(AtomicBool::new(true));
+        let waiter_notifier = Arc::clone(&notifier);
+        let waiter_flag = Arc::clone(&keep_waiting);
+        let start_gen = notifier.generation();
+
+        let waiter = std::thread::spawn(move || {
+            let t0 = Instant::now();
+            waiter_notifier.wait_for_change(start_gen, Duration::from_secs(30), &waiter_flag);
+            (t0.elapsed(), waiter_notifier.generation())
+        });
+
+        // Give the waiter time to actually reach the kernel, so this exercises
+        // the wake path and not the pre-park generation re-check.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            NodeInfo::notify_event(&name),
+            "the notifier registered above was not reachable through notify_event"
+        );
+
+        let (elapsed, generation) = waiter.join().expect("waiter thread panicked");
+        assert_eq!(generation, start_gen.wrapping_add(1));
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "waiter took {elapsed:?} to return from a 30 s wait that was notified after \
+             50 ms — the publish bumped the counter but never woke the futex, so event \
+             nodes are back to waiting out their backstop"
+        );
+    }
+
+    /// A wake that never arrives must degrade to the backstop, never to a hang.
+    ///
+    /// `publish()` is called directly and `wake_all()` deliberately is not,
+    /// which is exactly the shape of every way a wake can go missing:
+    /// a platform with no futex, a private futex on a shared mapping, a
+    /// publisher that read a stale `waiters` count. The waiter must still come
+    /// back — a lost wake-up is a latency event, never a stalled node.
+    #[test]
+    fn a_lost_wakeup_degrades_to_the_backstop_and_never_hangs() {
+        let notifier = Arc::new(EventNotifier::new());
+        let keep_waiting = Arc::new(AtomicBool::new(true));
+        let backstop = Duration::from_millis(200);
+
+        let waiter_notifier = Arc::clone(&notifier);
+        let waiter_flag = Arc::clone(&keep_waiting);
+        let waiter = std::thread::spawn(move || {
+            let t0 = Instant::now();
+            waiter_notifier.wait_for_change(0, backstop, &waiter_flag);
+            t0.elapsed()
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        // Bump WITHOUT waking — simulate the lost wake-up.
+        assert!(
+            notifier.publish(),
+            "the waiter should have been visible in the waiter count by now"
+        );
+
+        let elapsed = waiter.join().expect("waiter thread panicked");
+        assert!(
+            elapsed < backstop * 4,
+            "waiter blocked {elapsed:?} against a {backstop:?} backstop — the timeout is \
+             not bounding the wait, so a lost wake-up can stall an event node"
+        );
+    }
+
+    /// Shutdown must not have to wait out the backstop.
+    ///
+    /// `wake_all` moves no generation, so the waiter wakes, sees the same
+    /// counter, re-tests its run flag and leaves without fabricating a tick.
+    #[test]
+    fn clearing_the_run_flag_and_waking_releases_a_parked_waiter() {
+        let notifier = Arc::new(EventNotifier::new());
+        let keep_waiting = Arc::new(AtomicBool::new(true));
+
+        let waiter_notifier = Arc::clone(&notifier);
+        let waiter_flag = Arc::clone(&keep_waiting);
+        let waiter = std::thread::spawn(move || {
+            let t0 = Instant::now();
+            waiter_notifier.wait_for_change(0, Duration::from_secs(30), &waiter_flag);
+            (t0.elapsed(), waiter_notifier.generation())
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+        keep_waiting.store(false, Ordering::SeqCst);
+        notifier.wake_all();
+
+        let (elapsed, generation) = waiter.join().expect("waiter thread panicked");
+        assert_eq!(
+            generation, 0,
+            "the shutdown wake moved the generation — a stopping node would tick once more"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "waiter took {elapsed:?} to notice shutdown; EventExecutor::stop would block \
+             for its whole join budget on every idle event node"
         );
     }
 

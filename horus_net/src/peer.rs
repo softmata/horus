@@ -275,6 +275,35 @@ impl PeerTable {
         self.peers.get(peer_id)
     }
 
+    /// Whether some known peer announced from `addr`'s IP and stamps
+    /// `sender_id_hash` into the packets it sends.
+    ///
+    /// The receive path uses this to decide whether a datagram may contribute to
+    /// per-peer state that later steers our own SEND decisions. `sender_id_hash`
+    /// is a bare 16-bit wire field: on its own it names nobody, so anything keyed
+    /// on it alone can be filed under a legitimate peer's identity by any host
+    /// the source filter admits. Requiring the source address to also be one this
+    /// peer announced from means a bare spoofer has to hold a peer-table slot at
+    /// its own address before it can influence anything.
+    ///
+    /// This is attribution, not authentication — announcements are unauthenticated
+    /// and `peer_id` is attacker-chosen (see the crate trust model). It raises the
+    /// cost and narrows the reach; only a per-datagram MAC closes it.
+    ///
+    /// Matching is on IP, not the full socket address: a peer's data packets come
+    /// from its ephemeral source port, not the port it announced on — the same
+    /// reason `announced_type_hash` matches on IP.
+    pub fn id_hash_announced_from(&self, addr: SocketAddr, sender_id_hash: u16) -> bool {
+        self.peers
+            .values()
+            .any(|p| p.addr.ip() == addr.ip() && p.id_hash() == sender_id_hash)
+    }
+
+    /// Whether any known peer announced from `addr`'s IP.
+    pub fn has_peer_at(&self, addr: SocketAddr) -> bool {
+        self.peers.values().any(|p| p.addr.ip() == addr.ip())
+    }
+
     /// Number of alive peers.
     pub fn alive_count(&self) -> usize {
         self.peers.values().filter(|p| p.alive).count()
@@ -563,6 +592,28 @@ mod tests {
     }
 
     // ─── Announced type-hash lookup (import type check) ─────────────────────
+
+    #[test]
+    fn id_hash_attribution_requires_both_the_address_and_the_hash() {
+        let mut table = PeerTable::new();
+        let peer_id = [1u8; 16];
+        table.update_peer(&make_announcement(peer_id, vec![imu_pub()]));
+        let real = crate::discovery::peer_id_hash(&peer_id);
+
+        let from_peer: SocketAddr = "192.168.1.10:40000".parse().unwrap();
+        assert!(table.id_hash_announced_from(from_peer, real));
+        assert!(table.has_peer_at(from_peer));
+
+        // Right address, a hash that peer does not stamp.
+        assert!(!table.id_hash_announced_from(from_peer, real ^ 0x1234));
+
+        // The peer's own hash, but claimed from somewhere else — this is the
+        // shape of the attack: a host filing statistics under a legitimate
+        // peer's identity so they steer OUR send decisions.
+        let elsewhere: SocketAddr = "10.9.9.9:40000".parse().unwrap();
+        assert!(!table.id_hash_announced_from(elsewhere, real));
+        assert!(!table.has_peer_at(elsewhere));
+    }
 
     #[test]
     fn announced_type_hash_returns_the_peers_declared_type() {

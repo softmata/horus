@@ -364,11 +364,12 @@ measured hardware floor it subtracts.
 default DDS, ~5 µs median for a 64-byte same-process message. Compared to HORUS's
 end-to-end cross-process 171 ns — the harder case for HORUS, and therefore the
 conservative comparison — that is roughly **30x**. HORUS does not measure ROS 2
-itself: `dds_comparison_benchmark` quotes published values unless built with
-`-F dds` and a DDS implementation installed, and results carry a `provenance`
-field marking them `literature` rather than `measured` so the two are never
-confused. Any number here that matters to your decision is worth measuring on
-your own hardware and message sizes.
+itself, and no longer ships a benchmark that quotes it: the binary that did
+built ROS 2, CycloneDDS and FastDDS distributions arithmetically from two
+constants and wrote them beside real measurements, so it was deleted rather
+than relabelled. The REP 2014 figure above is cited, not measured here. Any
+number that matters to your decision is worth measuring on your own hardware
+and message sizes.
 
 | vs iceoryx2   | HORUS      | iceoryx2   | Speedup  |
 |---------------|------------|------------|----------|

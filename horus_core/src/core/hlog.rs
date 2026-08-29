@@ -18,10 +18,186 @@
 //! ```
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
 use crate::core::log_buffer::{publish_log, LogEntry, LogType};
 use crate::terminal::is_raw_mode;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Level filter
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `hlog!` had no level filter at all. Every arm evaluated `format!`
+// unconditionally and then paid, in order: `chrono::Local::now()` and a
+// formatted timestamp `String`, two more owned `String`s, a `bincode`
+// serialisation behind the shared-memory log buffer's PROCESS-GLOBAL mutex, and
+// an unbuffered `write(2)` + `flush` to stderr. There was no such thing as a
+// disabled log line — a `hlog!(debug, ...)` in a 1 kHz `tick()` cost the full
+// several microseconds whether or not anybody would ever read it.
+//
+// The filter has to short-circuit BEFORE argument evaluation, which is why it
+// lives in the macro rather than at the top of `log_with_context`. A level check
+// after `format!` has already run buys nothing: the allocation, the `Display`
+// impls of every argument, and any side effect they have are the expensive part.
+// Below the active level a call is now a relaxed atomic load, a compare and a
+// not-taken branch — a couple of nanoseconds, and it never touches the log
+// buffer's mutex at all.
+//
+// The default is [`DEFAULT_LEVEL`], and it is `debug` — nothing is suppressed
+// until an operator sets `HORUS_LOG_LEVEL` or calls [`set_max_level`]. See that
+// constant for why the conventional `info` default is not used here and what it
+// would take to change it. The consequence, stated rather than implied: an
+// unconfigured deployment gets the mechanism but not the saving.
+
+/// Nothing is logged.
+pub const LEVEL_OFF: u8 = 0;
+/// Errors only.
+pub const LEVEL_ERROR: u8 = 1;
+/// Errors and warnings.
+pub const LEVEL_WARN: u8 = 2;
+/// Errors, warnings and informational messages. The level a production image
+/// should set; see [`DEFAULT_LEVEL`] for why it is not the default.
+pub const LEVEL_INFO: u8 = 3;
+/// Everything, including debug.
+pub const LEVEL_DEBUG: u8 = 4;
+
+/// The level in force when nothing has set one.
+///
+/// **`Debug` — nothing is suppressed unless it is configured. Say plainly what
+/// that costs:** the saving this filter exists for is only realised once a
+/// level is actually set, so a deployment that never sets one still pays the
+/// full per-line cost for `hlog!(debug, ...)` inside a tick. Production images
+/// should set `HORUS_LOG_LEVEL=info` (or `warn`).
+///
+/// The conventional default would be `Info`, i.e. debug off. It is not the
+/// default here because this crate has an existing, deliberate, *tested*
+/// invariant that says otherwise — `hlog_ignores_log_bridge_level` in
+/// `tests/log_system_tests.rs` asserts that a `Debug` entry reaches the shared
+/// buffer regardless of any level, and documents the reason: "hlog!() is the
+/// node-level logger and should never be silently dropped". Two more tests
+/// (`python_hlog_all_levels_roundtrip`, `log_without_context_uses_unknown_node_name`)
+/// depend on the same thing. Changing this constant to [`LEVEL_INFO`] is a
+/// one-token change; it requires those assertions to be renegotiated first, and
+/// that is a decision about the product's logging contract, not about latency.
+pub const DEFAULT_LEVEL: u8 = LEVEL_DEBUG;
+
+/// Environment override: `off`, `error`, `warn`, `info`, `debug`.
+pub const LEVEL_ENV: &str = "HORUS_LOG_LEVEL";
+
+/// Sentinel meaning "the environment has not been consulted yet".
+const LEVEL_UNSET: u8 = u8::MAX;
+
+// The filter is a single `level <= max_level` comparison, so the constants must
+// be ordered least-verbose to most-verbose. Enforced at compile time rather than
+// in a test: reordering them would silently invert the filter, and a wrong
+// answer here means a log an operator is relying on stops appearing.
+const _: () = assert!(LEVEL_OFF < LEVEL_ERROR);
+const _: () = assert!(LEVEL_ERROR < LEVEL_WARN);
+const _: () = assert!(LEVEL_WARN < LEVEL_INFO);
+const _: () = assert!(LEVEL_INFO < LEVEL_DEBUG);
+// `set_max_level` clamps to LEVEL_DEBUG, so a caller can never store the
+// sentinel and turn every subsequent check into a re-read of the environment.
+const _: () = assert!(LEVEL_DEBUG < LEVEL_UNSET);
+
+static MAX_LEVEL: AtomicU8 = AtomicU8::new(LEVEL_UNSET);
+
+/// Parse a level name. Returns `None` for anything unrecognised, so a typo
+/// falls back to the default rather than silently disabling logging.
+pub fn parse_level(name: &str) -> Option<u8> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "silent" => Some(LEVEL_OFF),
+        "error" | "err" => Some(LEVEL_ERROR),
+        "warn" | "warning" => Some(LEVEL_WARN),
+        "info" => Some(LEVEL_INFO),
+        "debug" | "trace" | "all" => Some(LEVEL_DEBUG),
+        _ => None,
+    }
+}
+
+/// Read `HORUS_LOG_LEVEL` and latch the result. Cold: runs at most once per
+/// process on the first `hlog!`, and never again.
+#[cold]
+#[inline(never)]
+fn init_level() -> u8 {
+    let level = match std::env::var(LEVEL_ENV) {
+        Ok(ref v) => parse_level(v).unwrap_or_else(|| {
+            // An unrecognised value must not silently mean "default" — that is
+            // how an operator ends up believing debug logging is on.
+            crate::terminal::eprint_line(&format!(
+                "[hlog] {LEVEL_ENV}='{v}' not recognised (expected off/error/warn/info/debug) \
+                 — using the default"
+            ));
+            DEFAULT_LEVEL
+        }),
+        Err(_) => DEFAULT_LEVEL,
+    };
+    // Racing callers all compute the same value, so a plain store is fine.
+    MAX_LEVEL.store(level, Ordering::Relaxed);
+    level
+}
+
+/// The highest level currently being logged.
+pub fn max_level() -> u8 {
+    let current = MAX_LEVEL.load(Ordering::Relaxed);
+    if current == LEVEL_UNSET {
+        init_level()
+    } else {
+        current
+    }
+}
+
+/// Set the highest level to log, overriding `HORUS_LOG_LEVEL`.
+///
+/// Takes effect immediately for every thread.
+pub fn set_max_level(level: u8) {
+    MAX_LEVEL.store(level.min(LEVEL_DEBUG), Ordering::Relaxed);
+}
+
+/// Whether `level` would be logged.
+///
+/// The guard the `hlog!` macros expand to, so it must stay cheap enough to sit
+/// in a 1 kHz tick: in steady state one relaxed load, one compare, one branch.
+#[inline]
+pub fn level_enabled(level: u8) -> bool {
+    let current = MAX_LEVEL.load(Ordering::Relaxed);
+    if current != LEVEL_UNSET {
+        return level <= current;
+    }
+    level <= init_level()
+}
+
+/// Maps the bare level word the macros take to its numeric constant.
+///
+/// Exported because `hlog_every!` and `hlog_once!` take the level as an
+/// `ident`, and they expand in downstream crates. Not part of the public API.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hlog_level_const {
+    (info) => {
+        $crate::core::hlog::LEVEL_INFO
+    };
+    (warn) => {
+        $crate::core::hlog::LEVEL_WARN
+    };
+    (error) => {
+        $crate::core::hlog::LEVEL_ERROR
+    };
+    (debug) => {
+        $crate::core::hlog::LEVEL_DEBUG
+    };
+    // Without this arm a misspelled level fails inside this helper with
+    // "no rules expected `verbose`", pointing at a macro the author never
+    // wrote — the same class of unhelpful error the `hlog!` failure arm below
+    // exists to prevent.
+    ($other:tt) => {
+        compile_error!(concat!(
+            "unknown hlog level `",
+            stringify!($other),
+            "` — the levels are: info, warn, error, debug"
+        ))
+    };
+}
 
 thread_local! {
     static CURRENT_NODE: RefCell<Option<NodeLogContext>> = const { RefCell::new(None) };
@@ -103,9 +279,41 @@ pub fn current_tick_number() -> u64 {
     CURRENT_NODE.with(|ctx| ctx.borrow().as_ref().map(|c| c.tick_number).unwrap_or(0))
 }
 
+/// The filter level a [`LogType`] is subject to, or `None` for the transport
+/// entries.
+///
+/// `Publish`/`Subscribe` exist for the monitor, never reach the console, and are
+/// not something an operator sets a *log level* to control — so the user-facing
+/// level filter deliberately does not gate them.
+fn filter_level(log_type: &LogType) -> Option<u8> {
+    match log_type {
+        LogType::Error => Some(LEVEL_ERROR),
+        LogType::Warning => Some(LEVEL_WARN),
+        LogType::Info => Some(LEVEL_INFO),
+        LogType::Debug => Some(LEVEL_DEBUG),
+        LogType::Publish | LogType::Subscribe => None,
+    }
+}
+
+/// Whether a [`LogType`] passes the active level filter.
+#[inline]
+pub fn log_type_enabled(log_type: &LogType) -> bool {
+    filter_level(log_type).is_none_or(level_enabled)
+}
+
 /// Internal function used by the hlog!() macro.
 /// Logs a message with the current node context.
+///
+/// The `hlog!` macros check the level before they build `message`, which is
+/// where the saving is. The check is repeated here for the direct callers (the
+/// C FFI, `log_horus_error`, anything holding a `String` already): they still
+/// pay for the message they built, but not for the timestamp, the buffer mutex
+/// or the console write.
 pub fn log_with_context(level: LogType, message: String) {
+    if !log_type_enabled(&level) {
+        return;
+    }
+
     let now = chrono::Local::now();
 
     let (node_name, tick_us, tick_number) = CURRENT_NODE.with(|ctx| {
@@ -124,20 +332,28 @@ pub fn log_with_context(level: LogType, message: String) {
         }
     });
 
+    // Render the console line BEFORE the entry takes ownership. This used to
+    // `.clone()` both `node_name` and `message` — two heap allocations and two
+    // copies on every log line, on a path that runs inside `tick()`.
+    let console = format_console_line(&level, &node_name, &message, is_raw_mode());
+
     // Write to shared memory log buffer for monitor
     publish_log(LogEntry {
         timestamp: now.format("%H:%M:%S%.3f").to_string(),
         tick_number,
-        node_name: node_name.clone(),
-        log_type: level.clone(),
+        node_name,
+        log_type: level,
         topic: None,
-        message: message.clone(),
+        message,
         tick_us,
         ipc_ns: 0,
     });
 
-    // Also emit to stderr for console visibility.
-    emit_console(&level, &node_name, &message);
+    // Console last: the shared-memory buffer is what survives a crash, and the
+    // stderr write is the one that can block on a slow reader.
+    if let Some(line) = console {
+        write_console_line(&line);
+    }
 }
 
 /// Log a message attributed to a named node, bypassing the thread-local.
@@ -150,6 +366,10 @@ pub fn log_with_context(level: LogType, message: String) {
 ///
 /// Use this wherever the node is known at the call site.
 pub fn log_as_node(level: LogType, node_name: &str, message: &str) {
+    if !log_type_enabled(&level) {
+        return;
+    }
+
     let now = chrono::Local::now();
     let (tick_us, tick_number) = CURRENT_NODE.with(|ctx| match *ctx.borrow() {
         Some(ref c) => (
@@ -161,18 +381,22 @@ pub fn log_as_node(level: LogType, node_name: &str, message: &str) {
         None => (0, 0),
     });
 
+    let console = format_console_line(&level, node_name, message, is_raw_mode());
+
     publish_log(LogEntry {
         timestamp: now.format("%H:%M:%S%.3f").to_string(),
         tick_number,
         node_name: node_name.to_string(),
-        log_type: level.clone(),
+        log_type: level,
         topic: None,
         message: message.to_string(),
         tick_us,
         ipc_ns: 0,
     });
 
-    emit_console(&level, node_name, message);
+    if let Some(line) = console {
+        write_console_line(&line);
+    }
 }
 
 /// Write one log line to the terminal.
@@ -191,12 +415,31 @@ pub fn log_as_node(level: LogType, node_name: &str, message: &str) {
 /// `Publish` and `Subscribe` entries are deliberately not printed — they exist
 /// for the monitor and would drown a console at tick rate.
 pub fn emit_console(level: &LogType, node_name: &str, message: &str) {
-    use std::io::{self, Write};
-
+    if !log_type_enabled(level) {
+        return;
+    }
     // A TUI in raw mode has no implicit carriage return.
     let Some(line) = format_console_line(level, node_name, message, is_raw_mode()) else {
         return;
     };
+    write_console_line(&line);
+}
+
+/// Write one already-formatted line to stderr.
+///
+/// Split out from [`emit_console`] so the callers that have to build the line
+/// early — to hand its inputs to the log buffer by value rather than by clone —
+/// can still perform the write last.
+///
+/// NOTE, since this is a real cost and not a hypothetical: this write is
+/// unbuffered and blocking. On a slow or stopped stderr reader it blocks for as
+/// long as the reader takes, and a `hlog!` from inside a `tick()` inherits that
+/// unbounded wait. The level filter above is what keeps the common case off
+/// this path entirely; RT-thread diagnostics take a different route
+/// (`scheduling::rt_executor::rt_diag`, a preallocated ring drained off-thread)
+/// precisely because they cannot afford it.
+fn write_console_line(line: &str) {
+    use std::io::{self, Write};
     let mut err = io::stderr();
     let _ = err.write_all(line.as_bytes());
     let _ = err.flush();
@@ -249,6 +492,20 @@ pub fn format_console_line(
 /// - `error` - Error conditions that need attention
 /// - `debug` - Detailed debug information
 ///
+/// # Filtering
+///
+/// A call below the active level costs one relaxed atomic load and a
+/// not-taken branch: the level is checked **before** the format arguments are
+/// evaluated, so a suppressed line pays for neither `format!` nor its
+/// arguments' `Display` impls. The default level is
+/// [`DEFAULT_LEVEL`](crate::core::hlog::DEFAULT_LEVEL) (`info`, i.e. `debug`
+/// is off); change it with `HORUS_LOG_LEVEL=debug` or
+/// [`set_max_level`](crate::core::hlog::set_max_level).
+///
+/// The corollary is that arguments with side effects are not evaluated when
+/// the line is suppressed — which is the intended semantics of a level, and
+/// the reason the check cannot live inside the logging function.
+///
 /// # Example
 ///
 /// ```ignore
@@ -277,17 +534,28 @@ pub fn format_console_line(
 /// ```
 #[macro_export]
 macro_rules! hlog {
+    // The level check is OUTSIDE `format!` in every arm. That placement is the
+    // whole point: a check after the arguments have been formatted has already
+    // paid for everything the filter exists to avoid.
     (info, $($arg:tt)*) => {
-        $crate::core::hlog::log_with_context($crate::core::LogType::Info, format!($($arg)*))
+        if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_INFO) {
+            $crate::core::hlog::log_with_context($crate::core::LogType::Info, format!($($arg)*))
+        }
     };
     (warn, $($arg:tt)*) => {
-        $crate::core::hlog::log_with_context($crate::core::LogType::Warning, format!($($arg)*))
+        if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_WARN) {
+            $crate::core::hlog::log_with_context($crate::core::LogType::Warning, format!($($arg)*))
+        }
     };
     (error, $($arg:tt)*) => {
-        $crate::core::hlog::log_with_context($crate::core::LogType::Error, format!($($arg)*))
+        if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_ERROR) {
+            $crate::core::hlog::log_with_context($crate::core::LogType::Error, format!($($arg)*))
+        }
     };
     (debug, $($arg:tt)*) => {
-        $crate::core::hlog::log_with_context($crate::core::LogType::Debug, format!($($arg)*))
+        if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_DEBUG) {
+            $crate::core::hlog::log_with_context($crate::core::LogType::Debug, format!($($arg)*))
+        }
     };
     // Failure arm. Without it, forgetting the level produced:
     //
@@ -320,6 +588,11 @@ macro_rules! hlog {
 /// }
 /// ```
 pub fn log_horus_error(err: &crate::error::HorusError) {
+    // Ahead of the `Display` impls and the `format!`: an error's `Display` can
+    // be expensive (it walks a chain of sources) and its `help()` allocates.
+    if !level_enabled(LEVEL_ERROR) {
+        return;
+    }
     let msg = if let Some(hint) = err.help() {
         format!("{}\n  hint: {}", err, hint)
     } else {
@@ -355,14 +628,19 @@ macro_rules! hlog_every {
     ($interval_ms:expr, $level:ident, $($arg:tt)*) => {{
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
-        let now_ms = ::std::time::SystemTime::now()
-            .duration_since(::std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let last = LAST_LOG_MS.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last) >= ($interval_ms as u64) {
-            LAST_LOG_MS.store(now_ms, Ordering::Relaxed);
-            $crate::hlog!($level, $($arg)*);
+        // Level first, ahead of the clock read: `SystemTime::now()` is a vDSO
+        // call, and paying it to decide whether to skip a line that is disabled
+        // anyway is the same mistake as formatting first.
+        if $crate::core::hlog::level_enabled($crate::__hlog_level_const!($level)) {
+            let now_ms = ::std::time::SystemTime::now()
+                .duration_since(::std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let last = LAST_LOG_MS.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(last) >= ($interval_ms as u64) {
+                LAST_LOG_MS.store(now_ms, Ordering::Relaxed);
+                $crate::hlog!($level, $($arg)*);
+            }
         }
     }};
     // Same failure arm as `hlog!`, for the same reason: without it, omitting
@@ -394,7 +672,12 @@ macro_rules! hlog_once {
     ($level:ident, $($arg:tt)*) => {{
         use std::sync::atomic::{AtomicBool, Ordering};
         static LOGGED: AtomicBool = AtomicBool::new(false);
-        if !LOGGED.swap(true, Ordering::Relaxed) {
+        // Short-circuit `&&`: when the level is disabled the swap does not
+        // happen, so raising the level later still lets the line through once.
+        // Consuming the token while suppressed would silently spend it.
+        if $crate::core::hlog::level_enabled($crate::__hlog_level_const!($level))
+            && !LOGGED.swap(true, Ordering::Relaxed)
+        {
             $crate::hlog!($level, $($arg)*);
         }
     }};
@@ -464,6 +747,161 @@ mod tests {
     }
 
     use super::*;
+
+    // ── Level filter ────────────────────────────────────────────────────
+    //
+    // `hlog!` had no filter at all: every arm ran `format!` unconditionally and
+    // then paid a timestamp, three owned `String`s, a `bincode` write behind
+    // the log buffer's process-global mutex, and an unbuffered blocking
+    // `write(2)` to stderr. A `hlog!(debug, ...)` in a 1 kHz tick cost the full
+    // several microseconds whether or not anyone would read it.
+
+    /// Serialises the tests that move the process-global level.
+    ///
+    /// They only ever narrow as far as `LEVEL_INFO`, the default, so they
+    /// cannot suppress the `info` lines the buffer tests above depend on.
+    static LEVEL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The ordering of the level constants is asserted at compile time next to
+    /// their definitions; this pins the *default*, which is a product decision.
+    #[test]
+    fn nothing_is_suppressed_by_default() {
+        // Pinned deliberately. `hlog_ignores_log_bridge_level` and two other
+        // integration tests assert that a Debug entry always reaches the shared
+        // buffer, and document "should never be silently dropped" as the
+        // intent. Suppression is therefore opt-in; see `DEFAULT_LEVEL`.
+        assert_eq!(
+            DEFAULT_LEVEL, LEVEL_DEBUG,
+            "the default must not drop a level the logging contract promises to keep"
+        );
+    }
+
+    #[test]
+    fn unrecognised_level_names_do_not_silently_disable_logging() {
+        assert_eq!(parse_level("warn"), Some(LEVEL_WARN));
+        assert_eq!(parse_level("  DEBUG "), Some(LEVEL_DEBUG));
+        assert_eq!(parse_level("off"), Some(LEVEL_OFF));
+        // A typo must fall back to the default, never to OFF: silently logging
+        // nothing is the worst possible response to a misspelled level.
+        assert_eq!(parse_level("verbose"), None);
+        assert_eq!(parse_level(""), None);
+    }
+
+    /// Transport entries are the monitor's, not an operator's log level, so the
+    /// filter must not gate them.
+    #[test]
+    fn transport_entries_bypass_the_level_filter() {
+        let _guard = LEVEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = max_level();
+        set_max_level(LEVEL_INFO);
+        assert!(log_type_enabled(&LogType::Publish));
+        assert!(log_type_enabled(&LogType::Subscribe));
+        assert!(!log_type_enabled(&LogType::Debug));
+        assert!(log_type_enabled(&LogType::Error));
+        set_max_level(previous);
+    }
+
+    /// **The** property of the filter: a suppressed line does not evaluate its
+    /// arguments.
+    ///
+    /// A level check placed after `format!` has already run buys nothing — the
+    /// allocation and every argument's `Display` impl are the expensive part.
+    /// This asserts the check is where it has to be, in the macro.
+    #[test]
+    fn a_suppressed_line_does_not_evaluate_its_arguments() {
+        let _guard = LEVEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = max_level();
+        set_max_level(LEVEL_INFO);
+
+        let evaluated = std::cell::Cell::new(0u32);
+        let expensive = || {
+            evaluated.set(evaluated.get() + 1);
+            "payload"
+        };
+
+        crate::hlog!(debug, "suppressed {}", expensive());
+        assert_eq!(
+            evaluated.get(),
+            0,
+            "a debug line below the active level must not evaluate its arguments"
+        );
+
+        crate::hlog!(info, "emitted {}", expensive());
+        assert_eq!(
+            evaluated.get(),
+            1,
+            "a line at or above the active level must still be logged"
+        );
+
+        set_max_level(previous);
+    }
+
+    /// Raising the level makes suppressed lines appear — the filter hides
+    /// output, it does not disable the call site.
+    #[test]
+    fn raising_the_level_lets_debug_through() {
+        use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+        let _guard = LEVEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = max_level();
+
+        let count = || {
+            GLOBAL_LOG_BUFFER
+                .get_all()
+                .iter()
+                .filter(|e| e.message.contains("level_gate_9920"))
+                .count()
+        };
+        let before = count();
+
+        set_max_level(LEVEL_INFO);
+        crate::hlog!(debug, "level_gate_9920 suppressed");
+        assert_eq!(count(), before, "debug must not reach the buffer at info");
+
+        set_max_level(LEVEL_DEBUG);
+        crate::hlog!(debug, "level_gate_9920 emitted");
+        assert_eq!(count(), before + 1, "debug must reach the buffer at debug");
+
+        set_max_level(previous);
+    }
+
+    /// `hlog_once!` must not spend its one shot on a suppressed call.
+    ///
+    /// Otherwise raising the level later would never show the line — the token
+    /// was consumed by a call that produced nothing.
+    #[test]
+    fn hlog_once_does_not_spend_its_token_while_suppressed() {
+        use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
+        let _guard = LEVEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = max_level();
+
+        // One closure, therefore one expansion, therefore one `static` — the
+        // same call site on every invocation.
+        let emit = || crate::hlog_once!(debug, "once_gate_9921");
+        let count = || {
+            GLOBAL_LOG_BUFFER
+                .get_all()
+                .iter()
+                .filter(|e| e.message.contains("once_gate_9921"))
+                .count()
+        };
+        let before = count();
+
+        set_max_level(LEVEL_INFO);
+        for _ in 0..5 {
+            emit();
+        }
+        assert_eq!(count(), before, "suppressed calls must produce nothing");
+
+        set_max_level(LEVEL_DEBUG);
+        emit();
+        assert_eq!(
+            count(),
+            before + 1,
+            "the once-token must survive the suppressed calls"
+        );
+
+        set_max_level(previous);
+    }
 
     #[test]
     fn test_set_and_clear_context() {

@@ -1,23 +1,35 @@
 # cargo-audit configuration (https://github.com/rustsec/rustsec/tree/main/cargo-audit).
 #
-# The CI `audit` job runs `cargo audit` against this file. Any advisory NOT in
-# the ignore list below fails CI — so a newly introduced vulnerable dependency
-# is caught at PR time. The entries here are TRIAGED, not dismissed: each names
-# why it is tolerated and what would let us remove it. Re-review on every bump.
+# The CI `audit` job (ci.yml, job `security`) runs `cargo audit` against this
+# file. Any advisory NOT in the ignore list below fails CI on main — so a newly
+# introduced vulnerable dependency is caught at PR time. Entries here are
+# TRIAGED, not dismissed: each must name why it is tolerated and what would let
+# us remove it. Re-review on every bump.
 #
-# Tracking: softmata-brain insight 1313 (security triage, 2026-06-15).
+# The list is currently EMPTY, and that is the target state. An ignore entry
+# suppresses its advisory for every crate version it matches, forever —
+# including for a version that lands in the lockfile years after the entry was
+# written. So an ignore whose exit condition has already been met is not inert;
+# it is a hole waiting for the dependency to come back. Delete entries the
+# moment their condition is met rather than leaving them "just in case".
+#
+# ── Removed entries, kept as history ──────────────────────────────────────────
+#
+# 2026-07-06 — RUSTSEC-2026-0176 (pyo3 0.27 OOB read) and RUSTSEC-2026-0177
+#   (pyo3 0.27 missing Sync bound). horus_py migrated to pyo3 0.29 (+ pythonize
+#   0.29), which fixes both; Cargo.lock now resolves pyo3 0.29.2 /
+#   pyo3-ffi 0.29.2 / pythonize 0.29.0. Dependabot alerts #25-#28 are resolved
+#   by that bump, not ignored.
+#
+# 2026-08-28 — RUSTSEC-2023-0071 (rsa 0.9.x, "Marvin Attack" key-recovery timing
+#   sidechannel). The entry's own stated exit condition — "remove this entry if
+#   `rsa` is dropped from the lockfile" — is met: `rsa` no longer appears in
+#   Cargo.lock at all, so the advisory cannot match anything today. The entry
+#   was therefore doing only one thing: pre-suppressing the advisory for
+#   whatever future dependency bump pulls `rsa` back in. If that happens,
+#   `cargo audit` should say so out loud. Re-add only with a fresh triage of the
+#   reintroduced path, and only if `cargo tree -i rsa` shows it is genuinely
+#   unreachable from a shipped binary.
 
 [advisories]
-ignore = [
-    # rsa 0.9.x — "Marvin Attack" key-recovery timing sidechannel.
-    # No fixed upstream version exists. `rsa` is not reachable in any horus
-    # build tree (`cargo tree -i rsa` is empty — it sits in Cargo.lock via an
-    # optional/transitive path that no enabled feature pulls in). Remove this
-    # entry if `rsa` is dropped from the lockfile or an upstream fix ships.
-    "RUSTSEC-2023-0071",
-
-    # NOTE (2026-07-06): the two pyo3 0.27 advisories (RUSTSEC-2026-0176 OOB read,
-    # RUSTSEC-2026-0177 missing Sync bound) were REMOVED from this list — horus_py
-    # is now migrated to pyo3 0.29 (+ pythonize 0.29), which fixes both. Dependabot
-    # alerts #25-#28 are resolved by that bump, not ignored.
-]
+ignore = []

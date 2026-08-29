@@ -64,14 +64,16 @@ impl Default for BenchmarkConfig {
 
 /// Where a result's numbers came from.
 ///
-/// `dds_comparison_benchmark` emits entries for ROS2, CycloneDDS, FastDDS and
-/// iceoryx when the `dds` feature is off — which is the default, and which
-/// means nothing was installed to measure. Those entries carried a full
+/// `dds_comparison_benchmark` emitted entries for ROS2, CycloneDDS, FastDDS and
+/// iceoryx when the `dds` feature was off — which was the default, and which
+/// meant nothing was installed to measure. Those entries carried a full
 /// percentile distribution (p1 through p99.99, plus confidence bounds), all of
 /// it computed arithmetically from two hardcoded constants, and were written
 /// into the JSON report alongside real measurements with nothing in the schema
 /// to tell them apart. `count: 0` and an `_reference` name suffix were the only
-/// hints, and neither survives a chart generator.
+/// hints, and neither survives a chart generator. That binary is gone; this
+/// enum stays, because the moment a quoted figure enters a report again it
+/// needs to arrive already marked.
 ///
 /// A number a reader might quote in a comparison has to say where it came from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

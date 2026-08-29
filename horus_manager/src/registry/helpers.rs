@@ -609,6 +609,47 @@ fn copy_dir_all_inner(root_src: &Path, src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Reject a version string that cannot safely become a path component.
+///
+/// `install_from_registry` and `install_binary_artifact` build the cache entry
+/// as `<install_dir>/<name>@<version>`, then `create_dir_all` a staging
+/// directory beside it, `copy_dir_all` the unpacked archive into it,
+/// `remove_dir_all` whatever already sits at the destination and `rename` the
+/// staging directory over it. On a `latest` install the version is not supplied
+/// by the caller at all — [`detect_package_version`] reads it back out of the
+/// DOWNLOADED archive's own `horus.toml` / `package.json` / `Cargo.toml`, so it
+/// is chosen by whoever published the package.
+///
+/// `Path::join` does not normalise, so a version of `/../../.config/autostart`
+/// yielded the literal component `<name>@` followed by real `..` components and
+/// left the cache entirely: `create_dir_all` created the `<name>@`
+/// stepping-stone that makes the `..` resolvable, `remove_dir_all` deleted the
+/// attacker-named directory, and `rename` put the package's contents there. The
+/// per-entry tar validation in the extraction loop cannot catch this — the
+/// escape is not in an archive member path, it is in the metadata used to build
+/// the destination.
+///
+/// A version is a label, never a path. Comparators (`^`, `>=`, `,`) stay
+/// allowed because `horus install pkg@>=1.2` reaches the same code verbatim.
+pub(crate) fn ensure_path_safe_version(package_name: &str, version: &str) -> Result<()> {
+    let unusable = version.is_empty()
+        || version.len() > 64
+        || version.starts_with('.')
+        || version.contains("..")
+        || version.contains(['/', '\\', ':', '\0']);
+    if unusable {
+        return Err(anyhow!(
+            "Refusing to install {}: the version {:?} is not a usable directory name.\n\
+             A version must not be empty, exceed 64 characters, begin with '.', contain \
+             '..', or contain a path separator — joined onto the package cache, such a \
+             value escapes it and overwrites a directory somewhere else.",
+            package_name,
+            version
+        ));
+    }
+    Ok(())
+}
+
 // Helper function to detect package version from directory
 pub(crate) fn detect_package_version(dir: &Path) -> Option<String> {
     // Try horus.toml first (primary HORUS manifest)
