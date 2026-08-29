@@ -301,6 +301,82 @@ fn tensor_backed_publish_does_not_allocate() {
     );
 }
 
+/// The serde send path reuses its scratch buffer rather than allocating a
+/// serialisation buffer per message.
+///
+/// A non-POD topic — anything with a `Drop`, so anything carrying a `String` or
+/// a `Vec` — cannot move its value through the ring as raw bytes and has to
+/// serialise. That is a per-message encode on the publish path, and the obvious
+/// implementation allocates a fresh buffer for it every time.
+///
+/// `dispatch::serialize_into_scratch` writes into `local.serde_scratch`
+/// instead, so the buffer is allocated once per handle. This pins that: if the
+/// scratch is ever removed or accidentally re-created per send, an RT publisher
+/// of a non-POD message starts taking the allocator lock at its tick rate.
+///
+/// Only the SEND side is asserted. Receiving a `String` has to allocate the
+/// `String` — that is the message, not overhead — so a no-alloc receive of an
+/// owned type is not a property worth claiming.
+#[test]
+fn serde_send_reuses_its_scratch_buffer() {
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct Named {
+        // A `String` field makes this non-POD (`needs_drop`), which is what
+        // routes it to the serde path rather than the POD one.
+        label: String,
+        value: f32,
+    }
+
+    let _gate = counter_gate();
+    let _shm_guard = cleanup_stale_shm();
+
+    let name = common::unique("rt.guard.serde");
+    let tx = Topic::<Named>::new(&name).expect("create serde pub");
+
+    // Warmup outside the bracket, with a message the SAME size as the ones
+    // below. The scratch is a `Vec<u8>` that grows to fit the largest message
+    // encoded so far and is then cleared (keeping capacity) per send, so the
+    // first message larger than any before it costs one realloc. That growth is
+    // amortised and is not what this test is about — warming with a SHORTER
+    // label made the first loop iteration pay it and the test fail for the
+    // wrong reason.
+    tx.send(Named {
+        label: "sensor".to_string(),
+        value: 0.0,
+    });
+
+    // Build the messages up front. Constructing the `String` allocates, and
+    // that is the caller's cost, not the transport's — measuring it here would
+    // make the test fail for a reason it is not about.
+    let msgs: Vec<Named> = (0..64u32)
+        .map(|i| Named {
+            label: "sensor".to_string(),
+            value: i as f32,
+        })
+        .collect();
+
+    let before = rt_allocator::violation_count();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Consumed by value: `send` takes ownership, and cloning inside the
+        // guarded region would allocate the `String` again and count against
+        // the transport. Only `alloc` is instrumented, so the drop of each
+        // message inside `send` is not counted either way.
+        for m in msgs {
+            let _guard = rt_allocator::enter_rt_context_guarded("rt_serde_node");
+            tx.send(m);
+        }
+    }));
+
+    let violations = rt_allocator::violation_count() - before;
+    assert!(
+        outcome.is_ok() && violations == 0,
+        "the serde send path allocated ({violations} violation(s)) beyond the \
+         message itself. The scratch buffer in LocalState exists so that \
+         encoding does not allocate per message; if it has been removed, an RT \
+         publisher of a non-POD message now takes the allocator lock every tick."
+    );
+}
+
 // ─────────────────────────── through the executor ────────────────────────────
 
 /// Ticks completed by the clean executor-driven node. A `static` + atomic so
