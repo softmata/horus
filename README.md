@@ -383,6 +383,32 @@ and message sizes.
 
 Ratios above 1 favour HORUS.
 
+**Bulk payloads do not go through `Topic<[u8; N]>`.** `Image`, `PointCloud`,
+`DepthImage` and `Tensor` keep their buffers in a shared-memory pool and put
+only a 224-byte descriptor on the topic, so publishing is zero-copy and the
+latency is flat in frame size:
+
+| frame (Mono8)   | pixels  | one-way p50 |
+|-----------------|---------|-------------|
+| 64x64           | 4 KB    | 306 ns      |
+| 640x480         | 307 KB  | 297 ns      |
+| 1920x1080       | 2 MB    | 284 ns      |
+
+That is the row to compare against a loan/publish API. The 4 KB line in the
+table above sends a POD **by value**, which copies 4 KB into the ring and 4 KB
+back out; it is the wrong API for bulk data and is kept in the table because
+removing a row where HORUS loses would be the more dishonest choice.
+
+Reproduce with `cargo run --release -p horus_benchmarks --bin topic_probe --
+--image 1920x1080`.
+
+One caveat worth knowing before you build a camera pipeline: `Image::new`
+zero-initialises the buffer, which for a 1920x1080 frame costs ~82 us. That is
+a deliberate scrub — a pool slot can be reused by another process, so it is
+cleared before it is handed out — but it means allocating a frame per capture
+puts that cost on your critical path. Allocate once and clone; a clone is a
+refcount bump and a descriptor copy, which is what the numbers above measure.
+
 **iceoryx2 is still faster at 4 KB** — by 1.2x on the median and 1.6x on the
 p99 — and the crossover sits between 1 KB and 4 KB. HORUS's advantage is at
 small payloads, which is where robotics control traffic lives: a CmdVel is 16
