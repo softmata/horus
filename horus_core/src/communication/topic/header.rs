@@ -26,15 +26,16 @@ pub(crate) const TOPIC_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE" (kept for 
 /// v3: Added per-slot sequence array for multi-producer write-completion tracking
 /// v4: Two independent breaking changes, shipped together.
 ///
-///     (a) Every millisecond timestamp in this header — participant leases,
-///         `last_topology_change_ms`, `stall_since_ms` — moved from
-///         `CLOCK_REALTIME` to `CLOCK_MONOTONIC`. See [`current_time_ms`].
-///     (b) Added `layout_kind`, selecting the co-located slot geometry for
-///         small POD types. It is carved out of `_pad1a`, so no existing field
-///         moves, but a v3 reader does not know to consult it: it would address
-///         a colo region with the split layout's offsets and read payload bytes
-///         as readiness stamps. That is the same class of silent corruption the
-///         horus_net offset drift produced once already.
+/// (a) Every millisecond timestamp in this header — participant leases,
+/// `last_topology_change_ms`, `stall_since_ms` — moved from `CLOCK_REALTIME` to
+/// `CLOCK_MONOTONIC`. See [`current_time_ms`].
+///
+/// (b) Added `layout_kind`, selecting the co-located slot geometry for small POD
+/// types. It is carved out of `_pad1a`, so no existing field moves, but a v3
+/// reader does not know to consult it: it would address a colo region with the
+/// split layout's offsets and read payload bytes as readiness stamps. That is
+/// the same class of silent corruption the horus_net offset drift produced once
+/// already.
 ///
 /// # Why v4 is a hard break and not a soft migration
 ///
