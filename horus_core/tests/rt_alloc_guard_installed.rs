@@ -241,6 +241,66 @@ fn steady_state_topic_recv_compute_send_does_not_allocate() {
     );
 }
 
+/// The tensor-backed publish path — allocate a pooled frame, publish it, receive
+/// it — does not touch the heap.
+///
+/// This is the path a camera or lidar node runs, and it is the one where a
+/// hidden allocation is easiest to miss: the pixel buffer comes from a
+/// shared-memory pool rather than the heap, so `Image::new` *looks* like it
+/// cannot allocate, and until recently it did anyway — `vec![height, width,
+/// channels]` built a heap Vec purely to be copied into `Tensor`'s fixed shape
+/// array and dropped.
+///
+/// Publishing is a descriptor copy and a refcount bump, so it should be free of
+/// the allocator regardless of frame size. 64x64 keeps the scrub on drop cheap;
+/// what is under test is the allocation behaviour, not the throughput.
+#[test]
+fn tensor_backed_publish_does_not_allocate() {
+    use horus_core::memory::Image;
+    use horus_core::types::ImageEncoding;
+
+    let _gate = counter_gate();
+    let _shm_guard = cleanup_stale_shm();
+
+    let name = common::unique("rt.guard.frames");
+    let tx = Topic::<Image>::new(&name).expect("create frame pub");
+    let rx = Topic::<Image>::new(&name).expect("create frame sub");
+
+    // Warmup outside the bracket: lazy pool creation, SHM mapping and backend
+    // selection are all allowed to allocate once.
+    let warm = Image::new(64, 64, ImageEncoding::Mono8).expect("warmup frame");
+    tx.send(warm);
+    let _ = rx.recv();
+
+    let before = rt_allocator::violation_count();
+    let mut received = 0u32;
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for i in 0..64u32 {
+            let _guard = rt_allocator::enter_rt_context_guarded("rt_camera_node");
+            let frame = Image::new(64, 64, ImageEncoding::Mono8).expect("frame");
+            frame.data_mut()[0] = i as u8;
+            tx.send(frame);
+            if rx.recv().is_some() {
+                received += 1;
+            }
+        }
+    }));
+
+    let violations = rt_allocator::violation_count() - before;
+    assert!(
+        outcome.is_ok() && violations == 0,
+        "the tensor-backed publish path allocated ({violations} violation(s)). \
+         Image::new draws its buffer from a shared-memory pool, so a heap \
+         allocation here is incidental bookkeeping rather than the payload — \
+         find it and put it on the stack, do not relax this test."
+    );
+    assert!(
+        received > 0,
+        "the subscriber received nothing, so the loop above proved nothing"
+    );
+}
+
 // ─────────────────────────── through the executor ────────────────────────────
 
 /// Ticks completed by the clean executor-driven node. A `static` + atomic so

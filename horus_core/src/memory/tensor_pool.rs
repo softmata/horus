@@ -1025,12 +1025,21 @@ impl TensorPool {
         // A crafted shape like [u32::MAX, u32::MAX] would overflow u64 without this check,
         // causing the pool to allocate a near-zero-size region and subsequent writes to
         // corrupt memory beyond the allocation.
+        // `ok_or_else`, not `ok_or`. `ok_or` takes its argument by value, so the
+        // error — including its `String` — was constructed on every iteration of
+        // this fold, on every allocation, whether or not the multiply
+        // overflowed. That put a heap allocation per shape dimension on the
+        // frame-allocation path, which `tensor_backed_publish_does_not_allocate`
+        // now catches. The `checked_mul` below always used the lazy form, which
+        // is what makes this one a slip rather than a convention.
         let num_elements: u64 = shape.iter().copied().try_fold(1u64, |acc, x| {
-            acc.checked_mul(x).ok_or(HorusError::Memory(
-                "Tensor shape too large: element count overflows u64"
-                    .to_string()
-                    .into(),
-            ))
+            acc.checked_mul(x).ok_or_else(|| {
+                HorusError::Memory(
+                    "Tensor shape too large: element count overflows u64"
+                        .to_string()
+                        .into(),
+                )
+            })
         })?;
         let element_size = dtype.element_size() as u64;
         let size = num_elements.checked_mul(element_size).ok_or_else(|| {
