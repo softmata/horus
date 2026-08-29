@@ -49,7 +49,20 @@ fn write_pod<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeO
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(&msg as *const T as *const u8, std::mem::size_of::<T>())
         };
-        write_topic_slot_bytes(&path, bytes);
+        // Check the return value. Ignoring it meant this helper printed
+        // "WROTE_RAW <count>" unconditionally, so `cross_process.rs`'s assertion
+        // that the writer succeeded passed while every write could be failing
+        // silently — which is exactly how the wrong `shm_path` above stayed
+        // hidden long enough for all 16 xproc_* tests to be permanently red for
+        // a reason no assertion named. Fail loudly instead, on stderr, which the
+        // caller prints when its write assertion trips.
+        if !write_topic_slot_bytes(&path, bytes) {
+            eprintln!(
+                "write_topic_slot_bytes failed at i={i} for {}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
         // Pace the writes.
         //
         // Unpaced, the whole run lands in a few microseconds and the concurrent

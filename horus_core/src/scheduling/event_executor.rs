@@ -978,7 +978,13 @@ mod tests {
         // wall-clock bound measures the scheduler, whereas the minimum measures
         // the mechanism. A notification found by the escalated 32 ms timeout
         // cannot come back in single-digit milliseconds even once.
-        const ROUNDS: u64 = 4;
+        // 10 rounds, not 4. The statistic is the MINIMUM, so more samples only
+        // make it a better estimate of the wake path rather than of the
+        // scheduler: on a box with 10 spinners the fastest of 4 rounds was
+        // measured at 7.3 ms, which is the run queue talking, not the futex. A
+        // missing wake cannot be rescued by extra rounds — every one of them
+        // would wait out the 32 ms backstop.
+        const ROUNDS: u64 = 10;
         let mut latency = Duration::MAX;
         for round in 0..ROUNDS {
             // Long enough for the backstop to walk 1 -> 2 -> 4 -> 8 -> 16 -> 32 ms
@@ -1066,7 +1072,7 @@ mod tests {
 
         let count = Arc::new(AtomicU64::new(0));
         let nodes = vec![make_event_node(
-            "evt_idle_cpu",
+            "idlecpu_probe",
             "idle_cpu_topic",
             count.clone(),
         )];
@@ -1080,10 +1086,20 @@ mod tests {
         // `EventExecutor::start`. Both conditions matter — another test may spawn
         // threads in the same window, and this process is full of threads that
         // were already running.
+        // Match the thread name EXACTLY, and note that Linux truncates `comm` to
+        // 15 bytes: `EventExecutor::start` names threads `horus-event-<node>`,
+        // and "horus-event-" is already 12 of those 15. Every other event node in
+        // this file is called `evt_*`, so they ALL truncate to "horus-event-evt"
+        // — a `starts_with("horus-event")` filter silently counted the switches
+        // of whatever other event tests happened to be running concurrently,
+        // which is why this still failed under a loaded suite after being
+        // attributed per-thread. Hence the node above is `idlecpu_probe`, whose
+        // truncation is unique among them.
+        const WATCHER_COMM: &str = "horus-event-idl";
         let watcher_tids: Vec<u32> = task_ids()
             .difference(&before_tids)
             .copied()
-            .filter(|tid| task_comm(*tid).starts_with("horus-event"))
+            .filter(|tid| task_comm(*tid) == WATCHER_COMM)
             .collect();
         assert!(
             !watcher_tids.is_empty(),
