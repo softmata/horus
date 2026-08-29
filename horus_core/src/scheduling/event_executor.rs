@@ -967,27 +967,53 @@ mod tests {
     /// signalled produces one per WAKE_BACKSTOP only if the wait keeps timing
     /// out, and none at all while it is parked.
     ///
-    /// Self-calibrating: the same window is measured with and without the
-    /// executor, so unrelated threads in the test process cancel out. The
-    /// threshold is a quarter of what polling would produce.
+    /// Attributed to the executor's OWN threads, via
+    /// `/proc/self/task/<tid>/status`. It used to read
+    /// `getrusage(RUSAGE_SELF)`, which is process-wide — and `cargo test` runs
+    /// all ~2500 tests in ONE process, so both the baseline and the measurement
+    /// counted every other concurrently-running test's blocking. The subtraction
+    /// was billed as self-calibrating, but on a loaded machine the noise dwarfed
+    /// the ~31 switches being measured, and it could equally have MASKED a real
+    /// regression via negative background drift. Identifying the threads by
+    /// (created after the executor started) AND (named `horus-event-*`) removes
+    /// the baseline entirely rather than widening a threshold.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_idle_event_node_does_not_wake_up_to_poll() {
-        fn voluntary_context_switches() -> i64 {
-            // SAFETY: `getrusage` writes a fully-initialised `rusage` into the
-            // out-param; `RUSAGE_SELF` needs no other resource.
-            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-            let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
-            assert_eq!(rc, 0, "getrusage failed");
-            usage.ru_nvcsw as i64
+        /// TIDs of every thread in this process right now.
+        fn task_ids() -> std::collections::HashSet<u32> {
+            std::fs::read_dir("/proc/self/task")
+                .expect("read /proc/self/task")
+                .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
+                .collect()
+        }
+
+        /// This thread's name, as the kernel truncates it into `comm`.
+        fn task_comm(tid: u32) -> String {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        }
+
+        /// Voluntary context switches for one thread. Threads can exit
+        /// mid-measurement, so a vanished task counts as zero rather than
+        /// failing the test.
+        fn voluntary_switches(tid: u32) -> i64 {
+            let status = match std::fs::read_to_string(format!("/proc/self/task/{tid}/status")) {
+                Ok(s) => s,
+                Err(_) => return 0,
+            };
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .unwrap_or(0)
         }
 
         let window = Duration::from_millis(400);
 
-        // Baseline: same window, no event executor running.
-        let before = voluntary_context_switches();
-        std::thread::sleep(window);
-        let baseline = voluntary_context_switches() - before;
+        let before_tids = task_ids();
 
         let count = Arc::new(AtomicU64::new(0));
         let nodes = vec![make_event_node(
@@ -1000,9 +1026,25 @@ mod tests {
 
         // Let start-up and registration settle out of the measured window.
         std::thread::sleep(100_u64.ms());
-        let before = voluntary_context_switches();
+
+        // The executor's threads: created since the snapshot above, and named by
+        // `EventExecutor::start`. Both conditions matter — another test may spawn
+        // threads in the same window, and this process is full of threads that
+        // were already running.
+        let watcher_tids: Vec<u32> = task_ids()
+            .difference(&before_tids)
+            .copied()
+            .filter(|tid| task_comm(*tid).starts_with("horus-event"))
+            .collect();
+        assert!(
+            !watcher_tids.is_empty(),
+            "no horus-event thread appeared, so nothing was measured; the test              would otherwise pass vacuously"
+        );
+
+        let sum = |tids: &[u32]| -> i64 { tids.iter().copied().map(voluntary_switches).sum() };
+        let before = sum(&watcher_tids);
         std::thread::sleep(window);
-        let with_watcher = voluntary_context_switches() - before;
+        let with_watcher = sum(&watcher_tids) - before;
 
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
@@ -1016,13 +1058,13 @@ mod tests {
         // 400 ms of 1 ms polling is 400 wake-ups. The escalating backstop
         // should produce ~31 over this window (16 at 1 ms, then 2/4/8/16, then
         // 32 ms each). Anything under 100 cannot be a 1 ms poll loop.
-        let attributable = with_watcher - baseline;
+        let attributable = with_watcher;
         assert!(
             attributable < 100,
-            "an idle event node added {attributable} voluntary context switches over \
-             {window:?} (baseline {baseline}, with watcher {with_watcher}). A parked \
-             futex waiter adds ~0; ~{} is the signature of a 1 ms poll loop, which \
-             costs CPU on an idle robot and scales with the event-node count.",
+            "an idle event node's own thread made {attributable} voluntary context \
+             switches over {window:?}. A parked futex waiter makes ~0; ~{} is the \
+             signature of a 1 ms poll loop, which costs CPU on an idle robot and \
+             scales with the event-node count.",
             window.as_millis(),
         );
     }

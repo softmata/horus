@@ -176,7 +176,8 @@ impl ShmRegion {
         // failed grow leaves the previous mapping described correctly.
         // SAFETY: as above.
         let inner = unsafe { &*self.inner.get() };
-        self.base.store(inner.as_ptr() as *mut u8, Ordering::Release);
+        self.base
+            .store(inner.as_ptr() as *mut u8, Ordering::Release);
         self.len.store(inner.len(), Ordering::Release);
         Ok(())
     }
@@ -253,7 +254,11 @@ mod tests {
 
         // Non-faulting: this is the dereference that used to SIGSEGV.
         // SAFETY: the old mapping is retained for the region's lifetime.
-        assert_eq!(unsafe { *old_ptr }, 0xAB, "the retained mapping was unmapped");
+        assert_eq!(
+            unsafe { *old_ptr },
+            0xAB,
+            "the retained mapping was unmapped"
+        );
 
         // Coherent, not merely mapped: a write through the NEW base is visible
         // through the OLD one, because they are the same physical pages.
@@ -278,10 +283,8 @@ mod tests {
         // Each call asks for one byte more than the last. The doubling floor in
         // `grow` turns all but the first few into no-ops, so the cap is not
         // reached — which is the point of the floor.
-        let mut size = 4097;
-        for _ in 0..64 {
-            let _ = region.grow(size);
-            size += 1;
+        for i in 0..64usize {
+            let _ = region.grow(4097 + i);
         }
 
         // SAFETY: retained for the region's lifetime; that is what is asserted.

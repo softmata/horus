@@ -287,8 +287,19 @@ pub(crate) struct TopicHeader {
     pub(crate) capacity: u32,
     /// Capacity mask for fast modulo (capacity - 1, only valid if capacity is power of 2)
     pub(crate) capacity_mask: u32,
-    /// Slot size in bytes (for non-POD types, includes header + data)
-    pub(crate) slot_size: u32,
+    /// Slot size in bytes (for non-POD types, includes header + data).
+    ///
+    /// Atomic because `auto_grow_slot_size` rewrites it at runtime, in one
+    /// process, while every other participant reads it — `sync_local`,
+    /// `geometry_is_addressable`, `point_at_slots` and `init_shm_backend` all
+    /// load it. As a plain `u32` that was a data race on shared memory, and the
+    /// writer additionally formed a `&mut TopicHeader` over bytes other handles
+    /// hold `&TopicHeader` to, which is aliasing UB on its own.
+    ///
+    /// `AtomicU32` has the same size and alignment as `u32`, so the wire layout
+    /// is byte-identical and `TOPIC_VERSION` does not move — guaranteed by the
+    /// `size_of::<TopicHeader>() == 640` assertion below rather than by prose.
+    pub(crate) slot_size: AtomicU32,
     /// Alignment padding so the two 8-byte stall words below stay 8-aligned.
     pub(crate) _pad_producer_align: [u8; 4],
     /// Stall detector: the `tail` a producer last observed on a full ring.
@@ -444,7 +455,7 @@ impl TopicHeader {
             sequence_or_head: AtomicU64::new(0),
             capacity: 0,
             capacity_mask: 0,
-            slot_size: 0,
+            slot_size: AtomicU32::new(0),
             _pad_producer_align: [0; 4],
             stall_tail: AtomicU64::new(0),
             stall_since_ms: AtomicU64::new(0),
@@ -537,7 +548,7 @@ impl TopicHeader {
         self.sequence_or_head.store(0, Ordering::Release);
         self.capacity = capacity;
         self.capacity_mask = capacity.wrapping_sub(1); // For bitwise AND instead of modulo
-        self.slot_size = slot_size;
+        self.slot_size.store(slot_size, Ordering::Release);
         self.stall_tail.store(0, Ordering::Release);
         self.stall_since_ms.store(0, Ordering::Release);
 

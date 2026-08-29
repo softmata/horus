@@ -1264,7 +1264,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ) -> HorusResult<usize> {
         let capacity = header.capacity as usize;
         let capacity_mask = header.capacity_mask;
-        let slot_size = header.slot_size as usize;
+        let slot_size = header.slot_size.load(Ordering::Acquire) as usize;
         let region_len = storage.len();
 
         let refuse = |reason: String| {
@@ -1368,7 +1368,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if header.capacity_mask as usize != capacity - 1 {
             return false;
         }
-        let slot_size = header.slot_size as usize;
+        let slot_size = header.slot_size.load(Ordering::Acquire) as usize;
         if slot_size == 0 {
             return false;
         }
@@ -1424,7 +1424,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// independently-maintained copies of layout arithmetic are precisely what
     /// `shm_layout` exists to stop drifting.
     #[inline]
-    fn point_at_slots(&self, local: &mut LocalState, capacity: usize, colo: bool, stride: usize) {
+    fn point_at_slots(&self, local: &mut LocalState) {
+        // Geometry comes from `LocalState`, never fresh from the header.
+        //
+        // `sync_local` adopts `slot_size`/`capacity`/`capacity_mask` together and
+        // ONLY if `geometry_is_addressable` passes, leaving the handle on its last
+        // validated set otherwise. Every caller used to hand this function a
+        // capacity taken from that validated state but a `slot_size` re-read from
+        // shared memory — so on a refusal, or if a peer rewrote the field between
+        // the two reads, the pair described no ring that exists: slot `i` at
+        // `base + i * new_stride` inside a mapping sized for the old one. Reading
+        // both from `local` makes the pair validated-by-construction, which is the
+        // point of this function being the single writer of the three pointers.
+        //
+        // `is_colo` is still read from the header because the layout kind is fixed
+        // when the region is created and auto-grow preserves it; it is not a value
+        // a peer can change underneath us.
+        let capacity = local.cached_capacity as usize;
+        let stride = local.slot_size;
+        let colo = self.header().is_colo();
         let base = self.storage.as_ptr();
         // SAFETY: both offsets lie within the region sized by `new`/auto-grow
         // for this capacity and layout; `base` is a valid non-null mapping.
@@ -1461,8 +1479,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// fields in the first place.
     fn sync_local_and_point(&self, local: &mut LocalState, header: &TopicHeader, strict: bool) {
         Self::sync_local(local, header, strict, self.storage.len());
-        let capacity = local.cached_capacity as usize;
-        self.point_at_slots(local, capacity, header.is_colo(), header.slot_size as usize);
+        self.point_at_slots(local);
     }
 
     /// Compute the byte offset from storage start to the data region.
@@ -1515,7 +1532,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // wrote the header. A refusal is not silent — `handle_epoch_change` logs
         // it.
         if Self::geometry_is_addressable(header, region_len) {
-            local.slot_size = header.slot_size as usize;
+            local.slot_size = header.slot_size.load(Ordering::Acquire) as usize;
             local.cached_capacity = header.capacity as u64;
             local.cached_capacity_mask = header.capacity_mask as u64;
         }
@@ -1642,10 +1659,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // instead would put `cached_data_ptr` outside the region before the first
         // message is ever sent.
         Self::sync_local(local, header, false, self.storage.len());
-        let cap = local.cached_capacity as usize;
         // `cap` is the capacity `sync_local` accepted, so the whole ring fits
         // inside `storage.len()` under whichever geometry the header declares.
-        self.point_at_slots(local, cap, header.is_colo(), header.slot_size as usize);
+        self.point_at_slots(local);
         // Set role LAST — this gates the fast path via can_send()/can_recv()
         local.role = if is_producer {
             if local.role == TopicRole::Consumer {
@@ -1897,7 +1913,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         let backend = unsafe { &mut *self.backend.get() };
 
-        if Self::backend_matches_mode(backend, mode) {
+        if Self::backend_matches_mode(backend, mode) && !self.fanout_attach_is_due(local, backend) {
             // Backend matches but fn ptrs may be stale (e.g., first call after construction).
             self.set_dispatch_fn_ptrs(mode, is_pod);
             return;
@@ -1917,6 +1933,44 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // panic. `init_shm_backend` keeps `cached_mode` in step for exactly this.
         let built_mode = self.local().cached_mode;
         self.set_dispatch_fn_ptrs(built_mode, is_pod);
+    }
+
+    /// Backoff between attempts to rejoin FanoutShm after a failed `attach`.
+    ///
+    /// A fanout region can be hundreds of megabytes, and a retry maps and unmaps
+    /// it, so this cannot run on every poll. 50 ms is far below the timescale a
+    /// dropped subscriber matters on and far above the cost of the retry.
+    const FANOUT_ATTACH_RETRY_MS: u64 = 50;
+
+    /// Whether this handle fell back off FanoutShm and is due to retry `attach`.
+    ///
+    /// `backend_matches_mode` compares the backend against `cached_mode`, and the
+    /// FanoutShm fallback sets `cached_mode` to `SpscShm` — so from that moment
+    /// the two agree and `initialize_backend` returns early every time. Nothing
+    /// else re-examines it: `check_migration`'s migrator block, which ends by
+    /// restoring `cached_mode` from the header, is gated on `!is_optimal()`, and
+    /// `is_optimal()` reads only SHARED header state, which still says FanoutShm
+    /// and is still optimal. The degradation is invisible there.
+    ///
+    /// So the condition is checked directly: a `ShmData` backend on a topic whose
+    /// header says FanoutShm is a handle that fell back, and once the backoff has
+    /// elapsed it should try to rejoin.
+    fn fanout_attach_is_due(&self, local: &LocalState, backend: &BackendStorage<T>) -> bool {
+        // The anomaly itself is the trigger, not a flag set on one code path: a
+        // `ShmData` backend on a topic whose header says FanoutShm is a handle
+        // that is not where the topic agreed to be, however it got there. Keying
+        // off a marker set only by the attach fallback missed the other route
+        // into the same state — a handle whose `cached_mode` is behind the header
+        // and whose backend was therefore never rebuilt.
+        if !matches!(backend, BackendStorage::ShmData) {
+            return false;
+        }
+        if self.header().mode() != BackendMode::FanoutShm {
+            return false;
+        }
+        // `fanout_retry_at_ms` is purely a rate limiter here: 0 means "no attempt
+        // has failed yet, so try now".
+        header::current_time_ms() >= local.fanout_retry_at_ms
     }
 
     /// Check if the current backend storage already matches the requested mode.
@@ -1999,6 +2053,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     // earlier read of the same header word and can already be a
                     // migration behind.
                     local.cached_mode = BackendMode::FanoutShm;
+                    local.fanout_retry_at_ms = 0;
                     *backend = BackendStorage::FanoutShm(Box::new(ring));
                     return;
                 }
@@ -2014,7 +2069,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 "FanoutShm init failed for '{}', falling back to SpscShm",
                 self.name
             );
-            self.local().cached_mode = BackendMode::SpscShm;
+            let local = self.local();
+            local.cached_mode = BackendMode::SpscShm;
+            // Mark the handle degraded so `initialize_backend` retries instead of
+            // short-circuiting on the fallback mode forever. The usual cause is a
+            // creator that has not published the ring's magic yet, which resolves
+            // on its own; retrying is what turns a lost race into a hiccup rather
+            // than a subscriber that never receives anything again.
+            local.fanout_retry_at_ms =
+                header::current_time_ms().saturating_add(Self::FANOUT_ATTACH_RETRY_MS);
         }
 
         // Standard SHM backends: use ShmData.
@@ -2033,14 +2096,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if local.cached_mode == BackendMode::FanoutShm {
             local.cached_mode = mode;
         }
-        let cap = local.cached_capacity as usize;
         // Both offsets are within storage bounds because `validate_ring_geometry`
         // refused this header at attach time unless the ring it declares fits the
         // mapping — under whichever geometry it declares. `cap` comes from that
         // same validated header field; storage.as_ptr() is a valid non-null
         // pointer.
-        let hdr = self.header();
-        self.point_at_slots(local, cap, hdr.is_colo(), hdr.slot_size as usize);
+        self.point_at_slots(local);
     }
 
     /// Set dispatch function pointers based on the current backend mode and POD status.
@@ -2222,13 +2283,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let new_header_ptr = self.storage.as_ptr() as *const TopicHeader;
         self.header_ptr.set(new_header_ptr);
 
-        // Update the header with the new slot_size.
-        // SAFETY: header_ptr now points into the grown ShmRegion.
-        unsafe {
-            let header_mut = &mut *(new_header_ptr as *mut TopicHeader);
-            header_mut.slot_size = new_slot_size as u32;
-        }
+        // Publish the new slot_size.
+        //
+        // Through `&TopicHeader`, not `&mut`: every other handle and every other
+        // process holds a `&TopicHeader` over these same bytes, so forming a
+        // `&mut` here was aliasing UB independently of the store itself. The
+        // field is atomic for the same reason — `sync_local`,
+        // `geometry_is_addressable` and `point_at_slots` all read it from other
+        // threads, and as a plain `u32` this was a data race on shared memory.
+        // Release so the grown mapping is visible before the geometry that
+        // describes it.
+        // SAFETY: header_ptr points into the grown ShmRegion.
         let header = unsafe { &*new_header_ptr };
+        header
+            .slot_size
+            .store(new_slot_size as u32, Ordering::Release);
 
         // Trigger migration so all processes re-sync (picks up new slot_size + pointers).
         let migrator = crate::communication::topic::migration::BackendMigrator::new(header);
@@ -2242,8 +2311,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // Re-derive ALL cached pointers from the (possibly moved) mmap.
         local.cached_header_ptr = new_header_ptr;
         {
-            let hdr = self.header();
-            self.point_at_slots(local, capacity, hdr.is_colo(), hdr.slot_size as usize);
+            self.point_at_slots(local);
         }
 
         self.initialize_backend();
@@ -2394,7 +2462,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // and slot size whose product wraps produced a SMALL total, so the grow
         // was skipped and the wrapped geometry was installed anyway.
         let declared_capacity = header.capacity as usize;
-        let declared_slot = header.slot_size as usize;
+        let declared_slot = header.slot_size.load(Ordering::Acquire) as usize;
         let declared_len =
             shm_layout::required_region_len_checked(declared_capacity, declared_slot);
         if let Some(required) = declared_len {
@@ -2433,7 +2501,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 actual_epoch,
                 header.capacity,
                 header.capacity_mask,
-                header.slot_size,
+                header.slot_size.load(Ordering::Acquire),
             );
         }
         Self::sync_local(local, header, true, region_len);
@@ -2444,12 +2512,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // agreement is what every `SAFETY: index < capacity` claim in dispatch.rs
         // rests on.
         local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
-        self.point_at_slots(
-            local,
-            local.cached_capacity as usize,
-            header.is_colo(),
-            header.slot_size as usize,
-        );
+        self.point_at_slots(local);
 
         self.initialize_backend();
 
@@ -4383,7 +4446,10 @@ mod untrusted_ring_geometry_tests {
     #[test]
     fn a_slot_size_larger_than_the_mapping_is_refused() {
         let name = format!("untrusted_geom_slot_{}", std::process::id());
-        if !plant_region(&name, |h| h.slot_size = 1 << 24) {
+        if !plant_region(&name, |h| {
+            h.slot_size
+                .store(1 << 24, std::sync::atomic::Ordering::Release)
+        }) {
             eprintln!("skipping: shared memory unavailable");
             return;
         }
@@ -4396,7 +4462,9 @@ mod untrusted_ring_geometry_tests {
     #[test]
     fn a_zero_slot_size_is_refused() {
         let name = format!("untrusted_geom_zero_{}", std::process::id());
-        if !plant_region(&name, |h| h.slot_size = 0) {
+        if !plant_region(&name, |h| {
+            h.slot_size.store(0, std::sync::atomic::Ordering::Release)
+        }) {
             eprintln!("skipping: shared memory unavailable");
             return;
         }

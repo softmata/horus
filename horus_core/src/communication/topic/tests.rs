@@ -3002,14 +3002,14 @@ fn auto_grow_increases_slot_size_in_header() {
     t.send("x".to_string());
     let _ = t.recv();
 
-    let old_slot_size = t.header().slot_size;
+    let old_slot_size = t.header().slot_size.load(Ordering::Acquire);
     assert_eq!(old_slot_size, 64, "Initial slot_size should be 64");
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
         // Trigger auto-grow: 100-char string → ~108 bytes serialized > 48 max
         let _ = t.try_send("C".repeat(100));
-        let new_slot_size = t.header().slot_size;
+        let new_slot_size = t.header().slot_size.load(Ordering::Acquire);
         assert!(
             new_slot_size > old_slot_size,
             "slot_size should have grown: {} → {}",
@@ -3070,14 +3070,14 @@ fn auto_grow_multiple_grows() {
     let _ = t.force_migrate(BackendMode::SpscShm);
     trigger_shm_dispatch(&name);
     let _ = t.try_send(vec![0xAA; 80]);
-    let slot_after_1 = t.header().slot_size;
+    let slot_after_1 = t.header().slot_size.load(Ordering::Acquire);
     assert!(slot_after_1 > 64, "First grow should increase slot_size");
 
     // Second grow: need ~500 bytes (force back to SHM first)
     let _ = t.force_migrate(BackendMode::SpscShm);
     trigger_shm_dispatch(&name);
     let _ = t.try_send(vec![0xBB; 480]);
-    let slot_after_2 = t.header().slot_size;
+    let slot_after_2 = t.header().slot_size.load(Ordering::Acquire);
     assert!(
         slot_after_2 > slot_after_1,
         "Second grow should increase further: {} → {}",
@@ -3089,7 +3089,7 @@ fn auto_grow_multiple_grows() {
     let _ = t.force_migrate(BackendMode::SpscShm);
     trigger_shm_dispatch(&name);
     let _ = t.try_send(vec![0xCC; 2000]);
-    let slot_after_3 = t.header().slot_size;
+    let slot_after_3 = t.header().slot_size.load(Ordering::Acquire);
     assert!(
         slot_after_3 > slot_after_2,
         "Third grow should increase further: {} → {}",
@@ -3136,7 +3136,7 @@ fn auto_grow_boundary_exact_fit() {
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
-        let old_slot = t.header().slot_size;
+        let old_slot = t.header().slot_size.load(Ordering::Acquire);
 
         // 40 chars → bincode 48 bytes = max_data_len (64 - 16). Exact fit.
         let result = t.try_send("F".repeat(40));
@@ -3145,7 +3145,7 @@ fn auto_grow_boundary_exact_fit() {
             "Exact-fit message should succeed without grow"
         );
         assert_eq!(
-            t.header().slot_size,
+            t.header().slot_size.load(Ordering::Acquire),
             old_slot,
             "Slot size should NOT change for exact-fit message"
         );
@@ -3163,12 +3163,12 @@ fn auto_grow_one_byte_over() {
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
-        let old_slot = t.header().slot_size;
+        let old_slot = t.header().slot_size.load(Ordering::Acquire);
 
         // 41 chars → bincode 49 bytes > max_data_len 48. One byte over.
         let _ = t.try_send("G".repeat(41));
         assert!(
-            t.header().slot_size > old_slot,
+            t.header().slot_size.load(Ordering::Acquire) > old_slot,
             "One-byte-over should trigger grow"
         );
     }
@@ -3213,7 +3213,7 @@ fn auto_grow_vec_u8_large_payload() {
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
-        let old_slot = t.header().slot_size;
+        let old_slot = t.header().slot_size.load(Ordering::Acquire);
 
         // 16KB payload → spills to TensorPool (above 4KB threshold)
         let large_msg = vec![0xAB_u8; 16384];
@@ -3229,7 +3229,7 @@ fn auto_grow_vec_u8_large_payload() {
             }
         }
 
-        let new_slot = t.header().slot_size;
+        let new_slot = t.header().slot_size.load(Ordering::Acquire);
         // With auto-spill, slot size should NOT grow for large messages.
         // The message is spilled to TensorPool, keeping ring buffer compact.
         // Note: if spill fails (pool unavailable), auto-grow kicks in as fallback.
@@ -5680,7 +5680,8 @@ fn pod_ring_colocates_each_stamp_with_its_payload() {
         "a 16-byte POD topic must select the colo layout"
     );
     assert_eq!(
-        hdr.slot_size as usize, CACHE_LINE,
+        hdr.slot_size.load(Ordering::Acquire) as usize,
+        CACHE_LINE,
         "the colo slot is stamp + payload rounded up to a whole cache line"
     );
 
@@ -5868,7 +5869,7 @@ fn pod_ring_stops_padding_slots_once_the_type_exceeds_fifty_six_bytes() {
     });
     let _ = padded.recv();
     assert_eq!(
-        padded.ring.header().slot_size as usize,
+        padded.ring.header().slot_size.load(Ordering::Acquire) as usize,
         64,
         "a 56-byte POD type still gets a 64-byte slot — {} bytes of every slot \
          are padding no dispatch path ever addresses",
@@ -5891,7 +5892,8 @@ fn pod_ring_stops_padding_slots_once_the_type_exceeds_fifty_six_bytes() {
         "header type_size must be the Rust type's size"
     );
     assert_eq!(
-        hdr.slot_size as usize, type_size,
+        hdr.slot_size.load(Ordering::Acquire) as usize,
+        type_size,
         "a POD type with size_of + 8 > 64 takes the unpadded arm, so the \
          allocation stride is size_of::<T>() ({type_size}) and not the flat 64 \
          the 56-byte type above got"
@@ -8875,6 +8877,75 @@ fn partial_write_concurrent_writers_no_partial_data() {
     );
 }
 
+/// A handle that loses the FanoutShm attach race must be able to rejoin.
+///
+/// `ShmFanoutRing::attach` spins for the region's magic under a deadline, and the
+/// creator publishes that magic LAST — after initialising a region that can be
+/// hundreds of megabytes. Under load that initialisation was measured at ~7
+/// seconds against a 2 second attach deadline, so an attacher can lose the race
+/// against a perfectly healthy creator.
+///
+/// Losing it used to be permanent. The fallback sets `cached_mode` to `SpscShm`,
+/// after which `initialize_backend`'s `backend_matches_mode` check is satisfied
+/// and returns early forever; and `check_migration`'s migrator block — the one
+/// that would restore `cached_mode` from the header — is gated on `!is_optimal()`,
+/// which reads only shared header state that still says FanoutShm and is still
+/// optimal. So the handle silently read a ring nobody writes for the rest of the
+/// process's life, while `backend_name()` (which reports the SHARED mode) still
+/// called it FanoutShm.
+///
+/// This drives the recovery directly rather than trying to lose a real race:
+/// it puts a handle into exactly the state the fallback leaves behind, then
+/// asserts that the next `initialize_backend` rejoins instead of short-circuiting.
+#[test]
+fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
+    let name = unique("fanout_rejoin");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(1);
+    let _ = t.recv();
+    t.force_migrate(BackendMode::FanoutShm);
+    // Drive one send/recv so the handle actually builds the fanout backend.
+    t.send(2);
+    let _ = t.recv();
+
+    let ring = &t.ring;
+    assert_eq!(
+        ring.header().mode(),
+        BackendMode::FanoutShm,
+        "test premise: the shared header must be on FanoutShm"
+    );
+    {
+        // SAFETY: single-threaded test; this is the state the attach fallback
+        // leaves behind (mod.rs, the `FanoutShm init failed` branch).
+        let backend = unsafe { &mut *ring.backend.get() };
+        assert!(
+            matches!(backend, BackendStorage::ShmData),
+            "test premise: force_migrate leaves this handle on the shared ring \
+             while the header says FanoutShm — that IS the degraded state"
+        );
+    }
+    let local = ring.local();
+    assert_eq!(
+        local.cached_mode,
+        BackendMode::SpscShm,
+        "test premise: the handle's cached mode must disagree with the header"
+    );
+
+    ring.initialize_backend();
+
+    // SAFETY: single-threaded test.
+    let backend = unsafe { &*ring.backend.get() };
+    assert!(
+        matches!(backend, BackendStorage::FanoutShm(_)),
+        "a degraded handle did not rejoin FanoutShm — it is stuck on the shared \
+         ring, which for a subscriber means receiving nothing, forever"
+    );
+    assert_eq!(
+        local.fanout_retry_at_ms, 0,
+        "a successful rejoin must clear the retry marker"
+    );
+}
+
 /// A clone that grows the shared mapping must not strand its siblings.
 ///
 /// `Topic::clone` shares one `Arc<ShmRegion>` but gives each clone its own
@@ -9612,7 +9683,7 @@ fn pod_message_exact_slot_size() {
     let hdr = t.ring.header();
     assert!(hdr.is_pod_type(), "Pod64 must be classified POD");
     assert_eq!(
-        hdr.slot_size as usize,
+        hdr.slot_size.load(Ordering::Acquire) as usize,
         mem::size_of::<Pod64>(),
         "the slot is exactly the type: no cache-line padding (that arm only \
          applies below 57 bytes) and no serde slot overhead"
@@ -10883,7 +10954,19 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
     // timing-sensitive tests in this suite flake — a test that breaks its
     // neighbours is its own defect.
     let n = 250_000u64;
-    let n_consumers = 20;
+    // 15, not 20, because the participant table holds MAX_PARTICIPANTS = 16 and
+    // this test opens `n_consumers + 1` endpoints on ONE topic. At 20 it asked
+    // for 21 slots. Registration is lazy and first-come-first-served — a
+    // subscriber registers inside its first `recv()`, the publisher inside its
+    // first `send()` — and all of them race the instant the barrier releases. If
+    // the PUBLISHER lost that race it was refused a slot, every one of its
+    // 250,000 sends was dropped by `send_lossy_retry`, the ring head never moved,
+    // and all 20 consumers polled an empty ring for the full 10 s window. The
+    // test then reported "the ring is not delivering at all" — which was true,
+    // and had nothing to do with ordering or duplication.
+    //
+    // Nothing is lost by the reduction: 5 of the 20 could never register anyway.
+    let n_consumers = 15;
 
     let tx: Topic<u64> = Topic::new(&name).expect("pub");
 
@@ -10925,8 +11008,13 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
         })
         .collect();
 
+    // Claim the publisher's participant slot BEFORE releasing the subscribers, so
+    // the stream cannot be silently emptied by losing a registration race. The
+    // value is still monotonic, so this introduces no artificial inversion.
+    tx.send(0);
+
     barrier.wait();
-    for i in 0..n {
+    for i in 1..n {
         tx.send(i);
     }
     for h in consumers {

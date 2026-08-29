@@ -1016,58 +1016,69 @@ mod tests {
     fn test_hlog_every_throttles_by_interval() {
         use crate::core::log_buffer::GLOBAL_LOG_BUFFER;
 
-        let before = GLOBAL_LOG_BUFFER
-            .get_all()
-            .iter()
-            .filter(|e| e.message.contains("every_throttle_9905"))
-            .count();
-
         const INTERVAL_MS: u128 = 200;
+        const BURST: u32 = 64;
 
-        // Call in a tight loop for ~500ms with a 200ms interval, and measure how
-        // long the loop actually ran rather than assuming it was 500ms.
-        let start = std::time::Instant::now();
-        let mut calls = 0u32;
-        while start.elapsed() < std::time::Duration::from_millis(500) {
-            crate::hlog_every!(200, info, "every_throttle_9905");
-            calls += 1;
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let elapsed_ms = start.elapsed().as_millis();
+        // One closure means one macro expansion, so every call below shares the
+        // single per-callsite `static` the throttle keys on.
+        let emit = || crate::hlog_every!(200, info, "every_throttle_9905");
+        // `saturating_sub`: the log buffer is a fixed-size ring shared across the
+        // whole suite, so marker entries can be evicted between two reads and a
+        // plain subtraction would panic with an unsigned overflow.
+        let count_now = || {
+            GLOBAL_LOG_BUFFER
+                .get_all()
+                .iter()
+                .filter(|e| e.message.contains("every_throttle_9905"))
+                .count()
+        };
 
-        let after = GLOBAL_LOG_BUFFER
-            .get_all()
-            .iter()
-            .filter(|e| e.message.contains("every_throttle_9905"))
-            .count();
-
-        let count = (after - before) as u128;
-
-        // The property is the throttle: `calls` invocations must not produce
-        // `calls` entries, they must produce about one per interval.
+        // Phase 1 — it suppresses. A tight burst with NO sleep: consecutive calls
+        // are microseconds apart on any machine.
         //
-        // The old assertion was `(2..=6).contains(&count)` against a hardcoded
-        // 500ms window. Its upper bound tested the throttle; its lower bound
-        // tested the machine. Under load the `sleep(5)` stretches, the loop gets
-        // through far fewer iterations, and the window closes having crossed the
-        // 200ms boundary once instead of twice — a correct throttle reported as
-        // a broken one. Bounds now come from the elapsed time that was actually
-        // observed.
-        let most = elapsed_ms / INTERVAL_MS + 1;
+        // This used to be a 500ms loop paced by `sleep(5)`, asserting
+        // `count < calls`. That silently assumed the loop calls faster than the
+        // throttle throttles. Under load the sleep stretched past 200ms, the loop
+        // managed 2 iterations, and both were legitimately due — a CORRECT
+        // throttle reported as "it is not throttling". A burst cannot degenerate
+        // that way, and the guard below refuses to pass vacuously if it somehow does.
+        let before = count_now();
+        let t0 = std::time::Instant::now();
+        for _ in 0..BURST {
+            emit();
+        }
+        let burst_ms = t0.elapsed().as_millis();
+        let count = count_now().saturating_sub(before) as u128;
+
+        let most = burst_ms / INTERVAL_MS + 1;
+        assert!(
+            most < u128::from(BURST),
+            "the burst took {burst_ms}ms, so {most} emissions would be legal out of \
+             {BURST} calls — this machine is too starved for the measurement to mean \
+             anything, rather than the throttle being broken"
+        );
         assert!(
             count >= 1,
-            "hlog_every! emitted nothing in {elapsed_ms}ms over {calls} calls"
+            "hlog_every! emitted nothing for the first call, which must always fire"
         );
         assert!(
             count <= most,
-            "hlog_every!({INTERVAL_MS}ms) emitted {count} entries in {elapsed_ms}ms \
-             over {calls} calls — at most {most} are possible if it is throttling \
-             at all"
+            "hlog_every!({INTERVAL_MS}ms) emitted {count} entries for {BURST} calls in \
+             {burst_ms}ms — at most {most} are possible if it is throttling"
         );
-        assert!(
-            count < u128::from(calls),
-            "hlog_every! emitted {count} entries for {calls} calls — it is not \
-             throttling"
+
+        // Phase 2 — it resumes. Oversleeping only widens the gap, so load can only
+        // make this more true; the gap is measured rather than assumed.
+        let mark = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(INTERVAL_MS as u64 + 50));
+        assert!(mark.elapsed().as_millis() >= INTERVAL_MS);
+        let before2 = count_now();
+        emit();
+        assert_eq!(
+            count_now().saturating_sub(before2),
+            1,
+            "a call a full interval after the last emission must fire again — the \
+             throttle suppresses, it must not latch off"
         );
     }
 }

@@ -179,7 +179,7 @@ impl ShmRegion {
         }
 
         // SAFETY: file is a valid open file with sufficient size; len(size) matches the file size
-        let mut mmap = unsafe {
+        let mmap = unsafe {
             MmapOptions::new()
                 .len(size)
                 .map_mut(&file)
@@ -187,15 +187,27 @@ impl ShmRegion {
         };
 
         if is_owner {
-            mmap.fill(0);
+            // No `mmap.fill(0)` here. `is_owner` is set only on the
+            // `O_CREAT|O_EXCL` branch above, i.e. a file this call just created
+            // and `ftruncate`d from zero length, and POSIX requires the extended
+            // bytes to read as zeros. The memset was writing what was already
+            // there — but writing it is what made it expensive: it faults in and
+            // dirties every page up front, and it runs BEFORE the region's magic
+            // is published, so it is a critical section that every attacher waits
+            // on. On a 512 MiB non-POD fanout region under load that section was
+            // measured at ~7 seconds, which is longer than the attach deadline;
+            // attachers timed out and fell back. `test_shm_zero_initialized`
+            // pins the zero-fill invariant this relies on.
+            //
             // Write topic metadata file for discovery consistency across platforms
             let _ = super::write_topic_meta(name, size);
         }
 
-        // Attachers get their page tables populated here rather than one minor
-        // fault at a time inside the first publish or receive loop. (For the
-        // creator the `fill(0)` above has already done it, so this is a cheap
-        // no-op restatement of the invariant rather than duplicated work.)
+        // Populate page tables here rather than one minor fault at a time inside
+        // the first publish or receive loop. This now runs for the creator too,
+        // and unlike the old blanket `fill(0)` it is bounded by
+        // `residency_policy().max_bytes`, so a huge region no longer pays for
+        // full residency it never asked for.
         // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
         // call; `make_resident` neither reads nor writes the region.
         unsafe { super::make_resident(mmap.as_ptr(), size) };

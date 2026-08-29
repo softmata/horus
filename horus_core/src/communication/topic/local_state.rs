@@ -177,6 +177,27 @@ pub(crate) struct LocalState {
     /// SHM region backing the fanout channel matrix (must stay alive for lifetime of ring)
     pub fanout_shm_storage: Option<std::sync::Arc<crate::memory::shm_region::ShmRegion>>,
 
+    /// Wall-clock ms after which a degraded FanoutShm handle may retry `attach`.
+    ///
+    /// Zero means "not degraded". A non-zero value means this handle asked for a
+    /// FanoutShm backend, `ShmFanoutRing::attach` returned `None`, and it fell
+    /// back to the shared `ShmData` ring. That fallback used to be PERMANENT:
+    /// `initialize_backend` compares the backend against `cached_mode` (which the
+    /// fallback pins to `SpscShm`), so it short-circuits forever, and
+    /// `check_migration`'s `is_optimal()` gate is satisfied by the shared header
+    /// alone, so the branch that would restore `cached_mode` never runs. A
+    /// subscriber that lost one attach race then polled a ring nobody writes for
+    /// the rest of the process's life, while `backend_name()` — which reports the
+    /// SHARED header mode — still called it FanoutShm.
+    ///
+    /// The common cause is not a corrupt region but a slow one: the creator
+    /// publishes the ring's magic last, so every attacher waits on it, and
+    /// attach gives up after a fixed deadline. Retrying is therefore usually
+    /// enough. The timestamp rate-limits it, because a genuinely incompatible
+    /// layout would otherwise mmap and munmap a region that can be hundreds of
+    /// megabytes on every poll.
+    pub fanout_retry_at_ms: u64,
+
     /// COMM-H3: producer keep-alive for spilled FanoutShm messages. Each large
     /// (> SPILL_THRESHOLD) serde message is copied into a TensorPool slot and only
     /// a 40-byte descriptor is broadcast; the slot must stay alive until every
@@ -245,6 +266,7 @@ impl Default for LocalState {
             fanout_pub_lock: None,
             fanout_sub_lock: None,
             fanout_shm_storage: None,
+            fanout_retry_at_ms: 0,
             spill_keepalive: std::collections::VecDeque::new(),
             // Deliberately empty: a POD topic must never pay for a serde
             // staging buffer it will never use. The first serde send grows it.
