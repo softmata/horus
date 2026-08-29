@@ -11,7 +11,7 @@
 //!   latency is set by core locality (a same-thread self-loop stays L1-hot; the
 //!   moment the consumer runs on another core you pay cross-core cache coherence)
 //!
-//! **Cross-process** (SpscShm, MpscShm, SpmcShm, PodShm):
+//! **Cross-process** (SpscShm, MpscShm, PodShm):
 //! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.timestamp_ns`
 //! - Producer writes `rdtsc()` → `send()`, consumer reads `recv()` → `rdtscp()`
 //! - Requires `constant_tsc` for cross-core TSC synchronization
@@ -1270,9 +1270,20 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// SpmcShm -- cross-process 1 publisher, 2 consumers.
+/// Cross-process 1 publisher, 2 consumers.
 /// Parent = consumer 1, child = consumer 2, child = publisher.
 /// Measures one-way latency via RDTSC timestamps in message payload.
+///
+/// The backend is `PodShm`, not `SpmcShm`, and that is the policy rather than a
+/// defect. `detect_optimal_backend` routes 1-to-many POD to broadcast on
+/// purpose: `SpmcShm`'s consumers share one tail and COMPETE for messages, so a
+/// fast subscriber would starve the others — wrong for pub/sub, where every
+/// subscriber is supposed to see every message.
+///
+/// This scenario asserted `SpmcShm` and printed `MISMATCH` on every run,
+/// reporting the implementation as broken when the expectation was. A false
+/// alarm in benchmark output is worse than no check: it trains the reader to
+/// ignore the line that would matter if the backend really did change.
 fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let cal = timer.calibration();
     let topic_name = format!("bench_spmc_{}", std::process::id());
@@ -1289,7 +1300,7 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Pacing prevents ring overflow that inflates measured latency.
     let mut child_pub = spawn_paced_publisher(&topic_name, child_count, core_aux());
 
-    // Wait for publisher to register and topology to settle (1P, 2S → SpmcShm)
+    // Wait for publisher to register and topology to settle (1P, 2S → PodShm)
     wait_for_topology(&consumer, 1, 2, 5_u64.secs());
     let migration_recv = wait_for_messages(&consumer, 100, 10_u64.secs());
 
@@ -1306,12 +1317,22 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossProc-1PMC",
         backend,
-        expected_backend: "SpmcShm",
+        expected_backend: "PodShm",
         measurement: "one-way",
         latencies_ns: latencies,
         total_sent: MIGRATION_BOOT + child_count,
         total_received,
-        note: None,
+        // Without this the row prints "98.9% loss" beside a 196ns median and
+        // reads as though HORUS drops 99 messages in 100. It does not: 1-to-many
+        // POD resolves to PodShm, which is latest-value broadcast with no
+        // backpressure, so an unthrottled publisher overwrites slots a consumer
+        // has not read yet — by design, and the same design the
+        // CrossProc-PodShm row already annotates. The delivered messages are
+        // what the latency figure is computed from.
+        note: Some(
+            "PodShm broadcast: unread slots are overwritten by design, so the \
+             loss figure is producer pacing, not dropped delivery",
+        ),
         freshness_samples: None,
         delivery_ratio: None,
         skip_count: None,
@@ -1344,7 +1365,7 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub * 2, core_child_cons());
     thread::sleep(200_u64.ms()); // Wait for child to register
 
-    // Step 2: Spawn pub1 (paced) → topology: 1P, 2S, cross-proc → SpmcShm
+    // Step 2: Spawn pub1 (paced) → topology: 1P, 2S, cross-proc → PodShm
     // Paced publishers prevent ring overflow that causes the consumer to read
     // stale messages with old timestamps, inflating measured latency.
     let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, core_aux());
@@ -1357,7 +1378,7 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // We need pubs=2 visible in the header before migration detection works.
     wait_for_topology(&consumer, 2, 2, 5_u64.secs());
 
-    // Drain any queued messages from the SpmcShm era
+    // Drain any queued messages from before the topology settled
     let migration2 = wait_for_messages(&consumer, 200, 5_u64.secs());
 
     // Step 4: Force migration check so parent detects PodShm before measurement
@@ -2267,7 +2288,7 @@ fn print_overhead_analysis(results: &[ScenarioResult]) {
     let cross_proc = [
         ("CrossProc-1P1C", "SpscShm"),
         ("CrossProc-2P1C", "MpscShm"),
-        ("CrossProc-1PMC", "SpmcShm"),
+        ("CrossProc-1PMC", "PodShm"),
         ("CrossProc-PodShm", "PodShm"),
     ];
 
