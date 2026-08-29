@@ -373,10 +373,57 @@ fn send_only(reps: usize, cpus: (usize, usize)) {
     }
 }
 
+/// Cost of allocating a pooled frame and returning it — `Image::new` plus the
+/// drop that scrubs the slot. NOT a transport figure.
+///
+/// Worth measuring separately because a pipeline that allocates per capture puts
+/// this on its critical path, and it is far larger than publishing: the scrub
+/// alone is ~45us for a 1080p frame. The transport for the same frame is ~300ns.
+fn alloc_only(reps: usize, w: u32, h: u32) {
+    use horus_core::memory::Image;
+    use horus_core::types::ImageEncoding;
+
+    let probe = Image::new(w, h, ImageEncoding::Mono8).expect("alloc");
+    println!();
+    println!(
+        "  Image::new + drop, {}x{} Mono8 = {} B (NOT a transport figure)",
+        w,
+        h,
+        probe.nbytes()
+    );
+    drop(probe);
+    println!("  rep      p50      p99      max");
+    for _ in 0..reps {
+        let n = 2_000usize;
+        let mut v: Vec<u64> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t0 = now_ns();
+            let img = Image::new(w, h, ImageEncoding::Mono8).expect("alloc");
+            drop(img);
+            v.push(now_ns().wrapping_sub(t0));
+        }
+        v.sort_unstable();
+        println!(
+            "       {:>7}  {:>7}  {:>7}",
+            pct(&v, 0.50),
+            pct(&v, 0.99),
+            v[v.len() - 1]
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let raw = args.iter().any(|a| a == "--raw");
     let send_only_mode = args.iter().any(|a| a == "--send-only");
+    let alloc_dims: Option<(u32, u32)> = args
+        .iter()
+        .position(|a| a == "--alloc")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        });
     let image_dims: Option<(u32, u32)> = args
         .iter()
         .position(|a| a == "--image")
@@ -425,6 +472,11 @@ fn main() {
 
     if send_only_mode {
         send_only(reps, cpus);
+        return;
+    }
+
+    if let Some((w, h)) = alloc_dims {
+        alloc_only(reps, w, h);
         return;
     }
 
