@@ -89,9 +89,19 @@ fn test_node_crash_system_survives() {
         .build()
         .unwrap();
 
-    // Run for 200ms — at 100Hz that is ~20 ticks.
-    // Lidar panics at tick 10; imu and controller should keep going.
-    let _ = scheduler.run_for(200_u64.ms());
+    // Run for 1s — at 100Hz that is ~100 ticks.
+    //
+    // 200ms (~20 ticks) left almost no room: lidar panics at tick 10 and the
+    // assertions below want the healthy nodes PAST 10, so a scheduler that
+    // manages only ten ticks in the window fails on the run queue rather than on
+    // the behaviour. It did, with `imu == 10` exactly, while passing in
+    // isolation.
+    //
+    // Lengthening does not weaken anything here, unlike the tick-rate test: the
+    // discriminator is the CRASH POINT, which stays at 10 however long the
+    // window is. If a sibling panic took the scheduler down, the healthy nodes
+    // would still stop at ~10 and the assertion would still fire.
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let lidar = lidar_ticks.load(Ordering::SeqCst);
     let imu = imu_ticks.load(Ordering::SeqCst);
