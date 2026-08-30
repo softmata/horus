@@ -99,6 +99,9 @@ impl Statistics {
         let median_val = median(&sorted);
         let std_dev_val = std_dev(&sorted);
 
+        // Full sample set here too, for the reason in the doc above: fencing the
+        // central estimates bounds `cv = std_dev / mean` by construction, and
+        // `cv` is the published determinism figure.
         let (ci_low, ci_high) = bootstrap_ci(&sorted, confidence_level, 10_000);
 
         Self {

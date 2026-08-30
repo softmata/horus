@@ -385,6 +385,9 @@ Ratios above 1 favour HORUS. Both columns come from the same run, which is what
 makes the ratio trustworthy; the absolute nanoseconds drift with machine load
 and thermal state, so compare ratios across runs, not absolutes.
 
+Unlike the ROS 2 row above, this one is measured on both sides — see the
+reproduce command below.
+
 4 KB is now roughly a tie (0.96x median). It used to be 0.46x — see the
 zero-copy note below for why a 4 KB POD sent **by value** is the wrong shape for
 bulk data in the first place.
