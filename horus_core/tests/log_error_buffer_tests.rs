@@ -35,6 +35,58 @@ fn exclusive() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Run one test in a child process with a private `HORUS_NAMESPACE`.
+///
+/// Returns `true` in the child ("do the work"); in the parent it spawns that
+/// child, asserts it passed, and returns `false`.
+///
+/// `GLOBAL_ERROR_BUFFER` is not a process-local static — `log_buffer` maps it
+/// out of `shm_logs_path()`, so it is a fixed-size ring shared by every HORUS
+/// process in the namespace. The `exclusive()` lock below serializes the tests
+/// in THIS binary against each other, but it cannot stop another test binary
+/// running concurrently from writing errors into the same ring and evicting
+/// this test's entries before it counts them. That is how
+/// `concurrent_dual_write_no_corruption` failed in a full workspace run while
+/// passing on its own.
+///
+/// Only the tests that count their own surviving entries need this. The ones
+/// that filter by a unique node name and assert presence are unaffected by
+/// other writers.
+fn count_in_isolated_child(test_name: &str) -> bool {
+    const MARKER: &str = "HORUS_ERRBUF_CHILD";
+    if std::env::var(MARKER).is_ok() {
+        return true;
+    }
+    // Hold the file's lock across the spawn. The child is a separate process
+    // doing real work, so without this it runs concurrently with whatever else
+    // this binary is executing — and `dual_write_overhead_acceptable` next door
+    // times a sub-microsecond operation. Isolating one test must not perturb its
+    // neighbours.
+    let _serialize = exclusive();
+    let exe = std::env::current_exe().expect("current_exe");
+    let ns = format!("errbuf_{}_{}", std::process::id(), test_name);
+    let out = std::process::Command::new(exe)
+        .args([test_name, "--exact", "--test-threads=1"])
+        .env(MARKER, "1")
+        .env("HORUS_NAMESPACE", &ns)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .expect("spawn isolated child");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{test_name} failed in an isolated child with a private log buffer, so \
+         this is the behaviour and not another binary evicting entries:\n{stdout}"
+    );
+    // Anti-vacuity: a filter that stopped matching would run zero tests, exit
+    // zero, and this test would pass having checked nothing.
+    assert!(
+        stdout.contains("1 passed"),
+        "the isolated child ran no test — `--exact {test_name}` matched nothing:\n{stdout}"
+    );
+    false
+}
+
 fn make_entry(node: &str, log_type: LogType, message: &str) -> LogEntry {
     LogEntry {
         timestamp: "12:00:00.000".to_string(),
@@ -302,6 +354,16 @@ fn error_buffer_for_node_returns_only_errors_for_node() {
 
 #[test]
 fn concurrent_dual_write_no_corruption() {
+    if !count_in_isolated_child("concurrent_dual_write_no_corruption") {
+        return;
+    }
+    // Serialize against the other tests in this binary. `GLOBAL_ERROR_BUFFER` is
+    // a 500-entry ring shared by every test in the process, so a sibling writing
+    // errors concurrently can EVICT this test's entries before it counts them —
+    // which is how this failed in a full workspace run. The lock at the top of
+    // this file exists for exactly this, and its own doc makes the argument: a
+    // tolerance wide enough to absorb the race is wide enough to absorb the bug.
+    let _guard = exclusive();
     let base = uid("concurrent_dual");
     let barrier = Arc::new(std::sync::Barrier::new(4));
 
@@ -383,16 +445,30 @@ fn dual_write_overhead_acceptable() {
     bench(LogType::Info, "warmup_info");
     bench(LogType::Error, "warmup_error");
 
+    let mut best_ratio = f64::MAX;
     let mut best_info = std::time::Duration::MAX;
     let mut best_error = std::time::Duration::MAX;
     for _ in 0..ROUNDS {
-        best_info = best_info.min(bench(LogType::Info, "info"));
-        best_error = best_error.min(bench(LogType::Error, "error"));
+        // Keep the PAIR from the best round, not the best of each half taken
+        // independently. The comment above says both halves are measured within
+        // a round so that a machine slowing mid-test slows both — but minimising
+        // them separately throws that pairing away: min(error) and min(info) can
+        // come from different rounds, and a round that was clean for info and
+        // dirty for error inflates the ratio out of nothing. That is what failed
+        // under load. Ranking rounds BY RATIO keeps the two halves together.
+        let info = bench(LogType::Info, "info");
+        let error = bench(LogType::Error, "error");
+        let ratio = error.as_nanos() as f64 / info.as_nanos().max(1) as f64;
+        if ratio < best_ratio {
+            best_ratio = ratio;
+            best_info = info;
+            best_error = error;
+        }
     }
 
     let info_elapsed = best_info;
     let error_elapsed = best_error;
-    let overhead_ratio = error_elapsed.as_nanos() as f64 / info_elapsed.as_nanos().max(1) as f64;
+    let overhead_ratio = best_ratio;
 
     println!(
         "DUAL-WRITE OVERHEAD (best of {ROUNDS}): Info={:?}, Error={:?}, ratio={overhead_ratio:.2}x",
@@ -413,6 +489,16 @@ fn dual_write_overhead_acceptable() {
 
 #[test]
 fn error_buffer_wraps_at_500_boundary() {
+    if !count_in_isolated_child("error_buffer_wraps_at_500_boundary") {
+        return;
+    }
+    // Serialize against the other tests in this binary. `GLOBAL_ERROR_BUFFER` is
+    // a 500-entry ring shared by every test in the process, so a sibling writing
+    // errors concurrently can EVICT this test's entries before it counts them —
+    // which is how this failed in a full workspace run. The lock at the top of
+    // this file exists for exactly this, and its own doc makes the argument: a
+    // tolerance wide enough to absorb the race is wide enough to absorb the bug.
+    let _guard = exclusive();
     let node = uid("wrap_500");
 
     // Push 600 errors — exceeds 500-slot capacity
@@ -477,6 +563,16 @@ fn publish_log_subscribe_not_in_error_buffer() {
 
 #[test]
 fn mixed_error_warning_batch_correct_counts() {
+    if !count_in_isolated_child("mixed_error_warning_batch_correct_counts") {
+        return;
+    }
+    // Serialize against the other tests in this binary. `GLOBAL_ERROR_BUFFER` is
+    // a 500-entry ring shared by every test in the process, so a sibling writing
+    // errors concurrently can EVICT this test's entries before it counts them —
+    // which is how this failed in a full workspace run. The lock at the top of
+    // this file exists for exactly this, and its own doc makes the argument: a
+    // tolerance wide enough to absorb the race is wide enough to absorb the bug.
+    let _guard = exclusive();
     let node = uid("mixed_batch");
 
     // Push 30 Errors + 20 Warnings
