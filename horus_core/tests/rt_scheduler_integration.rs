@@ -194,15 +194,42 @@ fn test_high_performance_rt_config() {
     let traction_count = traction_ticks.load(Ordering::SeqCst);
     let stability_count = stability_ticks.load(Ordering::SeqCst);
 
-    // At 10kHz for 50ms, expect ~500 ticks ideally. Use conservative threshold for CI.
+    // Calibrate against the DEFAULT tick rate over the same window, in the same
+    // conditions, rather than against an absolute tick count.
+    //
+    // `> 10 in 50ms` was an absolute bound that happened to sit just above what
+    // the 100Hz default produces (5). On a box running the rest of the workspace
+    // suite the scheduler thread does not get 10kHz — this failed with 6 ticks,
+    // which is the run queue, not the configuration. And the obvious repair,
+    // lengthening the window, makes it VACUOUS: at 500ms the default rate alone
+    // clears 10.
+    //
+    // So the discriminator has to be relative. Load slows both runs, and the
+    // property under test — that `.tick_rate(10_000)` actually raises the rate
+    // rather than being ignored — survives as a ratio.
+    let baseline = CriticalControlNode::new("baseline_control", 10);
+    let baseline_ticks = Arc::clone(&baseline.tick_count);
+    let mut default_rate = Scheduler::new();
+    default_rate.add(baseline).order(0).build();
+    default_rate.run_for(50_u64.ms()).unwrap();
+    let baseline_count = baseline_ticks.load(Ordering::SeqCst);
+
+    // 1.5x, not 3x. If `.tick_rate()` were ignored both runs would be the same
+    // rate and the ratio would be exactly 1.0, so any threshold above 1
+    // discriminates. Measured under 8 spinners on 12 cores the ratio is 2.6
+    // (13 ticks against 5, the default being clock-paced and so barely affected),
+    // and 3x tripped on that. 1.5x keeps the whole discriminating power with
+    // room for a starved scheduler.
     assert!(
-        traction_count > 10,
-        "Traction control ticked {} times in 50ms at 10kHz (expected many more)",
-        traction_count
+        traction_count * 2 > baseline_count * 3,
+        "traction control ticked {traction_count} times at 10kHz against \
+         {baseline_count} at the default rate over the same 50ms window — the \
+         tick_rate setting is not raising the rate"
     );
     assert!(
-        stability_count > 10,
-        "Stability control ticked {} times in 50ms at 10kHz (expected many more)",
-        stability_count
+        stability_count * 2 > baseline_count * 3,
+        "stability control ticked {stability_count} times at 10kHz against \
+         {baseline_count} at the default rate over the same 50ms window — the \
+         tick_rate setting is not raising the rate"
     );
 }
