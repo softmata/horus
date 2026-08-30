@@ -5835,7 +5835,16 @@ fn a_zero_copy_publisher_is_attributed_under_a_real_scheduler() {
 
     let mut scheduler = Scheduler::new();
     scheduler.add(node).order(0).build();
-    let _ = scheduler.run_for(300_u64.ms());
+    // 1.5s, not 300ms. These assertions are about ATTRIBUTION — that a publisher
+    // constructed outside any tick is credited to its node — not about how
+    // quickly the scheduler gets there. The window has to be long enough for the
+    // node to tick at least once, and on a box running the rest of the ~2500-test
+    // suite in parallel the scheduler thread can lose 300ms to the run queue
+    // before it ever ticks. It did: this failed once in a full workspace run with
+    // an empty publisher list, while passing 4/4 in isolation and 6/6 under 8
+    // spinners on its own. A real regression — never attributing the publisher —
+    // fails however long the window is.
+    let _ = scheduler.run_for(1500_u64.ms());
 
     let registry = topic_node_registry();
     assert_eq!(
