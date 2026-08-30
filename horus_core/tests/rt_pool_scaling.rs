@@ -48,7 +48,13 @@ fn single_rt_node_runs() {
         .build()
         .unwrap();
 
-    scheduler.run_for(50_u64.ms()).unwrap();
+    // 500ms, not 30/50ms. Every assertion in this file is `ticks > 0` — that the
+    // node ticked AT ALL, not that it ticked at a rate — so the window is not
+    // part of the property and lengthening it cannot make anything vacuous. At
+    // 30ms a scheduler thread competing with the rest of the workspace suite can
+    // miss its window entirely, which is how the same shape failed in
+    // determinism_gaps and failure_injection.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     assert!(
         count.load(Ordering::Relaxed) > 0,
@@ -71,7 +77,13 @@ fn multiple_independent_rt_nodes_run() {
             .unwrap();
     }
 
-    scheduler.run_for(50_u64.ms()).unwrap();
+    // 500ms, not 30/50ms. Every assertion in this file is `ticks > 0` — that the
+    // node ticked AT ALL, not that it ticked at a rate — so the window is not
+    // part of the property and lengthening it cannot make anything vacuous. At
+    // 30ms a scheduler thread competing with the rest of the workspace suite can
+    // miss its window entirely, which is how the same shape failed in
+    // determinism_gaps and failure_injection.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     for (i, c) in counts.iter().enumerate() {
         assert!(
@@ -96,7 +108,13 @@ fn rt_node_with_priority() {
         .unwrap();
 
     // Should not crash even if SCHED_FIFO unavailable
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30/50ms. Every assertion in this file is `ticks > 0` — that the
+    // node ticked AT ALL, not that it ticked at a rate — so the window is not
+    // part of the property and lengthening it cannot make anything vacuous. At
+    // 30ms a scheduler thread competing with the rest of the workspace suite can
+    // miss its window entirely, which is how the same shape failed in
+    // determinism_gaps and failure_injection.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     assert!(count.load(Ordering::Relaxed) > 0);
 }
@@ -115,7 +133,13 @@ fn rt_node_with_core_pinning() {
         .unwrap();
 
     // Should not crash even if core 0 is unavailable for pinning
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30/50ms. Every assertion in this file is `ticks > 0` — that the
+    // node ticked AT ALL, not that it ticked at a rate — so the window is not
+    // part of the property and lengthening it cannot make anything vacuous. At
+    // 30ms a scheduler thread competing with the rest of the workspace suite can
+    // miss its window entirely, which is how the same shape failed in
+    // determinism_gaps and failure_injection.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     assert!(count.load(Ordering::Relaxed) > 0);
 }
@@ -136,7 +160,13 @@ fn rt_node_with_per_node_watchdog() {
         .build()
         .unwrap();
 
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30/50ms. Every assertion in this file is `ticks > 0` — that the
+    // node ticked AT ALL, not that it ticked at a rate — so the window is not
+    // part of the property and lengthening it cannot make anything vacuous. At
+    // 30ms a scheduler thread competing with the rest of the workspace suite can
+    // miss its window entirely, which is how the same shape failed in
+    // determinism_gaps and failure_injection.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     assert!(count.load(Ordering::Relaxed) > 0);
 }
@@ -155,7 +185,13 @@ fn non_rt_node_with_watchdog() {
         .build()
         .unwrap();
 
-    scheduler.run_for(30_u64.ms()).unwrap();
+    // 500ms, not 30/50ms. Every assertion in this file is `ticks > 0` — that the
+    // node ticked AT ALL, not that it ticked at a rate — so the window is not
+    // part of the property and lengthening it cannot make anything vacuous. At
+    // 30ms a scheduler thread competing with the rest of the workspace suite can
+    // miss its window entirely, which is how the same shape failed in
+    // determinism_gaps and failure_injection.
+    scheduler.run_for(500_u64.ms()).unwrap();
 
     assert!(count.load(Ordering::Relaxed) > 0);
 }
