@@ -1379,7 +1379,7 @@ const REAP_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 ///
 /// A file is reclaimed only when BOTH hold: nobody has it open (the non-blocking
 /// `LOCK_EX` test in [`is_shm_file_stale`], the same last-one-out test
-/// `ShmRegion::drop` uses), and it is older than [`REAP_MIN_AGE`].
+/// `ShmRegion::drop` uses), and it is older than `REAP_MIN_AGE` (one hour).
 #[cfg(unix)]
 pub fn reap_abandoned_files(namespace_path: &std::path::Path) -> NamespaceCleanupResult {
     let mut result = NamespaceCleanupResult {
