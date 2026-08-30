@@ -1354,6 +1354,106 @@ pub struct NamespaceInfo {
     pub file_count: usize,
 }
 
+/// Minimum age before a file inside a live namespace may be reclaimed.
+///
+/// Liveness is decided by `flock`, not by age — a region any process still has
+/// open holds `LOCK_SH` and is never touched. The age is purely a guard on the
+/// one window `flock` cannot cover: `ShmRegion::new` does `open(O_CREAT)` and
+/// then `flock`, and between those two syscalls a brand-new region looks
+/// unlocked. That window is microseconds; an hour is nine orders of magnitude of
+/// margin, and no legitimate reclaim is time-sensitive.
+const REAP_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Remove abandoned files inside a namespace that is still in use.
+///
+/// [`cleanup_stale_namespaces`] works at directory granularity and skips any
+/// namespace that is alive — including, always, our own. That leaves nothing to
+/// reclaim the individual regions a crashed process left behind in a namespace
+/// that is otherwise healthy, and they are never reclaimed at all when the
+/// namespace name is stable rather than session-derived: the `horus_test_*`
+/// namespace used under `cargo test` is keyed on target directory and profile,
+/// so it is the SAME namespace on every run and every crashed run's regions
+/// accumulate in it forever. Measured at 22 GB on a 31 GB tmpfs, at which point
+/// unrelated tests start failing on allocation — which looks exactly like a code
+/// regression and is not one.
+///
+/// A file is reclaimed only when BOTH hold: nobody has it open (the non-blocking
+/// `LOCK_EX` test in [`is_shm_file_stale`], the same last-one-out test
+/// `ShmRegion::drop` uses), and it is older than [`REAP_MIN_AGE`].
+#[cfg(unix)]
+pub fn reap_abandoned_files(namespace_path: &std::path::Path) -> NamespaceCleanupResult {
+    let mut result = NamespaceCleanupResult {
+        removed: 0,
+        bytes_freed: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+    reap_dir(namespace_path, &mut result);
+    result
+}
+
+#[cfg(unix)]
+fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            reap_dir(&path, result);
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                result.skipped += 1;
+                continue;
+            }
+        };
+        let old_enough = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|age| age >= REAP_MIN_AGE)
+            .unwrap_or(false);
+        if !old_enough {
+            result.skipped += 1;
+            continue;
+        }
+        if !is_shm_file_stale(&path) {
+            result.skipped += 1;
+            continue;
+        }
+        let size = meta.len();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                result.removed += 1;
+                result.bytes_freed += size;
+            }
+            Err(e) => result
+                .errors
+                .push(format!("failed to remove {}: {}", path.display(), e)),
+        }
+    }
+}
+
+/// No `flock` on this platform, so a dead creator cannot be told from a live
+/// one and nothing is reclaimed.
+#[cfg(not(unix))]
+pub fn reap_abandoned_files(_namespace_path: &std::path::Path) -> NamespaceCleanupResult {
+    NamespaceCleanupResult {
+        removed: 0,
+        bytes_freed: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    }
+}
+
 /// Scan the SHM parent directory and remove stale HORUS namespace directories.
 ///
 /// A namespace is considered stale when:
@@ -1399,7 +1499,13 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
         }
 
         if dir_name == current_ns {
+            // Our own namespace is never removed, but regions a crashed process
+            // left inside it still can be — see `reap_abandoned_files`.
+            let reaped = reap_abandoned_files(&entry.path());
+            result.removed += reaped.removed;
+            result.bytes_freed += reaped.bytes_freed;
             result.skipped += 1;
+            result.errors.extend(reaped.errors);
             continue;
         }
 
@@ -1572,6 +1678,72 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The reaper reclaims an abandoned region, and nothing else.
+    ///
+    /// Both guards are exercised in one place because either alone is unsafe:
+    /// `flock` alone would race the window between `open(O_CREAT)` and `flock` in
+    /// `ShmRegion::new`, where a brand-new region looks unlocked; age alone would
+    /// delete a region that has simply been idle for an hour.
+    #[test]
+    #[cfg(unix)]
+    fn reap_takes_only_old_and_unheld_files() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = std::env::temp_dir().join(format!("horus_reap_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test namespace dir");
+
+        let old_free = dir.join("old_and_free");
+        let fresh_free = dir.join("fresh_and_free");
+        let old_held = dir.join("old_but_held");
+        for p in [&old_free, &fresh_free, &old_held] {
+            std::fs::write(p, b"x").expect("plant file");
+        }
+
+        // Backdate the two "old" files two hours.
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        for p in [&old_free, &old_held] {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(p)
+                .expect("open to set time");
+            f.set_modified(two_hours_ago).expect("backdate");
+        }
+
+        // Hold the third one exactly the way a live region does.
+        let holder = std::fs::File::open(&old_held).expect("open holder");
+        // SAFETY: valid open descriptor; LOCK_SH is a valid flock operation.
+        assert_eq!(
+            unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_SH) },
+            0,
+            "could not take the shared lock a live region would hold"
+        );
+
+        let result = reap_abandoned_files(&dir);
+
+        assert!(
+            !old_free.exists(),
+            "an hours-old region nobody has open must be reclaimed"
+        );
+        assert!(
+            fresh_free.exists(),
+            "a brand-new file must survive: this is the guard on the window between \
+             open(O_CREAT) and flock in ShmRegion::new, where a live region looks unlocked"
+        );
+        assert!(
+            old_held.exists(),
+            "a region a process still holds LOCK_SH on must survive at any age"
+        );
+        assert_eq!(
+            result.removed, 1,
+            "exactly one file should have been reaped"
+        );
+
+        drop(holder);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// LIVE-12: namespace liveness is a second liveness check, and it used to
