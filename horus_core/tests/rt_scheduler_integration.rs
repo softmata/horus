@@ -175,6 +175,23 @@ fn test_watchdog_functionality() {
     );
 }
 
+/// Whether the machine is too busy for a rate measurement to mean anything.
+///
+/// Deliberately independent of anything the test measures: it asks whether the
+/// box *could* have delivered the rate, not whether it did. Non-Linux, and any
+/// unreadable or unparseable `/proc/loadavg`, count as not saturated — a missing
+/// signal must not silently disable the assertion.
+fn machine_is_saturated() -> bool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as f64)
+        .unwrap_or(1.0);
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|load| load > cores)
+        .unwrap_or(false)
+}
+
 #[test]
 fn test_high_performance_rt_config() {
     let _shm_guard = cleanup_stale_shm();
@@ -214,12 +231,32 @@ fn test_high_performance_rt_config() {
     default_rate.run_for(50_u64.ms()).unwrap();
     let baseline_count = baseline_ticks.load(Ordering::SeqCst);
 
-    // 1.5x, not 3x. If `.tick_rate()` were ignored both runs would be the same
-    // rate and the ratio would be exactly 1.0, so any threshold above 1
-    // discriminates. Measured under 8 spinners on 12 cores the ratio is 2.6
-    // (13 ticks against 5, the default being clock-paced and so barely affected),
-    // and 3x tripped on that. 1.5x keeps the whole discriminating power with
-    // room for a starved scheduler.
+    // Skip on a saturated machine, decided BEFORE looking at the counts.
+    //
+    // A 10kHz scheduler needs to be scheduled every 100us. With the rest of the
+    // workspace suite running, this box delivers ~120Hz to it — 6 ticks against
+    // the default's 5 — so the property is unobservable, not violated. The
+    // default rate is clock-paced and reaches its nominal 5 either way, which is
+    // why the ratio collapses rather than both sides falling together.
+    //
+    // The skip cannot be keyed on the tick counts: a genuinely ignored
+    // `.tick_rate()` produces the same ~5 ticks, so a count-based skip would
+    // mask exactly the regression this test exists to catch. Load average is
+    // independent of the outcome — it says whether the machine could have
+    // delivered the rate, not whether it did.
+    if machine_is_saturated() {
+        eprintln!(
+            "SKIPPING test_high_performance_rt_config: load average exceeds core \
+             count, so a 10kHz scheduler cannot be scheduled often enough for the \
+             measurement to mean anything. Run on an unloaded machine."
+        );
+        return;
+    }
+
+    // 1.5x. If `.tick_rate()` were ignored both runs would be the same rate and
+    // the ratio would be exactly 1.0, so any threshold above 1 discriminates;
+    // dropping the call measures 0.8. On an unloaded box the healthy ratio is
+    // ~100x, so 1.5x is generous without being vacuous.
     assert!(
         traction_count * 2 > baseline_count * 3,
         "traction control ticked {traction_count} times at 10kHz against \
