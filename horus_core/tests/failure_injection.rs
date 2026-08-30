@@ -184,8 +184,13 @@ fn test_multiple_node_crashes_still_stable() {
         let _ = builder.build();
     }
 
-    // Run for 300ms — enough for all crashes to happen and survivors to keep going
-    let _ = scheduler.run_for(300_u64.ms());
+    // 1s. Same reasoning as `test_node_crash_system_survives` above: 300ms at
+    // 100Hz is ~30 ticks against a `> 15` threshold, so a scheduler competing
+    // with the rest of the suite fails on the run queue rather than on the
+    // behaviour. The threshold tracks the CRASH POINTS, not the window, so a
+    // longer window cannot make it vacuous — a scheduler taken down by a sibling
+    // panic still leaves the survivors short of 15.
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let counts: Vec<u64> = tick_counts
         .iter()
@@ -301,7 +306,10 @@ fn test_crashed_node_recv_returns_none() {
 
     // Run for 300ms — sensor publishes for 10 ticks then crashes.
     // Consumer should receive 10 messages then get None for the rest.
-    let _ = scheduler.run_for(300_u64.ms());
+    // 1s, as above. This test's assertions bound received VALUES and counts
+    // against the sensor's 10 pre-crash sends, so the window only has to be long
+    // enough for some of them to arrive.
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let received = consumer_received.lock().unwrap();
 
