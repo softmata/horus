@@ -205,6 +205,30 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
 /// On a target where inline assembly is unavailable this falls back to the
 /// volatile loop: slower, and still correct.
 ///
+/// # Do not "optimise" this with non-temporal stores
+///
+/// This is the single most expensive operation in the zero-copy image path:
+/// profiled with `topic_probe --alloc 640x480`, the scrub is **82% of a whole
+/// alloc/free cycle** — ~5.8us of ~6.0us for a 307,200-byte frame. It looks like
+/// an obvious candidate for `_mm256_stream_si256`, which skips the
+/// read-for-ownership on every line since nothing will read these zeros.
+///
+/// Measured, that is 49% SLOWER: 8704ns against 5848ns for the same 307KB.
+/// `write_bytes` runs at ~52 GB/s here and streaming at ~35 GB/s, because the
+/// slot is HOT — the producer filled it moments ago — so ordinary stores hit
+/// cache while non-temporal stores insist on going to memory and throw that
+/// locality away.
+///
+/// It is the mirror of the `memory::simd` change that removed streaming stores
+/// from the payload copy: there the consumer reads the bytes immediately, here
+/// nothing reads them at all, and the answer is the same both times because what
+/// decides it is where the data already IS, not whether it will be read.
+///
+/// ~52 GB/s is memory bandwidth. There is no cheaper way to zero this much
+/// memory, and the zeroing itself is not optional — it is what stops a later
+/// tenant of the slot, possibly in another process, reading the previous
+/// tenant's frame.
+///
 /// # Safety
 ///
 /// `ptr..ptr + len` must be valid for writes and exclusively owned by the
