@@ -43,6 +43,29 @@ maturin develop --release
 
 ### Unit and Integration Tests
 
+**Run the timing-sensitive integration tests in `--release`.** CI does, and it
+matters: a debug build is roughly an order of magnitude slower, so a 1 kHz RT
+scheduler test, a latency percentile check or a stress test can fail in `debug`
+purely because the code cannot keep up — nothing is wrong with it. Seven tests
+across `stress_rt_contention`, `scheduler_config_test`, `production_fanout_battle`
+and `safety_battle_tests` fail in debug and pass in release for exactly that
+reason.
+
+What CI runs, so you can reproduce a failure in the configuration it happened in:
+
+```bash
+# The lib job: unit tests only, serialized.
+cargo test --workspace --exclude horus_py --lib --no-fail-fast -- --test-threads=1
+
+# The integration job: every tests/ target, in RELEASE.
+cargo test --workspace --exclude horus_py --release --test '*'
+```
+
+Add `--no-fail-fast` when you want the whole failure list: without it cargo stops
+at the first failing test binary, so a run reports one failure at a time and you
+fix them one slow round-trip apiece.
+
+
 ```bash
 # Rust unit tests
 cargo test
