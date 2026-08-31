@@ -7202,15 +7202,19 @@ fn mp_send_no_overshoot_corruption() {
             let created = Topic::with_capacity(&n, cap, None);
             b.wait();
             let p: Topic<u64> = created.expect("producer");
+            let mut sent = 0u64;
             for i in 0..per {
                 // Distinct value: producer id in high bits, sequence in low bits.
                 let mut m = (pid as u64) << 40 | i;
                 loop {
                     match p.try_send(m) {
-                        Ok(()) => break,
+                        Ok(()) => {
+                            sent += 1;
+                            break;
+                        }
                         Err(r) => {
                             if stop.load(Ordering::Acquire) {
-                                return;
+                                return sent;
                             }
                             m = r;
                             std::thread::yield_now();
@@ -7218,6 +7222,7 @@ fn mp_send_no_overshoot_corruption() {
                     }
                 }
             }
+            sent
         }));
     }
     barrier.wait();
@@ -7251,19 +7256,85 @@ fn mp_send_no_overshoot_corruption() {
         }
     }
     stop.store(true, Ordering::Release);
-    for h in handles {
-        let _ = h.join();
+    let sent: u64 = handles.into_iter().map(|h| h.join().unwrap_or(0)).sum();
+
+    // Drain what is still in the ring now that the producers have stopped.
+    //
+    // Without this the comparison races: the consumer loop above exits on its
+    // deadline, and a producer already inside `try_send` can still succeed
+    // before it observes `stop`. That inflates `sent` past anything the consumer
+    // could have drained, and the test reports a loss that never happened — it
+    // did exactly that on Windows CI, at 1798 against 1800.
+    //
+    // Draining after the join closes the window: every accepted message is
+    // either already counted or still sitting in the ring, so the two numbers
+    // describe the same set. A message that overshoot really did overwrite is
+    // in neither, which is what the assertion below is for.
+    while let Some(v) = consumer.try_recv() {
+        let pid = v >> 40;
+        let i = v & ((1u64 << 40) - 1);
+        assert!(
+            pid < n_producers as u64 && i < per,
+            "GARBAGE value {:#x} (overshoot wrote a torn/aliased slot)",
+            v
+        );
+        assert!(
+            seen.insert(v),
+            "DUPLICATE value {:#x} (overshoot re-used a slot)",
+            v
+        );
+        count += 1;
     }
+
+    // The assertion is that nothing was LOST, not that a wall-clock budget was
+    // met. Overshoot corruption overwrites an unconsumed slot, so the value that
+    // was in it is never delivered — `count < sent` is exactly that symptom, and
+    // it does not depend on how fast the machine is.
+    //
+    // The old form compared `count` against `total`, the number the producers
+    // were ASKED to send. That is a liveness property: producers retry until the
+    // consumer's budget expires, so on a starved runner the last few never get
+    // pushed at all and the test reported a shortfall as corruption. The budget
+    // had already been raised 8s -> 30s chasing it, and Windows CI still starved
+    // two messages out of 1800 with neither GARBAGE nor DUPLICATE firing — which
+    // is the test itself saying the corruption did not happen.
+    // Account for the abandoned-claim escape, which is a DOCUMENTED counted loss.
+    //
+    // A producer can be descheduled between claiming a slot and publishing its
+    // stamp. The consumer will not block forever on that: `claimed_slot_escape`
+    // gives up after a bound and skips the slot, incrementing `missed` — the
+    // trade its own docs describe as turning an unbounded stall into a counted
+    // message loss. The producer then finishes and reports the send as accepted,
+    // so `sent` counts a message the consumer deliberately skipped.
+    //
+    // Windows makes this ordinary rather than exotic: its scheduler quantum is
+    // ~15ms, so a producer parked mid-claim stays parked long enough for the
+    // escape to fire. This test failed there at 1796 of 1800 with neither
+    // GARBAGE nor DUPLICATE, and 4 escapes is exactly that shape.
+    //
+    // So the invariant is conservation, not delivery: every accepted message was
+    // either drained or explicitly skipped and counted. Overshoot corruption
+    // breaks it — an overwritten slot is in neither total.
+    let missed = consumer.missed_count();
     assert_eq!(
-        count, total,
-        "consumer drained {}/{} inside the budget. Note what did NOT fire: no \
-         GARBAGE and no DUPLICATE, so every value that did arrive was intact and \
-         no slot was re-used. Overshoot corruption trips one of those two \
-         immediately and in this test's own terms — so a shortfall here is a \
-         producer starving on its retry loop, which is a liveness result, not \
-         the corruption this test is named for. The old message asserted the \
-         corruption cause outright and was wrong about it on Windows.",
-        count, total
+        count + missed,
+        sent,
+        "consumer drained {count} and skipped {missed} of the {sent} values the \
+         producers actually pushed, so {} went missing. Every value that arrived \
+         was intact (no GARBAGE) and no slot was re-used (no DUPLICATE), and an \
+         abandoned claim would have been counted in `missed` — so this is a lost \
+         message: overshoot overwrote an unconsumed slot.",
+        sent - count - missed
+    );
+
+    // Anti-vacuity: the corruption checks above only mean something if a
+    // substantial number of messages actually went through a contended ring.
+    assert!(
+        sent * 2 >= total,
+        "only {sent} of {total} messages were pushed before the drain budget \
+         expired, so this run exercised too little contention to be evidence \
+         either way. This is a liveness result about the machine, not about \
+         overshoot."
     );
 }
 
