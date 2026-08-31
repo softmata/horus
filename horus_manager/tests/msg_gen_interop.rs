@@ -29,6 +29,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+/// A scratch directory under the workspace's `target/`, created if absent.
+///
+/// `CARGO_TARGET_TMPDIR` is cargo's own scratch directory for integration tests,
+/// but it is only guaranteed to be set — not to exist, since `cargo clean` or a
+/// hand `rm -rf target/tmp` removes it. Create it rather than fail on it.
+fn scratch_root() -> &'static str {
+    let root = env!("CARGO_TARGET_TMPDIR");
+    let _ = std::fs::create_dir_all(root);
+    root
+}
+
 fn horus() -> &'static str {
     env!("CARGO_BIN_EXE_horus")
 }
@@ -84,7 +95,28 @@ const POSE_YX: &str = "    y: f32,\n    x: f32,\n";
 
 /// Generate a project without building anything. Cheap: no cargo.
 fn generated_project(defs: &str) -> (tempfile::TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
+    // Under the workspace's `target/`, not `$TMPDIR`.
+    //
+    // Every test here builds a generated crate that depends on `horus_core`, in
+    // a target directory under this project — so a run of this file is three
+    // full builds of the workspace. `tempfile::tempdir()` puts those on `/tmp`,
+    // which is a tmpfs, and they do not fit alongside everything else on the
+    // box: all four of these tests failed with `Disk quota exceeded (os error
+    // 122)` while `df` still reported free space, and the same exhaustion took
+    // out `uat_workflows` at the same time. Pointing `TMPDIR` at a roomier
+    // filesystem made all six pass unchanged, which is how the cause was found.
+    //
+    // `CARGO_TARGET_TMPDIR` is cargo's directory for exactly this: it sits under
+    // `target/`, on the same filesystem as a build that already fits there, and
+    // cargo cleans it with the rest of `target/`.
+    //
+    // The per-project target directories stay per-project. Sharing ONE target
+    // directory across callers looks tempting — it would let the first build pay
+    // for `horus_core` and the rest hit the cache — but it is wrong here:
+    // `a_reordered_build_cannot_open_the_same_topic` builds two DIFFERENT
+    // versions of the same crate and needs both artifacts at once, and a shared
+    // directory makes the second clobber the first. Tried; it fails at the copy.
+    let tmp = tempfile::tempdir_in(scratch_root()).expect("tempdir");
     let project = tmp.path().join("demo");
     let out = Command::new(horus())
         .args(["new", "demo", "--python"])
