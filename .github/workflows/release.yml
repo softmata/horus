@@ -17,6 +17,19 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Least privilege for the default GITHUB_TOKEN. Every other workflow in this
+# repository declares this; release.yml did not, so its jobs fell back to the
+# repository's default token permissions — read/write on every scope for a repo
+# whose org predates GitHub's 2023 default change. That default landed on the
+# one workflow where it matters most: `build-release` runs `cargo build`, which
+# executes the build scripts and proc macros of every transitive dependency
+# (including two git dependencies), on the tag push that cuts a release. A
+# single compromised build script would have held a write-scoped token.
+# `create-release` re-declares the `contents: write` it genuinely needs, so no
+# job loses a permission it actually uses.
+permissions:
+  contents: read
+
 jobs:
   build-release:
     name: Build ${{ matrix.asset_name }}

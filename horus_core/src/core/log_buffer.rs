@@ -41,7 +41,14 @@ fn max_log_entries() -> usize {
         .clamp(100, 50000)
 }
 
-// Keep old name as alias for backward compat in SAFETY comments
+/// Default capacity for a buffer opened without one (`open_at`).
+///
+/// This is NOT a bound on any buffer's slot count and must never be used as one
+/// in a `SAFETY` argument or an index assert, which is what the previous comment
+/// ("keep old name as alias for backward compat in SAFETY comments") invited.
+/// `SharedLogBuffer::capacity` is the only true bound: the error buffer holds
+/// 500 slots, the remote buffer 2000, and the main buffer anything from 100 to
+/// 50000 depending on `HORUS_LOG_BUFFER_SIZE`.
 const MAX_LOG_ENTRIES: usize = DEFAULT_LOG_ENTRIES;
 
 /// Capacity for the dedicated error ring buffer.
@@ -109,8 +116,11 @@ unsafe fn claim_slot(base: *const u8) -> u64 {
 /// Atomically store a value into the seqlock field at the start of `slot_idx`.
 ///
 /// # Safety
-/// `slot_idx` must be < `MAX_LOG_ENTRIES` and `base` must point to the full
-/// mmap region (`HEADER_SIZE + MAX_LOG_ENTRIES * SLOT_SIZE` bytes).
+/// `base` must point to a mapping of at least `HEADER_SIZE + (slot_idx + 1) *
+/// SLOT_SIZE` bytes — i.e. `slot_idx` must be below the capacity that
+/// `SharedLogBuffer::open_at_with_capacity` derived from the mapping length,
+/// NOT below the `MAX_LOG_ENTRIES` constant (the error buffer holds 500 slots
+/// and the remote buffer 2000, so that constant is far too permissive a bound).
 /// `HEADER_SIZE` and `SLOT_SIZE` are multiples of 8, so the pointer is always
 /// 8-byte aligned.
 #[inline]
@@ -248,10 +258,8 @@ impl SharedLogBuffer {
             if total_size > existing {
                 file.set_len(total_size as u64)?;
             } else {
-                // Existing file is larger — use its size. Our capacity is smaller
-                // but we can safely mmap and use our portion.
-                // Adjust our capacity to match the file.
-                // (This is a defensive fallback; in practice capacities match.)
+                // Existing file is larger — leave it alone and map all of it. Our
+                // capacity is smaller, so we simply use a prefix of the region.
             }
         }
 
@@ -263,6 +271,41 @@ impl SharedLogBuffer {
                 })
             })?
         };
+
+        // Every `unsafe` helper below states its precondition as "`slot_idx` is
+        // less than the capacity and `base` covers the whole region". Until now
+        // nothing enforced the second half: `capacity` came from the caller (an
+        // env var, or the `MAX_LOG_ENTRIES` constant) while the mapping length
+        // came from the file, and the two were only *assumed* to agree.
+        //
+        // They can disagree. `set_len` above is called by every process that
+        // opens the buffer, and two processes that both observe `len == 0` both
+        // size it: if the one with the SMALLER capacity lands its `set_len`
+        // second, the other maps a file shorter than its own `capacity` implies
+        // and then writes slots far past the end of the mapping. Another local
+        // process can also `ftruncate` the region between the `set_len` and the
+        // `map_mut` — /dev/shm is shared, and the file being 0600 only narrows
+        // that to a same-UID peer, which is inside the threat model.
+        //
+        // Derive the capacity from the mapping that actually exists rather than
+        // from what we asked for. In the overwhelmingly common case the file is
+        // exactly (or more than) `total_size` and this changes nothing.
+        let mapped = mmap.len();
+        if mapped < HEADER_SIZE + SLOT_SIZE {
+            return Err(crate::error::HorusError::Memory(
+                crate::error::MemoryError::MmapFailed {
+                    reason: format!(
+                        "log buffer at {} mapped {} bytes — too small for the {}-byte header \
+                         plus one {}-byte slot",
+                        path.display(),
+                        mapped,
+                        HEADER_SIZE,
+                        SLOT_SIZE
+                    ),
+                },
+            ));
+        }
+        let capacity = capacity.min((mapped - HEADER_SIZE) / SLOT_SIZE);
 
         Ok(Self {
             mmap: Mutex::new(mmap),
@@ -332,8 +375,10 @@ impl SharedLogBuffer {
 
         // ── Step 2: Mark slot as write-in-progress (odd seq) ─────────────────
         // Readers that see an odd seq will skip this slot, preventing torn reads.
-        // SAFETY: slot_idx < MAX_LOG_ENTRIES (modulo above); base covers the full mmap.
-        // HEADER_SIZE and SLOT_SIZE are multiples of 8, so the AtomicU64 is aligned.
+        // SAFETY: slot_idx < self.capacity (modulo above), and `open_at_with_capacity`
+        // clamped self.capacity so that HEADER_SIZE + capacity * SLOT_SIZE fits inside
+        // the mapping. HEADER_SIZE and SLOT_SIZE are multiples of 8, so the AtomicU64
+        // is aligned.
         unsafe {
             store_slot_seq(base, slot_idx, claimed_idx.wrapping_mul(2).wrapping_add(1));
         }
@@ -341,9 +386,12 @@ impl SharedLogBuffer {
         // ── Step 3: Write serialised entry data ───────────────────────────────
         let data_off = slot_off + SLOT_SEQ_SIZE;
         let len = serialized.len().min(SLOT_DATA_SIZE);
-        // SAFETY: data_off + SLOT_DATA_SIZE is within the mmap region (bounded by
-        // HEADER_SIZE + MAX_LOG_ENTRIES * SLOT_SIZE). serialized.len() <= SLOT_DATA_SIZE.
-        // MutexGuard keeps the mmap alive; the claimed slot is exclusively ours.
+        // SAFETY: data_off + SLOT_DATA_SIZE <= HEADER_SIZE + self.capacity * SLOT_SIZE,
+        // which `open_at_with_capacity` clamped to fit inside the mapping.
+        // serialized.len() <= SLOT_DATA_SIZE. MutexGuard keeps the mmap alive; the
+        // claimed slot is exclusively ours *within this process* — a peer process with
+        // a different capacity can still land on the same slot, which the reader's
+        // seqlock re-check in `get_since` detects and discards.
         unsafe {
             std::ptr::copy_nonoverlapping(serialized.as_ptr(), base.add(data_off), len);
             if len < SLOT_DATA_SIZE {
@@ -354,7 +402,7 @@ impl SharedLogBuffer {
         // ── Step 4: Mark slot as complete (even nonzero seq) ─────────────────
         // The Release ordering ensures the data writes above are visible to any
         // reader that performs an Acquire load on this seq field.
-        // SAFETY: slot_idx < MAX_LOG_ENTRIES; base covers the full mmap; aligned (see Step 2).
+        // SAFETY: slot_idx < self.capacity; base covers the full mmap; aligned (see Step 2).
         unsafe {
             store_slot_seq(base, slot_idx, claimed_idx.wrapping_mul(2).wrapping_add(2));
         }
@@ -415,8 +463,9 @@ impl SharedLogBuffer {
         for i in skip..num_entries {
             let slot_idx = (start_idx + i) % self.capacity;
 
-            // SAFETY: slot_idx < MAX_LOG_ENTRIES; mmap covers the full buffer.
-            let seq = unsafe { load_slot_seq(base, slot_idx) };
+            // SAFETY: slot_idx < self.capacity, which `open_at_with_capacity`
+            // clamped to fit the mapping; mmap covers the full buffer.
+            let mut seq = unsafe { load_slot_seq(base, slot_idx) };
 
             // Never-written slot.
             if seq == 0 {
@@ -431,9 +480,12 @@ impl SharedLogBuffer {
                 let mut resolved = false;
                 while Instant::now() < deadline {
                     std::hint::spin_loop();
-                    // SAFETY: base from mmap, slot_idx < MAX_LOG_ENTRIES (loop bound).
+                    // SAFETY: base from mmap, slot_idx < self.capacity (loop bound).
                     let seq2 = unsafe { load_slot_seq(base, slot_idx) };
                     if seq2 != 0 && seq2 & 1 == 0 {
+                        // Carry the *resolved* stamp forward: it, not the stale
+                        // odd value, is what the post-copy re-check compares against.
+                        seq = seq2;
                         resolved = true;
                         break;
                     }
@@ -441,18 +493,53 @@ impl SharedLogBuffer {
                 if !resolved {
                     // Writer is dead — reset seqlock to even so the slot can be
                     // reclaimed by a future writer (the data is garbage anyway).
-                    // SAFETY: base from mmap, slot_idx < MAX_LOG_ENTRIES (loop bound).
+                    // SAFETY: base from mmap, slot_idx < self.capacity (loop bound).
                     unsafe { store_slot_seq(base, slot_idx, seq.wrapping_add(1)) };
                     continue;
                 }
             }
 
             let data_off = HEADER_SIZE + slot_idx * SLOT_SIZE + SLOT_SEQ_SIZE;
-            // SAFETY: data_off is within the mmap region.
-            let entry_bytes =
-                unsafe { std::slice::from_raw_parts(base.add(data_off), SLOT_DATA_SIZE) };
 
-            if let Ok(entry) = bincode::deserialize::<LogEntry>(entry_bytes) {
+            // Copy the slot out, then re-read the stamp and require it unchanged.
+            //
+            // The type doc above promises the seq field "prevent[s] torn reads when
+            // a reader runs concurrently with a writer from another process", and
+            // before this it did not: the stamp was checked once, *before* the read,
+            // and never again. A peer process that claimed this slot the instant
+            // after that check wrote its 504 bytes straight underneath the reader.
+            // Worse, the copy was handed to bincode as a `&[u8]` borrowed directly
+            // from the peer-writable mapping — a live shared reference to memory
+            // another process mutates, which is a data race in the Rust abstract
+            // machine no matter how benign the bytes turn out to be.
+            //
+            // Both halves are closed here: the bytes are copied into a private
+            // buffer first (bincode never sees the shared mapping), and the stamp is
+            // re-read afterwards. Any change means the slot was claimed or rewritten
+            // mid-copy, so the copy is discarded rather than deserialized. This is
+            // the same protocol `communication::topic::seqlock::seqlock_consume`
+            // already uses on the data plane.
+            let mut slot_copy = [0u8; SLOT_DATA_SIZE];
+            // SAFETY: data_off + SLOT_DATA_SIZE <= HEADER_SIZE + self.capacity *
+            // SLOT_SIZE, which is within the mapping (clamped at open). Source and
+            // destination do not overlap — `slot_copy` is a local.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    base.add(data_off),
+                    slot_copy.as_mut_ptr(),
+                    SLOT_DATA_SIZE,
+                );
+            }
+
+            // SAFETY: same bounds as the load above.
+            let seq_after = unsafe { load_slot_seq(base, slot_idx) };
+            if seq_after != seq {
+                // Overwritten while we copied — the bytes may be half of one entry
+                // and half of another. Drop them.
+                continue;
+            }
+
+            if let Ok(entry) = bincode::deserialize::<LogEntry>(&slot_copy[..]) {
                 logs.push(entry);
             }
         }
@@ -663,7 +750,18 @@ impl SharedLogBuffer {
     /// recovery.
     #[doc(hidden)]
     pub fn corrupt_slot_seqlock(&self, slot_idx: usize, odd_value: u64) {
-        assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
+        // `self.capacity`, NOT `MAX_LOG_ENTRIES`. This buffer may hold far fewer
+        // slots than that constant — the error buffer defaults to 500 and the
+        // remote buffer to 2000 — and the assert is the only thing standing
+        // between a caller-supplied index and `store_slot_seq`'s raw
+        // `base.add(HEADER_SIZE + slot_idx * SLOT_SIZE)`. Asserting against 5000
+        // let `corrupt_slot_seqlock(4999, 1)` on a 500-slot buffer store 2.5 MB
+        // past the end of the mapping.
+        assert!(
+            slot_idx < self.capacity,
+            "slot_idx {slot_idx} out of range (capacity {})",
+            self.capacity
+        );
         assert!(odd_value & 1 == 1, "value must be odd to simulate crash");
         let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *const u8 = (*guard).as_ptr();
@@ -675,7 +773,13 @@ impl SharedLogBuffer {
     /// **Test-only**: `#[doc(hidden)]`.
     #[doc(hidden)]
     pub fn read_slot_seqlock(&self, slot_idx: usize) -> u64 {
-        assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
+        // Bound is the mapping's capacity, not the `MAX_LOG_ENTRIES` constant —
+        // see `corrupt_slot_seqlock`.
+        assert!(
+            slot_idx < self.capacity,
+            "slot_idx {slot_idx} out of range (capacity {})",
+            self.capacity
+        );
         let guard = self.mmap.lock().unwrap_or_else(|e| e.into_inner());
         let base: *const u8 = (*guard).as_ptr();
         unsafe { load_slot_seq(base, slot_idx) }
@@ -689,7 +793,14 @@ impl SharedLogBuffer {
     /// to verify `get_all()` gracefully skips garbage data.
     #[doc(hidden)]
     pub fn write_slot_raw(&self, slot_idx: usize, data: &[u8], seq_even: u64) {
-        assert!(slot_idx < MAX_LOG_ENTRIES, "slot_idx out of range");
+        // Bound is the mapping's capacity, not the `MAX_LOG_ENTRIES` constant —
+        // see `corrupt_slot_seqlock`. This one writes 504 bytes of caller data,
+        // so the wrong bound was an out-of-bounds *write*.
+        assert!(
+            slot_idx < self.capacity,
+            "slot_idx {slot_idx} out of range (capacity {})",
+            self.capacity
+        );
         assert!(
             seq_even != 0 && seq_even & 1 == 0,
             "seq must be even nonzero"
@@ -737,6 +848,95 @@ mod tests {
         ));
         let buf = SharedLogBuffer::new_at_path(&path).unwrap();
         (buf, path)
+    }
+
+    /// The raw slot helpers must be bounded by THIS buffer's capacity, not by
+    /// the `MAX_LOG_ENTRIES` constant.
+    ///
+    /// `MAX_LOG_ENTRIES` is 5000, but the buffers that actually exist are
+    /// smaller: the error buffer is 500 slots and the remote buffer 2000, and
+    /// the main buffer goes down to 100 under `HORUS_LOG_BUFFER_SIZE`. The
+    /// asserts in `corrupt_slot_seqlock` / `read_slot_seqlock` /
+    /// `write_slot_raw` are the ONLY thing between a caller-supplied index and
+    /// `base.add(HEADER_SIZE + slot_idx * SLOT_SIZE)`; checking them against
+    /// 5000 let an index past the end of a 100-slot mapping through, and
+    /// `write_slot_raw` then wrote 504 bytes there.
+    #[test]
+    fn slot_helpers_are_bounded_by_capacity_not_by_the_constant() {
+        let path = std::env::temp_dir().join(format!(
+            "horus_log_capbound_{}_{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        const SMALL: usize = 100;
+        let buf = SharedLogBuffer::open_at_with_capacity(&path, SMALL).expect("open small buffer");
+        assert_eq!(
+            buf.capacity, SMALL,
+            "a freshly created file must give exactly the requested capacity"
+        );
+        // Both operands are constants, so this belongs at compile time: as a
+        // runtime assert it could only ever fire in a build that already
+        // compiled, and it is a statement about the test's premise rather than
+        // about anything the run observes.
+        const _: () = assert!(
+            SMALL < MAX_LOG_ENTRIES,
+            "this test only means anything while the constant is the looser bound"
+        );
+
+        // The last in-range slot is fine.
+        buf.write_slot_raw(SMALL - 1, &[7u8; 8], 2);
+        assert_eq!(buf.read_slot_seqlock(SMALL - 1), 2);
+
+        // One past it — and anything up to the old constant — must be refused,
+        // not written past the end of the mapping.
+        for out_of_range in [SMALL, SMALL + 1, MAX_LOG_ENTRIES - 1] {
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                buf.write_slot_raw(out_of_range, &[0xAAu8; 8], 2);
+            }));
+            assert!(
+                refused.is_err(),
+                "write_slot_raw({out_of_range}) must be refused on a {SMALL}-slot buffer"
+            );
+
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                buf.corrupt_slot_seqlock(out_of_range, 1);
+            }));
+            assert!(
+                refused.is_err(),
+                "corrupt_slot_seqlock({out_of_range}) must be refused on a {SMALL}-slot buffer"
+            );
+
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                buf.read_slot_seqlock(out_of_range);
+            }));
+            assert!(
+                refused.is_err(),
+                "read_slot_seqlock({out_of_range}) must be refused on a {SMALL}-slot buffer"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `capacity` must never exceed what the mapping can actually hold, because
+    /// every `unsafe` slot access derives its bound from it.
+    #[test]
+    fn capacity_never_exceeds_the_mapping() {
+        let (buf, path) = temp_buf(9_001);
+        let mapped = buf.mmap.lock().unwrap_or_else(|e| e.into_inner()).len();
+        assert!(
+            HEADER_SIZE + buf.capacity * SLOT_SIZE <= mapped,
+            "capacity {} implies {} bytes but only {} are mapped",
+            buf.capacity,
+            HEADER_SIZE + buf.capacity * SLOT_SIZE,
+            mapped
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     /// Basic sequential write+read round-trip.

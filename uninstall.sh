@@ -356,8 +356,16 @@ SHM_NS_COUNT=0
 for ns_dir in $SHM_GLOB; do
     if [ -d "$ns_dir" ]; then
         ns_size=$(du -sh "$ns_dir" 2>/dev/null | cut -f1)
-        ns_name=$(basename "$ns_dir")
-        echo -e "    [x] $ns_dir/ ($ns_size)"
+        # printf %s, not `echo -e "$ns_dir"` — the same rule the removal loop in
+        # step 3 already follows, and this listing needs it more. /dev/shm is
+        # world-writable, so any local user can create a horus_* directory whose
+        # NAME contains escape sequences; `echo -e` interprets them, and this is
+        # the inventory the operator reads immediately before answering the
+        # "Are you sure you want to uninstall HORUS?" prompt below. Interpreted
+        # escapes let that user clear lines, move the cursor and repaint the
+        # list, so what the operator confirms is not what is about to be
+        # deleted — from a run that may be under sudo.
+        printf '    [x] %s/ (%s)\n' "$ns_dir" "$ns_size"
         SHM_NS_COUNT=$((SHM_NS_COUNT + 1))
     fi
 done

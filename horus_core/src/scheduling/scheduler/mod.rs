@@ -306,6 +306,45 @@ pub struct Scheduler {
     #[allow(dead_code)] // false positive: read in node_ops.rs
     pub(super) registry_slots: HashMap<String, usize>,
 
+    /// The same slot indices, addressed by position in `self.nodes` instead of
+    /// by name. Resolved once, where `registry_slots` is filled.
+    ///
+    /// `update_registry_slot` runs at the end of every tick of every
+    /// main-thread node and needs one number that cannot change after startup.
+    /// It used to recover that number by hashing the node's name (SipHash over
+    /// the bytes) and probing a `HashMap` that lives nowhere near the node it
+    /// describes — a near-certain cache miss, paid inside the tick's period
+    /// budget, to learn something already known before the loop started.
+    ///
+    /// `registry_slots` stays the source of truth: `None` at a position means
+    /// "the SHM registry was full, this node has no slot", and *no* entry at
+    /// that position (a node registered after this was built) falls back to
+    /// the name map. The cache can therefore never be the reason a node's
+    /// metrics land in the wrong slot.
+    registry_slot_cache: Vec<Option<u32>>,
+
+    /// Per-node "this node may have an entry in the safety monitor's
+    /// `degradation_states` map", by position in `self.nodes`.
+    ///
+    /// `SafetyMonitor::record_successful_tick` returns `DegradationAction::None`
+    /// the moment it finds no entry for the node — but finding that out costs
+    /// a lock on `degradation_states` (a `parking_lot::Mutex`, shared with every
+    /// executor thread, with no priority inheritance) plus a SipHash of the node
+    /// name. Every healthy node paid that on every tick to be told that nothing
+    /// had happened.
+    ///
+    /// An entry can only be created by `SafetyMonitor::evaluate_degradation`,
+    /// and for a node the main thread still owns the only caller is
+    /// `check_timing_violations` in this file, on a deadline miss. Until that
+    /// has fired there is provably no entry, so the call is a no-op and
+    /// skipping it changes nothing. This is not a cached copy of the
+    /// degradation state — the state is still read from the monitor, under its
+    /// lock, on every tick from the first miss onwards; the flag only says
+    /// whether there is yet anything to read. It is never cleared, and an
+    /// unknown position defaults to "call it", so the failure direction is
+    /// always the old behaviour.
+    degradation_tracked: Vec<bool>,
+
     /// Every node the scheduler owns, including the ones handed to an executor.
     ///
     /// The class partition moves RT / Compute / Event / AsyncIo nodes out of
@@ -506,6 +545,8 @@ impl Scheduler {
             initialized: false,
             registry: None,
             registry_slots: HashMap::new(),
+            registry_slot_cache: Vec::new(),
+            degradation_tracked: Vec::new(),
             presence_roster: Vec::new(),
             presence_rate_samples: HashMap::new(),
             presence_reset_reported: std::collections::HashSet::new(),
@@ -2687,6 +2728,17 @@ impl Scheduler {
                             None
                         }
                     };
+                // Resolve every per-tick lookup that depends only on startup
+                // state, now that the class partition is done and `self.nodes`
+                // holds exactly the nodes the main thread will tick.
+                let slot_cache: Vec<Option<u32>> = self
+                    .nodes
+                    .iter()
+                    .map(|n| self.registry_slots.get(n.name.as_ref()).map(|&s| s as u32))
+                    .collect();
+                self.registry_slot_cache = slot_cache;
+                self.degradation_tracked = vec![false; self.nodes.len()];
+
                 // Roster of every node, including the ones about to be handed
                 // to an executor. The presence refresh needs this because
                 // `self.nodes` no longer contains them.
@@ -4334,8 +4386,14 @@ impl Scheduler {
             }
         }
 
-        // Replay: advance replayer, inject outputs into SHM and recorder
-        {
+        // Replay: advance replayer, inject outputs into SHM and recorder.
+        //
+        // Guarded on `self.replay`: the `Arc<str>` clone below is an atomic
+        // increment now and an atomic decrement later on a line every other
+        // holder of the name also touches, and it ran on every tick of every
+        // node in every deployment — to key a replayer that exists only under
+        // `.replay_from()`.
+        if self.replay.is_some() {
             let node_name = self.nodes[i].name.clone();
             let replay_outputs: Option<Vec<(String, Vec<u8>)>> =
                 self.replay.as_mut().and_then(|replay| {
@@ -4465,8 +4523,16 @@ impl Scheduler {
             return;
         };
         let node = &self.nodes[i];
-        let Some(&slot) = self.registry_slots.get(node.name.as_ref()) else {
-            return;
+        // Positional cache first (see `registry_slot_cache`); the name map is
+        // the authority and the fallback, so a node that appeared after the
+        // cache was built still reaches its own slot.
+        let slot = match self.registry_slot_cache.get(i) {
+            Some(&Some(slot)) => slot as usize,
+            Some(&None) => return, // registry was full: this node has no slot
+            None => match self.registry_slots.get(node.name.as_ref()) {
+                Some(&slot) => slot,
+                None => return,
+            },
         };
 
         let (tick_count, error_count) = match node.context {
@@ -4522,7 +4588,27 @@ impl Scheduler {
                 profiler.record_node_failure(node_name);
                 print_line(&format!("Node '{}' panicked during execution", node_name));
             }
-            profiler.record(node_name, tick_duration);
+            // `RuntimeProfiler::record` reaches its per-node entry with
+            // `entry(node_name.to_string())`, which allocates a `String` on
+            // EVERY call — including the hit, which is every tick after the
+            // first — and does it while holding this mutex. `malloc` has no
+            // WCET bound (arena contention → `brk`/`mmap` → page fault), and
+            // the executor threads take this same lock, so the allocation sat
+            // inside a lock that a lower-priority thread can hold: unbounded
+            // blocking, on the tick path, in a safety-critical runtime.
+            //
+            // `get_mut` borrows the key instead of owning it, so the steady
+            // state allocates nothing. The `None` arm deliberately still goes
+            // through `record()`, which keeps `record()` the only thing that
+            // ever CREATES an entry — so the profiler's `enabled` flag governs
+            // exactly what it governed before: when profiling is disabled no
+            // entry is ever created, every tick takes the `None` arm, and
+            // `record()` no-ops. Same samples, same Welford state, one fewer
+            // `malloc`/`free` pair per node per tick.
+            match profiler.node_stats.get_mut(node_name) {
+                Some(stats) => stats.update(tick_duration.as_micros() as f64),
+                None => profiler.record(node_name, tick_duration),
+            }
         }
 
         // Update per-node RtStats
@@ -4594,9 +4680,21 @@ impl Scheduler {
                     }
                 }
 
-                // Graduated degradation recovery: track successful ticks at reduced rate
-                if let Some(ref monitor) = self.monitor.safety {
-                    let action = monitor.record_successful_tick(&self.nodes[i].name);
+                // Graduated degradation recovery: track successful ticks at reduced rate.
+                //
+                // Skipped only while the node provably has no degradation state
+                // to recover from — see `degradation_tracked`. Once it has one,
+                // this reads the live state under the monitor's lock exactly as
+                // before, every tick.
+                let recovery_action = match self.monitor.safety {
+                    Some(ref monitor)
+                        if self.degradation_tracked.get(i).copied().unwrap_or(true) =>
+                    {
+                        Some(monitor.record_successful_tick(&self.nodes[i].name))
+                    }
+                    _ => None,
+                };
+                if let Some(action) = recovery_action {
                     self.apply_degradation_action(i, action);
                 }
 
@@ -4683,6 +4781,19 @@ impl Scheduler {
         tick_duration: Duration,
     ) -> bool {
         use super::primitives::{DeadlineAction, TimingEnforcer};
+
+        // Everything below is gated on `is_rt_node` and on the node having a
+        // budget or a deadline; without one of those this function does nothing
+        // but bump and drop an `Arc` refcount. After the class partition the
+        // nodes the main thread still owns are precisely the ones for which
+        // that is true, so the whole call was an atomic RMW pair per node per
+        // tick in exchange for nothing.
+        {
+            let node = &self.nodes[i];
+            if !node.is_rt_node || (node.tick_budget.is_none() && node.deadline.is_none()) {
+                return false;
+            }
+        }
 
         let node_name = Arc::clone(&self.nodes[i].name);
 
@@ -4807,6 +4918,13 @@ impl Scheduler {
                             consecutive,
                             self.nodes[i].rate_hz,
                         );
+                        // `evaluate_degradation` is the one call that can put
+                        // this node into the monitor's `degradation_states`
+                        // map, so from here on `record_successful_tick` has
+                        // something to find and must run on every tick.
+                        if let Some(tracked) = self.degradation_tracked.get_mut(i) {
+                            *tracked = true;
+                        }
                         self.apply_degradation_action(i, action);
                     }
 
@@ -5112,7 +5230,20 @@ impl Scheduler {
                 }
             }
         } else {
-            // No graph (cycle detected or build failed) — sequential fallback
+            // No graph (cycle detected or build failed) — sequential fallback.
+            //
+            // This re-sorts `self.nodes` IN PLACE, on every tick, so any cache
+            // addressed by position in that vector stops describing the node at
+            // that position. The sort is stable and `priority` never changes
+            // after registration, so today the permutation is the identity —
+            // but a cache whose correctness rests on that is one future
+            // reordering away from writing one node's tick metrics into another
+            // node's SHM registry slot, which is precisely the aliasing
+            // `SchedulerRegistry::register_node` refuses to hand out. Drop the
+            // positional caches here; both lookups then fall back to the name
+            // map, which is the authority, and behave exactly as before.
+            self.registry_slot_cache.clear();
+            self.degradation_tracked.clear();
             self.nodes.sort_by_key(|r| r.priority);
             let num_nodes = self.nodes.len();
             for i in 0..num_nodes {

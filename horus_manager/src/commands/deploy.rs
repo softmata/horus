@@ -154,6 +154,67 @@ fn resolve_target(target: &str) -> ResolvedTarget {
     }
 }
 
+/// Reject an ssh destination or identity that the tools downstream would read
+/// as an *option* rather than as data.
+///
+/// `host` and `identity` come from `.horus/deploy.yaml`, which lives inside the
+/// project — i.e. inside any checkout the user cloned — and both land in the
+/// argv of `ssh` and `rsync` with nothing between them and the parser:
+///
+/// * [`run_on_target`] passes the host as a bare positional
+///   (`cmd.arg(&config.target)`). ssh reads a leading `-` as an option, and
+///   `-oProxyCommand=…` makes ssh run that string through `/bin/sh`.
+/// * [`sync_binary_to_target`] interpolates the identity into rsync's `-e`
+///   string. rsync splits `--rsh` on **whitespace only** — no shell, no quote
+///   handling — so an identity containing a space contributes further argv
+///   elements to the ssh invocation, `-oProxyCommand=…` included. (It is also
+///   why the single quotes [`sync_to_target`] wraps the identity in are not a
+///   defence: they reach ssh as part of the filename.)
+///
+/// A hostname and a key path never legitimately begin with `-` or contain
+/// whitespace, so refuse rather than attempt to quote.
+fn validate_ssh_inputs(host: &str, identity: Option<&Path>) -> HorusResult<()> {
+    fn reject(what: &str, value: &str, why: &str) -> HorusError {
+        HorusError::Config(ConfigError::Other(format!(
+            "Refusing to deploy: the {what} {value:?} {why}.\n\
+             Deploy targets are read from .horus/deploy.yaml, which is part of the \
+             checkout, and this value is passed straight into the argv of ssh/rsync — \
+             where it would be parsed as an option (for example -oProxyCommand=...) \
+             instead of as a destination."
+        )))
+    }
+
+    if host.trim().is_empty() {
+        return Err(reject("target host", host, "is empty"));
+    }
+    if host.starts_with('-') {
+        return Err(reject("target host", host, "begins with '-'"));
+    }
+    if host.chars().any(char::is_whitespace) {
+        return Err(reject("target host", host, "contains whitespace"));
+    }
+
+    if let Some(identity) = identity {
+        let text = identity.to_string_lossy();
+        if text.trim().is_empty() {
+            return Err(reject("identity file", &text, "is empty"));
+        }
+        if text.starts_with('-') {
+            return Err(reject("identity file", &text, "begins with '-'"));
+        }
+        if text.chars().any(char::is_whitespace) {
+            return Err(reject(
+                "identity file",
+                &text,
+                "contains whitespace, which rsync turns into extra ssh arguments \
+                 because it splits its -e command on whitespace",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Load and parse `.horus/deploy.yaml` from the current directory.
 fn load_deploy_yaml() -> Option<DeployYaml> {
     let config_path = Path::new(".horus/deploy.yaml");
@@ -502,6 +563,11 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
         excludes: default_excludes(),
         skip_confirm: false,
     };
+
+    // The host and the identity path reach the argv of ssh and rsync with no
+    // parser in between, and both can come from the checkout's deploy.yaml.
+    // Refuse the shapes that would be read as options there.
+    validate_ssh_inputs(&config.target, config.identity.as_deref())?;
 
     println!("{}", "HORUS Deploy".green().bold());
     println!();
@@ -1372,6 +1438,55 @@ mod tests {
         assert_eq!(TargetArch::Armv7.display_name(), "ARM32 (armv7)");
         assert_eq!(TargetArch::X86_64.display_name(), "x86_64");
         assert_eq!(TargetArch::Native.display_name(), "native");
+    }
+
+    // ── ssh/rsync argv validation ────────────────────────────────────────
+
+    /// `cmd.arg(&config.target)` is a bare positional to ssh, so a host that
+    /// begins with `-` is parsed as an option — and `-oProxyCommand=…` makes
+    /// ssh run that string through /bin/sh. The value can come from the
+    /// checkout's own .horus/deploy.yaml.
+    #[test]
+    fn ssh_host_that_would_be_parsed_as_an_option_is_refused() {
+        for host in [
+            "-oProxyCommand=touch /tmp/pwn",
+            "-lroot",
+            "pi@robot -oProxyCommand=id",
+            "",
+            "   ",
+        ] {
+            assert!(
+                validate_ssh_inputs(host, None).is_err(),
+                "host {host:?} must not reach ssh argv"
+            );
+        }
+    }
+
+    /// rsync splits its `-e` command on whitespace and honours no quotes, so a
+    /// space anywhere in the identity path adds argv elements to the ssh
+    /// invocation it builds.
+    #[test]
+    fn identity_that_injects_ssh_arguments_is_refused() {
+        for identity in ["/home/u/k -oProxyCommand=id", "-oProxyCommand=id", ""] {
+            assert!(
+                validate_ssh_inputs("pi@robot", Some(Path::new(identity))).is_err(),
+                "identity {identity:?} must not reach rsync -e"
+            );
+        }
+    }
+
+    /// Everything a real deploy.yaml holds still works.
+    #[test]
+    fn ordinary_deploy_targets_are_accepted() {
+        // `unwrap` rather than `assert!(..is_ok())`: on a regression the panic
+        // carries the rejection reason, which is the whole diagnostic.
+        validate_ssh_inputs("pi@192.168.1.100", None).unwrap();
+        validate_ssh_inputs("robot", None).unwrap();
+        validate_ssh_inputs(
+            "nvidia@jetson.local",
+            Some(Path::new("/home/u/.ssh/robot_key")),
+        )
+        .unwrap();
     }
 
     // ── DeployYaml parsing ───────────────────────────────────────────────

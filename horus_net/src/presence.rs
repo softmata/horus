@@ -16,6 +16,31 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Staleness thresholds.
 const DEAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum node entries accepted from one presence broadcast.
+///
+/// `node_count` is a u16 off the wire and each entry costs only 11 bytes there
+/// (2 length + 1 name byte + 8 rate), but expands to ~27 bytes of JSON — so the
+/// decoder is a ~2.5x amplifier writing into `shm_nodes_dir()`, which on Linux
+/// is **`/dev/shm`: the same tmpfs the topic rings live in**. A single 65507-byte
+/// datagram yields ~5900 entries (~160 KB written); a *fragmented* one reaches
+/// `fragment::MAX_REASSEMBLY_SIZE` (1 MB) and yields ~90 000 entries, ~2.4 MB per
+/// file. At the presence token bucket's sustained 32/s, held for the 30s
+/// `DEAD_TIMEOUT`, that is gigabytes of RAM-backed files — and exhausting that
+/// tmpfs is not a disk-space problem, it is every subsequent `Topic::new` failing
+/// and lazily-allocated tmpfs pages faulting for processes already mapped in.
+///
+/// No real host runs anywhere near this many nodes; a fleet member that does is
+/// truncated in its presence listing rather than allowed to fill memory.
+const MAX_NODES_PER_BROADCAST: usize = 256;
+
+/// Maximum distinct remote hosts whose presence files this receiver maintains.
+///
+/// `host_id` is chosen by the sender and every distinct value creates a file.
+/// Matches `netfilter::MAX_PEERS`, the crate's existing ceiling on distinct
+/// remote hosts. Like `PeerTable`, this refuses NEW hosts at the cap rather than
+/// evicting, so a flood of forged ids cannot displace the real fleet's entries.
+const MAX_REMOTE_HOSTS: usize = crate::netfilter::MAX_PEERS;
+
 /// Reject a wire-supplied name that could escape the presence directory when used
 /// to build a filesystem path (`remote_{host_id}.json`).
 ///
@@ -85,6 +110,8 @@ pub struct PresenceReceiver {
     active_hosts: HashMap<String, (PathBuf, Instant)>,
     /// Local namespace for filtering
     local_namespace: String,
+    /// Whether the host-cap warning has already been emitted.
+    host_cap_warned: bool,
 }
 
 impl Default for PresenceReceiver {
@@ -108,6 +135,7 @@ impl PresenceReceiver {
             // namespace this process is not in, or rejecting one for the
             // namespace it is.
             local_namespace: horus_sys::shm::shm_namespace(),
+            host_cap_warned: false,
         }
     }
 
@@ -172,15 +200,40 @@ impl PresenceReceiver {
         ]);
         pos += 8;
 
+        // Refuse a NEW host once we are already tracking a full fleet's worth.
+        //
+        // `host_id` is sender-chosen and every distinct value creates a file
+        // under `/dev/shm`. Refusing (rather than evicting) keeps a flood of
+        // forged ids from displacing the real fleet, exactly as `PeerTable`
+        // does. Known hosts keep updating, so a fleet at the cap still works.
+        if !self.active_hosts.contains_key(&host_id) && self.active_hosts.len() >= MAX_REMOTE_HOSTS
+        {
+            if !self.host_cap_warned {
+                self.host_cap_warned = true;
+                horus_core::terminal::eprint_line(&format!(
+                    "[horus_net] Tracking presence for {MAX_REMOTE_HOSTS} remote hosts; \
+                     ignoring further ones. If this is not a real fleet of that size, a \
+                     host is forging presence broadcasts — check HORUS_NET_ALLOW_PEERS. \
+                     (Fires once.)"
+                ));
+            }
+            return;
+        }
+
         // Node count
         if pos + 2 > data.len() {
             return;
         }
-        let node_count = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+        // Bounded before it drives the decode loop: see MAX_NODES_PER_BROADCAST.
+        // The wire count is a u16 and each entry is as little as 11 bytes, so an
+        // unbounded loop turns one reassembled 1 MB datagram into ~2.4 MB of JSON
+        // in the tmpfs that backs every topic ring on this host.
+        let node_count =
+            (u16::from_le_bytes([data[pos], data[pos + 1]]) as usize).min(MAX_NODES_PER_BROADCAST);
         pos += 2;
 
         // Build JSON presence file content (discovery reads JSON)
-        let mut nodes_json = Vec::new();
+        let mut nodes_json = Vec::with_capacity(node_count);
         for _ in 0..node_count {
             if pos + 2 > data.len() {
                 break;
@@ -465,6 +518,60 @@ mod tests {
         );
         // The document must still be one flat object with one nodes array.
         assert_eq!(content.matches("\"nodes\"").count(), 1);
+    }
+
+    #[test]
+    fn a_broadcast_cannot_write_an_unbounded_presence_file() {
+        // `node_count` is a u16 and an entry costs 11 bytes on the wire but ~27
+        // in JSON, and the file lands in /dev/shm — the tmpfs every topic ring
+        // on this host is allocated from. Unbounded, one reassembled datagram
+        // wrote megabytes of RAM-backed JSON, repeatable at the presence token
+        // bucket's sustained rate.
+        let mut recv = PresenceReceiver::new();
+        let ns = recv.local_namespace.clone();
+        let names: Vec<String> = (0..(MAX_NODES_PER_BROADCAST * 3))
+            .map(|i| format!("n{i}"))
+            .collect();
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        recv.handle_broadcast(&presence_payload_with_nodes(&ns, "floodtest", &refs));
+
+        let path = horus_sys::shm::shm_nodes_dir().join("remote_floodtest.json");
+        let content = std::fs::read_to_string(&path).expect("presence file must be written");
+        let _ = std::fs::remove_file(&path);
+
+        let written = content.matches("\"rate_hz\"").count();
+        assert_eq!(
+            written,
+            MAX_NODES_PER_BROADCAST,
+            "a broadcast claiming {} nodes must be truncated to the cap, not written whole",
+            refs.len()
+        );
+    }
+
+    #[test]
+    fn a_forged_host_id_flood_cannot_grow_the_presence_file_set() {
+        // Every distinct sender-chosen `host_id` creates a file in /dev/shm.
+        let mut recv = PresenceReceiver::new();
+        let ns = recv.local_namespace.clone();
+        for i in 0..(MAX_REMOTE_HOSTS * 2) {
+            let host = format!("flood{i}");
+            recv.handle_broadcast(&presence_payload(&ns, &host));
+            assert!(
+                recv.active_hosts.len() <= MAX_REMOTE_HOSTS,
+                "presence host set exceeded its cap at iteration {i}: {}",
+                recv.active_hosts.len()
+            );
+        }
+        assert_eq!(recv.active_hosts.len(), MAX_REMOTE_HOSTS);
+
+        // A host already tracked must still be able to refresh at the cap —
+        // otherwise a full table would freeze the real fleet's presence.
+        let known = "flood0".to_string();
+        assert!(recv.active_hosts.contains_key(&known));
+        recv.handle_broadcast(&presence_payload(&ns, &known));
+        assert!(recv.active_hosts.contains_key(&known));
+
+        recv.cleanup_all();
     }
 
     #[test]

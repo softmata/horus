@@ -625,6 +625,411 @@ pub fn has_native_shm() -> bool {
 }
 
 // ============================================================================
+// Page residency — pre-faulting and locking a mapping
+// ============================================================================
+//
+// A freshly `mmap`'d SHM region has no page-table entries. The first store to
+// each page therefore takes a minor fault inside whatever loop touches it
+// first, which on a control loop is the publish path: microseconds each,
+// landing squarely in the tail, once per 4 KiB of ring. The faults are
+// unavoidable — the pages must be wired eventually — but *when* they happen is
+// entirely up to us, and startup is free.
+//
+// Nothing here writes a single byte of the region. The obvious "touch every
+// page" loop is a read-modify-write, and on a region a peer process is already
+// publishing into that is a lost update. `madvise(MADV_POPULATE_WRITE)` asks
+// the kernel to install the same writable PTEs a store would have, without the
+// store.
+
+/// Default cap on how much of one region [`make_resident`] will pre-fault.
+///
+/// Pre-faulting does not create work — the pages would be faulted in on first
+/// touch anyway — but it does *front-load* the RSS, and a region may be far
+/// larger than the part a process ever touches (a `TensorPool` defaults to a
+/// 1 GiB data region). The cap bounds the startup cost and the early commit;
+/// override with `HORUS_SHM_PREFAULT_MAX_BYTES`. Every topic ring in practice
+/// is far below it, so the cap only bites on large pools.
+///
+/// It also bounds a second cost worth naming: pre-faulting is a *burst* of page
+/// allocation and zeroing inside one syscall, and a node attaching mid-mission
+/// pays it while its peers' control loops are running. The work is the same
+/// work those first touches would have done anyway, just concentrated — but
+/// concentrated at attach, not spread through a tick. Lower the cap on a system
+/// where even a bounded attach-time burst is unwelcome.
+pub const DEFAULT_PREFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// What a residency request actually achieved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Residency {
+    /// Page tables are populated for writing across the whole span: a store to
+    /// any page in it takes no fault.
+    Populated,
+    /// Best effort only. The kernel was asked to bring the pages in, but a
+    /// first store may still take a minor fault — a cheaper one, since the
+    /// page itself is already allocated.
+    Hinted,
+    /// Nothing was done: the span was empty, the policy is off, or this
+    /// platform has no hook.
+    Skipped,
+}
+
+/// Process-wide residency policy, read from the environment once.
+///
+/// - `HORUS_SHM_PREFAULT` (default **on**) — pre-fault mapped SHM at attach.
+///   Set to `0`/`false`/`off`/`no` to leave the faults where they were, in the
+///   control loop.
+/// - `HORUS_SHM_PREFAULT_MAX_BYTES` (default [`DEFAULT_PREFAULT_MAX_BYTES`]) —
+///   per-region byte cap.
+/// - `HORUS_SHM_MLOCK` (default **off**) — additionally `mlock` the span, so
+///   the pages cannot be reclaimed or swapped. See [`ResidencyPolicy::lock`]
+///   for why this is not the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidencyPolicy {
+    /// Populate page tables at attach.
+    pub prefault: bool,
+    /// Per-region cap on the pre-faulted (and locked) prefix, in bytes.
+    pub max_bytes: usize,
+    /// Pin the span with `mlock(2)`.
+    ///
+    /// **Off by default, deliberately.** Locking makes the pages unreclaimable,
+    /// which is what a control loop wants — a swapped ring buffer has already
+    /// missed its deadline — but it is a behaviour change with a cost the
+    /// process must be sized for. The span counts against `RLIMIT_MEMLOCK`
+    /// (commonly 8 MiB unless `horus_manager setup-rt` has raised it), and
+    /// memory that can no longer be reclaimed is memory the OOM killer reaches
+    /// for instead. Turning this on is a statement that a memory budget exists;
+    /// HORUS will not make it silently.
+    ///
+    /// This is deliberately `mlock` on the region rather than
+    /// `mlockall(MCL_FUTURE)`: it pins exactly the pages the transport needs
+    /// and leaves the process's ordinary allocations alone, so a heap
+    /// allocation still fails the way it always did instead of turning into an
+    /// `ENOMEM` from `malloc`. `mlockall` remains available as an explicit,
+    /// whole-process decision via `horus_sys::rt::lock_memory`.
+    pub lock: bool,
+}
+
+/// The residency policy for this process.
+///
+/// Read from the environment on first use and cached: a later `setenv` does
+/// not change it, so the policy cannot shift between two attaches in one run.
+pub fn residency_policy() -> &'static ResidencyPolicy {
+    static POLICY: std::sync::OnceLock<ResidencyPolicy> = std::sync::OnceLock::new();
+    POLICY.get_or_init(|| ResidencyPolicy {
+        prefault: std::env::var("HORUS_SHM_PREFAULT")
+            .ok()
+            .and_then(|v| parse_bool_flag(&v))
+            .unwrap_or(true),
+        max_bytes: std::env::var("HORUS_SHM_PREFAULT_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_PREFAULT_MAX_BYTES),
+        lock: std::env::var("HORUS_SHM_MLOCK")
+            .ok()
+            .and_then(|v| parse_bool_flag(&v))
+            .unwrap_or(false),
+    })
+}
+
+/// Parse an on/off environment flag. `None` for anything unrecognised, so a
+/// typo falls back to the documented default instead of silently meaning "off".
+fn parse_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Hard cap on the number of mappings a region retains across grows.
+///
+/// Growing retains the mapping it replaces rather than unmapping it, because
+/// other threads still hold pointers into it (see each backend's `retired`
+/// field). Retention has to be bounded, and geometric growth alone does not
+/// bound it: `handle_epoch_change` grows to a size derived from *another
+/// process's* header fields, so a peer that bumps `slot_size` by one and bumps
+/// the epoch, repeatedly, drives one retained mapping per iteration. Left
+/// uncapped that walks into `max_map_count` (65530 by default) and every
+/// subsequent `mmap` in the process fails — a local denial of service.
+///
+/// Exceeding the cap fails the grow. It never unmaps to make room: unmapping is
+/// precisely the bug retention exists to prevent, so the degradation here is to
+/// liveness (`auto_grow_slot_size` returns false and the caller spills or drops;
+/// `handle_epoch_change` skips the grow and `sync_local` then refuses the
+/// unaddressable geometry) and never to soundness.
+///
+/// 32 is generous against legitimate use: growth through `auto_grow_slot_size`
+/// is geometric and stops at the spill threshold, so a topic reaches its final
+/// slot size in at most ~13 grows, and a default-sized topic never grows at all.
+pub const MAX_RETIRED_MAPPINGS: usize = 32;
+
+/// Make a mapping resident under the process [`ResidencyPolicy`]: pre-fault
+/// (and optionally lock) up to `max_bytes` of it, starting at `ptr`.
+///
+/// The prefix is deliberate — a ring's header and first slots are what the
+/// publish path touches first and most.
+///
+/// Never fails: residency is an optimisation, and a kernel that declines it
+/// leaves behaviour exactly as it was. The return value says what was achieved
+/// so a caller can report it.
+///
+/// # Safety
+///
+/// `ptr` must be the base of a live mapping of at least `len` bytes that stays
+/// mapped for the duration of the call. No byte of it is read or written.
+pub unsafe fn make_resident(ptr: *const u8, len: usize) -> Residency {
+    let policy = residency_policy();
+    let span = len.min(policy.max_bytes);
+    if span == 0 {
+        return Residency::Skipped;
+    }
+
+    // `mlock(2)` populates the span for writing as well as pinning it, so a
+    // successful lock leaves the pre-fault nothing to do.
+    if policy.lock && lock_span(ptr, span) {
+        return Residency::Populated;
+    }
+    if !policy.prefault {
+        return Residency::Skipped;
+    }
+    prefault_span(ptr, span)
+}
+
+/// Populate page tables for `len` bytes at `ptr`, ignoring the byte cap.
+///
+/// For spans the caller knows are small and always worth paying for at
+/// startup — a pool's header and slot table, which every allocation walks —
+/// rather than a data region whose size is set by configuration. The
+/// `HORUS_SHM_PREFAULT` kill switch still applies.
+///
+/// # Safety
+///
+/// As [`make_resident`]: `ptr` must be the base of a live mapping of at least
+/// `len` bytes. No byte of it is read or written.
+pub unsafe fn prefault_span(ptr: *const u8, len: usize) -> Residency {
+    if len == 0 || !residency_policy().prefault {
+        return Residency::Skipped;
+    }
+
+    #[cfg(unix)]
+    {
+        let Some((base, span)) = page_align(ptr, len) else {
+            return Residency::Skipped;
+        };
+
+        #[cfg(target_os = "linux")]
+        {
+            // MADV_POPULATE_WRITE (Linux 5.14+) installs the writable PTEs a
+            // store would have installed, for the whole span, without touching
+            // the contents — the property that makes this safe to run on a
+            // region a peer is already publishing into.
+            for _ in 0..4 {
+                // SAFETY: `base`/`span` cover a live mapping (see the contract
+                // above); madvise only advises and never dereferences for us.
+                if unsafe { libc::madvise(base, span, libc::MADV_POPULATE_WRITE) } == 0 {
+                    return Residency::Populated;
+                }
+                // A signal can cut population short; the work already done
+                // stands, so resume rather than give up on the whole span.
+                if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    break;
+                }
+            }
+        }
+
+        // Pre-5.14 kernels (EINVAL/ENOSYS), and every other Unix: ask for the
+        // pages to be brought in. On tmpfs this allocates them, so the first
+        // store still faults but no longer has to allocate underneath.
+        // SAFETY: as above.
+        if unsafe { libc::madvise(base, span, libc::MADV_WILLNEED) } == 0 {
+            return Residency::Hinted;
+        }
+        Residency::Skipped
+    }
+
+    // No portable hook. Windows has PrefetchVirtualMemory, but it takes a
+    // working-set quota bump to be useful and Windows is not a target where
+    // HORUS claims RT latency; leaving it a no-op is honest.
+    #[cfg(not(unix))]
+    {
+        let _ = ptr;
+        Residency::Skipped
+    }
+}
+
+/// Round `[ptr, ptr+len)` out to whole pages. `None` if the page size cannot be
+/// trusted, in which case the caller skips rather than guesses.
+///
+/// Rounding the tail up cannot overrun the mapping: `mmap` always rounds the
+/// length it maps up to a page boundary, so the page containing the last byte
+/// is mapped in full.
+#[cfg(unix)]
+fn page_align(ptr: *const u8, len: usize) -> Option<(*mut libc::c_void, usize)> {
+    // SAFETY: sysconf reads a static system parameter and touches no memory.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page <= 0 {
+        return None;
+    }
+    let page = page as usize;
+    if !page.is_power_of_two() {
+        return None;
+    }
+    let addr = ptr as usize;
+    let base = addr & !(page - 1);
+    let span = (addr - base)
+        .checked_add(len)?
+        .checked_next_multiple_of(page)?;
+    Some((base as *mut libc::c_void, span))
+}
+
+/// `mlock` the span. Returns whether the pages are now pinned.
+///
+/// A failure is reported once and then tolerated: the region stays usable and
+/// merely keeps the swappability it always had.
+#[cfg(unix)]
+fn lock_span(ptr: *const u8, len: usize) -> bool {
+    let Some((base, span)) = page_align(ptr, len) else {
+        return false;
+    };
+    // SAFETY: `base`/`span` cover a live mapping; mlock only changes its
+    // residency attributes.
+    if unsafe { libc::mlock(base, span) } == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error();
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::warn!(
+            "HORUS_SHM_MLOCK is set but mlock() of {span} bytes of shared memory failed: {err}. \
+             Shared memory stays swappable, so a page can still fault in the middle of a \
+             control loop. Raise RLIMIT_MEMLOCK (`horus_manager setup-rt`, or \
+             `memlock unlimited` in /etc/security/limits.d) or grant CAP_IPC_LOCK."
+        );
+    }
+    false
+}
+
+#[cfg(not(unix))]
+fn lock_span(_ptr: *const u8, _len: usize) -> bool {
+    false
+}
+
+#[cfg(test)]
+mod residency_tests {
+    use super::*;
+
+    // ── Page residency ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_bool_flag_accepts_the_documented_spellings() {
+        for on in ["1", "true", "TRUE", " on ", "yes"] {
+            assert_eq!(parse_bool_flag(on), Some(true), "{on:?} should read as on");
+        }
+        for off in ["0", "false", "OFF", " no "] {
+            assert_eq!(
+                parse_bool_flag(off),
+                Some(false),
+                "{off:?} should read as off"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bool_flag_rejects_typos_so_they_fall_back_to_the_default() {
+        // A typo must not silently mean "off" — that would turn a misspelled
+        // opt-in into a silently disabled pre-fault.
+        for bad in ["", "ON!", "enabled", "2", "of"] {
+            assert_eq!(parse_bool_flag(bad), None, "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn make_resident_on_empty_span_is_skipped() {
+        let mut byte = 0u8;
+        // SAFETY: a one-byte live allocation; zero length means nothing is touched.
+        let r = unsafe { make_resident(&mut byte as *mut u8, 0) };
+        assert_eq!(r, Residency::Skipped);
+    }
+
+    #[test]
+    fn prefault_span_does_not_disturb_the_regions_contents() {
+        let _guard = env_lock();
+        let name = format!(
+            "sys_prefault_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let size = 64 * 1024;
+        let mut region = match ShmRegion::new(&name, size) {
+            Ok(r) => r,
+            Err(_) => return, // no writable SHM tree in this environment
+        };
+
+        // Fill with a recognisable pattern, then ask for residency. A naive
+        // "touch every page" pre-fault is a read-modify-write and would race a
+        // concurrent publisher; this asserts we are not doing that.
+        let expected: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        region.as_slice_mut().copy_from_slice(&expected);
+
+        // SAFETY: `region` owns a live mapping of `size` bytes for this scope.
+        let outcome = unsafe { prefault_span(region.as_ptr(), size) };
+        if residency_policy().prefault {
+            // The outcome is a per-platform contract, not one universal answer.
+            // Asserting "not Skipped" everywhere asserted that every platform
+            // has a pre-fault hook, which is false: `prefault_span` has no
+            // portable implementation and returns `Skipped` off Unix by design.
+            #[cfg(unix)]
+            assert_ne!(
+                outcome,
+                Residency::Skipped,
+                "a writable file-backed mapping should be pre-faultable on Unix"
+            );
+            #[cfg(not(unix))]
+            assert_eq!(
+                outcome,
+                Residency::Skipped,
+                "prefault_span is a documented no-op off Unix; a real outcome \
+                 here means a hook was added and this test should assert it"
+            );
+        }
+        assert_eq!(
+            region.as_slice(),
+            &expected[..],
+            "pre-faulting must not modify a single byte of the region"
+        );
+    }
+
+    #[test]
+    fn make_resident_honours_the_byte_cap() {
+        // The cap is what keeps a 1 GiB pool from committing 1 GiB at attach.
+        // Assert it is a real, finite number rather than re-reading the env.
+        let policy = residency_policy();
+        assert!(
+            policy.max_bytes > 0,
+            "a zero cap would disable pre-faulting"
+        );
+        assert!(
+            policy.max_bytes <= DEFAULT_PREFAULT_MAX_BYTES
+                || std::env::var_os("HORUS_SHM_PREFAULT_MAX_BYTES").is_some(),
+            "the default cap must not exceed DEFAULT_PREFAULT_MAX_BYTES"
+        );
+    }
+
+    #[test]
+    fn mlock_is_opt_in() {
+        // Locking trades swappability for RLIMIT_MEMLOCK pressure and a
+        // likelier OOM kill. That is a decision an operator makes, never a
+        // default HORUS takes on their behalf.
+        if std::env::var_os("HORUS_SHM_MLOCK").is_none() {
+            assert!(!residency_policy().lock);
+        }
+    }
+}
+
+// ============================================================================
 // Topic metadata registry (for non-Linux SHM discovery)
 // ============================================================================
 
@@ -736,6 +1141,40 @@ pub fn list_topic_metas() -> Vec<TopicMeta> {
 /// Use this instead of `topic_shm_path` whenever the name was read out of a
 /// `.meta` file, a discovery scan, or anything else another process wrote.
 /// Returns `None` for a name that would escape the topics directory.
+/// Whether an existing region can be grown in place.
+///
+/// True wherever the backing store can be extended and re-mapped: `ftruncate`
+/// plus a fresh `mmap` on Unix. False on Windows, where a region is a *named
+/// section* and a named section cannot be resized once it exists --
+/// `CreateFileMappingW` with the same name returns a handle to the section
+/// that is already there, at its original size, and `MapViewOfFile` for the
+/// larger size then fails with ERROR_ACCESS_DENIED. `grow_unchecked` reports
+/// exactly that.
+///
+/// Tests that exercise the remap race a grow creates have nothing to exercise
+/// where growing cannot happen, and should skip rather than assert against an
+/// error they provoked themselves.
+pub const fn regions_can_grow() -> bool {
+    !cfg!(windows)
+}
+
+/// Whether a region's bytes live in a file another process can open and modify
+/// through the filesystem.
+///
+/// True wherever a region is a file under the SHM tree. False on Windows, where
+/// `CreateFileMappingW(INVALID_HANDLE_VALUE, ..)` backs the mapping with the
+/// pagefile: there is no path, [`ShmRegion::backing_path`] answers `None`, and
+/// bytes written to the path a name maps to are simply not the region's bytes.
+///
+/// This exists for tests that simulate a hostile peer by writing a region by
+/// hand. A peer can still corrupt a Windows region — by opening the named
+/// mapping and storing through it — so a test that did that would run
+/// everywhere; one that goes through the filesystem cannot, and should say so
+/// rather than silently assert nothing.
+pub const fn regions_are_file_backed() -> bool {
+    !cfg!(windows)
+}
+
 pub fn topic_shm_path_checked(name: &str) -> Option<PathBuf> {
     validate_region_name(name).ok()?;
     Some(topic_shm_path(name))
@@ -961,6 +1400,106 @@ pub struct NamespaceInfo {
     pub file_count: usize,
 }
 
+/// Minimum age before a file inside a live namespace may be reclaimed.
+///
+/// Liveness is decided by `flock`, not by age — a region any process still has
+/// open holds `LOCK_SH` and is never touched. The age is purely a guard on the
+/// one window `flock` cannot cover: `ShmRegion::new` does `open(O_CREAT)` and
+/// then `flock`, and between those two syscalls a brand-new region looks
+/// unlocked. That window is microseconds; an hour is nine orders of magnitude of
+/// margin, and no legitimate reclaim is time-sensitive.
+const REAP_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Remove abandoned files inside a namespace that is still in use.
+///
+/// [`cleanup_stale_namespaces`] works at directory granularity and skips any
+/// namespace that is alive — including, always, our own. That leaves nothing to
+/// reclaim the individual regions a crashed process left behind in a namespace
+/// that is otherwise healthy, and they are never reclaimed at all when the
+/// namespace name is stable rather than session-derived: the `horus_test_*`
+/// namespace used under `cargo test` is keyed on target directory and profile,
+/// so it is the SAME namespace on every run and every crashed run's regions
+/// accumulate in it forever. Measured at 22 GB on a 31 GB tmpfs, at which point
+/// unrelated tests start failing on allocation — which looks exactly like a code
+/// regression and is not one.
+///
+/// A file is reclaimed only when BOTH hold: nobody has it open (the non-blocking
+/// `LOCK_EX` test in [`is_shm_file_stale`], the same last-one-out test
+/// `ShmRegion::drop` uses), and it is older than `REAP_MIN_AGE` (one hour).
+#[cfg(unix)]
+pub fn reap_abandoned_files(namespace_path: &std::path::Path) -> NamespaceCleanupResult {
+    let mut result = NamespaceCleanupResult {
+        removed: 0,
+        bytes_freed: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+    reap_dir(namespace_path, &mut result);
+    result
+}
+
+#[cfg(unix)]
+fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            reap_dir(&path, result);
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                result.skipped += 1;
+                continue;
+            }
+        };
+        let old_enough = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|age| age >= REAP_MIN_AGE)
+            .unwrap_or(false);
+        if !old_enough {
+            result.skipped += 1;
+            continue;
+        }
+        if !is_shm_file_stale(&path) {
+            result.skipped += 1;
+            continue;
+        }
+        let size = meta.len();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                result.removed += 1;
+                result.bytes_freed += size;
+            }
+            Err(e) => result
+                .errors
+                .push(format!("failed to remove {}: {}", path.display(), e)),
+        }
+    }
+}
+
+/// No `flock` on this platform, so a dead creator cannot be told from a live
+/// one and nothing is reclaimed.
+#[cfg(not(unix))]
+pub fn reap_abandoned_files(_namespace_path: &std::path::Path) -> NamespaceCleanupResult {
+    NamespaceCleanupResult {
+        removed: 0,
+        bytes_freed: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    }
+}
+
 /// Scan the SHM parent directory and remove stale HORUS namespace directories.
 ///
 /// A namespace is considered stale when:
@@ -1006,7 +1545,13 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
         }
 
         if dir_name == current_ns {
+            // Our own namespace is never removed, but regions a crashed process
+            // left inside it still can be — see `reap_abandoned_files`.
+            let reaped = reap_abandoned_files(&entry.path());
+            result.removed += reaped.removed;
+            result.bytes_freed += reaped.bytes_freed;
             result.skipped += 1;
+            result.errors.extend(reaped.errors);
             continue;
         }
 
@@ -1179,6 +1724,72 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The reaper reclaims an abandoned region, and nothing else.
+    ///
+    /// Both guards are exercised in one place because either alone is unsafe:
+    /// `flock` alone would race the window between `open(O_CREAT)` and `flock` in
+    /// `ShmRegion::new`, where a brand-new region looks unlocked; age alone would
+    /// delete a region that has simply been idle for an hour.
+    #[test]
+    #[cfg(unix)]
+    fn reap_takes_only_old_and_unheld_files() {
+        use std::os::unix::io::AsRawFd;
+
+        let dir = std::env::temp_dir().join(format!("horus_reap_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test namespace dir");
+
+        let old_free = dir.join("old_and_free");
+        let fresh_free = dir.join("fresh_and_free");
+        let old_held = dir.join("old_but_held");
+        for p in [&old_free, &fresh_free, &old_held] {
+            std::fs::write(p, b"x").expect("plant file");
+        }
+
+        // Backdate the two "old" files two hours.
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        for p in [&old_free, &old_held] {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(p)
+                .expect("open to set time");
+            f.set_modified(two_hours_ago).expect("backdate");
+        }
+
+        // Hold the third one exactly the way a live region does.
+        let holder = std::fs::File::open(&old_held).expect("open holder");
+        // SAFETY: valid open descriptor; LOCK_SH is a valid flock operation.
+        assert_eq!(
+            unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_SH) },
+            0,
+            "could not take the shared lock a live region would hold"
+        );
+
+        let result = reap_abandoned_files(&dir);
+
+        assert!(
+            !old_free.exists(),
+            "an hours-old region nobody has open must be reclaimed"
+        );
+        assert!(
+            fresh_free.exists(),
+            "a brand-new file must survive: this is the guard on the window between \
+             open(O_CREAT) and flock in ShmRegion::new, where a live region looks unlocked"
+        );
+        assert!(
+            old_held.exists(),
+            "a region a process still holds LOCK_SH on must survive at any age"
+        );
+        assert_eq!(
+            result.removed, 1,
+            "exactly one file should have been reaped"
+        );
+
+        drop(holder);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// LIVE-12: namespace liveness is a second liveness check, and it used to

@@ -214,11 +214,18 @@ fi
 # unparseable version used to fall back to "unknown" and cache the tree anyway;
 # that only hid the failure until the first `horus run`.
 SRC_VERSION=$(grep -m1 '^version' "${CLONE_DIR}/horus_core/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
-if [ -z "$SRC_VERSION" ]; then
-    fail "Could not parse version from horus_core/Cargo.toml"
-    rm -rf "$CLONE_DIR"
-    exit 1
-fi
+# The parsed string becomes a path component below, and `rm -rf "$HORUS_SRC_DIR"`
+# then deletes whatever it names. It is read out of the tree that was just
+# cloned, so a `/` or `..` in it would point that rm -rf outside the cache — at
+# whatever the caller (sometimes root) can delete. A crate version is
+# alphanumerics with `. + - _` and nothing else; reject anything that is not.
+case "$SRC_VERSION" in
+    ''|*[!A-Za-z0-9.+_-]*|.*)
+        fail "Refusing to use version '${SRC_VERSION}' from horus_core/Cargo.toml as a directory name"
+        rm -rf "$CLONE_DIR"
+        exit 1
+        ;;
+esac
 HORUS_SRC_DIR="${HORUS_CACHE}/horus@${SRC_VERSION}"
 
 mkdir -p "$HORUS_CACHE"

@@ -572,13 +572,31 @@ pub fn decode_packet(buf: &[u8]) -> Option<(PacketHeader, Vec<InMessage>)> {
         let mh = MessageHeader::decode(&buf[offset..])?;
         offset += MessageHeader::SIZE;
 
+        // `payload_len` is a u32 taken straight off the wire. `offset +
+        // payload_len` is fine on a 64-bit host, but `usize` is 32 bits on the
+        // armv7/armhf controllers this middleware targets, and the release
+        // profile has no `overflow-checks`. There, a declared length near
+        // `u32::MAX` wraps the sum down to a small number, the `> buf.len()`
+        // guard passes, and the slice expression below recomputes the same
+        // wrapped value into a range whose end is before its start — a panic on
+        // the single `horus-net` thread. Nothing catches it: the thread unwinds
+        // alone, the process survives with replication (including e-stop
+        // propagation) permanently dead, and `ReplicatorHandle::is_running()`
+        // keeps returning true. One datagram, from anyone the source filter
+        // admits.
+        //
+        // `checked_add` removes the wrap on every target width, and `get`
+        // makes any residual mismatch a `break` rather than a panic.
         let payload_len = mh.payload_len as usize;
-        if offset + payload_len > buf.len() {
+        let Some(payload_end) = offset.checked_add(payload_len) else {
+            break; // Length cannot be represented — discard the rest
+        };
+        let Some(bytes) = buf.get(offset..payload_end) else {
             break; // Truncated — discard partial message
-        }
+        };
 
-        let payload = buf[offset..offset + payload_len].to_vec();
-        offset += payload_len;
+        let payload = bytes.to_vec();
+        offset = payload_end;
 
         messages.push(InMessage {
             topic_hash: mh.topic_hash,
@@ -850,6 +868,75 @@ mod tests {
         // Truncate: cut off half the payload
         let (_, msgs) = decode_packet(&buf[..len - 50]).unwrap();
         assert_eq!(msgs.len(), 0); // Truncated message discarded
+    }
+
+    #[test]
+    fn decode_packet_rejects_a_length_that_would_overflow_the_offset() {
+        // `payload_len` is attacker-chosen. `offset + payload_len` wraps on a
+        // 32-bit `usize` (armv7 controllers, release profile, no
+        // overflow-checks) and the wrapped value then indexes the slice — a
+        // panic that unwinds the single horus-net thread and leaves the process
+        // alive with replication silently dead. The decoder must reject the
+        // frame on every target width instead.
+        let header = PacketHeader::new(PacketFlags::empty(), 0x1234, 1);
+        let mut buf = [0u8; 128];
+        header.encode(&mut buf[..PacketHeader::SIZE]);
+        let mh = MessageHeader {
+            topic_hash: 0xDEAD_BEEF,
+            payload_len: u32::MAX,
+            timestamp_ns: 0,
+            sequence: 0,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::PodLe,
+            source_host: 0,
+        };
+        mh.encode(&mut buf[PacketHeader::SIZE..PacketHeader::SIZE + MessageHeader::SIZE]);
+
+        let (decoded, msgs) = decode_packet(&buf).expect("the packet header still decodes");
+        assert_eq!(decoded.packet_sequence, 1);
+        assert!(
+            msgs.is_empty(),
+            "a message declaring more payload than the datagram holds must be dropped, \
+             not indexed"
+        );
+    }
+
+    #[test]
+    fn decode_packet_stops_at_the_first_overlong_message_in_a_batch() {
+        // The good message ahead of the bad one must survive; the bad one must
+        // not take the rest of the datagram's real content with it.
+        let header = PacketHeader::new(PacketFlags::empty().with(PacketFlags::BATCH), 7, 3);
+        let good = OutMessage {
+            topic_name: "imu".into(),
+            topic_hash: topic_hash("imu"),
+            payload: vec![0x5A; 8],
+            timestamp_ns: 1,
+            sequence: 1,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::PodLe,
+        };
+        let mut buf = [0u8; 256];
+        let len = encode_batch(&header, std::slice::from_ref(&good), &mut buf);
+
+        // Append a second header claiming a 4 GiB payload.
+        let bad = MessageHeader {
+            topic_hash: 1,
+            payload_len: u32::MAX,
+            timestamp_ns: 0,
+            sequence: 2,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::PodLe,
+            source_host: 0,
+        };
+        bad.encode(&mut buf[len..len + MessageHeader::SIZE]);
+        let total = len + MessageHeader::SIZE;
+
+        let (_, msgs) = decode_packet(&buf[..total]).unwrap();
+        assert_eq!(msgs.len(), 1, "the well-formed message must still decode");
+        assert_eq!(msgs[0].payload, vec![0x5A; 8]);
     }
 
     #[test]

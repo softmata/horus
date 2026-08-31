@@ -1,31 +1,43 @@
-//! # SIMD-accelerated memory operations for HORUS
+//! # Bulk memory copies into and out of shared memory
 //!
-//! This module provides high-performance memory copy operations using AVX2
-//! SIMD instructions for large data transfers in shared memory.
+//! These are the copies a topic makes for a message too large to move as a
+//! plain value, and the ones the perception types make for whole frames:
+//! `Image::copy_from` (640x480 RGB8 = 921 KB at 30 fps), `PointCloud::copy_from`
+//! (100K points = 1.2 MB at 10 Hz), `DepthImage::copy_from`.
 //!
-//! ## Performance Benefits
+//! ## Why there is no hand-written SIMD here any more
 //!
-//! - **Streaming stores**: Non-temporal stores bypass the CPU cache,
-//!   ideal for write-once patterns (camera frames, LiDAR scans)
-//! - **Wide operations**: Copy 256 bits (32 bytes) per instruction
-//! - **Prefetching**: Hardware prefetch hints on reads for better bandwidth
+//! This module used to implement both directions with AVX2: the write side
+//! with `_mm256_stream_si256` non-temporal stores "ideal for write-once
+//! patterns", the read side with 256-bit loads and software prefetch 512 bytes
+//! ahead. Both lost to `std::ptr::copy_nonoverlapping`, which lowers to the
+//! platform `memcpy`.
 //!
-//! ## Where SIMD is Used
+//! Measured against iceoryx2 on an i7-10750H, same-thread 4 KB messages,
+//! median / p99 / max in ns:
 //!
-//! Perception types that handle large buffers (images, point clouds, depth maps):
-//! - `Image::copy_from()` — e.g. 640×480 RGB8 = 921KB at 30fps
-//! - `PointCloud::copy_from()` — e.g. 100K points = 1.2MB at 10Hz
-//! - `DepthImage::copy_from()` — e.g. 640×480 F32 = 1.2MB at 30fps
-//! - Topic send/recv for messages larger than `SIMD_COPY_THRESHOLD`
+//! | write side        | read side         | HORUS               |
+//! |-------------------|-------------------|---------------------|
+//! | AVX2 streaming    | AVX2 + prefetch   | 1018 / 1670 / 147731 |
+//! | memcpy            | AVX2 + prefetch   |  698 /  785 /  18733 |
+//! | memcpy            | memcpy            |  572 /  649 /  24975 |
 //!
-//! ## Runtime Detection
+//! The streaming stores were the larger mistake, and the reason is structural
+//! rather than a tuning miss: a non-temporal store bypasses the cache, so the
+//! producer pushes the payload to DRAM and the consumer — which is about to
+//! read it, immediately, that being the entire point of a topic — takes a full
+//! memory round trip to get it back. "Write-once" described how the producer
+//! touches the buffer, not how the system does.
 //!
-//! The module automatically detects CPU capabilities at runtime and selects
-//! the best available implementation:
-//! - AVX2: 256-bit operations (most modern x86-64 CPUs)
-//! - Fallback: Standard library copy (always works)
-
-use std::sync::OnceLock;
+//! glibc's `memcpy` already makes this decision per microarchitecture: it
+//! switches to non-temporal stores above `__x86_shared_non_temporal_threshold`,
+//! tuned to a fraction of L3, and uses AVX or AVX-512 below it. A fixed 4 KB
+//! rule compiled into this crate cannot know any of that, and on this CPU it
+//! was wrong for every size a topic carries — `MAX_SLOT_SIZE` is 1 MB, well
+//! inside a 12 MB L3.
+//!
+//! The functions are kept as named seams: they mark the places where a bulk
+//! copy crosses into shared memory, and that is worth being able to find.
 
 // ============================================================================
 // SIMD THRESHOLDS AND CONSTANTS
@@ -34,30 +46,6 @@ use std::sync::OnceLock;
 /// Threshold in bytes above which SIMD copy is beneficial.
 /// Below this size, the setup overhead exceeds the benefit.
 pub const SIMD_COPY_THRESHOLD: usize = 4096; // 4KB
-
-/// Alignment requirement for SIMD operations (AVX2 = 32 bytes)
-#[allow(unused)]
-const SIMD_ALIGNMENT: usize = 32;
-
-// Runtime feature detection — initialized exactly once, race-free
-#[allow(unused)]
-static AVX2_AVAILABLE: OnceLock<bool> = OnceLock::new();
-
-/// Check if AVX2 is available on the current CPU
-#[allow(unused)]
-#[inline]
-fn is_avx2_available() -> bool {
-    *AVX2_AVAILABLE.get_or_init(|| {
-        #[cfg(target_arch = "x86_64")]
-        {
-            is_x86_feature_detected!("avx2")
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            false
-        }
-    })
-}
 
 /// Copy data TO shared memory using SIMD streaming stores.
 ///
@@ -86,15 +74,6 @@ pub unsafe fn simd_copy_to_shm(src: *const u8, dst: *mut u8, len: usize) {
         return;
     }
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_avx2_available() {
-            simd_copy_to_shm_avx2(src, dst, len);
-            return;
-        }
-    }
-
-    // Fallback: standard copy
     std::ptr::copy_nonoverlapping(src, dst, len);
 }
 
@@ -117,15 +96,6 @@ pub unsafe fn simd_copy_from_shm(src: *const u8, dst: *mut u8, len: usize) {
         return;
     }
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_avx2_available() {
-            simd_copy_from_shm_avx2(src, dst, len);
-            return;
-        }
-    }
-
-    // Fallback: standard copy
     std::ptr::copy_nonoverlapping(src, dst, len);
 }
 
@@ -158,199 +128,59 @@ pub fn fast_copy_to_shm(src: &[u8], dst: &mut [u8]) {
     }
 }
 
-// ============================================================================
-// AVX2 IMPLEMENTATIONS
-// ============================================================================
-
-/// AVX2 implementation of streaming copy TO shared memory.
-///
-/// Uses _mm256_stream_si256 for non-temporal stores that bypass cache.
-///
-/// # Safety
-///
-/// Same as [`simd_copy_to_shm`]: `src` and `dst` must be valid for `len` bytes,
-/// must not overlap, and their backing memory must remain valid for the duration
-/// of the call. This function is only called after AVX2 feature detection
-/// confirms hardware support.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_copy_to_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
-    use std::arch::x86_64::*;
-
-    let mut src_ptr = src;
-    let mut dst_ptr = dst;
-    let mut remaining = len;
-
-    // Handle unaligned prefix (copy bytes until dst is 32-byte aligned)
-    let dst_addr = dst_ptr as usize;
-    let unaligned_prefix = (SIMD_ALIGNMENT - (dst_addr % SIMD_ALIGNMENT)) % SIMD_ALIGNMENT;
-
-    // If the prefix bytes needed for alignment exceed the remaining length, we
-    // cannot bring dst into alignment within this buffer.  Fall back to scalar
-    // copy for the entire buffer rather than issuing a misaligned
-    // _mm256_stream_si256, which requires 32-byte alignment and causes SIGBUS
-    // or silent data corruption when that invariant is violated.
-    if unaligned_prefix > remaining {
-        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, remaining);
-        return;
-    }
-
-    if unaligned_prefix > 0 {
-        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, unaligned_prefix);
-        src_ptr = src_ptr.add(unaligned_prefix);
-        dst_ptr = dst_ptr.add(unaligned_prefix);
-        remaining -= unaligned_prefix;
-    }
-
-    // Invariant: dst_ptr is now 32-byte aligned (or remaining == 0).
-    // In release builds the prefix logic above guarantees this; the assert
-    // catches violations in debug builds (e.g. misaligned test allocations).
-    debug_assert_eq!(
-        (dst_ptr as usize) % SIMD_ALIGNMENT,
-        0,
-        "SIMD dst must be 32-byte aligned before streaming stores"
-    );
-
-    // Main SIMD loop: 256 bits (32 bytes) per iteration
-    // Process 4 vectors (128 bytes) per loop for better instruction-level parallelism
-    const VECTOR_SIZE: usize = 32;
-    const UNROLL_FACTOR: usize = 4;
-    const CHUNK_SIZE: usize = VECTOR_SIZE * UNROLL_FACTOR;
-
-    while remaining >= CHUNK_SIZE {
-        // Load 4 vectors from source (unaligned load is fine for reads)
-        let v0 = _mm256_loadu_si256(src_ptr as *const __m256i);
-        let v1 = _mm256_loadu_si256(src_ptr.add(VECTOR_SIZE) as *const __m256i);
-        let v2 = _mm256_loadu_si256(src_ptr.add(VECTOR_SIZE * 2) as *const __m256i);
-        let v3 = _mm256_loadu_si256(src_ptr.add(VECTOR_SIZE * 3) as *const __m256i);
-
-        // Store using streaming (non-temporal) stores to bypass cache
-        _mm256_stream_si256(dst_ptr as *mut __m256i, v0);
-        _mm256_stream_si256(dst_ptr.add(VECTOR_SIZE) as *mut __m256i, v1);
-        _mm256_stream_si256(dst_ptr.add(VECTOR_SIZE * 2) as *mut __m256i, v2);
-        _mm256_stream_si256(dst_ptr.add(VECTOR_SIZE * 3) as *mut __m256i, v3);
-
-        src_ptr = src_ptr.add(CHUNK_SIZE);
-        dst_ptr = dst_ptr.add(CHUNK_SIZE);
-        remaining -= CHUNK_SIZE;
-    }
-
-    // Handle remaining full vectors
-    while remaining >= VECTOR_SIZE {
-        let v = _mm256_loadu_si256(src_ptr as *const __m256i);
-        _mm256_stream_si256(dst_ptr as *mut __m256i, v);
-
-        src_ptr = src_ptr.add(VECTOR_SIZE);
-        dst_ptr = dst_ptr.add(VECTOR_SIZE);
-        remaining -= VECTOR_SIZE;
-    }
-
-    // Memory fence to ensure streaming stores are visible
-    _mm_sfence();
-
-    // Handle remaining bytes (< 32)
-    if remaining > 0 {
-        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, remaining);
-    }
-}
-
-/// AVX2 implementation of copy FROM shared memory.
-///
-/// Uses regular loads (with prefetching) since data may be used multiple times.
-///
-/// # Safety
-///
-/// Same as [`simd_copy_from_shm`]: `src` and `dst` must be valid for `len`
-/// bytes, must not overlap, and their backing memory must remain valid for the
-/// duration of the call. This function is only called after AVX2 feature
-/// detection confirms hardware support.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn simd_copy_from_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
-    use std::arch::x86_64::*;
-
-    let mut src_ptr = src;
-    let mut dst_ptr = dst;
-    let mut remaining = len;
-
-    // Handle unaligned prefix (bring dst to 32-byte alignment)
-    let dst_addr = dst_ptr as usize;
-    let unaligned_prefix = (SIMD_ALIGNMENT - (dst_addr % SIMD_ALIGNMENT)) % SIMD_ALIGNMENT;
-
-    // Fall back to scalar if we can't align within the remaining buffer.
-    if unaligned_prefix > remaining {
-        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, remaining);
-        return;
-    }
-
-    if unaligned_prefix > 0 {
-        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, unaligned_prefix);
-        src_ptr = src_ptr.add(unaligned_prefix);
-        dst_ptr = dst_ptr.add(unaligned_prefix);
-        remaining -= unaligned_prefix;
-    }
-
-    // Invariant: dst_ptr is now 32-byte aligned (or remaining == 0).
-    debug_assert_eq!(
-        (dst_ptr as usize) % SIMD_ALIGNMENT,
-        0,
-        "SIMD dst must be 32-byte aligned after prefix copy"
-    );
-
-    const VECTOR_SIZE: usize = 32;
-    const UNROLL_FACTOR: usize = 4;
-    const CHUNK_SIZE: usize = VECTOR_SIZE * UNROLL_FACTOR;
-    const PREFETCH_DISTANCE: usize = 512; // Prefetch 512 bytes ahead
-
-    while remaining >= CHUNK_SIZE {
-        // Prefetch future data
-        if remaining > PREFETCH_DISTANCE {
-            _mm_prefetch(src_ptr.add(PREFETCH_DISTANCE) as *const i8, _MM_HINT_T0);
-        }
-
-        // Load 4 vectors from shared memory
-        let v0 = _mm256_loadu_si256(src_ptr as *const __m256i);
-        let v1 = _mm256_loadu_si256(src_ptr.add(VECTOR_SIZE) as *const __m256i);
-        let v2 = _mm256_loadu_si256(src_ptr.add(VECTOR_SIZE * 2) as *const __m256i);
-        let v3 = _mm256_loadu_si256(src_ptr.add(VECTOR_SIZE * 3) as *const __m256i);
-
-        // Store to local memory
-        _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
-        _mm256_storeu_si256(dst_ptr.add(VECTOR_SIZE) as *mut __m256i, v1);
-        _mm256_storeu_si256(dst_ptr.add(VECTOR_SIZE * 2) as *mut __m256i, v2);
-        _mm256_storeu_si256(dst_ptr.add(VECTOR_SIZE * 3) as *mut __m256i, v3);
-
-        src_ptr = src_ptr.add(CHUNK_SIZE);
-        dst_ptr = dst_ptr.add(CHUNK_SIZE);
-        remaining -= CHUNK_SIZE;
-    }
-
-    // Handle remaining full vectors
-    while remaining >= VECTOR_SIZE {
-        let v = _mm256_loadu_si256(src_ptr as *const __m256i);
-        _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
-
-        src_ptr = src_ptr.add(VECTOR_SIZE);
-        dst_ptr = dst_ptr.add(VECTOR_SIZE);
-        remaining -= VECTOR_SIZE;
-    }
-
-    // Handle remaining bytes
-    if remaining > 0 {
-        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, remaining);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Both directions are byte-exact across the sizes where this module used
+    /// to change strategy.
+    ///
+    /// This replaces a test that called `is_avx2_available()` twice and
+    /// asserted the two results matched — it verified that a `OnceLock` caches,
+    /// which `OnceLock` already guarantees, and would have passed on a build
+    /// where every copy produced garbage.
+    ///
+    /// The sizes bracket the old `SIMD_COPY_THRESHOLD` and the old 32-byte
+    /// vector and 128-byte unrolled chunk, because those boundaries are where a
+    /// hand-written copy drops or duplicates its tail. Nothing dispatches on
+    /// them now, which is exactly why they are worth keeping: a future
+    /// reintroduction of a size-dependent path has to survive them.
     #[test]
-    fn test_avx2_detection() {
-        // Call multiple times to test caching
-        let first = is_avx2_available();
-        let second = is_avx2_available();
-        assert_eq!(first, second);
+    fn copies_are_byte_exact_across_the_old_strategy_boundaries() {
+        for len in [
+            0, 1, 31, 32, 33, 127, 128, 129, 4095, 4096, 4097, 8192, 12_289,
+        ] {
+            let src: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let mut dst = vec![0u8; len];
+            // SAFETY: distinct Vec buffers of equal length.
+            unsafe { simd_copy_to_shm(src.as_ptr(), dst.as_mut_ptr(), len) };
+            assert_eq!(src, dst, "write path differs at len {len}");
+
+            let mut back = vec![0u8; len];
+            // SAFETY: distinct Vec buffers of equal length.
+            unsafe { simd_copy_from_shm(dst.as_ptr(), back.as_mut_ptr(), len) };
+            assert_eq!(src, back, "read path differs at len {len}");
+        }
+    }
+
+    /// An unaligned destination copies correctly.
+    ///
+    /// The streaming-store path needed a 32-byte-aligned destination and hand
+    /// wrote a prefix loop to reach one; `_mm256_stream_si256` on a misaligned
+    /// address is a SIGBUS. Plain `memcpy` has no such requirement, so this
+    /// guards the property rather than the implementation.
+    #[test]
+    fn an_unaligned_destination_copies_correctly() {
+        let len = 4096 + 96;
+        let src: Vec<u8> = (0..len).map(|i| (i % 253) as u8).collect();
+        let mut backing = vec![0u8; len + 32];
+        for off in [1usize, 7, 15, 31] {
+            let dst = &mut backing[off..off + len];
+            // SAFETY: `src` and the `backing` subslice are distinct allocations
+            // of at least `len` bytes.
+            unsafe { simd_copy_to_shm(src.as_ptr(), dst.as_mut_ptr(), len) };
+            assert_eq!(&src[..], &dst[..], "unaligned by {off}");
+        }
     }
 
     #[test]

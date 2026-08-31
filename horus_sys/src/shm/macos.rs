@@ -70,6 +70,12 @@ fn acquire_holder_lock(name: &str, create: bool) -> Option<std::fs::File> {
 #[derive(Debug)]
 pub struct ShmRegion {
     ptr: *mut u8,
+    /// `(ptr, size)` of every mapping `grow_unchecked` replaced, deliberately
+    /// kept mapped. See the Linux backend's `retired` field for the rationale:
+    /// `Topic` shares one `Arc<ShmRegion>` across clones and each clone caches
+    /// pointers derived from the base address, so `munmap`ing the old view on
+    /// grow leaves those dangling. Released together in `Drop`.
+    retired: Vec<(*mut u8, usize)>,
     fd: i32,
     shm_name: String,
     topic_name: String,
@@ -130,11 +136,19 @@ impl ShmRegion {
             unsafe { libc::close(fd) };
             anyhow::bail!("shm mmap failed: {}", std::io::Error::last_os_error());
         }
+        // Pay the page faults at attach instead of inside the first receive
+        // loop; see `horus_sys::shm::make_resident` for the policy and its
+        // opt-outs.
+        // SAFETY: `ptr` is a live mapping of `size` bytes that outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(ptr as *const u8, size as usize) };
+
         // Join the holder set so the creator cannot unlink this region out from
         // under us. Attaching must never create the sidecar.
         let lock_file = acquire_holder_lock(name, false);
         Ok(Self {
             ptr: ptr as *mut u8,
+            retired: Vec::new(),
             fd,
             shm_name,
             topic_name: name.to_string(),
@@ -293,6 +307,12 @@ impl ShmRegion {
             let _ = super::write_topic_meta(name, size);
         }
 
+        // As in `open_existing`: wire the page tables now rather than one
+        // minor fault at a time in the publish loop.
+        // SAFETY: `ptr` is a live mapping of `size` bytes that outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(ptr as *const u8, size) };
+
         // Every holder — creator or not — keeps a shared lock on the sidecar for
         // the lifetime of the region; that is what makes the last-one-out test
         // in `Drop` correct.
@@ -300,6 +320,7 @@ impl ShmRegion {
 
         Ok(Self {
             ptr: ptr as *mut u8,
+            retired: Vec::new(),
             fd,
             shm_name,
             topic_name: name.to_string(),
@@ -351,9 +372,27 @@ impl ShmRegion {
     ///
     /// # Safety
     ///
-    /// The caller must ensure no other thread is concurrently reading from or
-    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    /// `&mut self` already excludes concurrent access to this struct's fields.
+    /// What the caller still owes is about the *mapped bytes*: the grow publishes
+    /// a mapping at a new address, so any pointer previously handed out by
+    /// `as_ptr()` now addresses the retained older mapping. That is safe to read
+    /// — the replaced mapping is kept alive and is a coherent view of the same
+    /// file — but it describes the PRE-GROW geometry, so a caller must re-derive
+    /// cached offsets before using the new slot layout.
+    ///
+    /// The previous contract here ("no other thread is concurrently reading ...
+    /// guaranteed by the single-thread ownership contract and the migration
+    /// lock") was false: `Topic` shares one region across clones on different
+    /// threads and held no such lock. It was a live use-after-free.
     pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.retired.len() < super::MAX_RETIRED_MAPPINGS,
+            "refusing to grow: {} mappings already retained (cap {}); \
+             see MAX_RETIRED_MAPPINGS",
+            self.retired.len(),
+            super::MAX_RETIRED_MAPPINGS
+        );
+
         anyhow::ensure!(
             new_size > self.size,
             "grow_unchecked: new_size ({}) must be > current size ({})",
@@ -391,11 +430,23 @@ impl ShmRegion {
             std::io::Error::last_os_error()
         );
 
-        // Only now release the old mapping.
-        libc::munmap(self.ptr as *mut libc::c_void, self.size);
+        // Retain the old mapping rather than releasing it: see the `retired`
+        // field. Two MAP_SHARED views of the same fd are coherent, so a reader
+        // still on the old base reads the same bytes, and stops faulting.
+        self.retired.push((self.ptr, self.size));
 
         self.ptr = new_ptr as *mut u8;
         self.size = new_size;
+
+        // The remap is a brand-new mapping with empty page tables, so without
+        // this every page of the grown region would fault again on first touch
+        // — and a grow happens *because* a large message is arriving, i.e. at
+        // the worst possible moment. Re-establish residency before anyone
+        // publishes into it.
+        // SAFETY: the new mapping is live and `new_size` bytes long; the call
+        // neither reads nor writes it.
+        super::make_resident(self.ptr as *const u8, new_size);
+
         Ok(())
     }
 }
@@ -406,6 +457,10 @@ impl Drop for ShmRegion {
         // self.fd is a valid open file descriptor
         unsafe {
             libc::munmap(self.ptr as *mut libc::c_void, self.size);
+            // Mappings retained across grows (see `retired`).
+            for (ptr, size) in self.retired.drain(..) {
+                libc::munmap(ptr as *mut libc::c_void, size);
+            }
             libc::close(self.fd);
         }
 

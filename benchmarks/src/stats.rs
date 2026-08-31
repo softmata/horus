@@ -3,12 +3,26 @@
 //! Provides:
 //! - Bootstrap confidence intervals
 //! - Percentile calculations
-//! - Tukey outlier filtering (IQR-based)
+//! - Tukey outlier accounting (IQR-based, diagnostic only)
 //! - Standard deviation and variance
 //! - Coefficient of variation for determinism analysis
+//! - Quantile support accounting (how many observations back a tail figure)
 //! - Normality testing (Shapiro-Wilk, Jarque-Bera, Anderson-Darling)
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize an `f64` that may appear as `null`.
+///
+/// `Statistics::empty` stores `NaN` on purpose — see its doc — and
+/// `serde_json` writes `NaN` as `null`. Without this, that report could be
+/// written and never read back: the regression gate died on a real one with
+/// `invalid type: null, expected f64`, so a single zero-sample benchmark took
+/// down the whole gate rather than being reported as the empty run it was.
+/// Reading `null` back as `NaN` closes the round trip and keeps the "no
+/// samples is not zero latency" property on both sides of the wire.
+pub(crate) fn nan_from_null<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+}
 
 /// Comprehensive statistics for a benchmark run
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,10 +30,13 @@ pub struct Statistics {
     /// Number of samples
     pub count: usize,
     /// Arithmetic mean (ns)
+    #[serde(deserialize_with = "nan_from_null")]
     pub mean: f64,
     /// Median (50th percentile) (ns)
+    #[serde(deserialize_with = "nan_from_null")]
     pub median: f64,
     /// Standard deviation (ns)
+    #[serde(deserialize_with = "nan_from_null")]
     pub std_dev: f64,
     /// Minimum observed value (ns)
     pub min: u64,
@@ -42,33 +59,44 @@ pub struct Statistics {
     /// 99.99th percentile (ns)
     pub p9999: u64,
     /// Bootstrap confidence interval (low, high) at configured level
+    #[serde(deserialize_with = "nan_from_null")]
     pub ci_low: f64,
     /// Bootstrap confidence interval high bound
+    #[serde(deserialize_with = "nan_from_null")]
     pub ci_high: f64,
     /// Confidence level used (e.g., 95.0)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub confidence_level: f64,
     /// Number of outliers removed (if filtering enabled)
     pub outliers_removed: usize,
 }
 
 impl Statistics {
-    /// Compute statistics from raw latency samples
+    /// Compute statistics from raw latency samples.
     ///
-    /// `filter_outliers` affects ONLY the central estimates — mean, standard
-    /// deviation and the bootstrap confidence interval. Every order statistic
-    /// (`min`, `max`, `median`, and all percentiles) is computed from the full,
-    /// unfiltered sample set, and `count` is the full sample count.
+    /// **Every published field is computed from the full, unfiltered sample
+    /// set** — `mean`, `std_dev`, `ci_low`/`ci_high` included. `filter_outliers`
+    /// now controls exactly one thing: whether `outliers_removed` is populated
+    /// with a count of how many samples fall outside Tukey's
+    /// `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]` fence. It is a *diagnostic*, and no
+    /// reported number is computed from what survives the fence.
     ///
-    /// This used to filter first and then compute everything from what
-    /// survived. Tukey's fence drops every sample outside
-    /// `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]`, so on a tight latency distribution the
-    /// entire tail was deleted before `max`, `p99`, `p99.9` and `p99.99` were
-    /// taken: the reported worst case could not exceed `Q3 + 1.5*IQR` no matter
-    /// what the machine did, and the published "worst-case measured" figures
-    /// and the CI jitter metric derived from `max - min` were truncated by
-    /// construction. For a real-time middleware the tail is the measurement —
-    /// an OS preemption or a page fault on a control loop is precisely the
-    /// event that misses the deadline, not an artifact to be discarded.
+    /// Two rounds of the same bug lived here. The first filtered before taking
+    /// order statistics, so `max`, `p99`, `p99.9` and `p99.99` could not exceed
+    /// `Q3 + 1.5*IQR` no matter what the machine did. The second left `mean`
+    /// and `std_dev` on the fenced subset, which bounded
+    /// `cv = std_dev / mean` — the published determinism number — by
+    /// construction: the fence deletes precisely the preemptions and page
+    /// faults that *constitute* jitter, so a row could report `cv: 0.05` beside
+    /// `max_jitter_ns: 250000` and both were "correct". Worse, the four other
+    /// benchmark binaries computed `cv` on unfiltered samples, so a field of the
+    /// same name meant two different things depending on which binary wrote it.
+    ///
+    /// For a real-time middleware the tail *is* the measurement: an OS
+    /// preemption or a page fault on a control loop is the event that misses the
+    /// deadline, not an artifact to be discarded. If a fenced central estimate
+    /// is genuinely wanted for some other purpose, call [`trimmed_mean`] and
+    /// [`trimmed_std_dev`], which say so in their names.
     pub fn from_samples(samples: &[u64], confidence_level: f64, filter_outliers: bool) -> Self {
         if samples.is_empty() {
             return Self::empty(confidence_level);
@@ -77,26 +105,23 @@ impl Statistics {
         let mut sorted = samples.to_vec();
         sorted.sort_unstable();
 
-        // Samples used for the central estimates only. If the fence would drop
-        // everything, fall back to the full set rather than reporting nothing.
-        let (central, outliers_removed) = if filter_outliers {
-            let f = self::filter_outliers(samples);
-            if f.is_empty() {
-                (sorted.clone(), 0)
-            } else {
-                let removed = samples.len() - f.len();
-                (f, removed)
-            }
+        // Diagnostic only: how many samples sit outside Tukey's fence. Nothing
+        // below is computed from the survivors.
+        let outliers_removed = if filter_outliers {
+            samples.len() - self::filter_outliers(samples).len()
         } else {
-            (sorted.clone(), 0)
+            0
         };
 
         let count = sorted.len();
-        let mean_val = mean(&central);
+        let mean_val = mean(&sorted);
         let median_val = median(&sorted);
-        let std_dev_val = std_dev(&central);
+        let std_dev_val = std_dev(&sorted);
 
-        let (ci_low, ci_high) = bootstrap_ci(&central, confidence_level, 10_000);
+        // Full sample set here too, for the reason in the doc above: fencing the
+        // central estimates bounds `cv = std_dev / mean` by construction, and
+        // `cv` is the published determinism figure.
+        let (ci_low, ci_high) = bootstrap_ci(&sorted, confidence_level, 10_000);
 
         Self {
             count,
@@ -120,12 +145,19 @@ impl Statistics {
         }
     }
 
+    /// Statistics for a run that produced no samples.
+    ///
+    /// The float fields are `NaN`, which `serde_json` writes as `null`. A zero
+    /// here would read as "0 ns latency, 0 ns jitter" — the best possible
+    /// result — in every table and chart downstream, which is the exact failure
+    /// mode this module exists to prevent. The integer fields cannot carry
+    /// `null`; check [`Statistics::is_empty`] before reading them.
     fn empty(confidence_level: f64) -> Self {
         Self {
             count: 0,
-            mean: 0.0,
-            median: 0.0,
-            std_dev: 0.0,
+            mean: f64::NAN,
+            median: f64::NAN,
+            std_dev: f64::NAN,
             min: 0,
             max: 0,
             p1: 0,
@@ -136,13 +168,84 @@ impl Statistics {
             p99: 0,
             p999: 0,
             p9999: 0,
-            ci_low: 0.0,
-            ci_high: 0.0,
+            ci_low: f64::NAN,
+            ci_high: f64::NAN,
             confidence_level,
             outliers_removed: 0,
         }
     }
+
+    /// True when no samples were collected. The integer order statistics are
+    /// meaningless in that case and must not be published.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Coefficient of variation, `std_dev / mean`, on the **unfiltered**
+    /// samples.
+    ///
+    /// This is the determinism figure. Use it rather than recomputing
+    /// `std_dev / mean` at the call site, so that every binary publishes a `cv`
+    /// that means the same thing.
+    pub fn cv(&self) -> f64 {
+        if self.mean > 0.0 {
+            self.std_dev / self.mean
+        } else {
+            f64::NAN
+        }
+    }
+
+    /// Number of observations at or beyond the `p`th percentile — the
+    /// observations that actually determine it.
+    ///
+    /// `p99.9` of 100,000 samples rests on 100 observations; `p99.99` of the
+    /// same run rests on 10, and `p99.99` of 10,000 samples is the second
+    /// largest sample wearing a percentile's name.
+    ///
+    /// Computed in integer arithmetic on hundredths of a percent. `1.0 - 99.9 /
+    /// 100.0` is 0.0009999999999999998 in binary floating point, which floors
+    /// 100,000 samples to 99 exceedances and would report `p99.9` as
+    /// unsupported at exactly the sample count that supports it — a rule that
+    /// mis-fires on its own boundary is not a rule.
+    pub fn quantile_exceedances(&self, p: f64) -> usize {
+        let hundredths = (p * 100.0).round().clamp(0.0, 10_000.0) as u64;
+        let beyond = 10_000 - hundredths;
+        ((self.count as u64).saturating_mul(beyond) / 10_000) as usize
+    }
+
+    /// Whether the `p`th percentile has enough observations behind it to be
+    /// worth publishing. See [`MIN_TAIL_EXCEEDANCES`].
+    pub fn quantile_supported(&self, p: f64) -> bool {
+        self.quantile_exceedances(p) >= MIN_TAIL_EXCEEDANCES
+    }
+
+    /// Whether `p999` is supported by at least [`MIN_TAIL_EXCEEDANCES`]
+    /// observations (needs n >= 100,000).
+    pub fn p999_supported(&self) -> bool {
+        self.quantile_supported(99.9)
+    }
+
+    /// Whether `p9999` is supported by at least [`MIN_TAIL_EXCEEDANCES`]
+    /// observations (needs n >= 1,000,000).
+    pub fn p9999_supported(&self) -> bool {
+        self.quantile_supported(99.99)
+    }
 }
+
+/// Minimum number of observations beyond a quantile before that quantile is
+/// reportable.
+///
+/// **The rule: report the `p`th percentile only when `n * (1 - p/100) >= 100`.**
+/// The quantile estimate's relative standard error is roughly `1/sqrt(k)` where
+/// `k` is the number of exceedances, so 100 exceedances buys about +/-10% — the
+/// loosest band in which a claimed tail improvement can be distinguished from
+/// resampling noise at all. Below that the figure moves by tens of percent
+/// between identical runs and any comparison drawn from it is unfalsifiable.
+///
+/// Concretely: `p99` needs n >= 10,000, `p99.9` needs n >= 100,000, and
+/// `p99.99` needs n >= 1,000,000. A binary that collects 100,000 samples per
+/// scenario may publish `p99.9` and must not publish `p99.99`.
+pub const MIN_TAIL_EXCEEDANCES: usize = 100;
 
 /// Calculate arithmetic mean
 pub fn mean(samples: &[u64]) -> f64 {
@@ -183,14 +286,56 @@ pub fn std_dev(samples: &[u64]) -> f64 {
     variance.sqrt()
 }
 
-/// Calculate coefficient of variation (CV = std_dev / mean)
-/// Lower is better for real-time determinism
+/// Calculate coefficient of variation (CV = std_dev / mean) on the samples as
+/// given.
+///
+/// Never pass this the output of [`filter_outliers`]. The fence removes the
+/// preemptions and faults that the coefficient of variation exists to report,
+/// which makes the result bounded by construction rather than measured.
+/// Lower is better for real-time determinism.
 pub fn coefficient_of_variation(samples: &[u64]) -> f64 {
     let m = mean(samples);
     if m == 0.0 {
         return 0.0;
     }
     std_dev(samples) / m
+}
+
+/// Mean of the samples that fall inside Tukey's 1.5*IQR fence.
+///
+/// Named for what it is. This is a *trimmed* central estimate and is not
+/// interchangeable with [`Statistics::mean`]: it deliberately discards the tail,
+/// so it must never feed a jitter, determinism or worst-case figure.
+pub fn trimmed_mean(samples: &[u64]) -> f64 {
+    let kept = filter_outliers(samples);
+    if kept.is_empty() {
+        return mean(samples);
+    }
+    mean(&kept)
+}
+
+/// Standard deviation of the samples inside Tukey's 1.5*IQR fence.
+///
+/// See [`trimmed_mean`] for why this is not a determinism metric.
+pub fn trimmed_std_dev(samples: &[u64]) -> f64 {
+    let kept = filter_outliers(samples);
+    if kept.is_empty() {
+        return std_dev(samples);
+    }
+    std_dev(&kept)
+}
+
+/// Count samples that came out as exactly 0 ns.
+///
+/// A latency benchmark cannot observe a genuine 0 ns operation. Zeros are the
+/// signature of an overhead subtraction that over-corrected: the calibrated
+/// timing overhead is a *minimum* captured once, so whenever the instantaneous
+/// instrumentation cost falls below it the `saturating_sub` floors the sample at
+/// zero and it enters the distribution indistinguishable from a very fast
+/// operation. That is the Tukey bug inverted onto the left tail — it drags the
+/// median and the mean down and nothing counts it. Count it.
+pub fn count_zero_samples(samples: &[u64]) -> usize {
+    samples.iter().filter(|&&x| x == 0).count()
 }
 
 /// Calculate percentile using linear interpolation
@@ -227,8 +372,10 @@ pub fn bootstrap_ci(samples: &[u64], confidence_level: f64, iterations: usize) -
         return (0.0, 0.0);
     }
     if samples.len() == 1 {
-        let val = samples[0] as f64;
-        return (val, val);
+        // A confidence interval cannot be estimated from one observation.
+        // Returning `(val, val)` reported a zero-width 95% interval, i.e.
+        // perfect precision, from the least precise possible measurement.
+        return (f64::NAN, f64::NAN);
     }
 
     // Use a simple LCG PRNG for reproducibility (not cryptographic, just benchmark)
@@ -304,16 +451,22 @@ pub struct NormalityAnalysis {
     /// Sample size used for analysis
     pub sample_size: usize,
     /// Skewness (0 = symmetric like normal)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub skewness: f64,
     /// Excess kurtosis (0 = normal, >0 = heavy tails, <0 = light tails)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub kurtosis: f64,
     /// Jarque-Bera test statistic
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub jarque_bera_stat: f64,
     /// Jarque-Bera p-value (>0.05 suggests normality)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub jarque_bera_pvalue: f64,
     /// Anderson-Darling test statistic
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub anderson_darling_stat: f64,
     /// D'Agostino-Pearson K² statistic
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub dagostino_k2: f64,
     /// Is distribution likely normal? (based on combined tests)
     pub is_likely_normal: bool,
@@ -402,15 +555,23 @@ impl NormalityAnalysis {
         }
     }
 
+    /// Result for a sample set too small to test.
+    ///
+    /// Every statistic is `NaN` (`null` in JSON). The previous values —
+    /// `skewness: 0.0`, `kurtosis: 0.0`, `jarque_bera_pvalue: 1.0` — are not
+    /// neutral placeholders: they are, respectively, "perfectly symmetric",
+    /// "exactly normal tails" and "cannot reject normality with certainty".
+    /// A table or chart built from the JSON reads them as the strongest
+    /// possible evidence of normality, produced by a test that never ran.
     fn insufficient_samples(n: usize) -> Self {
         Self {
             sample_size: n,
-            skewness: 0.0,
-            kurtosis: 0.0,
-            jarque_bera_stat: 0.0,
-            jarque_bera_pvalue: 1.0,
-            anderson_darling_stat: 0.0,
-            dagostino_k2: 0.0,
+            skewness: f64::NAN,
+            kurtosis: f64::NAN,
+            jarque_bera_stat: f64::NAN,
+            jarque_bera_pvalue: f64::NAN,
+            anderson_darling_stat: f64::NAN,
+            dagostino_k2: f64::NAN,
             is_likely_normal: false,
             recommendation: format!(
                 "Insufficient samples ({}) for normality testing. Need at least 20.",
@@ -697,20 +858,23 @@ mod tests {
         assert!(stats.ci_low <= stats.ci_high);
     }
 
-    /// Outlier filtering must never truncate the reported tail.
+    /// The `filter_outliers` flag must not change a single published number.
     ///
-    /// The old implementation filtered first and computed everything from the
-    /// survivors, so `max` and `p99.9` were capped at Tukey's upper fence and a
-    /// genuine 50 us stall in an otherwise tight distribution simply vanished
-    /// from the "worst case" the benchmarks publish. This asserts the opposite
-    /// of what the code used to do: the stall must still be reported, and only
-    /// the mean may be pulled back toward the body of the distribution.
+    /// Two rounds of the same bug lived in `from_samples`: first the order
+    /// statistics were taken from the fenced subset (capping `max` and `p99.9`
+    /// at Tukey's upper fence), then the mean and standard deviation stayed on
+    /// it (capping `cv`, the determinism figure, at whatever the fence allowed).
+    /// The flag is now a diagnostic counter and nothing else, so a genuine
+    /// 50 us stall in an otherwise tight distribution must survive into every
+    /// statistic with the flag set exactly as it does with it clear.
     #[test]
-    fn outlier_filtering_does_not_truncate_the_tail() {
+    fn outlier_flag_changes_no_published_statistic() {
         let mut samples: Vec<u64> = (0..999).map(|x| 100 + (x % 5)).collect();
         samples.push(50_000); // a real preemption, not a measurement artifact
 
         let filtered = Statistics::from_samples(&samples, 95.0, true);
+        let unfiltered = Statistics::from_samples(&samples, 95.0, false);
+
         assert_eq!(
             filtered.max, 50_000,
             "max must come from the unfiltered samples"
@@ -722,17 +886,39 @@ mod tests {
         );
         assert_eq!(
             filtered.outliers_removed, 1,
-            "the stall is still counted as an outlier for the central estimate"
+            "the stall is still counted as outside the fence, as a diagnostic"
         );
+        assert_eq!(unfiltered.outliers_removed, 0);
 
-        // The tail statistics must be identical with and without filtering;
-        // only the mean/CI may differ.
-        let unfiltered = Statistics::from_samples(&samples, 95.0, false);
         assert_eq!(filtered.max, unfiltered.max);
         assert_eq!(filtered.p99, unfiltered.p99);
         assert_eq!(filtered.p999, unfiltered.p999);
         assert_eq!(filtered.p9999, unfiltered.p9999);
-        assert!(filtered.mean < unfiltered.mean);
+        assert_eq!(filtered.mean, unfiltered.mean);
+        assert_eq!(filtered.std_dev, unfiltered.std_dev);
+        assert_eq!(filtered.cv(), unfiltered.cv());
+    }
+
+    /// The determinism figure must be able to report a bad number.
+    ///
+    /// One 50 us stall in a 1000-sample run of a ~100 ns operation is a CV well
+    /// above 1. The old filtered CV reported ~0.02 for this exact distribution,
+    /// because the fence deleted the only sample that carried any jitter.
+    #[test]
+    fn cv_reports_the_stall_it_exists_to_report() {
+        let mut samples: Vec<u64> = (0..999).map(|x| 100 + (x % 5)).collect();
+        samples.push(50_000);
+
+        let stats = Statistics::from_samples(&samples, 95.0, true);
+        assert!(
+            stats.cv() > 1.0,
+            "cv must see the stall, got {} (fenced cv would be ~0.02)",
+            stats.cv()
+        );
+
+        // The distinctly-named trimmed estimator is the one allowed to hide it.
+        assert!(trimmed_mean(&samples) < stats.mean);
+        assert!(trimmed_std_dev(&samples) < stats.std_dev);
     }
 
     /// A zero-width Tukey fence must not swallow the distribution.
@@ -743,6 +929,71 @@ mod tests {
         assert_eq!(stats.count, 8);
         assert_eq!(stats.max, 7);
         assert_eq!(stats.min, 7);
+        assert_eq!(stats.mean, 7.0);
+    }
+
+    /// A quantile must not be published unless enough observations lie beyond
+    /// it. `p99.99` of 100,000 samples rests on 10 observations.
+    #[test]
+    fn tail_quantiles_declare_their_support() {
+        // Support depends only on the sample count, so set it directly rather
+        // than running a 10,000-resample bootstrap over a million samples to
+        // learn how many samples there are.
+        let with_count = |n: usize| {
+            let mut s = Statistics::empty(95.0);
+            s.count = n;
+            s
+        };
+
+        let s = with_count(100_000);
+        assert_eq!(s.quantile_exceedances(99.0), 1_000);
+        assert_eq!(s.quantile_exceedances(99.9), 100);
+        assert_eq!(s.quantile_exceedances(99.99), 10);
+        assert!(s.p999_supported(), "n=1e5 supports p99.9 exactly");
+        assert!(!s.p9999_supported(), "n=1e5 cannot support p99.99");
+
+        assert!(
+            with_count(1_000_000).p9999_supported(),
+            "n=1e6 supports p99.99"
+        );
+        assert!(
+            !with_count(10_000).p999_supported(),
+            "n=1e4 cannot support p99.9"
+        );
+        assert!(
+            with_count(10_000).quantile_supported(99.0),
+            "n=1e4 supports p99 exactly"
+        );
+
+        // And the real path agrees, at a size a unit test can afford.
+        let real = Statistics::from_samples(&vec![100_u64; 2_000], 95.0, false);
+        assert_eq!(real.count, 2_000);
+        assert_eq!(real.quantile_exceedances(99.0), 20);
+        assert!(!real.quantile_supported(99.0));
+    }
+
+    /// An empty run must not read as a perfect one.
+    #[test]
+    fn empty_statistics_are_not_zero() {
+        let s = Statistics::from_samples(&[], 95.0, false);
+        assert!(s.is_empty());
+        assert!(s.mean.is_nan(), "a 0.0 mean reads as 0 ns latency");
+        assert!(s.median.is_nan());
+        assert!(s.std_dev.is_nan());
+        assert!(s.ci_low.is_nan());
+        assert!(s.ci_high.is_nan());
+        assert!(s.cv().is_nan());
+        // serde_json writes non-finite floats as null.
+        let j = serde_json::to_string(&s).unwrap();
+        assert!(j.contains("\"mean\":null"), "{}", j);
+    }
+
+    /// Over-subtracted overhead floors samples at exactly 0 ns; count them.
+    #[test]
+    fn zero_samples_are_counted() {
+        let samples = vec![0_u64, 0, 120, 130, 0, 140];
+        assert_eq!(count_zero_samples(&samples), 3);
+        assert_eq!(count_zero_samples(&[100, 200]), 0);
     }
 
     #[test]
@@ -843,5 +1094,37 @@ mod tests {
             "Survival(0) should be ~1, got {}",
             survival_0
         );
+    }
+
+    /// A run that produced no samples has to survive being written and read
+    /// back. `Statistics::empty` stores `NaN` deliberately — a zero would read
+    /// as "0 ns latency", the best possible result, in every table downstream —
+    /// and `serde_json` writes `NaN` as `null`. Nothing taught the deserializer
+    /// to read `null` back, so the regression gate died on the first real
+    /// report containing an empty benchmark with `invalid type: null, expected
+    /// f64` and took the whole gate down with it, rather than reporting the one
+    /// empty run.
+    #[test]
+    fn a_zero_sample_run_survives_the_json_round_trip() {
+        let empty = Statistics::from_samples(&[], 95.0, false);
+        assert!(empty.mean.is_nan(), "empty() must not report 0 ns");
+
+        let json = serde_json::to_string(&empty).expect("serialize");
+        assert!(
+            json.contains("null"),
+            "NaN is expected to serialize as null: {json}"
+        );
+
+        let back: Statistics = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.count, 0);
+        for (name, v) in [
+            ("mean", back.mean),
+            ("median", back.median),
+            ("std_dev", back.std_dev),
+            ("ci_low", back.ci_low),
+            ("ci_high", back.ci_high),
+        ] {
+            assert!(v.is_nan(), "{name} came back as {v}, not NaN");
+        }
     }
 }

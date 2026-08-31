@@ -11,6 +11,23 @@ use std::time::{Duration, Instant};
 /// Window duration for loss rate calculation.
 const WINDOW_DURATION: Duration = Duration::from_secs(1);
 
+/// Samples required in the CURRENT window before the estimate may throttle a send.
+///
+/// `on_received` is fed `(sender_id_hash, topic_hash, sequence)` straight off
+/// the wire, and `gaps` is incremented by the raw difference between two
+/// sequence numbers. Two datagrams — `seq = 1` then `seq = 1_000_000` — therefore
+/// produced `gaps = 999_998, total = 2`, a loss rate of ~500, and
+/// `SendRate::KeyframeOnly` for that `(peer, topic)`. Because the state only
+/// ever changes inside `on_received`, `total` then stayed at 2 forever, and
+/// `2.is_multiple_of(100)` is false — so `should_send` returned false on every
+/// subsequent export, permanently and silently, from two forged packets.
+///
+/// A loss rate is a statistic; two samples are not one. Requiring a real sample
+/// count means an attacker has to sustain a flood to hold the throttle down,
+/// which is the resource-exhaustion case the crate already documents, rather
+/// than buying a permanent per-topic kill switch with one burst.
+const MIN_SAMPLES_TO_DERATE: u32 = 8;
+
 /// Adaptive send rate levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendRate {
@@ -126,6 +143,23 @@ impl FlowController {
             .unwrap_or(0.0)
     }
 
+    /// Whether this throttle currently believes the estimate for `(peer, topic)`.
+    ///
+    /// Fails OPEN — an absent, expired or thin estimate means "send it". This
+    /// decides whether a robot's outbound replication reaches its peers, and the
+    /// only input is unauthenticated: `on_received` records a sender id hash and
+    /// a sequence number that any host passing `netfilter::PeerFilter` can
+    /// choose. Dropping traffic on evidence that weak is the wrong direction of
+    /// failure on a safety-critical link, so the estimate has to be both current
+    /// and backed by real samples before it may suppress anything.
+    fn estimate_is_usable(state: &RecvState) -> bool {
+        // A window that has closed is a measurement of the past, not of now.
+        // Without this, a `(peer, topic)` that stops receiving keeps whatever
+        // loss rate it last held — forever, because `RecvState` is only ever
+        // mutated from `on_received`.
+        state.window_start.elapsed() < WINDOW_DURATION && state.total >= MIN_SAMPLES_TO_DERATE
+    }
+
     /// Adaptive send rate based on loss rate.
     ///
     /// - <1% loss: Full (send everything)
@@ -141,14 +175,24 @@ impl FlowController {
     /// loss rate reads 0.0 and the throttle silently never engages. The
     /// parameter order matches `on_received` and `loss_rate` so that mistake
     /// is a type error rather than a silent no-op.
+    ///
+    /// # This throttle fails open, deliberately
+    ///
+    /// See `estimate_is_usable`. The signal is the loss *we* observe on
+    /// what a peer sends *us*, which is not a measurement of the loss on the
+    /// path from us to them — there is no loss report on the wire — and every
+    /// field it is derived from is attacker-choosable. It may slow a send; it
+    /// must never be the reason a robot stops publishing.
     pub fn should_send(&self, peer_hash: u16, topic_hash: u32) -> bool {
-        let loss = self.loss_rate(peer_hash, topic_hash);
-        let rate = SendRate::from_loss(loss);
+        let Some(state) = self.state.get(&(peer_hash, topic_hash)) else {
+            return true; // Nothing observed for this destination — send.
+        };
+        if !Self::estimate_is_usable(state) {
+            return true;
+        }
 
-        let key = (peer_hash, topic_hash);
-        let total = self.state.get(&key).map(|s| s.total).unwrap_or(0);
-
-        match rate {
+        let total = state.total;
+        match SendRate::from_loss(state.loss_rate()) {
             SendRate::Full => true,
             SendRate::Half => total.is_multiple_of(2),
             SendRate::Quarter => total.is_multiple_of(4),
@@ -273,6 +317,78 @@ mod tests {
         // the bug, pinned so a call site cannot quietly reintroduce it.
         assert_eq!(fc.loss_rate(OURS, TOPIC), 0.0);
         assert!(fc.should_send(OURS, TOPIC));
+    }
+
+    /// THE REGRESSION. `on_received` is driven by three unauthenticated wire
+    /// fields, and `gaps` grows by the raw difference between two sequence
+    /// numbers. Two forged datagrams therefore produced a loss rate of ~500 and
+    /// froze `total` at 2 — and since `2.is_multiple_of(100)` is false and
+    /// nothing but `on_received` ever mutates the state again, `should_send`
+    /// returned false for that `(peer, topic)` for the life of the process.
+    ///
+    /// That is a permanent, silent, remote kill switch on a chosen topic to a
+    /// chosen peer — on the EXPORT side, which the import guard exists to keep
+    /// remote parties from influencing at all.
+    #[test]
+    fn two_forged_samples_cannot_silence_a_destination() {
+        let mut fc = FlowController::new();
+        const VICTIM: u16 = 0xBEEF;
+        const TOPIC: u32 = 0x1234_5678;
+
+        fc.on_received(VICTIM, TOPIC, 1);
+        fc.on_received(VICTIM, TOPIC, 1_000_000);
+
+        assert!(
+            fc.loss_rate(VICTIM, TOPIC) > 0.20,
+            "fixture must actually produce a KeyframeOnly-grade loss estimate"
+        );
+        assert!(
+            fc.should_send(VICTIM, TOPIC),
+            "a two-sample estimate must not throttle: it is a forged burst, not a \
+             measurement, and the cost of believing it is that this robot silently \
+             stops publishing to that peer"
+        );
+    }
+
+    #[test]
+    fn an_expired_window_stops_throttling() {
+        // `RecvState` is only ever mutated from `on_received`, so a stream that
+        // stops leaves its last loss estimate in place. Reading a closed window
+        // as current makes any throttle it caused permanent.
+        let mut fc = FlowController::new();
+        const PEER: u16 = 0x1111;
+        const TOPIC: u32 = 100;
+
+        // A genuinely lossy window, with enough samples to be believed.
+        // 30 samples: past MIN_SAMPLES_TO_DERATE, and not a multiple of the
+        // KeyframeOnly divisor (which would let this message through anyway).
+        for seq in (1..=90).step_by(3) {
+            fc.on_received(PEER, TOPIC, seq);
+        }
+        assert!(fc.loss_rate(PEER, TOPIC) > 0.20);
+        assert!(
+            !fc.should_send(PEER, TOPIC),
+            "a fresh, well-sampled, lossy estimate must still de-rate"
+        );
+
+        // Force the window closed without touching anything else.
+        fc.state.get_mut(&(PEER, TOPIC)).unwrap().window_start =
+            Instant::now() - WINDOW_DURATION * 2;
+        assert!(
+            fc.should_send(PEER, TOPIC),
+            "an estimate from a window that has closed must not keep suppressing sends"
+        );
+    }
+
+    #[test]
+    fn a_thin_sample_count_does_not_throttle() {
+        let mut fc = FlowController::new();
+        // One below the threshold, every sample a gap.
+        for i in 0..(MIN_SAMPLES_TO_DERATE - 1) {
+            fc.on_received(0x2222, 100, i * 50 + 1);
+        }
+        assert!(fc.loss_rate(0x2222, 100) > 0.20);
+        assert!(fc.should_send(0x2222, 100));
     }
 
     #[test]

@@ -364,21 +364,81 @@ measured hardware floor it subtracts.
 default DDS, ~5 µs median for a 64-byte same-process message. Compared to HORUS's
 end-to-end cross-process 171 ns — the harder case for HORUS, and therefore the
 conservative comparison — that is roughly **30x**. HORUS does not measure ROS 2
-itself: `dds_comparison_benchmark` quotes published values unless built with
-`-F dds` and a DDS implementation installed, and results carry a `provenance`
-field marking them `literature` rather than `measured` so the two are never
-confused. Any number here that matters to your decision is worth measuring on
-your own hardware and message sizes.
+itself, and no longer ships a benchmark that quotes it: the binary that did
+built ROS 2, CycloneDDS and FastDDS distributions arithmetically from two
+constants and wrote them beside real measurements, so it was deleted rather
+than relabelled. The REP 2014 figure above is cited, not measured here. Any
+number that matters to your decision is worth measuring on your own hardware
+and message sizes.
 
-| vs iceoryx2   | HORUS      | iceoryx2   | Speedup  |
-|---------------|------------|------------|----------|
-| Same-thread   | 11 ns      | 69 ns      | **6.3x** |
-| Cross-process | 170 ns     | 361 ns     | **2.1x** |
-| Throughput    | 95 M msg/s | 22 M msg/s | **4.3x** |
+|  vs iceoryx2              | HORUS med | iox2 med | median    | p99      |
+|---------------------------|-----------|----------|-----------|----------|
+| Same-thread (8 B)         |   55 ns   |  416 ns  | **7.6x**  | **5.8x** |
+| Cross-thread RTT (8 B)    |  371 ns   | 1716 ns  | **4.6x**  | **3.9x** |
+| Cross-process RTT (8 B)   |  413 ns   | 1622 ns  | **3.9x**  | **3.4x** |
+| Same-thread (1 KB)        |  169 ns   |  448 ns  | **2.7x**  | **2.7x** |
+| Same-thread (4 KB)        |  574 ns   |  550 ns  | 0.96x     | 0.93x    |
+| MPMC 4P/4S recv cost      |   35 ns   |  216 ns  | **6.2x**  | **3.0x** |
+| Throughput (same loop)    | 37.8 M/s  |  3.0 M/s | **12.8x** | —        |
 
-Unlike the ROS 2 row above, this one is measured on both sides: reproduce with
-`cargo run --release -p horus_benchmarks --bin iceoryx2_comparison --features iceoryx2`, which links
-iceoryx2 and times it in the same harness.
+Ratios above 1 favour HORUS. Both columns come from the same run, which is what
+makes the ratio trustworthy; the absolute nanoseconds drift with machine load
+and thermal state, so compare ratios across runs, not absolutes.
+
+Unlike the ROS 2 row above, this one is measured on both sides — see the
+reproduce command below.
+
+4 KB is now roughly a tie (0.96x median). It used to be 0.46x — see the
+zero-copy note below for why a 4 KB POD sent **by value** is the wrong shape for
+bulk data in the first place.
+
+**Bulk payloads do not go through `Topic<[u8; N]>`.** `Image`, `PointCloud`,
+`DepthImage` and `Tensor` keep their buffers in a shared-memory pool and put
+only a 224-byte descriptor on the topic, so publishing is zero-copy and the
+latency is flat in frame size:
+
+| frame (Mono8)   | pixels  | one-way p50 |
+|-----------------|---------|-------------|
+| 64x64           | 4 KB    | 306 ns      |
+| 640x480         | 307 KB  | 297 ns      |
+| 1920x1080       | 2 MB    | 284 ns      |
+
+That is the row to compare against a loan/publish API. The 4 KB line in the
+table above sends a POD **by value**, which copies 4 KB into the ring and 4 KB
+back out; it is the wrong API for bulk data and is kept in the table because
+removing a row where HORUS loses would be the more dishonest choice.
+
+Reproduce with `cargo run --release -p horus_benchmarks --bin topic_probe --
+--image 1920x1080`.
+
+One caveat worth knowing before you build a camera pipeline: `Image::new`
+zero-initialises the buffer, which for a 1920x1080 frame costs ~82 us. That is
+a deliberate scrub — a pool slot can be reused by another process, so it is
+cleared before it is handed out — but it means allocating a frame per capture
+puts that cost on your critical path. Allocate once and clone; a clone is a
+refcount bump and a descriptor copy, which is what the numbers above measure.
+
+HORUS's advantage is largest at small payloads, which is where robotics control
+traffic lives: a CmdVel is 16 bytes. If your messages are camera frames or point
+clouds, use the tensor-backed types below rather than sending them by value, and
+measure on your own hardware either way.
+
+The round-trip rows are full round trips, not halved. Halving reports a
+one-sided stall as half a stall on each leg, which understates exactly the tail
+that matters. The same-thread rows are one thread writing and then reading its
+own ring: a lower bound on IPC cost with no cross-core transfer in it, for
+either library. Prefer the cross-process row when quoting a number.
+
+This table replaces one claiming 6.3x / 2.1x / 4.3x. Those came from a harness
+that gave the two libraries different topologies: the HORUS arm sent and
+received on a single handle, which selects an inlined same-instance fast path
+with no dispatch and no ring publication, while the iceoryx2 arm used a real
+publisher and subscriber. Both arms now use separate handles.
+
+Reproduce with `cargo run --release -p horus_benchmarks --bin iceoryx2_comparison
+--features iceoryx2`, which links iceoryx2 and times it in the same harness.
+Measured on an i7-10750H under the `powersave` governor; absolute values will
+differ on your hardware, ratios less so.
 
 Scales near-linearly to 100 nodes (14% degradation) and O(1) to 1,000 topics.
 

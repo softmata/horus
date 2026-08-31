@@ -21,9 +21,10 @@
 //!  └──────────────────────┘       └──────────────────────┘
 //! ```
 
+use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use super::types::Diag;
@@ -46,17 +47,972 @@ fn monotonic_nanos() -> u64 {
 ///
 /// The count is what keeps throttling honest: an operator sees both that the
 /// fault is happening and how often, without the log being destroyed by it.
-fn suppressed_suffix(hidden: u32) -> String {
-    if hidden == 0 {
-        String::new()
-    } else {
-        format!(" (+{hidden} more in the last second)")
+///
+/// A `Display` adapter rather than a `-> String` helper: this is rendered from
+/// the RT thread on the deadline-miss path, and returning a `String` meant a
+/// heap allocation — an allocator lock, on the loop that just reported it was
+/// late. Formatted in place it costs nothing but the digits.
+struct SuppressedSuffix(u32);
+
+impl fmt::Display for SuppressedSuffix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == 0 {
+            Ok(())
+        } else {
+            write!(f, " (+{} more in the last second)", self.0)
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Non-blocking RT diagnostics
+// ════════════════════════════════════════════════════════════════════════════
+//
+// # What this replaces, and why
+//
+// The RT thread's response to a DEADLINE MISS used to be, literally,
+// `print_line(&format!(...))`. That is:
+//
+//   * a `format!` — a heap allocation, i.e. the allocator's lock;
+//   * `is_raw_mode()` — `isatty` plus `tcgetattr`, two syscalls, per line;
+//   * the **process-global** stdout lock, shared with every other thread;
+//   * a `write(2)` and a `flush`.
+//
+// If stdout is a pipe whose reader is slow or stopped — an operator piping
+// `horus run` into `less`, a supervisor that stopped reading, a serial console
+// at 115200 baud — that write blocks until the pipe drains. Unbounded, by
+// construction. So the mechanism that reported a timing failure of a few
+// microseconds manufactured one of milliseconds, inside the loop that had just
+// missed by microseconds. Positive feedback under distress: the report cost
+// more than the event it reported.
+//
+// The surrounding code already knew the rule. The profiler and the blackbox
+// take their locks with `try_lock` and say "avoid RT priority inversion" while
+// doing it. The console prints were the one gap in that discipline.
+//
+// # The replacement
+//
+// A fixed-size, statically allocated, multi-producer ring. A producer claims a
+// slot with one `fetch_add`, formats DIRECTLY INTO that slot's inline byte
+// array through `core::fmt` (no `format!`, so no allocation and no allocator
+// lock), and publishes it with a seqlock store. No syscall, no lock, no
+// allocation, no unbounded wait — the emit is a few hundred nanoseconds of
+// stores and it cannot block on anything. A drain thread, started with the
+// executor and never running on an RT thread, does the blocking print.
+//
+// # What this costs, stated rather than buried
+//
+// * **Latency of the report.** A diagnostic now reaches the console up to
+//   `RT_DIAG_POLL` late. It is a line for a human; the machine-readable record
+//   (`RtStats`, the `SafetyMonitor` ladder, the blackbox) is still written
+//   synchronously on the same code paths and is unaffected.
+// * **Loss on abrupt death.** If the process is killed between the emit and the
+//   drain, queued lines are lost. `RtExecutor::stop` flushes, so this only
+//   affects a hard kill or an abort — and the blackbox holds the same events,
+//   so what is lost is the console copy, not the record of truth.
+// * **Loss under a storm.** The ring overwrites its oldest entry rather than
+//   blocking the producer; blocking the producer is the entire defect being
+//   removed. Drops are counted exactly and reported by the drain, so output is
+//   compressed under load, never silently thinned.
+
+/// Bytes reserved for one queued diagnostic line. Longer lines are truncated
+/// on a UTF-8 boundary and counted; the RT path never grows a buffer.
+const RT_DIAG_LINE_CAP: usize = 192;
+
+/// Slots in the diagnostic ring. Must be a power of two.
+///
+/// Sized against the throttle that feeds it: `DiagThrottle` already caps the
+/// per-node, per-kind rate at one line per second, so 128 slots drained every
+/// `RT_DIAG_POLL` leaves ~5000 lines/second of headroom — orders of magnitude
+/// above what a healthy or even a badly degraded robot can produce.
+const RT_DIAG_SLOTS: usize = 128;
+
+const RT_DIAG_SLOT_MASK: u64 = RT_DIAG_SLOTS as u64 - 1;
+
+/// How often the drain thread empties the ring.
+///
+/// The only thing this delays is a console line for a human. Making it shorter
+/// buys nothing an operator can perceive and costs a wakeup.
+const RT_DIAG_POLL: Duration = Duration::from_millis(25);
+
+/// One queued diagnostic line.
+struct DiagSlot {
+    /// Seqlock. `0` = never written, odd = write in progress, even and nonzero
+    /// = complete. Derived from the global claim index, so a slot's sequence is
+    /// strictly increasing across reuse and a reader can tell "this is the line
+    /// I asked for" from "this slot has already been recycled".
+    seq: AtomicU64,
+    len: AtomicU32,
+    /// Payload. `AtomicU8` rather than `UnsafeCell<[u8; N]>` deliberately: a
+    /// producer that is lapped mid-write by `RT_DIAG_SLOTS` other producers
+    /// would otherwise be a data race, which is undefined behaviour in this
+    /// language whether or not anyone reads the result. With atomic bytes the
+    /// worst case is a garbled line that the seqlock discards. The cost is that
+    /// the copy is a byte loop instead of a `memcpy` — about one store per
+    /// character, still far below a single syscall, and paid only when a
+    /// diagnostic actually fires.
+    bytes: [AtomicU8; RT_DIAG_LINE_CAP],
+}
+
+impl DiagSlot {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            len: AtomicU32::new(0),
+            bytes: [const { AtomicU8::new(0) }; RT_DIAG_LINE_CAP],
+        }
+    }
+}
+
+static RT_DIAG_RING: [DiagSlot; RT_DIAG_SLOTS] = [const { DiagSlot::new() }; RT_DIAG_SLOTS];
+/// Next claim index. Monotonic; slot is `index & RT_DIAG_SLOT_MASK`.
+static RT_DIAG_HEAD: AtomicU64 = AtomicU64::new(0);
+/// Lines the ring overwrote before a drain reached them.
+static RT_DIAG_DROPPED: AtomicU64 = AtomicU64::new(0);
+/// Lines that exceeded `RT_DIAG_LINE_CAP`.
+static RT_DIAG_TRUNCATED: AtomicU64 = AtomicU64::new(0);
+/// Index of the next line to print, and the lock that serialises the two
+/// drainers (the drain thread and `RtExecutor::stop`'s final flush).
+///
+/// **Producers never touch this.** That is the point: an RT thread emitting a
+/// diagnostic can never wait on a drainer, which is the priority inversion the
+/// blocking `print_line` had.
+static RT_DIAG_TAIL: Mutex<u64> = Mutex::new(0);
+
+static RT_DIAG_DRAIN_STARTED: Once = Once::new();
+
+/// Formats `core::fmt` output straight into a slot's byte array.
+struct SlotWriter<'a> {
+    slot: &'a DiagSlot,
+    len: usize,
+    truncated: bool,
+}
+
+impl fmt::Write for SlotWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = RT_DIAG_LINE_CAP - self.len;
+        if room == 0 {
+            self.truncated = true;
+            return Err(fmt::Error);
+        }
+        let n = if s.len() <= room {
+            s.len()
+        } else {
+            self.truncated = true;
+            // Never split a multi-byte character: the drain reads the slot back
+            // as UTF-8 and would discard the whole line.
+            let mut n = room;
+            while n > 0 && (s.as_bytes()[n] & 0xC0) == 0x80 {
+                n -= 1;
+            }
+            n
+        };
+        for (i, b) in s.as_bytes()[..n].iter().enumerate() {
+            self.slot.bytes[self.len + i].store(*b, Ordering::Relaxed);
+        }
+        self.len += n;
+        // Returning `Err` once the slot is full stops `core::fmt` from
+        // evaluating the remaining arguments — the truncation is already
+        // recorded, so continuing would be pure cost on the RT thread.
+        if self.truncated {
+            Err(fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Queue one diagnostic line for the drain thread. Never blocks, never
+/// allocates, never enters the kernel.
+///
+/// This is what the RT thread calls instead of `print_line(&format!(...))`.
+/// Call it as `rt_diag(format_args!("..."))`.
+pub(crate) fn rt_diag(args: fmt::Arguments<'_>) {
+    let idx = RT_DIAG_HEAD.fetch_add(1, Ordering::Relaxed);
+    let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+
+    // Odd sequence: a reader that lands here mid-write discards the slot.
+    //
+    // The store is `Relaxed` and the ORDERING comes from the fence after it. A
+    // `Release` store orders everything *before* it, which is the wrong
+    // direction — what this needs is for the odd marker to be visible before the
+    // byte stores that follow, and only a release fence gives that. (Free on
+    // x86: a compiler barrier, no instruction.)
+    slot.seq
+        .store(idx.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+    std::sync::atomic::fence(Ordering::Release);
+
+    let mut w = SlotWriter {
+        slot,
+        len: 0,
+        truncated: false,
+    };
+    let _ = fmt::Write::write_fmt(&mut w, args);
+    if w.truncated {
+        RT_DIAG_TRUNCATED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    slot.len.store(w.len as u32, Ordering::Relaxed);
+    // Release publishes both the byte stores and `len` to any reader that
+    // acquires this sequence value.
+    slot.seq
+        .store(idx.wrapping_mul(2).wrapping_add(2), Ordering::Release);
+}
+
+/// Copy the line claimed at `idx` out of the ring, or `None` if that slot is
+/// still being written or has already been recycled by a later producer.
+///
+/// The seqlock check is the whole safety argument: `idx` names a *generation*,
+/// not just a slot, so a reader can always tell "the line I asked for" from
+/// "some newer line that happens to live here now".
+fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> Option<usize> {
+    let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+    let want = idx.wrapping_mul(2).wrapping_add(2);
+    if slot.seq.load(Ordering::Acquire) != want {
+        return None;
+    }
+    let len = (slot.len.load(Ordering::Relaxed) as usize).min(RT_DIAG_LINE_CAP);
+    for (i, dst) in out[..len].iter_mut().enumerate() {
+        *dst = slot.bytes[i].load(Ordering::Relaxed);
+    }
+    // Re-check: a producer that started writing during the copy invalidates
+    // everything read above. The acquire fence is what keeps those reads from
+    // being reordered past this load — an `Acquire` *load* would only order
+    // what comes after it.
+    std::sync::atomic::fence(Ordering::Acquire);
+    if slot.seq.load(Ordering::Relaxed) != want {
+        return None;
+    }
+    Some(len)
+}
+
+/// Print every queued diagnostic through `emit`, then report what was lost.
+/// Returns the number of lines emitted.
+///
+/// Runs OFF the RT thread — this is where the blocking write deliberately
+/// lives. `emit` may block for as long as it likes; only other drainers wait.
+fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
+    let mut tail = RT_DIAG_TAIL.lock().unwrap_or_else(|e| e.into_inner());
+    let head = RT_DIAG_HEAD.load(Ordering::Acquire);
+
+    // Anything older than `head - RT_DIAG_SLOTS` has been overwritten. Count it
+    // exactly and skip forward: a storm compresses the output but never hides
+    // that it happened.
+    let oldest = head.saturating_sub(RT_DIAG_SLOTS as u64);
+    if *tail < oldest {
+        RT_DIAG_DROPPED.fetch_add(oldest - *tail, Ordering::Relaxed);
+        *tail = oldest;
+    }
+
+    let mut line = [0u8; RT_DIAG_LINE_CAP];
+    let mut printed = 0usize;
+    for idx in *tail..head {
+        let Some(len) = read_slot(idx, &mut line) else {
+            continue;
+        };
+        if let Ok(text) = std::str::from_utf8(&line[..len]) {
+            emit(text);
+            printed += 1;
+        }
+    }
+    *tail = head;
+    drop(tail);
+
+    let dropped = RT_DIAG_DROPPED.swap(0, Ordering::Relaxed);
+    if dropped > 0 {
+        emit(&format!(
+            "[RT-thread] {dropped} diagnostic line(s) dropped — the RT thread \
+             produced them faster than the console could take them"
+        ));
+    }
+    let truncated = RT_DIAG_TRUNCATED.swap(0, Ordering::Relaxed);
+    if truncated > 0 {
+        emit(&format!(
+            "[RT-thread] {truncated} diagnostic line(s) truncated at {RT_DIAG_LINE_CAP} bytes"
+        ));
+    }
+    printed
+}
+
+/// Start the diagnostic drain thread, once per process.
+///
+/// Called from `start_pool`, on the CALLER's thread. Never from an RT thread:
+/// spawning is a `clone(2)` plus a stack mapping, which is exactly the class of
+/// cost this whole mechanism exists to keep off the tick loop.
+///
+/// The thread runs for the life of the process. It is one wakeup every
+/// `RT_DIAG_POLL` and it must outlive any individual executor, because an
+/// executor that is being torn down is precisely when its last diagnostics
+/// matter.
+fn start_rt_diag_drain() {
+    RT_DIAG_DRAIN_STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new()
+            .name("horus-rt-diag".to_string())
+            .spawn(|| loop {
+                rt_diag_drain(print_line);
+                std::thread::sleep(RT_DIAG_POLL);
+            });
+        if spawned.is_err() {
+            // Out of threads. Say so on the caller's thread — RT diagnostics
+            // will now only appear at `stop()`, which is worth knowing.
+            print_line(
+                "[RT-thread] WARNING: could not spawn the diagnostic drain thread; \
+                 RT diagnostics will only be flushed at shutdown",
+            );
+        }
+    });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Cyclic wait: absolute-deadline sleep with a bounded guard spin
+// ════════════════════════════════════════════════════════════════════════════
+//
+// # What this replaces, and why
+//
+// The tick loop used to close each period with, in essence:
+//
+// ```text
+// let elapsed = loop_start.elapsed();              // loop_start re-sampled each iteration
+// if tick_period - elapsed < 1ms { spin until the period is up }
+// else { sleep(tick_period - elapsed - 500us); then spin }
+// ```
+//
+// Two defects, in increasing order of severity.
+//
+// **1. Drift.** The target was `loop_start + tick_period` with `loop_start`
+// re-sampled by `Instant::now()` at the top of every iteration — i.e. "now +
+// period", not "start + n*period". Every iteration folded its own overshoot
+// (spin-exit granularity, loop overhead, wake latency) into the phase and never
+// gave it back. At 1 kHz even a 50 ns per-tick overshoot is 50 us/s of phase
+// slip, ~4.3 s/day. Anything that assumes a fixed dt — a discrete-time
+// controller, a sensor fusion timestamp — inherits that slip. This is the
+// classic bug in this code shape, and the old code had it.
+//
+// **2. An unbounded busy-wait under RT bandwidth control.** The branch tested
+// SLACK (`tick_period - elapsed`), not the period, so it took the pure-spin
+// path whenever a tick left under 1 ms of slack. That is unconditionally true
+// for any tick period at or below 1 ms, and intermittently true at larger
+// periods whenever a tick ran long — so a 1 kHz chain busy-waited essentially
+// the entire period, every period. Linux RT bandwidth control
+// (`sched_rt_runtime_us` / `sched_rt_period_us`, 950 ms / 1000 ms by default)
+// forcibly DEQUEUES a SCHED_FIFO thread that exceeds its share for the
+// remainder of the RT period: roughly 50 ms, i.e. ~50 consecutive missed
+// deadlines at 1 kHz, once per second. SCHED_DEADLINE polices its declared
+// runtime even more tightly.
+//
+// That tail never showed up in test because `set_realtime_priority` fails
+// without CAP_SYS_NICE and the thread silently stays SCHED_OTHER, where RT
+// bandwidth control does not apply. **The defect only manifests once RT
+// priority is actually granted** — on the robot, not on a developer box or in
+// CI. `CyclicWaiter::new` therefore takes `rt_policy_active` and warns exactly
+// in the configuration where the old behaviour would bite.
+//
+// # The replacement, and the trade it makes
+//
+// Sleep to an ABSOLUTE deadline on CLOCK_MONOTONIC (`clock_nanosleep` with
+// `TIMER_ABSTIME`) for the bulk of the period, then guard-spin only the last
+// few microseconds. This is the standard cyclictest-style cyclic-task pattern.
+//
+// **TRADE, STATED RATHER THAN BURIED:** median wake jitter rises from the old
+// spin's ~100 ns to hrtimer precision — single-digit microseconds on
+// PREEMPT_RT, worse on a stock kernel. That is a MEDIAN REGRESSION, bought to
+// delete a ~50 ms tail item. It is the right trade for this runtime's figure of
+// merit (worst case and jitter first, median second), but it is a real cost, so
+// it is explicit here, configurable (`HORUS_RT_WAIT=spin` restores a pure spin,
+// `HORUS_RT_SPIN_GUARD_US` retunes the guard), and measured
+// (`rt_wait_stats()` publishes the observed wake lateness and spin time).
+//
+// The fix is deliberately in the code. The other way to stop the throttle is
+// `sched_rt_runtime_us=-1`, and that is NOT recommended: it removes the
+// kernel's last defence against a runaway RT thread wedging the machine. A loop
+// that gives back the CPU it does not need makes that config change
+// unnecessary.
+
+/// Width of the busy-wait that guards the final approach to a tick deadline.
+///
+/// Chosen against the wake-latency distribution the guard exists to hide: on a
+/// PREEMPT_RT kernel a pinned SCHED_FIFO thread's hrtimer wakeup lands within
+/// single-digit microseconds of the programmed time, so a 20 us guard converts
+/// the *typical* wake into a deadline-accurate one. It deliberately does NOT
+/// cover the worst case — widening it toward the tail would trade back exactly
+/// the RT bandwidth this rewrite reclaims, and buys nothing on a stock kernel,
+/// where the overshoot usually exceeds the guard and no spin happens at all.
+///
+/// Cost ceiling: 20 us is 2 % of a 1 kHz period, and the spin only covers the
+/// slice of the guard the sleep did not already consume, so the typical cost is
+/// well under that. Override with `HORUS_RT_SPIN_GUARD_US`; `0` disables the
+/// spin entirely (lowest CPU, pure hrtimer precision).
+const SPIN_GUARD_DEFAULT_NS: u64 = 20_000;
+
+/// The guard spin may never exceed `tick_period >> SPIN_GUARD_PERIOD_SHIFT`
+/// — one sixteenth, 6.25 %, of the period.
+///
+/// This clamp is the structural defence against re-introducing the defect above
+/// at high tick rates. A *fixed* guard is 2 % of a 1 ms period but 20 % of a
+/// 100 us one, so it would silently walk the loop back toward the kernel's 95 %
+/// RT bandwidth ceiling as the rate rises. Bounding the guard as a fraction of
+/// the period keeps the loop's unconditional CPU draw at 6.25 % or below at
+/// every rate, leaving the remainder of the budget for the nodes' real work.
+const SPIN_GUARD_PERIOD_SHIFT: u32 = 4;
+
+/// Minimum slack worth an absolute-sleep syscall, in nanoseconds.
+///
+/// Arming an hrtimer, switching out, taking the timer interrupt and switching
+/// back costs single-digit microseconds. Below this threshold the syscall costs
+/// more than the wait it replaces, so the residue is spun instead. The spin is
+/// bounded by this constant, so it can only dominate periods shorter than
+/// `MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT` (160 us, i.e. above ~6 kHz);
+/// `CyclicWaiter::new` warns once when the configured rate is in that regime,
+/// because a spin-dominated loop plus a real RT policy is the throttle case.
+const MIN_SLEEP_SLACK_NS: u64 = 10_000;
+
+/// Selects the cyclic wait strategy. Read in two places — `CyclicWaiter::new`,
+/// which implements it, and `RtExecutor::start_pool`, which must know whether
+/// the loop will ever yield before it decides how dangerous a shared core is.
+const RT_WAIT_ENV: &str = "HORUS_RT_WAIT";
+const RT_WAIT_SPIN: &str = "spin";
+
+/// Whether the operator asked for the pure busy-wait.
+///
+/// Load-bearing for the core-collision check: an absolute-sleep loop gives the
+/// CPU back every period, so two SCHED_FIFO chains sharing a core interfere; a
+/// spin loop never yields, so the same configuration is a livelock.
+fn spin_wait_requested() -> bool {
+    matches!(std::env::var(RT_WAIT_ENV).as_deref(), Ok(RT_WAIT_SPIN))
+}
+
+/// How often the per-thread wait counters are published to the process-wide
+/// totals. The counters are plain integers in the hot path (a few register
+/// adds); only this flush touches shared atomics, so the tick loop never pays
+/// for a contended cache line.
+const WAIT_STATS_FLUSH_INTERVAL_NS: u64 = 1_000_000_000;
+
+/// Absolute CLOCK_MONOTONIC nanoseconds — the same timebase the absolute sleep
+/// targets, so deadline arithmetic and the guard spin cannot disagree.
+///
+/// Distinct from [`monotonic_nanos`], which is `Instant`-based and exists for
+/// log throttling; mixing the two epochs in deadline arithmetic would be a bug.
+#[cfg(target_os = "linux")]
+#[inline]
+fn cyclic_now_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a live, writable `timespec` and CLOCK_MONOTONIC is always
+    // a valid clock id, so both documented failure modes (EFAULT for a bad
+    // pointer, EINVAL for a bad clock id) are unreachable. On Linux this
+    // resolves through the vDSO and does not enter the kernel.
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    (ts.tv_sec as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec as u64)
+}
+
+/// Portable monotonic nanoseconds for the non-Linux cyclic path.
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn cyclic_now_ns() -> u64 {
+    monotonic_nanos()
+}
+
+/// Sleep until an absolute instant on CLOCK_MONOTONIC.
+#[cfg(target_os = "linux")]
+#[inline]
+fn sleep_until_ns(deadline_ns: u64) {
+    let ts = libc::timespec {
+        tv_sec: (deadline_ns / 1_000_000_000) as _,
+        tv_nsec: (deadline_ns % 1_000_000_000) as _,
+    };
+    loop {
+        // SAFETY: `ts` is a live, valid `timespec` for the duration of the
+        // call. With TIMER_ABSTIME the kernel never writes the remaining-time
+        // pointer, so passing null is correct. `clock_nanosleep` returns the
+        // error number directly and does NOT set `errno`.
+        let rc = unsafe {
+            libc::clock_nanosleep(
+                libc::CLOCK_MONOTONIC,
+                libc::TIMER_ABSTIME,
+                &ts,
+                std::ptr::null_mut(),
+            )
+        };
+        if rc != libc::EINTR {
+            return;
+        }
+        // A signal handler ran. Because the target is ABSOLUTE, re-arming with
+        // the identical timespec resumes the same deadline and loses no time.
+        // A relative `nanosleep` would have to carry `rmtp` forward and would
+        // shed a little phase on every signal — the second reason to use
+        // TIMER_ABSTIME, on top of drift.
+    }
+}
+
+/// Portable fallback: a relative sleep recomputed from the ABSOLUTE target on
+/// every period, so oversleep is corrected rather than accumulated.
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn sleep_until_ns(deadline_ns: u64) {
+    let now = cyclic_now_ns();
+    if deadline_ns > now {
+        std::thread::sleep(Duration::from_nanos(deadline_ns - now));
+    }
+}
+
+/// How the tick loop waits out the remainder of a period.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WaitMode {
+    /// Sleep to an absolute CLOCK_MONOTONIC deadline (`clock_nanosleep` +
+    /// `TIMER_ABSTIME`), then guard-spin the residue. The default, and the
+    /// only mode that keeps the loop inside its RT bandwidth share.
+    AbsoluteSleep,
+    /// Non-Linux fallback: absolute deadlines on `Instant`'s clock, reached
+    /// with a relative `thread::sleep` recomputed each period.
+    PortableSleep,
+    /// Pure busy-wait to the absolute deadline. Opt-in via `HORUS_RT_WAIT=spin`
+    /// for the ~100 ns median wake, and DANGEROUS to combine with a real RT
+    /// policy: see the section note above. Unlike the code this replaces it is
+    /// still phase-absolute, so it does not drift.
+    Spin,
+}
+
+/// Observed behaviour of the cyclic wait, aggregated across all RT threads.
+///
+/// This rewrite trades median wake jitter for the removal of a ~50 ms tail, and
+/// a trade you cannot see is a trade you cannot defend. These counters are what
+/// make both sides of it visible in production: `wake_late_max_ns` is the worst
+/// gap ever observed between a tick's scheduled slot and the instant the loop
+/// actually resumed, and `overruns` / `slots_skipped` count the periods the
+/// executor could not keep up with at all.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RtWaitSnapshot {
+    /// Completed cyclic waits (i.e. tick slots serviced).
+    pub slots: u64,
+    /// Waits that found their own slot already in the past.
+    pub overruns: u64,
+    /// Total slots dropped by those overruns.
+    pub slots_skipped: u64,
+    /// Worst observed `resume - scheduled_slot`. The tail metric for the wake
+    /// path, and the honest cost of giving up the busy-wait.
+    pub wake_late_max_ns: u64,
+    /// Sum of `resume - scheduled_slot`; divide by `slots` for the mean.
+    pub wake_late_total_ns: u64,
+    /// Total time spent in the guard spin. The RT-bandwidth draw of the wait
+    /// itself — what used to be ~99.5 % of every period.
+    pub spin_total_ns: u64,
+}
+
+static WAIT_SLOTS: AtomicU64 = AtomicU64::new(0);
+static WAIT_OVERRUNS: AtomicU64 = AtomicU64::new(0);
+static WAIT_SLOTS_SKIPPED: AtomicU64 = AtomicU64::new(0);
+static WAIT_LATE_MAX_NS: AtomicU64 = AtomicU64::new(0);
+static WAIT_LATE_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+static WAIT_SPIN_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Process-wide cyclic-wait statistics, safe to poll from any thread.
+pub(crate) fn rt_wait_stats() -> RtWaitSnapshot {
+    RtWaitSnapshot {
+        slots: WAIT_SLOTS.load(Ordering::Relaxed),
+        overruns: WAIT_OVERRUNS.load(Ordering::Relaxed),
+        slots_skipped: WAIT_SLOTS_SKIPPED.load(Ordering::Relaxed),
+        wake_late_max_ns: WAIT_LATE_MAX_NS.load(Ordering::Relaxed),
+        wake_late_total_ns: WAIT_LATE_TOTAL_NS.load(Ordering::Relaxed),
+        spin_total_ns: WAIT_SPIN_TOTAL_NS.load(Ordering::Relaxed),
+    }
+}
+
+/// Drives one RT thread's tick cadence on an absolute phase grid.
+///
+/// Deadlines are always `anchor + n * period` for an integer `n`. They are
+/// never computed as "now + period": that is the drift bug this type exists to
+/// remove, and the arithmetic below is written so the grid survives even a
+/// multi-second stall.
+struct CyclicWaiter {
+    mode: WaitMode,
+    period_ns: u64,
+    guard_ns: u64,
+    /// Phase anchor. Every slot is `anchor_ns + n * period_ns`, exactly.
+    anchor_ns: u64,
+    /// Absolute time at which the NEXT work pass should begin.
+    next_slot_ns: u64,
+    /// Counters since the last flush. Plain integers so the per-period cost is
+    /// a handful of register adds, not shared-atomic traffic.
+    local: RtWaitSnapshot,
+    last_flush_ns: u64,
+}
+
+impl CyclicWaiter {
+    /// `rt_policy_active` is whether SCHED_FIFO or SCHED_DEADLINE was actually
+    /// granted. It gates the warnings, because RT bandwidth control — the whole
+    /// reason this type exists — only applies when it is true.
+    fn new(tick_period: Duration, rt_policy_active: bool, verbose: bool) -> Self {
+        // A zero period would make the slot arithmetic divide by zero; clamp to
+        // 1 ns, which degenerates to "run flat out" exactly as before.
+        let period_ns = (tick_period.as_nanos() as u64).max(1);
+
+        let mut mode = if cfg!(target_os = "linux") {
+            WaitMode::AbsoluteSleep
+        } else {
+            WaitMode::PortableSleep
+        };
+        match std::env::var(RT_WAIT_ENV).as_deref() {
+            Ok(RT_WAIT_SPIN) => mode = WaitMode::Spin,
+            Ok("sleep") => {}
+            Ok(other) => print_line(&format!(
+                "[RT-thread] HORUS_RT_WAIT='{other}' not recognised (expected 'sleep' or 'spin') — using 'sleep'"
+            )),
+            Err(_) => {}
+        }
+
+        let requested_guard_ns = std::env::var("HORUS_RT_SPIN_GUARD_US")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|us| us.saturating_mul(1_000))
+            .unwrap_or(SPIN_GUARD_DEFAULT_NS);
+        // Never let the guard eat more than 1/16 of the period; see
+        // SPIN_GUARD_PERIOD_SHIFT.
+        let guard_ns = requested_guard_ns.min(period_ns >> SPIN_GUARD_PERIOD_SHIFT);
+
+        if mode == WaitMode::Spin && rt_policy_active {
+            // Unconditional, not verbose-gated: this is the exact combination
+            // that produces the ~50 ms dequeue, and an operator who opted into
+            // it deserves to be told on every boot.
+            print_line(
+                "[RT-thread] WARNING: HORUS_RT_WAIT=spin with a real RT policy. The tick loop \
+                 will busy-wait every period; Linux RT bandwidth control will dequeue this \
+                 thread for ~50ms once its share is exhausted (~50 missed deadlines at 1kHz). \
+                 Median wake jitter improves to ~100ns and the worst case gets far worse.",
+            );
+        } else if period_ns < (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) && rt_policy_active {
+            print_line(&format!(
+                "[RT-thread] WARNING: tick period {}us is below the {}us floor where an \
+                 absolute sleep is cheaper than spinning; the final approach will be \
+                 spin-dominated and RT bandwidth control may throttle this thread.",
+                period_ns / 1000,
+                (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) / 1000,
+            ));
+        }
+
+        if verbose {
+            print_line(&format!(
+                "[RT-thread] Cyclic wait: {:?}, period {}us, guard spin {}ns, RT policy {}",
+                mode,
+                period_ns / 1000,
+                guard_ns,
+                if rt_policy_active {
+                    "ACTIVE"
+                } else {
+                    "not granted (SCHED_OTHER)"
+                },
+            ));
+        }
+
+        // Anchor the phase grid LAST: the diagnostics above take a lock and may
+        // touch stdout, and folding that into the anchor would make the very
+        // first slot arrive already overrun.
+        let now = cyclic_now_ns();
+
+        Self {
+            mode,
+            period_ns,
+            guard_ns,
+            anchor_ns: now,
+            next_slot_ns: now.wrapping_add(period_ns),
+            local: RtWaitSnapshot::default(),
+            last_flush_ns: now,
+        }
+    }
+
+    /// Wait out the remainder of the current period and return at the next
+    /// slot boundary.
+    fn wait(&mut self) {
+        let now = cyclic_now_ns();
+        self.local.slots += 1;
+
+        if now >= self.next_slot_ns {
+            // OVERRUN — the work pass ran past its own slot boundary.
+            //
+            // POLICY (documented deliberately, because both choices are
+            // defensible): the executor SKIPS FORWARD to the next slot that is
+            // still in the future, on the ORIGINAL phase grid, and waits for
+            // it. Missed slots are dropped, never run back to back.
+            //
+            // Why skip rather than catch up: a burst of zero-slack ticks is
+            // precisely the CPU pattern that trips RT bandwidth control, so a
+            // catch-up policy would let a single overrun manufacture the very
+            // ~50 ms dequeue this rewrite exists to remove. It would also hand
+            // nodes an inter-tick interval far shorter than the fixed dt their
+            // control math assumes. Skipping keeps every interval a whole
+            // number of periods and keeps the loop phase-locked to its grid.
+            //
+            // Why it cannot spiral: the number of slots to drop is one
+            // division, not a loop, so even a multi-second stall (suspend/
+            // resume, a stop-the-world pause, the old RT throttle itself) costs
+            // O(1) and lands the loop exactly one slot ahead of `now`. Cost per
+            // overrun is bounded and independent of how far behind we were.
+            let late_ns = now - self.next_slot_ns;
+            let skipped = late_ns / self.period_ns + 1;
+            self.local.overruns += 1;
+            self.local.slots_skipped += skipped;
+            self.next_slot_ns = self
+                .next_slot_ns
+                .wrapping_add(skipped.wrapping_mul(self.period_ns));
+        }
+
+        let target = self.next_slot_ns;
+        // Advance the grid BEFORE waiting: the next slot is defined by the
+        // phase, not by when this wait happens to return.
+        self.next_slot_ns = target.wrapping_add(self.period_ns);
+
+        let mut t = now;
+        if self.mode != WaitMode::Spin {
+            let sleep_until = target.saturating_sub(self.guard_ns);
+            // A `while`, not an `if`: a platform sleep that returns early is
+            // re-armed against the same absolute target, which keeps the guard
+            // spin below bounded by `guard_ns + MIN_SLEEP_SLACK_NS` instead of
+            // letting it absorb the whole period.
+            while sleep_until > t && sleep_until - t >= MIN_SLEEP_SLACK_NS {
+                sleep_until_ns(sleep_until);
+                t = cyclic_now_ns();
+            }
+        }
+
+        // Guard spin. Bounded by construction: the absolute sleep above returns
+        // at or after `target - guard_ns`, so this covers at most `guard_ns` —
+        // and nothing at all when the wake already overshot the guard, which is
+        // the common case on a stock kernel.
+        let spin_start = t;
+        while t < target {
+            std::hint::spin_loop();
+            t = cyclic_now_ns();
+        }
+
+        self.local.spin_total_ns += t.saturating_sub(spin_start);
+        let late_ns = t.saturating_sub(target);
+        self.local.wake_late_total_ns += late_ns;
+        if late_ns > self.local.wake_late_max_ns {
+            self.local.wake_late_max_ns = late_ns;
+        }
+
+        if t.saturating_sub(self.last_flush_ns) >= WAIT_STATS_FLUSH_INTERVAL_NS {
+            self.flush();
+            self.last_flush_ns = t;
+        }
+    }
+
+    /// Publish the local counters to the process-wide totals and reset them.
+    fn flush(&mut self) {
+        WAIT_SLOTS.fetch_add(self.local.slots, Ordering::Relaxed);
+        WAIT_OVERRUNS.fetch_add(self.local.overruns, Ordering::Relaxed);
+        WAIT_SLOTS_SKIPPED.fetch_add(self.local.slots_skipped, Ordering::Relaxed);
+        WAIT_LATE_TOTAL_NS.fetch_add(self.local.wake_late_total_ns, Ordering::Relaxed);
+        WAIT_SPIN_TOTAL_NS.fetch_add(self.local.spin_total_ns, Ordering::Relaxed);
+        WAIT_LATE_MAX_NS.fetch_max(self.local.wake_late_max_ns, Ordering::Relaxed);
+        self.local = RtWaitSnapshot::default();
+    }
+
+    /// Final flush plus, under `verbose`, the one line that makes the trade
+    /// legible: what the wake path actually cost on this run.
+    fn finish(&mut self, verbose: bool) {
+        let slots = self.local.slots;
+        let late_total = self.local.wake_late_total_ns;
+        let late_max = self.local.wake_late_max_ns;
+        let overruns = self.local.overruns;
+        let spin = self.local.spin_total_ns;
+        self.flush();
+        if verbose {
+            let mean = late_total.checked_div(slots).unwrap_or(0);
+            print_line(&format!(
+                "[RT-thread] Cyclic wait: {slots} slots, wake late mean {mean}ns / max \
+                 {late_max}ns, {overruns} overruns, {spin}ns spun"
+            ));
+        }
     }
 }
 
 use super::primitives::{DeadlineAction, NodeRunner, TimingEnforcer};
 use super::types::{RegisteredNode, SharedMonitors};
 use crate::core::DurationExt;
+
+// ════════════════════════════════════════════════════════════════════════════
+// CPU assignment: one core, one RT chain
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Every RT chain gets its own thread, and each thread is pinned to one core —
+// round-robin over the scheduler's RT CPU list, or to whatever a node's
+// `.core(n)` names. Nothing checked that two chains did not land on the SAME
+// core, and that configuration is not a mild inefficiency:
+//
+//   * SCHED_FIFO does not time-slice between threads of equal priority. The
+//     lower-numbered chain runs until it blocks; the other runs in whatever is
+//     left. Every tick of one chain is therefore added, in full, to the other
+//     chain's worst-case wake latency — the exact quantity this runtime is
+//     optimised for.
+//   * With `HORUS_RT_WAIT=spin` the tick loop never blocks at all, so the
+//     second chain does not run. Its watchdog reaches its limit and latches an
+//     emergency stop. That is the livelock shape, and it is a real
+//     configuration, not a hypothetical.
+//
+// It is reachable two ways: an operator naming the same core twice with
+// `.core(n)`, or simply having more RT chains than the scheduler has RT CPUs to
+// hand out, at which point the round-robin wraps and silently doubles up.
+//
+// The two are not the same mistake, so they do not get the same answer. An
+// explicit duplicate `.core(n)` is refused: the operator stated an intent that
+// cannot be satisfied, and there is no fallback to infer. A round-robin wrap is
+// a shortage, not a statement — refusing would mean a two-core controller
+// cannot run two RT chains at all — so it warns, loudly and unconditionally,
+// with the remediation. Under `HORUS_RT_WAIT=spin` both are refused, because
+// both are then the livelock rather than interference.
+//
+// `HORUS_RT_ALLOW_CORE_SHARING=1` downgrades every refusal to a warning, for
+// the deliberate case (two light chains, one core, and an operator who has
+// measured it).
+
+/// Environment escape hatch for a deliberately shared RT core.
+const ALLOW_CORE_SHARING_ENV: &str = "HORUS_RT_ALLOW_CORE_SHARING";
+
+/// The core one chain will actually pin to, and where that came from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ChainCore {
+    /// `None` when the chain runs unpinned — no core is being claimed, so no
+    /// collision exists to report.
+    cpu: Option<usize>,
+    /// True when a node's `.core(n)` named this core; false when it came from
+    /// round-robin over the scheduler's RT CPU list.
+    explicit: bool,
+}
+
+/// Resolve each chain's effective core.
+///
+/// This resolution used to be split: `start_pool` computed the round-robin
+/// assignment and the RT thread then silently overrode it from `.core(n)`. That
+/// split is why no collision check was possible — the only place that could see
+/// every chain's core did not know what it would be. It is resolved once, here,
+/// and the thread is told rather than asked.
+fn resolve_chain_cores(chains: &[Vec<RegisteredNode>], rt_cpus: &[usize]) -> Vec<ChainCore> {
+    let mut cores = Vec::with_capacity(chains.len());
+    for (idx, nodes) in chains.iter().enumerate() {
+        cores.push(match nodes.iter().find_map(|n| n.pinned_core) {
+            // An explicit `.core(n)` on any node in the chain claims the core
+            // for the whole chain — they share one thread.
+            Some(core) => ChainCore {
+                cpu: Some(core),
+                explicit: true,
+            },
+            // Round-robin over the scheduler's RT CPU list. This wraps silently
+            // once there are more chains than CPUs; that is the collision
+            // `check_core_collisions` reports.
+            None if !rt_cpus.is_empty() => ChainCore {
+                cpu: Some(rt_cpus[idx % rt_cpus.len()]),
+                explicit: false,
+            },
+            // No RT CPU list and no explicit pin: unpinned, claiming nothing.
+            None => ChainCore {
+                cpu: None,
+                explicit: false,
+            },
+        });
+    }
+    cores
+}
+
+/// A chain's name for diagnostics: its first node, which is the highest-priority
+/// one after the sort in `start_pool`.
+fn chain_label(chain: &[RegisteredNode]) -> &str {
+    chain.first().map(|n| n.name.as_ref()).unwrap_or("<empty>")
+}
+
+/// Refuse or loudly report two RT chains pinned to the same core.
+///
+/// Runs at executor start, on the caller's thread, so a blocking print here is
+/// correct — this is startup, not the tick loop.
+fn check_core_collisions(chains: &[Vec<RegisteredNode>], cores: &[ChainCore]) -> Result<()> {
+    // Within a single chain, two nodes naming different cores is also a config
+    // error — one silently wins. Report it; it is not fatal, because the chain
+    // does get a core and does run.
+    for nodes in chains {
+        let mut named = nodes.iter().filter_map(|n| n.pinned_core);
+        if let Some(first) = named.next() {
+            if named.any(|c| c != first) {
+                print_line(&format!(
+                    "[RT] WARNING: chain '{}' contains nodes pinned to different cores; \
+                     the whole chain shares one thread, so CPU {} (the first named) wins \
+                     and the others are ignored. Split them into separate chains to give \
+                     them separate cores.",
+                    chain_label(nodes),
+                    first,
+                ));
+            }
+        }
+    }
+
+    let spin = spin_wait_requested();
+    let allow_sharing = std::env::var(ALLOW_CORE_SHARING_ENV)
+        .is_ok_and(|v| !v.is_empty() && v != "0" && v != "false");
+    let mut refuse: Option<String> = None;
+
+    for i in 0..cores.len() {
+        let Some(cpu_i) = cores[i].cpu else { continue };
+        for j in (i + 1)..cores.len() {
+            if cores[j].cpu != Some(cpu_i) {
+                continue;
+            }
+            let both_explicit = cores[i].explicit && cores[j].explicit;
+            let (a, b) = (chain_label(&chains[i]), chain_label(&chains[j]));
+            let cause = if both_explicit {
+                "both chains name it with .core()"
+            } else {
+                "there are more RT chains than RT CPUs, so the round-robin wrapped"
+            };
+            let remedy = if both_explicit {
+                "give them different .core() values, or merge them into one chain"
+            } else {
+                "widen the scheduler's RT CPU list, or reduce the number of RT chains"
+            };
+            print_line(&format!(
+                "[RT] WARNING: RT chains '{a}' and '{b}' are both pinned to CPU {cpu_i} \
+                 ({cause}). SCHED_FIFO does not time-slice between equal priorities, so \
+                 each chain's tick is added in full to the other's worst-case wake \
+                 latency{}. Fix: {remedy}.",
+                if spin {
+                    ", and with HORUS_RT_WAIT=spin the tick loop never yields at all, so \
+                     the second chain will not run and its watchdog will latch an \
+                     emergency stop"
+                } else {
+                    ""
+                }
+            ));
+
+            if (both_explicit || spin) && refuse.is_none() {
+                refuse = Some(format!(
+                    "RT chains '{a}' and '{b}' are both pinned to CPU {cpu_i} ({cause}). \
+                     Two SCHED_FIFO chains on one core cannot both meet their deadlines. \
+                     Fix: {remedy}. To run this configuration anyway, set \
+                     {ALLOW_CORE_SHARING_ENV}=1."
+                ));
+            }
+        }
+    }
+
+    match refuse {
+        Some(message) if !allow_sharing => Err(Error::Internal {
+            message,
+            file: file!(),
+            line: line!(),
+        }),
+        Some(_) => {
+            print_line(&format!(
+                "[RT] {ALLOW_CORE_SHARING_ENV} is set — starting with a shared RT core \
+                 anyway. Deadline misses on the affected chains are expected."
+            ));
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
 
 /// Dedicated RT thread executor.
 ///
@@ -90,13 +1046,28 @@ impl RtExecutor {
         monitors: SharedMonitors,
         rt_cpus: Vec<usize>,
     ) -> Result<Self> {
+        let mut chains = chains;
         let num_chains = chains.len();
         let mut handles = Vec::with_capacity(num_chains);
 
-        for (chain_idx, mut nodes) in chains.into_iter().enumerate() {
-            // Sort by priority before handing off to the thread
+        // Sort every chain before resolving cores: `chain_label` names a chain
+        // by its highest-priority node, and the diagnostics below must name the
+        // same node the thread will report as.
+        for nodes in &mut chains {
             nodes.sort_by_key(|n| n.priority);
+        }
 
+        // One core, one RT chain. Resolved and checked before a single thread is
+        // spawned, so a refusal is a clean startup failure rather than a
+        // half-started executor.
+        let chain_cores = resolve_chain_cores(&chains, &rt_cpus);
+        check_core_collisions(&chains, &chain_cores)?;
+
+        // The blocking half of RT diagnostics lives on its own thread, started
+        // here — on the caller's thread, never on an RT thread.
+        start_rt_diag_drain();
+
+        for (chain_idx, nodes) in chains.into_iter().enumerate() {
             // Determine tick period from the fastest node in this chain
             let max_rate_hz = nodes
                 .iter()
@@ -109,12 +1080,9 @@ impl RtExecutor {
                 fallback_period
             };
 
-            // Assign CPU core: round-robin across available RT CPUs
-            let thread_cpus = if !rt_cpus.is_empty() {
-                vec![rt_cpus[chain_idx % rt_cpus.len()]]
-            } else {
-                vec![]
-            };
+            // Already resolved above — `.core(n)` if a node named one, else the
+            // round-robin slot.
+            let thread_cpus: Vec<usize> = chain_cores[chain_idx].cpu.into_iter().collect();
 
             let thread_name = if num_chains == 1 {
                 "horus-rt".to_string()
@@ -166,6 +1134,11 @@ impl RtExecutor {
                 all_nodes.extend(nodes);
             }
         }
+        // Final flush, after every RT thread has stopped producing. Without it a
+        // run shorter than `RT_DIAG_POLL` — or one whose last deadline miss came
+        // in the final milliseconds, which is the interesting case — would exit
+        // with its diagnostics still sitting in the ring.
+        rt_diag_drain(print_line);
         all_nodes
     }
 
@@ -280,12 +1253,12 @@ impl RtExecutor {
                 if monitors.verbose {
                     if let Some(hidden) = node.diag.allow(Diag::BudgetViolation, monotonic_nanos())
                     {
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] budget violation in '{}': {:?} > {:?}{}",
                             node.name,
                             budget_result.violation.actual(),
                             budget_result.violation.budget(),
-                            suppressed_suffix(hidden)
+                            SuppressedSuffix(hidden)
                         ));
                     }
                 }
@@ -312,7 +1285,7 @@ impl RtExecutor {
                     BudgetPolicy::Enforce => {
                         // Stop node if tick exceeded 2x budget
                         if tr.duration > tick_budget * 2 {
-                            print_line(&format!(
+                            rt_diag(format_args!(
                                 "[RT-thread] BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                 node.name, tr.duration, tick_budget * 2
                             ));
@@ -322,7 +1295,7 @@ impl RtExecutor {
                     }
                     BudgetPolicy::EmergencyStop => {
                         // Any budget violation triggers e-stop
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] BUDGET E-STOP: '{}' budget violation ({:?} > {:?})",
                             node.name, tr.duration, tick_budget
                         ));
@@ -358,22 +1331,25 @@ impl RtExecutor {
                 // the first miss.
                 node.in_safe_mode = false;
                 if let Some(hidden) = node.diag.allow(Diag::SafeStateLeave, monotonic_nanos()) {
-                    print_line(&format!(
+                    rt_diag(format_args!(
                         "[RT-thread] SafeMode: '{}' met its deadline again, leaving safe state{}",
                         node.name,
-                        suppressed_suffix(hidden)
+                        SuppressedSuffix(hidden)
                     ));
                 }
             }
             if let Some(dm) = miss {
                 if monitors.verbose {
                     if let Some(hidden) = node.diag.allow(Diag::DeadlineMiss, monotonic_nanos()) {
-                        print_line(&format!(
+                        // The report of a timing failure must not cost more
+                        // than the failure. This queues into a preallocated
+                        // ring; the blocking write happens on the drain thread.
+                        rt_diag(format_args!(
                             "[RT-thread] Deadline miss in '{}': {:?} > {:?}{}",
                             node.name,
                             dm.elapsed,
                             dm.deadline,
-                            suppressed_suffix(hidden)
+                            SuppressedSuffix(hidden)
                         ));
                     }
                 }
@@ -398,7 +1374,7 @@ impl RtExecutor {
                     let action =
                         monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
                     if !matches!(action, super::safety_monitor::DegradationAction::None) {
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] Degradation for '{}': {:?} after {} consecutive misses",
                             node.name, action, consecutive
                         ));
@@ -441,17 +1417,17 @@ impl RtExecutor {
                             if let Some(hidden) =
                                 node.diag.allow(Diag::SafeStateEnter, monotonic_nanos())
                             {
-                                print_line(&format!(
+                                rt_diag(format_args!(
                                     "[RT-thread] SafeMode: '{}' entering safe state after deadline miss{}",
                                     node.name,
-                                    suppressed_suffix(hidden)
+                                    SuppressedSuffix(hidden)
                                 ));
                             }
                             node.node.enter_safe_state();
                         }
                     }
                     DeadlineAction::EmergencyStop => {
-                        print_line(&format!(
+                        rt_diag(format_args!(
                             "[RT-thread] Emergency stop triggered by '{}'",
                             node.name
                         ));
@@ -647,10 +1623,19 @@ impl RtExecutor {
             }
         }
 
-        // SCHED_FIFO fallback (also the default when SCHED_DEADLINE not requested)
+        // SCHED_FIFO fallback (also the default when SCHED_DEADLINE not requested).
+        //
+        // Whether this SUCCEEDS is load-bearing, not cosmetic: Linux RT
+        // bandwidth control only polices SCHED_FIFO/SCHED_DEADLINE threads, so
+        // the tick loop's CPU draw only matters once one of them is actually
+        // granted. Without CAP_SYS_NICE this fails and the thread stays
+        // SCHED_OTHER — which is exactly why the busy-wait defect this file
+        // used to have was invisible on developer machines and in CI. Track it
+        // so `CyclicWaiter` can warn in the configuration that bites.
+        let mut rt_policy_active = deadline_active;
         if !deadline_active {
             match super::rt::set_realtime_priority(thread_priority) {
-                Ok(()) => {}
+                Ok(()) => rt_policy_active = true,
                 Err(e) => {
                     print_line(&format!(
                         "[RT-thread] Could not set SCHED_FIFO: {} (continuing with normal priority)",
@@ -660,18 +1645,13 @@ impl RtExecutor {
             }
         }
 
-        // Per-node core override: if any node in this chain specifies .core(), use that
-        let effective_cpus = {
-            let node_core = nodes.iter().filter_map(|n| n.pinned_core).next();
-            if let Some(core) = node_core {
-                vec![core]
-            } else {
-                rt_cpus.clone()
-            }
-        };
+        // `rt_cpus` arrives already resolved: `start_pool` applied the `.core(n)`
+        // override and the round-robin assignment together, because only it can
+        // see every chain at once and therefore only it can detect two chains
+        // claiming one core. Re-deriving it here would put the two halves of that
+        // decision back out of sync.
 
         // Pin to recommended RT CPU(s) to avoid cache thrashing and timer interrupts
-        let rt_cpus = effective_cpus;
         if !rt_cpus.is_empty() {
             match super::rt::set_thread_affinity(&rt_cpus) {
                 Ok(()) => {
@@ -737,6 +1717,11 @@ impl RtExecutor {
         // lazy initialization (e.g. a `Topic`'s SHM backend initializing on its
         // first recv/send) may allocate; steady-state ticks are then enforced.
         let mut warmed = vec![false; nodes.len()];
+
+        // Cyclic cadence on an absolute phase grid. Constructed here, after all
+        // the one-time setup above, so the phase anchor is not polluted by
+        // affinity/governor/IRQ work that only happens once.
+        let mut waiter = CyclicWaiter::new(tick_period, rt_policy_active, monitors.verbose);
 
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
@@ -807,9 +1792,12 @@ impl RtExecutor {
                 match infra_result {
                     Ok(()) => {} // normal completion
                     Err(_) => {
+                        // Queued, not printed: this runs on the RT thread, and
+                        // the comment that used to sit here claimed the
+                        // `format!` was being avoided while calling `format!`
+                        // and a blocking `print_line`.
                         if monitors.verbose {
-                            // Avoid format!() heap allocation in RT path — write directly to stderr
-                            crate::terminal::print_line(&format!(
+                            rt_diag(format_args!(
                                 "[RT-thread] Infrastructure panic for '{}' — node stopped",
                                 node.name
                             ));
@@ -819,27 +1807,19 @@ impl RtExecutor {
                 }
             }
 
-            // Sleep until next tick period
-            let elapsed = loop_start.elapsed();
-            if elapsed < tick_period {
-                // Use spin-wait for sub-millisecond precision on RT thread
-                if tick_period - elapsed < 1_u64.ms() {
-                    // Spin-wait for very short sleeps (better jitter than thread::sleep)
-                    while loop_start.elapsed() < tick_period {
-                        std::hint::spin_loop();
-                    }
-                } else {
-                    // Sleep for bulk of the time, then spin for the remainder
-                    let sleep_dur = (tick_period - elapsed) - 500_u64.us();
-                    if sleep_dur > Duration::ZERO {
-                        std::thread::sleep(sleep_dur);
-                    }
-                    while loop_start.elapsed() < tick_period {
-                        std::hint::spin_loop();
-                    }
-                }
-            }
+            // Wait out the period on an ABSOLUTE deadline grid.
+            //
+            // What used to be here spun the CPU for the whole period at any
+            // tick rate of 1 kHz or above, and computed its target as
+            // `loop_start + tick_period` with `loop_start` re-sampled every
+            // iteration — a busy-wait that RT bandwidth control punishes with a
+            // ~50 ms dequeue, on top of unbounded phase drift. See the
+            // `CyclicWaiter` section at the top of this file for the full
+            // reasoning and for the median-jitter cost this trade accepts.
+            waiter.wait();
         }
+
+        waiter.finish(monitors.verbose);
 
         if monitors.verbose {
             print_line(&format!(
@@ -3129,5 +4109,447 @@ mod tests {
         release.store(true, Ordering::SeqCst);
         running.store(false, Ordering::SeqCst);
         let _ = executor.stop();
+    }
+
+    // ========================================================================
+    // Cyclic wait: absolute phase grid, overrun policy, guard-spin bounds
+    // ========================================================================
+
+    /// Operator overrides would invalidate the default-value assertions below.
+    fn cyclic_env_overridden() -> bool {
+        std::env::var("HORUS_RT_SPIN_GUARD_US").is_ok() || std::env::var("HORUS_RT_WAIT").is_ok()
+    }
+
+    /// Deadlines must be `anchor + n*period`, never `now + period`.
+    ///
+    /// The difference is invisible in a tick *count* — both shapes tick roughly
+    /// the right number of times — so this asserts the invariant directly:
+    /// every slot the waiter produces is an exact integer multiple of the
+    /// period away from the anchor it started on. A "now + period" loop fails
+    /// this the moment a wake overshoots, which is every wake.
+    #[test]
+    fn test_cyclic_waiter_deadlines_stay_on_an_absolute_grid() {
+        let mut w = CyclicWaiter::new(Duration::from_millis(2), false, false);
+        let anchor = w.anchor_ns;
+        for _ in 0..10 {
+            w.wait();
+        }
+        assert_eq!(
+            (w.next_slot_ns - anchor) % w.period_ns,
+            0,
+            "slot {} is off the {}ns grid anchored at {} — deadlines are being \
+             computed relative to 'now', which accumulates drift",
+            w.next_slot_ns,
+            w.period_ns,
+            anchor
+        );
+        let advanced = (w.next_slot_ns - anchor) / w.period_ns;
+        assert!(
+            advanced >= 11,
+            "10 waits must advance the grid by at least 11 slots, got {advanced}"
+        );
+    }
+
+    /// An overrun drops whole slots and resumes on the ORIGINAL grid.
+    ///
+    /// It must not replay the missed ticks back to back: a burst of zero-slack
+    /// ticks is exactly the CPU pattern RT bandwidth control punishes, so a
+    /// catch-up policy would let one overrun manufacture the ~50 ms dequeue
+    /// this rewrite exists to remove. Recovery cost must also be O(1) in how
+    /// far behind the loop fell — no spiral.
+    #[test]
+    fn test_cyclic_waiter_overrun_skips_slots_without_catching_up() {
+        let mut w = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        let anchor = w.anchor_ns;
+
+        // Blow through ~20 slots without servicing any of them.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let t0 = Instant::now();
+        w.wait();
+        let waited = t0.elapsed();
+
+        assert_eq!(w.local.overruns, 1, "the missed slot must be counted");
+        assert!(
+            w.local.slots_skipped >= 15,
+            "expected ~20 dropped slots, got {}",
+            w.local.slots_skipped
+        );
+        assert_eq!(
+            (w.next_slot_ns - anchor) % w.period_ns,
+            0,
+            "an overrun must resume on the original phase grid, not re-anchor"
+        );
+        assert!(
+            waited < Duration::from_millis(10),
+            "overrun recovery took {waited:?}; it must cost about one period no \
+             matter how far behind the loop fell"
+        );
+    }
+
+    /// The guard spin is a named constant, and it is additionally capped as a
+    /// fraction of the period. A fixed guard is 2 % of a 1 kHz period but 20 %
+    /// of a 10 kHz one — it would walk the loop back toward the kernel's 95 %
+    /// RT bandwidth ceiling as the tick rate rises.
+    #[test]
+    fn test_guard_spin_is_clamped_to_a_fraction_of_the_period() {
+        let slow = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        assert!(
+            slow.guard_ns <= slow.period_ns >> SPIN_GUARD_PERIOD_SHIFT,
+            "guard {}ns exceeds 1/{} of a 1ms period",
+            slow.guard_ns,
+            1u32 << SPIN_GUARD_PERIOD_SHIFT
+        );
+
+        let fast = CyclicWaiter::new(Duration::from_micros(100), false, false);
+        assert!(
+            fast.guard_ns <= fast.period_ns >> SPIN_GUARD_PERIOD_SHIFT,
+            "guard {}ns exceeds 1/{} of a 100us period",
+            fast.guard_ns,
+            1u32 << SPIN_GUARD_PERIOD_SHIFT
+        );
+
+        if cyclic_env_overridden() {
+            return;
+        }
+        assert_eq!(
+            slow.guard_ns, SPIN_GUARD_DEFAULT_NS,
+            "a 1ms period has room for the full default guard"
+        );
+        assert_eq!(
+            fast.guard_ns,
+            100_000 >> SPIN_GUARD_PERIOD_SHIFT,
+            "a 100us period must clamp the default guard down"
+        );
+        assert!(fast.guard_ns < SPIN_GUARD_DEFAULT_NS);
+    }
+
+    /// The default must be the absolute sleep, not the busy-wait it replaced.
+    #[test]
+    fn test_absolute_sleep_is_the_default_wait_mode() {
+        if cyclic_env_overridden() {
+            return;
+        }
+        let w = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        let expected = if cfg!(target_os = "linux") {
+            WaitMode::AbsoluteSleep
+        } else {
+            WaitMode::PortableSleep
+        };
+        assert_eq!(
+            w.mode, expected,
+            "the tick loop must sleep to an absolute deadline by default; \
+             busy-waiting is opt-in via HORUS_RT_WAIT=spin"
+        );
+    }
+
+    // ========================================================================
+    // Non-blocking RT diagnostics
+    // ========================================================================
+
+    /// Search the claims made in `range` for a queued line matching `pred`.
+    ///
+    /// Reads the ring by claim index rather than through `rt_diag_drain`, for
+    /// two reasons: the drain thread other tests start would otherwise consume
+    /// the line first, and bracketing the emit with the head counter keeps the
+    /// assertion exact even when other tests emit concurrently.
+    fn find_queued(range: std::ops::Range<u64>, pred: impl Fn(&str) -> bool) -> Option<String> {
+        let mut buf = [0u8; RT_DIAG_LINE_CAP];
+        for idx in range {
+            let Some(len) = read_slot(idx, &mut buf) else {
+                continue;
+            };
+            if let Ok(text) = std::str::from_utf8(&buf[..len]) {
+                if pred(text) {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// A queued diagnostic must come back out byte-for-byte — the queue carries
+    /// the same information the blocking print used to, just not on this thread.
+    #[test]
+    fn test_rt_diag_queues_the_line_without_printing_it() {
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        rt_diag(format_args!("[RT-thread] marker {} {:?}", 4242, 1_u64.ms()));
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        let found = find_queued(before..after, |t| t.starts_with("[RT-thread] marker "))
+            .expect("the emitted line must be in the ring");
+        assert_eq!(
+            found, "[RT-thread] marker 4242 1ms",
+            "the queued bytes must be exactly what a print would have produced"
+        );
+    }
+
+    /// The ring is BOUNDED and the producer never waits on the consumer.
+    ///
+    /// That is the whole point: a deadline miss must not be able to block the
+    /// loop that missed. The cost of that guarantee is that a flood overwrites
+    /// its own oldest entries — so this asserts both halves, that the newest
+    /// survive and that the oldest are gone rather than queued forever.
+    #[test]
+    fn test_rt_diag_ring_is_bounded_and_drops_the_oldest() {
+        let start = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        let flood = RT_DIAG_SLOTS * 4;
+        for i in 0..flood - 1 {
+            rt_diag(format_args!("[RT-thread] flood {i}"));
+        }
+
+        let before_last = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        rt_diag(format_args!("[RT-thread] flood {}", flood - 1));
+        let after_last = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        let mut buf = [0u8; RT_DIAG_LINE_CAP];
+        assert!(
+            read_slot(start, &mut buf).is_none(),
+            "after {flood} emits into {RT_DIAG_SLOTS} slots the first line must have \
+             been recycled — an unbounded queue is a memory leak on the RT path"
+        );
+        assert!(
+            find_queued(before_last..after_last, |t| t
+                .ends_with(&format!("flood {}", flood - 1)))
+            .is_some(),
+            "the ring must keep the most recent line"
+        );
+    }
+
+    /// A line longer than a slot is truncated on a character boundary, not
+    /// dropped and not allowed to corrupt the slot.
+    #[test]
+    fn test_rt_diag_truncates_on_a_utf8_boundary() {
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        // Multi-byte characters straddling the cap: a naive byte cut produces
+        // invalid UTF-8 and the drain would discard the whole line entirely.
+        let long: String = "é".repeat(RT_DIAG_LINE_CAP);
+        rt_diag(format_args!("{long}"));
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        let text = find_queued(before..after, |t| !t.is_empty() && t.starts_with('é'))
+            .expect("a too-long line must still be queued, truncated");
+        assert!(
+            text.chars().all(|c| c == 'é'),
+            "truncation must land on a character boundary, got {text:?}"
+        );
+        assert!(text.len() <= RT_DIAG_LINE_CAP);
+    }
+
+    /// The RT tick path must reach the queue, not `print_line`.
+    ///
+    /// Runs a node that blows its deadline every tick and asserts the ring's
+    /// claim counter advanced — i.e. the deadline-miss report went through the
+    /// non-blocking sink. Before this change the same path called
+    /// `print_line(&format!(...))`, which takes the process-global stdout lock
+    /// and can block for as long as a slow reader wants.
+    #[test]
+    fn test_deadline_miss_reports_through_the_nonblocking_sink() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        // Sleeps 3 ms against a 200 us deadline: every tick misses. The budget
+        // is deliberately generous so only the deadline path reports.
+        let mut node = make_slow_rt_node(
+            "diag_late_node",
+            count.clone(),
+            3_000,
+            Duration::from_millis(100),
+            super::super::safety_monitor::BudgetPolicy::Warn,
+        );
+        node.deadline = Some(Duration::from_micros(200));
+        node.miss_policy = Miss::Warn;
+
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![vec![node]],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        std::thread::sleep(60_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "the node must have ticked at all"
+        );
+        assert!(
+            find_queued(before..after, |t| t.contains("Deadline miss")
+                && t.contains("diag_late_node"))
+            .is_some(),
+            "a deadline miss must queue its report instead of writing to stdout \
+             from the RT thread"
+        );
+    }
+
+    // ========================================================================
+    // One core, one RT chain
+    // ========================================================================
+
+    fn pinned_chain(name: &str, core: usize) -> Vec<RegisteredNode> {
+        let mut node = make_rt_registered(name, Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        node.pinned_core = Some(core);
+        vec![node]
+    }
+
+    /// Two chains explicitly pinned to the same core is a configuration the
+    /// system must not accept silently.
+    ///
+    /// SCHED_FIFO does not time-slice between equal priorities, so the second
+    /// chain runs only in whatever the first leaves — every tick of one is added
+    /// in full to the other's worst-case wake latency. The operator named the
+    /// core twice; there is no fallback intent to infer, so this is refused
+    /// rather than warned about.
+    #[test]
+    fn test_two_chains_on_one_explicit_core_are_refused() {
+        if std::env::var(ALLOW_CORE_SHARING_ENV).is_ok() {
+            return; // operator opted out of the check
+        }
+        let running = Arc::new(AtomicBool::new(true));
+        let started = RtExecutor::start_pool(
+            vec![pinned_chain("pin_a", 0), pinned_chain("pin_b", 0)],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        );
+
+        let err = match started {
+            Ok(executor) => {
+                running.store(false, Ordering::SeqCst);
+                let _ = executor.stop();
+                panic!(
+                    "two RT chains pinned to CPU 0 must be refused at startup, not \
+                     discovered later as a watchdog e-stop"
+                );
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("CPU 0"), "{err}");
+        assert!(
+            err.contains(ALLOW_CORE_SHARING_ENV),
+            "the refusal must name its escape hatch: {err}"
+        );
+    }
+
+    /// Distinct explicit cores are the correct configuration and must start.
+    #[test]
+    fn test_two_chains_on_distinct_explicit_cores_start() {
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            vec![pinned_chain("pin_c", 0), pinned_chain("pin_d", 1)],
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            Vec::new(),
+        )
+        .expect("one core per chain is exactly the supported configuration");
+
+        std::thread::sleep(20_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(executor.stop().len(), 2);
+    }
+
+    /// More chains than RT CPUs is a shortage, not a statement of intent.
+    ///
+    /// Refusing would mean a two-core controller cannot run three RT chains at
+    /// all, and with the absolute-sleep wait the chains do interleave. It warns
+    /// loudly and starts — the distinction from the explicit case is deliberate.
+    #[test]
+    fn test_round_robin_core_exhaustion_warns_but_starts() {
+        if spin_wait_requested() {
+            return; // under a pure spin this configuration is refused instead
+        }
+        let counts: Vec<_> = (0..3)
+            .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .collect();
+        let chains: Vec<Vec<RegisteredNode>> = counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| vec![make_rt_registered(&format!("rr_node_{i}"), c.clone())])
+            .collect();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let executor = RtExecutor::start_pool(
+            chains,
+            running.clone(),
+            1_u64.ms(),
+            test_monitors(),
+            vec![0], // three chains, one CPU: the round-robin wraps twice
+        )
+        .expect("a CPU shortage must degrade, not refuse to start");
+
+        std::thread::sleep(40_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(executor.stop().len(), 3);
+    }
+
+    /// The core each chain lands on must be resolved in one place.
+    ///
+    /// It used to be split — `start_pool` did the round-robin and the RT thread
+    /// silently overrode it from `.core(n)` — which is precisely why no
+    /// collision check was possible: the only code that could see every chain
+    /// did not know what core any of them would end up on.
+    #[test]
+    fn test_chain_core_resolution_prefers_an_explicit_pin() {
+        let chains = vec![
+            pinned_chain("explicit", 7),
+            vec![make_rt_registered(
+                "implicit",
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            )],
+        ];
+        let cores = resolve_chain_cores(&chains, &[3, 4]);
+        assert_eq!(
+            cores[0],
+            ChainCore {
+                cpu: Some(7),
+                explicit: true
+            },
+            ".core(7) must win over the round-robin slot"
+        );
+        assert_eq!(
+            cores[1],
+            ChainCore {
+                cpu: Some(4),
+                explicit: false
+            },
+            "an unpinned chain takes its round-robin slot"
+        );
+
+        // No RT CPU list and no explicit pin: nothing is being claimed, so there
+        // is no collision to report.
+        let cores = resolve_chain_cores(&chains[1..], &[]);
+        assert_eq!(cores[0].cpu, None);
+    }
+
+    /// The median-for-tail trade must be measurable, not merely asserted in a
+    /// comment: the wake path publishes what it actually cost.
+    #[test]
+    fn test_rt_wait_stats_are_published() {
+        let before = rt_wait_stats().slots;
+        let mut w = CyclicWaiter::new(Duration::from_millis(1), false, false);
+        for _ in 0..5 {
+            w.wait();
+        }
+        w.finish(false);
+
+        let after = rt_wait_stats();
+        assert!(
+            after.slots >= before + 5,
+            "cyclic wait slots must reach the process-wide counters ({} -> {})",
+            before,
+            after.slots
+        );
+        assert!(
+            after.wake_late_total_ns > 0,
+            "wake lateness must be recorded — it is the measured cost of \
+             giving up the busy-wait"
+        );
     }
 }

@@ -57,12 +57,80 @@ fn local_state_fits_four_cache_lines() {
     // (fanout_shm_pub_id/sub_id + the two `flock` guard fields fanout_pub_lock/
     // sub_lock), touched only once per endpoint at register/teardown, never per
     // message. That grew the total footprint from 3 to 4 cache lines (200 bytes).
+    // The budget is platform-specific because two of those cold guard fields are
+    // `Option<FileLock>`, and `FileLock` wraps a `std::fs::File`: a 4-byte fd on
+    // Unix, an 8-byte HANDLE on Windows. That is the whole difference, it is
+    // entirely in the cold tail, and it puts the Windows total at 272. Asserting
+    // 256 everywhere asserted that a file descriptor is four bytes on every
+    // platform, which is why this failed the moment the Windows job could build
+    // and run for the first time. Both bounds are exact, so either platform
+    // growing a field still trips the test.
+    #[cfg(not(windows))]
+    const BUDGET: usize = 256;
+    #[cfg(windows)]
+    const BUDGET: usize = 272;
+
     let size = mem::size_of::<LocalState>();
     assert!(
-        size <= 256,
-        "LocalState should fit in 4 cache lines, got {} bytes ({} cache lines)",
+        size <= BUDGET,
+        "LocalState should fit in {} bytes, got {} bytes ({} cache lines)",
+        BUDGET,
         size,
         size.div_ceil(64)
+    );
+
+    // The comment above names the invariant that actually matters — every field
+    // the per-message path touches stays inside the first 64 bytes — and the
+    // size check alone does not enforce it: a cold field inserted anywhere in
+    // the first line would push a hot one out while keeping the total under
+    // 256, and the test would stay green. `#[repr(C)]` makes the offsets
+    // well-defined, so state the invariant rather than the total.
+    const LINE: usize = 64;
+    assert_eq!(
+        mem::offset_of!(LocalState, cached_mode),
+        0,
+        "cached_mode is the first thing send() checks, so it leads the struct"
+    );
+    for (field, off) in [
+        ("msg_counter", mem::offset_of!(LocalState, msg_counter)),
+        ("local_head", mem::offset_of!(LocalState, local_head)),
+        (
+            "cached_capacity_mask",
+            mem::offset_of!(LocalState, cached_capacity_mask),
+        ),
+        (
+            "cached_data_ptr",
+            mem::offset_of!(LocalState, cached_data_ptr),
+        ),
+        ("local_tail", mem::offset_of!(LocalState, local_tail)),
+        (
+            "cached_capacity",
+            mem::offset_of!(LocalState, cached_capacity),
+        ),
+        (
+            "cached_header_ptr",
+            mem::offset_of!(LocalState, cached_header_ptr),
+        ),
+        (
+            "cached_seq_ptr",
+            mem::offset_of!(LocalState, cached_seq_ptr),
+        ),
+    ] {
+        assert!(
+            off < LINE,
+            "{field} is read on the per-message path but sits at offset {off}; \
+             anything at {LINE} or beyond costs a second cache line per send"
+        );
+    }
+    let hot_end = mem::offset_of!(LocalState, cached_seq_ptr) + mem::size_of::<*mut u8>();
+    assert!(
+        hot_end <= LINE,
+        "the hot section now ends at byte {hot_end}, past the first cache line"
+    );
+    // The first cold field must start line 2, not share line 1.
+    assert!(
+        mem::offset_of!(LocalState, slot_index) >= LINE,
+        "slot_index is cold registration state and must not share the hot line"
     );
 }
 
@@ -413,24 +481,31 @@ fn topic_has_message_and_pending_count() {
     assert!(t.pending_count() >= 1);
 }
 
+/// A same-thread self-loop settles on SpscShm.
+///
+/// There is no "direct channel" backend — the intra-process discriminants were
+/// retired and now decode to `Unknown` (`backend_mode_from_integer`), so the old
+/// name promised a mechanism that no longer exists. The old assertion also
+/// accepted `BackendMode::Unknown`, which is `LocalState`'s *initial* value:
+/// a topic whose backend detection never ran at all would have passed it.
+/// `dispatch_selects_direct_channel_for_same_instance` and
+/// `dispatch_pod_type_same_thread_direct_channel` already assert the strict
+/// `SpscShm` form after the same send/recv pair.
 #[test]
-fn topic_same_thread_uses_direct_channel() {
+fn topic_same_thread_self_loop_settles_on_spsc_shm() {
     let t: Topic<u64> = Topic::new(unique("dc_mode")).expect("create");
     // Trigger backend detection (recv must complete to settle the backend).
     t.send(1);
     assert_eq!(t.recv(), Some(1));
 
     // Real topics are SHM-backed (creator_pid set), so a same-thread self-loop
-    // resolves to SpscShm. The exact settled state may still read Unknown before
-    // the first migration check fires; the invariant is simply "an SHM backend".
+    // resolves to SpscShm.
     let local = t.ring.local();
-    assert!(
-        matches!(
-            local.cached_mode,
-            BackendMode::SpscShm | BackendMode::Unknown
-        ),
-        "Same-thread real topic must be SHM-backed (or not-yet-migrated); got {:?}",
-        local.cached_mode
+    assert_eq!(
+        local.cached_mode,
+        BackendMode::SpscShm,
+        "a same-thread real topic must settle on SpscShm; Unknown here means \
+         backend detection never ran"
     );
 }
 
@@ -1920,6 +1995,25 @@ fn rapid_migration_no_crash() {
         t.send(round as u64);
         let _ = t.recv();
     }
+
+    // The loop above asserted nothing, so on its own it could not tell "100
+    // migrations survived" from "force_migrate silently did nothing 100 times".
+    // Two things have to hold afterwards: the transitions really happened, and
+    // the topic is still usable.
+    let epoch = t.ring.header().migration_epoch.load(Ordering::Acquire);
+    assert!(
+        epoch > 0,
+        "100 forced transitions across {} distinct modes left migration_epoch \
+         at 0 — no migration ever ran, so nothing was hammered",
+        modes.len() - 1
+    );
+    while t.recv().is_some() {}
+    t.send(u64::MAX);
+    assert_eq!(
+        t.recv(),
+        Some(u64::MAX),
+        "the topic must still deliver after the migration hammering"
+    );
 }
 
 // ============================================================================
@@ -2141,20 +2235,30 @@ fn shm_pod_backend_send_recv() {
             }
         }
         _ => {
-            // SHM not available — verify we don't crash and fallback works
+            // force_migrate did not move the topic — SHM unavailable, or the
+            // topic is already on the optimal backend (`NotNeeded`). Either way
+            // the handle must still carry a message end to end; that is what
+            // "the fallback works" means, and it is what the previous
+            // `v.is_some() || v.is_none()` assertion — true of every possible
+            // Option — failed to say.
+            while t.recv().is_some() {}
             t.send(42);
-            let v = t.recv();
-            assert!(
-                v.is_some() || v.is_none(),
-                "Must not panic on SHM unavailable"
+            assert_eq!(
+                t.recv(),
+                Some(42),
+                "a topic that did not migrate must still deliver on the \
+                 backend it kept"
             );
         }
     }
 }
 
+/// Basic send/recv over the FanoutShm backend. (Named `shm_mpmc_*` until now;
+/// `BackendMode::MpmcShm` does not exist — the mode this migrates to is
+/// `FanoutShm`.)
 #[test]
-fn shm_mpmc_backend_send_recv() {
-    let name = unique("shm_mpmc");
+fn shm_fanout_backend_send_recv() {
+    let name = unique("shm_fanout");
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(1);
     let _ = t.recv();
@@ -2170,12 +2274,23 @@ fn shm_mpmc_backend_send_recv() {
                     count += 1;
                 }
             }
-            assert!(count > 0, "MpmcShm: should receive at least some messages");
+            assert!(
+                count > 0,
+                "FanoutShm: should receive at least some messages"
+            );
         }
         _ => {
-            // Graceful fallback
+            // Graceful fallback: the migration did not happen, so the topic
+            // must still deliver on the backend it kept. This arm used to
+            // discard the recv result, which made it unfailable.
+            while t.recv().is_some() {}
             t.send(42);
-            let _ = t.recv();
+            assert_eq!(
+                t.recv(),
+                Some(42),
+                "a topic that did not migrate must still deliver on the \
+                 backend it kept"
+            );
         }
     }
 }
@@ -2357,25 +2472,35 @@ fn dispatch_migration_during_burst() {
 // bump process_epoch to trigger the epoch_guard in the dispatch function.
 //
 // Types tested:
-//   - u64:      small POD  (sizeof+8=16 ≤ 64 → co-located layout)
-//   - [u64; 8]: large POD  (sizeof+8=72 > 64 → separate seq layout)
+//   - u64:      small POD  (size_of+8 = 16 ≤ 64 → 64-byte slot allocation)
+//   - [u64; 8]: large POD  (size_of+8 = 72 >  64 → slot allocation == size_of)
 //   - String:   non-POD    (→ bincode serde dispatch)
 //
-// Dispatch functions exercised per test:
-//   (SpscShm shares the MpscShm atomic-claim + per-slot-flag dispatch since the
-//    multi-producer convergence fix, softmata-brain 1327 — so these tests exercise
-//    the send_shm_mp_* / recv_shm_mpsc_* functions, same as MpscShm below.)
-//   SpscShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpsc_pod_colo
-//   SpscShm + [u64;8] → send_shm_mp_pod         / recv_shm_mpsc_pod
-//   SpscShm + String  → send_shm_mp_serde        / recv_shm_mpsc_serde
-//   SpmcShm + u64     → send_shm_sp_pod_colo    / recv_shm_spmc_pod_colo
-//   SpmcShm + String  → send_shm_sp_serde        / recv_shm_spmc_serde
-//   MpscShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpsc_pod_colo
-//   MpscShm + String  → send_shm_mp_serde        / recv_shm_mpsc_serde
-//   MpmcShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpmc_pod_colo
-//   MpmcShm + String  → send_shm_mp_serde        / recv_shm_mpmc_serde
-//   PodShm  + u64     → send_shm_pod_bcast_colo / recv_shm_pod_bcast_colo
-//   PodShm  + [u64;8] → send_shm_pod_broadcast  / recv_shm_pod_broadcast
+// A type's size changes the ring's ALLOCATION stride and nothing else: the
+// dispatch pair is chosen from (mode, is_pod) alone, so u64 and [u64; 8] on the
+// same backend run the *same* two functions and index the data region with the
+// same `(cached_data_ptr as *T).add(index)`. There is no size-dependent
+// "co-located" dispatch — no `*_colo` function exists in `dispatch.rs`, and no
+// POD path has ever addressed a `[seq(8) | data(T) | pad to 64]` slot. The
+// small/large pairs below are therefore two payload sizes over one code path,
+// which is worth having (alignment, `simd_aware_write` widths, slot padding)
+// but is not two code paths. See
+// `pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t`.
+//
+// Dispatch functions exercised per test, transcribed from
+// `RingTopic::resolve_send_fn` / `resolve_recv_fn`. POD size never appears in
+// either match, which is the point made above. SpscShm shares the MpscShm
+// atomic-claim + per-slot-flag dispatch since the multi-producer convergence fix
+// (softmata-brain 1327). The tests below that say "mpmc" migrate to `FanoutShm`
+// — there is no `BackendMode::MpmcShm`.
+//   SpscShm   + POD   → send_shm_mp_pod        / recv_shm_mpsc_pod
+//   SpscShm   + serde → send_shm_mp_serde      / recv_shm_mpsc_serde
+//   MpscShm   + POD   → send_shm_mp_pod        / recv_shm_mpsc_pod
+//   MpscShm   + serde → send_shm_mp_serde      / recv_shm_mpsc_serde
+//   SpmcShm   + POD   → send_shm_sp_pod        / recv_shm_spmc_pod
+//   SpmcShm   + serde → send_shm_sp_serde      / recv_shm_spmc_serde
+//   PodShm    + any   → send_shm_pod_broadcast / recv_shm_pod_broadcast
+//   FanoutShm + any   → send_fanout_shm        / recv_fanout_shm
 
 /// Force dispatch fn ptr re-installation by desyncing process_epoch from
 /// the Topic's cached_epoch. The next try_send/try_recv will trigger the
@@ -2388,9 +2513,16 @@ fn trigger_shm_dispatch(name: &str) {
 
 // ---- SpscShm ----
 
+/// SpscShm carrying a small (8-byte) POD payload.
+///
+/// Named `..._pod_colo` until now, which promised a co-located slot layout and
+/// a `*_colo` dispatch pair. Neither exists — see the section comment above.
+/// What a small payload actually changes is the ring's allocation stride, and
+/// that is pinned by
+/// `pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t`.
 #[test]
-fn shm_dispatch_spsc_pod_colo() {
-    let name = unique("shm_d_spsc_colo");
+fn shm_dispatch_spsc_small_pod() {
+    let name = unique("shm_d_spsc_small");
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
@@ -2401,32 +2533,38 @@ fn shm_dispatch_spsc_pod_colo() {
             trigger_shm_dispatch(&name);
             // First try_send triggers epoch_guard → SHM dispatch installed
             for i in 1..=64u64 {
-                assert!(t.try_send(i).is_ok(), "SpscShm POD colo: send {} failed", i);
+                assert!(
+                    t.try_send(i).is_ok(),
+                    "SpscShm small POD: send {} failed",
+                    i
+                );
             }
             let mut received = Vec::new();
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "SpscShm POD colo: no messages");
+            assert!(!received.is_empty(), "SpscShm small POD: no messages");
             // SPSC preserves ordering
             for w in received.windows(2) {
                 assert!(
                     w[1] > w[0],
-                    "SpscShm POD colo: order broken {} → {}",
+                    "SpscShm small POD: order broken {} → {}",
                     w[0],
                     w[1]
                 );
             }
             assert_eq!(*received.last().unwrap(), 64);
-            eprintln!("SpscShm POD colo: {}/64", received.len());
+            eprintln!("SpscShm small POD: {}/64", received.len());
         }
         other => eprintln!("SpscShm unavailable: {:?}", other),
     }
 }
 
+/// SpscShm carrying a large (64-byte) POD payload — the same dispatch pair as
+/// the small-payload case above, over a ring whose slots are unpadded.
 #[test]
-fn shm_dispatch_spsc_pod_separate() {
-    let name = unique("shm_d_spsc_sep");
+fn shm_dispatch_spsc_large_pod() {
+    let name = unique("shm_d_spsc_large");
     let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
     t.send([0u64; 8]);
     let _ = t.recv();
@@ -2444,11 +2582,11 @@ fn shm_dispatch_spsc_pod_separate() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "SpscShm POD separate: no messages");
+            assert!(!received.is_empty(), "SpscShm large POD: no messages");
             for v in &received {
-                assert_eq!(v[7], v[0] * 100, "SpscShm POD separate: corruption {:?}", v);
+                assert_eq!(v[7], v[0] * 100, "SpscShm large POD: corruption {:?}", v);
             }
-            eprintln!("SpscShm POD separate: {}/32", received.len());
+            eprintln!("SpscShm large POD: {}/32", received.len());
         }
         other => eprintln!("SpscShm unavailable: {:?}", other),
     }
@@ -2489,9 +2627,10 @@ fn shm_dispatch_spsc_serde() {
 
 // ---- SpmcShm ----
 
+/// SpmcShm carrying a small (8-byte) POD payload.
 #[test]
-fn shm_dispatch_spmc_pod_colo() {
-    let name = unique("shm_d_spmc_colo");
+fn shm_dispatch_spmc_small_pod() {
+    let name = unique("shm_d_spmc_small");
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
@@ -2507,11 +2646,11 @@ fn shm_dispatch_spmc_pod_colo() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "SpmcShm POD colo: no messages");
+            assert!(!received.is_empty(), "SpmcShm small POD: no messages");
             for &v in &received {
-                assert!((1..=64).contains(&v), "SpmcShm POD colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "SpmcShm small POD: corrupt {}", v);
             }
-            eprintln!("SpmcShm POD colo: {}/64", received.len());
+            eprintln!("SpmcShm small POD: {}/64", received.len());
         }
         other => eprintln!("SpmcShm unavailable: {:?}", other),
     }
@@ -2546,9 +2685,10 @@ fn shm_dispatch_spmc_serde() {
 
 // ---- MpscShm ----
 
+/// MpscShm carrying a small (8-byte) POD payload.
 #[test]
-fn shm_dispatch_mpsc_pod_colo() {
-    let name = unique("shm_d_mpsc_colo");
+fn shm_dispatch_mpsc_small_pod() {
+    let name = unique("shm_d_mpsc_small");
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
@@ -2564,11 +2704,11 @@ fn shm_dispatch_mpsc_pod_colo() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "MpscShm POD colo: no messages");
+            assert!(!received.is_empty(), "MpscShm small POD: no messages");
             for &v in &received {
-                assert!((1..=64).contains(&v), "MpscShm POD colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "MpscShm small POD: corrupt {}", v);
             }
-            eprintln!("MpscShm POD colo: {}/64", received.len());
+            eprintln!("MpscShm small POD: {}/64", received.len());
         }
         other => eprintln!("MpscShm unavailable: {:?}", other),
     }
@@ -2601,11 +2741,12 @@ fn shm_dispatch_mpsc_serde() {
     }
 }
 
-// ---- MpmcShm ----
+// ---- FanoutShm (these tests say "mpmc"; there is no BackendMode::MpmcShm) ----
 
+/// FanoutShm carrying a small (8-byte) POD payload.
 #[test]
-fn shm_dispatch_mpmc_pod_colo() {
-    let name = unique("shm_d_mpmc_colo");
+fn shm_dispatch_fanout_small_pod() {
+    let name = unique("shm_d_fanout_small");
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
@@ -2625,22 +2766,22 @@ fn shm_dispatch_mpmc_pod_colo() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "MpmcShm POD colo: no messages");
+            assert!(!received.is_empty(), "FanoutShm small POD: no messages");
             for &v in &received {
-                assert!((1..=64).contains(&v), "MpmcShm POD colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "FanoutShm small POD: corrupt {}", v);
             }
-            eprintln!("MpmcShm POD colo: {}/64", received.len());
+            eprintln!("FanoutShm small POD: {}/64", received.len());
         }
-        other => eprintln!("MpmcShm unavailable: {:?}", other),
+        other => eprintln!("FanoutShm unavailable: {:?}", other),
     }
 }
 
 // ---- PodShm broadcast ----
 
+/// PodShm broadcast carrying a large (64-byte) POD payload — unpadded slots.
 #[test]
-fn shm_dispatch_pod_broadcast_separate() {
-    // Large POD → separate seq layout (non-colo) through PodShm broadcast
-    let name = unique("shm_d_bcast_sep");
+fn shm_dispatch_pod_broadcast_large_pod() {
+    let name = unique("shm_d_bcast_large");
     let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
     t.send([0u64; 8]);
     let _ = t.recv();
@@ -2659,11 +2800,11 @@ fn shm_dispatch_pod_broadcast_separate() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "PodShm separate: no messages");
+            assert!(!received.is_empty(), "PodShm large POD: no messages");
             for v in &received {
-                assert_eq!(v[7], v[0] * 100, "PodShm separate: corruption {:?}", v);
+                assert_eq!(v[7], v[0] * 100, "PodShm large POD: corruption {:?}", v);
             }
-            eprintln!("PodShm separate: {}/32", received.len());
+            eprintln!("PodShm large POD: {}/32", received.len());
         }
         other => eprintln!("PodShm unavailable: {:?}", other),
     }
@@ -2875,14 +3016,14 @@ fn auto_grow_increases_slot_size_in_header() {
     t.send("x".to_string());
     let _ = t.recv();
 
-    let old_slot_size = t.header().slot_size;
+    let old_slot_size = t.header().slot_size.load(Ordering::Acquire);
     assert_eq!(old_slot_size, 64, "Initial slot_size should be 64");
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
         // Trigger auto-grow: 100-char string → ~108 bytes serialized > 48 max
         let _ = t.try_send("C".repeat(100));
-        let new_slot_size = t.header().slot_size;
+        let new_slot_size = t.header().slot_size.load(Ordering::Acquire);
         assert!(
             new_slot_size > old_slot_size,
             "slot_size should have grown: {} → {}",
@@ -2943,14 +3084,14 @@ fn auto_grow_multiple_grows() {
     let _ = t.force_migrate(BackendMode::SpscShm);
     trigger_shm_dispatch(&name);
     let _ = t.try_send(vec![0xAA; 80]);
-    let slot_after_1 = t.header().slot_size;
+    let slot_after_1 = t.header().slot_size.load(Ordering::Acquire);
     assert!(slot_after_1 > 64, "First grow should increase slot_size");
 
     // Second grow: need ~500 bytes (force back to SHM first)
     let _ = t.force_migrate(BackendMode::SpscShm);
     trigger_shm_dispatch(&name);
     let _ = t.try_send(vec![0xBB; 480]);
-    let slot_after_2 = t.header().slot_size;
+    let slot_after_2 = t.header().slot_size.load(Ordering::Acquire);
     assert!(
         slot_after_2 > slot_after_1,
         "Second grow should increase further: {} → {}",
@@ -2962,7 +3103,7 @@ fn auto_grow_multiple_grows() {
     let _ = t.force_migrate(BackendMode::SpscShm);
     trigger_shm_dispatch(&name);
     let _ = t.try_send(vec![0xCC; 2000]);
-    let slot_after_3 = t.header().slot_size;
+    let slot_after_3 = t.header().slot_size.load(Ordering::Acquire);
     assert!(
         slot_after_3 > slot_after_2,
         "Third grow should increase further: {} → {}",
@@ -3009,7 +3150,7 @@ fn auto_grow_boundary_exact_fit() {
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
-        let old_slot = t.header().slot_size;
+        let old_slot = t.header().slot_size.load(Ordering::Acquire);
 
         // 40 chars → bincode 48 bytes = max_data_len (64 - 16). Exact fit.
         let result = t.try_send("F".repeat(40));
@@ -3018,7 +3159,7 @@ fn auto_grow_boundary_exact_fit() {
             "Exact-fit message should succeed without grow"
         );
         assert_eq!(
-            t.header().slot_size,
+            t.header().slot_size.load(Ordering::Acquire),
             old_slot,
             "Slot size should NOT change for exact-fit message"
         );
@@ -3036,12 +3177,12 @@ fn auto_grow_one_byte_over() {
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
-        let old_slot = t.header().slot_size;
+        let old_slot = t.header().slot_size.load(Ordering::Acquire);
 
         // 41 chars → bincode 49 bytes > max_data_len 48. One byte over.
         let _ = t.try_send("G".repeat(41));
         assert!(
-            t.header().slot_size > old_slot,
+            t.header().slot_size.load(Ordering::Acquire) > old_slot,
             "One-byte-over should trigger grow"
         );
     }
@@ -3086,7 +3227,7 @@ fn auto_grow_vec_u8_large_payload() {
 
     if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
         trigger_shm_dispatch(&name);
-        let old_slot = t.header().slot_size;
+        let old_slot = t.header().slot_size.load(Ordering::Acquire);
 
         // 16KB payload → spills to TensorPool (above 4KB threshold)
         let large_msg = vec![0xAB_u8; 16384];
@@ -3102,7 +3243,7 @@ fn auto_grow_vec_u8_large_payload() {
             }
         }
 
-        let new_slot = t.header().slot_size;
+        let new_slot = t.header().slot_size.load(Ordering::Acquire);
         // With auto-spill, slot size should NOT grow for large messages.
         // The message is spilled to TensorPool, keeping ring buffer compact.
         // Note: if spill fails (pool unavailable), auto-grow kicks in as fallback.
@@ -3202,6 +3343,23 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
                     v
                 );
             }
+
+            // The pointer itself, which is what the name is about. Round-trip
+            // data alone cannot distinguish "restored correctly" from "left
+            // pointing somewhere else that happens to be self-consistent for
+            // one handle" — the mismatch that motivated the fix.
+            let hdr = t.ring.header();
+            let base = hdr as *const super::header::TopicHeader as usize;
+            let capacity = hdr.capacity as usize;
+            let data_off = t.ring.local().cached_data_ptr as usize - base;
+            assert_eq!(
+                data_off,
+                super::shm_layout::data_region_offset(capacity),
+                "cached_data_ptr is {data_off} bytes into the region; the SHM \
+                 ring's data starts after the header and the {capacity}-entry \
+                 sequence array"
+            );
+
             eprintln!("DC→SHM pointer restore: {}/10", received.len());
         }
         other => eprintln!("SpscShm unavailable: {:?}", other),
@@ -3516,13 +3674,19 @@ fn shm_pod_byte_exact_integrity_array() {
 }
 
 // ============================================================================
-// 36. SHM POD separate-seq for non-SPSC variants
+// 36. Large POD payloads on the non-SPSC backends
 // ============================================================================
+//
+// These were named `*_separate_seq`, against a `*_colo` counterpart, as though
+// the two sizes reached different code. They do not: the sequence array is
+// separate for every POD type at every size, and the dispatch pair comes from
+// (mode, is_pod). What a large payload changes is the ring's allocation stride —
+// see `pod_ring_stops_padding_slots_once_the_type_exceeds_fifty_six_bytes`.
 
+/// Large (64-byte) POD payload through MpscShm → send_shm_mp_pod.
 #[test]
-fn shm_dispatch_mpsc_pod_separate_seq() {
-    // Large POD through MpscShm → send_shm_mp_pod (separate seq layout)
-    let name = unique("shm_d_mpsc_sep");
+fn shm_dispatch_mpsc_large_pod() {
+    let name = unique("shm_d_mpsc_large");
     let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
     t.send([0u64; 8]);
     let _ = t.recv();
@@ -3540,25 +3704,20 @@ fn shm_dispatch_mpsc_pod_separate_seq() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "MpscShm POD separate: no messages");
+            assert!(!received.is_empty(), "MpscShm large POD: no messages");
             for v in &received {
-                assert_eq!(
-                    v[7],
-                    v[0] * 1000,
-                    "MpscShm POD separate: corruption {:?}",
-                    v
-                );
+                assert_eq!(v[7], v[0] * 1000, "MpscShm large POD: corruption {:?}", v);
             }
-            eprintln!("MpscShm POD separate: {}/16", received.len());
+            eprintln!("MpscShm large POD: {}/16", received.len());
         }
         other => eprintln!("MpscShm unavailable: {:?}", other),
     }
 }
 
+/// Large (64-byte) POD payload through FanoutShm → send_fanout_shm.
 #[test]
-fn shm_dispatch_mpmc_pod_separate_seq() {
-    // Large POD through MpmcShm → send_shm_mp_pod (separate seq layout)
-    let name = unique("shm_d_mpmc_sep");
+fn shm_dispatch_fanout_large_pod() {
+    let name = unique("shm_d_fanout_large");
     let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
     t.send([0u64; 8]);
     let _ = t.recv();
@@ -3578,20 +3737,20 @@ fn shm_dispatch_mpmc_pod_separate_seq() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "MpmcShm POD separate: no messages");
+            assert!(!received.is_empty(), "FanoutShm large POD: no messages");
             for v in &received {
-                assert_eq!(v[7], v[0] * 999, "MpmcShm POD separate: corruption {:?}", v);
+                assert_eq!(v[7], v[0] * 999, "FanoutShm large POD: corruption {:?}", v);
             }
-            eprintln!("MpmcShm POD separate: {}/16", received.len());
+            eprintln!("FanoutShm large POD: {}/16", received.len());
         }
-        other => eprintln!("MpmcShm unavailable: {:?}", other),
+        other => eprintln!("FanoutShm unavailable: {:?}", other),
     }
 }
 
+/// Large (64-byte) POD payload through SpmcShm → send_shm_sp_pod.
 #[test]
-fn shm_dispatch_spmc_pod_separate_seq() {
-    // Large POD through SpmcShm → send_shm_sp_pod (separate seq layout)
-    let name = unique("shm_d_spmc_sep");
+fn shm_dispatch_spmc_large_pod() {
+    let name = unique("shm_d_spmc_large");
     let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
     t.send([0u64; 8]);
     let _ = t.recv();
@@ -3609,24 +3768,26 @@ fn shm_dispatch_spmc_pod_separate_seq() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "SpmcShm POD separate: no messages");
+            assert!(!received.is_empty(), "SpmcShm large POD: no messages");
             for v in &received {
-                assert_eq!(v[7], v[0] * 777, "SpmcShm POD separate: corruption {:?}", v);
+                assert_eq!(v[7], v[0] * 777, "SpmcShm large POD: corruption {:?}", v);
             }
-            eprintln!("SpmcShm POD separate: {}/16", received.len());
+            eprintln!("SpmcShm large POD: {}/16", received.len());
         }
         other => eprintln!("SpmcShm unavailable: {:?}", other),
     }
 }
 
 // ============================================================================
-// 37. PodShm broadcast co-located
+// 37. PodShm broadcast, small payload
 // ============================================================================
 
+/// PodShm broadcast carrying a small (8-byte) POD payload — the padded-slot
+/// side of the allocation branch, same `send_shm_pod_broadcast` code as the
+/// large-payload case in section 34.
 #[test]
-fn shm_dispatch_pod_broadcast_colo() {
-    // Small POD → co-located slot layout through PodShm broadcast
-    let name = unique("shm_d_bcast_colo");
+fn shm_dispatch_pod_broadcast_small_pod() {
+    let name = unique("shm_d_bcast_small");
     let t: Topic<u64> = Topic::new(&name).expect("create");
     t.send(0);
     let _ = t.recv();
@@ -3642,11 +3803,11 @@ fn shm_dispatch_pod_broadcast_colo() {
             while let Some(v) = t.try_recv() {
                 received.push(v);
             }
-            assert!(!received.is_empty(), "PodShm colo: no messages");
+            assert!(!received.is_empty(), "PodShm small POD: no messages");
             for &v in &received {
-                assert!((1..=64).contains(&v), "PodShm colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "PodShm small POD: corrupt {}", v);
             }
-            eprintln!("PodShm colo: {}/64", received.len());
+            eprintln!("PodShm small POD: {}/64", received.len());
         }
         other => eprintln!("PodShm unavailable: {:?}", other),
     }
@@ -3683,19 +3844,23 @@ fn shm_broadcast_multi_subscriber_fanout() {
             let latest2 = sub2.read_latest();
             let latest3 = sub3.read_latest();
 
-            // At least one subscriber should see data
-            let any_received = latest1.is_some() || latest2.is_some() || latest3.is_some();
-            if any_received {
-                // Verify the value is within expected range
-                for (i, lat) in [latest1, latest2, latest3].iter().enumerate() {
-                    if let Some(v) = lat {
-                        assert!(
-                            (0..=10).contains(v),
-                            "Subscriber {} got corrupt value: {} (valid sent values are 0..=10)",
-                            i + 1,
-                            v
-                        );
-                    }
+            // The value check used to sit inside `if any_received`, and
+            // `any_received` itself was never asserted — so a fan-out that
+            // delivered NOTHING to any of the three subscribers, which is the
+            // exact failure this test exists to catch, passed silently.
+            assert!(
+                latest1.is_some() || latest2.is_some() || latest3.is_some(),
+                "broadcast fan-out delivered nothing: 10 messages published, \
+                 none of the three subscribers can read the latest slot"
+            );
+            for (i, lat) in [latest1, latest2, latest3].iter().enumerate() {
+                if let Some(v) = lat {
+                    assert!(
+                        (0..=10).contains(v),
+                        "Subscriber {} got corrupt value: {} (valid sent values are 0..=10)",
+                        i + 1,
+                        v
+                    );
                 }
             }
             eprintln!(
@@ -4573,9 +4738,18 @@ fn topic_read_latest_empty_returns_none() {
     assert_eq!(sub_t.read_latest(), None);
 }
 
-/// read_latest returns None after all messages have been consumed.
+/// After a full drain, `read_latest` either reports nothing or reports the
+/// NEWEST published value — never an older one.
+///
+/// Whether the drained slot still reads back is backend-dependent (an SHM slot
+/// is not zeroed on consume; a tail >= head check returns None), so `None` is
+/// legitimate. What is not legitimate is `Some(1)`: `read_latest` naming a
+/// superseded message is a stale-command hazard, and it is the only outcome
+/// this test can rule out. The previous body ruled out nothing at all — it
+/// ended in `let _latest = sub_t.read_latest();`, so the function the test is
+/// named for was called and its result discarded.
 #[test]
-fn topic_read_latest_after_drain_returns_none_or_latest() {
+fn topic_read_latest_after_drain_is_none_or_the_newest_value() {
     let name = unique("rl_drain");
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
     let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
@@ -4584,11 +4758,13 @@ fn topic_read_latest_after_drain_returns_none_or_latest() {
     // Drain all
     assert_eq!(sub_t.recv(), Some(1));
     assert_eq!(sub_t.recv(), Some(2));
-    // After full drain, read_latest behavior depends on backend:
-    // SHM-based: may still see data in the slot (not zeroed)
-    // Heap ring: returns None when tail >= head
-    // Either is acceptable — the key is it doesn't panic or return stale unrelated data
-    let _latest = sub_t.read_latest();
+
+    let latest = sub_t.read_latest();
+    assert!(
+        matches!(latest, None | Some(2)),
+        "read_latest returned {latest:?} after 1 and 2 were published and \
+         drained; anything but None or the newest value (2) is stale or garbage"
+    );
 }
 
 /// has_message() and pending_count() correctly track ring fill level through send/recv cycle.
@@ -4710,26 +4886,37 @@ fn topic_interleaved_send_recv_robotics_tick() {
     }
 }
 
-/// Multiple consumers: each gets independent view of the data stream.
+/// Multiple consumers: each gets an independent view of the data stream.
 /// Robotics: multiple nodes (planner, logger, visualizer) subscribe to same sensor.
+///
+/// The assertion here used to be `s1.is_some() || s2.is_some()` — which is
+/// satisfied when exactly ONE subscriber sees the stream and the other sees
+/// nothing, i.e. by competing-consumer semantics, the precise opposite of the
+/// "independent view" the name promises. Both subscribers now have to produce
+/// the whole stream in order, which is what
+/// `broadcast_two_subscribers_each_get_full_stream` establishes for the same
+/// topology.
 #[test]
 fn topic_multiple_recv_consumers_independent() {
     let name = unique("multi_cons");
     let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
+    // Both subscribers exist before the first send: a broadcast consumer seats
+    // its cursor at the head when it registers.
     let sub1: Topic<u64> = Topic::new(&name).expect("sub1");
     let sub2: Topic<u64> = Topic::new(&name).expect("sub2");
 
     pub_t.send(100);
     pub_t.send(200);
 
-    // Both subscribers should be able to receive
-    // (at least one should see data — with role=Both/SPMC topology)
-    let s1 = sub1.recv();
-    let s2 = sub2.recv();
-    assert!(
-        s1.is_some() || s2.is_some(),
-        "at least one subscriber should receive"
-    );
+    for (who, sub) in [("sub1", &sub1), ("sub2", &sub2)] {
+        assert_eq!(
+            sub.recv(),
+            Some(100),
+            "{who} must see the first message — a subscriber consuming another \
+             subscriber's messages is a competing queue, not a broadcast"
+        );
+        assert_eq!(sub.recv(), Some(200), "{who} must see the second message");
+    }
 }
 
 // ============================================================================
@@ -4799,21 +4986,29 @@ fn topic_capacity_odd_rounds_to_power_of_two() {
 }
 
 /// Capacity=1 at Topic level: latest-only semantic for robot pose.
+///
+/// "Latest-only" is the whole claim, so the assertion has to be on *which*
+/// message survives, not on whether one did. `msg.is_some()` passed equally
+/// under keep-oldest, and keep-oldest on a pose topic means steering a robot
+/// from a stale pose. `send_fire_and_forget_keeps_the_newest_on_a_full_unread_ring`
+/// pins the same rule for the send path.
 #[test]
 fn topic_capacity_1_latest_only_semantic() {
     let name = unique("cap1_pose");
     let t: Topic<u64> = Topic::with_capacity(&name, 1, None).expect("cap 1");
 
-    // Send overwrites the single slot (via lossy retry)
+    // The second send fills the only slot: `send` is fire-and-forget, so it
+    // retires the unread slot 0 rather than blocking or dropping itself.
     t.send(100);
-    t.send(200); // may overwrite or retry
+    t.send(200);
 
-    // Should get at least one message
-    let msg = t.recv();
-    assert!(
-        msg.is_some(),
-        "should have at least one message in cap-1 ring"
+    assert_eq!(
+        t.recv(),
+        Some(200),
+        "a capacity-1 ring must hand back the NEWEST message; 100 would mean \
+         the ring kept the stale pose and dropped the fresh one"
     );
+    assert_eq!(t.recv(), None, "only one slot, so only one message");
 }
 
 // ============================================================================
@@ -5136,6 +5331,12 @@ fn dispatch_rewired_after_external_migration_and_check() {
             epoch_before,
             epoch_after
         );
+        // GAP: the epoch moving proves t1 NOTICED, not that it REWIRED, which
+        // is what this test is named for. The assertion that would close it is
+        // `t1.ring.local().cached_mode == mode`, but it is only correct if
+        // `check_migration_now` is a pure resync and never re-optimises — and
+        // the note above (SpscShm being the 1P:1C optimum) suggests it may.
+        // Settle that question before adding it.
 
         // send/recv still works after re-dispatch
         t1.send(42);
@@ -5165,6 +5366,23 @@ fn epoch_guard_preserves_fifo_within_epoch() {
         received.push(v);
     }
 
+    // `windows(2)` is empty for a one-element vector, so the ordering loop below
+    // proves nothing unless at least two messages actually arrived — and
+    // `!received.is_empty()`, which used to be the only other assertion, let a
+    // single delivered message satisfy a test named for ordering.
+    assert!(
+        received.len() >= 2,
+        "only {} message(s) came back out of 100; the FIFO check below is \
+         vacuous on fewer than two",
+        received.len()
+    );
+    assert_eq!(
+        *received.last().unwrap(),
+        100,
+        "the newest message must be the last one out, whatever was dropped \
+         behind it"
+    );
+
     // Verify strict monotonic ordering
     for window in received.windows(2) {
         assert!(
@@ -5174,10 +5392,6 @@ fn epoch_guard_preserves_fifo_within_epoch() {
             window[0]
         );
     }
-    assert!(
-        !received.is_empty(),
-        "Should receive messages to verify FIFO ordering"
-    );
 }
 
 /// Cached epoch diverges from SHM when another Topic migrates, then
@@ -5242,7 +5456,7 @@ fn msg_counter_wrapping_add_no_panic() {
 }
 
 // ============================================================================
-// Section 49: Wrapping Sequence Numbers and Co-located Slot Layout
+// Section 49: Wrapping Sequence Numbers and POD Ring Slot Geometry
 // ============================================================================
 
 /// Sequence number wrapping near u64::MAX boundary on the role=Both fast path.
@@ -5313,14 +5527,14 @@ fn sequence_wrap_u64_max_direct_channel() {
 }
 
 /// Sequence wrapping with large POD type (>56 bytes) on the role=Both fast path.
-/// Verifies the same wrapping arithmetic works for types that would use
-/// separate-seq layout in SHM (not co-located).
+/// Verifies the same wrapping arithmetic works for a type big enough to take the
+/// unpadded arm of `with_capacity_and_kind` (slot_size == size_of::<T>()).
 ///
 /// Robotics: large sensor payloads (128-byte IMU+GPS fusion struct) at high rate
 /// must handle sequence wrapping identically to small messages.
 #[test]
 fn sequence_wrap_u64_max_large_type() {
-    // 128-byte POD type — too large for co-located (needs sizeof(T) + 8 <= 64)
+    // 128-byte POD type — past the `size_of::<T>() + 8 <= 64` padding threshold
     #[repr(C)]
     #[derive(
         Clone,
@@ -5339,7 +5553,8 @@ fn sequence_wrap_u64_max_large_type() {
     // Verify type size constraint
     assert!(
         std::mem::size_of::<LargeSensor>() + 8 > 64,
-        "LargeSensor should NOT use co-located layout in SHM"
+        "LargeSensor must stay past the padding threshold for this case to be \
+         the large-type one"
     );
 
     let name = unique("seq_wrap_large");
@@ -5401,33 +5616,37 @@ fn sequence_wrap_u64_max_large_type() {
     );
 }
 
-/// Co-located slot layout is selected for POD types where sizeof(T) + 8 <= 64.
-/// Verifies the co-located threshold: types ≤56 bytes (+ 8 byte seq = 64) fit
-/// in one cache line. Types at 57+ bytes spill to separate-seq layout.
+/// A small POD topic co-locates each readiness stamp with its own payload.
 ///
-/// Robotics: co-located layout gives ~2x lower latency for sensor messages
-/// because seq + data share one cache line (single inter-core transfer).
+/// The out-of-crate twin `horus_core/tests/pod_ring_slot_geometry.rs` pins the
+/// same geometry by reading the backing file; this one pins the cached pointers
+/// `LocalState` hands the dispatch paths, which only an in-crate test can reach.
+/// Both matter: the file says what was written, this says where the hot path
+/// will look.
+///
+/// This test previously asserted the opposite, and was right to at the time.
+/// `with_capacity_and_kind` allocated 64 bytes per slot for every POD type with
+/// `size_of::<T>() + 8 <= 64` and its comment described a co-located
+/// `[stamp(8) | data(T) | pad]` slot, but the stamps were allocated in their own
+/// array between the header and the data, and every POD path indexed the data at
+/// `size_of::<T>()`. So the padding was paid for and the co-location never
+/// happened: four 16-byte slots shared a cache line, which is the false sharing
+/// the padding was meant to prevent. The version before THAT asserted
+/// `size_of::<T>() + 8 <= 64` — a compile-time tautology about the type — and
+/// was green either way.
+///
+/// The ring is scanned end to end on purpose: slot 0 sits at the same address
+/// under either geometry, so a single-message check cannot tell them apart.
 #[test]
-fn colo_layout_selected_for_small_pod_types() {
-    // u64: sizeof = 8, 8 + 8 = 16 <= 64 → co-located eligible
-    assert!(std::mem::size_of::<u64>() + 8 <= 64);
+fn pod_ring_colocates_each_stamp_with_its_payload() {
+    const CACHE_LINE: usize = 64;
+    const CAPACITY: u32 = 16;
+    // Strictly below CAPACITY: the ring never fills, so no slot is retired and
+    // every tag written below is still in place when the scan runs.
+    const MESSAGES: u64 = 8;
 
-    // Verify u64 send/recv works through the role=Both fast path (same math as colo SHM)
-    let name1 = unique("colo_u64");
-    let t1: Topic<u64> = Topic::new(&name1).expect("create u64 topic");
-    for i in 1..=32u64 {
-        t1.send(i);
-    }
-    let mut received = Vec::new();
-    while let Some(v) = t1.recv() {
-        received.push(v);
-    }
-    assert_eq!(received.len(), 32, "All 32 u64 messages should arrive");
-    for (i, &v) in received.iter().enumerate() {
-        assert_eq!(v, (i + 1) as u64, "u64 msg {} corrupt", i);
-    }
-
-    // [f32; 12]: sizeof = 48, 48 + 8 = 56 <= 64 → co-located (max size that fits)
+    // 16 bytes, no Drop -> POD by `communication::pod::is_pod`, and inside the
+    // `type_size <= COLO_MAX_PAYLOAD` bound that selects the colo geometry.
     #[repr(C)]
     #[derive(
         Clone,
@@ -5439,67 +5658,189 @@ fn colo_layout_selected_for_small_pod_types() {
         serde::Serialize,
         serde::Deserialize,
     )]
-    struct MaxColo {
-        data: [f32; 12], // 48 bytes — exactly 48 + 8 = 56 ≤ 64
+    struct SlotProbe {
+        tag: u64,
+        echo: u64,
     }
-    let max_colo_size = std::mem::size_of::<MaxColo>();
-    assert_eq!(max_colo_size, 48);
+
+    /// A distinct, non-zero marker per index — this is what lets the scan below
+    /// tell a 16-byte stride from a 64-byte one.
+    fn tag_of(i: u64) -> u64 {
+        0xC010_0000_0000_0000 | (i + 1)
+    }
+
+    let type_size = mem::size_of::<SlotProbe>();
+    assert_eq!(type_size, 16, "SlotProbe must stay a 16-byte POD");
+
+    let name = unique("pod_slot_geometry");
+    let t: Topic<SlotProbe> =
+        Topic::with_capacity(&name, CAPACITY, None).expect("create POD topic");
+    for i in 0..MESSAGES {
+        t.send(SlotProbe {
+            tag: tag_of(i),
+            echo: !tag_of(i),
+        });
+    }
+
+    // ---- the geometry the header advertises --------------------------------
+    let hdr = t.ring.header();
+    assert_eq!(
+        hdr.type_size as usize, type_size,
+        "header type_size must be the Rust type's size"
+    );
+    assert_eq!(hdr.capacity, CAPACITY, "capacity is already a power of two");
     assert!(
-        max_colo_size + 8 <= 64,
-        "MaxColo should fit co-located layout"
+        hdr.is_colo(),
+        "a 16-byte POD topic must select the colo layout"
+    );
+    assert_eq!(
+        hdr.slot_size.load(Ordering::Acquire) as usize,
+        CACHE_LINE,
+        "the colo slot is stamp + payload rounded up to a whole cache line"
     );
 
-    let name2 = unique("colo_max");
-    let t2: Topic<MaxColo> = Topic::new(&name2).expect("create MaxColo topic");
-    for i in 0..16u32 {
-        let mut v = MaxColo { data: [0.0; 12] };
-        v.data[0] = i as f32;
-        t2.send(v);
-    }
-    let mut count = 0;
-    while let Some(v) = t2.recv() {
-        assert_eq!(
-            v.data[0] as u32, count,
-            "MaxColo data[0] mismatch at {}",
-            count
+    // ---- where the dispatch paths are actually pointed ----------------------
+    let base = hdr as *const super::header::TopicHeader as usize;
+    let (seq_ptr, data_ptr, stride) = {
+        let local = t.ring.local();
+        assert!(
+            !local.cached_seq_ptr.is_null() && !local.cached_data_ptr.is_null(),
+            "the sends above must have registered this handle and cached both \
+             region pointers"
         );
-        count += 1;
-    }
-    assert_eq!(count, 16, "All 16 MaxColo messages should arrive");
+        (
+            local.cached_seq_ptr,
+            local.cached_data_ptr,
+            local.cached_colo_stride,
+        )
+    };
+    let seq_off = seq_ptr as usize - base;
+    let data_off = data_ptr as usize - base;
 
-    // [f32; 14]: sizeof = 56, 56 + 8 = 64 <= 64 → STILL co-located (boundary)
-    #[repr(C)]
-    #[derive(
-        Clone,
-        Copy,
-        Debug,
-        PartialEq,
-        bytemuck::Pod,
-        bytemuck::Zeroable,
-        serde::Serialize,
-        serde::Deserialize,
-    )]
-    struct BoundaryColo {
-        data: [f32; 14], // 56 bytes — exactly 56 + 8 = 64 ≤ 64
-    }
-    let boundary_colo_size = std::mem::size_of::<BoundaryColo>();
-    assert_eq!(boundary_colo_size, 56);
-    assert!(
-        boundary_colo_size + 8 <= 64,
-        "BoundaryColo should fit co-located layout"
+    assert_eq!(
+        stride as usize, CACHE_LINE,
+        "the cached stride is what every POD path multiplies the index by; a \
+         zero here would silently put the hot path back on the split layout"
+    );
+    assert_eq!(
+        seq_off,
+        super::shm_layout::HEADER_SIZE,
+        "colo slots begin where the header ends — there is no stamp array"
+    );
+    assert_eq!(
+        data_off - seq_off,
+        super::shm_layout::COLO_PAYLOAD_OFF,
+        "a payload sits 8 bytes after its OWN stamp. Under the split layout \
+         this difference was `capacity * 8` — the whole stamp array — which is \
+         the second cache line the colo layout exists to remove"
     );
 
-    // [u64; 8]: sizeof = 64, 64 + 8 = 72 > 64 → NOT co-located
-    assert!(std::mem::size_of::<[u64; 8]>() + 8 > 64);
+    // ---- the stride the payloads actually landed on -------------------------
+    // SAFETY: `data_ptr` is the live mapping the POD send path just wrote
+    // through. Every offset read below is under `MESSAGES * CACHE_LINE`, well
+    // inside the `CAPACITY * slot_size` bytes the region was allocated at, and
+    // `read_unaligned` needs no alignment guarantee.
+    let tag_at = |byte_off: usize| -> u64 {
+        unsafe { std::ptr::read_unaligned(data_ptr.add(byte_off) as *const u64) }
+    };
+    let holds =
+        |stride: usize| -> bool { (0..MESSAGES).all(|i| tag_at(i as usize * stride) == tag_of(i)) };
+
+    assert!(
+        holds(CACHE_LINE),
+        "every POD path strides by the whole colo slot, so consecutive payloads \
+         must be {CACHE_LINE} bytes apart"
+    );
+    assert!(
+        !holds(type_size),
+        "payloads are still {type_size} bytes apart — the index stride did not \
+         move with the allocation, so this is the old split geometry"
+    );
+    assert_eq!(
+        tag_at(0),
+        tag_of(0),
+        "slot 0 sits at the same address under either geometry — which is why \
+         this test scans the whole ring instead of checking one message"
+    );
+
+    // ---- each stamp is real, and shares its payload's line ------------------
+    // SAFETY: same mapping and bounds as `tag_at`; the stamp for slot i is at
+    // `seq_ptr + i * slot`, inside the region for i < CAPACITY.
+    let stamp_at = |i: usize| -> u64 {
+        unsafe { std::ptr::read_unaligned(seq_ptr.add(i * CACHE_LINE) as *const u64) }
+    };
+    for i in 0..MESSAGES as usize {
+        assert_eq!(
+            stamp_at(i),
+            i as u64 + 1,
+            "slot {i} must carry its published stamp, not incidentally-zero memory"
+        );
+        let stamp_off = seq_off + i * CACHE_LINE;
+        let payload_off = data_off + i * CACHE_LINE;
+        assert_eq!(
+            stamp_off / CACHE_LINE,
+            payload_off / CACHE_LINE,
+            "slot {i}: the stamp and its payload must share one cache line — \
+             that single coherence miss is the whole point of the layout"
+        );
+    }
+
+    // ---- no two slots share a line -----------------------------------------
+    assert_eq!(
+        data_off % CACHE_LINE,
+        super::shm_layout::COLO_PAYLOAD_OFF,
+        "payloads sit 8 bytes into their own cache-line-aligned slot"
+    );
+    let line_of = |i: usize| (seq_off + i * CACHE_LINE) / CACHE_LINE;
+    assert_ne!(
+        line_of(0),
+        line_of(1),
+        "adjacent slots must not share a line: under the split layout four \
+         16-byte slots did, so a producer writing slot i invalidated the line a \
+         consumer was reading slot i-1 from, three times in four"
+    );
+
+    // ---- reader and writer agree -------------------------------------------
+    let mut got = Vec::new();
+    while let Some(m) = t.recv() {
+        got.push(m);
+    }
+    assert_eq!(
+        got.len(),
+        MESSAGES as usize,
+        "every published message must come back: the recv paths stride the same \
+         way the send paths do"
+    );
+    for (i, m) in got.iter().enumerate() {
+        let i = i as u64;
+        assert_eq!(m.tag, tag_of(i), "message {i} tag");
+        assert_eq!(m.echo, !tag_of(i), "message {i} echo");
+    }
 }
 
-/// Separate-seq layout is used for POD types where sizeof(T) + 8 > 64.
-/// The per-slot sequence array is stored separately from the data array.
+/// Above 56 bytes a POD type gets no slot padding: the allocation stride drops
+/// from a flat 64 to `size_of::<T>()`, which is the stride every POD dispatch
+/// path was already using.
+///
+/// The old name and doc here ("separate-seq layout is used for POD types where
+/// sizeof(T) + 8 > 64") described a choice the code does not make. The sequence
+/// array is separate for **every** POD type — it always sits between the header
+/// and the data region, `capacity * 8` bytes of it, whatever the type's size
+/// (`shm_layout::seq_array_offset` / `data_region_offset`, and see
+/// `pod_ring_allocates_a_cache_line_per_slot_but_indexes_by_size_of_t` for the
+/// small-type half). The only thing crossing 56 bytes changes is the `else` arm
+/// of `with_capacity_and_kind`'s `actual_slot_size`: allocation stride and index
+/// stride finally agree, so the 4x over-allocation and the four-slots-per-line
+/// false sharing disappear.
+///
+/// The old body asserted `size_of::<T>() + 8 > 64` — true at compile time,
+/// about the type, and independent of anything the ring does — and then ran a
+/// round trip that would have passed under any layout at all.
 ///
 /// Robotics: large point cloud descriptors, multi-joint robot states (>56 bytes).
 #[test]
-fn separate_seq_layout_for_large_pod_types() {
-    // 64-byte POD: sizeof = 64, 64 + 8 = 72 > 64 → separate seq
+fn pod_ring_stops_padding_slots_once_the_type_exceeds_fifty_six_bytes() {
+    // 72-byte POD: 72 + 8 = 80 > 64, so this lands in the unpadded arm.
     #[repr(C)]
     #[derive(
         Clone,
@@ -5512,24 +5853,98 @@ fn separate_seq_layout_for_large_pod_types() {
         serde::Deserialize,
     )]
     struct LargeJointState {
-        positions: [f64; 8], // 64 bytes — just over the co-located limit
+        // 72 bytes. Deliberately not 64: at exactly 64 the padded arm and the
+        // unpadded arm produce the same slot_size, so a 64-byte type cannot
+        // tell them apart and the assertion below would prove nothing.
+        positions: [f64; 9],
     }
-    assert!(std::mem::size_of::<LargeJointState>() + 8 > 64);
+
+    // The padded side of the same branch, for contrast: 56 + 8 == 64, the
+    // largest type that still gets a slot rounded up to a whole cache line.
+    #[repr(C)]
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        bytemuck::Pod,
+        bytemuck::Zeroable,
+        serde::Serialize,
+        serde::Deserialize,
+    )]
+    struct AtThreshold {
+        positions: [f64; 7], // 56 bytes
+    }
+
+    let padded_name = unique("sep_at_threshold");
+    let padded: Topic<AtThreshold> = Topic::new(&padded_name).expect("create");
+    padded.send(AtThreshold {
+        positions: [0.0; 7],
+    });
+    let _ = padded.recv();
+    assert_eq!(
+        padded.ring.header().slot_size.load(Ordering::Acquire) as usize,
+        64,
+        "a 56-byte POD type still gets a 64-byte slot — {} bytes of every slot \
+         are padding no dispatch path ever addresses",
+        64 - mem::size_of::<AtThreshold>()
+    );
 
     let name = unique("sep_large");
     let t: Topic<LargeJointState> = Topic::new(&name).expect("create");
     let val = LargeJointState {
-        positions: [0.0; 8],
+        positions: [0.0; 9],
     };
     t.send(val);
     let _ = t.recv();
+
+    // ---- the geometry, read off the live region -----------------------------
+    let type_size = mem::size_of::<LargeJointState>();
+    let hdr = t.ring.header();
+    assert_eq!(
+        hdr.type_size as usize, type_size,
+        "header type_size must be the Rust type's size"
+    );
+    assert_eq!(
+        hdr.slot_size.load(Ordering::Acquire) as usize,
+        type_size,
+        "a POD type with size_of + 8 > 64 takes the unpadded arm, so the \
+         allocation stride is size_of::<T>() ({type_size}) and not the flat 64 \
+         the 56-byte type above got"
+    );
+    let capacity = hdr.capacity as usize;
+    let base = hdr as *const super::header::TopicHeader as usize;
+    let (seq_off, data_off) = {
+        let local = t.ring.local();
+        assert!(
+            !local.cached_seq_ptr.is_null() && !local.cached_data_ptr.is_null(),
+            "the send above must have registered this handle"
+        );
+        (
+            local.cached_seq_ptr as usize - base,
+            local.cached_data_ptr as usize - base,
+        )
+    };
+    assert_eq!(
+        seq_off,
+        super::shm_layout::seq_array_offset(),
+        "the sequence array starts immediately after the header — for large \
+         POD types exactly as for small ones"
+    );
+    assert_eq!(
+        data_off - seq_off,
+        capacity * mem::size_of::<u64>(),
+        "the whole sequence array precedes the data region; a per-slot \
+         sequence word would make this gap 0"
+    );
+
     let _ = t.force_migrate(BackendMode::SpscShm);
     t.check_migration_now();
 
     // Send/recv through the separate-seq dispatch path
     for i in 0..32u32 {
         let mut v = LargeJointState {
-            positions: [0.0; 8],
+            positions: [0.0; 9],
         };
         v.positions[0] = i as f64;
         v.positions[7] = (i * 10) as f64;
@@ -6751,7 +7166,7 @@ fn broadcast_subscriber_join_midstream() {
     );
 }
 
-/// SAFETY-CRITICAL (softmata-brain): `send_shm_mp_pod`/`_serde`/`_colo` claim a ring
+/// SAFETY-CRITICAL (softmata-brain): `send_shm_mp_pod`/`send_shm_mp_serde` claim a ring
 /// slot with an OPTIMISTIC `fetch_add` after a NON-atomic backpressure check, so
 /// between the check and the claim other producers can claim too, and a producer can
 /// claim `seq >= tail + capacity` — OVERSHOOT. It then writes unconditionally to
@@ -6809,7 +7224,12 @@ fn mp_send_no_overshoot_corruption() {
 
     let mut seen = std::collections::HashSet::new();
     let mut count = 0u64;
-    let deadline = Instant::now() + 8_u64.secs();
+    // Generous on purpose. The drain finishes in milliseconds on an idle box;
+    // the budget exists only so a stall fails the test instead of hanging it,
+    // and 8 s was tight enough that a loaded CI runner could starve the last
+    // couple of messages on the producers' yield_now retry loop and report it
+    // as corruption.
+    let deadline = Instant::now() + 30_u64.secs();
     while count < total && Instant::now() < deadline {
         match consumer.try_recv() {
             Some(v) => {
@@ -6836,8 +7256,13 @@ fn mp_send_no_overshoot_corruption() {
     }
     assert_eq!(
         count, total,
-        "LOST/STALLED: consumer got {}/{} — overshoot overwrote an unconsumed slot, \
-         stalling the in-order consumer on a flag that never matches",
+        "consumer drained {}/{} inside the budget. Note what did NOT fire: no \
+         GARBAGE and no DUPLICATE, so every value that did arrive was intact and \
+         no slot was re-used. Overshoot corruption trips one of those two \
+         immediately and in this test's own terms — so a shortfall here is a \
+         producer starving on its retry loop, which is a liveness result, not \
+         the corruption this test is named for. The old message asserted the \
+         corruption cause outright and was wrong about it on Windows.",
         count, total
     );
 }
@@ -7374,14 +7799,29 @@ fn topic_new_empty_name() {
     );
 }
 
-/// Topic::new with whitespace-only prefix — whitespace in SHM names
-/// may be rejected by the platform, so we accept either Ok or Err.
+/// Topic::new with a whitespace-only prefix — whitespace in SHM names may be
+/// rejected by the platform, so either outcome is allowed, but neither outcome
+/// is allowed to be *half* an outcome: an `Ok` must be a working topic, and an
+/// `Err` must carry a message. The previous body dropped the result on the
+/// floor, so it could only ever have caught a panic.
 #[test]
 fn topic_new_whitespace_name() {
     let name = unique("   ");
-    let _result = Topic::<u64>::new(&name);
-    // Whitespace in topic names may be rejected by platform SHM layer.
-    // Both Ok and Err are valid outcomes — we just verify no panic.
+    match Topic::<u64>::new(&name) {
+        Ok(t) => {
+            t.send(7u64);
+            assert_eq!(
+                t.recv(),
+                Some(7u64),
+                "an accepted whitespace name must yield a usable topic, not a \
+                 half-initialised one"
+            );
+        }
+        Err(e) => assert!(
+            !e.to_string().is_empty(),
+            "a rejected topic name must say why"
+        ),
+    }
 }
 
 /// Topic::new with very long name (10KB)
@@ -8461,6 +8901,234 @@ fn partial_write_concurrent_writers_no_partial_data() {
     );
 }
 
+/// A handle that loses the FanoutShm attach race must be able to rejoin.
+///
+/// `ShmFanoutRing::attach` spins for the region's magic under a deadline, and the
+/// creator publishes that magic LAST — after initialising a region that can be
+/// hundreds of megabytes. Under load that initialisation was measured at ~7
+/// seconds against a 2 second attach deadline, so an attacher can lose the race
+/// against a perfectly healthy creator.
+///
+/// Losing it used to be permanent. The fallback sets `cached_mode` to `SpscShm`,
+/// after which `initialize_backend`'s `backend_matches_mode` check is satisfied
+/// and returns early forever; and `check_migration`'s migrator block — the one
+/// that would restore `cached_mode` from the header — is gated on `!is_optimal()`,
+/// which reads only shared header state that still says FanoutShm and is still
+/// optimal. So the handle silently read a ring nobody writes for the rest of the
+/// process's life, while `backend_name()` (which reports the SHARED mode) still
+/// called it FanoutShm.
+///
+/// This drives the recovery directly rather than trying to lose a real race:
+/// it puts a handle into exactly the state the fallback leaves behind, then
+/// asserts that the next `initialize_backend` rejoins instead of short-circuiting.
+#[test]
+fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
+    let name = unique("fanout_rejoin");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(1);
+    let _ = t.recv();
+    t.force_migrate(BackendMode::FanoutShm);
+    // Drive one send/recv so the handle actually builds the fanout backend.
+    t.send(2);
+    let _ = t.recv();
+
+    let ring = &t.ring;
+    assert_eq!(
+        ring.header().mode(),
+        BackendMode::FanoutShm,
+        "test premise: the shared header must be on FanoutShm"
+    );
+    {
+        // SAFETY: single-threaded test; this is the state the attach fallback
+        // leaves behind (mod.rs, the `FanoutShm init failed` branch).
+        let backend = unsafe { &mut *ring.backend.get() };
+        assert!(
+            matches!(backend, BackendStorage::ShmData),
+            "test premise: force_migrate leaves this handle on the shared ring \
+             while the header says FanoutShm — that IS the degraded state"
+        );
+    }
+    let local = ring.local();
+    assert_eq!(
+        local.cached_mode,
+        BackendMode::SpscShm,
+        "test premise: the handle's cached mode must disagree with the header"
+    );
+
+    ring.initialize_backend();
+
+    // SAFETY: single-threaded test.
+    let backend = unsafe { &*ring.backend.get() };
+    assert!(
+        matches!(backend, BackendStorage::FanoutShm(_)),
+        "a degraded handle did not rejoin FanoutShm — it is stuck on the shared \
+         ring, which for a subscriber means receiving nothing, forever"
+    );
+    assert_eq!(
+        local.fanout_retry_at_ms, 0,
+        "a successful rejoin must clear the retry marker"
+    );
+}
+
+/// A clone that grows the shared mapping must not strand its siblings.
+///
+/// `Topic::clone` shares one `Arc<ShmRegion>` but gives each clone its own
+/// `header_ptr` and its own cached slot pointers, all derived from the mapping's
+/// base address. The geometry-resync path replaces that mapping when the backend
+/// migrates to multi-producer mode, and the replacement lands at a NEW address.
+/// The old mapping used to be unmapped on the spot, which turned every sibling's
+/// cached pointers into dangling ones.
+///
+/// This is the shape that actually crashed. Roughly half of all lib-suite runs on
+/// an oversubscribed box died here, with two faulting sites in the cores: a load
+/// in `TopicHeader::is_verbose` through a stale `header_ptr` (`0x780510d2b000`,
+/// while the live mapping was at `0x780510d37000`), and an atomic **store**
+/// inside `BackendMigrator::perform_migration` — a wild write, which faulted only
+/// because that address happened to be unmapped rather than recycled. The `Arc`
+/// strong count was 3, so nothing had been dropped: the mapping moved out from
+/// under a live `Arc`.
+///
+/// The fix is in `ShmRegion`: grows are serialized, the base is published
+/// atomically, and the replaced mapping is retained rather than unmapped (it is a
+/// second `MAP_SHARED` view of the same file, so a sibling still on the old base
+/// reads coherent bytes until it re-points). Removing the retention alone puts
+/// this test back to SIGSEGV.
+///
+/// The length assertion is what keeps this test honest: without it the test would
+/// still pass if the migration stopped resizing the mapping, and would then be
+/// guarding nothing.
+#[test]
+fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
+    // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
+    // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
+    // to a multi-producer backend has to make room for the separate stamp array
+    // (+ capacity*8 = 9856). Each round now asks for that migration directly, so
+    // one would do; the rounds re-run the race against fresh interleavings, and
+    // the assertion afterwards still refuses to let the test pass having grown
+    // nothing.
+    // Nothing to race where a region cannot grow at all: on Windows a named
+    // section cannot be resized, so every round would provoke the error itself
+    // and then assert the mapping did not change size.
+    if !horus_sys::shm::regions_can_grow() {
+        eprintln!("skipping: regions cannot grow in place on this platform");
+        return;
+    }
+
+    let mut grew = false;
+    for _ in 0..4 {
+        if run_one_grow_race_round() {
+            grew = true;
+        }
+    }
+    assert!(
+        grew,
+        "no round grew the mapping, so this test exercised none of the remap \
+         race it exists to guard"
+    );
+}
+
+/// One round of the race. Returns whether the mapping was actually replaced.
+fn run_one_grow_race_round() -> bool {
+    let name = unique("grow_strands_siblings");
+    let t: Topic<[u64; 4]> = Topic::new(&name).unwrap();
+    let len_before = t.ring.storage.len();
+
+    let n_writers = 3;
+    // writers + reader + this thread, which drives the remap
+    let barrier = Arc::new(Barrier::new(n_writers + 2));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let writers: Vec<_> = (0..n_writers)
+        .map(|w| {
+            let t = t.clone();
+            let b = barrier.clone();
+            let stop = stop.clone();
+            test_spawn(move || {
+                b.wait();
+                let mut i = 0u64;
+                // Bounded so a migration that never lands cannot spin forever.
+                while !stop.load(Ordering::Relaxed) && i < 2_000_000 {
+                    let v = (w as u64) * 10_000 + i;
+                    t.send([v, v, v, v]);
+                    i += 1;
+                }
+            })
+        })
+        .collect();
+
+    // Published so this thread can wait for the reader to be genuinely mid-flight
+    // before it forces the remap, rather than remapping an idle ring.
+    let seen_count = Arc::new(AtomicU64::new(0));
+    let reader = {
+        let t = t.clone();
+        let b = barrier.clone();
+        let stop = stop.clone();
+        let seen_count = seen_count.clone();
+        test_spawn(move || {
+            b.wait();
+            let mut seen = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                // `recv()` opens with `is_verbose()` — the load that faulted.
+                if let Some(v) = t.recv() {
+                    assert_eq!(v[0], v[3], "torn read across the remap");
+                    seen += 1;
+                    seen_count.store(seen, Ordering::Relaxed);
+                }
+                std::hint::spin_loop();
+            }
+            seen
+        })
+    };
+
+    // Drive the remap from here instead of waiting for the backend to choose
+    // multi-producer mode on its own. Which mode `migrate_to_optimal` settles on
+    // depends on how the writers and the reader interleave, and on a 2-core CI
+    // runner they interleave in a way that never reaches it — every round then
+    // leaves the mapping its original size and the test guards nothing, which is
+    // exactly what the length assertion caught. Asking for `MpscShm` directly
+    // makes the colo -> split grow happen on any core count, while the sibling
+    // clones above are live and reading through their cached pointers.
+    barrier.wait();
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    // Let real traffic build first, so the remap lands on a reader that is
+    // actively dereferencing its cached pointers rather than on an idle ring.
+    while seen_count.load(Ordering::Relaxed) < 200 && Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
+
+    // Then drive the remap from here instead of waiting for the backend to pick
+    // a growing mode on its own. `migrate_to_optimal` settles on whichever mode
+    // the writer/reader interleaving suggests, and only `FanoutShm` rewrites the
+    // layout from colo to split: that is what adds the `capacity * 8` stamp array
+    // (640 + 1024 + 8192 = 9856 > 8832) and forces the grow. Left to chance it
+    // often lands on `MpscShm`, which changes no geometry — measured here at 2
+    // rounds in 4, and a 2-core CI runner hit 0 in 16, which is what the length
+    // assertion caught.
+    //
+    // The loop condition is the grow itself, not the `MigrationResult`: a
+    // `Success` that the backend immediately migrates back off does not resize
+    // anything, so success is only observable in the mapping.
+    while t.ring.storage.len() == len_before && Instant::now() < deadline {
+        let _ = BackendMigrator::new(t.ring.header()).try_migrate(BackendMode::FanoutShm);
+        std::thread::yield_now();
+    }
+
+    // Keep both sides running across the remap that just happened.
+    let after_remap = seen_count.load(Ordering::Relaxed);
+    while seen_count.load(Ordering::Relaxed) < after_remap + 200 && Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    for h in writers {
+        h.join().unwrap();
+    }
+    let _seen = reader.join().unwrap();
+
+    t.ring.storage.len() > len_before
+}
+
 /// Serializable type with nested heap allocation — no panic on corrupted data.
 #[test]
 fn corrupted_nested_struct_deserialization() {
@@ -9076,6 +9744,14 @@ struct Pod64 {
     data2: [u8; 32],
 }
 
+/// A 64-byte POD message gets a slot exactly its own size — no padding, no
+/// serde slot header.
+///
+/// The name claims something about the slot, so the slot is what is checked.
+/// The body used to be a bare round trip, which would have passed at any slot
+/// size at all (the send and recv paths agree with each other by construction).
+/// 64 + 8 > 64 puts `Pod64` in the unpadded arm of `with_capacity_and_kind`, and
+/// being POD keeps the `[ready | len | data ]` serde slot header off it.
 #[test]
 fn pod_message_exact_slot_size() {
     let t: Topic<Pod64> = Topic::new(unique("pod_exact")).expect("create");
@@ -9084,9 +9760,21 @@ fn pod_message_exact_slot_size() {
         data2: [0xCD; 32],
     };
     t.send(msg);
-    let received = t.recv();
-    assert!(received.is_some());
-    assert_eq!(received.unwrap(), msg);
+    assert_eq!(t.recv(), Some(msg));
+
+    let hdr = t.ring.header();
+    assert!(hdr.is_pod_type(), "Pod64 must be classified POD");
+    assert_eq!(
+        hdr.slot_size.load(Ordering::Acquire) as usize,
+        mem::size_of::<Pod64>(),
+        "the slot is exactly the type: no cache-line padding (that arm only \
+         applies below 57 bytes) and no serde slot overhead"
+    );
+    assert_eq!(
+        hdr.type_size as usize,
+        mem::size_of::<Pod64>(),
+        "header type_size must be the Rust type's size"
+    );
 }
 
 /// POD type: zero-sized type (ZST) messages work.
@@ -9772,17 +10460,34 @@ fn verbose_default_is_off() {
     assert!(!t.header().is_verbose());
 }
 
+/// `TOPIC_VERBOSE_OFFSET` is 23 *and* is where the `verbose` field actually
+/// lives.
+///
+/// The constant is a wire-format promise — out-of-process readers (the TUI
+/// monitor toggles this flag) address byte 23 directly rather than through
+/// `TopicHeader`. Pinning the literal on its own does not keep that promise:
+/// reordering a field above `verbose` would move the field and leave the
+/// constant, and the test would still be green. (It was previously the same
+/// `assert_eq!(TOPIC_VERBOSE_OFFSET, 23)` written out twice, so it checked the
+/// literal twice and the layout never. `header::tests::
+/// verbose_offset_matches_struct_layout` ties the same knot from the other
+/// side; `verbose` is the one wire offset `shm_layout`'s `const` assertions do
+/// not cover, so having it asserted twice is deliberate.)
 #[test]
 fn verbose_offset_constant_correct() {
     assert_eq!(
         super::header::TOPIC_VERBOSE_OFFSET,
         23,
-        "TOPIC_VERBOSE_OFFSET should be 23"
+        "TOPIC_VERBOSE_OFFSET is a cross-process wire constant; changing it \
+         requires a TOPIC_VERSION bump"
     );
     assert_eq!(
-        super::header::TOPIC_VERBOSE_OFFSET,
-        23,
-        "TOPIC_VERBOSE_OFFSET should be byte 23"
+        mem::offset_of!(super::header::TopicHeader, verbose) as u64,
+        super::header::TOPIC_VERBOSE_OFFSET as u64,
+        "the constant no longer points at TopicHeader::verbose — a field above \
+         it changed size or order, and every out-of-process reader of byte \
+         {} is now reading something else",
+        super::header::TOPIC_VERBOSE_OFFSET
     );
 }
 
@@ -10052,10 +10757,27 @@ fn test_topic_empty_name_returns_error() {
 #[test]
 fn test_topic_very_long_name() {
     let long_name = "a".repeat(1024);
-    let result = RingTopic::<u32>::new(&long_name);
-    // Either works (SHM path may be valid) or fails with path error
-    // The important thing is it doesn't panic
-    let _ = result;
+    // A 1 KiB name is past the usual 255-byte path-component limit, so either
+    // outcome is legitimate — but the result cannot just be dropped, which is
+    // all the previous body did. An `Ok` has to be a working ring; an `Err` has
+    // to say something.
+    match RingTopic::<u32>::new(&long_name) {
+        Ok(t) => {
+            // The name is a fixed string, not `unique(...)`, so a region left
+            // by an earlier run of this test can still hold unread messages.
+            while t.recv().is_some() {}
+            t.send(5u32);
+            assert_eq!(
+                t.recv(),
+                Some(5u32),
+                "an accepted 1 KiB topic name must yield a usable ring"
+            );
+        }
+        Err(e) => assert!(
+            !e.to_string().is_empty(),
+            "a rejected topic name must say why"
+        ),
+    }
 }
 
 #[test]
@@ -10115,17 +10837,27 @@ fn test_topic_send_after_ring_full_returns() {
     let _ = t.recv();
 
     // Force SHM dispatch
-    match t.force_migrate(BackendMode::SpscShm) {
-        MigrationResult::Success { .. } => {
-            trigger_shm_dispatch(&name);
-            // Fill the ring beyond capacity
-            for i in 0..100 {
-                let _ = t.try_send(i);
-            }
-            // Should not panic — messages are dropped when ring is full
-        }
-        _ => {} // SHM migration may not succeed in all environments
+    if let MigrationResult::Success { .. } = t.force_migrate(BackendMode::SpscShm) {
+        trigger_shm_dispatch(&name);
     }
+
+    // Fill the ring far beyond capacity with nothing draining it. `try_send`
+    // must REFUSE once the ring is full — that is the "returns" in the name,
+    // and it is backend-independent, so it is asserted whether or not the
+    // migration above succeeded. The previous body ran this loop with `let _ =`
+    // and no assertion at all: a `try_send` that blocked forever would have
+    // hung, but one that silently accepted 100 messages into 4 slots, or one
+    // that failed from the very first call, was indistinguishable from correct.
+    let capacity = t.header().capacity as usize;
+    let accepted = (0..100u64).filter(|&i| t.try_send(i).is_ok()).count();
+    assert!(
+        accepted > 0,
+        "try_send refused every message on a ring with {capacity} free slots"
+    );
+    assert!(
+        accepted <= capacity,
+        "an undrained ring of {capacity} slots accepted {accepted} messages"
+    );
 }
 
 #[test]
@@ -10200,15 +10932,22 @@ fn test_stress_8_threads_same_topic_send_recv() {
 
 #[test]
 fn test_stress_rapid_create_destroy_topics() {
-    // Rapidly create and destroy topics to stress SHM allocation
+    // Rapidly create and destroy topics to stress SHM allocation. Each fresh
+    // topic has to actually work: the previous version discarded the recv, so
+    // a create/teardown cycle that handed back an unusable ring — a stale
+    // mapping reused, a region never initialised — was indistinguishable from
+    // success.
     for i in 0..50 {
         let name = unique(&format!("stress_create_{}", i));
         let t: RingTopic<u32> = RingTopic::new(&name).expect("create");
         t.send(42u32);
-        let _ = t.recv();
+        assert_eq!(
+            t.recv(),
+            Some(42u32),
+            "topic {i} of the create/destroy cycle did not round-trip"
+        );
         drop(t);
     }
-    // No leak, no crash = success
 }
 
 #[test]
@@ -10297,7 +11036,19 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
     // timing-sensitive tests in this suite flake — a test that breaks its
     // neighbours is its own defect.
     let n = 250_000u64;
-    let n_consumers = 20;
+    // 15, not 20, because the participant table holds MAX_PARTICIPANTS = 16 and
+    // this test opens `n_consumers + 1` endpoints on ONE topic. At 20 it asked
+    // for 21 slots. Registration is lazy and first-come-first-served — a
+    // subscriber registers inside its first `recv()`, the publisher inside its
+    // first `send()` — and all of them race the instant the barrier releases. If
+    // the PUBLISHER lost that race it was refused a slot, every one of its
+    // 250,000 sends was dropped by `send_lossy_retry`, the ring head never moved,
+    // and all 20 consumers polled an empty ring for the full 10 s window. The
+    // test then reported "the ring is not delivering at all" — which was true,
+    // and had nothing to do with ordering or duplication.
+    //
+    // Nothing is lost by the reduction: 5 of the 20 could never register anyway.
+    let n_consumers = 15;
 
     let tx: Topic<u64> = Topic::new(&name).expect("pub");
 
@@ -10339,8 +11090,13 @@ fn recv_never_reorders_or_duplicates_when_lapped() {
         })
         .collect();
 
+    // Claim the publisher's participant slot BEFORE releasing the subscribers, so
+    // the stream cannot be silently emptied by losing a registration race. The
+    // value is still monotonic, so this introduces no artificial inversion.
+    tx.send(0);
+
     barrier.wait();
-    for i in 0..n {
+    for i in 1..n {
         tx.send(i);
     }
     for h in consumers {

@@ -149,10 +149,15 @@ enum Commands {
         /// Use Python (`-p` is deprecated here: it means --package elsewhere)
         ///
         /// `-p`, `-r` and `-c` still work and are still accepted, but they are
-        /// no longer advertised: on `horus build`, `horus run` and `horus test`
-        /// — the commands typed minutes later in the same project — the same
-        /// three letters mean `--package`, `--release` and `--clean`. Nothing
-        /// errors when the habit crosses over, it just builds something else.
+        /// no longer advertised: on the commands typed minutes later in the
+        /// same project, the same three letters mean something else. `-r` is
+        /// `--release` on `horus build`, `horus run` and `horus test`; `-p` and
+        /// `-c` are `--package` and `--clean` on `horus build` and `horus run`
+        /// only, and `horus test` has neither. See DEPRECATED_NEW_SHORT_FLAGS,
+        /// which is the list this comment has to agree with.
+        ///
+        /// `-r` and `-c` cross over silently — they just build something else.
+        /// A bare `-p` at least fails, because `--package` takes a value.
         /// They stop being accepted in HORUS 0.4.0; use the long form.
         #[arg(long = "python", short_alias = 'p', conflicts_with_all = ["rust", "cpp"])]
         python: bool,

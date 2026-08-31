@@ -175,6 +175,23 @@ fn test_watchdog_functionality() {
     );
 }
 
+/// Whether the machine is too busy for a rate measurement to mean anything.
+///
+/// Deliberately independent of anything the test measures: it asks whether the
+/// box *could* have delivered the rate, not whether it did. Non-Linux, and any
+/// unreadable or unparseable `/proc/loadavg`, count as not saturated — a missing
+/// signal must not silently disable the assertion.
+fn machine_is_saturated() -> bool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as f64)
+        .unwrap_or(1.0);
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|load| load > cores)
+        .unwrap_or(false)
+}
+
 #[test]
 fn test_high_performance_rt_config() {
     let _shm_guard = cleanup_stale_shm();
@@ -194,15 +211,62 @@ fn test_high_performance_rt_config() {
     let traction_count = traction_ticks.load(Ordering::SeqCst);
     let stability_count = stability_ticks.load(Ordering::SeqCst);
 
-    // At 10kHz for 50ms, expect ~500 ticks ideally. Use conservative threshold for CI.
+    // Calibrate against the DEFAULT tick rate over the same window, in the same
+    // conditions, rather than against an absolute tick count.
+    //
+    // `> 10 in 50ms` was an absolute bound that happened to sit just above what
+    // the 100Hz default produces (5). On a box running the rest of the workspace
+    // suite the scheduler thread does not get 10kHz — this failed with 6 ticks,
+    // which is the run queue, not the configuration. And the obvious repair,
+    // lengthening the window, makes it VACUOUS: at 500ms the default rate alone
+    // clears 10.
+    //
+    // So the discriminator has to be relative. Load slows both runs, and the
+    // property under test — that `.tick_rate(10_000)` actually raises the rate
+    // rather than being ignored — survives as a ratio.
+    let baseline = CriticalControlNode::new("baseline_control", 10);
+    let baseline_ticks = Arc::clone(&baseline.tick_count);
+    let mut default_rate = Scheduler::new();
+    default_rate.add(baseline).order(0).build();
+    default_rate.run_for(50_u64.ms()).unwrap();
+    let baseline_count = baseline_ticks.load(Ordering::SeqCst);
+
+    // Skip on a saturated machine, decided BEFORE looking at the counts.
+    //
+    // A 10kHz scheduler needs to be scheduled every 100us. With the rest of the
+    // workspace suite running, this box delivers ~120Hz to it — 6 ticks against
+    // the default's 5 — so the property is unobservable, not violated. The
+    // default rate is clock-paced and reaches its nominal 5 either way, which is
+    // why the ratio collapses rather than both sides falling together.
+    //
+    // The skip cannot be keyed on the tick counts: a genuinely ignored
+    // `.tick_rate()` produces the same ~5 ticks, so a count-based skip would
+    // mask exactly the regression this test exists to catch. Load average is
+    // independent of the outcome — it says whether the machine could have
+    // delivered the rate, not whether it did.
+    if machine_is_saturated() {
+        eprintln!(
+            "SKIPPING test_high_performance_rt_config: load average exceeds core \
+             count, so a 10kHz scheduler cannot be scheduled often enough for the \
+             measurement to mean anything. Run on an unloaded machine."
+        );
+        return;
+    }
+
+    // 1.5x. If `.tick_rate()` were ignored both runs would be the same rate and
+    // the ratio would be exactly 1.0, so any threshold above 1 discriminates;
+    // dropping the call measures 0.8. On an unloaded box the healthy ratio is
+    // ~100x, so 1.5x is generous without being vacuous.
     assert!(
-        traction_count > 10,
-        "Traction control ticked {} times in 50ms at 10kHz (expected many more)",
-        traction_count
+        traction_count * 2 > baseline_count * 3,
+        "traction control ticked {traction_count} times at 10kHz against \
+         {baseline_count} at the default rate over the same 50ms window — the \
+         tick_rate setting is not raising the rate"
     );
     assert!(
-        stability_count > 10,
-        "Stability control ticked {} times in 50ms at 10kHz (expected many more)",
-        stability_count
+        stability_count * 2 > baseline_count * 3,
+        "stability control ticked {stability_count} times at 10kHz against \
+         {baseline_count} at the default rate over the same 50ms window — the \
+         tick_rate setting is not raising the rate"
     );
 }

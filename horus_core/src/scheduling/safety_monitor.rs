@@ -4,7 +4,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 // ============================================================================
 // Global emergency stop hook — used by horus_net for network link-loss safety
@@ -110,16 +110,88 @@ pub fn take_pending_local_estop() -> Option<String> {
         .take()
 }
 
-/// Return the current wall-clock time as nanoseconds since the Unix epoch.
+/// Monotonic nanoseconds. The clock every watchdog timeout in this module is
+/// measured against.
 ///
-/// Using `SystemTime` rather than `Instant` lets us store an absolute timestamp
-/// in a `u64` with no global base reference.  NTP adjustments of a few microseconds
-/// cannot cause spurious watchdog expiry because watchdog timeouts are O(milliseconds).
+/// # Why this is not the wall clock
+///
+/// This was `SystemTime::now() - UNIX_EPOCH`, defended by a comment arguing
+/// that NTP adjustments are microseconds against millisecond timeouts. That is
+/// true of NTP *slew* and false of an NTP *step*, and a step is the ordinary
+/// case, not the exotic one: `chronyd` and `systemd-timesyncd` both step
+/// outright on their first sync rather than slewing an arbitrarily large
+/// offset, a VM or container resume lands the guest clock forward by however
+/// long it was suspended, and `date -s` is a thing operators do.
+///
+/// Both directions of a step are a safety failure, and they fail differently:
+///
+/// * **Forward.** `elapsed_ns` for every registered node jumps by the size of
+///   the step in a single pass. A step larger than 3x a node's timeout makes
+///   [`Watchdog::check_graduated`] return `Critical` for all of them at once,
+///   and `check_watchdogs_graduated` turns the first critical node into
+///   `trigger_emergency_stop` — a latched, fleet-wide e-stop on a robot whose
+///   every node is ticking perfectly. Nothing about the robot changed; the
+///   clock moved.
+/// * **Backward.** `check_graduated_at`'s `saturating_sub` clamps the elapsed
+///   time to zero, so every watchdog reads `Ok` until real time catches back
+///   up with the pre-step reading. The watchdog does not false-trip, it goes
+///   *blind*: a node can stop ticking for the length of the step and never be
+///   reported. That is the worse of the two failures, because it is silent.
+///
+/// `CLOCK_MONOTONIC` has neither failure by construction. It is not settable
+/// (`clock_settime` returns `EINVAL` for it), NTP can only slew its *rate*, and
+/// `date -s` does not touch it. It is the clock a safety timeout has to be
+/// measured on, and `rt_executor` already reached the same conclusion for its
+/// diagnostic throttle.
+///
+/// # Epoch
+///
+/// These timestamps never leave the process: `last_heartbeat_ns` is only ever
+/// compared against a later reading of this same function, and the one accessor
+/// that exposes it ([`SafetyMonitor::watchdog_last_heartbeat_ns`]) is used only
+/// to compare two readings of it. The epoch is therefore free to be arbitrary —
+/// boot on unix, first call elsewhere — and no reader can be broken by the
+/// change of meaning.
+///
+/// # Cost
+///
+/// Unchanged. On Linux `clock_gettime(CLOCK_MONOTONIC)` resolves through the
+/// vDSO exactly as the `SystemTime` read it replaces did, so this is a tail fix
+/// that costs no cycles.
+#[cfg(unix)]
 #[inline(always)]
 fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a live, writable `timespec` and CLOCK_MONOTONIC is always
+    // a valid clock id, so both documented failure modes (EFAULT for a bad
+    // pointer, EINVAL for a bad clock id) are unreachable. A failed call would
+    // leave `ts` zeroed, which reads as "no time has passed" — the blind
+    // direction, not the false-trip direction — but it cannot happen here.
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    (ts.tv_sec as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(ts.tv_nsec as u64)
+}
+
+/// Monotonic nanoseconds for platforms without `clock_gettime` (Windows).
+///
+/// `Instant` is monotonic and non-settable on every platform Rust supports
+/// (QPC on Windows), which is the whole requirement here — the epoch being
+/// process-local costs nothing because these timestamps never leave the
+/// process.
+#[cfg(not(unix))]
+#[inline(always)]
+fn now_ns() -> u64 {
+    use std::sync::OnceLock;
+    static ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
         .as_nanos() as u64
 }
 
@@ -182,8 +254,9 @@ pub(crate) enum WatchdogSeverity {
 
 /// Watchdog for monitoring node health
 ///
-/// `last_heartbeat_ns` is stored as nanoseconds since the Unix epoch in an
-/// `AtomicU64`.  This eliminates the `Mutex<Instant>` TOCTOU window that
+/// `last_heartbeat_ns` is stored as [`now_ns`] nanoseconds — a MONOTONIC
+/// reading, never the wall clock, for the reasons set out on that function — in
+/// an `AtomicU64`.  This eliminates the `Mutex<Instant>` TOCTOU window that
 /// existed between `lock()` (reading the timestamp) and `elapsed()` (comparing
 /// it): if a heartbeat arrived between those two operations, the stale
 /// timestamp caused a false-positive expiry, triggering an emergency stop on a
@@ -199,7 +272,8 @@ pub(crate) struct Watchdog {
     /// The timeout as configured, before any rate-change scaling. `set_scale`
     /// is always applied to this, so scaling never compounds.
     base_timeout: Duration,
-    /// Last heartbeat time as nanoseconds since Unix epoch.
+    /// Last heartbeat, as monotonic nanoseconds from [`now_ns`]. Process-local
+    /// epoch: only ever compared against another reading of the same clock.
     last_heartbeat_ns: AtomicU64,
     /// Is watchdog expired?
     expired: AtomicBool,
@@ -1609,6 +1683,81 @@ mod tests {
         monitor.record_deadline_miss("other_node");
         assert!(!monitor.is_emergency_stop());
         assert_eq!(monitor.get_stats().deadline_misses, 1);
+    }
+
+    // ── Watchdog clock source ────────────────────────────────────────────
+
+    /// The watchdog's clock must not be a settable one.
+    ///
+    /// `now_ns` used to be `SystemTime::now() - UNIX_EPOCH`. On that clock an
+    /// NTP step, a VM resume or `date -s` moves `elapsed_ns` for every node at
+    /// once: forward past 3x a timeout latches a fleet-wide e-stop on a healthy
+    /// robot via `check_watchdogs_graduated`, and backward makes
+    /// `check_graduated_at`'s `saturating_sub` clamp to zero so the watchdog
+    /// stops reporting real deaths.
+    ///
+    /// A test cannot step the system clock, so it pins the property that makes
+    /// the step harmless instead: the reading is not wall-clock time. Unix-epoch
+    /// nanoseconds passed 1.7e18 in 2024 and only climb; `CLOCK_MONOTONIC`
+    /// counts from boot, so reaching that value takes 54 years of uptime. Any
+    /// revert to `SystemTime` fails here immediately.
+    #[test]
+    fn the_watchdog_clock_is_monotonic_not_wall_clock() {
+        // Unix-epoch nanoseconds at 2024-01-01. Every wall-clock reading this
+        // code will ever see is above it; no plausible uptime is.
+        const EPOCH_NS_2024: u64 = 1_704_067_200_000_000_000;
+
+        let t0 = now_ns();
+        assert!(
+            t0 < EPOCH_NS_2024,
+            "now_ns() returned {t0}, which is wall-clock time since the Unix \
+             epoch, not a monotonic reading. A clock step can now latch a \
+             fleet-wide emergency stop on a healthy robot, or blind the \
+             watchdog to a real node death."
+        );
+
+        let t1 = now_ns();
+        assert!(
+            t1 >= t0,
+            "the watchdog clock went backwards ({t0} then {t1}); every timeout \
+             in this module is a subtraction of two of these readings"
+        );
+    }
+
+    /// A fed watchdog stays `Ok` when the *wall* clock is far past its timeout.
+    ///
+    /// The two clocks are now different quantities, and this is the assertion
+    /// that says so at the level the watchdog actually operates: feed a
+    /// 10 ms watchdog, then evaluate it at a `SystemTime`-derived "now". On the
+    /// old clock that argument was directly comparable to `last_heartbeat_ns`
+    /// and the reading is nine decimal orders past the timeout, so the node
+    /// would be `Critical` — the exact shape of the spurious e-stop. On a
+    /// monotonic clock the wall-clock number is simply not a reading of this
+    /// timebase, and `check_graduated_at` must be given one that is.
+    #[test]
+    fn a_wall_clock_reading_is_not_a_watchdog_reading() {
+        let wd = Watchdog::new(10_u64.ms());
+        wd.feed();
+
+        let wall_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let fed_at = wd.last_heartbeat_ns.load(Ordering::Acquire);
+        assert!(
+            wall_ns.saturating_sub(fed_at) > 10_000_000 * 3,
+            "precondition: the wall-clock reading is more than 3x the timeout \
+             away from the heartbeat, so it would read Critical if the two were \
+             the same timebase"
+        );
+
+        // The watchdog's own clock, which is the only one it may be judged on.
+        assert_eq!(
+            wd.check_graduated(),
+            WatchdogSeverity::Ok,
+            "a watchdog fed microseconds ago must be Ok no matter what the wall \
+             clock says"
+        );
     }
 
     // ── Graduated watchdog tests ─────────────────────────────────────────

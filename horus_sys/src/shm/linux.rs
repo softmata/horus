@@ -16,6 +16,26 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub struct ShmRegion {
     mmap: MmapMut,
+    /// Mappings that `grow_unchecked` replaced, deliberately kept alive.
+    ///
+    /// Growing produces a mapping at a NEW address. Dropping the old `MmapMut`
+    /// here would `munmap` address space that other threads are still reading
+    /// through: `Topic` shares one `Arc<ShmRegion>` across clones, and every
+    /// clone caches its own `header_ptr` / slot pointers derived from the base
+    /// address at the time it last re-synced. Releasing the old mapping turned
+    /// each of those into a dangling pointer -- observed as a SIGSEGV in
+    /// `TopicHeader::is_verbose` and, worse, as a faulting atomic *store*
+    /// inside `BackendMigrator::perform_migration`, which is a wild write that
+    /// only faulted because the address happened to be unmapped.
+    ///
+    /// Retaining costs one `VMA` per grow and nothing else: both mappings are
+    /// `MAP_SHARED` views of the SAME file, so the overlapping prefix is
+    /// physically the same pages. A reader on the old base therefore sees
+    /// COHERENT header bytes, not a stale snapshot, and re-points itself when
+    /// it notices the migration epoch bump. Growth is geometric
+    /// (`next_power_of_two().max(old * 2)`), so the retained count is
+    /// logarithmic in the final slot size -- a couple of dozen at the extreme.
+    retired: Vec<MmapMut>,
     _file: File,
     path: PathBuf,
     topic_name: String,
@@ -49,8 +69,20 @@ impl ShmRegion {
         }
 
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
+
+        // Pay the page faults here, at attach, instead of in whichever loop
+        // touches the ring first. This path is the one that needed it: the
+        // creator below already wires every page as a side effect of its
+        // `fill(0)`, so before this call an attaching subscriber was the only
+        // holder taking minor faults mid-receive. See
+        // `horus_sys::shm::make_resident` for the policy and its opt-outs.
+        // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(mmap.as_ptr(), size) };
+
         Ok(Self {
             mmap,
+            retired: Vec::new(),
             _file: file,
             path,
             topic_name: name.to_string(),
@@ -147,7 +179,7 @@ impl ShmRegion {
         }
 
         // SAFETY: file is a valid open file with sufficient size; len(size) matches the file size
-        let mut mmap = unsafe {
+        let mmap = unsafe {
             MmapOptions::new()
                 .len(size)
                 .map_mut(&file)
@@ -155,13 +187,34 @@ impl ShmRegion {
         };
 
         if is_owner {
-            mmap.fill(0);
+            // No `mmap.fill(0)` here. `is_owner` is set only on the
+            // `O_CREAT|O_EXCL` branch above, i.e. a file this call just created
+            // and `ftruncate`d from zero length, and POSIX requires the extended
+            // bytes to read as zeros. The memset was writing what was already
+            // there — but writing it is what made it expensive: it faults in and
+            // dirties every page up front, and it runs BEFORE the region's magic
+            // is published, so it is a critical section that every attacher waits
+            // on. On a 512 MiB non-POD fanout region under load that section was
+            // measured at ~7 seconds, which is longer than the attach deadline;
+            // attachers timed out and fell back. `test_shm_zero_initialized`
+            // pins the zero-fill invariant this relies on.
+            //
             // Write topic metadata file for discovery consistency across platforms
             let _ = super::write_topic_meta(name, size);
         }
 
+        // Populate page tables here rather than one minor fault at a time inside
+        // the first publish or receive loop. This now runs for the creator too,
+        // and unlike the old blanket `fill(0)` it is bounded by
+        // `residency_policy().max_bytes`, so a huge region no longer pays for
+        // full residency it never asked for.
+        // SAFETY: `mmap` owns a live mapping of `size` bytes and outlives the
+        // call; `make_resident` neither reads nor writes the region.
+        unsafe { super::make_resident(mmap.as_ptr(), size) };
+
         Ok(Self {
             mmap,
+            retired: Vec::new(),
             size,
             path,
             topic_name: name.to_string(),
@@ -217,11 +270,27 @@ impl ShmRegion {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that no other thread is concurrently reading from
-    /// or writing to the memory region via raw pointers derived from `as_ptr()`.
-    /// In the Topic system, this is guaranteed by the single-thread ownership
-    /// contract and the migration lock.
+    /// `&mut self` already excludes concurrent access to this struct's fields.
+    /// What the caller still owes is about the *mapped bytes*: the grow publishes
+    /// a mapping at a new address, so any pointer previously handed out by
+    /// `as_ptr()` now addresses the retained older mapping. That is safe to read
+    /// — the replaced mapping is kept alive and is a coherent view of the same
+    /// file — but it describes the PRE-GROW geometry, so a caller must re-derive
+    /// cached offsets before using the new slot layout.
+    ///
+    /// The previous contract here ("no other thread is concurrently reading ...
+    /// guaranteed by the single-thread ownership contract and the migration
+    /// lock") was false: `Topic` shares one region across clones on different
+    /// threads and held no such lock. It was a live use-after-free.
     pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.retired.len() < super::MAX_RETIRED_MAPPINGS,
+            "refusing to grow: {} mappings already retained (cap {}); \
+             see MAX_RETIRED_MAPPINGS",
+            self.retired.len(),
+            super::MAX_RETIRED_MAPPINGS
+        );
+
         anyhow::ensure!(
             new_size > self.size,
             "grow_unchecked: new_size ({}) must be > current size ({})",
@@ -251,8 +320,20 @@ impl ShmRegion {
                 )
             })?;
 
-        self.mmap = new_mmap;
+        // Retain, do not drop: see the `retired` field. `mem::replace` hands us
+        // the old mapping instead of `munmap`ing it out from under readers.
+        let old_mmap = std::mem::replace(&mut self.mmap, new_mmap);
+        self.retired.push(old_mmap);
         self.size = new_size;
+
+        // The remap is a brand-new mapping with empty page tables, so without
+        // this every page of the grown region would fault again on first touch
+        // — and a grow happens *because* a large message is arriving, i.e. at
+        // the worst possible moment. Re-establish residency before anyone
+        // publishes into it.
+        // SAFETY: the new mapping is live and `new_size` bytes long; the call
+        // neither reads nor writes it.
+        unsafe { super::make_resident(self.mmap.as_ptr(), new_size) };
 
         Ok(())
     }

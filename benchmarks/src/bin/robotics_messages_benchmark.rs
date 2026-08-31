@@ -4,6 +4,24 @@
 //! real-world robotic systems. Required for academic validity per
 //! REP 2014 and industry benchmarking standards.
 //!
+//! ## What is actually timed
+//!
+//! Every figure here is the cost of the **`tx.send()` call** — the publisher's
+//! enqueue into the ring — measured with RDTSC around that call and nothing
+//! else. It is NOT publish-to-receive latency. A consumer thread on another
+//! core drains in the background so the ring does not fill; the producer never
+//! waits for a message to arrive anywhere, and the batch drain-waits are
+//! outside the timed region.
+//!
+//! This matters for the suitability verdicts below. A `send()` on a warm ring
+//! costs tens of nanoseconds, and the control-rate gates it is compared against
+//! are 100 µs to 25 ms — four to six orders of magnitude looser. Those gates
+//! cannot fail; the output now prints the headroom beside each verdict and
+//! labels a gate non-discriminating rather than printing a bare PASS that reads
+//! as a real-time guarantee. A real control-loop budget also has to cover the
+//! receive side, the node's compute, and the scheduler's own jitter, none of
+//! which this binary measures.
+//!
 //! ## Message Types Tested
 //!
 //! | Type | Size | Use Case |
@@ -38,6 +56,36 @@ use std::thread;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;
+
+// Per-message-type deadline budgets, one control period at the type's typical
+// rate. `deadline_misses` is counted from the samples against these instead of
+// being written as a literal 0 next to a threshold of 0.
+//
+// These are whole-period budgets applied to a send()-enqueue cost, so they are
+// enormously loose — see `suitability_verdict`, which prints the headroom and
+// refuses to call a gate this slack a pass.
+const CMDVEL_DEADLINE_NS: u64 = 1_000_000; // 1 kHz
+const IMU_DEADLINE_NS: u64 = 2_000_000; // 500 Hz
+const LASERSCAN_DEADLINE_NS: u64 = 25_000_000; // 40 Hz
+const JOINTCMD_DEADLINE_NS: u64 = 2_000_000; // 500 Hz
+
+/// Verdict for a control-rate gate, carrying the margin it passed by.
+///
+/// A bare "✓ PASS" on `p99 < 1ms` for a quantity measured in tens of
+/// nanoseconds reads as a real-time guarantee, but the gate is four orders of
+/// magnitude loose and could not have failed. Anything passing by 100x or more
+/// is reported as non-discriminating rather than as a pass.
+fn suitability_verdict(p99_ns: u64, threshold_ns: u64) -> String {
+    if p99_ns >= threshold_ns {
+        return "✗ FAIL".to_string();
+    }
+    let headroom = threshold_ns as f64 / p99_ns.max(1) as f64;
+    if headroom >= 100.0 {
+        format!("~ PASS by {:.0}x — gate not discriminating", headroom)
+    } else {
+        format!("✓ PASS by {:.1}x", headroom)
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -101,7 +149,9 @@ fn main() {
     println!();
 
     // Benchmark each message type with Topic (Topic::new() auto-selects backend)
-    println!("\n[Topic] Running benchmarks...");
+    println!("\n[Topic] Running benchmarks — timing tx.send() enqueue cost only");
+    println!("        (cross-thread consumer drains in the background; no sample");
+    println!("         waits for delivery, so these are NOT end-to-end latencies)");
     println!("─────────────────────────────────────────────────");
 
     // CmdVel (16 bytes) - Control commands
@@ -126,93 +176,81 @@ fn main() {
 
     // Summary table
     println!("\n╔══════════════════════════════════════════════════════════════════════════════════════════╗");
-    println!("║                              SUMMARY BY MESSAGE TYPE                                      ║");
+    println!("║           SUMMARY BY MESSAGE TYPE — send() ENQUEUE COST, not end-to-end latency           ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════════════════╣");
-    println!("║ Backend    │ Message      │   Size │ Median (ns) │ p99 (ns) │    CV   │ Throughput      ║");
+    println!("║ Message      │   Size │ Median (ns) │ p99 (ns) │    CV   │ Misses │ Sustained rate       ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════════════════╣");
 
     for result in &report.results {
+        // The leading "Adaptive_" of the name was previously printed as a
+        // "Backend" column. `Topic::new` picks the backend at runtime and this
+        // binary never asks which one it picked, so that column asserted a fact
+        // it had not observed. Dropped rather than guessed.
         let msg_type = result.name.split('_').skip(1).collect::<Vec<_>>().join("_");
-        let backend = result.name.split('_').next().unwrap_or("?");
         println!(
-            "║ {:10} │ {:12} │ {:>6} │ {:>11.0} │ {:>8} │ {:>7.4} │ {:>9.2} M/s  ║",
-            backend,
+            "║ {:12} │ {:>6} │ {:>11.0} │ {:>8} │ {:>7.4} │ {:>6} │ {:>9.2} M msg/s     ║",
             msg_type,
             result.message_size,
             result.statistics.median,
             result.statistics.p99,
             result.determinism.cv,
+            result.determinism.deadline_misses,
             result.throughput.messages_per_sec / 1_000_000.0
         );
     }
     println!("╚══════════════════════════════════════════════════════════════════════════════════════════╝");
+    println!("Sustained rate is wall-clock over the measured loop, so it includes the batch");
+    println!("drain-waits. It is a publish rate for this producer/consumer pair, not a bus limit.");
 
     // Suitability analysis for real-time robotics
     println!("\n╔══════════════════════════════════════════════════════════════════╗");
     println!("║              REAL-TIME SUITABILITY ANALYSIS                      ║");
     println!("╠══════════════════════════════════════════════════════════════════╣");
+    println!("║ These gates grade the p99 of the send() ENQUEUE COST against one ║");
+    println!("║ whole control period. They are not end-to-end control-loop       ║");
+    println!("║ guarantees: a real loop also pays the receive side, the node's   ║");
+    println!("║ compute, and the scheduler's jitter, none of which is measured   ║");
+    println!("║ here. The headroom is printed so a pass by four orders of        ║");
+    println!("║ magnitude cannot be read as a tight result.                      ║");
+    println!("╠══════════════════════════════════════════════════════════════════╣");
 
-    let cmdvel_results: Vec<_> = report
-        .results
-        .iter()
-        .filter(|r| r.name.contains("CmdVel"))
-        .collect();
-    if let Some(best) = cmdvel_results.iter().min_by(|a, b| {
-        a.statistics
-            .median
-            .partial_cmp(&b.statistics.median)
-            .unwrap()
-    }) {
-        let meets_1khz = best.statistics.p99 < 1_000_000; // 1ms = 1MHz rate
-        let meets_10khz = best.statistics.p99 < 100_000; // 100µs = 10kHz rate
-        println!(
-            "║ CmdVel (1kHz control):  {} (p99={:.0}ns < 1ms)",
-            if meets_1khz { "✓ PASS" } else { "✗ FAIL" },
-            best.statistics.p99
-        );
-        println!(
-            "║ CmdVel (10kHz control): {} (p99={:.0}ns < 100µs)",
-            if meets_10khz { "✓ PASS" } else { "✗ FAIL" },
-            best.statistics.p99
-        );
-    }
-
-    let imu_results: Vec<_> = report
-        .results
-        .iter()
-        .filter(|r| r.name.contains("Imu"))
-        .collect();
-    if let Some(best) = imu_results.iter().min_by(|a, b| {
-        a.statistics
-            .median
-            .partial_cmp(&b.statistics.median)
-            .unwrap()
-    }) {
-        let meets_500hz = best.statistics.p99 < 2_000_000; // 2ms = 500Hz rate
-        println!(
-            "║ Imu (500Hz fusion):     {} (p99={:.0}ns < 2ms)",
-            if meets_500hz { "✓ PASS" } else { "✗ FAIL" },
-            best.statistics.p99
-        );
-    }
-
-    let lidar_results: Vec<_> = report
-        .results
-        .iter()
-        .filter(|r| r.name.contains("LaserScan"))
-        .collect();
-    if let Some(best) = lidar_results.iter().min_by(|a, b| {
-        a.statistics
-            .median
-            .partial_cmp(&b.statistics.median)
-            .unwrap()
-    }) {
-        let meets_40hz = best.statistics.p99 < 25_000_000; // 25ms = 40Hz rate
-        println!(
-            "║ LaserScan (40Hz lidar): {} (p99={:.0}ns < 25ms)",
-            if meets_40hz { "✓ PASS" } else { "✗ FAIL" },
-            best.statistics.p99
-        );
+    for (needle, label, threshold) in [
+        ("CmdVel", "CmdVel    (1kHz  control)", CMDVEL_DEADLINE_NS),
+        ("CmdVel", "CmdVel    (10kHz control)", 100_000u64),
+        ("Imu", "Imu       (500Hz fusion) ", IMU_DEADLINE_NS),
+        (
+            "LaserScan",
+            "LaserScan (40Hz  lidar)  ",
+            LASERSCAN_DEADLINE_NS,
+        ),
+        (
+            "JointCommand",
+            "JointCmd  (500Hz control)",
+            JOINTCMD_DEADLINE_NS,
+        ),
+    ] {
+        // `min_by` over medians used `partial_cmp(..).unwrap()`, which panics on
+        // a NaN median — the value `Statistics` uses for "no samples". Fall back
+        // to Equal so a run that collected nothing reports rather than aborts.
+        let best = report
+            .results
+            .iter()
+            .filter(|r| r.name.contains(needle))
+            .min_by(|a, b| {
+                a.statistics
+                    .median
+                    .partial_cmp(&b.statistics.median)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some(best) = best {
+            println!(
+                "║ {}: {} (p99={}ns vs {}ns)",
+                label,
+                suitability_verdict(best.statistics.p99, threshold),
+                best.statistics.p99,
+                threshold
+            );
+        }
     }
 
     println!("╚══════════════════════════════════════════════════════════════════╝");
@@ -287,9 +325,10 @@ fn benchmark_cmdvel(
         thread::yield_now();
     }
 
-    // Measurement
+    // Measurement — times tx.send() only. See the module header.
     let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
+    let wall_start = std::time::Instant::now();
     for i in 0..iterations {
         let msg = CmdVel::new(1.0 + (i as f32 * 0.001), 0.5);
         let start = timer.start();
@@ -302,6 +341,7 @@ fn benchmark_cmdvel(
             }
         }
     }
+    let wall_secs = wall_start.elapsed().as_secs_f64();
 
     while messages_received.load(Ordering::Acquire) < total_messages as u64 {
         thread::yield_now();
@@ -315,6 +355,8 @@ fn benchmark_cmdvel(
         std::mem::size_of::<CmdVel>(),
         latencies,
         iterations,
+        CMDVEL_DEADLINE_NS,
+        wall_secs,
         platform,
     )
 }
@@ -379,9 +421,10 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
         thread::yield_now();
     }
 
-    // Measurement
+    // Measurement — times tx.send() only. See the module header.
     let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
+    let wall_start = std::time::Instant::now();
     for i in 0..iterations {
         let mut msg = Imu::new();
         msg.linear_acceleration = [0.0, 0.0, 9.81];
@@ -396,6 +439,7 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
             }
         }
     }
+    let wall_secs = wall_start.elapsed().as_secs_f64();
 
     while messages_received.load(Ordering::Acquire) < total_messages as u64 {
         thread::yield_now();
@@ -409,6 +453,8 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
         std::mem::size_of::<Imu>(),
         latencies,
         iterations,
+        IMU_DEADLINE_NS,
+        wall_secs,
         platform,
     )
 }
@@ -478,9 +524,10 @@ fn benchmark_laserscan(
         thread::yield_now();
     }
 
-    // Measurement
+    // Measurement — times tx.send() only. See the module header.
     let warmup_base = warmup_count as u64;
     let mut latencies = Vec::with_capacity(iterations);
+    let wall_start = std::time::Instant::now();
     for seq in 0..iterations {
         let mut msg = LaserScan::new();
         for j in 0..360 {
@@ -496,6 +543,7 @@ fn benchmark_laserscan(
             }
         }
     }
+    let wall_secs = wall_start.elapsed().as_secs_f64();
 
     while messages_received.load(Ordering::Acquire) < total_messages as u64 {
         thread::yield_now();
@@ -509,6 +557,8 @@ fn benchmark_laserscan(
         std::mem::size_of::<LaserScan>(),
         latencies,
         iterations,
+        LASERSCAN_DEADLINE_NS,
+        wall_secs,
         platform,
     )
 }
@@ -580,9 +630,10 @@ fn benchmark_jointcmd(
         thread::yield_now();
     }
 
-    // Measurement
+    // Measurement — times tx.send() only. See the module header.
     let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
+    let wall_start = std::time::Instant::now();
     for i in 0..iterations {
         let mut msg = JointCommand::new();
         let offset = (i as f64) * 0.001;
@@ -602,6 +653,7 @@ fn benchmark_jointcmd(
             }
         }
     }
+    let wall_secs = wall_start.elapsed().as_secs_f64();
 
     while messages_received.load(Ordering::Acquire) < total_messages as u64 {
         thread::yield_now();
@@ -615,15 +667,31 @@ fn benchmark_jointcmd(
         std::mem::size_of::<JointCommand>(),
         latencies,
         iterations,
+        JOINTCMD_DEADLINE_NS,
+        wall_secs,
         platform,
     )
 }
 
+/// Build a result from the measured send-enqueue samples.
+///
+/// `deadline_ns` is the control-rate budget for this message type; the miss
+/// count is computed from the samples against it. It used to be written as the
+/// literal `0` with `deadline_threshold_ns: 0` beside it and stamped
+/// `Provenance::Measured` — a real-time deadline gate that reported a pass
+/// without ever comparing a sample to anything.
+///
+/// `wall_secs` is the wall-clock duration of the measured loop, used for the
+/// throughput figure. Summing the per-sample send costs instead gives
+/// `1 / mean(send_ns)`, an instruction-retire rate with every drain wait
+/// removed, which no caller can achieve.
 fn build_result(
     name: &str,
     message_size: usize,
     latencies: Vec<u64>,
     iterations: usize,
+    deadline_ns: u64,
+    wall_secs: f64,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
     let config = BenchmarkConfig {
@@ -647,17 +715,18 @@ fn build_result(
         max_jitter_ns: max_jitter,
         p999: statistics.p999,
         p9999: statistics.p9999,
-        deadline_misses: 0,
-        deadline_threshold_ns: 0,
-        run_variance: 0.0,
+        deadline_misses: latencies.iter().filter(|&&l| l > deadline_ns).count() as u64,
+        deadline_threshold_ns: deadline_ns,
+        // Single run per message type: there is no run-to-run spread. 0.0 would
+        // claim perfect reproducibility across runs that were never performed.
+        run_variance: f64::NAN,
     };
 
-    let total_ns: u64 = latencies.iter().sum();
-    let duration_secs = total_ns as f64 / 1_000_000_000.0;
+    let duration_secs = wall_secs;
 
     let throughput = ThroughputMetrics {
-        messages_per_sec: latencies.len() as f64 / duration_secs.max(0.001),
-        bytes_per_sec: (latencies.len() * message_size) as f64 / duration_secs.max(0.001),
+        messages_per_sec: latencies.len() as f64 / duration_secs.max(1e-9),
+        bytes_per_sec: (latencies.len() * message_size) as f64 / duration_secs.max(1e-9),
         total_messages: latencies.len() as u64,
         total_bytes: (latencies.len() * message_size) as u64,
         duration_secs,

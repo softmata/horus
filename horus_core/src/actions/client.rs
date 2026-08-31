@@ -219,7 +219,7 @@ where
                     GoalStatus::Succeeded => state
                         .result
                         .clone()
-                        .ok_or(ActionError::ExecutionError("Missing result".into())),
+                        .ok_or_else(|| ActionError::ExecutionError("Missing result".into())),
                     GoalStatus::Canceled => Err(ActionError::GoalCanceled),
                     GoalStatus::Preempted => Err(ActionError::GoalPreempted),
                     GoalStatus::Rejected => {
@@ -872,7 +872,7 @@ where
                     GoalStatus::Succeeded => state
                         .result
                         .clone()
-                        .ok_or(ActionError::ExecutionError("Missing result".into())),
+                        .ok_or_else(|| ActionError::ExecutionError("Missing result".into())),
                     GoalStatus::Canceled => Err(ActionError::GoalCanceled),
                     GoalStatus::Preempted => Err(ActionError::GoalPreempted),
                     GoalStatus::Rejected => Err(ActionError::GoalRejected("Goal rejected".into())),
@@ -932,7 +932,7 @@ where
                     GoalStatus::Succeeded => state
                         .result
                         .clone()
-                        .ok_or(ActionError::ExecutionError("Missing result".into())),
+                        .ok_or_else(|| ActionError::ExecutionError("Missing result".into())),
                     GoalStatus::Canceled => Err(ActionError::GoalCanceled),
                     GoalStatus::Preempted => Err(ActionError::GoalPreempted),
                     GoalStatus::Rejected => Err(ActionError::GoalRejected("Goal rejected".into())),

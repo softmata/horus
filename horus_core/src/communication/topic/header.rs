@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use crate::error::{HorusError, HorusResult};
 
+use super::shm_layout as layout;
 use super::types::BackendMode;
 
 // ============================================================================
@@ -23,7 +24,46 @@ pub(crate) const TOPIC_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE" (kept for 
 /// Header version for compatibility checking
 /// v2: Added slot_size field for large message support
 /// v3: Added per-slot sequence array for multi-producer write-completion tracking
-pub(crate) const TOPIC_VERSION: u32 = 3;
+/// v4: Two independent breaking changes, shipped together.
+///
+/// (a) Every millisecond timestamp in this header — participant leases,
+/// `last_topology_change_ms`, `stall_since_ms` — moved from `CLOCK_REALTIME` to
+/// `CLOCK_MONOTONIC`. See [`current_time_ms`].
+///
+/// (b) Added `layout_kind`, selecting the co-located slot geometry for small POD
+/// types. It is carved out of `_pad1a`, so no existing field moves, but a v3
+/// reader does not know to consult it: it would address a colo region with the
+/// split layout's offsets and read payload bytes as readiness stamps. That is
+/// the same class of silent corruption the horus_net offset drift produced once
+/// already.
+///
+/// # Why v4 is a hard break and not a soft migration
+///
+/// Neither change is detectable in-band by a v3 process.
+///
+/// The timestamps did not change layout, size or alignment; they changed
+/// MEANING. A v3 process stamps a lease at ~1.75e12 (ms since 1970) and a v4
+/// process stamps the same field at ~1e7 (ms since boot), and the two compare
+/// their values against each other through shared memory with no way to tell
+/// which epoch a number came from. Mixed on one segment they mis-judge liveness
+/// in both directions at once — the v3 writer's leases look permanently expired
+/// to the v4 reader (its slot is reclaimed underneath a live process), and the
+/// v4 writer's leases look ~55 years in the future to the v3 reader (a crashed
+/// process is never reaped).
+///
+/// The geometry is worse still: a v3 reader has no `layout_kind` concept at
+/// all, so it cannot even ask. There is no in-band discriminator that could
+/// make either safe, so the only correct handling is to refuse the segment:
+/// `Topic`'s open path rejects a version mismatch outright, which turns a
+/// silent corruption into a startup error naming both versions.
+///
+/// The practical consequence is that a v4 binary will not attach to a topic
+/// segment created by a v3 binary still running, and vice versa. Segments live
+/// in `/dev/shm` and do not survive a reboot, so on a machine where every HORUS
+/// process is restarted together this is invisible; a rolling restart that
+/// leaves old and new processes sharing a topic gets the error instead of the
+/// corruption.
+pub(crate) const TOPIC_VERSION: u32 = 4;
 
 /// Default lease timeout in milliseconds (5 seconds)
 pub(crate) const DEFAULT_LEASE_TIMEOUT_MS: u64 = 5000;
@@ -64,7 +104,11 @@ pub(crate) struct ParticipantEntry {
     pub(crate) source_host: AtomicU8,
     /// Padding for alignment
     pub(crate) _pad: [u8; 5],
-    /// Last heartbeat timestamp (milliseconds since epoch)
+    /// When this lease runs out, in [`current_time_ms`] milliseconds —
+    /// MONOTONIC since boot, NOT since the Unix epoch. Written by the owning
+    /// process and compared by any other process on the host; see
+    /// [`current_time_ms`] for why that comparison is sound and for the
+    /// clock-step failures the wall clock caused here.
     pub(crate) lease_expires_ms: AtomicU64,
 }
 
@@ -215,11 +259,25 @@ pub(crate) struct TopicHeader {
     /// Topic kind: Data=0, ServiceRequest=1, ServiceResponse=2, etc.
     /// Set once at topic creation. Used by discovery to classify topics.
     pub(crate) topic_kind: u8,
+    /// Which slot geometry the data region uses: `LAYOUT_SPLIT` or
+    /// `LAYOUT_COLO` (see `shm_layout`).
+    ///
+    /// Carved out of `_pad1a`, so `messages_total` keeps offset 56 and every
+    /// constant in `shm_layout` is unchanged. Atomic because a reader in
+    /// another process loads it while attaching.
+    pub(crate) layout_kind: AtomicU8,
     /// Alignment padding for messages_total
-    pub(crate) _pad1a: [u8; 7],
-    /// Total messages ever sent on this topic (always-on atomic counter).
-    /// Incremented on every send() regardless of verbose flag.
-    pub(crate) messages_total: AtomicU64,
+    pub(crate) _pad1a: [u8; 6],
+    /// Padding where `messages_total` used to live.
+    ///
+    /// It moved to the producer line below. This cache line is read by
+    /// consumers on the hot path — `migration_check!` Acquire-loads
+    /// `migration_epoch` at offset 40 on EVERY recv — and a producer doing a
+    /// locked read-modify-write here on every send made the two false-share,
+    /// ping-ponging the line between cores once per message. Measured at ~36ns
+    /// of a ~150ns one-way latency on an i7-10750H, against a comment that
+    /// claimed the increment cost ~1ns.
+    pub(crate) _pad1b: [u8; 8],
 
     // === Cache line 2 (bytes 64-127): PRODUCER WRITE LINE ===
     // This cache line is ONLY written by producers (senders)
@@ -230,8 +288,19 @@ pub(crate) struct TopicHeader {
     pub(crate) capacity: u32,
     /// Capacity mask for fast modulo (capacity - 1, only valid if capacity is power of 2)
     pub(crate) capacity_mask: u32,
-    /// Slot size in bytes (for non-POD types, includes header + data)
-    pub(crate) slot_size: u32,
+    /// Slot size in bytes (for non-POD types, includes header + data).
+    ///
+    /// Atomic because `auto_grow_slot_size` rewrites it at runtime, in one
+    /// process, while every other participant reads it — `sync_local`,
+    /// `geometry_is_addressable`, `point_at_slots` and `init_shm_backend` all
+    /// load it. As a plain `u32` that was a data race on shared memory, and the
+    /// writer additionally formed a `&mut TopicHeader` over bytes other handles
+    /// hold `&TopicHeader` to, which is aliasing UB on its own.
+    ///
+    /// `AtomicU32` has the same size and alignment as `u32`, so the wire layout
+    /// is byte-identical and `TOPIC_VERSION` does not move — guaranteed by the
+    /// `size_of::<TopicHeader>() == 640` assertion below rather than by prose.
+    pub(crate) slot_size: AtomicU32,
     /// Alignment padding so the two 8-byte stall words below stay 8-aligned.
     pub(crate) _pad_producer_align: [u8; 4],
     /// Stall detector: the `tail` a producer last observed on a full ring.
@@ -242,18 +311,53 @@ pub(crate) struct TopicHeader {
     /// [`TopicHeader::drain_has_stalled`].
     pub(crate) stall_tail: AtomicU64,
     /// Stall detector: when [`TopicHeader::stall_tail`] was observed
-    /// (ms since epoch). 0 means "no observation on record".
+    /// ([`current_time_ms`] monotonic ms). 0 means "no observation on record".
     pub(crate) stall_since_ms: AtomicU64,
     /// Padding to fill cache line (64 - 8 - 4 - 4 - 4 - 4 - 8 - 8 = 24 bytes)
     pub(crate) _pad_producer: [u8; 24],
 
-    // === Cache line 3 (bytes 128-191): CONSUMER WRITE LINE ===
-    // This cache line is ONLY written by consumers (receivers)
-    // NEVER put producer-written fields here!
+    // === Cache line 3 (bytes 128-191): LOW-TRAFFIC LINE ===
+    //
+    // This was "CONSUMER WRITE LINE / NEVER put producer-written fields here",
+    // and `messages_total` below breaks that rule deliberately. The rule was
+    // aimed at the right problem — keep the per-message writers of the two
+    // roles off one line — but `tail` is not a per-message write: a consumer
+    // stores it once per `capacity / 2` messages (see the `flush_mask` sites in
+    // dispatch.rs), and a producer loads it only when its local view says the
+    // ring is full. So this line is idle almost all the time, which is exactly
+    // what `messages_total` needs and what neither of the two lines above can
+    // offer: line 1 carries `migration_epoch`, polled by every consumer on
+    // every recv, and line 2 carries `sequence_or_head`, read by the broadcast
+    // recv path on every recv.
+    //
+    // Measured, best-of-6-reps one-way on an i7-10750H, Topic<CmdVel>:
+    // counter on line 1 gave a scattered 160-201ns, on line 2 a flat
+    // 166-175ns, here 139-187ns with a 135ns floor when the counter is removed
+    // outright. The scatter is the tell — a locked RMW against a line the peer
+    // is reading stalls for a variable time, which is why the median moved
+    // further than the floor did.
+    //
+    // The invariant to preserve is therefore "no two PER-MESSAGE writers from
+    // different roles on one line", not "one role per line".
     /// Read tail (for ring backends) - CONSUMER ONLY
     pub(crate) tail: AtomicU64,
-    /// Padding to fill cache line (64 - 8 = 56 bytes)
-    pub(crate) _pad_consumer: [u8; 56],
+    /// Total messages ever sent on this topic (always-on atomic counter).
+    /// Incremented on every send() regardless of verbose flag.
+    ///
+    /// Placed here, on the consumer line, because the two lines that look like
+    /// its natural home are both read by consumers on EVERY recv: line 1 holds
+    /// `migration_epoch`, which `migration_check!` polls per recv, and line 2
+    /// holds `sequence_or_head`, which the broadcast recv path reads per recv.
+    /// A producer doing a locked read-modify-write on either made the line
+    /// ping-pong once per message. Both placements were measured; line 1 gave a
+    /// scattered 132-191ns against a 127-133ns floor without the counter, and
+    /// line 2 was worse still at a flat 166-175ns.
+    ///
+    /// `tail` is the only other word here and a consumer stores it once per
+    /// `capacity / 2` messages, so this line is very nearly producer-exclusive.
+    pub(crate) messages_total: AtomicU64,
+    /// Padding to fill cache line (64 - 8 - 8 = 48 bytes)
+    pub(crate) _pad_consumer: [u8; 48],
 
     // === Cache line 4 (bytes 192-255): Counters and metadata ===
     /// Number of active publishers
@@ -269,7 +373,7 @@ pub(crate) struct TopicHeader {
     /// detector below uses it as its grace period — a test that wants a short
     /// grace has to be able to set it on a live header.
     pub(crate) lease_timeout_ms: AtomicU32,
-    /// Last topology change timestamp (ms)
+    /// Last topology change, in [`current_time_ms`] monotonic milliseconds.
     pub(crate) last_topology_change_ms: AtomicU64,
     /// Message type name (null-terminated, e.g. "CmdVel", "Imu").
     /// Set once at topic creation via `std::any::type_name::<T>()`.
@@ -299,8 +403,27 @@ pub(crate) struct TopicHeader {
     /// only fires when both sides supply a hash, so an old peer is never
     /// rejected — it is simply not protected.
     pub(crate) layout_hash: AtomicU32,
-    /// Reserved for future use
-    pub(crate) _pad_counters: [u8; 4],
+    /// When the participant table was last swept for dead registrants, as the
+    /// low 32 bits of [`current_time_ms`]. 0 means "never swept".
+    ///
+    /// This is the amortisation window for [`Self::reap_dead_participants`],
+    /// whose per-participant liveness probe is a `kill(2)` plus a `/proc` read
+    /// and which is reachable from inside `send()`. Shared rather than
+    /// process-local so that N processes on one topic cost one sweep per window
+    /// between them, not N.
+    ///
+    /// Carved out of what was reserved padding, so the header stays 640 bytes
+    /// and every existing offset is unchanged. It sits on the counters line
+    /// deliberately: every caller of the sweep already reads `subscriber_count`
+    /// from this same line, so the throttle check pulls in no cache line that
+    /// was not being pulled in anyway — and in particular it stays OFF the
+    /// producer's write line, which `send()` dirties on every message.
+    ///
+    /// 32 bits, so it wraps every 49.7 days of uptime. All arithmetic on it is
+    /// `wrapping_sub`, which yields the correct elapsed time across a wrap for
+    /// any interval shorter than the wrap period — and the window here is a
+    /// fraction of a lease timeout, i.e. seconds.
+    pub(crate) last_reap_ms: AtomicU32,
 
     // === Cache lines 5-10 (bytes 256-639): Participant tracking (384 bytes = 16 * 24) ===
     /// Participant entries for lease management
@@ -326,20 +449,22 @@ impl TopicHeader {
             creator_thread_id_hash: 0,
             migration_epoch: AtomicU64::new(0),
             topic_kind: 0,
-            _pad1a: [0; 7],
-            messages_total: AtomicU64::new(0),
+            layout_kind: AtomicU8::new(0),
+            _pad1a: [0; 6],
+            _pad1b: [0; 8],
             // Cache line 2: Producer write line
             sequence_or_head: AtomicU64::new(0),
             capacity: 0,
             capacity_mask: 0,
-            slot_size: 0,
+            slot_size: AtomicU32::new(0),
             _pad_producer_align: [0; 4],
             stall_tail: AtomicU64::new(0),
             stall_since_ms: AtomicU64::new(0),
             _pad_producer: [0; 24],
             // Cache line 3: Consumer write line
             tail: AtomicU64::new(0),
-            _pad_consumer: [0; 56],
+            messages_total: AtomicU64::new(0),
+            _pad_consumer: [0; 48],
             // Cache line 4: Counters
             publisher_count: AtomicU32::new(0),
             subscriber_count: AtomicU32::new(0),
@@ -348,7 +473,7 @@ impl TopicHeader {
             last_topology_change_ms: AtomicU64::new(0),
             type_name: [0; 32],
             layout_hash: AtomicU32::new(0),
-            _pad_counters: [0; 4],
+            last_reap_ms: AtomicU32::new(0),
             participants: std::array::from_fn(|_| ParticipantEntry {
                 pid: AtomicU32::new(0),
                 thread_id_hash: AtomicU32::new(0),
@@ -365,6 +490,17 @@ impl TopicHeader {
     // All 7 arguments are required by the SHM header wire format — grouping them
     // into a struct would add overhead at the only call site (topic open/create).
     #[allow(clippy::too_many_arguments)]
+    /// Whether this region uses the co-located slot geometry.
+    ///
+    /// Read from SHM rather than re-derived from `type_size`: the creator
+    /// decided the geometry once, and a later attacher that re-derived it
+    /// could disagree (different `horus_core` build, different eligibility
+    /// bound) and then read payload bytes as a stamp.
+    #[inline]
+    pub(crate) fn is_colo(&self) -> bool {
+        self.layout_kind.load(Ordering::Acquire) == layout::LAYOUT_COLO
+    }
+
     pub fn init(
         &mut self,
         type_size: u32,
@@ -394,13 +530,26 @@ impl TopicHeader {
         self.creator_thread_id_hash = hash_thread_id(std::thread::current().id());
         self.migration_epoch.store(0, Ordering::Release);
         self.topic_kind = topic_kind;
+        // Pick the slot geometry once, at creation, and record it. Every later
+        // attach reads this rather than re-deriving it from type_size, so a
+        // producer and a consumer can never disagree about where a stamp
+        // lives — the disagreement mode that made the horus_net offset drift
+        // a silent corruption instead of a loud failure.
+        self.layout_kind.store(
+            if layout::colo_eligible(is_pod, type_size as usize) {
+                layout::LAYOUT_COLO
+            } else {
+                layout::LAYOUT_SPLIT
+            },
+            Ordering::Release,
+        );
         self.messages_total.store(0, Ordering::Release);
 
         // Cache line 2: Producer write line
         self.sequence_or_head.store(0, Ordering::Release);
         self.capacity = capacity;
         self.capacity_mask = capacity.wrapping_sub(1); // For bitwise AND instead of modulo
-        self.slot_size = slot_size;
+        self.slot_size.store(slot_size, Ordering::Release);
         self.stall_tail.store(0, Ordering::Release);
         self.stall_since_ms.store(0, Ordering::Release);
 
@@ -415,6 +564,10 @@ impl TopicHeader {
             .store(DEFAULT_LEASE_TIMEOUT_MS as u32, Ordering::Release);
         self.last_topology_change_ms
             .store(current_time_ms(), Ordering::Release);
+        // "Never swept". A fresh table has nothing to reap, and this makes the
+        // first sweep on the segment unconditional rather than waiting out a
+        // window inherited from whatever the memory held before.
+        self.last_reap_ms.store(0, Ordering::Release);
 
         // Cache line 4 (cont): type_name — null-terminated, truncated if needed
         self.type_name = [0u8; 32];
@@ -677,7 +830,15 @@ impl TopicHeader {
 
         // Pass 2: nothing free — retire participants whose process is actually
         // gone (expired lease AND dead pid AND local AND not us), then rescan.
-        self.reap_dead_participants(now_ms);
+        //
+        // Deliberately the UNTHROTTLED sweep. This is the one caller that
+        // cannot be told "somebody checked recently": the alternative to
+        // finding a slot here is returning "no available participant slots" and
+        // failing the registration outright, and a node refusing to start
+        // because another process swept the table a millisecond earlier would
+        // be a new failure introduced by an optimisation. Registration is a
+        // startup-shaped event, so the probes are affordable exactly here.
+        let _ = self.reap_dead_participants_now(now_ms);
         if let Some(i) =
             self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
         {
@@ -781,7 +942,104 @@ impl TopicHeader {
     /// its process dying — but it is what makes the participant table, and
     /// everything that reads it (`topic info`, `detect_optimal_backend`),
     /// describe the system that is actually running.
+    ///
+    /// # This entry point is AMORTISED. `send()` can reach it.
+    ///
+    /// `Topic::send` → `send_lossy_retry` → `nothing_is_draining` calls this on
+    /// every send once the ring is full, and the liveness probe below is a
+    /// `kill(2)` plus a `format!` allocation and an open/read/close on
+    /// `/proc/<pid>/stat`, per expired participant, up to 16 of them. That is a
+    /// syscall pair on the publish path with no bound on how often it repeats —
+    /// and the doc above describes the state that makes it repeat FOREVER: an
+    /// idle-but-alive subscriber's lease expires, the sweep probes it, finds it
+    /// alive, changes nothing, and the next send does the whole thing again.
+    /// Measured shape: tens of microseconds inside one `send()`, on every send,
+    /// which is percent of a 1 kHz control period spent asking the kernel a
+    /// question whose answer has not changed.
+    ///
+    /// So a sweep runs at most once per [`Self::reap_interval_ms`] per topic,
+    /// coordinated in shared memory so N processes share one window rather than
+    /// each getting their own. Callers that need an answer immediately —
+    /// `register_role`, which is looking for a slot to claim right now and must
+    /// not fail a registration because somebody else swept a millisecond ago —
+    /// use [`Self::reap_dead_participants_now`].
+    ///
+    /// A window is opened only by a sweep that reclaimed NOTHING — see
+    /// [`Self::reap_dead_participants_now`]. That is what makes the throttle
+    /// target the pathology and not the useful work: the repeat it suppresses is
+    /// always a repeat of a sweep that already found nothing to do.
+    ///
+    /// **What the throttle costs, stated:** if a participant's process dies
+    /// during a window that a fruitless sweep opened, reclaiming its slot is
+    /// delayed by the remainder of that window. Nothing depends on it being
+    /// instant. A slot only becomes reclaimable once its lease expires, which
+    /// takes a full lease timeout, so this adds at most a quarter to a delay
+    /// that was already a multiple of it. The one path that could care — "the
+    /// ring is full and nothing is draining" — has its own independent timer in
+    /// [`Self::drain_has_stalled`] running on the FULL lease timeout, four times
+    /// longer, so it reaches the same conclusion regardless of whether any given
+    /// sweep ran. No safety property and no delivery guarantee is traded here;
+    /// only a syscall rate.
     pub(crate) fn reap_dead_participants(&self, now_ms: u64) {
+        if !self.claim_reap_window(now_ms) {
+            return;
+        }
+        let _ = self.reap_dead_participants_now(now_ms);
+    }
+
+    /// How long a participant-table sweep is good for, in milliseconds.
+    ///
+    /// A quarter of the lease timeout. Tied to the lease rather than fixed
+    /// because the lease is what makes a sweep able to find anything: entries
+    /// only become reapable by expiring, which takes a full lease timeout, so
+    /// four sweeps per lease period is already three more than the table can
+    /// change under. Tests that shorten the lease get a proportionally shorter
+    /// window for free.
+    ///
+    /// Floored at 1 ms so a pathological lease timeout cannot produce a zero
+    /// window and silently restore the unthrottled behaviour.
+    #[inline]
+    fn reap_interval_ms(&self) -> u64 {
+        (self.lease_timeout() / 4).max(1)
+    }
+
+    /// Claim the right to sweep the participant table now, or decline.
+    ///
+    /// Exactly one caller wins a given window: the CAS is what makes this hold
+    /// across processes, so a topic with one publisher and eight subscribers all
+    /// hitting a full ring does one sweep between them, not nine.
+    ///
+    /// Returns `true` only to the winner.
+    #[inline]
+    fn claim_reap_window(&self, now_ms: u64) -> bool {
+        let now = now_ms as u32;
+        let last = self.last_reap_ms.load(Ordering::Relaxed);
+        // 0 is "never swept" — always allow, so the first caller on a fresh
+        // segment gets a real answer with no warm-up.
+        if last != 0 && (now.wrapping_sub(last) as u64) < self.reap_interval_ms() {
+            return false;
+        }
+        // `max(1)` keeps a legitimate reading of zero — the first millisecond
+        // after boot on a monotonic clock, and every sweep on a header whose
+        // clock is stubbed to 0 in a test — from writing back the "never swept"
+        // sentinel and defeating the throttle.
+        self.last_reap_ms
+            .compare_exchange(last, now.max(1), Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Sweep the participant table unconditionally, ignoring the throttle.
+    ///
+    /// For callers that need the table correct *now* and can afford the probes:
+    /// `register_role` on its way to failing a registration, and tests. Prefer
+    /// [`Self::reap_dead_participants`] anywhere a caller might repeat.
+    ///
+    /// Returns how many registrations were reclaimed, and records the sweep in
+    /// the shared window — but ONLY if it reclaimed nothing. See
+    /// [`Self::reap_dead_participants`] for why a fruitful sweep deliberately
+    /// leaves the window open.
+    pub(crate) fn reap_dead_participants_now(&self, now_ms: u64) -> usize {
+        let mut reclaimed = 0usize;
         let me = std::process::id();
         for p in self.participants.iter() {
             // 1 = live entry. 0 = free, 2 = another thread is mid-claim; in
@@ -826,7 +1084,30 @@ impl TopicHeader {
             p.active.store(0, Ordering::Release);
             self.last_topology_change_ms
                 .store(now_ms, Ordering::Release);
+            reclaimed += 1;
         }
+
+        // Only a sweep that changed NOTHING opens a quiet window.
+        //
+        // The cost this throttle exists to remove is the *fruitless repeat* —
+        // probe, "still alive", change nothing, probe again on the next send,
+        // forever. A sweep that actually reclaimed a slot is not that: the table
+        // just changed, `sub_count()` just changed, and whatever asked the
+        // question is entitled to ask it again immediately. Writing the sentinel
+        // back means the next caller sweeps unthrottled, so the throttle can
+        // never sit between a dying participant and the reclaim that unfreezes
+        // a ring for it. It costs at most one extra scan per generation of dead
+        // participants, because the sweep that follows a fruitful one finds
+        // nothing and opens the window itself.
+        self.last_reap_ms.store(
+            if reclaimed == 0 {
+                (now_ms as u32).max(1)
+            } else {
+                0
+            },
+            Ordering::Relaxed,
+        );
+        reclaimed
     }
 
     /// Has this ring stopped being drained?
@@ -1229,6 +1510,12 @@ fn read_slot_inner(
     }
 
     let is_pod = is_pod_raw == POD_YES;
+    // Which slot geometry the creator chose. Read from the region rather than
+    // re-derived from type_size: a reader that re-derived it could disagree
+    // with the writer and then read payload bytes as a stamp.
+    // SAFETY: OFF_LAYOUT_KIND (49) is inside the validated 640-byte header.
+    let colo = unsafe { std::ptr::read_unaligned(base.add(super::shm_layout::OFF_LAYOUT_KIND)) }
+        == super::shm_layout::LAYOUT_COLO;
 
     // ── 3b. Which counter actually indexes the ring ───────────────────────────
     //
@@ -1267,6 +1554,7 @@ fn read_slot_inner(
             ((head - 1) as usize) & cap_mask,
             is_pod,
             slot_size,
+            colo,
         )
         .is_some_and(|stamp| stamp != 0)
     {
@@ -1297,15 +1585,29 @@ fn read_slot_inner(
         if type_size == 0 || capacity == 0 {
             return None;
         }
-        // Pod layout (same as serde): [HEADER (640)] [SEQ_ARRAY (cap * 8)] [DATA (cap * type_size)]
-        let seq_array_size = capacity * std::mem::size_of::<u64>();
-        let data_region_start = TOPIC_HEADER_SIZE + seq_array_size;
-        let required = data_region_start + capacity * type_size;
-        if mmap.len() < required {
-            return None;
+        if colo {
+            // Colo layout: [HEADER (640)] [SLOTS (cap * slot_size)], each slot
+            // being [stamp (8) | payload | pad to a cache line]. No sequence
+            // array, so the data starts immediately after the header.
+            let required = super::shm_layout::colo_required_region_len(capacity, slot_size);
+            if slot_size < super::shm_layout::COLO_PAYLOAD_OFF + type_size || mmap.len() < required
+            {
+                return None;
+            }
+            let slot_start = super::shm_layout::colo_payload_offset(last_written, slot_size);
+            let end = slot_start.checked_add(type_size)?;
+            mmap.get(slot_start..end)?.to_vec()
+        } else {
+            // Split layout: [HEADER (640)] [SEQ_ARRAY (cap * 8)] [DATA (cap * type_size)]
+            let seq_array_size = capacity * std::mem::size_of::<u64>();
+            let data_region_start = TOPIC_HEADER_SIZE + seq_array_size;
+            let required = data_region_start + capacity * type_size;
+            if mmap.len() < required {
+                return None;
+            }
+            let slot_start = data_region_start + last_written * type_size;
+            mmap[slot_start..slot_start + type_size].to_vec()
         }
-        let slot_start = data_region_start + last_written * type_size;
-        mmap[slot_start..slot_start + type_size].to_vec()
     } else {
         if slot_size < 16 || capacity == 0 {
             return None;
@@ -1407,11 +1709,17 @@ fn slot_stamp(
     index: usize,
     is_pod: bool,
     slot_size: usize,
+    colo: bool,
 ) -> Option<u64> {
     use super::shm_layout as layout;
 
     let offset = if is_pod {
-        layout::seq_slot_offset(index)
+        if colo {
+            // Colo has no sequence array: the stamp is the slot's first word.
+            layout::colo_stamp_offset(index, slot_size)
+        } else {
+            layout::seq_slot_offset(index)
+        }
     } else {
         if slot_size < layout::SERDE_SLOT_OVERHEAD {
             return None;
@@ -1580,7 +1888,97 @@ pub(crate) fn hash_thread_id(id: std::thread::ThreadId) -> u64 {
     hasher.finish()
 }
 
-/// Get current time in milliseconds since UNIX epoch
+/// Monotonic milliseconds — the timebase for every timestamp this header keeps.
+///
+/// Participant leases, `last_topology_change_ms` and the drain-stall detector
+/// are all stamped with this and compared against it, ACROSS PROCESSES, through
+/// shared memory.
+///
+/// # Why not the wall clock
+///
+/// This was `SystemTime::now() - UNIX_EPOCH`. Leases are pure interval
+/// arithmetic (`now > expires`), so the epoch was never used for anything — but
+/// the wall clock can STEP, and a step is read as elapsed time:
+///
+/// * **Forward** (NTP first sync, VM or container resume, `date -s`): every
+///   lease in the table expires in one instant. On the send path that is a
+///   burst of liveness probes inside `send()`, then deregistration of live
+///   participants, then a topology change, then a migration-epoch bump that
+///   forces every other process onto the `handle_epoch_change` path on its next
+///   message — a full cascade, on a robot where nothing was wrong.
+/// * **Backward**: leases sit in the future and never expire, so a genuinely
+///   crashed participant's slot is held forever, `sub_count()` keeps counting
+///   it, and a full ring stays backpressured against a `tail` nobody will move
+///   again.
+///
+/// `CLOCK_MONOTONIC` cannot step: it is not settable, and NTP only slews its
+/// rate.
+///
+/// # Why a monotonic clock is sound across processes
+///
+/// This is the part that has to be checked rather than assumed, because these
+/// values are compared between processes. On Linux `CLOCK_MONOTONIC` is
+/// documented as "a nonsettable SYSTEM-WIDE clock that represents monotonic
+/// time since some unspecified starting point" — the starting point is boot,
+/// and it is the same starting point for every process on the host. (The
+/// per-process clock is `CLOCK_PROCESS_CPUTIME_ID`, a different clock id;
+/// nothing here uses it, and Rust's `Instant` must NOT be substituted either,
+/// because its zero is per-process and there is no way to read it out.) So two
+/// processes calling this function get directly comparable numbers, which is
+/// exactly the property leases need. The same holds on macOS, where
+/// `CLOCK_MONOTONIC` is machine uptime.
+///
+/// Scope of that guarantee, and it is the right scope: values are comparable
+/// within ONE BOOT of ONE HOST.
+///
+/// * **Across hosts** they are meaningless — two machines have unrelated boot
+///   times. Nothing carries a lease across a host boundary: `horus_net`
+///   addresses this header through `shm_layout`, whose offsets stop at
+///   `slot_size` and cover no timestamp or participant field, and
+///   `reap_dead_participants` already refuses to judge any participant with a
+///   non-zero `source_host` because a remote peer's *pid* is equally
+///   meaningless locally. If a lease value is ever added to the network wire
+///   format it must be converted to a duration at the sending end; a raw
+///   monotonic value must never be replicated.
+/// * **Across a reboot** they are meaningless too — but the segments do not
+///   survive one. `horus_sys::shm` puts them in `/dev/shm`, a tmpfs the kernel
+///   recreates empty at boot. The non-unix fallback backend uses `/tmp`, which
+///   is not guaranteed to be cleared, and that platform stays on the wall clock
+///   below.
+///
+/// # Cost
+///
+/// Unchanged: `clock_gettime(CLOCK_MONOTONIC)` goes through the vDSO exactly as
+/// the `SystemTime` read did.
+#[cfg(unix)]
+#[inline]
+pub(crate) fn current_time_ms() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a live, writable `timespec` and CLOCK_MONOTONIC is always
+    // a valid clock id, so both documented failure modes (EFAULT for a bad
+    // pointer, EINVAL for a bad clock id) are unreachable.
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    (ts.tv_sec as u64)
+        .wrapping_mul(1_000)
+        .wrapping_add(ts.tv_nsec as u64 / 1_000_000)
+}
+
+/// Wall-clock milliseconds — the non-unix fallback.
+///
+/// **STATED COST, NOT HIDDEN:** on this path the clock-step failures described
+/// above are still reachable. The two candidates were `Instant`, which is
+/// monotonic but whose epoch is per-process and therefore *wrong* for a value
+/// two processes compare (it would break liveness on every call, not just after
+/// a step), and `GetTickCount64`, which is right but is not in the
+/// `windows-sys` feature set this crate enables. Wall clock is the lesser
+/// defect of the two available ones. Windows is not a supported deployment
+/// target for the real-time paths; if it becomes one, this is the fix to make.
+#[cfg(not(unix))]
 #[inline]
 pub(crate) fn current_time_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1643,6 +2041,39 @@ mod tests {
     #[test]
     fn participant_entry_size_is_24_bytes() {
         assert_eq!(std::mem::size_of::<ParticipantEntry>(), 24);
+    }
+
+    /// `last_reap_ms` was carved out of reserved padding and must not have
+    /// moved anything.
+    ///
+    /// The header is a cross-process wire format. Two assertions, because they
+    /// fail for different reasons: the participant table's offset says no field
+    /// above it grew, and `last_reap_ms`'s own offset says it landed in the
+    /// four reserved bytes at the end of the counters line rather than
+    /// somewhere it would share a line with `sequence_or_head` — which `send()`
+    /// dirties on every message, and which is exactly what this field must not
+    /// touch.
+    #[test]
+    fn the_reap_window_fits_in_reserved_padding_without_moving_a_field() {
+        assert_eq!(
+            std::mem::offset_of!(TopicHeader, participants),
+            256,
+            "the participant table moved; every process mapping this segment \
+             now reads leases at a different offset"
+        );
+        assert_eq!(
+            std::mem::offset_of!(TopicHeader, last_reap_ms),
+            252,
+            "last_reap_ms is no longer in the counters line's reserved tail"
+        );
+        // Same 64-byte line as the counters every caller of the sweep already
+        // reads, and not the producer's write line.
+        assert_eq!(std::mem::offset_of!(TopicHeader, last_reap_ms) / 64, 3);
+        assert_eq!(std::mem::offset_of!(TopicHeader, subscriber_count) / 64, 3);
+        assert_ne!(
+            std::mem::offset_of!(TopicHeader, last_reap_ms) / 64,
+            std::mem::offset_of!(TopicHeader, sequence_or_head) / 64
+        );
     }
 
     #[test]
@@ -2028,6 +2459,162 @@ mod tests {
         assert_eq!((h.pub_count(), h.sub_count()), (0, 0));
     }
 
+    // ── Sweep amortisation ──────────────────────────────────────────────
+
+    /// The sweep must not run on every call, because `send()` is a caller.
+    ///
+    /// `Topic::send` → `send_lossy_retry` → `nothing_is_draining` calls the
+    /// sweep on every send once the ring is full, and each expired participant
+    /// costs a `kill(2)` plus an open/read/close on `/proc/<pid>/stat`. The
+    /// state that makes it unbounded is ordinary: an idle-but-alive subscriber
+    /// looks expired forever, so the probe runs, finds it alive, changes
+    /// nothing, and the next send repeats the whole thing. Tens of microseconds
+    /// of syscalls inside a publish, on every publish, indefinitely.
+    #[test]
+    fn the_sweep_runs_at_most_once_per_window() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100); // window = lease / 4 = 25 ms
+
+        // A live participant of ours with an expired lease: exactly the state
+        // finding 1.6 describes, and the reason the repeat is unbounded. The
+        // sweep can never reclaim this entry, so every repeat is pure cost.
+        plant_participant(&h, 0, std::process::id(), 2, 1);
+
+        let t0 = current_time_ms();
+        h.reap_dead_participants(t0);
+        assert_eq!(
+            h.sub_count(),
+            1,
+            "precondition: the sweep found nothing to reclaim, which is what \
+             opens the window"
+        );
+
+        // Now a registrant's process dies. Inside the window, a caller that may
+        // repeat — and `send()` is one — gets nothing: no probe, no syscall.
+        plant_participant(&h, 1, dead, 2, 1);
+        h.reap_dead_participants(t0 + 24);
+        assert_eq!(
+            h.sub_count(),
+            2,
+            "a sweep found nothing 24 ms ago and the window is 25 ms; this call \
+             must not have probed /proc again"
+        );
+
+        h.reap_dead_participants(t0 + 25);
+        assert_eq!(
+            h.sub_count(),
+            1,
+            "the window has elapsed, so the dead registrant is reclaimed — the \
+             throttle bounds the syscall rate, it does not disable the sweep"
+        );
+    }
+
+    /// A sweep that reclaimed something must not suppress the next one.
+    ///
+    /// The cost being amortised is the *fruitless repeat*: probe, "still
+    /// alive", change nothing, probe again on the next send, forever. A sweep
+    /// that actually retired a registration is not that — the table just
+    /// changed under everyone — so it deliberately leaves the window open. This
+    /// is what keeps the throttle from ever sitting between a participant dying
+    /// and the reclaim that unfreezes a full ring for it.
+    #[test]
+    fn a_sweep_that_reclaims_something_does_not_open_a_window() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let h = make_header(8, 8, true, 16);
+        h.set_lease_timeout_ms(100_000); // a 25 s window, if one ever opened
+        let t0 = current_time_ms();
+
+        plant_participant(&h, 0, dead, 2, 1);
+        h.reap_dead_participants(t0);
+        assert_eq!(
+            h.sub_count(),
+            0,
+            "precondition: this sweep reclaimed a slot"
+        );
+
+        // A second one dies a millisecond later — far inside the window a
+        // fruitless sweep would have opened.
+        plant_participant(&h, 1, dead, 2, 1);
+        h.reap_dead_participants(t0 + 1);
+        assert_eq!(
+            h.sub_count(),
+            0,
+            "the previous sweep reclaimed a slot, so it must not have opened a \
+             window; a producer whose ring is full is entitled to ask again \
+             immediately"
+        );
+    }
+
+    /// The window is a quarter of the lease timeout, and follows it.
+    ///
+    /// Tied to the lease because the lease is what lets a sweep find anything:
+    /// an entry only becomes reapable by expiring, which takes a full lease
+    /// timeout. A fixed window would be either uselessly short against a long
+    /// lease or, worse, longer than a short one.
+    #[test]
+    fn the_sweep_window_tracks_the_lease_timeout() {
+        let h = make_header(8, 8, true, 16);
+
+        h.set_lease_timeout_ms(4_000);
+        assert_eq!(h.reap_interval_ms(), 1_000);
+
+        h.set_lease_timeout_ms(400);
+        assert_eq!(h.reap_interval_ms(), 100);
+
+        // Floored, so no lease setting can produce a zero window and silently
+        // restore a probe on every send.
+        h.set_lease_timeout_ms(1);
+        assert_eq!(h.reap_interval_ms(), 1);
+    }
+
+    /// A node must never fail to start because somebody else swept recently.
+    ///
+    /// `register_role`'s second pass reclaims dead participants' slots, and the
+    /// alternative to finding one is refusing the registration outright. That
+    /// path therefore uses the unthrottled sweep: turning a throttle into a
+    /// startup failure would be a new defect introduced by an optimisation.
+    #[test]
+    fn a_registration_is_never_refused_because_the_sweep_was_throttled() {
+        let Some(dead) = a_dead_pid() else {
+            eprintln!("skipping: cannot spawn a process to kill");
+            return;
+        };
+        let h = make_header(8, 8, true, 16);
+        // A 100 s lease gives a 25 s window — far longer than this test runs,
+        // so the throttle is certainly still closed at the registration below.
+        h.set_lease_timeout_ms(100_000);
+
+        // Somebody swept a moment ago, on a table that had nothing to reap.
+        // The window is now claimed.
+        h.reap_dead_participants(current_time_ms());
+
+        // Then every slot fills with participants whose process is gone.
+        for i in 0..MAX_PARTICIPANTS {
+            plant_participant(&h, i, dead, 2, 1);
+        }
+        assert_eq!(h.sub_count(), MAX_PARTICIPANTS as u32);
+
+        let slot = h.register_producer().expect(
+            "registration must sweep unconditionally: every slot is held by a \
+             process that no longer exists, and refusing the node's start \
+             because another process swept the table moments ago would be a \
+             failure the throttle invented",
+        );
+        assert!(slot < MAX_PARTICIPANTS);
+        assert_eq!(
+            h.pub_count(),
+            1,
+            "the registration is real, not merely a returned index"
+        );
+    }
+
     #[test]
     fn a_counter_at_zero_never_wraps_to_four_billion() {
         // These counters are decremented by whichever process notices the owner
@@ -2130,9 +2717,15 @@ mod tests {
         let t0 = current_time_ms();
         h.tail.store(42, Ordering::Release);
         assert!(!h.drain_has_stalled(t0));
-        // `current_time_ms` is wall clock, and wall clock is adjustable. A start
-        // time left in the future would suppress the detector until real time
-        // caught up with it.
+        // `current_time_ms` is monotonic now, so the wall-clock adjustment this
+        // was originally written against can no longer reach it. The branch
+        // stays and so does this test, because the detector reads its start
+        // time out of SHARED MEMORY: `stall_since_ms` is whatever the last
+        // producer wrote, and a start time in the future — a stale segment, a
+        // corrupted word, a caller passing its own clock — would suppress the
+        // detector until real time caught up with it. That is a freeze that
+        // outlasts the cause, so the guard is worth keeping even now that the
+        // likeliest cause is gone.
         assert!(!h.drain_has_stalled(t0 - 60_000));
         assert!(h.drain_has_stalled(t0 - 60_000 + 100));
     }
@@ -2530,11 +3123,49 @@ mod tests {
     #[test]
     fn current_time_ms_is_reasonable() {
         let now = current_time_ms();
-        // Should be after 2024-01-01 (ms since epoch ≈ 1704067200000)
-        assert!(now > 1_704_067_200_000);
-        // Should be monotonically non-decreasing
+        // Monotonically non-decreasing — the property every lease comparison,
+        // the topology timestamp and the drain-stall detector rest on.
         let later = current_time_ms();
         assert!(later >= now);
+    }
+
+    /// The lease clock must not be a settable one.
+    ///
+    /// This test used to assert the OPPOSITE — `now > 1_704_067_200_000`, i.e.
+    /// "is this wall-clock time after 2024" — which is what pinned the defect
+    /// in place. Leases are stamped into shared memory and compared across
+    /// processes, and on a settable clock a single NTP step, VM resume or
+    /// `date -s` moves every one of them at once: forward, every participant
+    /// expires simultaneously and live subscribers get deregistered out from
+    /// under a running robot; backward, no lease ever expires and a crashed
+    /// participant holds its slot and its `sub_count()` entry forever.
+    ///
+    /// A test cannot step the system clock, so it pins the property that makes
+    /// a step harmless: the reading is not wall-clock time. Unix-epoch
+    /// milliseconds passed 1.7e12 in 2024 and only climb; `CLOCK_MONOTONIC`
+    /// counts from boot, so reaching that value takes 54 years of uptime.
+    #[test]
+    fn the_lease_clock_is_monotonic_not_wall_clock() {
+        // Unix-epoch milliseconds at 2024-01-01.
+        const EPOCH_MS_2024: u64 = 1_704_067_200_000;
+
+        let now = current_time_ms();
+
+        // The fallback backend is still on the wall clock and says so; see
+        // `current_time_ms`. Every deployment target for the real-time paths is
+        // unix.
+        if !cfg!(unix) {
+            return;
+        }
+
+        assert!(
+            now < EPOCH_MS_2024,
+            "current_time_ms() returned {now}, which is wall-clock time since \
+             the Unix epoch, not a monotonic reading. Participant leases are \
+             compared across processes on this clock: a clock step will now \
+             either expire every live participant at once or stop expiring dead \
+             ones at all."
+        );
     }
 
     // ── set_topic_verbose (unsafe) ──────────────────────────────────────
@@ -2733,14 +3364,51 @@ mod tests {
 
     // ── messages_total offset ──────────────────────────────────────────
 
+    /// `messages_total` sits where `shm_layout` says, and off every line a
+    /// consumer reads per message.
+    ///
+    /// The offset alone is already asserted at compile time against
+    /// `OFF_MESSAGES_TOTAL`; what this adds is the *reason* the field is where
+    /// it is. It used to be pinned to 56 by literal, which said nothing about
+    /// why 56, and so could not tell the difference between a deliberate move
+    /// and an accidental one. At 56 it shared cache line 1 with
+    /// `migration_epoch`, which every consumer Acquire-loads on every recv via
+    /// `migration_check!`, so the producer's per-send locked increment
+    /// ping-ponged that line between cores.
     #[test]
-    fn messages_total_offset_is_56() {
+    fn messages_total_is_off_every_per_recv_line() {
         let h = TopicHeader::zeroed();
         let base = &h as *const TopicHeader as *const u8;
         let field_ptr = &h.messages_total as *const AtomicU64 as *const u8;
         // SAFETY: both pointers derive from the same TopicHeader allocation.
         let offset = unsafe { field_ptr.offset_from(base) } as usize;
-        assert_eq!(offset, 56, "messages_total should be at byte offset 56");
+        assert_eq!(
+            offset,
+            super::super::shm_layout::OFF_MESSAGES_TOTAL,
+            "messages_total must be where shm_layout tells out-of-crate readers \
+             it is"
+        );
+
+        const LINE: usize = 64;
+        let epoch =
+            unsafe { (&h.migration_epoch as *const AtomicU64 as *const u8).offset_from(base) }
+                as usize;
+        let head =
+            unsafe { (&h.sequence_or_head as *const AtomicU64 as *const u8).offset_from(base) }
+                as usize;
+        assert_ne!(
+            offset / LINE,
+            epoch / LINE,
+            "messages_total shares a cache line with migration_epoch, which \
+             every consumer polls on every recv — the producer's per-send \
+             locked increment will ping-pong it"
+        );
+        assert_ne!(
+            offset / LINE,
+            head / LINE,
+            "messages_total shares a cache line with sequence_or_head, which \
+             the broadcast recv path reads on every recv"
+        );
     }
 
     // ── topic_kind field ───────────────────────────────────────────────
@@ -2873,6 +3541,16 @@ mod untrusted_header_tests {
 
     /// Build a topic file whose header declares `capacity` but a DIFFERENT
     /// `cap_mask` — the shape a hostile file takes.
+    use super::super::shm_layout as layout;
+
+    fn put_u64(buf: &mut [u8], off: usize, v: u64) {
+        buf[off..off + 8].copy_from_slice(&v.to_ne_bytes());
+    }
+
+    fn put_u32(buf: &mut [u8], off: usize, v: u32) {
+        buf[off..off + 4].copy_from_slice(&v.to_ne_bytes());
+    }
+
     fn write_header(path: &std::path::Path, capacity: u32, cap_mask: u32, type_size: u32) {
         let total = TOPIC_HEADER_SIZE
             + (capacity as usize) * 8
@@ -2882,14 +3560,19 @@ mod untrusted_header_tests {
         buf[12..16].copy_from_slice(&type_size.to_ne_bytes());
         buf[20] = POD_YES;
         // Both counters, as a real file has them before the ring wraps.
-        // `read_latest_slot_bytes` keys on messages_total (offset 56);
-        // sequence_or_head (offset 64) is kept in sync here so the fixture
-        // stays faithful.
-        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
-        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
-        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
-        buf[76..80].copy_from_slice(&cap_mask.to_ne_bytes());
-        buf[80..84].copy_from_slice(&type_size.to_ne_bytes());
+        // `read_latest_slot_bytes` keys on messages_total; sequence_or_head is
+        // kept in sync here so the fixture stays faithful.
+        //
+        // Offsets come from `shm_layout`, never from literals. These fixtures
+        // ARE a second implementation of the wire format, and a second copy of
+        // the offsets is exactly what drifted in horus_net for four months —
+        // and what silently broke these tests when `messages_total` moved off
+        // cache line 1.
+        put_u64(&mut buf, layout::OFF_MESSAGES_TOTAL, 1);
+        put_u64(&mut buf, layout::OFF_SEQUENCE_OR_HEAD, 1);
+        put_u32(&mut buf, layout::OFF_CAPACITY, capacity);
+        put_u32(&mut buf, layout::OFF_CAPACITY_MASK, cap_mask);
+        put_u32(&mut buf, layout::OFF_SLOT_SIZE, type_size);
         let mut f = std::fs::File::create(path).unwrap();
         f.write_all(&buf).unwrap();
     }
@@ -2934,11 +3617,11 @@ mod untrusted_header_tests {
         buf[0..8].copy_from_slice(&TOPIC_MAGIC.to_ne_bytes());
         buf[12..16].copy_from_slice(&8u32.to_ne_bytes()); // type_size (unused on the serde path)
         buf[20] = POD_NO;
-        buf[56..64].copy_from_slice(&1u64.to_ne_bytes()); // messages_total = 1
-        buf[64..72].copy_from_slice(&1u64.to_ne_bytes()); // sequence_or_head = 1
-        buf[72..76].copy_from_slice(&capacity.to_ne_bytes());
-        buf[76..80].copy_from_slice(&(capacity - 1).to_ne_bytes()); // cap_mask
-        buf[80..84].copy_from_slice(&slot_size.to_ne_bytes());
+        put_u64(&mut buf, layout::OFF_MESSAGES_TOTAL, 1);
+        put_u64(&mut buf, layout::OFF_SEQUENCE_OR_HEAD, 1);
+        put_u32(&mut buf, layout::OFF_CAPACITY, capacity);
+        put_u32(&mut buf, layout::OFF_CAPACITY_MASK, capacity - 1);
+        put_u32(&mut buf, layout::OFF_SLOT_SIZE, slot_size);
         let slot_start = TOPIC_HEADER_SIZE + (capacity as usize) * 8;
         buf[slot_start + 8..slot_start + 16].copy_from_slice(&data_len.to_ne_bytes());
         let mut f = std::fs::File::create(path).unwrap();

@@ -808,6 +808,12 @@ impl RegistryClient {
             version_str.to_string()
         };
 
+        // The version is about to become a directory name under the cache, and
+        // on the `latest` path it was just read out of the archive we unpacked —
+        // i.e. the publisher picks it. Refuse anything that would not stay a
+        // single path component. See `ensure_path_safe_version`.
+        ensure_path_safe_version(package_name, &actual_version)?;
+
         // Move to final location with version info (use safe path name)
         let package_dir = if install_type == "global" {
             install_dir.join(format!("{}@{}", safe_pkg_name, actual_version))
@@ -1222,6 +1228,10 @@ impl RegistryClient {
         } else {
             version_str.to_string()
         };
+
+        // Same gate as the source path: the version becomes a directory name,
+        // and on the `latest` path it came out of the artifact we unpacked.
+        ensure_path_safe_version(package_name, &actual_version)?;
 
         // Move to final location
         let package_dir = if install_type == "global" {

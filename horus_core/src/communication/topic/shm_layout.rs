@@ -73,7 +73,9 @@ pub const OFF_IS_POD: usize = 20;
 /// `topic_kind: u8`
 pub const OFF_TOPIC_KIND: usize = 48;
 /// `messages_total: AtomicU64`
-pub const OFF_MESSAGES_TOTAL: usize = 56;
+pub const OFF_MESSAGES_TOTAL: usize = 136;
+/// `migration_epoch: AtomicU64` — polled by every consumer on every recv.
+pub const OFF_MIGRATION_EPOCH: usize = 40;
 /// `sequence_or_head: AtomicU64` — the producer's publish point.
 pub const OFF_SEQUENCE_OR_HEAD: usize = 64;
 /// `capacity: u32`
@@ -153,6 +155,113 @@ pub const fn required_region_len(capacity: usize, stride: usize) -> usize {
     data_region_offset(capacity) + capacity * stride
 }
 
+/// [`required_region_len`], refusing to wrap.
+///
+/// The unchecked form is fine for a geometry this process computed. It is NOT
+/// fine for one read out of a shared header, where `capacity` and `stride` are
+/// whatever another process stored: with `overflow-checks` off — the release
+/// profile a robot ships — `capacity * stride` wraps and the total comes back
+/// *smaller* than the header itself, so a containment check written against it
+/// passes for a ring that does not fit in the mapping at all. Every caller
+/// validating an attacker-controlled header must use this one.
+#[inline]
+pub fn required_region_len_checked(capacity: usize, stride: usize) -> Option<usize> {
+    capacity
+        .checked_mul(core::mem::size_of::<u64>())?
+        .checked_add(capacity.checked_mul(stride)?)?
+        .checked_add(HEADER_SIZE)
+}
+
+// ─── Co-located slot layout (POD, small types) ──────────────────────────────
+
+/// `layout_kind` value: the historical split layout described above.
+pub const LAYOUT_SPLIT: u8 = 0;
+/// `layout_kind` value: stamp co-located with its payload, one slot per line.
+pub const LAYOUT_COLO: u8 = 1;
+
+/// `layout_kind: AtomicU8` — which of the two geometries this region uses.
+///
+/// Carved out of `_pad1a`, so `messages_total` stays at 56 and every offset
+/// above is unchanged.
+pub const OFF_LAYOUT_KIND: usize = 49;
+
+/// A cache line. Colo slots are padded to a multiple of this so that no two
+/// slots ever share one.
+pub const CACHE_LINE: usize = 64;
+
+/// Offset of the readiness stamp within a colo slot.
+pub const COLO_STAMP_OFF: usize = 0;
+/// Offset of the payload within a colo slot.
+pub const COLO_PAYLOAD_OFF: usize = 8;
+
+/// Largest payload that still shares its stamp's cache line.
+///
+/// Past this the payload spills onto a second line and the co-location win
+/// largely disappears — measured at ~60ns for payloads at or under this bound
+/// versus ~17ns at 64 bytes, on an i7-10750H. The bound is therefore the
+/// eligibility rule, not a soft preference.
+pub const COLO_MAX_PAYLOAD: usize = CACHE_LINE - COLO_PAYLOAD_OFF;
+
+/// Whether a topic of `type_size` bytes should use the colo layout.
+///
+/// POD only: a serde topic carries its own in-slot length word and variable
+/// payload, so there is no fixed geometry to co-locate.
+#[inline]
+pub const fn colo_eligible(is_pod: bool, type_size: usize) -> bool {
+    is_pod && type_size > 0 && type_size <= COLO_MAX_PAYLOAD
+}
+
+/// Bytes per colo slot: stamp + payload, rounded up to whole cache lines.
+///
+/// The padding is load-bearing. It is what stops two slots sharing a line —
+/// today's split layout strides small PODs at 64 bytes for allocation but
+/// indexes them by `type_size`, so four 16-byte slots land in one line and
+/// adjacent producers false-share.
+#[inline]
+pub const fn colo_slot_size(type_size: usize) -> usize {
+    let raw = COLO_PAYLOAD_OFF + type_size;
+    raw.div_ceil(CACHE_LINE) * CACHE_LINE
+}
+
+/// Byte offset of colo slot `index`. Colo has no separate sequence array, so
+/// the slots begin immediately after the header.
+#[inline]
+pub const fn colo_slot_offset(index: usize, slot_size: usize) -> usize {
+    HEADER_SIZE + index * slot_size
+}
+
+/// Byte offset of the stamp for colo slot `index`.
+#[inline]
+pub const fn colo_stamp_offset(index: usize, slot_size: usize) -> usize {
+    colo_slot_offset(index, slot_size) + COLO_STAMP_OFF
+}
+
+/// Byte offset of the payload for colo slot `index`.
+#[inline]
+pub const fn colo_payload_offset(index: usize, slot_size: usize) -> usize {
+    colo_slot_offset(index, slot_size) + COLO_PAYLOAD_OFF
+}
+
+/// Total bytes a colo region needs for `capacity` slots.
+#[inline]
+pub const fn colo_required_region_len(capacity: usize, slot_size: usize) -> usize {
+    HEADER_SIZE + capacity * slot_size
+}
+
+/// [`colo_required_region_len`], refusing to wrap.
+///
+/// Same reason as [`required_region_len_checked`]: a colo geometry read out of
+/// a shared header carries another process's `capacity` and `slot_size`, and a
+/// containment check built on a wrapped product passes for a ring that does not
+/// fit the mapping. Colo has no sequence array, so this is the shorter product
+/// — which is exactly why the split form cannot be reused to validate it: it
+/// would demand `capacity * 8` bytes that a colo region correctly does not have,
+/// and reject every valid one.
+#[inline]
+pub fn colo_required_region_len_checked(capacity: usize, slot_size: usize) -> Option<usize> {
+    capacity.checked_mul(slot_size)?.checked_add(HEADER_SIZE)
+}
+
 // ─── Compile-time drift detection ───────────────────────────────────────────
 
 /// Ties every constant above to the actual `TopicHeader` field it describes.
@@ -170,21 +279,43 @@ mod static_asserts {
         assert!(offset_of!(TopicHeader, type_size) == OFF_TYPE_SIZE);
         assert!(offset_of!(TopicHeader, is_pod) == OFF_IS_POD);
         assert!(offset_of!(TopicHeader, topic_kind) == OFF_TOPIC_KIND);
+        assert!(offset_of!(TopicHeader, layout_kind) == OFF_LAYOUT_KIND);
         assert!(offset_of!(TopicHeader, messages_total) == OFF_MESSAGES_TOTAL);
+        assert!(offset_of!(TopicHeader, migration_epoch) == OFF_MIGRATION_EPOCH);
         assert!(offset_of!(TopicHeader, sequence_or_head) == OFF_SEQUENCE_OR_HEAD);
         assert!(offset_of!(TopicHeader, capacity) == OFF_CAPACITY);
         assert!(offset_of!(TopicHeader, capacity_mask) == OFF_CAPACITY_MASK);
         assert!(offset_of!(TopicHeader, slot_size) == OFF_SLOT_SIZE);
 
-        // `topic_kind` is a single byte followed by 7 bytes of padding; a
-        // 64-bit store at its offset would clobber both. horus_net did exactly
-        // that, believing offset 48 held `messages_total`.
-        assert!(OFF_MESSAGES_TOTAL == OFF_TOPIC_KIND + 8);
+        // `topic_kind` is a single byte followed by padding; a 64-bit store at
+        // its offset would clobber both. horus_net did exactly that, believing
+        // offset 48 held `messages_total`. It never did, and as of v4
+        // `messages_total` is not even on this cache line.
+        assert!(OFF_TOPIC_KIND < OFF_MESSAGES_TOTAL);
+
+        // `messages_total` must NOT share a cache line with `migration_epoch`.
+        // The producer does a locked read-modify-write on the counter every
+        // send; `migration_check!` Acquire-loads the epoch on every recv. On one
+        // line those false-share and the line ping-pongs once per message —
+        // ~36ns of a ~150ns one-way latency when measured. It belongs on the
+        // producer line, which consumers do not poll.
+        assert!(OFF_MESSAGES_TOTAL / CACHE_LINE != OFF_MIGRATION_EPOCH / CACHE_LINE);
+        assert!(OFF_MESSAGES_TOTAL / CACHE_LINE != OFF_SEQUENCE_OR_HEAD / CACHE_LINE);
 
         // The header must be a whole number of cache lines, and the producer's
         // publish word must start its own line (false-sharing invariant).
         assert!(HEADER_SIZE == 640);
         assert!(OFF_SEQUENCE_OR_HEAD == 64);
+
+        // Colo slots must start cache-line aligned, or every slot straddles
+        // two lines and the layout is worse than the one it replaces.
+        assert!(HEADER_SIZE.is_multiple_of(CACHE_LINE));
+        // The stamp and a maximum-size payload must fit one line exactly.
+        assert!(COLO_PAYLOAD_OFF + COLO_MAX_PAYLOAD == CACHE_LINE);
+        // `layout_kind` lives inside what used to be `_pad1a`, between
+        // `topic_kind` and `messages_total`, so it displaces no field.
+        assert!(OFF_LAYOUT_KIND > OFF_TOPIC_KIND);
+        assert!(OFF_LAYOUT_KIND < OFF_MESSAGES_TOTAL);
     };
 }
 
@@ -233,6 +364,29 @@ mod tests {
         assert_eq!(SERDE_SLOT_LEN_OFF, 8);
         assert_eq!(SERDE_SLOT_DATA_OFF, 16);
         assert_eq!(SERDE_SLOT_OVERHEAD, 16);
+    }
+
+    #[test]
+    fn the_checked_length_agrees_with_the_plain_one_when_nothing_wraps() {
+        for (capacity, stride) in [(1usize, 8usize), (8, 64), (512, 4096)] {
+            assert_eq!(
+                required_region_len_checked(capacity, stride),
+                Some(required_region_len(capacity, stride))
+            );
+        }
+    }
+
+    /// The case the unchecked form gets wrong: a geometry out of an untrusted
+    /// header whose product wraps. `required_region_len` returns a SMALL number
+    /// there, so `required <= mapped_len` passes and the caller maps a ring it
+    /// cannot address.
+    #[test]
+    fn a_wrapping_geometry_is_refused_rather_than_reported_small() {
+        let capacity = 1usize << 40;
+        let stride = 1usize << 40;
+        assert_eq!(required_region_len_checked(capacity, stride), None);
+        // capacity alone can overflow the sequence array, before any stride.
+        assert_eq!(required_region_len_checked(usize::MAX, 1), None);
     }
 
     #[test]

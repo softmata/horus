@@ -332,7 +332,13 @@ impl ShmSpscChannel {
     pub(crate) unsafe fn try_recv_serde(&self, skipped: &mut u64) -> Option<Vec<u8>> {
         let head = &*self.head_ptr;
         let tail = &*self.tail_ptr;
-        let max_payload = self.slot_size - 4;
+        // `saturating_sub`, not `-`: `slot_size` reaches this view from the SHM
+        // meta block. `attach` now refuses a `slot_size` below MIN_SLOT_SIZE, but
+        // the subtraction is the one place where being wrong is unrecoverable —
+        // with `overflow-checks` off a slot_size of 0..3 wraps `max_payload` to
+        // ~usize::MAX, which turns the length bound below into a no-op and lets a
+        // slot's own 32-bit length word drive a 4 GiB out-of-bounds read.
+        let max_payload = self.slot_size.saturating_sub(4);
         seqlock_consume(
             self.ver_ptr,
             self.mask,
@@ -527,9 +533,24 @@ impl ShmFanoutRing {
     /// `shm_base` must point to a valid mmap'd SHM region.
     ///
     /// Returns `None` if the region carries an incompatible (older/foreign) layout
-    /// version, so the caller can reject-and-rebuild (fall back to SpscShm) instead
-    /// of reinterpreting a stale region with the new strides.
-    pub(crate) unsafe fn attach(shm_base: *mut u8, is_pod: bool, type_size: usize) -> Option<Self> {
+    /// version, or dimensions that do not describe a matrix inside `region_len`,
+    /// so the caller can reject-and-rebuild (fall back to SpscShm) instead of
+    /// reinterpreting a stale or hostile region with the new strides.
+    ///
+    /// `region_len` is the length of the mapping `shm_base` points at. It is the
+    /// only thing that bounds the dimensions in the region's own header, all of
+    /// which another process wrote — see [`Self::validate_meta`].
+    pub(crate) unsafe fn attach(
+        shm_base: *mut u8,
+        region_len: usize,
+        is_pod: bool,
+        type_size: usize,
+    ) -> Option<Self> {
+        // Before the meta reference is even formed: a region too small to hold
+        // the meta block would make `&*` itself out of bounds.
+        if region_len < FANOUT_META_OFFSET + FANOUT_META_SIZE {
+            return None;
+        }
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
 
         // Spin-wait for the owner to finish initialization (it writes `magic` LAST).
@@ -586,10 +607,114 @@ impl ShmFanoutRing {
         }
         std::sync::atomic::fence(Ordering::Acquire);
 
+        // The magic proves the layout VERSION, not the numbers. Everything
+        // `build_views` is about to turn into a pointer is still whatever the
+        // writing process stored.
+        if !Self::validate_meta(meta, region_len, is_pod, type_size) {
+            return None;
+        }
+
         Some(Self::build_views(shm_base, is_pod, type_size))
     }
 
+    /// Check the dimensions an existing `FanoutShmMeta` declares before any
+    /// pointer is derived from them.
+    ///
+    /// Every field here was written by another process into a region on the
+    /// shared `/dev/shm`, so on a robot where one node is compromised — or
+    /// merely buggy — all of them are attacker-controlled. `build_views` used
+    /// them raw: `max_publishers * max_subscribers` channel views at
+    /// `channels_base + i * channel_stride`, and `ShmSpscChannel::from_raw`
+    /// derives `data_ptr`, `ver_ptr` and the index mask from `slot_size`,
+    /// `channel_capacity` and `capacity_mask`. A stride, a capacity or a mask
+    /// bigger than the region therefore placed live channels OUTSIDE the
+    /// mapping, and the first `try_send_pod` wrote through one — an
+    /// out-of-bounds write at an offset the writer picks. `max_publishers`
+    /// above `MAX_FANOUT_ENDPOINTS` was equally unchecked, and endpoint ids
+    /// derived from it index the fixed-size `recv_cursors` and `*_owner_pids`
+    /// arrays.
+    ///
+    /// `init_owner` writes exactly ONE geometry for a given capacity, so this
+    /// recomputes that geometry and demands equality rather than mere
+    /// plausibility: `channel_stride` must be the stride the layout implies
+    /// (a smaller one overlaps the next channel's slots, a larger one walks the
+    /// matrix off the end), and the whole matrix must fit inside `region_len`.
+    /// Anything else is refused, and `init_shm_backend` falls back to SpscShm
+    /// exactly as it already does for an incompatible layout version.
+    fn validate_meta(
+        meta: &FanoutShmMeta,
+        region_len: usize,
+        is_pod: bool,
+        type_size: usize,
+    ) -> bool {
+        let max_pubs = meta.max_publishers as usize;
+        let max_subs = meta.max_subscribers as usize;
+        if max_pubs == 0 || max_pubs > MAX_FANOUT_ENDPOINTS {
+            return false;
+        }
+        if max_subs == 0 || max_subs > MAX_FANOUT_ENDPOINTS {
+            return false;
+        }
+
+        let capacity = meta.channel_capacity as usize;
+        if capacity == 0 || !capacity.is_power_of_two() {
+            return false;
+        }
+        // `seqlock_consume`'s contract is `capacity == mask + 1`; its slot index
+        // is `pos & mask`, which is only inside the ring when that holds.
+        if meta.capacity_mask as usize != capacity - 1 {
+            return false;
+        }
+
+        let slot_size = meta.slot_size as usize;
+        if slot_size < MIN_SLOT_SIZE {
+            return false;
+        }
+        // `try_send_pod` memcpys `size_of::<T>()` bytes into a slot with no
+        // length check of its own — the slot has to be at least that big.
+        if is_pod && slot_size < type_size {
+            return false;
+        }
+
+        // The stride `init_owner` would have written for this capacity and slot
+        // size: head/tail cache lines + `capacity` data slots + `capacity`
+        // version stamps. Checked throughout — with `overflow-checks` off, a
+        // wrapped product comes back small and every containment test below it
+        // passes for a matrix that does not fit.
+        let Some(seq_bytes) = capacity.checked_mul(8) else {
+            return false;
+        };
+        let Some(data_bytes) = capacity.checked_mul(slot_size) else {
+            return false;
+        };
+        let Some(stride) = data_bytes
+            .checked_add(seq_bytes)
+            .and_then(|body| body.checked_add(CHANNEL_HEADER_SIZE))
+        else {
+            return false;
+        };
+        if meta.channel_stride != stride as u64 {
+            return false;
+        }
+
+        let Some(total) = max_pubs
+            .checked_mul(max_subs)
+            .and_then(|channels| channels.checked_mul(stride))
+            .and_then(|matrix| matrix.checked_add(FANOUT_CHANNELS_BASE))
+        else {
+            return false;
+        };
+        total <= region_len
+    }
+
     /// Build channel views from an initialized SHM region.
+    ///
+    /// # Safety
+    ///
+    /// The meta block's dimensions must already describe a matrix that fits the
+    /// mapping: either this process wrote them (`init_owner`) or they passed
+    /// [`Self::validate_meta`] (`attach`). Every pointer below is derived from
+    /// them without a further bound.
     unsafe fn build_views(shm_base: *mut u8, is_pod: bool, _type_size: usize) -> Self {
         let meta = &*(shm_base.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
         let max_pubs = meta.max_publishers as usize;
@@ -1065,9 +1190,10 @@ mod tests {
         let addr = ptr as usize;
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let region_len = layout.size();
         std::thread::spawn(move || {
             let ptr = addr as *mut u8;
-            let result = unsafe { ShmFanoutRing::attach(ptr, true, 8) };
+            let result = unsafe { ShmFanoutRing::attach(ptr, region_len, true, 8) };
             let _ = tx.send(result.is_none());
         });
 
@@ -1315,10 +1441,113 @@ mod tests {
             let _owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
 
             // Simulated second process attaches
-            let joiner = ShmFanoutRing::attach(ptr, true, 8).unwrap();
+            let joiner = ShmFanoutRing::attach(ptr, layout.size(), true, 8).unwrap();
             assert_eq!(joiner.max_publishers, MAX_FANOUT_ENDPOINTS);
             assert_eq!(joiner.max_subscribers, MAX_FANOUT_ENDPOINTS);
 
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    // ── The meta block as untrusted input ───────────────────────────────
+    //
+    // Every dimension in `FanoutShmMeta` is written by another process into a
+    // region on the shared `/dev/shm`. `build_views` turns all of them into
+    // channel pointers, and `try_send_pod` writes through those pointers, so a
+    // dimension that does not fit the mapping is an out-of-bounds write at an
+    // offset the writing process chooses. These plant the values a corrupt or
+    // hostile writer leaves behind and require `attach` to refuse — the caller
+    // then falls back to SpscShm, exactly as it does for a stale layout version.
+
+    /// Initialise a region, mutate one field of its meta block, and report
+    /// whether `attach` still accepts it.
+    fn attach_accepts_after(mutate: impl FnOnce(&mut FanoutShmMeta)) -> bool {
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        // SAFETY: `ptr` is a live allocation of `layout.size()` bytes, aligned to
+        // a page and large enough for the geometry `init_owner` writes; nothing
+        // else refers to it for the duration of this function.
+        unsafe {
+            let owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let meta = &mut *(ptr.add(FANOUT_META_OFFSET) as *mut FanoutShmMeta);
+            mutate(meta);
+            let accepted = ShmFanoutRing::attach(ptr, layout.size(), true, 8).is_some();
+            drop(owner);
+            std::alloc::dealloc(ptr, layout);
+            accepted
+        }
+    }
+
+    #[test]
+    fn attach_refuses_a_stride_that_walks_the_matrix_off_the_region() {
+        // 256 channels at this stride put the last one gigabytes past a ~300 KB
+        // mapping; the first send through any of them writes there.
+        let huge = attach_accepts_after(|m| m.channel_stride = 1 << 26);
+        assert!(
+            !huge,
+            "a stride that does not fit the mapping must be refused"
+        );
+        // A stride SMALLER than the layout implies is equally wrong: channel i's
+        // slots then overlap channel i-1's version stamps.
+        let small = attach_accepts_after(|m| m.channel_stride = 128);
+        assert!(
+            !small,
+            "a stride that overlaps neighbouring channels must be refused"
+        );
+    }
+
+    #[test]
+    fn attach_refuses_more_endpoints_than_the_matrix_has_room_for() {
+        // Endpoint ids derived from these index `recv_cursors` and the
+        // owner-PID arrays, both fixed at MAX_FANOUT_ENDPOINTS.
+        assert!(!attach_accepts_after(|m| m.max_publishers = 4096));
+        assert!(!attach_accepts_after(|m| m.max_subscribers = 4096));
+        // Zero is not a matrix either — `recv_pod` computes `cursor % max_pubs`.
+        assert!(!attach_accepts_after(|m| m.max_publishers = 0));
+    }
+
+    #[test]
+    fn attach_refuses_a_mask_wider_than_the_channel() {
+        // `pos & mask` in `seqlock_publish` is the ONLY bound on a slot index.
+        let accepted = attach_accepts_after(|m| m.capacity_mask = u32::MAX);
+        assert!(
+            !accepted,
+            "a mask inconsistent with the channel capacity must be refused, not \
+             used to index the ring"
+        );
+    }
+
+    #[test]
+    fn attach_refuses_a_capacity_that_is_not_a_power_of_two() {
+        // `seqlock_consume` requires `capacity == mask + 1`; without a power of
+        // two there is no mask that makes `pos & mask` stay inside the ring.
+        assert!(!attach_accepts_after(|m| m.channel_capacity = 63));
+        assert!(!attach_accepts_after(|m| m.channel_capacity = 0));
+    }
+
+    #[test]
+    fn attach_refuses_a_region_whose_slots_are_smaller_than_this_message() {
+        // A region another node (or a previous run) built for an 8-byte message,
+        // opened by a participant whose `T` is 64 bytes. The geometry is
+        // internally consistent — it is simply too small — and `try_send_pod`
+        // memcpys `size_of::<T>()` bytes into each slot with no length check.
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            assert!(ShmFanoutRing::attach(ptr, layout.size(), true, 64).is_none());
+            drop(owner);
+            std::alloc::dealloc(ptr, layout);
+        }
+    }
+
+    #[test]
+    fn attach_refuses_a_region_too_small_for_its_own_meta_block() {
+        let (ptr, layout) = alloc_shm_sim(8, true, 64);
+        unsafe {
+            let owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            // Forming the `&FanoutShmMeta` is itself out of bounds here, so the
+            // length check has to come before the reference, not after it.
+            assert!(ShmFanoutRing::attach(ptr, FANOUT_META_OFFSET, true, 8).is_none());
+            drop(owner);
             std::alloc::dealloc(ptr, layout);
         }
     }

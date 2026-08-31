@@ -11,7 +11,7 @@
 //!   latency is set by core locality (a same-thread self-loop stays L1-hot; the
 //!   moment the consumer runs on another core you pay cross-core cache coherence)
 //!
-//! **Cross-process** (SpscShm, MpscShm, SpmcShm, PodShm):
+//! **Cross-process** (SpscShm, MpscShm, PodShm):
 //! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.timestamp_ns`
 //! - Producer writes `rdtsc()` → `send()`, consumer reads `recv()` → `rdtscp()`
 //! - Requires `constant_tsc` for cross-core TSC synchronization
@@ -23,8 +23,19 @@
 //!
 //! ## Statistical Analysis
 //!
-//! Each scenario: 100K samples, Tukey IQR outlier filtering, bootstrap 95% CI,
-//! full percentile distribution (p1–p99.99), CPU-pinned processes.
+//! Each scenario: 100K samples, bootstrap 95% CI, CPU-pinned processes on
+//! verified-distinct physical cores.
+//!
+//! **No statistic published here is outlier-filtered.** Tukey's fence is
+//! computed and its count reported as a diagnostic, and nothing else. The fence
+//! deletes exactly the preemptions and page faults that constitute jitter, so a
+//! filtered mean, standard deviation or CV is bounded by construction rather
+//! than measured.
+//!
+//! **A percentile is printed only when at least 100 observations lie beyond
+//! it.** At 100K samples that permits p99 and p99.9 and forbids p99.99, which
+//! would rest on ten observations and move by tens of percent between identical
+//! runs. Unsupported figures print as `n/a` with the exceedance count.
 //!
 //! ## Usage
 //!
@@ -44,9 +55,12 @@
 
 use horus::prelude::Topic;
 use horus_benchmarks::output::{write_json_report, BenchmarkReport};
-use horus_benchmarks::platform::{detect_platform, has_constant_tsc, PlatformInfo};
+use horus_benchmarks::platform::{
+    detect_cpu_frequency, detect_platform, distinct_physical_cores, has_constant_tsc,
+    share_physical_core, PlatformInfo,
+};
 use horus_benchmarks::set_cpu_affinity;
-use horus_benchmarks::stats::Statistics;
+use horus_benchmarks::stats::{count_zero_samples, Statistics, MIN_TAIL_EXCEEDANCES};
 use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer, RdtscCalibration};
 use horus_benchmarks::{
     BenchmarkConfig, BenchmarkResult, DeterminismMetrics, Provenance, ThroughputMetrics,
@@ -55,8 +69,8 @@ use horus_core::core::DurationExt;
 use horus_robotics::CmdVel;
 use std::hint::spin_loop;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -77,13 +91,119 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// 10M msgs × ~100ns = ~1s — enough headroom for setup + warmup + measurement.
 const PODSHM_MSGS_PER_PUB: u64 = 10_000_000;
 
-/// CPU core pinning assignments.
-/// Spaced by 2 to avoid hyperthreading siblings on most Intel/AMD layouts.
-const CORE_MAIN: usize = 0;
-const CORE_AUX: usize = 2;
-const CORE_PUB2: usize = 4;
-const CORE_CHILD_CONS: usize = 6;
-const CORE_CONS2: usize = 8;
+/// Default deadline budget, in nanoseconds, against which `deadline_misses` is
+/// counted.
+///
+/// This is a *declared budget for this benchmark*, not a HORUS guarantee. 10 us
+/// is two orders of magnitude above every path measured here and an order of
+/// magnitude above the ~1 us producer pacing, so a sample that exceeds it did
+/// not lose a cache-coherence race — it was preempted, faulted, or migrated.
+/// That is the event a control loop cares about, and the count of them is a
+/// number this harness can actually produce. Override with `--deadline-ns`.
+const DEFAULT_DEADLINE_NS: u64 = 10_000;
+
+/// Deadline budget for this run. Set once from the CLI before any scenario runs.
+static DEADLINE_NS: AtomicU64 = AtomicU64::new(DEFAULT_DEADLINE_NS);
+
+fn deadline_ns() -> u64 {
+    DEADLINE_NS.load(Ordering::Relaxed)
+}
+
+/// Threads whose CPU pin did not take, in this process.
+///
+/// Every pin used to be `let _ = set_cpu_affinity(..)`. On a runner with fewer
+/// logical CPUs than the benchmark asks for, every one of those calls fails and
+/// the whole suite silently measures whatever the scheduler felt like doing —
+/// producing numbers that look exactly like pinned ones. A benchmark that could
+/// not place its threads has not measured what it claims to measure.
+static PIN_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Pin the calling thread to `core`, recording and reporting any failure.
+fn pin_to(core: usize, role: &str) {
+    if let Err(e) = set_cpu_affinity(core) {
+        PIN_FAILURES.fetch_add(1, Ordering::Relaxed);
+        eprintln!(
+            "  ERROR: could not pin {} to CPU {}: {} -- this run is NOT pinned",
+            role, core, e
+        );
+    }
+}
+
+/// CPU cores this benchmark pins to, one per distinct physical core.
+///
+/// The old assignment was five `const`s, `0, 2, 4, 6, 8`, commented "spaced by 2
+/// to avoid hyperthreading siblings on most Intel/AMD layouts". No layout is
+/// avoided by arithmetic. On a 6-core/12-thread Intel part `cpu0`'s sibling list
+/// is `0,6`, so `core_main() = 0` and `core_child_cons() = 6` were the two threads of
+/// one physical core: the cross-process scenarios pinned the measuring consumer
+/// onto the same core as a child and reported the result as a cross-core
+/// number. On AMD Zen, siblings are enumerated adjacently and the *opposite*
+/// convention (`0, 1`) collides instead. At most one of the two conventions in
+/// this repository can be right on any given machine, and neither ever read
+/// `thread_siblings_list`.
+struct CoreAssignment {
+    main: usize,
+    aux: usize,
+    pub2: usize,
+    child_cons: usize,
+    cons2: usize,
+    /// True when these came from `thread_siblings_list` and are known pairwise
+    /// distinct. False means the fallback list is in use and core locality is
+    /// unverified.
+    topology_verified: bool,
+}
+
+/// Used only when the kernel will not tell us the topology.
+const FALLBACK_CORES: [usize; 5] = [0, 2, 4, 6, 8];
+
+impl CoreAssignment {
+    fn detect() -> Self {
+        match distinct_physical_cores(5) {
+            Some(c) => Self {
+                main: c[0],
+                aux: c[1],
+                pub2: c[2],
+                child_cons: c[3],
+                cons2: c[4],
+                topology_verified: true,
+            },
+            None => Self {
+                main: FALLBACK_CORES[0],
+                aux: FALLBACK_CORES[1],
+                pub2: FALLBACK_CORES[2],
+                child_cons: FALLBACK_CORES[3],
+                cons2: FALLBACK_CORES[4],
+                topology_verified: false,
+            },
+        }
+    }
+
+    fn all(&self) -> [usize; 5] {
+        [self.main, self.aux, self.pub2, self.child_cons, self.cons2]
+    }
+}
+
+static CORES: OnceLock<CoreAssignment> = OnceLock::new();
+
+fn cores() -> &'static CoreAssignment {
+    CORES.get_or_init(CoreAssignment::detect)
+}
+
+fn core_main() -> usize {
+    cores().main
+}
+fn core_aux() -> usize {
+    cores().aux
+}
+fn core_pub2() -> usize {
+    cores().pub2
+}
+fn core_child_cons() -> usize {
+    cores().child_cons
+}
+fn core_cons2() -> usize {
+    cores().cons2
+}
 
 /// Width of the output box (interior, excluding border characters)
 const BOX_W: usize = 72;
@@ -129,6 +249,27 @@ impl ScenarioResult {
         loss as f64 / self.total_sent as f64 * 100.0
     }
 
+    /// Samples that exceeded the declared deadline budget.
+    ///
+    /// This field used to be the literal `0`, written straight into the JSON
+    /// report under `Provenance::Measured`, beside a `deadline_threshold_ns` of
+    /// `0`. Nothing was measured and nothing could ever have made it non-zero;
+    /// any consumer of the artefact read "zero deadline misses observed" from a
+    /// framework whose entire selling point is safety-critical real time. An
+    /// unmeasured zero stamped `Measured` is worse than an absent field.
+    fn deadline_misses(&self) -> u64 {
+        let budget = deadline_ns();
+        self.latencies_ns.iter().filter(|&&l| l > budget).count() as u64
+    }
+
+    /// Samples that came out as exactly 0 ns.
+    ///
+    /// Not a fast operation: the signature of an overhead subtraction that
+    /// over-corrected. See [`horus_benchmarks::stats::count_zero_samples`].
+    fn zero_samples(&self) -> usize {
+        count_zero_samples(&self.latencies_ns)
+    }
+
     /// Short backend name for summary table (e.g. "SpscShm" from "SpscShm (Adaptive)")
     fn backend_short(&self) -> &str {
         self.backend
@@ -171,15 +312,37 @@ fn main() {
         .find(|w| w[0] == "--json")
         .map(|w| w[1].clone());
     let skip_stress = args.iter().any(|a| a == "--skip-stress");
+    let with_raw = args.iter().any(|a| a == "--raw-samples");
+    let allow_unpinned = args.iter().any(|a| a == "--allow-unpinned");
+    if let Some(v) = args.windows(2).find(|w| w[0] == "--deadline-ns") {
+        match v[1].parse::<u64>() {
+            Ok(ns) if ns > 0 => DEADLINE_NS.store(ns, Ordering::Relaxed),
+            _ => {
+                eprintln!(
+                    "  ERROR: --deadline-ns needs a positive integer, got '{}'",
+                    v[1]
+                );
+                std::process::exit(2);
+            }
+        }
+    }
 
     // --- Initialization ---
-    let platform = detect_platform();
+    let mut platform = detect_platform();
     let timer = PrecisionTimer::with_calibration(500);
     let cal = timer.calibration();
 
     print_header(&platform, cal);
-    validate_platform(&platform);
-    let _ = set_cpu_affinity(CORE_MAIN);
+    let platform_ok = validate_platform(&platform);
+    if !platform_ok && !allow_unpinned {
+        eprintln!();
+        eprintln!("  Refusing to run: the conditions above make the numbers this binary");
+        eprintln!("  would print unattributable to the code under test. Publishing an");
+        eprintln!("  unpinned or sibling-colliding latency figure is worse than publishing");
+        eprintln!("  none. Re-run with --allow-unpinned to measure anyway.");
+        std::process::exit(2);
+    }
+    pin_to(core_main(), "main measurement thread");
 
     let mut results: Vec<ScenarioResult> = Vec::new();
 
@@ -276,10 +439,62 @@ fn main() {
     print_overhead_analysis(&results);
     print_methodology(cal);
 
+    // === Did the machine hold still? ===
+    // Every reported nanosecond is core_cycles / f_core. If f_core moved during
+    // the run, the rows above are not comparable to each other, let alone to a
+    // previous run — and nothing else in the output would say so.
+    platform.cpu.measured_freq_mhz_end = detect_cpu_frequency();
+    print_frequency_check(&platform);
+
+    // === Was anything actually pinned? ===
+    let pin_failures = PIN_FAILURES.load(Ordering::Relaxed);
+    if pin_failures > 0 {
+        eprintln!();
+        eprintln!("  {} thread pin(s) FAILED in this process.", pin_failures);
+        eprintln!("  The affected threads ran wherever the scheduler put them, which may");
+        eprintln!("  include sharing a physical core with the thread they were measured");
+        eprintln!("  against. These numbers do not mean what the table says they mean.");
+        if !allow_unpinned {
+            eprintln!("  JSON output suppressed. Re-run with --allow-unpinned to write it anyway.");
+            std::process::exit(2);
+        }
+    }
+
     // === JSON output ===
     if let Some(path) = json_path {
-        write_json_output(&path, &platform, &results);
+        write_json_output(&path, &platform, &results, with_raw);
     }
+}
+
+/// Report the TSC rate at both ends of the run.
+fn print_frequency_check(platform: &PlatformInfo) {
+    let (Some(start), Some(end)) = (
+        platform.cpu.measured_freq_mhz,
+        platform.cpu.measured_freq_mhz_end,
+    ) else {
+        return;
+    };
+    let drift = platform.cpu.freq_drift_pct().unwrap_or(f64::NAN);
+
+    println!("─── Clock Check {}", "─".repeat(BOX_W - 18));
+    println!();
+    println!(
+        "  TSC rate: {:.1} MHz at start, {:.1} MHz at end ({:+.2}%)",
+        start, end, drift
+    );
+    println!("  Every nanosecond above is core_cycles / core_frequency. RDTSC ticks at");
+    println!("  the nominal rate regardless of P-state, so a core that clocked down");
+    println!("  makes identical code report a larger latency, with nothing else in this");
+    println!("  output changing.");
+    if drift.abs() > 2.0 {
+        println!();
+        println!(
+            "  WARNING: the clock moved {:+.2}% across this run. Rows measured early and",
+            drift
+        );
+        println!("  rows measured late are not comparable to each other.");
+    }
+    println!();
 }
 
 // ============================================================================
@@ -327,8 +542,17 @@ fn print_header(platform: &PlatformInfo, cal: &RdtscCalibration) {
     println!(
         "{}",
         box_left(&format!(
-            "Pinning: main={}, aux={}, pub2={}, cons={}, cons2={}",
-            CORE_MAIN, CORE_AUX, CORE_PUB2, CORE_CHILD_CONS, CORE_CONS2,
+            "Pinning: main={}, aux={}, pub2={}, cons={}, cons2={} ({})",
+            core_main(),
+            core_aux(),
+            core_pub2(),
+            core_child_cons(),
+            core_cons2(),
+            if cores().topology_verified {
+                "distinct physical cores"
+            } else {
+                "UNVERIFIED -- topology unreadable"
+            },
         ))
     );
     println!(
@@ -336,6 +560,13 @@ fn print_header(platform: &PlatformInfo, cal: &RdtscCalibration) {
         box_left(&format!(
             "Config: {} iterations, {} warmup, {} boot msgs",
             ITERATIONS, WARMUP, MIGRATION_BOOT,
+        ))
+    );
+    println!(
+        "{}",
+        box_left(&format!(
+            "Deadline budget: {} ns (declared, not a HORUS guarantee)",
+            deadline_ns(),
         ))
     );
 
@@ -348,8 +579,15 @@ fn print_header(platform: &PlatformInfo, cal: &RdtscCalibration) {
     println!();
 }
 
-fn validate_platform(platform: &PlatformInfo) {
+/// Check the machine can support the measurement this binary claims to make.
+///
+/// Returns false for conditions that make the numbers unattributable to the code
+/// under test — too few CPUs to place the threads, or a core assignment that
+/// puts two measured threads on one physical core. Those are not warnings: a
+/// benchmark that could not place its threads has measured the scheduler.
+fn validate_platform(platform: &PlatformInfo) -> bool {
     let mut warnings = Vec::new();
+    let mut blockers = Vec::new();
 
     if !has_constant_tsc() {
         warnings
@@ -367,12 +605,49 @@ fn validate_platform(platform: &PlatformInfo) {
         warnings.push("Running in VM -- RDTSC timing may be unreliable".to_string());
     }
 
-    if !warnings.is_empty() {
-        for w in &warnings {
-            eprintln!("  WARNING: {}", w);
+    // The suite pins five threads plus up to eleven stress children. Below the
+    // five it needs, every pin fails and every row is an unpinned number wearing
+    // a pinned number's label.
+    let assignment = cores();
+    let needed = assignment.all().iter().copied().max().unwrap_or(0) + 1;
+    if platform.cpu.logical_cores < needed {
+        blockers.push(format!(
+            "{} logical CPUs available, {} needed for the core assignment {:?}",
+            platform.cpu.logical_cores,
+            needed,
+            assignment.all()
+        ));
+    }
+
+    if !assignment.topology_verified {
+        blockers.push(format!(
+            "could not read thread_siblings_list; falling back to {:?}, whose core locality \
+             is unverified -- two of these may be SMT siblings, which moves cross-core \
+             latency by roughly 2x",
+            FALLBACK_CORES
+        ));
+    } else {
+        // Belt and braces: prove the assignment pairwise.
+        let all = assignment.all();
+        for (i, &a) in all.iter().enumerate() {
+            for &b in &all[i + 1..] {
+                if share_physical_core(a, b) == Some(true) {
+                    blockers.push(format!("CPUs {} and {} are SMT siblings", a, b));
+                }
+            }
         }
+    }
+
+    for w in &warnings {
+        eprintln!("  WARNING: {}", w);
+    }
+    for b in &blockers {
+        eprintln!("  BLOCKER: {}", b);
+    }
+    if !warnings.is_empty() || !blockers.is_empty() {
         println!();
     }
+    blockers.is_empty()
 }
 
 // ============================================================================
@@ -459,7 +734,7 @@ fn bench_spsc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
 
     // Consumer thread pinned to separate core
     let handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_AUX);
+        pin_to(core_aux(), "aux worker thread");
         let mut count = 0u64;
         let deadline = Instant::now() + 5_u64.secs();
         while count < 1000 && Instant::now() < deadline {
@@ -544,11 +819,11 @@ fn bench_mpsc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         producer1.send(msg);
     }
 
-    // Consumer thread pinned to CORE_AUX
+    // Consumer thread pinned to core_aux()
     let done_c = done.clone();
     let cons_ready_c = cons_ready.clone();
     let cons_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_AUX);
+        pin_to(core_aux(), "aux worker thread");
         let mut count = 0u64;
         let deadline = Instant::now() + 5_u64.secs();
         while count < 1000 && Instant::now() < deadline {
@@ -573,11 +848,11 @@ fn bench_mpsc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         spin_loop();
     }
 
-    // Producer2 thread pinned to CORE_PUB2
+    // Producer2 thread pinned to core_pub2()
     let done_p2 = done.clone();
     let p2_ready_c = p2_ready.clone();
     let p2_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_PUB2);
+        pin_to(core_pub2(), "second producer thread");
         // Send to register as 2nd publisher, triggers MpscShm migration
         for _ in 0..2000 {
             producer2.send(msg);
@@ -653,11 +928,11 @@ fn bench_spmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         producer.send(msg);
     }
 
-    // Consumer 1 thread pinned to CORE_AUX
+    // Consumer 1 thread pinned to core_aux()
     let done_c1 = done.clone();
     let c1_ready_c = c1_ready.clone();
     let c1_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_AUX);
+        pin_to(core_aux(), "aux worker thread");
         let mut count = 0u64;
         let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
@@ -682,11 +957,11 @@ fn bench_spmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         spin_loop();
     }
 
-    // Consumer 2 thread pinned to CORE_CONS2
+    // Consumer 2 thread pinned to core_cons2()
     let done_c2 = done.clone();
     let c2_ready_c = c2_ready.clone();
     let c2_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_CONS2);
+        pin_to(core_cons2(), "second consumer thread");
         let mut count = 0u64;
         let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
@@ -771,11 +1046,11 @@ fn bench_mpmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         producer1.send(msg);
     }
 
-    // Consumer 1 thread pinned to CORE_AUX
+    // Consumer 1 thread pinned to core_aux()
     let done_c1 = done.clone();
     let c1_ready_c = c1_ready.clone();
     let c1_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_AUX);
+        pin_to(core_aux(), "aux worker thread");
         let mut count = 0u64;
         let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
@@ -800,11 +1075,11 @@ fn bench_mpmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         spin_loop();
     }
 
-    // Consumer 2 thread pinned to CORE_CONS2
+    // Consumer 2 thread pinned to core_cons2()
     let done_c2 = done.clone();
     let c2_ready_c = c2_ready.clone();
     let c2_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_CONS2);
+        pin_to(core_cons2(), "second consumer thread");
         let mut count = 0u64;
         let deadline = Instant::now() + 5_u64.secs();
         while count < 500 && Instant::now() < deadline {
@@ -829,11 +1104,11 @@ fn bench_mpmc_same_proc(timer: &PrecisionTimer) -> ScenarioResult {
         spin_loop();
     }
 
-    // Producer2 thread pinned to CORE_PUB2
+    // Producer2 thread pinned to core_pub2()
     let done_p2 = done.clone();
     let p2_ready_c = p2_ready.clone();
     let p2_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(CORE_PUB2);
+        pin_to(core_pub2(), "second producer thread");
         for _ in 0..2000 {
             producer2.send(msg);
         }
@@ -905,7 +1180,7 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Paced publisher: prevents ring overflow that causes queuing delay.
     // Without pacing, producer outruns consumer → ring fills → measured latency
     // shows queuing delay (~3µs) instead of true wire latency (~300ns).
-    let mut child = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
+    let mut child = spawn_paced_publisher(&topic_name, child_count, core_aux());
 
     // Wait for publisher to register and migration to occur
     wait_for_topology(&consumer, 1, 1, 5_u64.secs());
@@ -953,11 +1228,11 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let msgs_per_pub = PODSHM_MSGS_PER_PUB;
 
     // Spawn pub1 → SpscShm migration (1P, 1C, cross-process)
-    let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
+    let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, core_aux());
     let migration1 = wait_for_messages(&consumer, 100, 10_u64.secs());
 
     // Spawn pub2 → MpscShm migration (2P, 1C, cross-process)
-    let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
+    let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, core_pub2());
 
     // Wait for pub2 to actually register in the topology
     wait_for_topology(&consumer, 2, 1, 5_u64.secs());
@@ -995,9 +1270,20 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// SpmcShm -- cross-process 1 publisher, 2 consumers.
+/// Cross-process 1 publisher, 2 consumers.
 /// Parent = consumer 1, child = consumer 2, child = publisher.
 /// Measures one-way latency via RDTSC timestamps in message payload.
+///
+/// The backend is `PodShm`, not `SpmcShm`, and that is the policy rather than a
+/// defect. `detect_optimal_backend` routes 1-to-many POD to broadcast on
+/// purpose: `SpmcShm`'s consumers share one tail and COMPETE for messages, so a
+/// fast subscriber would starve the others — wrong for pub/sub, where every
+/// subscriber is supposed to see every message.
+///
+/// This scenario asserted `SpmcShm` and printed `MISMATCH` on every run,
+/// reporting the implementation as broken when the expectation was. A false
+/// alarm in benchmark output is worse than no check: it trains the reader to
+/// ignore the line that would matter if the backend really did change.
 fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let cal = timer.calibration();
     let topic_name = format!("bench_spmc_{}", std::process::id());
@@ -1006,15 +1292,15 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     // Spawn child consumer first (registers as 2nd subscriber)
     let child_count = PODSHM_MSGS_PER_PUB;
-    let mut child_cons = spawn_consumer(&topic_name, child_count, CORE_CHILD_CONS);
+    let mut child_cons = spawn_consumer(&topic_name, child_count, core_child_cons());
     thread::sleep(200_u64.ms());
 
     // Paced publisher: even with 2 consumers, the parent consumer (doing measurement
     // work: RDTSC + Vec::push) is slower, so CAS contention causes bursty delivery.
     // Pacing prevents ring overflow that inflates measured latency.
-    let mut child_pub = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
+    let mut child_pub = spawn_paced_publisher(&topic_name, child_count, core_aux());
 
-    // Wait for publisher to register and topology to settle (1P, 2S → SpmcShm)
+    // Wait for publisher to register and topology to settle (1P, 2S → PodShm)
     wait_for_topology(&consumer, 1, 2, 5_u64.secs());
     let migration_recv = wait_for_messages(&consumer, 100, 10_u64.secs());
 
@@ -1031,12 +1317,22 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossProc-1PMC",
         backend,
-        expected_backend: "SpmcShm",
+        expected_backend: "PodShm",
         measurement: "one-way",
         latencies_ns: latencies,
         total_sent: MIGRATION_BOOT + child_count,
         total_received,
-        note: None,
+        // Without this the row prints "98.9% loss" beside a 196ns median and
+        // reads as though HORUS drops 99 messages in 100. It does not: 1-to-many
+        // POD resolves to PodShm, which is latest-value broadcast with no
+        // backpressure, so an unthrottled publisher overwrites slots a consumer
+        // has not read yet — by design, and the same design the
+        // CrossProc-PodShm row already annotates. The delivered messages are
+        // what the latency figure is computed from.
+        note: Some(
+            "PodShm broadcast: unread slots are overwritten by design, so the \
+             loss figure is producer pacing, not dropped delivery",
+        ),
         freshness_samples: None,
         delivery_ratio: None,
         skip_count: None,
@@ -1066,23 +1362,23 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     // Step 1: Spawn child consumer FIRST so both consumers are present before publishers.
     // Child consumer receives from both publishers (broadcast), so count = msgs_per_pub * 2.
-    let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub * 2, CORE_CHILD_CONS);
+    let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub * 2, core_child_cons());
     thread::sleep(200_u64.ms()); // Wait for child to register
 
-    // Step 2: Spawn pub1 (paced) → topology: 1P, 2S, cross-proc → SpmcShm
+    // Step 2: Spawn pub1 (paced) → topology: 1P, 2S, cross-proc → PodShm
     // Paced publishers prevent ring overflow that causes the consumer to read
     // stale messages with old timestamps, inflating measured latency.
-    let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
+    let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, core_aux());
     let migration1 = wait_for_messages(&consumer, 100, 10_u64.secs());
 
     // Step 3: Spawn pub2 (paced) → topology: 2P, 2S, cross-proc, POD → PodShm migration
-    let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
+    let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, core_pub2());
 
     // Wait for pub2 to actually register (it sleeps 100ms at startup).
     // We need pubs=2 visible in the header before migration detection works.
     wait_for_topology(&consumer, 2, 2, 5_u64.secs());
 
-    // Drain any queued messages from the SpmcShm era
+    // Drain any queued messages from before the topology settled
     let migration2 = wait_for_messages(&consumer, 200, 5_u64.secs());
 
     // Step 4: Force migration check so parent detects PodShm before measurement
@@ -1403,7 +1699,7 @@ fn collect_pod_shm(
 // ============================================================================
 
 fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
-    let _ = set_cpu_affinity(core);
+    pin_to(core, "child publisher");
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
 
     // Wait for parent consumer to register
@@ -1456,7 +1752,7 @@ fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
 }
 
 fn run_child_consumer(topic_name: &str, count: u64, core: usize) {
-    let _ = set_cpu_affinity(core);
+    pin_to(core, "child consumer");
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
     let _ = topic.recv(); // Register as subscriber
     thread::sleep(50_u64.ms());
@@ -1569,6 +1865,11 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
 
     child.wait().ok();
 
+    // Not `WARMUP + ITERATIONS`: the measurement loop breaks on the deadline or
+    // when the writer dies, so a literal made `loss_pct()` structurally 0 even
+    // on a run that collected nothing.
+    let received = WARMUP + latencies.len() as u64;
+
     ScenarioResult {
         name: "RawAtomic",
         backend: "shm".to_string(),
@@ -1576,7 +1877,7 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
         measurement: "one-way",
         latencies_ns: latencies,
         total_sent: total_writes,
-        total_received: WARMUP + ITERATIONS,
+        total_received: received,
         note: None,
         freshness_samples: None,
         delivery_ratio: None,
@@ -1586,7 +1887,7 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
 
 /// Child process: write RDTSC timestamps to a raw atomic in SHM.
 fn run_child_atomic_writer(topic_name: &str, count: u64) {
-    let _ = set_cpu_affinity(CORE_AUX);
+    pin_to(core_aux(), "raw-atomic writer child");
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
     // Send a dummy message to register as publisher and trigger SHM creation
     topic.send(CmdVel::with_timestamp(0.0, 0.0, 0));
@@ -1606,7 +1907,7 @@ fn run_child_atomic_writer(topic_name: &str, count: u64) {
     eprintln!(
         "  [raw-atomic] PID={} core={} writing {} timestamps",
         std::process::id(),
-        CORE_AUX,
+        core_aux(),
         count
     );
 
@@ -1628,19 +1929,35 @@ fn run_child_atomic_writer(topic_name: &str, count: u64) {
 /// Assign CPU cores for stress test child processes.
 /// Core 0 is reserved for the parent/main thread (measurement consumer).
 fn assign_stress_cores(total_children: usize) -> Vec<usize> {
-    if total_children <= 6 {
-        // HT-spaced: avoid hyperthreading siblings on most Intel/AMD layouts
-        (0..total_children).map(|i| (i + 1) * 2).collect()
-    } else if total_children <= 11 {
-        // Use cores 1-11 (all physical on typical 6C/12T)
-        (0..total_children).map(|i| i + 1).collect()
-    } else {
-        eprintln!(
-            "  [warn] {} child threads exceeds typical physical core count",
-            total_children
-        );
-        (0..total_children).map(|i| i + 1).collect()
+    // Ask the kernel which logical CPUs are on distinct physical cores, and take
+    // the ones the measuring thread is not already using. The previous version
+    // guessed -- `(i + 1) * 2` under six children, `i + 1` above -- which on a
+    // 6C/12T part whose sibling lists are (0,6), (1,7), ... puts child 2 on
+    // cpu 6, the sibling of the parent's cpu 0.
+    let main = core_main();
+    if let Some(distinct) = distinct_physical_cores(total_children + 1) {
+        let chosen: Vec<usize> = distinct.into_iter().filter(|&c| c != main).collect();
+        if chosen.len() >= total_children {
+            return chosen[..total_children].to_vec();
+        }
     }
+
+    // Over-subscribed, or topology unreadable. Say so rather than silently
+    // producing a number that looks like the others.
+    eprintln!(
+        "  [warn] {} stress children exceed the distinct physical cores available; \
+         siblings will be shared and these rows are not comparable to the pinned ones",
+        total_children
+    );
+    (0..total_children)
+        .map(|i| (i + 1) % num_cpus_or(1).max(1))
+        .collect()
+}
+
+fn num_cpus_or(default: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(default)
 }
 
 /// Generic stress benchmark: N publishers x M consumers, cross-process.
@@ -1725,7 +2042,9 @@ fn bench_stress(
     let total_received = migration_recv + measure_recv;
 
     // total_sent is unknown (publishers are killed mid-stream), so use
-    // total_received to avoid misleading "99.9% loss" from inflated counts.
+    // total_received. That makes `loss_pct()` structurally 0 for these rows,
+    // which is why the note below says loss is not measured rather than letting
+    // a reader take the 0 at face value.
     ScenarioResult {
         name,
         backend,
@@ -1734,7 +2053,7 @@ fn bench_stress(
         latencies_ns: latencies,
         total_sent: total_received,
         total_received,
-        note: None,
+        note: Some("publishers killed mid-stream: messages sent is unknown, so loss is not measured for this row"),
         freshness_samples: None,
         delivery_ratio: None,
         skip_count: None,
@@ -1764,12 +2083,20 @@ fn print_detail(r: &ScenarioResult) {
     }
 
     let s = r.stats();
-    // `outliers_removed` no longer means "removed from this table": the tail
-    // statistics below are computed from every sample. Only the mean and the
-    // confidence interval exclude them.
+    // `outliers_removed` is a diagnostic and nothing more: no statistic printed
+    // below excludes a single sample. Tukey's fence deletes the preemptions and
+    // faults that jitter consists of, so a fenced mean, std dev or CV is bounded
+    // by construction rather than measured.
     println!(
-        "  Samples: {} ({} excluded from mean/CI as outliers)",
+        "  Samples: {} ({} outside Tukey's fence; none excluded from any figure below)",
         s.count, s.outliers_removed
+    );
+    println!(
+        "  Tail support: p99 <- {} obs, p99.9 <- {} obs, p99.99 <- {} obs (need {})",
+        s.quantile_exceedances(99.0),
+        s.quantile_exceedances(99.9),
+        s.quantile_exceedances(99.99),
+        MIN_TAIL_EXCEEDANCES,
     );
 
     if r.total_sent != r.total_received && r.measurement != "broadcast" {
@@ -1794,25 +2121,20 @@ fn print_detail(r: &ScenarioResult) {
         "    {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
         fmt_ns(s.median as u64),
         fmt_ns(s.p95),
-        fmt_ns(s.p99),
-        fmt_ns(s.p999),
-        fmt_ns(s.p9999),
+        fmt_quantile(&s, 99.0, s.p99),
+        fmt_quantile(&s, 99.9, s.p999),
+        fmt_quantile(&s, 99.99, s.p9999),
         fmt_ns(s.max),
     );
     println!();
 
-    let cv = if s.mean > 0.0 {
-        s.std_dev / s.mean
-    } else {
-        0.0
-    };
     println!(
-        "    Mean: {}  CI95: [{:.1}, {:.1}]ns  StdDev: {:.1}ns  CV: {:.3}",
+        "    Mean: {}  CI95: [{:.1}, {:.1}]ns  StdDev: {:.1}ns  CV: {:.3} (unfiltered)",
         fmt_ns(s.mean as u64),
         s.ci_low,
         s.ci_high,
         s.std_dev,
-        cv,
+        s.cv(),
     );
     println!(
         "    Jitter: {} (max-min)  IQR: [{}, {}]",
@@ -1820,6 +2142,31 @@ fn print_detail(r: &ScenarioResult) {
         fmt_ns(s.p25),
         fmt_ns(s.p75),
     );
+
+    let misses = r.deadline_misses();
+    println!(
+        "    Deadline: {} of {} samples over {} ({:.4}%)",
+        misses,
+        s.count,
+        fmt_ns(deadline_ns()),
+        if s.count > 0 {
+            misses as f64 / s.count as f64 * 100.0
+        } else {
+            f64::NAN
+        },
+    );
+
+    // Free self-check on the overhead subtraction: a latency benchmark cannot
+    // observe a genuine 0 ns operation, so any zero is the once-calibrated
+    // overhead MIN being subtracted from a sample it exceeded.
+    let zeros = r.zero_samples();
+    if zeros > 0 {
+        println!(
+            "    WARNING: {} sample(s) floored at 0 ns -- the overhead subtraction \
+             over-corrected;\n             this run's median and mean are biased low.",
+            zeros
+        );
+    }
     println!();
 }
 
@@ -1897,8 +2244,8 @@ fn print_summary(results: &[ScenarioResult]) {
             r.measurement,
             fmt_ns(s.median as u64),
             fmt_ns(s.p95),
-            fmt_ns(s.p99),
-            fmt_ns(s.p999),
+            fmt_quantile(&s, 99.0, s.p99),
+            fmt_quantile(&s, 99.9, s.p999),
             fmt_ns(s.max),
             mark,
             r.backend_short(),
@@ -1906,6 +2253,11 @@ fn print_summary(results: &[ScenarioResult]) {
     }
 
     println!("{}", "=".repeat(w));
+    println!(
+        "  n/a[k] = too few observations (k) beyond that quantile to report it; need {}.",
+        MIN_TAIL_EXCEEDANCES
+    );
+    println!("  max is a single observation and is reported, never compared.");
     println!();
 }
 
@@ -1914,19 +2266,17 @@ fn print_summary(results: &[ScenarioResult]) {
 // ============================================================================
 
 fn print_overhead_analysis(results: &[ScenarioResult]) {
-    // Find RawAtomic hardware floor (p50)
-    let hw_floor = results
+    // Find the RawAtomic hardware floor. `stats()` re-runs a 10,000-resample
+    // bootstrap over every sample, so take it once and keep both figures.
+    let floor = results
         .iter()
         .find(|r| r.name == "RawAtomic")
-        .and_then(|r| {
-            if r.latencies_ns.is_empty() {
-                None
-            } else {
-                Some(r.stats().median as u64)
-            }
-        });
+        .filter(|r| !r.latencies_ns.is_empty())
+        .map(|r| r.stats());
 
-    let Some(floor_ns) = hw_floor else { return };
+    let Some(floor) = floor else { return };
+    let floor_ns = floor.median as u64;
+    let floor_p99 = floor.p99;
 
     println!(
         "─── Framework Overhead (vs hardware floor: {}ns) {}",
@@ -1938,7 +2288,7 @@ fn print_overhead_analysis(results: &[ScenarioResult]) {
     let cross_proc = [
         ("CrossProc-1P1C", "SpscShm"),
         ("CrossProc-2P1C", "MpscShm"),
-        ("CrossProc-1PMC", "SpmcShm"),
+        ("CrossProc-1PMC", "PodShm"),
         ("CrossProc-PodShm", "PodShm"),
     ];
 
@@ -1949,16 +2299,24 @@ fn print_overhead_analysis(results: &[ScenarioResult]) {
             }
             let s = r.stats();
             let p50 = s.median as u64;
-            let overhead = p50.saturating_sub(floor_ns);
+            // Signed. `saturating_sub` clamped this at 0, so a path measuring
+            // *faster* than the floor -- which means the floor measurement is
+            // wrong, or the two rows ran at different core frequencies -- read
+            // as "0 ns of framework overhead", the best possible result, from
+            // what is actually a broken comparison.
+            let overhead = p50 as i64 - floor_ns as i64;
+            let overhead_p99 = s.p99 as i64 - floor_p99 as i64;
             println!(
-                "  {:<18} p50: {:>5}ns  overhead: {:>5}ns  (= {}ns total - {}ns hw floor)  {}",
-                name, p50, overhead, p50, floor_ns, label
+                "  {:<18} p50: {:>5}ns  over floor: {:>+6}ns   p99: {:>6}ns  over floor: {:>+7}ns  {}",
+                name, p50, overhead, s.p99, overhead_p99, label
             );
         }
     }
     println!();
-    println!("  Note: Hardware floor varies ±50ns between runs due to thermal/load conditions.");
-    println!("  Framework overhead = total latency - raw SHM cache line transfer cost.");
+    println!("  A negative figure is not a fast path: it means the floor and the row were");
+    println!("  not measured under the same conditions, and neither number is usable.");
+    println!("  The floor itself moves by tens of ns between runs with core frequency and");
+    println!("  load, so this whole block is an order-of-magnitude guide, not a measurement.");
     println!();
 }
 
@@ -1975,9 +2333,29 @@ fn print_methodology(cal: &RdtscCalibration) {
     println!("    broadcast = like one-way, but tracks freshness/skip-aheads (PodShm)");
     println!();
     println!("  Statistical processing:");
-    println!("    - Tukey IQR outlier removal (1.5x fence)");
-    println!("    - Bootstrap 95% CI (10K resamples, LCG PRNG)");
-    println!("    - Full percentile distribution (p1 through p99.99)");
+    println!("    - NO outlier removal. Every figure above -- mean, std dev, CV, CI and");
+    println!(
+        "      every percentile -- is computed from all {} samples.",
+        ITERATIONS
+    );
+    println!("      Tukey's 1.5x fence is computed and its count reported as a diagnostic");
+    println!("      only. The fence deletes the preemptions and page faults that jitter");
+    println!("      consists of; a CV taken after it cannot exceed the fence, which is why");
+    println!("      the older tables that used one were withdrawn.");
+    println!("    - Bootstrap 95% CI on the mean (10K resamples, fixed-seed LCG)");
+    println!(
+        "    - A percentile is printed only when >= {} observations lie beyond it.",
+        MIN_TAIL_EXCEEDANCES
+    );
+    println!(
+        "      At {} samples that permits p99.9 and forbids p99.99.",
+        ITERATIONS
+    );
+    println!("    - max is one observation. It is reported, never compared between runs.");
+    println!(
+        "    - deadline_misses counts samples over the declared {} ns budget.",
+        deadline_ns()
+    );
     println!();
     println!("  Timing infrastructure:");
     println!(
@@ -2007,7 +2385,17 @@ fn print_methodology(cal: &RdtscCalibration) {
     println!("    - Topic selects backends based on topology and type (POD vs non-POD)");
     println!("    - MpmcShm only activates for non-POD types; POD multi-pub/sub uses PodShm");
     println!("    - Cross-process POD: zero-copy (memcpy + atomics). Non-POD: +bincode ser/deser");
-    println!("    - Governor 'powersave' significantly inflates latencies vs 'performance'");
+    println!("    - RDTSC ticks at the nominal rate; the work costs a fixed number of CORE");
+    println!("      cycles. Every nanosecond here is core_cycles / f_core, so a governor");
+    println!("      that clocks the core down inflates every figure without changing any");
+    println!("      other output. See the Clock Check block for this run's drift.");
+    println!("    - The RDTSC overhead subtracted from each sample is a MIN captured once,");
+    println!("      at whatever P-state held during calibration. When a later sample beats");
+    println!("      it the sample is floored at 0 ns; those are counted and warned about");
+    println!("      per scenario, and they bias the median and mean low.");
+    println!("    - runs = 1. Nothing here measures run-to-run spread, which on this");
+    println!("      harness has been observed at 2x for an unchanged binary. A single run");
+    println!("      cannot support a claim about a change of less than that.");
     println!();
 }
 
@@ -2015,16 +2403,24 @@ fn print_methodology(cal: &RdtscCalibration) {
 // JSON Output
 // ============================================================================
 
-fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioResult]) {
+/// Write the machine-readable report.
+///
+/// Fields that this binary does not measure are written as `NaN`, which
+/// `serde_json` emits as `null`. They used to be written as `0.0` and `0` under
+/// `Provenance::Measured`: `deadline_misses: 0` beside `deadline_threshold_ns: 0`,
+/// and `run_variance: 0.0` beside `runs: 1` — an assertion of perfect
+/// reproducibility from a single run. A null is a fact about the measurement; a
+/// zero in a field named for violations is a false safety claim.
+fn write_json_output(
+    path: &str,
+    platform: &PlatformInfo,
+    results: &[ScenarioResult],
+    with_raw: bool,
+) {
     let mut report = BenchmarkReport::new(platform.clone());
 
     for r in results {
         let s = r.stats();
-        let cv = if s.mean > 0.0 {
-            s.std_dev / s.mean
-        } else {
-            0.0
-        };
 
         let result = BenchmarkResult {
             provenance: Provenance::Measured,
@@ -2035,35 +2431,55 @@ fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioRes
                 warmup_iterations: WARMUP as usize,
                 iterations: ITERATIONS as usize,
                 runs: 1,
-                cpu_affinity: Some((CORE_MAIN, CORE_AUX)),
-                filter_outliers: true,
+                cpu_affinity: Some((core_main(), core_aux())),
+                // No statistic in this report excludes a sample.
+                // `statistics.outliers_removed` is a count of samples outside
+                // Tukey's fence, kept as a diagnostic; nothing is removed.
+                filter_outliers: false,
                 confidence_level: 95.0,
             },
             platform: platform.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            // Exclude raw latencies to keep JSON compact (~500K entries would be 7+ MB).
-            // Statistics already capture full percentile distribution for regression tracking.
-            raw_latencies_ns: Vec::new(),
+            // Off by default (~800 KB per scenario), on with --raw-samples.
+            // Without them no percentile can be re-derived after a bug is fixed,
+            // no paired test can be run, and the bimodality that a mid-run
+            // frequency step leaves behind is undetectable. That is a size
+            // trade-off, stated here; it is not a claim that the samples do not
+            // matter.
+            raw_latencies_ns: if with_raw {
+                r.latencies_ns.clone()
+            } else {
+                Vec::new()
+            },
             statistics: s.clone(),
             throughput: ThroughputMetrics {
-                messages_per_sec: if s.mean > 0.0 { 1e9 / s.mean } else { 0.0 },
-                bytes_per_sec: if s.mean > 0.0 {
-                    (std::mem::size_of::<CmdVel>() as f64) * 1e9 / s.mean
-                } else {
-                    0.0
-                },
-                total_messages: r.latencies_ns.len() as u64,
-                total_bytes: (r.latencies_ns.len() * std::mem::size_of::<CmdVel>()) as u64,
-                duration_secs: (s.mean * r.latencies_ns.len() as f64) / 1e9,
+                // This binary measures latency. `1e9 / mean` is not a measured
+                // throughput: the cross-process producers are deliberately paced
+                // at ~1 us/message, so the reciprocal of a one-way latency is a
+                // number about nothing. It was stamped `Measured` all the same.
+                messages_per_sec: f64::NAN,
+                bytes_per_sec: f64::NAN,
+                total_messages: r.total_received,
+                total_bytes: r.total_received * std::mem::size_of::<CmdVel>() as u64,
+                // Wall-clock duration of a scenario is dominated by process
+                // spawn and topology settling, neither of which is timed here.
+                duration_secs: f64::NAN,
             },
             determinism: DeterminismMetrics {
-                cv,
+                // Unfiltered, from `Statistics::cv()`, so this field means the
+                // same thing as the `cv` the other benchmark binaries write.
+                cv: s.cv(),
                 max_jitter_ns: s.max - s.min,
                 p999: s.p999,
+                // Reported, but at 100K samples this rests on ~10 observations;
+                // `statistics.count` is the divisor a consumer needs to decide
+                // whether it can be compared. See `fmt_quantile`.
                 p9999: s.p9999,
-                deadline_misses: 0,
-                deadline_threshold_ns: 0,
-                run_variance: 0.0,
+                deadline_misses: r.deadline_misses(),
+                deadline_threshold_ns: deadline_ns(),
+                // runs = 1: there is no run-to-run variance to report, and 0.0
+                // asserted that there was none.
+                run_variance: f64::NAN,
             },
         };
         report.add_result(result);
@@ -2078,6 +2494,25 @@ fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioRes
 // ============================================================================
 // Formatting Helpers
 // ============================================================================
+
+/// Format a tail quantile, or refuse to print one the sample count cannot
+/// support.
+///
+/// A percentile is an estimate whose relative standard error is roughly
+/// `1/sqrt(k)`, where `k` is the number of observations beyond it. At this
+/// binary's 100,000 samples, `p99.9` rests on 100 observations (about +/-10%)
+/// and `p99.99` rests on ten (about +/-32%) — the latter is the second largest
+/// sample wearing a percentile's name, and "p99.99 improved 20%" is well inside
+/// its own noise. Rather than print a number that cannot be compared, print the
+/// exceedance count that disqualifies it.
+fn fmt_quantile(s: &Statistics, p: f64, value: u64) -> String {
+    let k = s.quantile_exceedances(p);
+    if k >= MIN_TAIL_EXCEEDANCES {
+        fmt_ns(value)
+    } else {
+        format!("n/a[{}]", k)
+    }
+}
 
 fn fmt_ns(ns: u64) -> String {
     if ns < 10_000 {

@@ -27,6 +27,19 @@ fn mapping_name_wide(name: &str) -> Vec<u16> {
 #[derive(Debug)]
 pub struct ShmRegion {
     ptr: *mut u8,
+    /// `(view, handle)` of every mapping `grow_unchecked` replaced, kept alive
+    /// deliberately. See the Linux backend's `retired` field: `Topic` shares one
+    /// `Arc<ShmRegion>` across clones, so unmapping the old view on grow leaves
+    /// every clone's cached pointers dangling.
+    ///
+    /// Caveat specific to Windows: a named section cannot be resized in place,
+    /// so `grow_unchecked` *copies* into a brand-new section. Retention stops
+    /// the crash, but unlike the POSIX backends the old view is a stale SNAPSHOT
+    /// rather than a coherent second view of the same pages -- a reader that has
+    /// not yet re-synced sees pre-grow data. That incoherence is inherent to the
+    /// copy and predates this change; it is why Windows auto-grow is documented
+    /// as unsupported for concurrent readers.
+    retired: Vec<(*mut u8, *mut std::ffi::c_void)>,
     handle: *mut std::ffi::c_void, // HANDLE
     topic_name: String,
     size: usize,
@@ -93,6 +106,7 @@ impl ShmRegion {
         }
         Ok(Self {
             ptr,
+            retired: Vec::new(),
             handle,
             topic_name: name.to_string(),
             size,
@@ -154,6 +168,7 @@ impl ShmRegion {
 
         Ok(Self {
             ptr,
+            retired: Vec::new(),
             handle,
             topic_name: name.to_string(),
             size,
@@ -219,13 +234,30 @@ impl ShmRegion {
     ///
     /// # Safety
     ///
-    /// The caller must ensure no other thread is concurrently reading from or
-    /// writing to this memory region via raw pointers derived from `as_ptr()`.
+    /// `&mut self` already excludes concurrent access to this struct's fields.
+    /// What the caller still owes is about the *mapped bytes*: the grow publishes
+    /// a mapping at a new address, so any pointer previously handed out by
+    /// `as_ptr()` now addresses the retained older mapping. That is safe to read
+    /// — the replaced mapping is kept alive and is a coherent view of the same
+    /// file — but it describes the PRE-GROW geometry, so a caller must re-derive
+    /// cached offsets before using the new slot layout.
+    ///
+    /// The previous contract here ("no other thread is concurrently reading ...
+    /// guaranteed by the single-thread ownership contract and the migration
+    /// lock") was false: `Topic` shares one region across clones on different
+    /// threads and held no such lock. It was a live use-after-free.
     pub unsafe fn grow_unchecked(&mut self, new_size: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.retired.len() < super::MAX_RETIRED_MAPPINGS,
+            "refusing to grow: {} mappings already retained (cap {}); \
+             see MAX_RETIRED_MAPPINGS",
+            self.retired.len(),
+            super::MAX_RETIRED_MAPPINGS
+        );
+
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::System::Memory::{
-            CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
-            MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
+            CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
         };
 
         anyhow::ensure!(
@@ -268,12 +300,9 @@ impl ShmRegion {
         // Copy old data to new mapping
         std::ptr::copy_nonoverlapping(self.ptr, new_ptr.Value as *mut u8, self.size);
 
-        // Unmap and close old resources
-        let old_view = MEMORY_MAPPED_VIEW_ADDRESS {
-            Value: self.ptr as *mut std::ffi::c_void,
-        };
-        UnmapViewOfFile(old_view);
-        CloseHandle(self.handle);
+        // Retain the old view and its handle rather than releasing them here:
+        // see the `retired` field. Released together in `Drop`.
+        self.retired.push((self.ptr, self.handle));
 
         self.ptr = new_ptr.Value as *mut u8;
         self.handle = new_handle;
@@ -298,6 +327,14 @@ impl Drop for ShmRegion {
             };
             UnmapViewOfFile(view);
             CloseHandle(self.handle);
+            // Views and sections retained across grows (see `retired`).
+            for (ptr, handle) in self.retired.drain(..) {
+                let old = windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: ptr as *mut std::ffi::c_void,
+                };
+                UnmapViewOfFile(old);
+                CloseHandle(handle);
+            }
         }
         // Windows automatically cleans up named file mappings when all handles are closed
     }

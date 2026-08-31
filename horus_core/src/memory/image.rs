@@ -80,13 +80,19 @@ impl Image {
         let dtype = encoding.tensor_dtype();
         let device = pool.backend_device();
 
-        let shape = if channels == 1 {
-            vec![height as u64, width as u64]
+        // Stack array rather than `vec![..]`: `Tensor` stores its shape in a
+        // fixed `[u64; MAX_TENSOR_DIMS]`, so a heap Vec here exists only to be
+        // copied into that array and freed again — a malloc/free pair on every
+        // frame allocation. `depth_image` and `pointcloud` already do it this
+        // way.
+        let shape_buf = [height as u64, width as u64, channels as u64];
+        let shape: &[u64] = if channels == 1 {
+            &shape_buf[..2]
         } else {
-            vec![height as u64, width as u64, channels as u64]
+            &shape_buf[..3]
         };
 
-        let tensor = pool.alloc(&shape, dtype, device)?;
+        let tensor = pool.alloc(shape, dtype, device)?;
         let descriptor = ImageDescriptor::new(tensor, encoding);
         Ok(Self { descriptor, pool })
     }

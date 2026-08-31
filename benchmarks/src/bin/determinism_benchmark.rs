@@ -7,11 +7,32 @@
 //! - Deadline miss rate
 //! - Run-to-run variance
 //!
+//! ## What is timed
+//!
+//! The sampled quantity is the **`tx.send()` call** — the producer's enqueue
+//! into the ring — and nothing else. It is NOT publish-to-receive latency. A
+//! consumer thread pinned to another core drains in the background so the ring
+//! does not fill, and the batch drain-waits sit outside the timed region.
+//!
+//! So the CV, the jitter and the tail percentiles below describe the
+//! *determinism of the enqueue path*, which is a real and useful thing to
+//! measure, but it is not the determinism a control loop experiences. The
+//! default deadline is 1 µs against a quantity that costs tens of nanoseconds:
+//! the gate has ~20x to ~50x of headroom and effectively cannot fail, so the
+//! summary prints the headroom rather than a bare PASS. Pass `--deadline` a
+//! value near the measured p99 to get a gate that discriminates.
+//!
 //! ## Methodology
 //!
 //! Uses RDTSC for cycle-accurate timing where available, with proper
 //! calibration against system clock. Performs multiple independent runs
 //! to measure run-to-run variance.
+//!
+//! `cpu_affinity: (0, 1)` pins the producer to logical CPU 0 and the consumer
+//! to logical CPU 1. On an SMT machine those are usually the two hyperthreads
+//! of one physical core, sharing L1 and L2 — a best case that a real two-node
+//! deployment does not get. The platform block in the JSON records the CPU so a
+//! reader can check.
 //!
 //! ## Running
 //!
@@ -171,10 +192,17 @@ fn main() {
             "POOR"
         };
 
-        let deadline_status = if result.determinism.deadline_misses == 0 {
-            "PASS"
+        // A bare PASS on "0 misses" says nothing about whether the gate could
+        // have failed. With the default 1 µs deadline against a send() costing
+        // tens of ns the answer is no, so the margin goes in the verdict.
+        let headroom =
+            result.determinism.deadline_threshold_ns as f64 / result.statistics.p99.max(1) as f64;
+        let deadline_status = if result.determinism.deadline_misses > 0 {
+            "FAIL".to_string()
+        } else if headroom >= 100.0 {
+            format!("PASS by {headroom:.0}x - gate not discriminating")
         } else {
-            "FAIL"
+            format!("PASS by {headroom:.1}x")
         };
 
         println!(
@@ -188,6 +216,7 @@ fn main() {
         );
     }
     println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!("Measured quantity: tx.send() enqueue cost, not end-to-end pub->sub latency.");
 
     // Write JSON output if requested
     if let Some(path) = json_output {
@@ -218,6 +247,13 @@ fn run_determinism_benchmark(
 
     let mut all_latencies: Vec<u64> = Vec::new();
     let mut run_medians: Vec<f64> = Vec::new();
+    // Wall clock across the measured loops only, for the throughput figure.
+    let mut measured_wall_secs = 0.0f64;
+    // Samples the RDTSC overhead subtraction floored at 0 ns. A real send()
+    // never costs 0 ns, so each of these is a measurement artefact pulling the
+    // mean, the median and the CV down. `elapsed_ns` throws the fact away;
+    // `elapsed_ns_checked` hands it back.
+    let mut clamped_samples = 0u64;
 
     for run in 0..config.runs {
         let topic_name = format!("det_{}_{}_run{}", name, std::process::id(), run);
@@ -297,9 +333,15 @@ fn run_determinism_benchmark(
             thread::yield_now();
         }
 
-        // Measured iterations - measure send latency (one-way)
+        // Measured iterations.
+        //
+        // This times the `tx.send()` enqueue and nothing else — see the module
+        // header. It is not a one-way pub->sub latency; the comment here used
+        // to call it one, which is the reading that turns an enqueue cost into
+        // a quoted IPC latency.
         let mut run_latencies = Vec::with_capacity(config.iterations);
         let warmup_base = config.warmup_iterations as u64;
+        let wall_start = std::time::Instant::now();
 
         for i in 0..config.iterations {
             let msg = ControlCmd {
@@ -312,7 +354,8 @@ fn run_determinism_benchmark(
             let start = timer.start();
             // Retry if buffer is full
             tx.send(msg);
-            let elapsed = timer.elapsed_ns(start);
+            let (elapsed, clamped) = timer.elapsed_ns_checked(start);
+            clamped_samples += u64::from(clamped);
 
             run_latencies.push(elapsed);
 
@@ -324,6 +367,7 @@ fn run_determinism_benchmark(
                 }
             }
         }
+        measured_wall_secs += wall_start.elapsed().as_secs_f64();
 
         // Wait for all messages to be received
         let total = (config.warmup_iterations + config.iterations) as u64;
@@ -352,6 +396,17 @@ fn run_determinism_benchmark(
         std::io::stdout().flush().ok();
     }
     println!(" done");
+
+    if clamped_samples > 0 {
+        let total = all_latencies.len().max(1);
+        println!(
+            "  [WARN] {} of {} samples ({:.3}%) were floored at 0 ns by the RDTSC overhead\n         \
+             subtraction. The mean, median and CV below are biased low by that much.",
+            clamped_samples,
+            total,
+            clamped_samples as f64 / total as f64 * 100.0
+        );
+    }
 
     // Compute statistics
     let statistics = Statistics::from_samples(
@@ -386,10 +441,16 @@ fn run_determinism_benchmark(
         run_variance: run_variance.sqrt() / run_mean, // Normalized run-to-run CV
     };
 
-    // Throughput (from total time)
-    let total_ns: u64 = all_latencies.iter().sum();
+    // Throughput from WALL CLOCK across the measured loops.
+    //
+    // `duration_secs` used to be the sum of the per-sample send costs, which
+    // makes `messages_per_sec` exactly `1 / mean(send_ns)`: the rate at which
+    // the enqueue instruction stream retires, with every batch drain-wait
+    // excluded. It is not a rate any caller can sustain, and it moves in the
+    // opposite direction to the thing it names whenever the consumer is the
+    // bottleneck.
     let total_messages = all_latencies.len() as u64;
-    let duration_secs = total_ns as f64 / 1_000_000_000.0;
+    let duration_secs = measured_wall_secs;
 
     let throughput = ThroughputMetrics {
         messages_per_sec: total_messages as f64 / duration_secs,
@@ -403,7 +464,7 @@ fn run_determinism_benchmark(
     BenchmarkResult {
         provenance: Provenance::Measured,
         name: name.to_string(),
-        subject: "HORUS Topic".to_string(),
+        subject: "HORUS Topic — tx.send() enqueue cost (not end-to-end)".to_string(),
         message_size: std::mem::size_of::<ControlCmd>(),
         config: config.clone(),
         platform: platform.clone(),

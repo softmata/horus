@@ -90,3 +90,36 @@ updates:
     # Only run if directory exists
     allow:
       - dependency-type: "all"
+
+  # npm — the Puppeteer-driven web E2E suite under horus_manager. This is the
+  # only package.json in the tree and it ships a committed package-lock.json, so
+  # `npm ci` there resolves a fixed 22-package graph (puppeteer, puppeteer-core,
+  # ws, zod, yargs, modern-tar, …) that nothing in this repository was watching:
+  # there was no npm entry here, and `cargo audit` does not see npm by
+  # construction. That gap matters more than the package count suggests —
+  # puppeteer is marked `hasInstallScript: true`, so `npm install` in that
+  # directory runs a postinstall with the developer's privileges, and no CI
+  # workflow runs the suite, which means the graph is exercised exclusively on
+  # workstations where nothing would have flagged a malicious release.
+  - package-ecosystem: "npm"
+    directory: "/horus_manager/tests/web_e2e"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(npm)"
+    labels:
+      - "dependencies"
+      - "javascript"
+    groups:
+      # Same shape as the cargo entry: minor and patch batched, majors left
+      # ungrouped so one breaking bump cannot take the others down with it.
+      npm-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

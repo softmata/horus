@@ -89,9 +89,19 @@ fn test_node_crash_system_survives() {
         .build()
         .unwrap();
 
-    // Run for 200ms — at 100Hz that is ~20 ticks.
-    // Lidar panics at tick 10; imu and controller should keep going.
-    let _ = scheduler.run_for(200_u64.ms());
+    // Run for 1s — at 100Hz that is ~100 ticks.
+    //
+    // 200ms (~20 ticks) left almost no room: lidar panics at tick 10 and the
+    // assertions below want the healthy nodes PAST 10, so a scheduler that
+    // manages only ten ticks in the window fails on the run queue rather than on
+    // the behaviour. It did, with `imu == 10` exactly, while passing in
+    // isolation.
+    //
+    // Lengthening does not weaken anything here, unlike the tick-rate test: the
+    // discriminator is the CRASH POINT, which stays at 10 however long the
+    // window is. If a sibling panic took the scheduler down, the healthy nodes
+    // would still stop at ~10 and the assertion would still fire.
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let lidar = lidar_ticks.load(Ordering::SeqCst);
     let imu = imu_ticks.load(Ordering::SeqCst);
@@ -174,8 +184,13 @@ fn test_multiple_node_crashes_still_stable() {
         let _ = builder.build();
     }
 
-    // Run for 300ms — enough for all crashes to happen and survivors to keep going
-    let _ = scheduler.run_for(300_u64.ms());
+    // 1s. Same reasoning as `test_node_crash_system_survives` above: 300ms at
+    // 100Hz is ~30 ticks against a `> 15` threshold, so a scheduler competing
+    // with the rest of the suite fails on the run queue rather than on the
+    // behaviour. The threshold tracks the CRASH POINTS, not the window, so a
+    // longer window cannot make it vacuous — a scheduler taken down by a sibling
+    // panic still leaves the survivors short of 15.
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let counts: Vec<u64> = tick_counts
         .iter()
@@ -291,7 +306,10 @@ fn test_crashed_node_recv_returns_none() {
 
     // Run for 300ms — sensor publishes for 10 ticks then crashes.
     // Consumer should receive 10 messages then get None for the rest.
-    let _ = scheduler.run_for(300_u64.ms());
+    // 1s, as above. This test's assertions bound received VALUES and counts
+    // against the sensor's 10 pre-crash sends, so the window only has to be long
+    // enough for some of them to arrive.
+    let _ = scheduler.run_for(1000_u64.ms());
 
     let received = consumer_received.lock().unwrap();
 

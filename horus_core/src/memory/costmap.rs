@@ -89,7 +89,10 @@ impl CostMap {
         pool: Arc<TensorPool>,
     ) -> HorusResult<Self> {
         let device = pool.backend_device();
-        let shape = vec![height as u64, width as u64];
+        // Stack array: `Tensor` keeps its shape in a fixed array, so a Vec here
+        // is a malloc/free pair per costmap allocation for two integers — and
+        // this one is used for two `alloc` calls.
+        let shape = [height as u64, width as u64];
 
         let grid_tensor = pool.alloc(&shape, TensorDtype::I8, device)?;
         let cost_tensor = match pool.alloc(&shape, TensorDtype::U8, device) {

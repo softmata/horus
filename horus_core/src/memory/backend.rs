@@ -132,9 +132,14 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
 
     /// Zero out a previously allocated region (security: prevent data leaks).
     ///
-    /// Called by `return_slot()` before marking a slot as free.
-    /// The default implementation uses volatile byte writes for CPU-accessible
-    /// memory, which cannot be elided by the compiler.
+    /// Called by `return_slot()` before marking a slot as free, so a later
+    /// tenant of the same slot — possibly in another process — cannot read the
+    /// previous tenant's bytes.
+    ///
+    /// The default implementation is [`scrub_bytes`]: a `write_bytes` kept
+    /// alive by an inline-assembly barrier, so it cannot be optimised away and
+    /// is still free to vectorise. See that function's docs for why the
+    /// guarantee matters here and what the volatile version it replaced cost.
     ///
     /// GPU backends may override to use `cudaMemset` or skip zeroing
     /// entirely if cross-process data leaks are not a concern.
@@ -142,13 +147,145 @@ pub trait PoolBackend: Send + Sync + fmt::Debug {
         if alloc.cpu_ptr.is_null() || alloc.size == 0 {
             return;
         }
-        // Volatile writes prevent the compiler from eliding the zeroing.
-        for i in 0..alloc.size {
-            // SAFETY: cpu_ptr is valid for alloc.size bytes (guaranteed by alloc()).
-            unsafe { alloc.cpu_ptr.add(i).write_volatile(0u8) };
-        }
+        // SAFETY: cpu_ptr is valid and writable for alloc.size bytes — that is
+        // the contract of `alloc()`, and `TensorPool::return_slot` additionally
+        // bounds-checks a shared-backend pointer against the mapping before
+        // building the `BackendAllocation` handed here.
+        unsafe { scrub_bytes(alloc.cpu_ptr, alloc.size) };
         // Ensure the zero writes are ordered before the slot is marked free.
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scrub primitive
+// ---------------------------------------------------------------------------
+
+/// Overwrite `len` bytes at `ptr` with zeros, guaranteed not to be optimised
+/// away.
+///
+/// # Why this needs a guarantee at all
+///
+/// This is the slot scrub that stands between two tenants of the same pool
+/// slot, possibly in different processes. If the compiler removes it, the next
+/// tenant reads the previous one's bytes out of shared memory. The scrub is
+/// therefore not an optimisation detail — it is the whole security property,
+/// and "the optimiser probably will not remove it" is not the standard to hold
+/// it to.
+///
+/// # Why `memcpy`-family stores rather than `write_volatile`
+///
+/// This used to be a hand-unrolled loop of eight `write_volatile::<usize>` per
+/// cache line. Volatile did give the guarantee, but it also forbids
+/// vectorisation and forbids the platform `memset` from choosing non-temporal
+/// stores above its shared-cache threshold, and that costs most of the
+/// throughput. Measured on an i7-10750H:
+///
+/// | region  | volatile words | `write_bytes` + barrier |
+/// |---------|----------------|-------------------------|
+/// | 4 KB    | 127 ns         |  56 ns                  |
+/// | 300 KB  | 11.2 us        | 6.3 us                  |
+/// | 2 MB    | 84.2 us        | 45.3 us                 |
+///
+/// Widening the volatile store does not recover it — `write_volatile::<u128>`
+/// measured within noise of the `usize` version (25 vs 25 GB/s at 2 MB),
+/// because what costs the bandwidth is that each volatile store must be
+/// emitted individually, not how wide it is.
+///
+/// A 2 MB frame is a 1920x1080 Mono8 image, and this runs on the drop path, so
+/// the difference is ~39 us per frame returned to the pool.
+///
+/// # How the guarantee survives
+///
+/// `asm!` without `options(nomem)` must be assumed by the compiler to read and
+/// write every byte of memory it could reach. The stores above are therefore
+/// observable and cannot be dead-code eliminated — the same guarantee volatile
+/// gives, obtained without constraining how the stores are emitted.
+///
+/// On a target where inline assembly is unavailable this falls back to the
+/// volatile loop: slower, and still correct.
+///
+/// # Do not "optimise" this with non-temporal stores
+///
+/// This is the single most expensive operation in the zero-copy image path:
+/// profiled with `topic_probe --alloc 640x480`, the scrub is **82% of a whole
+/// alloc/free cycle** — ~5.8us of ~6.0us for a 307,200-byte frame. It looks like
+/// an obvious candidate for `_mm256_stream_si256`, which skips the
+/// read-for-ownership on every line since nothing will read these zeros.
+///
+/// Measured, that is 49% SLOWER: 8704ns against 5848ns for the same 307KB.
+/// `write_bytes` runs at ~52 GB/s here and streaming at ~35 GB/s, because the
+/// slot is HOT — the producer filled it moments ago — so ordinary stores hit
+/// cache while non-temporal stores insist on going to memory and throw that
+/// locality away.
+///
+/// It is the mirror of the `memory::simd` change that removed streaming stores
+/// from the payload copy: there the consumer reads the bytes immediately, here
+/// nothing reads them at all, and the answer is the same both times because what
+/// decides it is where the data already IS, not whether it will be read.
+///
+/// ~52 GB/s is memory bandwidth. There is no cheaper way to zero this much
+/// memory, and the zeroing itself is not optional — it is what stops a later
+/// tenant of the slot, possibly in another process, reading the previous
+/// tenant's frame.
+///
+/// # Safety
+///
+/// `ptr..ptr + len` must be valid for writes and exclusively owned by the
+/// caller for the duration of the call.
+#[inline]
+pub unsafe fn scrub_bytes(ptr: *mut u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+    ))]
+    {
+        // SAFETY: the caller guarantees the region is valid for writes.
+        unsafe { core::ptr::write_bytes(ptr, 0, len) };
+        // SAFETY: an empty asm block. No `nomem`, so the compiler must treat it
+        // as reading the region written above and cannot elide those stores.
+        unsafe {
+            core::arch::asm!("/* scrub {0} */", in(reg) ptr, options(nostack, preserves_flags));
+        }
+    }
+
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+    )))]
+    {
+        const WORD: usize = core::mem::size_of::<usize>();
+        let mut offset = 0usize;
+        let misalign = ptr as usize & (WORD - 1);
+        let head = if misalign == 0 { 0 } else { WORD - misalign };
+        let head = head.min(len);
+        while offset < head {
+            // SAFETY: offset < head <= len.
+            unsafe { ptr.add(offset).write_volatile(0u8) };
+            offset += 1;
+        }
+        while len - offset >= WORD {
+            // SAFETY: at least WORD bytes remain and offset is word-aligned.
+            unsafe { (ptr.add(offset) as *mut usize).write_volatile(0) };
+            offset += WORD;
+        }
+        while offset < len {
+            // SAFETY: offset < len.
+            unsafe { ptr.add(offset).write_volatile(0u8) };
+            offset += 1;
+        }
     }
 }
 
@@ -225,9 +362,34 @@ impl MmapBackend {
         }
     }
 
+    /// Round `value` up to the next multiple of `alignment`.
+    ///
+    /// Returns `None` rather than wrapping. The old body was
+    /// `value.wrapping_add(alignment - 1) & !(alignment - 1)`, and both halves
+    /// were unsound against the value it is actually fed: `value` is
+    /// `next_alloc_offset`, an atomic in the pool's shared header that every
+    /// process on the pool can write.
+    ///
+    /// * `wrapping_add` turned a large `value` into a SMALL aligned result —
+    ///   `usize::MAX` with a 64-byte alignment aligned to 0 — which then passed
+    ///   the `new_offset > pool_size` bounds check and won the CAS, *rewinding*
+    ///   the shared bump cursor to the front of the data region. Every
+    ///   subsequent allocation then handed out memory already owned by a live
+    ///   tensor: two publishers writing the same bytes, with no error anywhere.
+    ///   That is silent cross-process data corruption, not a crash.
+    /// * `!(alignment - 1)` is only a valid mask for a power-of-two alignment.
+    ///   `alignment` comes from `TensorPoolConfig::slot_alignment`; at 0 it
+    ///   underflows to `usize::MAX`, whose mask is 0, so every allocation
+    ///   returns offset 0 — the same aliasing, reached from a config typo.
     #[inline]
-    fn align_up(value: usize, alignment: usize) -> usize {
-        value.wrapping_add(alignment - 1) & !(alignment - 1)
+    fn align_up(value: usize, alignment: usize) -> Option<usize> {
+        // `is_power_of_two` is false for 0, which also rejects the underflow.
+        if !alignment.is_power_of_two() {
+            return None;
+        }
+        value
+            .checked_add(alignment - 1)
+            .map(|v| v & !(alignment - 1))
     }
 }
 
@@ -238,8 +400,27 @@ impl PoolBackend for MmapBackend {
         let offset_atomic = unsafe { &*self.next_alloc_offset };
 
         loop {
-            let current = offset_atomic.load(Ordering::Acquire) as usize;
-            let aligned_current = Self::align_up(current, self.alignment);
+            let current_raw = offset_atomic.load(Ordering::Acquire);
+            // A bump cursor past the end of the data region cannot have been
+            // produced by this code (every store is bounds-checked below), so it
+            // is corruption in the shared header — a peer process, a stale
+            // region, or a torn write. Refuse rather than fold it back into
+            // range: `align_up` used to wrap such a value to a small offset and
+            // hand out memory that a live tensor already owns.
+            if current_raw > self.pool_size as u64 {
+                return Err(format!(
+                    "mmap pool bump cursor is {} but the data region is only {} bytes — \
+                     the shared PoolHeader is corrupt; refusing to allocate",
+                    current_raw, self.pool_size
+                ));
+            }
+            let current = current_raw as usize;
+            let aligned_current = Self::align_up(current, self.alignment).ok_or_else(|| {
+                format!(
+                    "cannot align bump cursor {} to {} bytes (alignment must be a power of two)",
+                    current, self.alignment
+                )
+            })?;
 
             let new_offset = aligned_current
                 .checked_add(size)
@@ -294,7 +475,174 @@ impl PoolBackend for MmapBackend {
         "mmap"
     }
 
-    // zero() uses the default implementation from PoolBackend trait
-    // (volatile byte writes + compiler fence), which matches the existing
-    // TensorPool::volatile_zero + compiler_fence pattern exactly.
+    // zero() uses the default implementation from the PoolBackend trait
+    // (word-sized volatile stores + compiler fence). The compiler fence keeps
+    // the scrub ahead of `return_slot`'s `flags.store(SLOT_FREE, Release)`,
+    // which is what publishes the slot to other allocators; on a weakly ordered
+    // target that Release store is also what orders the scrub in *hardware*.
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scrub `len` bytes starting `start` bytes into a `0xAB`-filled buffer and
+    /// assert that exactly `start..start + len` came back zero and every byte
+    /// outside it is untouched.
+    ///
+    /// Both halves matter. A short write is a data leak (the whole point of the
+    /// scrub); a long write is memory corruption of the neighbouring slot.
+    fn scrub_exactly(buf: &mut [u8], start: usize, len: usize) {
+        buf.fill(0xAB);
+        // SAFETY: start + len <= buf.len() is checked by the caller's slicing.
+        unsafe { scrub_bytes(buf.as_mut_ptr().add(start), len) };
+
+        let short: Vec<usize> = buf[start..start + len]
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| b != 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            short.is_empty(),
+            "start={start} len={len}: unscrubbed bytes (LEAK) at offsets {short:?}"
+        );
+
+        let over_before: Vec<usize> = buf[..start]
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| b != 0xAB)
+            .map(|(i, _)| i)
+            .collect();
+        let over_after: Vec<usize> = buf[start + len..]
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| b != 0xAB)
+            .map(|(i, _)| i + start + len)
+            .collect();
+        assert!(
+            over_before.is_empty() && over_after.is_empty(),
+            "start={start} len={len}: wrote outside the region (CORRUPTION) \
+             before={over_before:?} after={over_after:?}"
+        );
+    }
+
+    #[test]
+    fn scrub_covers_every_alignment_and_length() {
+        // The head/body/tail split means the interesting cases are every
+        // combination of start misalignment and length remainder around the
+        // 8-word block. 0..=40 crosses two full blocks on a 64-bit target and
+        // four on a 32-bit one, with every misalignment.
+        let mut buf = vec![0u8; 128];
+        for start in 0..=16usize {
+            for len in 0..=40usize {
+                scrub_exactly(&mut buf, start, len);
+            }
+        }
+    }
+
+    #[test]
+    fn scrub_handles_a_multi_block_region() {
+        // A length well past the unrolled body, at an odd start and an odd
+        // length, so head, body, the whole-word remainder and the tail all run.
+        let mut buf = vec![0u8; 4096];
+        scrub_exactly(&mut buf, 3, 4001);
+        scrub_exactly(&mut buf, 0, 4096);
+        scrub_exactly(&mut buf, 7, 1);
+    }
+
+    #[test]
+    fn scrub_of_zero_length_writes_nothing() {
+        let mut buf = vec![0xABu8; 64];
+        // SAFETY: a zero-length write through a valid pointer.
+        unsafe { scrub_bytes(buf.as_mut_ptr(), 0) };
+        assert!(buf.iter().all(|&b| b == 0xAB), "len=0 must write nothing");
+    }
+
+    /// Minimal backend used to exercise the `PoolBackend::zero` default body
+    /// (null/zero-size guards and the delegation to `volatile_zero_bytes`)
+    /// without standing up a whole `TensorPool`.
+    #[derive(Debug)]
+    struct HeapBackend;
+
+    impl PoolBackend for HeapBackend {
+        fn alloc(&self, _size: usize) -> Result<BackendAllocation, String> {
+            Err("test backend does not allocate".to_string())
+        }
+        fn free(&self, _alloc: &BackendAllocation) {}
+        fn device(&self) -> Device {
+            Device::cpu()
+        }
+        fn is_shared(&self) -> bool {
+            false
+        }
+        fn name(&self) -> &str {
+            "test-heap"
+        }
+    }
+
+    #[test]
+    fn pool_backend_zero_scrubs_the_whole_allocation() {
+        let mut buf = vec![0xCDu8; 300];
+        let alloc = BackendAllocation {
+            cpu_ptr: buf.as_mut_ptr(),
+            device_ptr: std::ptr::null_mut(),
+            size: buf.len(),
+        };
+        HeapBackend.zero(&alloc);
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "PoolBackend::zero must scrub the whole allocation"
+        );
+    }
+
+    /// `align_up` is fed `next_alloc_offset`, an atomic in the pool's shared
+    /// header that any process on the pool can write. It must never turn a
+    /// hostile or corrupt value into a small, plausible-looking offset.
+    #[test]
+    fn align_up_refuses_to_wrap_a_corrupt_bump_cursor() {
+        // The ordinary cases still work.
+        assert_eq!(MmapBackend::align_up(0, 64), Some(0));
+        assert_eq!(MmapBackend::align_up(1, 64), Some(64));
+        assert_eq!(MmapBackend::align_up(64, 64), Some(64));
+        assert_eq!(MmapBackend::align_up(65, 64), Some(128));
+
+        // The old `wrapping_add` body aligned this to 0 — the front of the data
+        // region — and the caller then CAS'd the shared cursor back to a small
+        // value and handed out memory a live tensor already owns.
+        assert_eq!(
+            MmapBackend::align_up(usize::MAX, 64),
+            None,
+            "a bump cursor near usize::MAX must be refused, not wrapped to 0"
+        );
+        assert_eq!(MmapBackend::align_up(usize::MAX - 62, 64), None);
+
+        // A non-power-of-two alignment has no valid `!(n - 1)` mask; 0 also
+        // underflowed to usize::MAX, whose mask is 0 (every offset becomes 0).
+        assert_eq!(MmapBackend::align_up(4096, 0), None);
+        assert_eq!(MmapBackend::align_up(4096, 48), None);
+    }
+
+    #[test]
+    fn pool_backend_zero_ignores_null_and_empty_allocations() {
+        // A GPU-only allocation has a null cpu_ptr; a zero-size slot has
+        // nothing to scrub. Neither may be dereferenced.
+        HeapBackend.zero(&BackendAllocation {
+            cpu_ptr: std::ptr::null_mut(),
+            device_ptr: std::ptr::null_mut(),
+            size: 4096,
+        });
+
+        let mut buf = vec![0xCDu8; 16];
+        HeapBackend.zero(&BackendAllocation {
+            cpu_ptr: buf.as_mut_ptr(),
+            device_ptr: std::ptr::null_mut(),
+            size: 0,
+        });
+        assert!(buf.iter().all(|&b| b == 0xCD), "size=0 must write nothing");
+    }
 }

@@ -1,9 +1,25 @@
 //! Scalability Benchmark
 //!
-//! Measures how HORUS IPC performance scales with:
+//! Measures how HORUS IPC **throughput** scales with:
 //! - Number of producer threads
 //! - Number of consumer threads
 //! - Total core count utilization
+//!
+//! ## What this measures — and what it does not
+//!
+//! This binary measures **delivered throughput only**. It collects no latency
+//! samples at all, so the `statistics` and `determinism` blocks of every result
+//! it emits are empty (`count == 0`, float fields `NaN`) rather than zero. They
+//! used to be written as literal zeros alongside a non-zero `count`, which made
+//! every chart downstream read "0 ns median, 0 ns p99, 0 ns jitter, 0 deadline
+//! misses" — the best possible result — for a run that never timed anything.
+//! Use `research_latency` or `all_paths_latency` for latency and jitter.
+//!
+//! Producers here are unthrottled and consumers drop whatever the ring cannot
+//! hold, so throughput alone cannot tell a fast configuration from a lossy one.
+//! Every row therefore also reports the **delivery ratio** (received/sent). A
+//! configuration that "scales" by dropping 90% of its traffic is visible as a
+//! 10% delivery ratio, not as a win.
 //!
 //! ## Methodology
 //!
@@ -57,13 +73,24 @@ fn main() {
 
     // Parse arguments
     let mut json_output: Option<String> = None;
-    let max_threads = num_cpus::get();
+    // `--max-threads` is documented in the module header above. It used not to
+    // be parsed at all: the flag was accepted silently and every run tested
+    // `num_cpus::get()` threads regardless of what the caller asked for.
+    let mut max_threads = num_cpus::get();
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--json" => {
                 json_output = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--max-threads" => {
+                max_threads = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&n| n >= 2)
+                    .unwrap_or(max_threads);
                 i += 2;
             }
             _ => {
@@ -105,14 +132,18 @@ fn main() {
     .filter(|(p, c)| p + c <= max_threads)
     .collect();
 
-    println!("╔═══════════════════════════════════════════════════════════════════════════════╗");
-    println!("║ Producers │ Consumers │ Throughput (M msg/s) │ Per-Thread │ Scaling Efficiency ║");
-    println!("╠═══════════════════════════════════════════════════════════════════════════════╣");
+    println!("Throughput below counts DELIVERED messages. `Delivered` is received/sent:");
+    println!("producers are unthrottled and the ring drops what consumers cannot keep up");
+    println!("with, so a high msg/s with a low delivery ratio is loss, not speed.");
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════════════════════════════════╗");
+    println!("║ Producers │ Consumers │ Throughput (M msg/s) │ Per-Thread │ Delivered │ Scaling Efficiency ║");
+    println!("╠══════════════════════════════════════════════════════════════════════════════════════════╣");
 
     let baseline_throughput = Arc::new(AtomicU64::new(0));
 
     for (num_producers, num_consumers) in &configs {
-        let result = run_scalability_test(
+        let (result, delivery) = run_scalability_test(
             *num_producers,
             *num_consumers,
             &platform,
@@ -136,14 +167,19 @@ fn main() {
         };
 
         println!(
-            "║    {:>2}      │     {:>2}     │       {:>8.2}       │   {:>6.2}   │       {:>6.1}%       ║",
-            num_producers, num_consumers, throughput_m, per_thread, efficiency
+            "║    {:>2}      │     {:>2}     │       {:>8.2}       │   {:>6.2}   │  {:>6.1}%  │       {:>6.1}%       ║",
+            num_producers,
+            num_consumers,
+            throughput_m,
+            per_thread,
+            delivery * 100.0,
+            efficiency
         );
 
         report.add_result(result);
     }
 
-    println!("╚═══════════════════════════════════════════════════════════════════════════════╝");
+    println!("╚══════════════════════════════════════════════════════════════════════════════════════════╝");
 
     // Producer scaling curve
     println!("\n╔══════════════════════════════════════════════════════════════════╗");
@@ -152,14 +188,18 @@ fn main() {
 
     let producer_counts: Vec<usize> = (1..=max_threads.min(8)).collect();
     for &num_producers in &producer_counts {
-        let result = run_scalability_test(num_producers, 1, &platform, baseline_throughput.clone());
+        let (result, delivery) =
+            run_scalability_test(num_producers, 1, &platform, baseline_throughput.clone());
         let throughput_m = result.throughput.messages_per_sec / 1_000_000.0;
         let bar_len = ((throughput_m / 10.0) * 40.0).min(40.0) as usize;
         let bar: String = "█".repeat(bar_len);
 
         println!(
-            "║ {:>2} producers: {:>6.2} M/s │{}",
-            num_producers, throughput_m, bar
+            "║ {:>2} producers: {:>6.2} M/s (delivered {:>5.1}%) │{}",
+            num_producers,
+            throughput_m,
+            delivery * 100.0,
+            bar
         );
 
         report.add_result(result);
@@ -173,14 +213,18 @@ fn main() {
 
     let consumer_counts: Vec<usize> = (1..=max_threads.min(8)).collect();
     for &num_consumers in &consumer_counts {
-        let result = run_scalability_test(1, num_consumers, &platform, baseline_throughput.clone());
+        let (result, delivery) =
+            run_scalability_test(1, num_consumers, &platform, baseline_throughput.clone());
         let throughput_m = result.throughput.messages_per_sec / 1_000_000.0;
         let bar_len = ((throughput_m / 10.0) * 40.0).min(40.0) as usize;
         let bar: String = "█".repeat(bar_len);
 
         println!(
-            "║ {:>2} consumers: {:>6.2} M/s │{}",
-            num_consumers, throughput_m, bar
+            "║ {:>2} consumers: {:>6.2} M/s (delivered {:>5.1}%) │{}",
+            num_consumers,
+            throughput_m,
+            delivery * 100.0,
+            bar
         );
 
         report.add_result(result);
@@ -196,12 +240,32 @@ fn main() {
     }
 }
 
+/// Number of messages a worker accumulates locally before publishing its count
+/// to the shared counter.
+///
+/// The counters used to be published once, at thread exit. That made the
+/// "reset for measurement" store below dead code: nothing had been added yet,
+/// so the reset cleared nothing and the final totals covered warmup *and*
+/// measurement while `duration` covered measurement only — every throughput
+/// figure in this binary was inflated by (warmup + measure) / measure, i.e. 20%
+/// at the current 1 s / 5 s split. Flushing in chunks makes the reset mean what
+/// it says, at the cost of one uncontended relaxed add per 4096 messages.
+///
+/// The reset can still clobber a flush that is in flight, losing up to one
+/// chunk per thread. That direction under-counts, which is the safe way for a
+/// throughput number to be wrong.
+const COUNTER_FLUSH_CHUNK: u64 = 4096;
+
+/// Returns the result and the delivery ratio (received / sent) over the
+/// measurement window. The ratio is not part of `BenchmarkResult`, and it is
+/// the only thing separating "this configuration is fast" from "this
+/// configuration drops most of its traffic".
 fn run_scalability_test(
     num_producers: usize,
     num_consumers: usize,
     platform: &horus_benchmarks::PlatformInfo,
     _baseline: Arc<AtomicU64>,
-) -> BenchmarkResult {
+) -> (BenchmarkResult, f64) {
     let topic_name = format!(
         "scale_p{}_c{}_{}_{}",
         num_producers,
@@ -251,6 +315,11 @@ fn run_scalability_test(
                 producer.send(msg);
                 local_sent += 1;
                 seq += 1;
+
+                if local_sent == COUNTER_FLUSH_CHUNK {
+                    total_sent.fetch_add(local_sent, Ordering::Relaxed);
+                    local_sent = 0;
+                }
             }
 
             total_sent.fetch_add(local_sent, Ordering::Relaxed);
@@ -281,6 +350,11 @@ fn run_scalability_test(
             while running.load(Ordering::Acquire) {
                 if consumer.recv().is_some() {
                     local_received += 1;
+
+                    if local_received == COUNTER_FLUSH_CHUNK {
+                        total_received.fetch_add(local_received, Ordering::Relaxed);
+                        local_received = 0;
+                    }
                 }
             }
 
@@ -302,7 +376,10 @@ fn run_scalability_test(
     running.store(true, Ordering::Release);
     thread::sleep(WARMUP_DURATION_SECS.secs());
 
-    // Reset counters for measurement
+    // Reset counters so the measurement window excludes warmup. This only works
+    // because the workers flush their local counts every COUNTER_FLUSH_CHUNK
+    // messages; when they published only at thread exit, this store cleared two
+    // zeros and the warmup traffic was counted against the measurement duration.
     total_sent.store(0, Ordering::Relaxed);
     total_received.store(0, Ordering::Relaxed);
 
@@ -322,10 +399,21 @@ fn run_scalability_test(
         handle.join().ok();
     }
 
-    // Calculate throughput
-    let _sent = total_sent.load(Ordering::Relaxed);
+    // Calculate throughput.
+    //
+    // `sent` used to be loaded into `_sent` and thrown away, which made message
+    // loss structurally invisible: producers are unthrottled, the ring drops
+    // whatever consumers cannot keep up with, and a configuration that
+    // delivered 5% of its traffic reported the same shape of number as one that
+    // delivered all of it. The ratio is returned to the caller and printed.
+    let sent = total_sent.load(Ordering::Relaxed);
     let received = total_received.load(Ordering::Relaxed);
     let duration_secs = duration.as_secs_f64();
+    let delivery_ratio = if sent > 0 {
+        received as f64 / sent as f64
+    } else {
+        f64::NAN
+    };
 
     let messages_per_sec = received as f64 / duration_secs;
     let bytes_per_sec = messages_per_sec * std::mem::size_of::<ScalabilityMsg>() as f64;
@@ -340,11 +428,24 @@ fn run_scalability_test(
         confidence_level: 95.0,
     };
 
+    // This benchmark times nothing per-message: it counts deliveries over a
+    // fixed wall-clock window. So there are NO latency samples, and the
+    // statistics block must say so.
+    //
+    // It previously wrote literal zeros into every order statistic while
+    // setting `count: received` — a non-zero count. That defeated
+    // `Statistics::is_empty()`, the one guard downstream consumers have, and
+    // published "0 ns median, 0 ns p99, 0 ns p99.99, 0 ns max" for a run with
+    // no timing data, stamped `Provenance::Measured`. Zero is the best possible
+    // latency; a fabricated best-possible result is worse than no result.
+    //
+    // `count: 0` plus `NaN` floats is the same shape `Statistics::empty()`
+    // produces, and serde writes the NaNs as JSON `null`.
     let statistics = Statistics {
-        count: received as usize,
-        mean: 0.0,
-        median: 0.0,
-        std_dev: 0.0,
+        count: 0,
+        mean: f64::NAN,
+        median: f64::NAN,
+        std_dev: f64::NAN,
         min: 0,
         max: 0,
         p1: 0,
@@ -355,8 +456,8 @@ fn run_scalability_test(
         p99: 0,
         p999: 0,
         p9999: 0,
-        ci_low: 0.0,
-        ci_high: 0.0,
+        ci_low: f64::NAN,
+        ci_high: f64::NAN,
         confidence_level: 95.0,
         outliers_removed: 0,
     };
@@ -369,20 +470,30 @@ fn run_scalability_test(
         duration_secs,
     };
 
+    // Same reasoning as `statistics` above: no latency samples exist, so there
+    // is no coefficient of variation and no jitter to report. `cv: 0.0` reads
+    // as perfect determinism in every summary that grades it, and
+    // `deadline_misses: 0` reads as a passed deadline gate that was never run.
+    // `NaN` is the only honest value the f64 fields can carry; the u64 fields
+    // have no NaN, so they stay 0 and are guarded by `statistics.count == 0`.
     let determinism = DeterminismMetrics {
-        cv: 0.0,
+        cv: f64::NAN,
         max_jitter_ns: 0,
         p999: 0,
         p9999: 0,
         deadline_misses: 0,
         deadline_threshold_ns: 0,
-        run_variance: 0.0,
+        run_variance: f64::NAN,
     };
 
-    BenchmarkResult {
+    let result = BenchmarkResult {
         provenance: Provenance::Measured,
         name: format!("scalability_p{}_c{}", num_producers, num_consumers),
-        subject: "HORUS MpmcShm".to_string(),
+        // The backend is chosen by `Topic::new` at runtime and is never queried
+        // here, so naming one would be an assertion, not an observation. The
+        // previous "HORUS MpmcShm" was exactly that, and it was wrong for every
+        // 1-producer configuration in the table.
+        subject: "HORUS Topic (backend auto-selected, not verified)".to_string(),
         message_size: std::mem::size_of::<ScalabilityMsg>(),
         config,
         platform: platform.clone(),
@@ -391,5 +502,7 @@ fn run_scalability_test(
         statistics,
         throughput,
         determinism,
-    }
+    };
+
+    (result, delivery_ratio)
 }

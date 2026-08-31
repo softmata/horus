@@ -105,6 +105,61 @@ fn test_validate_name_special_chars_rejected() {
 }
 
 // ============================================================================
+// ensure_path_safe_version — the version becomes a directory name
+// ============================================================================
+
+/// On a `latest` install the version is read back out of the DOWNLOADED
+/// archive's own manifest and then joined onto the package cache as
+/// `<cache>/<name>@<version>`. `Path::join` does not normalise, so a version
+/// carrying a separator escapes: `<cache>/pkg@/../../.config/autostart`
+/// resolves to `~/.config/autostart` once `create_dir_all` has made the `pkg@`
+/// stepping-stone — and the installer then `remove_dir_all`s that destination
+/// and renames the unpacked package over it.
+#[test]
+fn version_that_escapes_the_cache_is_refused() {
+    for version in [
+        "/../../.config/autostart",
+        "../../evil",
+        "..",
+        "1.0.0/../../../etc",
+        "a\\b",
+        "C:evil",
+        "",
+    ] {
+        assert!(
+            ensure_path_safe_version("evilpkg", version).is_err(),
+            "version {version:?} must not become a path component"
+        );
+    }
+}
+
+/// Every shape a real install produces has to keep working: exact semver from
+/// the dependency resolver, `latest`, prereleases and build metadata, and the
+/// comparator strings a user can type as `horus install pkg@>=1.2`.
+#[test]
+fn ordinary_versions_are_accepted() {
+    for version in [
+        "1.0.0",
+        "0.2.3-rc.1",
+        "1.2.3+build.5",
+        "latest",
+        "^1.2",
+        ">=1.2.0, <2.0.0",
+    ] {
+        ensure_path_safe_version("pkg", version)
+            .unwrap_or_else(|e| panic!("version {version:?} should be accepted: {e}"));
+    }
+}
+
+/// A version longer than any real one is rejected before it reaches the
+/// filesystem, where it would fail with an opaque ENAMETOOLONG instead.
+#[test]
+fn absurdly_long_version_is_refused() {
+    let long: String = std::iter::repeat_n('1', 65).collect();
+    assert!(ensure_path_safe_version("pkg", &long).is_err());
+}
+
+// ============================================================================
 // ManifestFormat Display tests
 // ============================================================================
 
