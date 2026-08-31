@@ -1141,6 +1141,23 @@ pub fn list_topic_metas() -> Vec<TopicMeta> {
 /// Use this instead of `topic_shm_path` whenever the name was read out of a
 /// `.meta` file, a discovery scan, or anything else another process wrote.
 /// Returns `None` for a name that would escape the topics directory.
+/// Whether a region's bytes live in a file another process can open and modify
+/// through the filesystem.
+///
+/// True wherever a region is a file under the SHM tree. False on Windows, where
+/// `CreateFileMappingW(INVALID_HANDLE_VALUE, ..)` backs the mapping with the
+/// pagefile: there is no path, [`ShmRegion::backing_path`] answers `None`, and
+/// bytes written to the path a name maps to are simply not the region's bytes.
+///
+/// This exists for tests that simulate a hostile peer by writing a region by
+/// hand. A peer can still corrupt a Windows region — by opening the named
+/// mapping and storing through it — so a test that did that would run
+/// everywhere; one that goes through the filesystem cannot, and should say so
+/// rather than silently assert nothing.
+pub const fn regions_are_file_backed() -> bool {
+    !cfg!(windows)
+}
+
 pub fn topic_shm_path_checked(name: &str) -> Option<PathBuf> {
     validate_region_name(name).ok()?;
     Some(topic_shm_path(name))

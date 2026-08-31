@@ -4396,12 +4396,23 @@ mod untrusted_ring_geometry_tests {
     const SLOT: u32 = 64;
 
     /// Write a topic region by hand, with `poison` applied to an otherwise
-    /// well-formed header. Returns false when shared memory is unavailable in
-    /// this environment (the sandbox), in which case the test skips.
+    /// well-formed header. Returns false when the region cannot be planted, in
+    /// which case the test skips.
+    ///
+    /// Two reasons it can fail. Shared memory may be unavailable outright (the
+    /// sandbox). Or the platform may not back regions with files at all: on
+    /// Windows a region is pagefile-backed and has no path, so this function's
+    /// `fs::write` lands somewhere the SHM layer never reads, the attach below
+    /// then creates a clean region and succeeds, and the test asserts nothing
+    /// while appearing to pass. Poisoning a Windows region means opening the
+    /// named mapping and storing through it, which this helper does not do.
     fn plant_region(name: &str, poison: impl FnOnce(&mut TopicHeader)) -> bool {
         // Let the SHM layer build its directory tree with the ownership and
         // permissions it insists on before writing a region into it by hand.
         // The seed handle is the sole holder, so it unlinks its own file.
+        if !horus_sys::shm::regions_are_file_backed() {
+            return false;
+        }
         match RingTopic::<u64>::new(name) {
             Ok(seed) => drop(seed),
             Err(_) => return false,
@@ -4446,7 +4457,7 @@ mod untrusted_ring_geometry_tests {
     fn a_capacity_mask_wider_than_the_capacity_is_refused() {
         let name = format!("untrusted_geom_mask_{}", std::process::id());
         if !plant_region(&name, |h| h.capacity_mask = u32::MAX) {
-            eprintln!("skipping: shared memory unavailable");
+            eprintln!("skipping: no file-backed shared memory to plant a hostile region in");
             return;
         }
         assert!(
@@ -4466,7 +4477,7 @@ mod untrusted_ring_geometry_tests {
             h.capacity = 63;
             h.capacity_mask = 62;
         }) {
-            eprintln!("skipping: shared memory unavailable");
+            eprintln!("skipping: no file-backed shared memory to plant a hostile region in");
             return;
         }
         assert!(RingTopic::<u64>::new(&name).is_err());
@@ -4484,7 +4495,7 @@ mod untrusted_ring_geometry_tests {
             h.capacity = 1 << 20;
             h.capacity_mask = (1 << 20) - 1;
         }) {
-            eprintln!("skipping: shared memory unavailable");
+            eprintln!("skipping: no file-backed shared memory to plant a hostile region in");
             return;
         }
         assert!(
@@ -4503,7 +4514,7 @@ mod untrusted_ring_geometry_tests {
             h.slot_size
                 .store(1 << 24, std::sync::atomic::Ordering::Release)
         }) {
-            eprintln!("skipping: shared memory unavailable");
+            eprintln!("skipping: no file-backed shared memory to plant a hostile region in");
             return;
         }
         assert!(RingTopic::<u64>::new(&name).is_err());
@@ -4518,7 +4529,7 @@ mod untrusted_ring_geometry_tests {
         if !plant_region(&name, |h| {
             h.slot_size.store(0, std::sync::atomic::Ordering::Release)
         }) {
-            eprintln!("skipping: shared memory unavailable");
+            eprintln!("skipping: no file-backed shared memory to plant a hostile region in");
             return;
         }
         assert!(RingTopic::<u64>::new(&name).is_err());
@@ -4530,7 +4541,7 @@ mod untrusted_ring_geometry_tests {
     fn a_consistent_header_still_opens() {
         let name = format!("untrusted_geom_good_{}", std::process::id());
         if !plant_region(&name, |_| {}) {
-            eprintln!("skipping: shared memory unavailable");
+            eprintln!("skipping: no file-backed shared memory to plant a hostile region in");
             return;
         }
         let topic = RingTopic::<u64>::new(&name).expect(
