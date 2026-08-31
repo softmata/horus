@@ -9042,6 +9042,30 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// producer's `local_tail` only ever originates in an Acquire load of
 /// `header.tail`, which is exactly why reading the code does not settle this.
 ///
+/// # Why this is not "TSan being pedantic", even though nothing corrupts here
+///
+/// No overshoot is constructible from it. A producer's `local_tail` only ever
+/// originates in an Acquire load of `header.tail`, so even when the max in
+/// `resynced_tail` keeps a stale value it stays <= the true consumed count, and
+/// the claim gate stays conservative. The torn-read check below passes on every
+/// run. On this machine the protocol behaves.
+///
+/// This machine is x86_64, and x86 is TSO: it will not reorder the stores and
+/// loads that a missing acquire/release edge leaves unconstrained. A formally
+/// unordered pair that is harmless under TSO is exactly the shape that DOES
+/// reorder on a weakly-ordered target — and this is robotics middleware, so the
+/// deployment target is aarch64: Jetson, Pi, and every ARM SBC in a robot.
+///
+/// Nothing in CI executes this code on ARM. `aarch64-unknown-linux-gnu` is
+/// cross-compiled and its smoke test is explicitly skipped ("the runner is
+/// x86_64 and qemu setup is overkill"), and the macOS ARM64 parity job runs
+/// `-p horus_sys` only. So the ring protocol has never run on a weakly-ordered
+/// machine in CI, and the one tool that models the memory model rather than the
+/// hardware is telling us an edge is missing.
+///
+/// That is the reason to chase this rather than silence it: the evidence that it
+/// is benign comes entirely from a platform that cannot exhibit the failure.
+///
 /// Not yet established, and deliberately not asserted here: whether this is
 /// harmful. The test's own `v[0] == v[3]` torn-read check passes on every run,
 /// so if two producers do overlap the window is small enough not to tear a
