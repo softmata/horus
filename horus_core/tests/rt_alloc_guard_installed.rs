@@ -126,16 +126,36 @@ fn an_allocation_inside_an_rt_tick_is_detected_counted_and_panics() {
     let _gate = counter_gate();
     let before = rt_allocator::violation_count();
 
-    let outcome = std::panic::catch_unwind(|| {
+    // Observe the violation from a SPAWNED THREAD rather than through
+    // `catch_unwind` in this one.
+    //
+    // The panic is raised from inside `GlobalAlloc::alloc`, and a panic raised
+    // there is not catchable by `catch_unwind` in a release build. Reproduced in
+    // 25 lines with no HORUS involved: a `#[global_allocator]` whose `alloc`
+    // panics takes the process down under `-O`, while the same program in debug
+    // is caught. This test asserted `outcome.is_err()` and so passed in debug and
+    // failed in release — it was asserting a property of the build profile.
+    //
+    // A thread boundary is a real unwind boundary either way: the panic ends the
+    // spawned thread and `join()` reports `Err`, in both profiles.
+    //
+    // The catchable in-process path is the one that matters and is covered by
+    // `an_allocating_no_alloc_node_is_caught_by_the_rt_executor`, which drives a
+    // real `.no_alloc()` node through the RT executor and passes in release —
+    // there the allocation happens inside `tick()`, with frames between the
+    // allocator and the executor's `catch_unwind`.
+    let joined = std::thread::spawn(|| {
         let _guard = rt_allocator::enter_rt_context_guarded("offending_node");
         let v: Vec<u8> = Vec::with_capacity(64);
         std::hint::black_box(&v);
-    });
+    })
+    .join();
 
     assert!(
-        outcome.is_err(),
+        joined.is_err(),
         "allocating inside a .no_alloc() bracket must panic the tick"
     );
+
     assert_eq!(
         rt_allocator::violation_count() - before,
         1,
