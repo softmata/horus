@@ -9077,11 +9077,38 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// observe it" is not the same as "it cannot happen" — the whole point of
 /// softmata-brain 1327 is that this class of defect is silent.
 ///
-/// What NOT to do about it: adding this test to the TSan skip list in
-/// `.github/workflows/safety.yml`. Three topic tests are already skipped there,
-/// and it would be easy to assume this is the same thing — it is not; those
-/// three produce no warnings at all when run individually under TSan, so
-/// whatever they were skipped for, it was not this.
+/// UPDATE — the skip landed, and the evidence now says it was right.
+///
+/// An earlier version of this note argued against adding the test to the TSan
+/// skip list in `.github/workflows/safety.yml`. It was added anyway (#89), and
+/// classifying the warnings from a real CI run shows that call was correct and
+/// this note was arguing from too little data. The run reported seven races,
+/// which sort into two shapes:
+///
+///   6 of 7   `send_shm_mp_pod` write  vs  `recv_shm_mpsc_pod` read
+///   1 of 7   `send_shm_mp_pod` write  vs  `send_shm_mp_pod` write
+///
+/// The six are the lossy contract, exactly as #89 says: this test sends through
+/// `Topic::send`, which is `send_lossy`, and a full ring overwrites the oldest
+/// unconsumed slot on purpose. The reader's stamp re-validation is what discards
+/// the torn result, and TSan cannot see that downstream check.
+///
+/// The seventh is a shape #89's rationale does not name — two PRODUCERS writing
+/// one address. It is not a double-claim (the CAS gives each a distinct
+/// sequence); it is two live sequences a lap apart landing on the same slot
+/// index, with no backpressure in `send_lossy` to stop the second. So it is the
+/// same contract, reached a different way, and it is still a formally
+/// unsynchronised write-write pair.
+///
+/// What does NOT change: everything above about ARM. Skipping the test removes
+/// the only signal in CI that this code has an unordered access at all, on a
+/// protocol that has still never executed on a weakly-ordered machine. That gap
+/// is now carried by `loom_migration_data_plane`, which models the migration
+/// resync under a memory model that DOES include weak ordering — the evidence
+/// x86 TSO structurally cannot provide. Its own limits are documented there: it
+/// models a single consumer, so the broadcast backend, where several consumers
+/// hold independent positions and the shared tail trails the slowest, is still
+/// unmodelled.
 fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
     // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
     // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
