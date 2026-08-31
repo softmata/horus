@@ -173,13 +173,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Scope: only PRs whose author already enabled auto-merge. That is
-          # someone explicitly saying "land this when it is green", so bringing
-          # the branch up to date is finishing a request, not an intervention.
-          # Never touches anyone else's branch, and never merges.
+          # Scope: PRs opened by a HUMAN that already have auto-merge enabled.
+          #
+          # The auto-merge signal alone is not enough. main requires no reviews
+          # at all (required_pull_request_reviews is null), and
+          # dependabot-automerge.yml enables auto-merge programmatically for any
+          # semver-patch bump -- github-actions included, since only the MINOR
+          # rule is restricted to cargo. Selecting on auto-merge alone therefore
+          # cannot tell a person's intent from a workflow's, and this job would
+          # help land changes to what executes inside CI with nobody reading
+          # them. Excluding bot authors keeps this job out of that loop entirely;
+          # dependabot's own workflow is unaffected either way.
           gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
-            --json number,mergeStateStatus,autoMergeRequest \
+            --json number,mergeStateStatus,autoMergeRequest,author \
             -q '.[] | select(.autoMergeRequest != null)
+                    | select(.author.is_bot != true)
+                    | select((.author.login // "") | startswith("app/") | not)
                     | select(.mergeStateStatus == "BEHIND") | .number' \
           | while read -r n; do
               [ -z "$n" ] && continue

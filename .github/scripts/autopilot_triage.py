@@ -12,6 +12,7 @@ Read-only: it inspects workflow runs and prints a report. It changes nothing.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -49,9 +50,18 @@ ENVIRONMENTAL = [
     ),
     (
         "shm-exhaustion",
-        "/dev/shm filled by leaked test namespaces. Causes unrelated tests to "
-        "fail in a rotating pattern. Clean with `rm -rf /dev/shm/horus_*`.",
-        ["/dev/shm", "Cannot allocate memory"],
+        "/dev/shm filled by leaked test namespaces. Clean with "
+        "`rm -rf /dev/shm/horus_*`.",
+        # Deliberately narrow. An earlier version matched the bare string
+        # "/dev/shm", which every job echoes as part of `SHM_DIR=...` during
+        # setup -- so it fired on almost every failure and buried real ones
+        # (a genuine TSan failure, run 33393284819, was discarded that way).
+        # Only a real allocation failure counts now.
+        [
+            "shm_open failed",
+            "Failed to create shared memory",
+            "No space left on device (os error 28)",
+        ],
     ),
     (
         "coverage-instrumentation",
@@ -59,13 +69,6 @@ ENVIRONMENTAL = [
         "on a 10kHz loop, which eats the margin. These are skipped in the "
         "coverage job on purpose; do not 'fix' the test.",
         ["tick count too low", "not auto-bumped"],
-    ),
-    (
-        "tsan-lossy-contract",
-        "ThreadSanitizer on the topic ring. Topic::send is send_lossy and "
-        "overwrites the oldest unconsumed slot by design; the reader's stamp "
-        "re-validation discards the torn result and TSan cannot see that.",
-        ["ThreadSanitizer: reported", "__tsan_memcpy"],
     ),
     (
         "network-transient",
@@ -78,6 +81,20 @@ ENVIRONMENTAL = [
         ],
     ),
 ]
+
+# Lines that are present on healthy runs and must never drive a classification.
+# HORUS logs the mlockall warning on every runner because RT memory locking is
+# not permitted there, and it contains "Cannot allocate memory" -- which an
+# earlier version of this file matched as shm exhaustion.
+BENIGN = (
+    "mlockall failed",
+    "memory lock failed",
+)
+
+# GitHub Actions renders echoed COMMANDS in bold cyan. Those lines are the
+# workflow's own source text, not program output, so matching against them
+# classifies on what a script says rather than on what happened.
+COMMAND_ECHO = "\x1b[36;1m"
 
 
 def gh(*args: str) -> str:
@@ -92,30 +109,92 @@ def gh(*args: str) -> str:
 
 
 def failed_runs() -> list[dict]:
+    """Failed runs that actually ran ON main, from this repo.
+
+    `--branch main` filters on head_branch, which for a pull_request run is the
+    PR's SOURCE branch -- and a fork's default branch is usually called `main`.
+    So the naive filter lets a fork PR's logs into a report that is fed to an
+    autonomous fixer. Restrict to push/schedule events from this repository.
+    """
     raw = gh(
         "run", "list",
         "--repo", REPO,
         "--branch", BRANCH,
         "--status", "failure",
-        "--limit", str(RUNS_TO_SCAN),
-        "--json", "databaseId,name,conclusion,createdAt,headSha,url",
+        "--limit", str(RUNS_TO_SCAN * 2),
+        "--json", "databaseId,name,conclusion,createdAt,headSha,url,event",
     )
     try:
-        return json.loads(raw) if raw else []
+        runs = json.loads(raw) if raw else []
     except json.JSONDecodeError:
         return []
+    # Excluding pull_request events IS the fork protection: a fork PR's run is a
+    # pull_request event, so it can never reach the report regardless of what its
+    # head branch is called.
+    trusted = [
+        r for r in runs
+        if r.get("event") in ("push", "schedule", "workflow_dispatch")
+    ]
+    return trusted[:RUNS_TO_SCAN]
 
 
-def classify(run: dict) -> tuple[str | None, str]:
-    """Return (environmental_label, evidence) or (None, '') if unexplained."""
-    log = gh("run", "view", str(run["databaseId"]), "--repo", REPO, "--log-failed")
-    if not log:
-        return None, "could not read failed-job log"
+def split_jobs(log: str) -> dict[str, list[str]]:
+    """`--log-failed` concatenates every failed job. Field 1 is the job name."""
+    jobs: dict[str, list[str]] = defaultdict(list)
+    for ln in log.splitlines():
+        parts = ln.split("\t")
+        jobs[parts[0].strip() if len(parts) > 1 else "(unknown job)"].append(ln)
+    return jobs
+
+
+def usable_lines(lines: list[str]) -> list[str]:
+    out = []
+    for ln in lines:
+        if COMMAND_ECHO in ln:
+            continue  # echoed workflow source, not output
+        if any(b in ln for b in BENIGN):
+            continue
+        out.append(ln)
+    return out
+
+
+def classify_job(lines: list[str]) -> tuple[str | None, str]:
+    body = "\n".join(usable_lines(lines))
     for label, explanation, needles in ENVIRONMENTAL:
         for n in needles:
-            if n in log:
+            if n in body:
                 return label, f"matched {n!r} — {explanation}"
-    return None, extract_evidence(log)
+    return None, extract_evidence(body)
+
+
+def classify(run: dict) -> tuple[str | None, str, dict[str, int]]:
+    """Classify each FAILED JOB separately.
+
+    Classifying a whole run collapses a matrix: one genuinely environmental job
+    would explain away a real code failure sitting beside it. A run counts as
+    environmental only when EVERY failed job in it does.
+    """
+    log = gh("run", "view", str(run["databaseId"]), "--repo", REPO, "--log-failed")
+    if not log:
+        return None, "could not read failed-job log", {}
+
+    jobs = split_jobs(log)
+    labels: dict[str, int] = defaultdict(int)
+    unexplained_evidence = ""
+    all_explained = bool(jobs)
+
+    for _name, lines in jobs.items():
+        label, evidence = classify_job(lines)
+        if label:
+            labels[label] += 1
+        else:
+            all_explained = False
+            if not unexplained_evidence:
+                unexplained_evidence = evidence
+
+    if all_explained:
+        return "environmental", "", dict(labels)
+    return None, unexplained_evidence, dict(labels)
 
 
 # Post-job cleanup dominates the tail of every failed-job log and says nothing
@@ -143,8 +222,6 @@ ERROR_MARKERS = (
     "FAILED",
     "failures:",
     "Error:",
-    "not found",
-    "missing",
 )
 
 
@@ -159,7 +236,33 @@ def extract_evidence(log: str, want: int = 14) -> str:
     for ln in chosen:
         parts = ln.split("\t")
         cleaned.append(parts[-1].strip() if len(parts) > 1 else ln.strip())
-    return "\n".join(cleaned) or "(no distinguishing lines found)"
+    return sanitize("\n".join(cleaned) or "(no distinguishing lines found)")
+
+
+def sanitize(text: str) -> str:
+    """Neutralise log text before it is embedded in an issue body.
+
+    That body is, by design, instructions to an autonomous fixer, so a log line
+    is untrusted input on an instruction channel. Three things matter: a line
+    containing a fence would close the code block and let the remainder render
+    as markdown; ANSI escapes make the result unreadable; and unbounded length
+    lets one run flood the issue.
+    """
+    # Two forms: a real escape byte, and the caret notation GitHub's log API
+    # returns instead (literal '^' '[' — no ESC byte is present, which is why
+    # matching only \x1b left 21 sequences of noise in the first report).
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+    text = re.sub(r"\^\[\[[0-9;]*[A-Za-z]", "", text)
+    text = text.replace("`", "'")  # cannot close the fence
+    # Defuse anything that reads as a directive to the agent downstream.
+    text = re.sub(
+        r"(?i)\b(ignore (all )?previous instructions|you are now|system:|assistant:)",
+        "[redacted-directive]",
+        text,
+    )
+    if len(text) > 4000:
+        text = text[:4000] + "\n[truncated]"
+    return text
 
 
 def main() -> int:
@@ -176,9 +279,10 @@ def main() -> int:
         if out_of_time():
             skipped += 1
             continue
-        label, evidence = classify(run)
-        if label:
-            env_hits[label] += 1
+        label, evidence, job_labels = classify(run)
+        for k, v in job_labels.items():
+            env_hits[k] += v
+        if label == "environmental":
             continue
         unexplained[run["name"]].append({**run, "evidence": evidence})
 
@@ -193,7 +297,10 @@ def main() -> int:
         )
 
     if env_hits:
-        print("### Explained by known environment issues (no action)\n")
+        print(
+            "### Environment signatures seen (a run is only dismissed when EVERY "
+            "failed job in it is explained)\n"
+        )
         for label, n in sorted(env_hits.items(), key=lambda kv: -kv[1]):
             print(f"- `{label}` x{n}")
         print()
