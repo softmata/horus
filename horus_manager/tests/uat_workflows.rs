@@ -15,6 +15,27 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
 
+/// A scratch directory under the workspace's `target/`, created if absent.
+///
+/// `CARGO_TARGET_TMPDIR` is cargo's own scratch directory for integration tests,
+/// but it is only guaranteed to be set — not to exist, since `cargo clean` or a
+/// hand `rm -rf target/tmp` removes it. Create it rather than fail on it.
+fn scratch_root() -> &'static str {
+    let root = env!("CARGO_TARGET_TMPDIR");
+    let _ = std::fs::create_dir_all(root);
+    root
+}
+
+// Scratch projects live under the workspace's `target/`, not `$TMPDIR`.
+//
+// These build real cargo projects, and `/tmp` is a tmpfs that does not have room
+// for them alongside everything else on the box: `uat_rust_project_full_lifecycle`
+// and `uat_multi_dependency_project` both failed with `Disk quota exceeded
+// (os error 122)` while `df` still reported free space, and pointing `TMPDIR` at
+// a roomier filesystem made them pass unchanged. `CARGO_TARGET_TMPDIR` is cargo's
+// directory for exactly this — under `target/`, on the same filesystem as a build
+// that already fits there, and cleaned by `cargo clean`.
+
 /// Helper to get the CLI command.
 fn horus_cmd() -> Command {
     cargo_bin_cmd!("horus")
@@ -48,7 +69,7 @@ fn strip_horus_dep(proj: &std::path::Path) {
 
 #[test]
 fn uat_rust_project_full_lifecycle() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
 
     // 1. Create project
     horus_cmd()
@@ -141,7 +162,7 @@ fn uat_rust_project_full_lifecycle() {
 
 #[test]
 fn uat_python_project_lifecycle() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
 
     // 1. Create Python project
     horus_cmd()
@@ -208,7 +229,7 @@ fn uat_python_project_lifecycle() {
 
 #[test]
 fn uat_project_health_workflow() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
     horus_cmd()
         .args([
             "new",
@@ -280,7 +301,7 @@ fn uat_project_health_workflow() {
 
 #[test]
 fn uat_multi_dependency_project() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
     horus_cmd()
         .args([
             "new",
@@ -351,7 +372,7 @@ fn uat_multi_dependency_project() {
 
 #[test]
 fn uat_init_existing_directory() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
 
     // 1. Init workspace in empty dir
     let output = horus_cmd()
@@ -399,7 +420,7 @@ fn uat_init_existing_directory() {
 
 #[test]
 fn uat_build_and_run_quick_exit() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
     horus_cmd()
         .args([
             "new",
@@ -445,7 +466,7 @@ fn uat_build_and_run_quick_exit() {
 
 #[test]
 fn uat_auth_and_publish_workflow() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
     let key_dir = tmp.path().join("keys");
 
     // 1. Generate signing key (isolated)
@@ -501,7 +522,7 @@ fn uat_auth_and_publish_workflow() {
 
 #[test]
 fn uat_dev_dependency_workflow() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in(scratch_root()).unwrap();
     horus_cmd()
         .args(["new", "dev-dep", "-r", "-o", &tmp.path().to_string_lossy()])
         .assert()
