@@ -9015,7 +9015,20 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 ///     replacement: two warnings, repeatably.
 ///
 /// So the missing happens-before edge is on the MIGRATION path, not on the
-/// ordinary claim protocol. Ordinarily slot reuse is ordered: a producer only
+/// ordinary claim protocol.
+///
+/// One more ablation places it exactly. Reverting ONLY the retained-mapping fix
+/// in `horus_sys::shm::linux::grow_unchecked` — back to `self.mmap = new_mmap`,
+/// which unmaps the old view — makes this test die under TSan with
+/// `SEGV on unknown address ... in __tsan_atomic8_load`, and report zero data
+/// races. That is the use-after-munmap the fix exists for, independently
+/// confirmed by a second tool, and it crashes before any race can be observed.
+///
+/// So the retention fix did not INTRODUCE this race. It removed a crash and left
+/// the unordered access that was underneath it: two producers reaching the same
+/// slot across a remap were never ordered against each other, and previously the
+/// process died on a dangling pointer before that could matter. The fix is
+/// necessary and not sufficient — it makes the remap survivable, not ordered. Ordinarily slot reuse is ordered: a producer only
 /// claims `seq` once it has observed `header.tail > seq - capacity` with an
 /// Acquire load, which pairs with the consumer's Release store of `tail` after
 /// it read the previous occupant. `handle_epoch_change` resynchronises
