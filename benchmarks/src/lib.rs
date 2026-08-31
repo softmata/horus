@@ -46,6 +46,7 @@ pub struct BenchmarkConfig {
     /// Whether to filter outliers
     pub filter_outliers: bool,
     /// Confidence interval percentage (e.g., 95.0)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub confidence_level: f64,
 }
 
@@ -123,14 +124,17 @@ pub struct BenchmarkResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThroughputMetrics {
     /// Messages per second
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub messages_per_sec: f64,
     /// Bytes per second
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub bytes_per_sec: f64,
     /// Total messages sent
     pub total_messages: u64,
     /// Total bytes transferred
     pub total_bytes: u64,
     /// Duration of throughput test
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub duration_secs: f64,
 }
 
@@ -138,6 +142,7 @@ pub struct ThroughputMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeterminismMetrics {
     /// Coefficient of variation (std_dev / mean) - lower is better
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub cv: f64,
     /// Maximum observed jitter (max - min)
     pub max_jitter_ns: u64,
@@ -150,6 +155,7 @@ pub struct DeterminismMetrics {
     /// Deadline threshold used (ns)
     pub deadline_threshold_ns: u64,
     /// Run-to-run variance (variance of median across runs)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub run_variance: f64,
 }
 

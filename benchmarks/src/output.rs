@@ -1265,22 +1265,29 @@ pub struct MetricComparison {
     /// Which statistic.
     pub metric: Metric,
     /// Current value (median across repetitions).
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub current: f64,
     /// Robust center of the baseline window.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub baseline_center: f64,
     /// Robust spread (1.4826·MAD) of the baseline window.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub baseline_spread: f64,
     /// Smallest value in the baseline window.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub baseline_min: f64,
     /// Largest value in the baseline window.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub baseline_max: f64,
     /// How many baseline runs contributed.
     pub baseline_runs: usize,
     /// The threshold. Above this is a regression.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub upper_band: f64,
     /// Which term set the threshold.
     pub band_source: BandSource,
     /// Percent change against the baseline center (positive = slower).
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub change_percent: f64,
     /// Consecutive runs above band, current run included. Only computed on
     /// trunk runs.
@@ -1316,16 +1323,20 @@ pub struct ResultComparison {
     /// Baseline runs available for this benchmark.
     pub baseline_runs: usize,
     /// Current median latency (ns), first repetition.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub current_median_ns: f64,
     /// Baseline window's median latency (ns).
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub baseline_median_ns: f64,
     /// Percent change in median (positive = slower).
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub change_percent: f64,
     /// Current p99 latency (ns), first repetition.
     pub current_p99_ns: u64,
     /// Baseline window's p99 latency (ns).
     pub baseline_p99_ns: u64,
     /// Percent change in p99.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub p99_change_percent: f64,
     /// Per-metric conclusions.
     pub metrics: Vec<MetricComparison>,

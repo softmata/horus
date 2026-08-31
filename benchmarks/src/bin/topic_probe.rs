@@ -60,6 +60,7 @@ const WARMUP_IMG: usize = 2_000;
 /// `sched_setaffinity` does not exist on Darwin at all, which is the macOS and
 /// macOS ARM64 link failure: "Undefined symbols for architecture arm64:
 /// _sched_setaffinity". It is declared and called only on Linux now.
+#[cfg(unix)]
 #[inline(always)]
 fn now_ns() -> u64 {
     // SAFETY: `ts` is a valid, correctly-sized `struct timespec`, and
@@ -71,6 +72,21 @@ fn now_ns() -> u64 {
     }
 }
 
+/// Windows has no `clock_gettime` and `libc` declares neither it nor
+/// `CLOCK_MONOTONIC` for the MSVC target. `Instant` is monotonic on every
+/// platform std supports, and the probe only ever uses differences of these
+/// values, so an arbitrary process-local origin is all it needs. Not used on
+/// Unix, where the direct syscall keeps the read as cheap as the thing being
+/// measured.
+#[cfg(not(unix))]
+#[inline(always)]
+fn now_ns() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
+
 /// Pin the calling thread to `cpu`. Returns false if the kernel refused.
 #[cfg(target_os = "linux")]
 fn pin(cpu: usize) -> bool {
@@ -78,8 +94,11 @@ fn pin(cpu: usize) -> bool {
     mask[cpu / 64] = 1u64 << (cpu % 64);
     // SAFETY: `mask` is a 1024-bit cpu_set_t, the size glibc expects.
     unsafe {
-        libc::sched_setaffinity(0, core::mem::size_of::<[u64; 16]>(), mask.as_ptr() as *const _)
-            == 0
+        libc::sched_setaffinity(
+            0,
+            core::mem::size_of::<[u64; 16]>(),
+            mask.as_ptr() as *const _,
+        ) == 0
     }
 }
 

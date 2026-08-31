@@ -65,6 +65,7 @@ pub struct Statistics {
     #[serde(deserialize_with = "nan_from_null")]
     pub ci_high: f64,
     /// Confidence level used (e.g., 95.0)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub confidence_level: f64,
     /// Number of outliers removed (if filtering enabled)
     pub outliers_removed: usize,
@@ -450,16 +451,22 @@ pub struct NormalityAnalysis {
     /// Sample size used for analysis
     pub sample_size: usize,
     /// Skewness (0 = symmetric like normal)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub skewness: f64,
     /// Excess kurtosis (0 = normal, >0 = heavy tails, <0 = light tails)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub kurtosis: f64,
     /// Jarque-Bera test statistic
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub jarque_bera_stat: f64,
     /// Jarque-Bera p-value (>0.05 suggests normality)
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub jarque_bera_pvalue: f64,
     /// Anderson-Darling test statistic
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub anderson_darling_stat: f64,
     /// D'Agostino-Pearson K² statistic
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub dagostino_k2: f64,
     /// Is distribution likely normal? (based on combined tests)
     pub is_likely_normal: bool,

@@ -2091,7 +2091,10 @@ fn print_scenario(r: &ScenarioResult, ns_per_cycle: f64) {
     if Perturbation::available() {
         println!(
             "  measured window: minor_faults={} major_faults={} ctx_switches vol={} invol={}",
-            r.perturbation.minflt, r.perturbation.majflt, r.perturbation.nvcsw, r.perturbation.nivcsw
+            r.perturbation.minflt,
+            r.perturbation.majflt,
+            r.perturbation.nvcsw,
+            r.perturbation.nivcsw
         );
     } else {
         // Printing the zeroed struct here would claim a flawlessly quiet
