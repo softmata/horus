@@ -9034,7 +9034,13 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// it read the previous occupant. `handle_epoch_change` resynchronises
 /// `local_head`/`local_tail` from the header, and that path appears to let a
 /// producer reach a slot without the load that would have ordered it against
-/// whoever wrote it last.
+/// whoever wrote it last. The specific suspect is `resynced_tail`, which returns
+/// `local_tail.max(shared_tail).min(new_head)`: when the producer's OWN cached
+/// `local_tail` wins that max, the value it then reuses slots against did not
+/// come from the Acquire load of the current header — it came from the
+/// producer's own pre-migration history. That is still sound on paper, because a
+/// producer's `local_tail` only ever originates in an Acquire load of
+/// `header.tail`, which is exactly why reading the code does not settle this.
 ///
 /// Not yet established, and deliberately not asserted here: whether this is
 /// harmful. The test's own `v[0] == v[3]` torn-read check passes on every run,
