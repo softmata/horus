@@ -196,6 +196,18 @@ jobs:
           # test binary unlinkable.
           # horus_manager tests spawn nested, non-instrumented Cargo builds;
           # mixing those artifacts with TSan is an intentional ABI mismatch.
+          #
+          # a_clone_growing_the_mapping_does_not_strand_its_siblings drives three
+          # writers through `Topic::send`, which is `send_lossy`: when the ring is
+          # full it overwrites the oldest unconsumed slot on purpose, and the
+          # reader's stamp check is what discards the torn result. TSan sees the
+          # payload memcpy of that overwrite against the reader's memcpy and
+          # reports a race, correctly -- it cannot see that the stamp
+          # re-validation downstream is what makes the read sound. The race it
+          # names is the lossy contract, not the use-after-munmap this test
+          # exists to catch, and that bug is a SIGSEGV every other job would
+          # still see. Same reason migrate_pod_shm_to_spsc_shm and the
+          # cross_thread MPMC tests are already skipped here.
           cargo +nightly test --workspace --exclude horus_py --exclude horus_manager \
             --lib -Zbuild-std \
             --target x86_64-unknown-linux-gnu -- --test-threads=1 \
@@ -209,7 +221,8 @@ jobs:
             --skip test_tick_hz_very_large \
             --skip topic_cross_thread_1p_multi_c_spmc \
             --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
-            --skip topic_cross_thread_multi_p_multi_c_mpmc
+            --skip topic_cross_thread_multi_p_multi_c_mpmc \
+            --skip a_clone_growing_the_mapping_does_not_strand_its_siblings
         env:
           RUSTFLAGS: -Zsanitizer=thread
           TSAN_OPTIONS: second_deadlock_stack=1
