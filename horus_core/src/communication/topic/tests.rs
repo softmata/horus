@@ -7190,11 +7190,20 @@ fn mp_send_no_overshoot_corruption() {
 
     let consumer: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("consumer");
     let stop = Arc::new(AtomicBool::new(false));
+    // Counts sends that actually returned Ok. Without it a shortfall is
+    // ambiguous: a producer abandons its remaining messages when `stop` fires
+    // mid-retry (the `return` below), so "consumer got 1792/1800" can mean
+    // 1800 were published and 8 were lost, or only 1792 were ever published.
+    // Those are opposite diagnoses -- one is a transport defect, the other is
+    // the test giving up -- and every previous failure message asserted one of
+    // them without the evidence to tell them apart.
+    let sent = Arc::new(AtomicU64::new(0));
     let barrier = Arc::new(Barrier::new(n_producers + 1));
     let mut handles = Vec::new();
     for pid in 0..n_producers {
         let n = name.clone();
         let stop = stop.clone();
+        let sent = sent.clone();
         let b = barrier.clone();
         handles.push(test_spawn(move || {
             // Main waits on this barrier too: unwrapping before wait() would hang
@@ -7207,7 +7216,10 @@ fn mp_send_no_overshoot_corruption() {
                 let mut m = (pid as u64) << 40 | i;
                 loop {
                     match p.try_send(m) {
-                        Ok(()) => break,
+                        Ok(()) => {
+                            sent.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
                         Err(r) => {
                             if stop.load(Ordering::Acquire) {
                                 return;
@@ -7257,17 +7269,20 @@ fn mp_send_no_overshoot_corruption() {
     for h in handles {
         let _ = h.join();
     }
+    let published = sent.load(Ordering::Relaxed);
     assert_eq!(
         count, total,
-        "consumer drained {}/{} inside the budget. What did NOT fire: GARBAGE \
-         and DUPLICATE, so everything that did arrive was intact and no slot was \
-         re-used. That narrows it to messages never becoming visible, and it \
-         does NOT distinguish the two ways that happens: overshoot overwriting a \
-         slot before the in-order consumer reached it, or the platform simply \
-         not publishing them. Read the count before guessing which — a shortfall \
-         of a handful out of 1800 that is unchanged by a 30s budget is not a \
-         producer losing a race for CPU.",
-        count, total
+        "consumer drained {count}/{total}, producers published {published}/{total}. \
+         Read those two numbers before proposing a cause:\n  \
+         published == {total} and count < {total} -> messages were published and \
+         did not arrive. That is transport loss; GARBAGE and DUPLICATE did not \
+         fire, so nothing torn or re-used arrived, which points at a slot \
+         overwritten before the in-order consumer reached it.\n  \
+         published < {total} -> the producers abandoned the rest when the drain \
+         budget expired mid-retry, so the ring stayed full and this is \
+         backpressure plus a slow consumer, NOT loss.\n\
+         The distinction was invisible before this counter existed, and every \
+         earlier failure message asserted one of the two without evidence."
     );
 }
 
