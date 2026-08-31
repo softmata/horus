@@ -49,6 +49,7 @@ jobs:
           cat triage.md
 
       - name: Escalate recurring unexplained failures
+        id: escalate
         if: steps.classify.outputs.code == '10'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,11 +106,59 @@ jobs:
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file triage.md
             echo "Updated existing issue #$existing"
+            echo "issue=$existing" >> "$GITHUB_OUTPUT"
+            # An issue already handed to Copilot should not be re-assigned on every
+            # run; a new comment is enough to wake it.
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
           else
             gh label create autopilot --repo "$GITHUB_REPOSITORY" \
               --color 0e8a16 --description "Opened by the autopilot" 2>/dev/null || true
-            gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title "$TITLE" --label autopilot --body-file triage.md
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --label autopilot --body-file triage.md)
+            echo "$url"
+            echo "issue=${url##*/}" >> "$GITHUB_OUTPUT"
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Hand the issue to the Copilot coding agent, which opens a PR against it.
+      # That PR is gated by the same six required checks as any human's, so the
+      # worst case is a proposal nobody merges -- never a change that lands unseen.
+      #
+      # Community reports say the default GITHUB_TOKEN cannot assign this bot and a
+      # PAT is needed. Rather than assume, this tries the default token and falls
+      # back to AUTOPILOT_TOKEN when the repo has one, and says which worked. If
+      # neither can, the issue simply stays unassigned with its full diagnosis and a
+      # human assigns it in one click.
+      - name: Hand the issue to Copilot
+        if: steps.escalate.outputs.fresh == 'true'
+        continue-on-error: true
+        env:
+          DEFAULT_TOKEN: ${{ github.token }}
+          PAT: ${{ secrets.AUTOPILOT_TOKEN }}
+          ISSUE: ${{ steps.escalate.outputs.issue }}
+        run: |
+          # Resolved once via GraphQL suggestedActors on this repo.
+          BOT_ID='BOT_kgDOC9w8XQ'
+
+          issue_id=$(GH_TOKEN="$DEFAULT_TOKEN" gh api graphql \
+            -f query='query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){id}}}' \
+            -F o="${GITHUB_REPOSITORY%%/*}" -F n="${GITHUB_REPOSITORY##*/}" -F i="$ISSUE" \
+            --jq '.data.repository.issue.id') || { echo "::warning::could not resolve issue node id"; exit 0; }
+
+          assign() {
+            GH_TOKEN="$1" gh api graphql \
+              -f query='mutation($a:ID!,$b:ID!){replaceActorsForAssignable(input:{assignableId:$a,actorIds:[$b]}){assignable{... on Issue{number}}}}' \
+              -F a="$issue_id" -F b="$BOT_ID" >/dev/null 2>&1
+          }
+
+          if assign "$DEFAULT_TOKEN"; then
+            echo "Assigned Copilot to #$ISSUE using the default GITHUB_TOKEN."
+          elif [ -n "$PAT" ] && assign "$PAT"; then
+            echo "Assigned Copilot to #$ISSUE using AUTOPILOT_TOKEN."
+          else
+            echo "::notice::Could not assign Copilot to #$ISSUE. The issue carries the"
+            echo "::notice::full diagnosis; assign it by hand, or add an AUTOPILOT_TOKEN"
+            echo "::notice::secret (fine-grained PAT, Issues: write) to close the loop."
           fi
 
   convoy:
