@@ -22,6 +22,14 @@ curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
+安装脚本会解析最新的发布标签，并从同一个标签取回两部分内容：经该版本 `SHA256SUMS` 校验的 CLI 可执行文件，以及缓存在 `~/.horus/cache/horus@<版本>` 的源码树。两者必须来自同一个标签，因为 `horus run` 会把该源码树作为路径依赖来编译你的项目。
+
+固定到某个版本：
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
 也可以手动安装：
 
 ```bash
@@ -30,7 +38,17 @@ cd horus
 ./install.sh
 ```
 
-Python：`pip install horus-robotics`。C++：链接 `libhorus_cpp`，并包含 `<horus/horus.hpp>`。
+升级：`horus self update` 会把 CLI 和缓存的源码树一起更新到同一个新标签。卸载：`curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash`；脚本会先列出将要删除的内容，并在终端里请求确认。加上 `-s -- --dry-run` 只列出不删除，加上 `-s -- --yes` 则无人值守执行。
+
+Docker：`docker build --target dev -t horus:dev .`。`docker build .` 的默认目标是只含 CLI 的精简镜像，无法构建或运行项目。
+
+C++：链接 `libhorus_cpp`，并包含 `<horus/horus.hpp>`。
+
+Python：`pip install "horus-robotics>=0.4.0"`。PyPI 上的最新版本是 0.1.9，其共享内存格式早于 0.4.x 的 CLI；在 0.4.x 发布之前，请从缓存的源码构建绑定：`pip install ~/.horus/cache/horus@0.4.0/horus_py`。
+
+Rust：没有 crates.io 渠道。`cargo add horus` 和 `cargo install horus` 取到的是同名的无关 crate。
+
+平台支持矩阵、安装脚本的环境变量以及 Docker 细节见 [Install, Upgrade, Uninstall](README.md#install-upgrade-uninstall)。
 
 ## 为什么选择 HORUS？
 
