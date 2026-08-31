@@ -11713,3 +11713,82 @@ fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
     assert_eq!(got[0], "value-0");
     assert_eq!(got[199], "value-199");
 }
+
+/// Backpressure is a property of the BACKEND, not of the call you make.
+///
+/// `try_send` returning `Err` and `send_blocking` actually blocking are both
+/// possible only where the backend has a full condition. The broadcast backends
+/// do not: `send_shm_pod_broadcast` has a single exit and it is `Ok(())`, and
+/// `ShmFanoutRing::send_serde` documents itself as "never blocks". They
+/// overwrite the oldest unread message instead of refusing a new one.
+///
+/// This matters because the backend is chosen from participant counts at
+/// runtime (`detect_optimal_backend`: two subscribers on a POD topic selects
+/// `PodShm`), so a topic that had real backpressure during bring-up loses it
+/// when anything else subscribes -- a logger, a recorder, `horus topic echo`.
+/// `send_blocking`'s doc used to recommend it for "critical command topics
+/// (emergency stop, motor setpoints) where message loss is unacceptable", which
+/// inverts exactly then.
+///
+/// The migration is forced rather than raced: two handles in one process share a
+/// participant slot, so `sub_count` stays 1 no matter how many local handles
+/// subscribe, and the interesting backend would never be reached here.
+#[test]
+fn a_broadcast_backend_cannot_refuse_a_send() {
+    let name = unique("bp_flip");
+    let cap: u32 = 16;
+    let tx: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("tx");
+    let rx: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("rx");
+    assert!(rx.recv().is_none(), "nothing published yet");
+
+    // 1P/1C: SpscShm, which has a real full condition.
+    assert!(
+        tx.provides_backpressure(),
+        "1P/1C should select a backend with backpressure, got {}",
+        tx.backend_name()
+    );
+    let mut refused = 0u32;
+    for i in 0..(cap as u64 * 8) {
+        if tx.try_send(i).is_err() {
+            refused += 1;
+        }
+    }
+    assert!(
+        refused > 0,
+        "a {cap}-slot ring with nobody draining must refuse on {}",
+        tx.backend_name()
+    );
+
+    // Now the broadcast backend a second subscriber would have selected.
+    let migrated = matches!(
+        BackendMigrator::new(tx.ring.header()).try_migrate(BackendMode::PodShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    );
+    assert!(migrated, "could not reach PodShm to test it");
+    // Deliberately NOT check_migration_now(): that calls migrate_to_optimal(),
+    // which reads the participant counts (still 1P/1C here) and would migrate
+    // straight back to SpscShm. The migration above bumps the epoch, and
+    // epoch_guard_send! re-resolves the send fn pointer on the next send.
+    while rx.recv().is_some() {}
+
+    assert!(
+        !tx.provides_backpressure(),
+        "PodShm is a broadcast ring and must report no backpressure"
+    );
+
+    let mut refused_broadcast = 0u32;
+    for i in 0..(cap as u64 * 8) {
+        if tx.try_send(i).is_err() {
+            refused_broadcast += 1;
+        }
+    }
+    assert_eq!(
+        refused_broadcast,
+        0,
+        "on {} a full ring must NOT surface as an error -- it overwrites. Same \
+         topic, same try_send, opposite delivery semantics, decided by how many \
+         things happened to subscribe. That is what provides_backpressure() is \
+         for.",
+        tx.backend_name()
+    );
+}

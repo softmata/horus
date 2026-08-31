@@ -2970,10 +2970,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Send a message, blocking until the ring has space or the timeout expires.
     ///
-    /// Unlike [`send()`](Self::send) which drops the message after a brief spin+yield
-    /// retry, this method guarantees delivery or returns an explicit timeout error.
-    /// Use this for critical command topics (emergency stop, motor setpoints) where
-    /// message loss is unacceptable.
+    /// Unlike [`send()`](Self::send), which drops the message after a brief
+    /// spin+yield retry, this reports a full ring instead of swallowing it --
+    /// **on the backends that have a full ring at all.**
+    ///
+    /// # This does NOT guarantee delivery on a broadcast topic
+    ///
+    /// Every phase below is a retry of `try_send`, so this method can only block
+    /// where `try_send` can fail. On `PodShm` and `FanoutShm` it cannot:
+    /// `send_shm_pod_broadcast` has one exit and it is `Ok(())`, and
+    /// `ShmFanoutRing::send_serde` documents itself as "never blocks", returning
+    /// false only for a message too large for a slot. Those backends overwrite
+    /// the oldest unread message rather than refuse a new one.
+    ///
+    /// And you do not choose the backend -- participant count does. One
+    /// subscriber gives `SpscShm` and real backpressure; a second subscriber,
+    /// including a logger or a `horus topic echo`, silently switches the same
+    /// topic to broadcast. At that point this call returns `Ok(())` in
+    /// nanoseconds without waiting, and the message it displaced is gone.
+    ///
+    /// This doc used to say the method "guarantees delivery" and to recommend it
+    /// for "critical command topics (emergency stop, motor setpoints) where
+    /// message loss is unacceptable". On a topic with two subscribers that was
+    /// exactly backwards, and it is the reason
+    /// [`provides_backpressure`](Self::provides_backpressure) now exists. Assert
+    /// it at startup on any topic carrying commands:
+    ///
+    /// ```ignore
+    /// assert!(estop.provides_backpressure(), "e-stop is on a lossy backend");
+    /// ```
     ///
     /// Strategy: spin briefly (256 iters), yield briefly (8 iters), then sleep in
     /// 100μs increments until the deadline.
@@ -3299,6 +3324,44 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpmcShm => "SpmcShm",
             BackendMode::MpscShm => "MpscShm",
             BackendMode::FanoutShm => "FanoutShm",
+        }
+    }
+
+    /// Whether a full ring can make this topic's `try_send` refuse a message.
+    ///
+    /// **This is not a property of the API you call, it is a property of the
+    /// backend, and the backend is chosen at runtime from how many participants
+    /// are attached.** A topic with one subscriber selects `SpscShm` and refuses
+    /// when full. Attach a second subscriber -- a logger, a recorder, a
+    /// `horus topic echo` -- and the same topic becomes `PodShm` or `FanoutShm`,
+    /// which overwrite instead. `send_shm_pod_broadcast` has a single exit and it
+    /// is `Ok(())`; `ShmFanoutRing::send_serde` documents itself as "never
+    /// blocks" and returns false only for a message too large for a slot.
+    ///
+    /// So on a broadcast backend `try_send` cannot report a full ring and
+    /// [`send_blocking`](Self::send_blocking) cannot block. Both still compile,
+    /// still return, and quietly lose data.
+    ///
+    /// Assert this at startup on any topic carrying commands rather than
+    /// samples:
+    ///
+    /// ```ignore
+    /// assert!(
+    ///     estop.provides_backpressure(),
+    ///     "e-stop topic fell back to a lossy broadcast backend ({})",
+    ///     estop.backend_name(),
+    /// );
+    /// ```
+    pub fn provides_backpressure(&self) -> bool {
+        match self.mode() {
+            // Ring-full is a real Err on these: the mp/sp send paths compare the
+            // claimed sequence against `header.tail` and refuse.
+            BackendMode::SpscShm
+            | BackendMode::MpscShm
+            | BackendMode::SpmcShm
+            | BackendMode::Unknown => true,
+            // Broadcast: overwrite-oldest by construction, no full condition.
+            BackendMode::PodShm | BackendMode::FanoutShm => false,
         }
     }
 
@@ -3791,6 +3854,15 @@ impl<T: TopicMessage> Topic<T> {
     #[doc(hidden)]
     pub fn backend_name(&self) -> &'static str {
         self.ring.backend_name()
+    }
+
+    /// Whether a full ring can make this topic's `try_send` refuse a message.
+    ///
+    /// See [`RingTopic::provides_backpressure`]. Returns `false` on the
+    /// broadcast backends, which is what a topic silently becomes once a second
+    /// subscriber attaches.
+    pub fn provides_backpressure(&self) -> bool {
+        self.ring.provides_backpressure()
     }
 
     /// This handle's FanoutShm subscriber endpoint, if it has claimed one.
