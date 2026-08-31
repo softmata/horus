@@ -3,8 +3,79 @@
 # Complete removal of HORUS CLI, libraries, binaries, cache, and artifacts
 # Cross-platform: Linux, macOS, Windows (Git Bash/MSYS2)
 # Matches install.sh v2.6.0
+#
+# Local:
+#   ./uninstall.sh              interactive
+#   ./uninstall.sh --dry-run    list what would be removed, remove nothing
+#   ./uninstall.sh --yes        unattended
+#
+# One-line uninstall:
+#   curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash -s -- --yes
+#
+# An install that set HORUS_PREFIX has to be uninstalled with the same value —
+# install.sh:228-241 puts bin/, cache/ and both state files under that prefix
+# instead of ~/.horus, and records the prefix nowhere outside it:
+#   HORUS_PREFIX=/opt/horus ./uninstall.sh --yes
+#
+# The piped form has worked since the empty-BASH_SOURCE guard below was added
+# and was documented nowhere, so nobody could use it. It needs --yes: piped
+# into bash, stdin is the script text rather than a keyboard, so a prompt would
+# read the script's own next line as the answer.
+#
+# --yes is itself the answer to "are you sure"; every later prompt then takes
+# the default printed in its [brackets]. So an unattended run removes HORUS but
+# KEEPS ~/.horus/config.toml, ~/.horus/credentials and the Cargo registry
+# cache: an unattended run must not delete more than a supervised one would by
+# default, and that registry belongs to every Rust project on the machine.
 
 set -e  # Exit on error
+
+# --- Arguments ---
+# Parsed before everything else, including the deps.sh source below, so that
+# --help and --dry-run keep working on a machine where the rest of this script
+# would not.
+DRY_RUN=false
+ASSUME_YES=false
+
+usage() {
+    # Plain text, no colour variables: those come from deps.sh, which has not
+    # been sourced yet at the point --help has to answer.
+    cat <<'USAGE'
+HORUS Uninstallation Script
+
+Usage: uninstall.sh [options]
+   or: curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash -s -- --yes
+
+Options:
+  -n, --dry-run   List everything that would be removed, remove nothing, exit 0.
+  -y, --yes       Do not prompt. Removes HORUS; keeps ~/.horus/config.toml,
+                  ~/.horus/credentials and the Cargo registry cache.
+  -h, --help      Show this message.
+
+Environment:
+  HORUS_PREFIX    The install root that was passed to install.sh. Required to
+                  uninstall such an install: nothing outside that prefix
+                  records where it went.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--dry-run) DRY_RUN=true ;;
+        -y|--yes|--assume-yes) ASSUME_YES=true ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            # Refuse rather than guess. A mistyped flag on a script whose job is
+            # `rm -rf` must not fall through to the interactive path as if it
+            # had never been passed.
+            echo "uninstall.sh: unknown option '$1'" >&2
+            echo "" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
 
 # Get script directory
 # When this script is piped to bash (curl ... | bash) BASH_SOURCE is empty, so
@@ -65,6 +136,62 @@ else
     get_shm_glob() { echo "$(get_shm_parent_dir)/horus_*"; }
     get_shm_logs_path() { echo "$(get_shm_parent_dir)/horus_*/logs"; }
 fi
+
+# ============================================================================
+# PROMPTS
+# ============================================================================
+
+# Ask a yes/no question. $1 is the question, $2 the default ("y" or "n") — both
+# the answer shown capitalised in the hint and the answer --yes takes.
+#
+# Three things the open-coded `read -p` calls this replaces got wrong:
+#   * There was no way to answer without a keyboard, so this script could never
+#     run in CI. That is how uninstall.sh:264 shipped a bash-4-only `mapfile`
+#     that made every macOS run exit 127 before printing a single line: the
+#     only automated check that could reach it was `bash -n`, which parses
+#     mapfile happily.
+#   * Piped from curl, bash reads this script from stdin, so a bare `read`
+#     swallows the script's next line instead of the user's answer. Ask
+#     /dev/tty whenever stdin is not a terminal.
+#   * With neither a terminal nor --yes there is no safe guess. Refuse: quietly
+#     taking a default here deletes files nobody approved.
+confirm() {
+    local question="$1"
+    local default="$2"
+    local hint="[y/N]"
+    local reply=""
+    [ "$default" = "y" ] && hint="[Y/n]"
+
+    if [ "$ASSUME_YES" = true ]; then
+        printf '  %b?%b %s %s --yes\n' "$YELLOW" "$NC" "$question" "$hint"
+        [ "$default" = "y" ]
+        return
+    fi
+
+    if [ -t 0 ]; then
+        read -p "$(printf '  %b?%b %s %s: ' "$YELLOW" "$NC" "$question" "$hint")" -n 1 -r reply
+        echo
+    # Probe by opening, not with `[ -r /dev/tty ]`. Under setsid, cron, a
+    # systemd unit or a container the device node is there and readable while
+    # the open fails with ENXIO, so the test passes, the `read` fails, $reply
+    # stays empty and the default is taken silently — which for the [Y/n]
+    # prompts means answering YES on behalf of a user who is not there. `:`
+    # opens the redirect and reads nothing; 2>/dev/null comes first because
+    # redirections are applied left to right and the failing open is what has
+    # to be silenced.
+    elif : 2>/dev/null < /dev/tty; then
+        read -p "$(printf '  %b?%b %s %s: ' "$YELLOW" "$NC" "$question" "$hint")" -n 1 -r reply < /dev/tty
+        echo
+    else
+        echo ""
+        echo -e "  ${RED}[-]${NC} No terminal available to answer: $question"
+        echo -e "      Re-run with --yes, or with --dry-run to see what would be removed."
+        exit 1
+    fi
+
+    [ -z "$reply" ] && reply="$default"
+    [[ $reply =~ ^[Yy]$ ]]
+}
 
 # ============================================================================
 # PROGRESS BAR FUNCTIONS - Uninstall-specific
@@ -147,8 +274,49 @@ INSTALL_DIRS=("$HOME/.cargo/bin" "$HOME/.local/bin")
 HORUS_DIR="$HOME/.horus"
 CACHE_DIR="$HORUS_DIR/cache"
 TARGET_DIR="$HORUS_DIR/target"
+MANIFEST_FILE="$HORUS_DIR/install_manifest.toml"
 SHM_PARENT="$(get_shm_parent_dir)"
 SHM_GLOB="$(get_shm_glob)"
+
+# Always returns 0 — a bare `[ ... ] && return 0` loop would leave the function
+# exiting non-zero on the "not found" path, and `set -e` would kill the script
+# at the call site.
+add_install_dir() {
+    local known
+    for known in "${INSTALL_DIRS[@]}"; do
+        if [ "$known" = "$1" ]; then
+            return 0
+        fi
+    done
+    INSTALL_DIRS=("$1" "${INSTALL_DIRS[@]}")
+}
+
+# HORUS_PREFIX relocates the install root, and install.sh also consults it when
+# running as root, so neither default above need hold the binary. Same failure
+# as the ~/.local/bin case above: an install location this list does not know
+# about is a binary that survives the uninstall.
+[ -n "${HORUS_PREFIX:-}" ] && add_install_dir "${HORUS_PREFIX}/bin"
+
+# install.sh and `horus self update` record the binary they actually installed
+# in install_manifest.toml. Prefer that over guessing. Only its *directory* is
+# used, and only horus/horus.exe inside that directory is ever removed — the
+# recorded path is never deleted verbatim, because this file is writable by
+# anyone who can write $HOME while this script is sometimes run under sudo.
+# Absence is normal and stays non-fatal: installs predating the manifest, and
+# the "keep my config" branch of a previous uninstall, leave none.
+# Under HORUS_PREFIX install.sh writes the manifest there rather than in
+# ~/.horus, so read whichever one exists. Only the READ location moves:
+# MANIFEST_FILE stays the ~/.horus copy that the step-4 cleanup removes, and the
+# prefix copy is removed with the rest of the prefix further down.
+_manifest_read="$MANIFEST_FILE"
+[ -n "${HORUS_PREFIX:-}" ] && [ -f "${HORUS_PREFIX}/install_manifest.toml" ] && _manifest_read="${HORUS_PREFIX}/install_manifest.toml"
+
+if [ -f "$_manifest_read" ]; then
+    _manifest_bin=$(sed -n 's/^[[:space:]]*binary[[:space:]]*=[[:space:]]*"\(.*\)".*$/\1/p' "$_manifest_read" | head -n 1)
+    [ -n "$_manifest_bin" ] && add_install_dir "$(dirname "$_manifest_bin")"
+    unset _manifest_bin
+fi
+unset _manifest_read
 
 # Platform-specific config directories
 case "$PLATFORM" in
@@ -261,10 +429,20 @@ MAN_PAGE_PATHS=(
 # twice.
 for _list in BASH_COMPLETION_PATHS ZSH_COMPLETION_PATHS FISH_COMPLETION_PATHS MAN_PAGE_PATHS; do
     eval "_tmp=(\"\${${_list}[@]}\")"
-    mapfile -t _uniq < <(printf '%s\n' "${_tmp[@]}" | awk '!seen[$0]++')
+    # Read the lines in a loop rather than with `mapfile -t`. mapfile is bash 4+
+    # and macOS still ships /bin/bash 3.2.57, so on every Mac this line was
+    # `mapfile: command not found` — and because this block is unconditional
+    # top-level code under `set -e`, running before the banner and long before
+    # the confirmation prompt, the whole uninstaller exited 127 having removed
+    # nothing and having printed nothing. Process substitution keeps the loop in
+    # this shell, so _uniq survives it.
+    _uniq=()
+    while IFS= read -r _line; do
+        _uniq+=("$_line")
+    done < <(printf '%s\n' "${_tmp[@]}" | awk '!seen[$0]++')
     eval "${_list}=(\"\${_uniq[@]}\")"
 done
-unset _list _tmp _uniq
+unset _list _tmp _uniq _line
 # <<< uninstall.sh: artifact paths <<<
 
 echo ""
@@ -345,6 +523,12 @@ if [ -d "$HORUS_DIR" ]; then
     if [ -f "$HORUS_DIR/install_profile" ]; then
         echo -e "        - install_profile - installation type"
     fi
+    if [ -f "$HORUS_DIR/installed_version" ]; then
+        echo -e "        - installed_version - version gate state"
+    fi
+    if [ -f "$MANIFEST_FILE" ]; then
+        echo -e "        - install_manifest.toml - install record (version, tag, commit)"
+    fi
 else
     echo -e "    ${YELLOW}(~/.horus not found)${NC}"
 fi
@@ -395,6 +579,73 @@ for path in "${MAN_PAGE_PATHS[@]}"; do
 done
 [ $MAN_COUNT -eq 0 ] && echo -e "    ${YELLOW}(no man page found)${NC}"
 
+# Steps 5 and 6 below remove things this listing never mentioned, so neither
+# --dry-run nor the operator staring at the confirmation prompt could see them
+# coming. Same drift that let the completion paths rot: what the script removes
+# and what it says it removes have to be written next to each other.
+echo ""
+echo -e "  ${CYAN}Shell Integration & Platform Data:${NC}"
+EXTRA_COUNT=0
+note_extra() {
+    echo -e "    [x] $1"
+    EXTRA_COUNT=$((EXTRA_COUNT + 1))
+}
+
+case "$PLATFORM" in
+    macos)
+        if [ -d "$HORUS_APP_SUPPORT" ]; then note_extra "$HORUS_APP_SUPPORT/"; fi
+        if [ -d "$HORUS_CACHES" ]; then note_extra "$HORUS_CACHES/"; fi
+        ;;
+    windows)
+        if [ -d "$HORUS_APPDATA" ]; then note_extra "$HORUS_APPDATA/"; fi
+        if [ -d "$HORUS_LOCALAPPDATA" ]; then note_extra "$HORUS_LOCALAPPDATA/"; fi
+        ;;
+    *)
+        # auth.json (registry credentials) and workspaces.json live here.
+        if [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/horus" ]; then
+            note_extra "${XDG_CONFIG_HOME:-$HOME/.config}/horus/ (credentials + workspace registry)"
+        fi
+        ;;
+esac
+
+for _extra in "$HORUS_DIR/env.sh" "$HORUS_DIR/env.fish" "$HOME/.config/fish/conf.d/horus.fish"; do
+    if [ -f "$_extra" ]; then note_extra "$_extra"; fi
+done
+
+for _extra in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
+    if [ -f "$_extra" ] && grep -qE '# >>> horus completions >>>|horus completion|\.horus/env\.sh' "$_extra" 2>/dev/null; then
+        note_extra "$_extra (horus lines only; a .horus-backup copy is kept)"
+    fi
+done
+
+if [ -n "${HORUS_PREFIX:-}" ] && [ "$HORUS_PREFIX" != "$HORUS_DIR" ] && [ -d "$HORUS_PREFIX" ]; then
+    note_extra "$HORUS_PREFIX/ - the HORUS_PREFIX install root: bin/horus, cache/, target/, completions/, env.sh, env.fish and the state files. Anything else in it is left alone."
+fi
+
+if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+    if [ -f "/etc/security/limits.d/99-horus-realtime.conf" ]; then
+        note_extra "/etc/security/limits.d/99-horus-realtime.conf and the rest of the RT config (asks first, needs sudo)"
+    fi
+fi
+
+if command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
+    _extra_pip="pip3"
+    command -v pip3 &> /dev/null || _extra_pip="pip"
+    if $_extra_pip show horus-robotics &> /dev/null 2>&1; then
+        note_extra "Python package horus-robotics (via $_extra_pip, asks first)"
+    fi
+    unset _extra_pip
+fi
+unset _extra
+
+[ $EXTRA_COUNT -eq 0 ] && echo -e "    ${YELLOW}(nothing found)${NC}"
+
+# Offered, not removed by default — and --yes keeps it, so it is listed as a
+# note rather than as an [x].
+if [ -d "${CARGO_HOME:-$HOME/.cargo}/registry" ]; then
+    echo -e "    ${CYAN}[i]${NC} Cargo registry cache is offered at the end; kept unless you answer yes"
+fi
+
 # Estimate total
 TOTAL_KB=$(calculate_sizes)
 if [ $TOTAL_KB -gt 1024 ]; then
@@ -410,13 +661,27 @@ echo ""
 echo -e "${BLUE}--------------------------------------------${NC}"
 echo ""
 
-# Ask for confirmation
-read -p "$(echo -e ${YELLOW}?${NC}) Are you sure you want to uninstall HORUS? [y/N]: " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+# --dry-run stops here. Everything above this line only reads, so this is
+# exactly the non-destructive half of the script — and it is the path CI runs.
+# It is the only check that would have caught uninstall.sh:264 exiting 127 on
+# macOS before the banner ever printed, because the prompt below is what kept
+# this script out of CI in the first place.
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${CYAN}${STATUS_INFO} Dry run: nothing was removed.${NC}"
+    echo -e "  Re-run without --dry-run (add --yes to skip the prompts) to uninstall."
     echo ""
-    echo -e "${GREEN}Uninstallation cancelled.${NC}"
     exit 0
+fi
+
+# Ask for confirmation. --yes IS the answer to this one, which is why it is not
+# routed through confirm(): confirm() answers with the bracketed default, and
+# the default here is "no".
+if [ "$ASSUME_YES" != true ]; then
+    if ! confirm "Are you sure you want to uninstall HORUS?" n; then
+        echo ""
+        echo -e "${GREEN}Uninstallation cancelled.${NC}"
+        exit 0
+    fi
 fi
 
 echo ""
@@ -537,10 +802,7 @@ if [ -d "$HORUS_DIR" ]; then
         [ "$HAS_CONFIG" = true ] && echo "      - config.toml (settings)"
         [ "$HAS_CREDENTIALS" = true ] && echo "      - credentials (authentication)"
         echo ""
-        read -p "$(echo -e "  ${YELLOW}?${NC}") Remove user configuration and credentials? [y/N]: " -n 1 -r
-        echo
-
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if confirm "Remove user configuration and credentials?" n; then
             rm -rf "$HORUS_DIR"
             echo -e "  ${GREEN}[+]${NC} Removed entire ~/.horus directory"
             REMOVED=$((REMOVED + 1))
@@ -548,7 +810,14 @@ if [ -d "$HORUS_DIR" ]; then
             # Remove everything except config files
             # Note: pre-compiled deps are inside cache/horus@version/target/, so removing cache removes them too
             [ -d "$CACHE_DIR" ] && rm -rf "$CACHE_DIR" && echo -e "  ${GREEN}[+]${NC} Removed cache/ (includes pre-compiled deps)"
+            # Both state files, always together. install.sh and `horus self
+            # update` write installed_version and install_manifest.toml on every
+            # successful install; leaving either behind points the version gate
+            # in version.rs at a HORUS that is no longer on the machine, and the
+            # manifest is the richer of the two (it carries topic_version, the
+            # field that actually decides whether the CLI can read its libs).
             [ -f "$HORUS_DIR/installed_version" ] && rm -f "$HORUS_DIR/installed_version"
+            [ -f "$MANIFEST_FILE" ] && rm -f "$MANIFEST_FILE"
             [ -f "$HORUS_DIR/install_profile" ] && rm -f "$HORUS_DIR/install_profile"
             echo -e "  ${CYAN}[i]${NC} Kept user configuration files"
             REMOVED=$((REMOVED + 1))
@@ -561,6 +830,37 @@ if [ -d "$HORUS_DIR" ]; then
     fi
 else
     echo -e "  ${YELLOW}[-]${NC} ~/.horus not found (already removed?)"
+fi
+
+# HORUS_PREFIX install roots.
+# install.sh:228-241 puts everything under $HORUS_PREFIX when it is set — bin/,
+# cache/ and both state files — instead of under ~/.horus, so the block above
+# cleans nothing for those installs. Enumerate what the installer writes rather
+# than `rm -rf "$HORUS_PREFIX"`: the prefix is a directory the operator named
+# (/opt/horus, but nothing stops /usr/local), it can predate HORUS, and a
+# mistyped value must not take the rest of it along. config.toml and credentials
+# are left for the same reason they are in ~/.horus. The rmdirs fail harmlessly
+# when anything else still lives there.
+if [ -n "${HORUS_PREFIX:-}" ] && [ "$HORUS_PREFIX" != "$HORUS_DIR" ] && [ -d "$HORUS_PREFIX" ]; then
+    for _artifact in \
+        "$HORUS_PREFIX/cache" \
+        "$HORUS_PREFIX/target" \
+        "$HORUS_PREFIX/completions" \
+        "$HORUS_PREFIX/installed_version" \
+        "$HORUS_PREFIX/install_manifest.toml" \
+        "$HORUS_PREFIX/install_profile" \
+        "$HORUS_PREFIX/env.sh" \
+        "$HORUS_PREFIX/env.fish"
+    do
+        if [ -e "$_artifact" ]; then
+            rm -rf "$_artifact"
+            echo -e "  ${GREEN}[+]${NC} Removed $_artifact"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
+    unset _artifact
+    rmdir "$HORUS_PREFIX/bin" 2>/dev/null || true
+    rmdir "$HORUS_PREFIX" 2>/dev/null || true
 fi
 
 #=====================================
@@ -616,9 +916,7 @@ if command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
     command -v pip3 &> /dev/null || PIP_CMD="pip"
     if $PIP_CMD show horus-robotics &> /dev/null 2>&1; then
         echo ""
-        read -p "$(echo -e "  ${YELLOW}?${NC}") Uninstall Python package horus-robotics? [Y/n]: " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        if confirm "Uninstall Python package horus-robotics?" y; then
             $PIP_CMD uninstall -y horus-robotics 2>/dev/null || true
             echo -e "  ${GREEN}[+]${NC} Uninstalled Python horus-robotics"
             REMOVED=$((REMOVED + 1))
@@ -631,17 +929,33 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
     RT_CLEANED=false
     if [ -f "/etc/security/limits.d/99-horus-realtime.conf" ]; then
         echo ""
-        read -p "$(echo -e "  ${YELLOW}?${NC}") Remove RT scheduling config (requires sudo)? [Y/n]: " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            sudo rm -f /etc/security/limits.d/99-horus-realtime.conf 2>/dev/null && RT_CLEANED=true
-            sudo rm -f /etc/sysctl.d/99-horus-realtime.conf 2>/dev/null
-            if [ -f "/etc/systemd/system/horus-performance-governor.service" ]; then
-                sudo systemctl disable horus-performance-governor.service 2>/dev/null || true
-                sudo rm -f /etc/systemd/system/horus-performance-governor.service 2>/dev/null
+        if confirm "Remove RT scheduling config (requires sudo)?" y; then
+            # `sudo -n` under --yes: an unattended run has no terminal for a
+            # password prompt, so plain sudo would either block on one or sit
+            # through its timeout before failing.
+            SUDO="sudo"
+            [ "$ASSUME_YES" = true ] && SUDO="sudo -n"
+            # `if sudo ...; then` rather than `sudo ... && RT_CLEANED=true`: the
+            # latter ends an && list with a failing command, which under `set -e`
+            # aborts the entire uninstall here — after the binary and ~/.horus
+            # are already gone — whenever sudo is declined or unavailable.
+            if $SUDO rm -f /etc/security/limits.d/99-horus-realtime.conf 2>/dev/null; then
+                RT_CLEANED=true
             fi
-            [ "$RT_CLEANED" = true ] && echo -e "  ${GREEN}[+]${NC} Removed RT scheduling configuration"
-            REMOVED=$((REMOVED + 1))
+            $SUDO rm -f /etc/sysctl.d/99-horus-realtime.conf 2>/dev/null || true
+            if [ -f "/etc/systemd/system/horus-performance-governor.service" ]; then
+                $SUDO systemctl disable horus-performance-governor.service 2>/dev/null || true
+                $SUDO rm -f /etc/systemd/system/horus-performance-governor.service 2>/dev/null || true
+            fi
+            if [ "$RT_CLEANED" = true ]; then
+                echo -e "  ${GREEN}[+]${NC} Removed RT scheduling configuration"
+                REMOVED=$((REMOVED + 1))
+            else
+                # Was counted as Removed unconditionally before, so a declined
+                # sudo reported a cleanup that never happened.
+                echo -e "  ${YELLOW}[!]${NC} Could not remove RT scheduling config (sudo declined or unavailable)"
+                SKIPPED=$((SKIPPED + 1))
+            fi
         fi
     fi
 fi
@@ -721,10 +1035,7 @@ if [ -d "$CARGO_REGISTRY" ]; then
     echo -e "  ${CYAN}[i]${NC} Cargo registry cache: $registry_size"
     echo -e "      This contains downloaded crates for all Rust projects."
     echo ""
-    read -p "$(echo -e "  ${YELLOW}?${NC}") Clean Cargo registry cache? (affects all Rust projects) [y/N]: " -n 1 -r
-    echo
-
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if confirm "Clean Cargo registry cache? (affects all Rust projects)" n; then
         rm -rf "$CARGO_REGISTRY"
         echo -e "  ${GREEN}[+]${NC} Cleaned Cargo registry cache"
         REMOVED=$((REMOVED + 1))
@@ -762,5 +1073,6 @@ echo ""
 echo -e "${CYAN}Notes:${NC}"
 echo -e "  - Project-local .horus/ directories were NOT removed"
 echo -e "  - System packages (libssl-dev, etc.) were NOT removed (may be used by other projects)"
-echo -e "  - To reinstall: ${CYAN}./install.sh${NC}"
+echo -e "  - To reinstall: ${CYAN}./install.sh${NC}, or"
+echo -e "    ${CYAN}curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash${NC}"
 echo ""

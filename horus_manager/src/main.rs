@@ -72,7 +72,7 @@ Development:
 
 Maintenance:
   doctor            Check this machine (toolchains, RT, shared memory)
-  self update       Update the horus CLI to latest version
+  self update       Update the horus CLI and its cached source (--check to preview)
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
   schema            Print the horus.toml JSON Schema (for editor validation)
@@ -879,7 +879,7 @@ enum Commands {
         undo: bool,
     },
 
-    /// Manage the horus CLI itself
+    /// Manage the horus CLI itself (see `horus self update`)
     #[command(name = "self")]
     Self_ {
         #[command(subcommand)]
@@ -1335,9 +1335,18 @@ enum OwnerCommands {
 
 #[derive(Subcommand)]
 enum SelfCommands {
-    /// Update the horus CLI to the latest version
+    /// Update the horus CLI and its cached source to the latest release
+    ///
+    /// Resolves the newest release from github.com/softmata/horus, downloads
+    /// the binary published for this platform, verifies it against the
+    /// release's SHA256SUMS, replaces this binary in place, and refreshes
+    /// ~/.horus/cache/horus@<version> at the same tag. The CLI and the source
+    /// your Rust projects are built against always move together; a mismatch
+    /// between them is what makes a node unable to read its own topics.
+    ///
+    /// Exits non-zero if the update — or the check for one — fails.
     Update {
-        /// Only check for updates, don't install
+        /// Report what an update would do, without installing anything
         #[arg(long = "check")]
         check_only: bool,
     },
@@ -3133,10 +3142,27 @@ fn run_command(command: Commands) -> HorusResult<()> {
             dry_run,
         } => {
             commands::pkg::run_update(package, global, dry_run)?;
-            // Check for CLI updates (non-blocking hint)
-            if let Ok(Some(latest)) = commands::upgrade::check_latest_version() {
+            // Advisory hint that a newer CLI exists. It used to ask the package
+            // registry (horusrobotics.dev/api/packages/horus/latest), which
+            // 404s, so it never fired; it now asks the same GitHub releases API
+            // that `horus self update` resolves against.
+            //
+            // A failed check is swallowed here and only here: this is a
+            // footnote to `horus update`, not the command the user ran. The one
+            // command that owes them an error when the check cannot run is
+            // `horus self update`, which returns it.
+            if let Ok(latest) = commands::upgrade::check_latest_version() {
                 let current = env!("CARGO_PKG_VERSION");
-                if latest != current {
+                // Compared as semver, not as strings, so a development build
+                // ahead of the last release is not told to "upgrade" backwards.
+                let newer = matches!(
+                    (
+                        semver::Version::parse(&latest),
+                        semver::Version::parse(current),
+                    ),
+                    (Ok(l), Ok(c)) if l > c
+                );
+                if newer {
                     println!(
                         "\n  {} horus {} available (current: {}). Run `horus self update` to upgrade.",
                         "hint:".yellow(),
@@ -3463,9 +3489,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Self_ { command } => match command {
+            // The error is propagated, not printed and discarded: a failed
+            // update — or a failed check for one — has to exit non-zero, or a
+            // CI job pinning a version cannot tell that it did not happen.
             SelfCommands::Update { check_only } => {
-                commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
-                Ok(())
+                commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)
             }
         },
 
