@@ -7229,11 +7229,14 @@ fn mp_send_no_overshoot_corruption() {
 
     let mut seen = std::collections::HashSet::new();
     let mut count = 0u64;
-    // Generous on purpose. The drain finishes in milliseconds on an idle box;
-    // the budget exists only so a stall fails the test instead of hanging it,
-    // and 8 s was tight enough that a loaded CI runner could starve the last
-    // couple of messages on the producers' yield_now retry loop and report it
-    // as corruption.
+    // Generous on purpose: the drain finishes in milliseconds on an idle box,
+    // and the budget exists only so a stall fails the test instead of hanging
+    // it. Raised from 8s when Windows reported 1798/1800, on the theory that a
+    // loaded runner had starved the last messages on the producers' yield_now
+    // retry loop. That theory was wrong — at 30s Windows reports 1792/1800, so
+    // the missing messages are not late, they never arrive. Left at 30s anyway,
+    // because a budget that cannot be the cause makes the next failure easier
+    // to read; the Windows gap is tracked where that job skips this test.
     let deadline = Instant::now() + 30_u64.secs();
     while count < total && Instant::now() < deadline {
         match consumer.try_recv() {
