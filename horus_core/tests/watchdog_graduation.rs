@@ -570,3 +570,104 @@ fn test_enter_safe_state_on_stalled_node() {
         "enter_safe_state() should be called when stalled node exceeds watchdog+deadline"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Node that panics on EVERY tick after the first few.
+//
+// This is the shape the watchdog used to be blind to. A node that hangs is
+// caught either way -- it never returns, so no further feed happens. A node
+// that keeps panicking is different: the scheduler catches the unwind, logs it,
+// and dispatches it again next tick. While the watchdog was fed in
+// `prepare_node_tick`, i.e. BEFORE the node ran, every one of those dispatches
+// fed it, so a node that had not completed a single tick since startup kept a
+// green watchdog for as long as the process lived.
+// ---------------------------------------------------------------------------
+
+struct PanicsEveryTickNode {
+    name: String,
+    tick_count: Arc<AtomicU64>,
+    healthy_ticks: u64,
+    safe_state_entered: Arc<AtomicBool>,
+}
+
+impl PanicsEveryTickNode {
+    fn new(prefix: &str, healthy_ticks: u64) -> (Self, Arc<AtomicU64>, Arc<AtomicBool>) {
+        let ticks = Arc::new(AtomicU64::new(0));
+        let safe = Arc::new(AtomicBool::new(false));
+        let node = Self {
+            name: format!("{prefix}_{}", std::process::id()),
+            tick_count: ticks.clone(),
+            healthy_ticks,
+            safe_state_entered: safe.clone(),
+        };
+        (node, ticks, safe)
+    }
+}
+
+impl Node for PanicsEveryTickNode {
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+
+    fn tick(&mut self) {
+        let count = self.tick_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if count > self.healthy_ticks {
+            panic!("intentional: this node never completes a tick again");
+        }
+    }
+
+    fn enter_safe_state(&mut self) {
+        self.safe_state_entered.store(true, Ordering::SeqCst);
+    }
+
+    fn is_safe_state(&self) -> bool {
+        self.safe_state_entered.load(Ordering::SeqCst)
+    }
+}
+
+/// A node that never completes a tick must not keep a green watchdog.
+///
+/// The watchdog is fed on COMPLETION, not on dispatch. While the main loop fed
+/// it in `prepare_node_tick` -- before the node ran -- the only thing a green
+/// watchdog proved was that the dispatch loop had reached this node's index. A
+/// node that panicked on every tick was fed exactly as often as a healthy one.
+///
+/// A hung node was always caught, because it never returns and so is never fed
+/// again. This is the case that was not: dispatched every tick, completing
+/// none. The RT executor already fed in its `Ok(_)` arm ("FIX #2"); the main
+/// loop did not, so this covers a BestEffort node, which is the path that was
+/// wrong.
+///
+/// Asserts on `watchdog_expirations` rather than `enter_safe_state`: safing is
+/// queued on the owning executor and, as the emergency-stop message says
+/// itself, "if the node is hung inside tick() that thread cannot run it, so the
+/// node's own safing may never execute". The expiry counter is the fact; the
+/// safing call is a best-effort consequence of it.
+#[test]
+fn a_node_that_only_panics_does_not_keep_its_watchdog_fed() {
+    let _shm_guard = cleanup_stale_shm();
+    let (node, ticks, _safe) = PanicsEveryTickNode::new("wd_panicker", 2);
+
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+    sched.add(node).watchdog(100_u64.ms()).build().unwrap();
+    let _ = sched.run_for(Duration::from_millis(900));
+
+    let dispatched = ticks.load(Ordering::SeqCst);
+    assert!(
+        dispatched > 5,
+        "node should have been dispatched repeatedly, got {dispatched}"
+    );
+
+    let expirations = sched
+        .safety_stats()
+        .map(|s| s.watchdog_expirations())
+        .unwrap_or(0);
+    assert!(
+        expirations > 0,
+        "a node dispatched {dispatched} times that completed none of them must \
+         expire its watchdog, got {expirations} expirations. Feeding in \
+         prepare_node_tick refreshed it on every one of those dispatches, so a \
+         node that had not finished a tick since startup stayed green for the \
+         life of the process."
+    );
+}

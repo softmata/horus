@@ -4343,17 +4343,6 @@ impl Scheduler {
             self.nodes[i].last_tick = Some(Instant::now());
         }
 
-        // Feed the watchdog for every node registered as critical — RT nodes, AND
-        // non-RT nodes with an explicit `.watchdog()` (which `apply_safety_config`
-        // also registers). Gating this on `is_rt_node` alone left a non-RT watchdog
-        // node registered but never fed, so its watchdog expired and spuriously
-        // emergency-stopped the whole scheduler (SCHED-H2).
-        if self.nodes[i].is_rt_node || self.nodes[i].node_watchdog.is_some() {
-            if let Some(ref monitor) = self.monitor.safety {
-                monitor.feed_watchdog(&self.nodes[i].name);
-            }
-        }
-
         // Begin recording tick
         if let Some(ref mut recorder) = self.nodes[i].recorder {
             recorder.begin_tick(self.tick.current);
@@ -4576,6 +4565,35 @@ impl Scheduler {
         tick_duration: Duration,
         tick_result: std::thread::Result<()>,
     ) -> bool {
+        // Feed the watchdog for every node registered as critical — RT nodes, AND
+        // non-RT nodes with an explicit `.watchdog()` (which `apply_safety_config`
+        // also registers). Gating this on `is_rt_node` alone left a non-RT watchdog
+        // node registered but never fed, so its watchdog expired and spuriously
+        // emergency-stopped the whole scheduler (SCHED-H2).
+        //
+        // This is fed AFTER the tick and only when the tick actually completed.
+        // It used to be fed in `prepare_node_tick`, i.e. BEFORE the node ran,
+        // which made it a liveness check on the SCHEDULER rather than on the
+        // node: the only thing it proved was that the dispatch loop had reached
+        // this index. A node whose `tick()` hung forever never returned here, so
+        // the feed had already happened and its watchdog stayed green for as long
+        // as the process lived — the exact failure a watchdog exists to catch. A
+        // node that panicked was fed just the same, and so was a node whose tick
+        // body had been silently disabled (a failed C++ node ticks as a no-op).
+        //
+        // Reaching this point means `run_node_tick` returned, so the node either
+        // completed or unwound; `tick_result.is_ok()` separates those. Both
+        // dispatch paths funnel here — the sequential one directly, and the
+        // parallel one through the `results_rx` drain — so there is one place
+        // where "this node made progress" is decided.
+        if tick_result.is_ok()
+            && (self.nodes[i].is_rt_node || self.nodes[i].node_watchdog.is_some())
+        {
+            if let Some(ref monitor) = self.monitor.safety {
+                monitor.feed_watchdog(&self.nodes[i].name);
+            }
+        }
+
         // Profiling and monitoring
         {
             let node_name = self.nodes[i].name.as_ref();
