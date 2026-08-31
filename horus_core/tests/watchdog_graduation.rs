@@ -671,3 +671,89 @@ fn a_node_that_only_panics_does_not_keep_its_watchdog_fed() {
          life of the process."
     );
 }
+
+// ---------------------------------------------------------------------------
+// A node that ticks perfectly well and records whether it was ever safed.
+// ---------------------------------------------------------------------------
+
+struct SafeStateRecordingNode {
+    name: String,
+    tick_count: Arc<AtomicU64>,
+    safe_state_entered: Arc<AtomicBool>,
+}
+
+impl SafeStateRecordingNode {
+    fn new(prefix: &str) -> (Self, Arc<AtomicU64>, Arc<AtomicBool>) {
+        let ticks = Arc::new(AtomicU64::new(0));
+        let safe = Arc::new(AtomicBool::new(false));
+        let node = Self {
+            name: format!("{prefix}_{}", std::process::id()),
+            tick_count: ticks.clone(),
+            safe_state_entered: safe.clone(),
+        };
+        (node, ticks, safe)
+    }
+}
+
+impl Node for SafeStateRecordingNode {
+    fn name(&self) -> &'static str {
+        Box::leak(self.name.clone().into_boxed_str())
+    }
+
+    fn tick(&mut self) {
+        self.tick_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn enter_safe_state(&mut self) {
+        self.safe_state_entered.store(true, Ordering::SeqCst);
+    }
+
+    fn is_safe_state(&self) -> bool {
+        self.safe_state_entered.load(Ordering::SeqCst)
+    }
+}
+
+/// An emergency stop has to stop the ROBOT, not just the scheduler.
+///
+/// Halting the tick loop stops new commands being computed; it does not change
+/// what the hardware was last told. A motor holds its last setpoint. The
+/// emergency-stop path used to print, record a blackbox event and return,
+/// leaving `enter_safe_state()` -- the callback whose entire purpose is putting
+/// an actuator somewhere safe -- uncalled. The shutdown that follows calls
+/// `shutdown()`, which is a lifecycle hook, not a safety one.
+///
+/// Here a peer node melts down and drives the watchdog ladder to its 3x
+/// emergency stop. The bystander ticks perfectly throughout and must still be
+/// safed, because an e-stop is a machine-wide event.
+#[test]
+fn an_emergency_stop_drives_nodes_to_their_safe_state() {
+    let _shm_guard = cleanup_stale_shm();
+    let (bad, _bad_ticks, _bad_safe) = PanicsEveryTickNode::new("estop_trigger", 2);
+    let (bystander, good_ticks, good_safe) = SafeStateRecordingNode::new("estop_bystander");
+
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+    sched.add(bad).watchdog(100_u64.ms()).build().unwrap();
+    sched.add(bystander).build().unwrap();
+    let _ = sched.run_for(Duration::from_millis(1200));
+
+    assert!(
+        good_ticks.load(Ordering::SeqCst) > 0,
+        "the bystander should have ticked normally"
+    );
+
+    let stopped = sched
+        .safety_stats()
+        .map(|s| s.watchdog_expirations() > 0)
+        .unwrap_or(false);
+    if !stopped {
+        eprintln!("skipping: the ladder did not reach an emergency stop in this run");
+        return;
+    }
+
+    assert!(
+        good_safe.load(Ordering::SeqCst),
+        "an emergency stop must drive every node to its safe state. This node \
+         ticked cleanly the whole time, which is exactly the node still holding \
+         an actuator at its last commanded value when the stop fires."
+    );
+}

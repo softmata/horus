@@ -3437,6 +3437,38 @@ impl Scheduler {
 
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
+
+                // Drive every node to its safe state before unwinding.
+                //
+                // Halting the tick loop stops new commands being COMPUTED. It
+                // does not change what the hardware was last told: a motor
+                // holds its last setpoint, and the shutdown sequence that
+                // follows calls `shutdown()`, which is a lifecycle hook, not a
+                // safety one. `enter_safe_state()` is the callback whose entire
+                // purpose is putting the actuator somewhere safe, and the
+                // emergency-stop path did not call it -- so "emergency stop"
+                // meant "stop the scheduler", not "stop the robot".
+                //
+                // Nodes the scheduler still owns are safed here. Nodes an
+                // executor took are safed by their owner: `enter_safe_state()`
+                // needs `&mut dyn Node`, which only the owning thread has, so
+                // the main thread can only ask. That request is the same one
+                // the graduated watchdog ladder uses.
+                for registered in self.nodes.iter_mut() {
+                    if !registered.initialized {
+                        continue;
+                    }
+                    if Self::guard_fault_callback(|| registered.node.enter_safe_state()) {
+                        print_line(&format!(
+                            "  WARNING: '{}' panicked in enter_safe_state(); it did NOT reach a safe state",
+                            registered.name
+                        ));
+                    }
+                }
+                if let Some(ref controls) = self.node_controls {
+                    controls.request_safe_state_all();
+                }
+
                 if let Some(ref bb) = self.monitor.blackbox {
                     bb.lock().unwrap_or_else(|p| p.into_inner()).record(
                         super::blackbox::BlackBoxEvent::EmergencyStop {

@@ -852,6 +852,25 @@ impl NodeControlMap {
     }
 
     /// Ask the executor that owns `name` to safe the node on its next pass.
+    /// Request safing for EVERY registered node.
+    ///
+    /// The emergency-stop path needs this: halting the tick loop stops new
+    /// commands being computed, but it does not change what the hardware was
+    /// last told, and the nodes an executor owns cannot be reached from the
+    /// main thread at all. Each executor honours the request from its own
+    /// thread, which is the only place `enter_safe_state()` can legally run.
+    pub fn request_safe_state_all(&self) {
+        for c in self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            c.safe_state_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     pub fn request_safe_state(&self, name: &str) {
         if let Some(c) = self
             .inner
