@@ -156,7 +156,13 @@ struct Consumer<'a, const CAP: usize> {
 
 impl<'a, const CAP: usize> Consumer<'a, CAP> {
     fn new(ring: &'a Ring<CAP>) -> Self {
-        Self { ring, local_tail: 0, delivered: 0, seen_epoch: 0, unpublished: 0 }
+        Self {
+            ring,
+            local_tail: 0,
+            delivered: 0,
+            seen_epoch: 0,
+            unpublished: 0,
+        }
     }
 
     /// Mirrors the migration branch: reload head/tail and resync the cached
@@ -169,12 +175,7 @@ impl<'a, const CAP: usize> Consumer<'a, CAP> {
         self.seen_epoch = epoch;
         let new_head = self.ring.head.load(Ordering::Acquire);
         let shared_tail = self.ring.tail.load(Ordering::Acquire);
-        self.local_tail = resynced_tail(
-            self.local_tail,
-            shared_tail,
-            new_head,
-            self.delivered > 0,
-        );
+        self.local_tail = resynced_tail(self.local_tail, shared_tail, new_head, self.delivered > 0);
     }
 
     /// Publish the cached position to the shared tail. Batched: the real
