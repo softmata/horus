@@ -90,8 +90,29 @@ impl Node for CppNode {
     }
 
     fn tick(&mut self) {
+        // A dead C++ node must not look like a healthy one.
+        //
+        // This used to `return` quietly once `failed` was set, and to swallow
+        // the panic that set it. Both are indistinguishable from a successful
+        // tick to everything upstream: the scheduler feeds the node's watchdog
+        // on a completed tick, `FailurePolicy` is driven by tick panics and saw
+        // none, and `is_failed()` is read nowhere outside this file's own unit
+        // tests. So a C++ node that died on its first tick kept a green watchdog
+        // and a clean failure record for the life of the process, while its
+        // control loop did nothing. On a node driving an actuator that is the
+        // worst possible way to fail.
+        //
+        // The C++ unwind is still caught HERE and never crosses the FFI
+        // boundary -- that part was always right and is unchanged. What is new
+        // is that the adapter then raises a *Rust* panic, from Rust code, which
+        // is exactly what the scheduler's `catch_unwind` around `tick()` is for.
+        // The failure becomes visible to the machinery built to react to it
+        // instead of being absorbed by the adapter.
         if self.failed {
-            return;
+            panic!(
+                "C++ node '{}' is disabled after {} panic(s) in its tick callback",
+                self.name, self.fail_count
+            );
         }
 
         let tick_fn = &mut self.tick_fn;
@@ -114,6 +135,10 @@ impl Node for CppNode {
                  Node is now disabled (fail_count={}).",
                 self.name, msg, self.fail_count
             ));
+            panic!(
+                "C++ node '{}' panicked in its tick callback: {}",
+                self.name, msg
+            );
         }
     }
 
@@ -497,8 +522,16 @@ mod tests {
         );
     }
 
+    /// A C++ panic is caught at the boundary and then REPORTED, not absorbed.
+    ///
+    /// This test used to assert the opposite -- "subsequent ticks are no-ops
+    /// (not panics)" -- which is what made a dead C++ node indistinguishable
+    /// from a healthy one: a quiet return feeds the watchdog and satisfies
+    /// FailurePolicy. The C++ unwind is still caught here and never crosses the
+    /// FFI boundary; what escapes now is a Rust panic raised from Rust code,
+    /// which the scheduler's catch_unwind around tick() is built to handle.
     #[test]
-    fn panic_in_tick_caught_and_node_disabled() {
+    fn panic_in_tick_is_caught_at_the_boundary_and_reported_upward() {
         let mut node = CppNode::new(
             "panicking".to_string(),
             Box::new(|| panic!("test panic from tick")),
@@ -506,13 +539,20 @@ mod tests {
 
         assert!(!node.is_failed());
 
-        // First tick panics — but catch_unwind catches it
-        node.tick();
+        // The C++ unwind is caught; a Rust panic is raised in its place.
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.tick()));
+        assert!(first.is_err(), "the first failure must reach the scheduler");
         assert!(node.is_failed(), "node should be marked failed after panic");
 
-        // Subsequent ticks are no-ops (not panics)
-        node.tick();
-        node.tick();
+        // And it keeps reporting: a disabled node must never read as a healthy
+        // tick, or its watchdog is refreshed forever by a node doing nothing.
+        for _ in 0..2 {
+            let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.tick()));
+            assert!(
+                again.is_err(),
+                "a disabled node must keep reporting failure, not return quietly"
+            );
+        }
         assert!(node.is_failed(), "still failed");
     }
 
@@ -521,18 +561,27 @@ mod tests {
         // catch_unwind protects against panics from Rust closures
         // (not extern "C" panics — those abort in Rust 2024+).
         // This test verifies the Rust closure path used by CppNode.
+        //
+        // The property under test is that the callback's unwind is contained at
+        // the boundary and the PROCESS survives -- that is unchanged. What the
+        // adapter does after containing it changed: it re-raises a Rust panic so
+        // the scheduler learns the node is dead, instead of returning quietly
+        // and reading as a healthy tick.
         let mut node = CppNode::new(
             "rust_panicker".to_string(),
             Box::new(|| panic!("rust closure panic")),
         );
 
-        // Panic caught — process survives
-        node.tick();
+        // Contained at the boundary: this thread lives to run the assertion.
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.tick()));
+        assert!(first.is_err(), "the failure is reported, not absorbed");
         assert!(node.is_failed());
 
-        // Subsequent ticks are no-ops
-        node.tick();
-        node.tick();
+        // Still reporting, still not aborting the process.
+        for _ in 0..2 {
+            let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.tick()));
+            assert!(again.is_err());
+        }
     }
 
     #[test]
