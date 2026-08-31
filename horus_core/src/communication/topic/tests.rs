@@ -8978,12 +8978,12 @@ fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
     // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
     // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
     // to a multi-producer backend has to make room for the separate stamp array
-    // (+ capacity*8 = 9856). Which backend the migration settles on depends on
-    // how the writers and the reader interleave, so a single round does not
-    // reliably reach it — hence the retries, and the assertion afterwards that
-    // at least one round actually did.
+    // (+ capacity*8 = 9856). Each round now asks for that migration directly, so
+    // one would do; the rounds re-run the race against fresh interleavings, and
+    // the assertion afterwards still refuses to let the test pass having grown
+    // nothing.
     let mut grew = false;
-    for _ in 0..16 {
+    for _ in 0..4 {
         if run_one_grow_race_round() {
             grew = true;
         }
@@ -9002,27 +9002,36 @@ fn run_one_grow_race_round() -> bool {
     let len_before = t.ring.storage.len();
 
     let n_writers = 3;
-    let barrier = Arc::new(Barrier::new(n_writers + 1));
+    // writers + reader + this thread, which drives the remap
+    let barrier = Arc::new(Barrier::new(n_writers + 2));
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let writers: Vec<_> = (0..n_writers)
         .map(|w| {
             let t = t.clone();
             let b = barrier.clone();
+            let stop = stop.clone();
             test_spawn(move || {
                 b.wait();
-                for i in 0..400u64 {
+                let mut i = 0u64;
+                // Bounded so a migration that never lands cannot spin forever.
+                while !stop.load(Ordering::Relaxed) && i < 2_000_000 {
                     let v = (w as u64) * 10_000 + i;
                     t.send([v, v, v, v]);
+                    i += 1;
                 }
             })
         })
         .collect();
 
+    // Published so this thread can wait for the reader to be genuinely mid-flight
+    // before it forces the remap, rather than remapping an idle ring.
+    let seen_count = Arc::new(AtomicU64::new(0));
     let reader = {
         let t = t.clone();
         let b = barrier.clone();
         let stop = stop.clone();
+        let seen_count = seen_count.clone();
         test_spawn(move || {
             b.wait();
             let mut seen = 0u64;
@@ -9031,6 +9040,7 @@ fn run_one_grow_race_round() -> bool {
                 if let Some(v) = t.recv() {
                     assert_eq!(v[0], v[3], "torn read across the remap");
                     seen += 1;
+                    seen_count.store(seen, Ordering::Relaxed);
                 }
                 std::hint::spin_loop();
             }
@@ -9038,10 +9048,50 @@ fn run_one_grow_race_round() -> bool {
         })
     };
 
+    // Drive the remap from here instead of waiting for the backend to choose
+    // multi-producer mode on its own. Which mode `migrate_to_optimal` settles on
+    // depends on how the writers and the reader interleave, and on a 2-core CI
+    // runner they interleave in a way that never reaches it — every round then
+    // leaves the mapping its original size and the test guards nothing, which is
+    // exactly what the length assertion caught. Asking for `MpscShm` directly
+    // makes the colo -> split grow happen on any core count, while the sibling
+    // clones above are live and reading through their cached pointers.
+    barrier.wait();
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    // Let real traffic build first, so the remap lands on a reader that is
+    // actively dereferencing its cached pointers rather than on an idle ring.
+    while seen_count.load(Ordering::Relaxed) < 200 && Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
+
+    // Then drive the remap from here instead of waiting for the backend to pick
+    // a growing mode on its own. `migrate_to_optimal` settles on whichever mode
+    // the writer/reader interleaving suggests, and only `FanoutShm` rewrites the
+    // layout from colo to split: that is what adds the `capacity * 8` stamp array
+    // (640 + 1024 + 8192 = 9856 > 8832) and forces the grow. Left to chance it
+    // often lands on `MpscShm`, which changes no geometry — measured here at 2
+    // rounds in 4, and a 2-core CI runner hit 0 in 16, which is what the length
+    // assertion caught.
+    //
+    // The loop condition is the grow itself, not the `MigrationResult`: a
+    // `Success` that the backend immediately migrates back off does not resize
+    // anything, so success is only observable in the mapping.
+    while t.ring.storage.len() == len_before && Instant::now() < deadline {
+        let _ = BackendMigrator::new(t.ring.header()).try_migrate(BackendMode::FanoutShm);
+        std::thread::yield_now();
+    }
+
+    // Keep both sides running across the remap that just happened.
+    let after_remap = seen_count.load(Ordering::Relaxed);
+    while seen_count.load(Ordering::Relaxed) < after_remap + 200 && Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
+
+    stop.store(true, Ordering::Relaxed);
     for h in writers {
         h.join().unwrap();
     }
-    stop.store(true, Ordering::Relaxed);
     let _seen = reader.join().unwrap();
 
     t.ring.storage.len() > len_before
