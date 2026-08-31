@@ -977,10 +977,22 @@ mod residency_tests {
         // SAFETY: `region` owns a live mapping of `size` bytes for this scope.
         let outcome = unsafe { prefault_span(region.as_ptr(), size) };
         if residency_policy().prefault {
+            // The outcome is a per-platform contract, not one universal answer.
+            // Asserting "not Skipped" everywhere asserted that every platform
+            // has a pre-fault hook, which is false: `prefault_span` has no
+            // portable implementation and returns `Skipped` off Unix by design.
+            #[cfg(unix)]
             assert_ne!(
                 outcome,
                 Residency::Skipped,
-                "a writable file-backed mapping should be pre-faultable on this platform"
+                "a writable file-backed mapping should be pre-faultable on Unix"
+            );
+            #[cfg(not(unix))]
+            assert_eq!(
+                outcome,
+                Residency::Skipped,
+                "prefault_span is a documented no-op off Unix; a real outcome \
+                 here means a hook was added and this test should assert it"
             );
         }
         assert_eq!(

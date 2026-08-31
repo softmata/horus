@@ -9,7 +9,20 @@
 //! - Quantile support accounting (how many observations back a tail figure)
 //! - Normality testing (Shapiro-Wilk, Jarque-Bera, Anderson-Darling)
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize an `f64` that may appear as `null`.
+///
+/// `Statistics::empty` stores `NaN` on purpose — see its doc — and
+/// `serde_json` writes `NaN` as `null`. Without this, that report could be
+/// written and never read back: the regression gate died on a real one with
+/// `invalid type: null, expected f64`, so a single zero-sample benchmark took
+/// down the whole gate rather than being reported as the empty run it was.
+/// Reading `null` back as `NaN` closes the round trip and keeps the "no
+/// samples is not zero latency" property on both sides of the wire.
+pub(crate) fn nan_from_null<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+}
 
 /// Comprehensive statistics for a benchmark run
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,10 +30,13 @@ pub struct Statistics {
     /// Number of samples
     pub count: usize,
     /// Arithmetic mean (ns)
+    #[serde(deserialize_with = "nan_from_null")]
     pub mean: f64,
     /// Median (50th percentile) (ns)
+    #[serde(deserialize_with = "nan_from_null")]
     pub median: f64,
     /// Standard deviation (ns)
+    #[serde(deserialize_with = "nan_from_null")]
     pub std_dev: f64,
     /// Minimum observed value (ns)
     pub min: u64,
@@ -43,8 +59,10 @@ pub struct Statistics {
     /// 99.99th percentile (ns)
     pub p9999: u64,
     /// Bootstrap confidence interval (low, high) at configured level
+    #[serde(deserialize_with = "nan_from_null")]
     pub ci_low: f64,
     /// Bootstrap confidence interval high bound
+    #[serde(deserialize_with = "nan_from_null")]
     pub ci_high: f64,
     /// Confidence level used (e.g., 95.0)
     pub confidence_level: f64,
@@ -1069,5 +1087,37 @@ mod tests {
             "Survival(0) should be ~1, got {}",
             survival_0
         );
+    }
+
+    /// A run that produced no samples has to survive being written and read
+    /// back. `Statistics::empty` stores `NaN` deliberately — a zero would read
+    /// as "0 ns latency", the best possible result, in every table downstream —
+    /// and `serde_json` writes `NaN` as `null`. Nothing taught the deserializer
+    /// to read `null` back, so the regression gate died on the first real
+    /// report containing an empty benchmark with `invalid type: null, expected
+    /// f64` and took the whole gate down with it, rather than reporting the one
+    /// empty run.
+    #[test]
+    fn a_zero_sample_run_survives_the_json_round_trip() {
+        let empty = Statistics::from_samples(&[], 95.0, false);
+        assert!(empty.mean.is_nan(), "empty() must not report 0 ns");
+
+        let json = serde_json::to_string(&empty).expect("serialize");
+        assert!(
+            json.contains("null"),
+            "NaN is expected to serialize as null: {json}"
+        );
+
+        let back: Statistics = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.count, 0);
+        for (name, v) in [
+            ("mean", back.mean),
+            ("median", back.median),
+            ("std_dev", back.std_dev),
+            ("ci_low", back.ci_low),
+            ("ci_high", back.ci_high),
+        ] {
+            assert!(v.is_nan(), "{name} came back as {v}, not NaN");
+        }
     }
 }

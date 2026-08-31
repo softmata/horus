@@ -511,6 +511,7 @@ pub struct BaselineEntry {
     /// Number of samples the statistics were computed from.
     pub count: usize,
     /// Median latency (ns).
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub median: f64,
     /// 95th percentile (ns).
     pub p95: u64,
@@ -528,6 +529,7 @@ pub struct BaselineEntry {
     /// for the report only: two binaries in this tree publish a field named
     /// `cv` computed from different sample populations (one filtered, one not),
     /// so it is never gated.
+    #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub cv: f64,
 }
 
