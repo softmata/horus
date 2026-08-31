@@ -237,6 +237,13 @@ mod tests {
     /// at offset 0, so the overlapping prefix is the same page-cache pages.
     #[test]
     fn a_pointer_taken_before_a_grow_stays_mapped_and_coherent() {
+        // A named Windows section cannot be resized, so `grow` there fails by
+        // design and there is no post-grow pointer to check.
+        if !horus_sys::shm::regions_can_grow() {
+            eprintln!("skipping: regions cannot grow in place on this platform");
+            return;
+        }
+
         let name = format!("core_shm_grow_retain_{}", std::process::id());
         let region = ShmRegion::new(&name, 4096).unwrap();
         let old_ptr = region.as_ptr();

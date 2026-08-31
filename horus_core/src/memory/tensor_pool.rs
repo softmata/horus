@@ -2695,6 +2695,15 @@ mod tests {
     ///
     /// The file here is left with NO `flock` holder, which is what proves the
     /// creator is gone rather than slow.
+    // Unix-only, and deliberately so. Reclaiming an abandoned pool means
+    // proving nobody holds it, which `is_sole_holder` does with
+    // flock(LOCK_EX|LOCK_NB). Off Unix that function returns false
+    // unconditionally -- see its `#[cfg(not(unix))]` arm -- because there is
+    // no way to tell a dead creator from a slow one, so a pool is never
+    // reclaimed and this file stays 'invalid magic' forever. That is the
+    // conservative choice on purpose; asserting the Unix outcome there was
+    // asserting flock exists.
+    #[cfg(unix)]
     #[test]
     fn a_pool_abandoned_before_its_header_was_written_is_reclaimed() {
         let pool_id = 10105;

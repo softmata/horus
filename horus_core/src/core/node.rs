@@ -1551,6 +1551,13 @@ mod event_notifier_gate_tests {
     /// that stops checking `waiters`, a private-vs-shared futex mismatch) this
     /// test takes 30 s and fails, rather than silently reverting event nodes
     /// to millisecond latency the way the old sleep-poll did.
+    // Linux-only: `park::wait` is a FUTEX_WAIT there and a plain
+    // `thread::sleep(timeout)` everywhere else, with `wake_all` a deliberate
+    // no-op -- see the `#[cfg(not(target_os = "linux"))]` pair in `park`. On
+    // any other platform a parked waiter is *supposed* to sleep out its full
+    // timeout, so this test measured the fallback and reported it as the bug
+    // it is meant to catch. What it guards is the Linux fast path.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_publish_wakes_a_parked_waiter_rather_than_letting_it_time_out() {
         let name = format!("wake_node_{}", std::process::id());
@@ -1627,6 +1634,13 @@ mod event_notifier_gate_tests {
     ///
     /// `wake_all` moves no generation, so the waiter wakes, sees the same
     /// counter, re-tests its run flag and leaves without fabricating a tick.
+    // Linux-only: `park::wait` is a FUTEX_WAIT there and a plain
+    // `thread::sleep(timeout)` everywhere else, with `wake_all` a deliberate
+    // no-op -- see the `#[cfg(not(target_os = "linux"))]` pair in `park`. On
+    // any other platform a parked waiter is *supposed* to sleep out its full
+    // timeout, so this test measured the fallback and reported it as the bug
+    // it is meant to catch. What it guards is the Linux fast path.
+    #[cfg(target_os = "linux")]
     #[test]
     fn clearing_the_run_flag_and_waking_releases_a_parked_waiter() {
         let notifier = Arc::new(EventNotifier::new());

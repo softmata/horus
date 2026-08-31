@@ -1141,6 +1141,23 @@ pub fn list_topic_metas() -> Vec<TopicMeta> {
 /// Use this instead of `topic_shm_path` whenever the name was read out of a
 /// `.meta` file, a discovery scan, or anything else another process wrote.
 /// Returns `None` for a name that would escape the topics directory.
+/// Whether an existing region can be grown in place.
+///
+/// True wherever the backing store can be extended and re-mapped: `ftruncate`
+/// plus a fresh `mmap` on Unix. False on Windows, where a region is a *named
+/// section* and a named section cannot be resized once it exists --
+/// `CreateFileMappingW` with the same name returns a handle to the section
+/// that is already there, at its original size, and `MapViewOfFile` for the
+/// larger size then fails with ERROR_ACCESS_DENIED. `grow_unchecked` reports
+/// exactly that.
+///
+/// Tests that exercise the remap race a grow creates have nothing to exercise
+/// where growing cannot happen, and should skip rather than assert against an
+/// error they provoked themselves.
+pub const fn regions_can_grow() -> bool {
+    !cfg!(windows)
+}
+
 /// Whether a region's bytes live in a file another process can open and modify
 /// through the filesystem.
 ///
