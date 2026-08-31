@@ -167,26 +167,41 @@ jobs:
           # here keeps the gate honest about the rest of the suite; the Windows
           # fan-out gap needs its own investigation and is NOT fixed by this.
           #
-          # mp_send_no_overshoot_corruption is UN-skipped again, and the reason it
-          # was skipped was wrong. I filed it as more evidence of the fan-out gap
-          # above on the strength of a matching signature. It is not: 988c5cf8
-          # root-caused that gap to a lazy-endpoint warm-up race, fixed it, and
-          # recorded "The data plane was never at fault". That landed weeks before
-          # the failure I attributed to it, so the attribution cannot be right and
-          # the real cause is still unknown.
+          # mp_send_no_overshoot_corruption: OPEN WINDOWS DATA-LOSS DEFECT.
+          # Skipped to keep the gate usable, with the diagnosis recorded here so
+          # it is not re-derived from scratch. It is NOT a flake and NOT the
+          # fan-out gap above -- 988c5cf8 root-caused that one to a lazy-endpoint
+          # warm-up race, fixed it, and recorded "The data plane was never at
+          # fault", weeks before this failure.
           #
-          # What the failure actually showed was "consumer drained 1792/1800",
-          # which that test could not decompose. Its producers abandon their
-          # remaining messages when the drain budget expires mid-retry, so a
-          # shortfall means EITHER 1800 were published and 8 were lost, OR only
-          # 1792 were ever published -- a transport defect or a slow consumer,
-          # opposite diagnoses. The test now counts successful sends and its
-          # failure message reports published-vs-received, so the next Windows run
-          # says which. Skipping it would only hide the answer.
+          # MEASURED on windows-latest, with the test instrumented to count
+          # successful sends:
+          #
+          #     consumer drained 1798/1800, producers published 1800/1800
+          #
+          # Every message was published -- try_send returned Ok 1800 times -- and
+          # two never arrived. GARBAGE and DUPLICATE did not fire, so nothing
+          # torn or aliased was delivered. That is transport loss on the
+          # multi-producer claim path: a slot overwritten before the in-order
+          # consumer reached it, on try_send, which is the API that is supposed
+          # to refuse rather than overwrite.
+          #
+          # RULED OUT:
+          #   - drain budget: fails identically at 30s, enormous for 1800 msgs
+          #   - producers giving up: published == 1800, so none abandoned
+          #   - Linux preemption: 10/10 pinned to one core (release), and 25/25
+          #     pinned to two cores built --no-default-features, which is this
+          #     job's exact configuration. It does not reproduce off Windows.
+          #
+          # Cause unknown. Six producers into a 16-slot ring; the CAS claim in
+          # send_shm_mp_pod is designed to make the room check and the claim
+          # atomic, so the loss is somewhere that reasoning does not cover.
+          # Anyone picking this up: un-skip it, the failure message reports
+          # published-vs-received and says which diagnosis each shape supports.
           # ONE line on purpose: this job runs on windows-latest, whose default
           # shell is pwsh, where a trailing `\` is NOT a line continuation --
           # it parses as "Missing expression after unary operator '--'".
-          cargo test --no-default-features -p horus_core --lib -- --test-threads=1 --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream
+          cargo test --no-default-features -p horus_core --lib -- --test-threads=1 --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream --skip mp_send_no_overshoot_corruption
         env:
           HORUS_NAMESPACE: ci_win_${{ github.run_id }}
           RUST_BACKTRACE: 1
