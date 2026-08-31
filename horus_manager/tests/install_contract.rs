@@ -226,6 +226,124 @@ fn install_sh_checks_the_rust_version_before_building() {
     );
 }
 
+/// macOS still ships Bash 3.2 as `/bin/bash`, so the curl-piped installer must
+/// not use syntax that only exists in Bash 4+.
+#[test]
+fn install_sh_avoids_bash_four_only_constructs() {
+    let text = install_sh();
+    let forbidden = [
+        ("declare -A", "associative arrays require Bash 4"),
+        ("readarray", "readarray requires Bash 4"),
+        ("mapfile", "mapfile requires Bash 4"),
+        ("coproc", "coproc requires Bash 4"),
+    ];
+
+    for (n, line) in text.lines().enumerate() {
+        let code = shell_code(line);
+        for (needle, reason) in forbidden {
+            assert!(
+                !code.contains(needle),
+                "install.sh:{} uses `{needle}` but {reason}; macOS /bin/bash is \
+                 still 3.2:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+        assert!(
+            !uses_bash_four_case_modification(code),
+            "install.sh:{} uses Bash 4 case-modification expansion; macOS \
+             /bin/bash is still 3.2:\n  {}",
+            n + 1,
+            line.trim()
+        );
+    }
+}
+
+fn uses_bash_four_case_modification(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] != b'$' || bytes[i + 1] != b'{' {
+            i += 1;
+            continue;
+        }
+
+        let body_start = i + 2;
+        let Some(end) = parameter_expansion_end(bytes, body_start) else {
+            i += 2;
+            continue;
+        };
+        let expansion = &code[body_start..end];
+        if parameter_expansion_uses_case_modification(expansion)
+            || uses_bash_four_case_modification(expansion)
+        {
+            return true;
+        }
+        i = end + 1;
+    }
+    false
+}
+
+fn parameter_expansion_end(bytes: &[u8], body_start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut i = body_start;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            depth += 1;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parameter_expansion_uses_case_modification(expansion: &str) -> bool {
+    let bytes = expansion.as_bytes();
+    let mut i = 0;
+
+    if bytes.first() == Some(&b'!') {
+        i += 1;
+    }
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b'[') {
+        while i < bytes.len() && bytes[i] != b']' {
+            i += 1;
+        }
+        if i < bytes.len() {
+            i += 1;
+        }
+    }
+
+    matches!(bytes.get(i), Some(b'^' | b','))
+}
+
+#[test]
+fn bash_four_case_modification_scanner_identifies_constructs() {
+    assert!(uses_bash_four_case_modification("${name^}"));
+    assert!(uses_bash_four_case_modification("${name^^[a-z]}"));
+    assert!(uses_bash_four_case_modification("${name,}"));
+    assert!(uses_bash_four_case_modification("${name,,[A-Z]}"));
+    assert!(uses_bash_four_case_modification("${outer:-${inner^^}}"));
+    // Robustness: an unclosed outer expansion must not hide a later complete
+    // nested Bash 4 expansion on the same line.
+    assert!(uses_bash_four_case_modification("${broken ${name^}"));
+
+    assert!(!uses_bash_four_case_modification("${name:-fallback}"));
+    assert!(!uses_bash_four_case_modification("${name##*/}"));
+    assert!(!uses_bash_four_case_modification(
+        "${name/pattern/replacement}"
+    ));
+}
+
 // ─── Tests must not depend on an external service ───────────────────────────
 
 /// A test that reaches crates.io or PyPI must carry `#[ignore]`.
