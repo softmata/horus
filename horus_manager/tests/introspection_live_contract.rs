@@ -156,6 +156,34 @@ impl LiveNode {
     /// samples, so the interesting values do not exist immediately. Polling
     /// beats a fixed sleep: it is faster when things work and still bounded
     /// when they do not.
+    /// Whether the spawned node process is alive and has registered at all.
+    ///
+    /// Distinguishes "this machine never got the child running" from "the child
+    /// ran and the attribution is wrong". Without it, a saturated box produces
+    /// the same failure text as the defect these tests exist to catch — the
+    /// `wait_for` doc says exactly that, and it is why a bare timeout here is
+    /// not a usable signal.
+    fn node_registered(&self) -> bool {
+        self.cli(&["node", "list"]).contains("ci_test_node")
+    }
+
+    /// Panic with a message that says which of the two it was.
+    fn diagnose(&self, what: &str, topic_output: String) -> ! {
+        if self.node_registered() {
+            panic!(
+                "{what}\nThe node IS registered, so the child ran and this is the \
+                 attribution defect this test exists to catch:\n{topic_output}"
+            );
+        }
+        panic!(
+            "SKIP-WORTHY: the node never registered at all within the deadline, so \
+             `{what}` could not be evaluated — the child did not get far enough on \
+             this machine. This is not evidence about attribution.\nnode list:\n{}\n\
+             topic info:\n{topic_output}",
+            self.cli(&["node", "list"])
+        );
+    }
+
     fn wait_for(&self, args: &[&str], done: impl Fn(&str) -> bool) -> Option<String> {
         // 60s. This is a bound on *failure*, not on success: the loop returns
         // the moment the output is right, so a longer deadline costs nothing
@@ -370,9 +398,9 @@ fn a_topic_built_in_a_constructor_still_names_its_publisher() {
         o.contains("ci_test_node")
     })
     .unwrap_or_else(|| {
-        panic!(
-            "a topic created in the node constructor never got a publisher:\n{}",
-            node.cli(&["topic", "info", &node.topic])
+        node.diagnose(
+            "a topic created in the node constructor never got a publisher",
+            node.cli(&["topic", "info", &node.topic]),
         )
     });
 }
