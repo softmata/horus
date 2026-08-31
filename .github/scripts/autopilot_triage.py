@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from collections import defaultdict
 
 REPO = "softmata/horus"
@@ -22,6 +23,15 @@ RUNS_TO_SCAN = 25
 # A single red run is usually noise on shared runners. Two of the same job is a
 # pattern worth reporting.
 RECURRENCE_THRESHOLD = 2
+# Fetching a full failed-job log per run is the slow part (~43s for 25 runs
+# normally). The job allows 20 minutes; stop well short of that and report what we
+# have rather than getting killed mid-run and producing nothing at all.
+TIME_BUDGET_S = 600
+_START = time.monotonic()
+
+
+def out_of_time() -> bool:
+    return (time.monotonic() - _START) > TIME_BUDGET_S
 
 # Signatures of failures that are NOT code defects. Each entry is
 # (label, explanation, [substrings that identify it]).
@@ -161,7 +171,11 @@ def main() -> int:
     env_hits: dict[str, int] = defaultdict(int)
     unexplained: dict[str, list[dict]] = defaultdict(list)
 
+    skipped = 0
     for run in runs:
+        if out_of_time():
+            skipped += 1
+            continue
         label, evidence = classify(run)
         if label:
             env_hits[label] += 1
@@ -169,6 +183,14 @@ def main() -> int:
         unexplained[run["name"]].append({**run, "evidence": evidence})
 
     print(f"## Autopilot triage — {len(runs)} failed run(s) on {BRANCH}\n")
+
+    # Never let a cap be silent: a truncated scan that looks complete is worse
+    # than one that admits it ran out of time.
+    if skipped:
+        print(
+            f"> Ran out of the {TIME_BUDGET_S}s log-fetch budget with {skipped} "
+            f"run(s) unexamined. This report is incomplete.\n"
+        )
 
     if env_hits:
         print("### Explained by known environment issues (no action)\n")
