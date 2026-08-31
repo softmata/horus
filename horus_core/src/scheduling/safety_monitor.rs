@@ -671,10 +671,24 @@ impl BudgetEnforcer {
         node: &str,
         actual: Duration,
     ) -> Result<(), BudgetViolation> {
+        // `entry(node.to_string())` allocated a String on EVERY call, including
+        // the hit — and this one runs per tick for every RT node with a budget.
+        // It is the same defect the profiler carried, and the note there says
+        // why it matters: malloc has no WCET bound (arena contention -> brk/mmap
+        // -> page fault), so the check that polices timing had unbounded cost of
+        // its own, on the RT thread.
+        //
+        // `contains_key` + `get_mut` borrows the key instead of owning it: two
+        // hash lookups and no allocation in the steady state, against one lookup
+        // and a malloc/free pair before. Only a node's FIRST tick allocates.
+        if !self.node_timing.contains_key(node) {
+            self.node_timing
+                .insert(node.to_string(), NodeTimingState::new(None));
+        }
         let state = self
             .node_timing
-            .entry(node.to_string())
-            .or_insert_with(|| NodeTimingState::new(None));
+            .get_mut(node)
+            .expect("inserted immediately above");
 
         if let Some(mut violation) = state.record_tick(actual) {
             self.overruns.fetch_add(1, Ordering::SeqCst);
@@ -687,11 +701,16 @@ impl BudgetEnforcer {
 
     /// Record a deadline miss with severity for a node.
     pub(crate) fn record_deadline_miss(&mut self, node: &str, severity_us: u64) {
-        let state = self
-            .node_timing
-            .entry(node.to_string())
-            .or_insert_with(|| NodeTimingState::new(None));
+        // As `check_budget`: no allocation on the hit path. This runs on the RT
+        // thread every time a deadline is missed, and the report of a timing
+        // failure must not cost more than the failure did.
+        if let Some(state) = self.node_timing.get_mut(node) {
+            state.record_miss(severity_us);
+            return;
+        }
+        let mut state = NodeTimingState::new(None);
         state.record_miss(severity_us);
+        self.node_timing.insert(node.to_string(), state);
     }
 
     /// Get timing stats for a specific node.
@@ -1132,7 +1151,14 @@ impl SafetyMonitor {
     ) -> DegradationAction {
         let policy = &self.degradation_policy;
         let mut states = self.degradation_states.lock();
-        let state = states.entry(node_name.to_string()).or_default();
+        // As `check_budget`: the RT executor calls this after every deadline
+        // miss, so the hit path must not allocate.
+        if !states.contains_key(node_name) {
+            states.insert(node_name.to_string(), Default::default());
+        }
+        let state = states
+            .get_mut(node_name)
+            .expect("inserted immediately above");
 
         if consecutive_misses >= policy.kill_after && state.stage != DegradationStage::Killed {
             state.stage = DegradationStage::Killed;
