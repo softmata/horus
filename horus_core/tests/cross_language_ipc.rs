@@ -27,6 +27,28 @@
 //! binary*, which is why `--test-threads=1` helps; it has no say over the other
 //! test binaries.
 //!
+//! # The release-mode half of that, which is NOT contention
+//!
+//! Measured separately: in a `--release` build these fail roughly 2 runs in 5
+//! even when the file is run ALONE and serialized, on an idle machine, with the
+//! Python extension built by `maturin develop --release` in a venv exactly as CI
+//! does. The same file passes 22/22 in a debug build under the same conditions.
+//! It reproduces identically on `origin/main`, so it predates the branch this
+//! note was written on.
+//!
+//! The failure shape is always the same: the Python child reports having sent
+//! its full count (`CHILD_SENT:396`) and the Rust side receives 0. So the child
+//! runs and publishes; nothing arrives. A wall-clock window that a loaded
+//! machine closes early does not explain a run where the machine is idle and the
+//! sender completed, which is why "contention" is not the whole story here and
+//! the release/debug split is the thing to chase — most likely a difference in
+//! how fast the Rust side reaches its first `recv()` relative to the child's
+//! startup, since release removes most of the setup cost on one side only.
+//!
+//! Recorded rather than fixed: the fix belongs with someone who can decide
+//! whether the receive loops should wait for a subscriber to register instead of
+//! racing a deadline, which is a change to what these tests assert.
+//!
 //! Widening the windows is not a fix on its own: the loops run to their
 //! deadline rather than stopping once they have what they need, so a longer
 //! window makes every test take the full window even on an idle machine. Two of
