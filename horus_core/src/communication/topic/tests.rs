@@ -7224,11 +7224,14 @@ fn mp_send_no_overshoot_corruption() {
 
     let mut seen = std::collections::HashSet::new();
     let mut count = 0u64;
-    // Generous on purpose. The drain finishes in milliseconds on an idle box;
-    // the budget exists only so a stall fails the test instead of hanging it,
-    // and 8 s was tight enough that a loaded CI runner could starve the last
-    // couple of messages on the producers' yield_now retry loop and report it
-    // as corruption.
+    // Generous on purpose: the drain finishes in milliseconds on an idle box,
+    // and the budget exists only so a stall fails the test instead of hanging
+    // it. Raised from 8s when Windows reported 1798/1800, on the theory that a
+    // loaded runner had starved the last messages on the producers' yield_now
+    // retry loop. That theory was wrong — at 30s Windows reports 1792/1800, so
+    // the missing messages are not late, they never arrive. Left at 30s anyway,
+    // because a budget that cannot be the cause makes the next failure easier
+    // to read; the Windows gap is tracked where that job skips this test.
     let deadline = Instant::now() + 30_u64.secs();
     while count < total && Instant::now() < deadline {
         match consumer.try_recv() {
@@ -7256,13 +7259,14 @@ fn mp_send_no_overshoot_corruption() {
     }
     assert_eq!(
         count, total,
-        "consumer drained {}/{} inside the budget. Note what did NOT fire: no \
-         GARBAGE and no DUPLICATE, so every value that did arrive was intact and \
-         no slot was re-used. Overshoot corruption trips one of those two \
-         immediately and in this test's own terms — so a shortfall here is a \
-         producer starving on its retry loop, which is a liveness result, not \
-         the corruption this test is named for. The old message asserted the \
-         corruption cause outright and was wrong about it on Windows.",
+        "consumer drained {}/{} inside the budget. What did NOT fire: GARBAGE \
+         and DUPLICATE, so everything that did arrive was intact and no slot was \
+         re-used. That narrows it to messages never becoming visible, and it \
+         does NOT distinguish the two ways that happens: overshoot overwriting a \
+         slot before the in-order consumer reached it, or the platform simply \
+         not publishing them. Read the count before guessing which — a shortfall \
+         of a handful out of 1800 that is unchanged by a 30s budget is not a \
+         producer losing a race for CPU.",
         count, total
     );
 }

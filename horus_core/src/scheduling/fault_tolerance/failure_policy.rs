@@ -559,39 +559,56 @@ mod tests {
     /// Exponential backoff increases with each restart: 10ms, 20ms, 40ms, 80ms...
     /// Robotics: sensor driver restarts with increasing delays to avoid
     /// hammering a disconnected device.
+    ///
+    /// The base is 50ms rather than the 10ms the doc line describes because the
+    /// "still in backoff" checks are negative assertions made from a sleep, and
+    /// a sleep can only ever run long. Windows' default timer quantum is about
+    /// 15.6ms, so `sleep(10ms)` there routinely returns after 15-16ms: at a 10ms
+    /// base, the check that 10ms into a 20ms backoff the node is still blocked
+    /// had a 10ms margin against a 15.6ms quantum, and failed on Windows the
+    /// first time that job ran to completion. Every margin below is now at least
+    /// 50ms, several times the quantum. The positive checks are safe either way
+    /// — oversleeping only makes "allowed by now" more true.
     #[test]
     fn restart_exponential_backoff_increases() {
-        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 10_u64.ms()));
+        let base = 50_u64;
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, base.ms()));
 
-        // Failure 1: 10ms backoff (10 * 2^0)
+        // Failure 1: 50ms backoff (50 * 2^0)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
         assert!(!handler.should_allow());
-        std::thread::sleep(15_u64.ms());
+        std::thread::sleep((base + 20).ms());
         assert!(
             handler.should_allow(),
-            "Should be allowed after 10ms backoff"
+            "Should be allowed after the 50ms backoff"
         );
 
-        // Failure 2: 20ms backoff (10 * 2^1)
+        // Failure 2: 100ms backoff (50 * 2^1)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
         assert!(!handler.should_allow());
-        std::thread::sleep(10_u64.ms());
-        assert!(!handler.should_allow(), "Should still be in 20ms backoff");
-        std::thread::sleep(15_u64.ms());
+        std::thread::sleep(base.ms());
+        assert!(
+            !handler.should_allow(),
+            "Should still be in the 100ms backoff 50ms in"
+        );
+        std::thread::sleep((base + 20).ms());
         assert!(
             handler.should_allow(),
-            "Should be allowed after 20ms backoff"
+            "Should be allowed after the 100ms backoff"
         );
 
-        // Failure 3: 40ms backoff (10 * 2^2)
+        // Failure 3: 200ms backoff (50 * 2^2)
         assert_eq!(handler.record_failure(), FailureAction::RestartNode);
         assert!(!handler.should_allow());
-        std::thread::sleep(20_u64.ms());
-        assert!(!handler.should_allow(), "Should still be in 40ms backoff");
-        std::thread::sleep(25_u64.ms());
+        std::thread::sleep((base * 2).ms());
+        assert!(
+            !handler.should_allow(),
+            "Should still be in the 200ms backoff 100ms in"
+        );
+        std::thread::sleep((base * 2 + 20).ms());
         assert!(
             handler.should_allow(),
-            "Should be allowed after 40ms backoff"
+            "Should be allowed after the 200ms backoff"
         );
     }
 
