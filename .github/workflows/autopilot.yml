@@ -1,0 +1,140 @@
+name: Autopilot
+
+# Autonomous maintenance for horus, built to a hard rule: it never merges and it
+# never edits code. It observes, classifies, and escalates. Every code change it
+# provokes arrives as a pull request that the existing six required checks gate,
+# exactly like a human's.
+#
+# What it does:
+#   triage  — reads failed runs on main, separates KNOWN-ENVIRONMENTAL failures
+#             from unexplained ones, and opens an issue only for failures that
+#             RECUR. Most red CI here is the runner, not the code.
+#   convoy  — main requires branches be up to date, and GitHub's auto-merge does
+#             not update them, so queued PRs starve. This updates them. It calls
+#             `gh pr update-branch` and nothing else.
+
+on:
+  schedule:
+    # 06:00 UTC, after the existing nightly/weekly crons have reported.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+# Default deny; each job takes only what it needs.
+permissions: {}
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Triage failures on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Classify recent failures
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 .github/scripts/autopilot_triage.py > triage.md
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          cat triage.md
+
+      - name: Escalate recurring unexplained failures
+        if: steps.classify.outputs.code == '10'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: 'Autopilot: recurring unexplained CI failure on main'
+        run: |
+          # Append the guardrails that stop a fixer from chasing a phantom.
+          cat >> triage.md <<'GUARD'
+
+          ---
+
+          ## Before changing any code
+
+          Most red CI in this repo is environmental. The triage above already
+          filtered the failures it could explain, but confirm the remainder is
+          real before touching source:
+
+          - Timing, throughput and tick-rate assertions are only meaningful with
+            `--release`. In debug they fail for no reason.
+          - `--test-threads=1` is required; the tests share one SHM namespace.
+          - Run `rm -rf /dev/shm/horus_*` first. Leaked namespaces make unrelated
+            tests fail in a rotating pattern.
+          - Without `--no-fail-fast`, cargo stops at the first failing binary and
+            you see one failure per run.
+          - A bare `exit code 1` with no output is usually the `/tmp` per-user
+            quota, not your change. `df` looks fine because it is a quota.
+          - Detection of the concurrency bugs here is probabilistic. Passing once
+            is not evidence of a fix.
+
+          ## The rule that matters most
+
+          Do not claim a fix without an ablation: show the test FAILS without the
+          change and passes with it. A test that passes both ways proves nothing,
+          and that is the most common way work here goes wrong. If you cannot
+          construct a failing case, say so and leave the finding documented
+          rather than shipping a change you cannot demonstrate.
+
+          For anything about ordering or interleaving, prefer a `loom` model
+          (`horus_core/tests/loom_*.rs`). It explores exhaustively and models weak
+          memory ordering, which x86 cannot exhibit. Every loom model here
+          documents the mutation that turns it red — yours must too.
+
+          ## Scope
+
+          Fix only what this issue reports. If you find something else, say so
+          separately rather than widening the change. Do not add scratch or report
+          `.md` files to this repo; it is public. Do not add co-authorship
+          trailers. Explain the mechanism in the commit message, with the numbers
+          you actually measured.
+          GUARD
+
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --label autopilot --state open --limit 1 --json number -q '.[0].number')
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file triage.md
+            echo "Updated existing issue #$existing"
+          else
+            gh label create autopilot --repo "$GITHUB_REPOSITORY" \
+              --color 0e8a16 --description "Opened by the autopilot" 2>/dev/null || true
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --label autopilot --body-file triage.md
+          fi
+
+  convoy:
+    name: Drain the auto-merge convoy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Update queued PRs that have fallen behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Scope: only PRs whose author already enabled auto-merge. That is
+          # someone explicitly saying "land this when it is green", so bringing
+          # the branch up to date is finishing a request, not an intervention.
+          # Never touches anyone else's branch, and never merges.
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
+            --json number,mergeStateStatus,autoMergeRequest \
+            -q '.[] | select(.autoMergeRequest != null)
+                    | select(.mergeStateStatus == "BEHIND") | .number' \
+          | while read -r n; do
+              [ -z "$n" ] && continue
+              echo "PR #$n is BEHIND with auto-merge on — updating branch"
+              gh pr update-branch "$n" --repo "$GITHUB_REPOSITORY" || \
+                echo "::warning::could not update #$n"
+            done
