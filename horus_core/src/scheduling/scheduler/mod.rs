@@ -716,6 +716,17 @@ impl Scheduler {
     /// Budget enforcement and deadline monitoring are always active for nodes
     /// that have `.rate()` set (no flag needed).
     ///
+    /// # Coverage: real-time nodes only
+    ///
+    /// This registers a watchdog for RT nodes. A node that is not real-time is
+    /// watched only if it carries its own `.watchdog(timeout)`, because a
+    /// best-effort node is allowed to take as long as it likes and firing a
+    /// watchdog at it would be wrong.
+    ///
+    /// So a scheduler with this set and nothing but best-effort nodes has no
+    /// node watchdog at all. The builder warns and names the uncovered nodes
+    /// rather than leaving that to be inferred.
+    ///
     /// # Example
     /// ```rust,ignore
     /// let scheduler = Scheduler::new()
@@ -1447,6 +1458,37 @@ impl Scheduler {
                 } else if registered.node_watchdog.is_some() {
                     // Non-RT node with explicit per-node watchdog
                     monitor.add_critical_node(registered.name.to_string(), node_timeout);
+                }
+            }
+
+            // A scheduler-level `.watchdog()` covers RT nodes only. A non-RT
+            // node is registered above ONLY when it carries its own
+            // `.watchdog()`, so an operator who configures a watchdog on the
+            // scheduler and adds best-effort nodes gets partial coverage and no
+            // diagnostic — the same shape as the sub-millisecond bug this
+            // builder already refuses to fail silently on, where the user asked
+            // for a safety timeout and got none.
+            //
+            // Not widened to cover them: a best-effort node is allowed to take
+            // as long as it likes, and firing a watchdog at it would be wrong.
+            // What is not allowed is leaving the operator to infer the gap.
+            if watchdog_active {
+                let uncovered: Vec<&str> = self
+                    .nodes
+                    .iter()
+                    .filter(|n| !n.is_rt_node && n.node_watchdog.is_none())
+                    .map(|n| n.name.as_ref())
+                    .collect();
+                if !uncovered.is_empty() {
+                    crate::hlog!(
+                        warn,
+                        "watchdog is configured on the scheduler but covers RT nodes only; \
+                         {} node(s) are NOT watched: {}. Give a node its own \
+                         .watchdog(timeout) to cover it, or set an execution class that \
+                         makes it real-time.",
+                        uncovered.len(),
+                        uncovered.join(", ")
+                    );
                 }
             }
 

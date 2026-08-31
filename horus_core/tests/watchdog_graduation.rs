@@ -757,3 +757,45 @@ fn an_emergency_stop_drives_nodes_to_their_safe_state() {
          an actuator at its last commanded value when the stop fires."
     );
 }
+
+/// A scheduler-level watchdog covers RT nodes ONLY.
+///
+/// This pins the boundary rather than endorsing it. A best-effort node is
+/// allowed to take as long as it likes, so firing a watchdog at it would be
+/// wrong -- but an operator who writes `Scheduler::new().watchdog(..)` and adds
+/// best-effort nodes has configured a safety timeout that covers none of them.
+/// The builder now warns and names them; this test makes sure the coverage
+/// boundary cannot move without someone deciding to move it.
+///
+/// The node here panics on every tick, which is the shape that DOES trip a
+/// watchdog when one is registered (see
+/// a_node_that_only_panics_does_not_keep_its_watchdog_fed, which is the same
+/// node with a per-node `.watchdog()`).
+#[test]
+fn a_scheduler_watchdog_does_not_cover_best_effort_nodes() {
+    let _shm_guard = cleanup_stale_shm();
+    let (node, ticks, _safe) = PanicsEveryTickNode::new("wd_uncovered", 2);
+
+    let mut sched = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .watchdog(100_u64.ms());
+    // No .rate() and no per-node .watchdog(): best-effort, therefore unwatched.
+    sched.add(node).build().unwrap();
+    let _ = sched.run_for(Duration::from_millis(600));
+
+    let dispatched = ticks.load(Ordering::SeqCst);
+    assert!(dispatched > 5, "node should tick, got {dispatched}");
+
+    let expirations = sched
+        .safety_stats()
+        .map(|s| s.watchdog_expirations())
+        .unwrap_or(0);
+    assert_eq!(
+        expirations, 0,
+        "a scheduler-level watchdog registers RT nodes only, so this best-effort \
+         node is not watched and cannot expire. If this now reports {expirations} \
+         expirations the coverage was widened -- which may well be right, but it \
+         changes what .watchdog() means and the doc and the builder warning must \
+         change with it."
+    );
+}
