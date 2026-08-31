@@ -584,6 +584,16 @@ struct Perturbation {
     nivcsw: u64,
 }
 
+impl Perturbation {
+    /// Whether these counters mean anything on this platform. Off Unix there is
+    /// no `getrusage`, so every field is zero — which without this flag reads as
+    /// a perfectly quiet machine instead of an unmeasured one.
+    const fn available() -> bool {
+        cfg!(unix)
+    }
+}
+
+#[cfg(unix)]
 fn rusage_now() -> Perturbation {
     // SAFETY: `ru` is a zeroed, correctly sized `rusage` on this thread's stack
     // and `getrusage` only writes into it; RUSAGE_SELF is a valid resource id.
@@ -601,6 +611,17 @@ fn rusage_now() -> Perturbation {
     }
 }
 
+/// `getrusage` is Unix-only; `libc` does not define it, `rusage`, or
+/// `RUSAGE_SELF` for the MSVC target, which is why this binary did not compile
+/// on Windows at all. There is no Windows equivalent that counts the same
+/// events, so the counters are reported as unavailable rather than as zero —
+/// see [`Perturbation::available`], which the printer consults so a Windows run
+/// cannot be read as "no faults, no preemptions".
+#[cfg(not(unix))]
+fn rusage_now() -> Perturbation {
+    Perturbation::default()
+}
+
 fn perturbation_delta(a: Perturbation, b: Perturbation) -> Perturbation {
     Perturbation {
         minflt: b.minflt.saturating_sub(a.minflt),
@@ -613,10 +634,18 @@ fn perturbation_delta(a: Perturbation, b: Perturbation) -> Perturbation {
 /// Lock currently-mapped pages. `MCL_CURRENT` only: `MCL_FUTURE` converts a swap
 /// event into an OOM kill, which is a trade a benchmark has no business making
 /// on the user's behalf.
+#[cfg(unix)]
 fn try_mlock_current() -> bool {
     // SAFETY: `mlockall` takes only a flags word and has no memory-safety
     // preconditions; failure is reported through the return value.
     unsafe { libc::mlockall(libc::MCL_CURRENT) == 0 }
+}
+
+/// No `mlockall` off Unix. `false` is the honest answer to "are the pages
+/// locked": they are not.
+#[cfg(not(unix))]
+fn try_mlock_current() -> bool {
+    false
 }
 
 /// Allocate and touch every element, so every page is resident before the first
@@ -2059,10 +2088,18 @@ fn print_scenario(r: &ScenarioResult, ns_per_cycle: f64) {
             ),
         }
     }
-    println!(
-        "  measured window: minor_faults={} major_faults={} ctx_switches vol={} invol={}",
-        r.perturbation.minflt, r.perturbation.majflt, r.perturbation.nvcsw, r.perturbation.nivcsw
-    );
+    if Perturbation::available() {
+        println!(
+            "  measured window: minor_faults={} major_faults={} ctx_switches vol={} invol={}",
+            r.perturbation.minflt, r.perturbation.majflt, r.perturbation.nvcsw, r.perturbation.nivcsw
+        );
+    } else {
+        // Printing the zeroed struct here would claim a flawlessly quiet
+        // machine on the one platform where nothing was measured.
+        println!(
+            "  measured window: fault and context-switch counters unavailable on this platform"
+        );
+    }
     for f in [&r.freq_a, &r.freq_b] {
         println!(
             "  core freq cpu{:<3} (measured window only): start={} end={} min={} max={} mean={:.0}MHz spread={:.2}% (n={})",

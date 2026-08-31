@@ -49,35 +49,46 @@ const SAMPLES_BULK: usize = 50_000;
 const SAMPLES_IMG: usize = 20_000;
 const WARMUP_IMG: usize = 2_000;
 
-#[repr(C)]
-struct Timespec {
-    sec: i64,
-    nsec: i64,
-}
-
-extern "C" {
-    fn clock_gettime(clk: i32, tp: *mut Timespec) -> i32;
-    fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u64) -> i32;
-}
-
-const CLOCK_MONOTONIC: i32 = 1;
-
+/// These were hand-rolled `extern "C"` declarations, which carried two bugs
+/// that only showed up off Linux.
+///
+/// `CLOCK_MONOTONIC` was declared as the literal `1`. That is Linux's value;
+/// on Darwin `1` is `CLOCK_MONOTONIC`'s neighbour and the monotonic clock is
+/// `6`, so every timestamp on macOS came from the wrong clock and no build
+/// error said so. `libc`'s constant is right on each platform by construction.
+///
+/// `sched_setaffinity` does not exist on Darwin at all, which is the macOS and
+/// macOS ARM64 link failure: "Undefined symbols for architecture arm64:
+/// _sched_setaffinity". It is declared and called only on Linux now.
 #[inline(always)]
 fn now_ns() -> u64 {
-    let mut ts = Timespec { sec: 0, nsec: 0 };
-    // SAFETY: `ts` is a valid, correctly-sized `struct timespec`.
+    // SAFETY: `ts` is a valid, correctly-sized `struct timespec`, and
+    // `clock_gettime` only writes into it.
     unsafe {
-        clock_gettime(CLOCK_MONOTONIC, &mut ts);
+        let mut ts: libc::timespec = core::mem::zeroed();
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
     }
-    (ts.sec as u64) * 1_000_000_000 + (ts.nsec as u64)
 }
 
 /// Pin the calling thread to `cpu`. Returns false if the kernel refused.
+#[cfg(target_os = "linux")]
 fn pin(cpu: usize) -> bool {
     let mut mask = [0u64; 16];
     mask[cpu / 64] = 1u64 << (cpu % 64);
     // SAFETY: `mask` is a 1024-bit cpu_set_t, the size glibc expects.
-    unsafe { sched_setaffinity(0, core::mem::size_of::<[u64; 16]>(), mask.as_ptr()) == 0 }
+    unsafe {
+        libc::sched_setaffinity(0, core::mem::size_of::<[u64; 16]>(), mask.as_ptr() as *const _)
+            == 0
+    }
+}
+
+/// No `sched_setaffinity` outside Linux. `false` is the honest answer to "is
+/// this thread pinned" — the probe already prints that and the reader can
+/// discount the tail accordingly.
+#[cfg(not(target_os = "linux"))]
+fn pin(_cpu: usize) -> bool {
+    false
 }
 
 fn pct(sorted: &[u64], p: f64) -> u64 {
