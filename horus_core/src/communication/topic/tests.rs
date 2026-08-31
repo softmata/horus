@@ -8998,6 +8998,43 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// still pass if the migration stopped resizing the mapping, and would then be
 /// guarding nothing.
 #[test]
+/// # OPEN: this test trips ThreadSanitizer, and the finding looks real
+///
+/// Under `-Zsanitizer=thread` this reports two data races: two PRODUCER threads
+/// writing the same slot address, with the other side of each race also a
+/// producer rather than the consumer. Reproduced locally with CI's exact
+/// invocation and seen on CI (job "ThreadSanitizer - Data Race Detection").
+///
+/// It is NOT generic multi-producer behaviour, which was the obvious guess.
+/// Measured on the same toolchain and flags:
+///
+///   * `mp_send_no_overshoot_corruption` — three producers, one consumer, a
+///     contended ring, NO grow: zero TSan warnings.
+///   * `topic_cross_thread_multi_p_multi_c_mpmc` — likewise zero.
+///   * this test, whose only additional ingredient is a concurrent mapping
+///     replacement: two warnings, repeatably.
+///
+/// So the missing happens-before edge is on the MIGRATION path, not on the
+/// ordinary claim protocol. Ordinarily slot reuse is ordered: a producer only
+/// claims `seq` once it has observed `header.tail > seq - capacity` with an
+/// Acquire load, which pairs with the consumer's Release store of `tail` after
+/// it read the previous occupant. `handle_epoch_change` resynchronises
+/// `local_head`/`local_tail` from the header, and that path appears to let a
+/// producer reach a slot without the load that would have ordered it against
+/// whoever wrote it last.
+///
+/// Not yet established, and deliberately not asserted here: whether this is
+/// harmful. The test's own `v[0] == v[3]` torn-read check passes on every run,
+/// so if two producers do overlap the window is small enough not to tear a
+/// 32-byte payload in practice. That is evidence, not a proof, and "we did not
+/// observe it" is not the same as "it cannot happen" — the whole point of
+/// softmata-brain 1327 is that this class of defect is silent.
+///
+/// What NOT to do about it: adding this test to the TSan skip list in
+/// `.github/workflows/safety.yml`. Three topic tests are already skipped there,
+/// and it would be easy to assume this is the same thing — it is not; those
+/// three produce no warnings at all when run individually under TSan, so
+/// whatever they were skipped for, it was not this.
 fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
     // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
     // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
