@@ -1,0 +1,210 @@
+name: Autopilot
+
+# Autonomous maintenance for horus, built to a hard rule: it never merges and it
+# never edits code. It observes, classifies, and escalates. Every code change it
+# provokes arrives as a pull request that the existing six required checks gate,
+# exactly like a human's.
+#
+# What it does:
+#   triage  — reads failed runs on main, separates KNOWN-ENVIRONMENTAL failures
+#             from unexplained ones, and opens an issue only for failures that
+#             RECUR. Most red CI here is the runner, not the code.
+#   convoy  — main requires branches be up to date, and GitHub's auto-merge does
+#             not update them, so queued PRs starve. This updates them. It calls
+#             `gh pr update-branch` and nothing else.
+
+on:
+  schedule:
+    # 06:00 UTC, after the existing nightly/weekly crons have reported.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+# Default deny; each job takes only what it needs.
+permissions: {}
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Triage failures on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Classify recent failures
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 .github/scripts/autopilot_triage.py > triage.md
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          cat triage.md
+
+      - name: Escalate recurring unexplained failures
+        id: escalate
+        if: steps.classify.outputs.code == '10'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: 'Autopilot: recurring unexplained CI failure on main'
+        run: |
+          # Append the guardrails that stop a fixer from chasing a phantom.
+          cat >> triage.md <<'GUARD'
+
+          ---
+
+          ## Before changing any code
+
+          Most red CI in this repo is environmental. The triage above already
+          filtered the failures it could explain, but confirm the remainder is
+          real before touching source:
+
+          - Timing, throughput and tick-rate assertions are only meaningful with
+            `--release`. In debug they fail for no reason.
+          - `--test-threads=1` is required; the tests share one SHM namespace.
+          - Run `rm -rf /dev/shm/horus_*` first. Leaked namespaces make unrelated
+            tests fail in a rotating pattern.
+          - Without `--no-fail-fast`, cargo stops at the first failing binary and
+            you see one failure per run.
+          - A bare `exit code 1` with no output is usually the `/tmp` per-user
+            quota, not your change. `df` looks fine because it is a quota.
+          - Detection of the concurrency bugs here is probabilistic. Passing once
+            is not evidence of a fix.
+
+          ## The rule that matters most
+
+          Do not claim a fix without an ablation: show the test FAILS without the
+          change and passes with it. A test that passes both ways proves nothing,
+          and that is the most common way work here goes wrong. If you cannot
+          construct a failing case, say so and leave the finding documented
+          rather than shipping a change you cannot demonstrate.
+
+          For anything about ordering or interleaving, prefer a `loom` model
+          (`horus_core/tests/loom_*.rs`). It explores exhaustively and models weak
+          memory ordering, which x86 cannot exhibit. Every loom model here
+          documents the mutation that turns it red — yours must too.
+
+          ## Scope
+
+          Fix only what this issue reports. If you find something else, say so
+          separately rather than widening the change. Do not add scratch or report
+          `.md` files to this repo; it is public. Do not add co-authorship
+          trailers. Explain the mechanism in the commit message, with the numbers
+          you actually measured.
+          GUARD
+
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --label autopilot --state open --limit 1 --json number -q '.[0].number')
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file triage.md
+            echo "Updated existing issue #$existing"
+            echo "issue=$existing" >> "$GITHUB_OUTPUT"
+            # An issue already handed to Copilot should not be re-assigned on every
+            # run; a new comment is enough to wake it.
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+          else
+            gh label create autopilot --repo "$GITHUB_REPOSITORY" \
+              --color 0e8a16 --description "Opened by the autopilot" 2>/dev/null || true
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --label autopilot --body-file triage.md)
+            echo "$url"
+            echo "issue=${url##*/}" >> "$GITHUB_OUTPUT"
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Hand the issue to the Copilot coding agent, which opens a PR against it.
+      #
+      # The default GITHUB_TOKEN cannot do this and is not attempted. GitHub's
+      # docs state the Copilot agent APIs accept only user-to-server tokens and
+      # that "Server-to-server tokens, such as GitHub App installation access
+      # tokens, are not supported" -- GITHUB_TOKEN is exactly such a token. So
+      # this needs AUTOPILOT_TOKEN: a fine-grained PAT scoped to this repo with
+      # Metadata:read and Issues:read+write.
+      #
+      # Without that secret the loop still works, it just stops one step short:
+      # the issue carries the full diagnosis and a human assigns it in one click.
+      #
+      # Note the safety boundary this cannot cross either way. GitHub does not
+      # run workflows on Copilot's PRs until a human approves them, so with
+      # strict up-to-date and six required checks a Copilot PR cannot reach green
+      # unattended. That is deliberate -- an agent must not be able to trigger CI
+      # on code it just wrote -- and it fails closed.
+      - name: Hand the issue to Copilot
+        if: steps.escalate.outputs.fresh == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_TOKEN }}
+          ISSUE: ${{ steps.escalate.outputs.issue }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice::No AUTOPILOT_TOKEN, so issue #$ISSUE is unassigned."
+            echo "::notice::It carries the full diagnosis — assign it to Copilot"
+            echo "::notice::by hand, or add the secret to close the loop."
+            exit 0
+          fi
+
+          # Resolved once via GraphQL suggestedActors on this repo; stable per repo.
+          BOT_ID='BOT_kgDOC9w8XQ'
+
+          # This preview API is gated behind an opt-in feature header; without it
+          # the mutation is rejected even with a valid PAT.
+          FEATURES='GraphQL-Features: issues_copilot_assignment_api_support'
+
+          issue_id=$(gh api graphql -H "$FEATURES" \
+            -f query='query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){id}}}' \
+            -F o="${GITHUB_REPOSITORY%%/*}" -F n="${GITHUB_REPOSITORY##*/}" -F i="$ISSUE" \
+            --jq '.data.repository.issue.id') || {
+              echo "::warning::could not resolve node id for issue #$ISSUE"; exit 0; }
+
+          if gh api graphql -H "$FEATURES" \
+              -f query='mutation($a:ID!,$b:ID!){replaceActorsForAssignable(input:{assignableId:$a,actorIds:[$b]}){assignable{... on Issue{number}}}}' \
+              -F a="$issue_id" -F b="$BOT_ID" >/dev/null; then
+            echo "Assigned Copilot to #$ISSUE."
+          else
+            echo "::warning::Assignment failed for #$ISSUE. The issue still carries"
+            echo "::warning::its diagnosis; check AUTOPILOT_TOKEN scopes (Issues: write)."
+          fi
+
+  convoy:
+    name: Drain the auto-merge convoy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Update queued PRs that have fallen behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Scope: PRs opened by a HUMAN that already have auto-merge enabled.
+          #
+          # The auto-merge signal alone is not enough. main requires no reviews
+          # at all (required_pull_request_reviews is null), and
+          # dependabot-automerge.yml enables auto-merge programmatically for any
+          # semver-patch bump -- github-actions included, since only the MINOR
+          # rule is restricted to cargo. Selecting on auto-merge alone therefore
+          # cannot tell a person's intent from a workflow's, and this job would
+          # help land changes to what executes inside CI with nobody reading
+          # them. Excluding bot authors keeps this job out of that loop entirely;
+          # dependabot's own workflow is unaffected either way.
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
+            --json number,mergeStateStatus,autoMergeRequest,author \
+            -q '.[] | select(.autoMergeRequest != null)
+                    | select(.author.is_bot != true)
+                    | select((.author.login // "") | startswith("app/") | not)
+                    | select(.mergeStateStatus == "BEHIND") | .number' \
+          | while read -r n; do
+              [ -z "$n" ] && continue
+              echo "PR #$n is BEHIND with auto-merge on — updating branch"
+              gh pr update-branch "$n" --repo "$GITHUB_REPOSITORY" || \
+                echo "::warning::could not update #$n"
+            done
