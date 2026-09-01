@@ -28,7 +28,8 @@
 //! The consumer mirrors the real `recv` path: a cached `local_tail`, a *batched*
 //! publish of that position to the shared `tail` (so the shared value lags the
 //! true consumed count), and a mid-drain resync through the real
-//! `resynced_tail` formula from `topic/mod.rs:800`, reproduced verbatim below
+//! `resynced_tail` formula from `horus_core::communication::topic`, reproduced
+//! verbatim below
 //! rather than paraphrased.
 //!
 //! Producers mirror `send_shm_mp_pod`: CAS-claim with an in-loop room check
@@ -87,7 +88,8 @@ use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::Arc;
 
 /// Verbatim from `horus_core::communication::topic::resynced_tail`
-/// (topic/mod.rs:800). Kept byte-identical so this model cannot silently drift
+/// (`horus_core::communication::topic::resynced_tail`). Kept byte-identical so
+/// this model cannot silently drift
 /// from the function it is meant to exercise.
 fn resynced_tail(local_tail: u64, shared_tail: u64, new_head: u64, delivered: bool) -> u64 {
     if !delivered {
@@ -130,15 +132,20 @@ impl<const CAP: usize> Ring<CAP> {
             if head.wrapping_sub(tail) >= CAP as u64 {
                 return false; // full — never overshoot
             }
+            // One `next`, used for the claim, the value and the stamp, so the
+            // three cannot drift apart. Wrapping to match the ring semantics the
+            // rest of this model uses -- a plain `+ 1` would also panic in debug
+            // if the model is ever scaled up.
+            let next = head.wrapping_add(1);
             if self
                 .head
-                .compare_exchange(head, head + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange(head, next, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
             {
                 let idx = (head & Self::MASK) as usize;
                 // Value is position-encoded: an overwrite lands the wrong value.
-                self.data[idx].store(head + 1, Ordering::Relaxed);
-                self.ready[idx].store(head + 1, Ordering::Release);
+                self.data[idx].store(next, Ordering::Relaxed);
+                self.ready[idx].store(next, Ordering::Release);
                 return true;
             }
         }
@@ -210,19 +217,38 @@ impl<'a, const CAP: usize> Consumer<'a, CAP> {
             return None;
         }
         let idx = (self.local_tail & Ring::<CAP>::MASK) as usize;
-        if self.ring.ready[idx].load(Ordering::Acquire) != self.local_tail.wrapping_add(1) {
+        let expected = self.local_tail.wrapping_add(1);
+        let ready = self.ring.ready[idx].load(Ordering::Acquire);
+        if ready != expected {
+            // The two ways this happens are opposites, and collapsing them is
+            // how a model stops modelling anything: `ready` BEHIND `expected` is
+            // a slot claimed and not yet written, which is ordinary and means
+            // "come back later". `ready` AHEAD is the slot having been reused at
+            // a later position while this consumer still had not read it — the
+            // exact hazard this file exists to detect. Returning `None` for both
+            // let the consumer treat an overwrite as an empty ring, leave the
+            // drain loop, and finish green through the bug.
+            //
+            // Compared by wrapping distance rather than `<`, so a lap boundary
+            // does not read as an overwrite.
+            assert!(
+                ready.wrapping_sub(expected) > u64::MAX / 2,
+                "OVERWRITE: slot {idx} is stamped {ready} but position {} expects \
+                 {expected}. A producer reused this slot before the consumer read \
+                 it — the migration resync moved the shared tail forward past \
+                 unread data.",
+                self.local_tail
+            );
             return None; // claimed but not yet written
         }
         let val = self.ring.data[idx].load(Ordering::Relaxed);
         // Position-encoded check: a slot reused under us lands the wrong value.
         assert_eq!(
-            val,
-            self.local_tail + 1,
-            "OVERWRITE: slot {idx} held {val} but position {} expects {}. A \
-             producer reused this slot before the consumer read it — the \
+            val, expected,
+            "OVERWRITE: slot {idx} held {val} but position {} expects {expected}. \
+             A producer reused this slot before the consumer read it — the \
              migration resync moved the shared tail forward past unread data.",
-            self.local_tail,
-            self.local_tail + 1
+            self.local_tail
         );
         self.local_tail = self.local_tail.wrapping_add(1);
         self.delivered += 1;
