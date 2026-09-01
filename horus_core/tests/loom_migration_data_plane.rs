@@ -87,10 +87,20 @@
 use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::Arc;
 
-/// Verbatim from `horus_core::communication::topic::resynced_tail`
-/// (`horus_core::communication::topic::resynced_tail`). Kept byte-identical so
-/// this model cannot silently drift
-/// from the function it is meant to exercise.
+/// A transcription of `horus_core::communication::topic::resynced_tail`.
+///
+/// The real function is private, so an integration test cannot call it and this
+/// copy cannot be compared against it mechanically. It reproduces the two
+/// branches and nothing else — the original also carries in-function comments,
+/// so "byte-identical" was never true and claiming it hid the actual risk:
+/// if the upstream formula changes, this model keeps exercising the old one and
+/// says nothing.
+///
+/// `resynced_tail_pins_the_transcribed_behaviour` below pins what is
+/// transcribed here, so an edit to THIS copy is caught. Nothing here can catch
+/// an edit to the upstream function; that is a real gap, and the mitigation is
+/// that the two live in the same crate and the upstream one carries a pointer
+/// back to this model.
 fn resynced_tail(local_tail: u64, shared_tail: u64, new_head: u64, delivered: bool) -> u64 {
     if !delivered {
         return shared_tail.min(new_head);
@@ -361,7 +371,7 @@ fn loom_migration_resync_does_not_expose_unread_slot_cap2() {
 /// so a drift in the copy above is caught here rather than silently modelling
 /// a different function.
 #[test]
-fn resynced_tail_copy_matches_the_real_one() {
+fn resynced_tail_pins_the_transcribed_behaviour() {
     assert_eq!(resynced_tail(23_929, 23_497, 30_000, true), 23_929);
     assert_eq!(resynced_tail(0, 5_000, 6_000, false), 5_000);
     assert_eq!(resynced_tail(9_000, 5_000, 6_000, false), 5_000);
