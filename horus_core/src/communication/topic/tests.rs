@@ -9032,7 +9032,9 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// the unordered access that was underneath it: two producers reaching the same
 /// slot across a remap were never ordered against each other, and previously the
 /// process died on a dangling pointer before that could matter. The fix is
-/// necessary and not sufficient — it makes the remap survivable, not ordered. Ordinarily slot reuse is ordered: a producer only
+/// necessary and not sufficient — it makes the remap survivable, not ordered.
+///
+/// Ordinarily slot reuse is ordered: a producer only
 /// claims `seq` once it has observed `header.tail > seq - capacity` with an
 /// Acquire load, which pairs with the consumer's Release store of `tail` after
 /// it read the previous occupant. `handle_epoch_change` resynchronises
