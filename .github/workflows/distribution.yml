@@ -248,15 +248,28 @@ jobs:
             exit 1
           }
 
+      # Deliberately NOT the binary install.ps1 just installed. That one comes
+      # from the published release, so this assertion would be about code that
+      # predates the pull request — which is how a generated-manifest bug that
+      # broke `horus build` for every Windows user stayed invisible here while
+      # also being unfixable by any change to this branch. The steps above still
+      # exercise install.ps1 itself against the real published artifact; this
+      # step is about the CLI under review.
+      - name: Build the CLI from this branch
+        shell: bash
+        run: cargo build --release -p horus_manager
+
       - name: Scaffold and build a project
         shell: bash
         run: |
           set -euo pipefail
+          branch_horus="$PWD/target/release/horus.exe"
+          test -x "$branch_horus" || { echo "::error::branch CLI was not built"; exit 1; }
           cd "$RUNNER_TEMP"
           rm -rf demo
-          horus new demo --rust --yes
+          "$branch_horus" new demo --rust --yes
           cd demo
-          horus build
+          "$branch_horus" build
 
       - name: uninstall.ps1 -DryRun changes nothing
         shell: pwsh

@@ -479,7 +479,20 @@ HORUS_SRC_DIR="${HORUS_CACHE}/horus@${SRC_VERSION}"
 mkdir -p "$HORUS_CACHE"
 if [ -n "$CLONE_DIR" ]; then
     rm -rf "$HORUS_SRC_DIR"
-    mv "$CLONE_DIR" "$HORUS_SRC_DIR"
+    if ! mv "$CLONE_DIR" "$HORUS_SRC_DIR" 2>/dev/null; then
+        # Git Bash on Windows: the clone and the cache land on different MSYS
+        # mounts, so `mv` degrades to copy-then-unlink — and git writes its pack
+        # and object files read-only, so the unlink half fails with EACCES. The
+        # move surfaced as a bare "mv: cannot move ...: Permission denied" after
+        # a successful clone, with the cache left empty.
+        cp -R "$CLONE_DIR" "$HORUS_SRC_DIR" || {
+            fail "Failed to install the source tree into ${HORUS_SRC_DIR}"
+            rm -rf "$CLONE_DIR"
+            exit 1
+        }
+        chmod -R u+w "$CLONE_DIR" 2>/dev/null || true
+        rm -rf "$CLONE_DIR"
+    fi
     CLONE_DIR=""
 elif [ "$SRC_TREE" != "$HORUS_SRC_DIR" ]; then
     # Link, do not copy, and never rm -rf the user's own tree. The link is what
