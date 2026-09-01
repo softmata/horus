@@ -1,7 +1,7 @@
 use super::deps::{split_dependencies_with_context, CargoPackage, PipPackage};
 use crate::cargo_utils::detect_system_cargo_binary;
 use crate::cli_output;
-use crate::lockfile::{hash_config, HorusLockfile, HORUS_LOCK};
+use crate::lockfile::{hash_config, installed_packages, HorusLockfile, LockedPackage, HORUS_LOCK};
 use crate::manifest::HORUS_TOML;
 use crate::version;
 use anyhow::{anyhow, bail, Context, Result};
@@ -13,12 +13,226 @@ use std::io::{self, Write};
 fn symlink(src: &Path, dst: &Path) -> Result<()> {
     horus_sys::fs::symlink(src, dst)
 }
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The `horus.lock` pins every installer in this module works under.
+///
+/// Loaded once per resolve and handed to each installer, because a pin nothing
+/// consults is not a pin: `[[package]]` entries were written on every run and
+/// read by nothing, so a committed `horus.lock` restored on a second machine
+/// installed whatever `latest` resolved to *there*. That failure succeeded
+/// quietly, wrote the wrong versions back into the committed file, and passed
+/// the `horus lock --check` gate the docs put in CI — the version in this
+/// struct is now the first answer each installer asks for.
+pub(crate) struct PinContext {
+    lock: HorusLockfile,
+
+    /// `(name, source)` pairs whose pin the project's own declared requirement
+    /// can no longer satisfy.
+    ///
+    /// Editing `numpy = ">=2.0"` into horus.toml has to beat a pin at 1.26.4,
+    /// exactly as a manifest edit beats Cargo.lock — otherwise the manifest is
+    /// unusable and the remedy is invisible. These are also the only pins
+    /// `write_lockfile` may move: the user contradicted them deliberately, so
+    /// recording the replacement is not the silent overwrite this exists to
+    /// stop.
+    overridden: Vec<(String, String)>,
+}
+
+impl PinContext {
+    /// Read the pins and work out which of them the manifest has overridden.
+    fn load(
+        lock_path: &Path,
+        horus_packages: &[String],
+        pip_packages: &[PipPackage],
+        cargo_packages: &[CargoPackage],
+    ) -> Self {
+        let lock = HorusLockfile::load_from(lock_path).unwrap_or_default();
+        let mut overridden = Vec::new();
+
+        for pkg in pip_packages {
+            if let Some(pinned) = lock.get_pinned(&pkg.name, "pypi") {
+                if !pip_requirement_admits(pkg.version.as_deref(), pinned) {
+                    overridden.push((pkg.name.clone(), "pypi".to_string()));
+                }
+            }
+        }
+        for pkg in cargo_packages {
+            if let Some(pinned) = lock.get_pinned(&pkg.name, "crates.io") {
+                if !cargo_requirement_admits(pkg.version.as_deref(), pinned) {
+                    overridden.push((pkg.name.clone(), "crates.io".to_string()));
+                }
+            }
+        }
+        for dep in horus_packages {
+            let (name, requested) = registry_name_and_version(dep);
+            if let Some(pinned) = lock.get_pinned(name, "registry") {
+                if requested.is_some_and(|want| want != pinned) {
+                    overridden.push((name.to_string(), "registry".to_string()));
+                }
+            }
+        }
+
+        Self { lock, overridden }
+    }
+
+    /// A `PinContext` that pins nothing.
+    ///
+    /// Only the tests need one: every production path reaches `load`, because
+    /// resolution always happens against a project directory even when the
+    /// lockfile in it is absent.
+    #[cfg(test)]
+    fn empty() -> Self {
+        Self {
+            lock: HorusLockfile::new(),
+            overridden: Vec::new(),
+        }
+    }
+
+    /// The version to install, or `None` to resolve as before.
+    fn pinned(&self, name: &str, source: &str) -> Option<&str> {
+        if self.is_overridden(name, source) {
+            return None;
+        }
+        self.lock.get_pinned(name, source)
+    }
+
+    /// Whether an ordinary install is allowed to move this pin.
+    fn is_overridden(&self, name: &str, source: &str) -> bool {
+        self.overridden
+            .iter()
+            .any(|(n, s)| n == name && s == source)
+    }
+
+    fn lock(&self) -> &HorusLockfile {
+        &self.lock
+    }
+}
+
+/// Whether a pinned version still satisfies a pip requirement string.
+///
+/// Not a full PEP 440 implementation, and deliberately asymmetric: an operator
+/// or a version this cannot decide answers `true`, keeping the pin. The two
+/// wrong answers do not cost the same — wrongly keeping a pin installs a
+/// version this project has already used, and `horus lock` moves it; wrongly
+/// dropping one silently reinstates `latest`, which is the whole defect.
+fn pip_requirement_admits(requirement: Option<&str>, pinned: &str) -> bool {
+    let Some(requirement) = requirement else {
+        return true;
+    };
+    requirement
+        .split(',')
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty())
+        .all(|clause| pip_clause_admits(clause, pinned))
+}
+
+fn pip_clause_admits(clause: &str, pinned: &str) -> bool {
+    // Longest operator first: `===` before `==`, `>=` before `>`.
+    const OPERATORS: [&str; 8] = ["===", "==", "!=", ">=", "<=", "~=", ">", "<"];
+    let Some(op) = OPERATORS.iter().find(|op| clause.starts_with(**op)) else {
+        // A bare version means exactly that version, both in horus.toml
+        // (`pyproject_gen::format_pypi_dep` renders it as `==`) and in the
+        // `name@version` spelling `PipPackage::from_string` accepts.
+        return clause == pinned;
+    };
+    let want = clause[op.len()..].trim();
+    if want.is_empty() {
+        return true;
+    }
+    match *op {
+        "===" | "==" => version_glob_matches(want, pinned),
+        "!=" => !version_glob_matches(want, pinned),
+        "~=" => compatible_release_admits(want, pinned),
+        ">=" => compare_versions(pinned, want).is_none_or(|o| o != Ordering::Less),
+        "<=" => compare_versions(pinned, want).is_none_or(|o| o != Ordering::Greater),
+        ">" => compare_versions(pinned, want).is_none_or(|o| o == Ordering::Greater),
+        "<" => compare_versions(pinned, want).is_none_or(|o| o == Ordering::Less),
+        _ => true,
+    }
+}
+
+/// `==1.26.*` and friends; without a glob this is plain equality.
+fn version_glob_matches(want: &str, pinned: &str) -> bool {
+    let Some(prefix) = want.strip_suffix(".*") else {
+        return want == pinned;
+    };
+    pinned == prefix || pinned.starts_with(&format!("{}.", prefix))
+}
+
+/// PEP 440 `~=X.Y.Z`: at least that version, and the same release series.
+fn compatible_release_admits(want: &str, pinned: &str) -> bool {
+    if compare_versions(pinned, want).is_some_and(|o| o == Ordering::Less) {
+        return false;
+    }
+    match want.rsplit_once('.') {
+        // `~=1.26.4` allows 1.26.*; `~=1.26` allows 1.*.
+        Some((series, _)) => version_glob_matches(&format!("{}.*", series), pinned),
+        // `~=1` is not valid PEP 440; nothing to constrain, so keep the pin.
+        None => true,
+    }
+}
+
+/// Compare two release versions numerically, or `None` if either is not one.
+///
+/// Pre-release, post-release and local segments (`2.0rc1`, `1.0.post2`,
+/// `1.0+cu118`) are not ordered here — they answer `None`, which keeps the
+/// pin rather than guessing at PEP 440's ordering rules.
+fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        v.split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<u64>>>()
+            .filter(|parts| !parts.is_empty())
+    };
+    let (a, b) = (parse(a)?, parse(b)?);
+    let width = a.len().max(b.len());
+    for i in 0..width {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return Some(x.cmp(&y));
+        }
+    }
+    Some(Ordering::Equal)
+}
+
+/// Whether a pinned version still satisfies a crates.io requirement.
+///
+/// Cargo requirements are real semver, so `semver::VersionReq` answers this
+/// exactly. Anything either side cannot parse keeps the pin, for the same
+/// asymmetry as the pip case.
+fn cargo_requirement_admits(requirement: Option<&str>, pinned: &str) -> bool {
+    let Some(requirement) = requirement else {
+        return true;
+    };
+    match (
+        semver::VersionReq::parse(requirement),
+        semver::Version::parse(pinned),
+    ) {
+        (Ok(req), Ok(version)) => req.matches(&version),
+        _ => true,
+    }
+}
+
+/// Split a registry dependency string into its name and requested version.
+///
+/// `rsplit_once` rather than `find`, so a scoped `@org/name` keeps its leading
+/// `@` instead of being read as an empty name with a version of `org/name`.
+fn registry_name_and_version(dep: &str) -> (&str, Option<&str>) {
+    match dep.rsplit_once('@').filter(|(name, _)| !name.is_empty()) {
+        Some((name, version)) => (name, Some(version)),
+        None => (dep, None),
+    }
+}
+
 /// Install pip packages using global cache (HORUS philosophy)
 /// Packages stored at: ~/.horus/cache/pypi_{name}@{version}/
-pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
+pub(crate) fn install_pip_packages(packages: Vec<PipPackage>, pins: &PinContext) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
     }
@@ -62,6 +276,11 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
     // which is the original defect's evidence block verbatim, reached down the
     // branch beside the one that was fixed.
     let mut linked: Vec<(String, Vec<String>)> = Vec::new();
+
+    // Where pip should write its install report, or `None` if this pip is too
+    // old to have one. Memoised across the loop: answering it costs a `pip
+    // --version` child process, and the answer cannot change mid-run.
+    let mut report_path: Option<Option<PathBuf>> = None;
 
     for pkg in &packages {
         // Check if package exists in system first. One probe answers both
@@ -108,18 +327,33 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
             }
         }
 
-        // Get actual version by querying PyPI or using installed version
-        let version_str = pkg
-            .version
-            .as_ref()
-            .map(|v| {
-                v.replace(">=", "")
-                    .replace("==", "")
-                    .replace("~=", "")
-                    .replace(">", "")
-                    .replace("<", "")
-            })
-            .unwrap_or_else(|| "latest".to_string());
+        // What to install, in the order that makes a committed horus.lock mean
+        // something: the pin first, the manifest's own constraint second,
+        // `latest` only when neither says anything. This used to start at the
+        // manifest, so the recorded pin was never consulted and two machines
+        // resolving `latest` on different days got different packages out of
+        // the same committed lockfile.
+        let pinned = pins.pinned(&pkg.name, "pypi");
+        let version_str = match pinned {
+            Some(pin) => pin.to_string(),
+            None => pkg
+                .version
+                .as_ref()
+                .map(|v| {
+                    v.replace(">=", "")
+                        .replace("==", "")
+                        .replace("~=", "")
+                        .replace(">", "")
+                        .replace("<", "")
+                })
+                .unwrap_or_else(|| "latest".to_string()),
+        };
+        // A pin names one version, so pip is asked for exactly it rather than
+        // for the range the manifest declared.
+        let requirement = match pinned {
+            Some(pin) => format!("{}=={}", pkg.name, pin),
+            None => pkg.requirement_string(),
+        };
 
         // Cache directory with pypi_ prefix to distinguish from HORUS packages
         let pkg_cache_dir = global_cache.join(format!("pypi_{}@{}", pkg.name, version_str));
@@ -185,7 +419,19 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
                 "--target",
                 &*pkg_cache_dir.to_string_lossy(),
             ]);
-            cmd.arg(pkg.requirement_string());
+
+            // Ask pip to write down which artifact it chose. `--report` is the
+            // only place the *distribution's* sha256 appears: the dist-info
+            // records per-file hashes of what was unpacked, not a digest of
+            // what was downloaded, and PyPI cannot be re-queried for it
+            // afterwards without guessing which wheel pip picked.
+            let report_path = report_path
+                .get_or_insert_with(|| pip_report_path(&python_cmd, &global_cache))
+                .clone();
+            if let Some(ref path) = report_path {
+                cmd.arg("--report").arg(path);
+            }
+            cmd.arg(&requirement);
 
             let output = cmd.output().context("Failed to run pip install")?;
 
@@ -200,12 +446,53 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
                 bail!("pip install failed for {}: {}", pkg.name, stderr);
             }
 
-            // Create metadata.json for package tracking
-            let metadata = serde_json::json!({
+            let checksum = report_path.as_ref().and_then(|path| {
+                let digest = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|report| report_checksum(&report, &pkg.name));
+                let _ = fs::remove_file(path);
+                digest
+            });
+
+            // A digest that disagrees with the pin at the *same* version means
+            // the bytes behind that version changed under this project. That
+            // is refused here rather than reported later: the package is not
+            // linked, and the cache directory goes with it so the next run
+            // re-downloads instead of reading the rejected copy as a hit.
+            if let Some(ref digest) = checksum {
+                let installed =
+                    LockedPackage::new(&pkg.name, &version_str, "pypi", Some(digest.clone()));
+                if let Some(expected) = pins.lock().checksum_conflict(&installed) {
+                    let expected = expected.to_string();
+                    let _ = fs::remove_dir_all(&pkg_cache_dir);
+                    bail!(
+                        "Checksum mismatch for {}=={}!\n\
+                         {} records: {}\n\
+                         PyPI served:  {}\n\n\
+                         The same version was published with different bytes, or the download \
+                         was tampered with. Refusing to install.\n\
+                         If the change is expected, re-resolve deliberately with `horus lock`.",
+                        pkg.name,
+                        version_str,
+                        HORUS_LOCK,
+                        expected,
+                        digest
+                    );
+                }
+            }
+
+            // Create metadata.json for package tracking. The checksum is
+            // written here, not held in memory, because the lockfile is
+            // assembled by reading the installed tree back off disk — a run
+            // that reuses this cache entry has to find the digest too.
+            let mut metadata = serde_json::json!({
                 "name": pkg.name,
                 "version": version_str,
                 "source": "PyPI"
             });
+            if let (Some(obj), Some(digest)) = (metadata.as_object_mut(), checksum.as_ref()) {
+                obj.insert("checksum".to_string(), digest.as_str().into());
+            }
             let metadata_path = pkg_cache_dir.join("metadata.json");
             fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
@@ -243,6 +530,90 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
     verify_linked_packages_import(&python_cmd, &linked)?;
 
     Ok(())
+}
+
+/// Where this pip should write its install report, or `None` if it has none.
+///
+/// `pip install --report` landed in pip 22.2. Passing it to an older pip is a
+/// hard `no such option` failure, which would turn "no checksum available"
+/// into "no install" — so the flag is only used once the version says it
+/// exists, and the digest is simply absent otherwise. That absence is recorded
+/// as `checksum = None`, never as a checksum of something else.
+fn pip_report_path(python_cmd: &str, global_cache: &Path) -> Option<PathBuf> {
+    let output = Command::new(python_cmd)
+        .args(["-m", "pip", "--version"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    if !pip_reports_installs(&String::from_utf8_lossy(&output.stdout)) {
+        log::debug!("pip is older than 22.2; installing without --report (no checksums)");
+        return None;
+    }
+    // Beside the cache rather than in it: the report is not part of any
+    // package, and `--target` directories become PYTHONPATH entries. The pid
+    // keeps two concurrent `horus run`s out of each other's file.
+    Some(global_cache.join(format!(".pip-report-{}.json", std::process::id())))
+}
+
+/// Whether a `pip --version` banner names a pip that supports `--report`.
+fn pip_reports_installs(banner: &str) -> bool {
+    // "pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.12)"
+    let Some(version) = banner.split_whitespace().nth(1) else {
+        return false;
+    };
+    let mut parts = version.split('.').map(|p| p.parse::<u32>());
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= (22, 2),
+        (Some(Ok(major)), _) => major > 22,
+        _ => false,
+    }
+}
+
+/// The sha256 pip recorded for the distribution it installed.
+///
+/// Reads `install[].download_info.archive_info.hashes.sha256`, falling back to
+/// the older `archive_info.hash` (`sha256=<hex>`) that pip 22.x wrote. The
+/// report also describes the transitive dependencies pip pulled in, so the
+/// entry is matched on the normalised distribution name rather than taken
+/// positionally.
+fn report_checksum(report: &str, package: &str) -> Option<String> {
+    let report: serde_json::Value = serde_json::from_str(report).ok()?;
+    let wanted = normalize_distribution_name(package);
+    for entry in report.get("install")?.as_array()? {
+        let name = entry.get("metadata")?.get("name")?.as_str()?;
+        if normalize_distribution_name(name) != wanted {
+            continue;
+        }
+        let archive = entry.get("download_info")?.get("archive_info")?;
+        let digest = archive
+            .get("hashes")
+            .and_then(|h| h.get("sha256"))
+            .and_then(|v| v.as_str())
+            .or_else(|| archive.get("hash").and_then(|v| v.as_str()))?;
+        return crate::lockfile::normalize_checksum(digest);
+    }
+    None
+}
+
+/// PEP 503 name normalisation: `Horus_Robotics` and `horus-robotics` are the
+/// same distribution, and pip's report spells names its own way.
+fn normalize_distribution_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut last_was_separator = false;
+    for ch in name.chars() {
+        if matches!(ch, '-' | '_' | '.') {
+            if !last_was_separator {
+                out.push('-');
+            }
+            last_was_separator = true;
+        } else {
+            out.extend(ch.to_lowercase());
+            last_was_separator = false;
+        }
+    }
+    out
 }
 
 /// Ask the interpreter that will run the node whether it can import what was
@@ -410,7 +781,7 @@ for name in sys.argv[1:]:
     Ok((interpreter, failures))
 }
 
-pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> {
+pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>, pins: &PinContext) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
     }
@@ -458,11 +829,13 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
             }
         }
 
-        let version_str = pkg
-            .version
-            .as_ref()
-            .unwrap_or(&"latest".to_string())
-            .clone();
+        // Same order as the pypi path: the lock's pin, then the manifest's own
+        // requirement, then `latest`.
+        let pinned = pins.pinned(&pkg.name, "crates.io");
+        let version_str = pinned
+            .map(str::to_string)
+            .or_else(|| pkg.version.clone())
+            .unwrap_or_else(|| "latest".to_string());
         let pkg_cache_dir = global_cache.join(format!("cratesio_{}@{}", pkg.name, version_str));
         let local_link = local_bin.join(&pkg.name);
 
@@ -502,11 +875,10 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
             let mut cmd = Command::new("cargo");
             cmd.arg("install");
 
-            if let Some(version) = &pkg.version {
-                cmd.arg(format!("{}@{}", pkg.name, version));
-            } else {
-                cmd.arg(&pkg.name);
-            }
+            match pinned.or(pkg.version.as_deref()) {
+                Some(version) => cmd.arg(format!("{}@{}", pkg.name, version)),
+                None => cmd.arg(&pkg.name),
+            };
 
             cmd.arg("--root").arg(&pkg_cache_dir);
 
@@ -595,10 +967,15 @@ pub(crate) fn resolve_dependencies_with_context(
     let (horus_packages, pip_packages, cargo_packages) =
         split_dependencies_with_context(dependencies.clone(), context_language);
 
-    if lock_path.exists() {
-        if let Ok(existing_lock) = HorusLockfile::load_from(lock_path) {
-            if let Some(ref hash) = config_hash {
-                if !existing_lock.is_stale(hash) {
+    // The pins every installer below works under. Loaded once, before anything
+    // resolves — see `PinContext` for why a lockfile nothing consults before
+    // installing is not a lockfile.
+    let pins = PinContext::load(lock_path, &horus_packages, &pip_packages, &cargo_packages);
+
+    if let Some(ref hash) = config_hash {
+        if lock_path.exists() {
+            {
+                if !pins.lock().is_stale(hash) {
                     // A matching config hash says the *inputs* have not
                     // changed. horus.lock pins no packages and records no
                     // paths, so it says nothing whatever about whether the
@@ -681,17 +1058,17 @@ pub(crate) fn resolve_dependencies_with_context(
 
     // Resolve pip packages
     if !pip_packages.is_empty() {
-        install_pip_packages(pip_packages)?;
+        install_pip_packages(pip_packages, &pins)?;
     }
 
     // Resolve cargo packages - skip for Python (library crates can't be installed with cargo install)
     // Cargo library dependencies are handled by Cargo.toml for Rust projects
     if !cargo_packages.is_empty() && context_language != Some("python") {
-        install_cargo_packages(cargo_packages)?;
+        install_cargo_packages(cargo_packages, &pins)?;
     }
 
     // ── Lockfile: write after successful resolution ──
-    write_lockfile(&config_hash)?;
+    write_lockfile(&config_hash, &pins)?;
 
     Ok(())
 }
@@ -1461,7 +1838,7 @@ pub(crate) fn prompt_system_package_choice_run(
 /// never named a single version, and a second machine reading it learned
 /// nothing about what to install. A config hash is a staleness check, not a
 /// reproducibility record.
-fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
+fn write_lockfile(config_hash: &Option<String>, pins: &PinContext) -> Result<()> {
     let lock_path = Path::new(HORUS_LOCK);
 
     // Load-then-mutate. `HorusLockfile::new()` produced a BLANK lockfile, so
@@ -1474,8 +1851,18 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
     let mut lockfile = HorusLockfile::load_from(lock_path).unwrap_or_default();
     lockfile.config_hash = config_hash.clone();
 
-    for (name, version, source) in resolved_package_pins(Path::new(".")) {
-        lockfile.pin(&name, &version, &source, None);
+    for pkg in installed_packages(Path::new(".")) {
+        // An existing pin only moves when the manifest deliberately
+        // contradicted it. Recording whatever this machine happened to resolve
+        // was the silent overwrite that made the file decorative: a colleague
+        // committed 1.26.4, your `horus run` resolved 2.1.0, and the lockfile
+        // then said 2.1.0 with nothing to show a pin had ever been there.
+        if lockfile.get_pinned(&pkg.name, &pkg.source).is_some()
+            && !pins.is_overridden(&pkg.name, &pkg.source)
+        {
+            continue;
+        }
+        lockfile.pin(&pkg.name, &pkg.version, &pkg.source, pkg.checksum);
     }
 
     lockfile
@@ -1494,188 +1881,17 @@ fn write_lockfile(config_hash: &Option<String>) -> Result<()> {
 
 /// The packages `.horus/` says are installed, as `(name, version, source)`.
 ///
-/// Read back off disk rather than collected as the installers run, so the
-/// lockfile records what is linked into this project — including packages a
-/// previous run resolved and this one skipped as already-linked — rather than
-/// what this particular invocation happened to do. That is the set a second
-/// machine has to reproduce.
-///
-/// Anything whose version cannot be established is left out: a pin that says
-/// `version = "latest"` is not a pin, and writing one would make the lockfile
-/// look authoritative while promising nothing.
+/// A projection of `lockfile::installed_packages`, which grew the checksum this
+/// tuple has no room for. Both readers walked the same `.horus/packages` layout
+/// and that duplication is how the two copies drifted, so this is kept only for
+/// the tests that were written against the tuple shape.
+#[cfg(test)]
 fn resolved_package_pins(project_dir: &Path) -> Vec<(String, String, String)> {
-    let mut pins = Vec::new();
-
-    // Two passes over `.horus/packages`, because a package can be represented
-    // there both by a directory and by a JSON marker beside it and the
-    // directory is the better evidence.
-    //
-    // Pass 1 — directories. A link into the global cache, or, for
-    // `horus install <pkg>` against a local workspace target, a real directory
-    // that pip unpacked in place (registry/install.rs installs to
-    // `.horus/packages/<name>` and never links). This used to call
-    // `fs::read_link` on everything, so the real-directory layout failed the
-    // very first step and was silently left out of the lockfile: `horus run`
-    // put the package on PYTHONPATH and horus.lock never named it.
-    if let Ok(entries) = fs::read_dir(project_dir.join(".horus/packages")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
-            match link_target_name(&path) {
-                // A link into the global cache, whose directory name carries
-                // both the distribution and the version.
-                Some(target) => {
-                    if let Some((name, version)) =
-                        target.strip_prefix("pypi_").and_then(split_name_version)
-                    {
-                        // pip is asked for `latest` when the manifest names no
-                        // version, so the directory name cannot answer this one
-                        // — the installed dist-info can.
-                        let version = if version == "latest" {
-                            match dist_info_version(&path) {
-                                Some(v) => v,
-                                None => continue,
-                            }
-                        } else {
-                            version.to_string()
-                        };
-                        pins.push((name.to_string(), version, "pypi".to_string()));
-                    } else if let Some((name, version)) = split_name_version(target.as_str()) {
-                        pins.push((
-                            name.to_string(),
-                            version.to_string(),
-                            "registry".to_string(),
-                        ));
-                    }
-                }
-                // Installed in place. The directory is named after the
-                // distribution alone, so the version comes from the metadata
-                // the installer wrote or from pip's own dist-info.
-                None => {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if let Some(version) =
-                        installed_directory_version(&path).or_else(|| dist_info_version(&path))
-                    {
-                        pins.push((name, version, "pypi".to_string()));
-                    }
-                }
-            }
-        }
-    }
-
-    // Pass 2 — markers, for the packages no directory accounted for. A
-    // reference to a package already installed in the system interpreter has no
-    // directory at all; `<name>.pypi.json` normally sits beside a directory
-    // pass 1 already pinned, and is the fallback when that directory is the one
-    // form pass 1 could not read a version out of.
-    if let Ok(entries) = fs::read_dir(project_dir.join(".horus/packages")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            let Some(name) = file_name
-                .strip_suffix(".system.json")
-                .or_else(|| file_name.strip_suffix(".pypi.json"))
-            else {
-                continue;
-            };
-            if pins.iter().any(|(pinned, _, _)| pinned == name) {
-                continue;
-            }
-            if let Some(version) = system_reference_version(&path) {
-                pins.push((name.to_string(), version, "pypi".to_string()));
-            }
-        }
-    }
-
-    if let Ok(entries) = fs::read_dir(project_dir.join(".horus/bin")) {
-        for entry in entries.flatten() {
-            // `.horus/bin/<name>` links to `<cache>/cratesio_<name>@<ver>/bin/<name>`,
-            // so the version lives two levels up from the link target.
-            let Ok(target) = fs::read_link(entry.path()) else {
-                continue;
-            };
-            let Some(pkg_dir) = target.parent().and_then(|bin| bin.parent()) else {
-                continue;
-            };
-            let dir_name = pkg_dir.file_name().unwrap_or_default().to_string_lossy();
-            if let Some((name, version)) = dir_name
-                .strip_prefix("cratesio_")
-                .and_then(split_name_version)
-                .filter(|(_, version)| *version != "latest")
-            {
-                pins.push((
-                    name.to_string(),
-                    version.to_string(),
-                    "crates.io".to_string(),
-                ));
-            }
-        }
-    }
-
-    pins.sort();
-    pins.dedup();
-    pins
+    installed_packages(project_dir)
+        .into_iter()
+        .map(|p| (p.name, p.version, p.source))
+        .collect()
 }
-
-/// Split a cache directory's `name@version` suffix.
-fn split_name_version(dir_name: &str) -> Option<(&str, &str)> {
-    dir_name
-        .rsplit_once('@')
-        .filter(|(name, _)| !name.is_empty())
-}
-
-/// The cache directory a `.horus/packages` entry links to, by name.
-fn link_target_name(link: &Path) -> Option<String> {
-    let target = fs::read_link(link).ok()?;
-    Some(target.file_name()?.to_string_lossy().to_string())
-}
-
-/// The version recorded in the `metadata.json` an installer writes into a
-/// package directory it unpacked in place.
-///
-/// `registry/install.rs` writes this file last, after pip reports success, and
-/// it carries the version pip resolved — which for a `@latest` request is the
-/// only place it is written down other than the dist-info.
-fn installed_directory_version(pkg_dir: &Path) -> Option<String> {
-    system_reference_version(&pkg_dir.join("metadata.json"))
-}
-
-/// The version recorded in a `<name>.system.json` or `<name>.pypi.json` marker,
-/// or in a package directory's `metadata.json` — all three are the same
-/// `{"name", "version", "source"}` shape.
-fn system_reference_version(marker: &Path) -> Option<String> {
-    let content = fs::read_to_string(marker).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    value
-        .get("version")
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.is_empty() && *v != "unknown")
-        .map(|v| v.to_string())
-}
-
-/// The version pip actually installed, from the `*.dist-info` it leaves behind.
-///
-/// Wheel metadata directories are named `{distribution}-{version}.dist-info`,
-/// which is the only place the resolved version is written down when the
-/// manifest asked for no particular one.
-fn dist_info_version(pkg_dir: &Path) -> Option<String> {
-    let entries = fs::read_dir(pkg_dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(stem) = name.strip_suffix(".dist-info") {
-            if let Some((_, version)) = stem.rsplit_once('-') {
-                if !version.is_empty() {
-                    return Some(version.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
 pub(crate) fn create_system_reference_python_run(
     package_name: &str,
     system_version: &str,
@@ -3107,7 +3323,8 @@ mod tests {
         let _lock = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
         std::env::set_current_dir(root).unwrap();
-        let result = super::write_lockfile(&Some("deadbeef".to_string()));
+        let result =
+            super::write_lockfile(&Some("deadbeef".to_string()), &super::PinContext::empty());
         std::env::set_current_dir(&prev).unwrap();
         result.unwrap();
 

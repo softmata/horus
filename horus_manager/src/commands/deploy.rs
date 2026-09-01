@@ -11,7 +11,32 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// YAML deploy config structure (~/.horus/deploy.yaml or .horus/deploy.yaml)
+/// The one file `horus deploy` reads its fleet inventory from.
+///
+/// Named once so every message that has to say where a target came from — or
+/// why one was not found — points at the same path.
+const DEPLOY_YAML: &str = ".horus/deploy.yaml";
+
+/// Where the robot's own wheels live, relative to the remote project directory.
+///
+/// `run_python` uses the same path locally and [`remote_run_command`] prepends
+/// it to `PYTHONPATH`, so the installer and the runner have to agree on it or
+/// the deploy succeeds and every `import` on the robot fails.
+const REMOTE_PACKAGES_DIR: &str = ".horus/packages";
+
+/// The fleet inventory: every named target, keyed by the name typed after
+/// `horus deploy`.
+///
+/// Read from the project's [`DEPLOY_YAML`] and nowhere else. This was
+/// documented as "~/.horus/deploy.yaml or .horus/deploy.yaml" while
+/// [`load_deploy_yaml`] only ever opened the project file, so a fleet written
+/// where the comment said to write it resolved nothing and every name in it
+/// fell through to [`resolve_target`]'s bare-hostname path — the silent,
+/// destructive one. The project file is also what the trust argument in
+/// [`validate_ssh_inputs`] rests on: these hosts and identity paths are allowed
+/// into an ssh argv because they are part of the checkout, reviewed like the
+/// rest of it. `cargo_gen`'s `BUILD_DIR_KEEPS` negates the `*` in
+/// `.horus/.gitignore` for exactly this file so that stays true.
 #[derive(Debug, serde::Deserialize)]
 struct DeployYaml {
     targets: HashMap<String, YamlTarget>,
@@ -34,6 +59,23 @@ struct ResolvedTarget {
     dir: Option<String>,
     port: Option<u16>,
     identity: Option<PathBuf>,
+    origin: TargetOrigin,
+}
+
+/// Where a target's connection details came from.
+///
+/// [`TargetOrigin::Unlisted`] is the one that has to be visible. A name the
+/// inventory does not have is handed to ssh as a hostname, and the sync behind
+/// it runs `rsync -avz --delete` against whatever DNS, `/etc/hosts` or
+/// `~/.ssh/config` makes of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetOrigin {
+    /// A `user@host` typed on the command line; no lookup is attempted.
+    Direct,
+    /// A named entry in [`DEPLOY_YAML`].
+    Listed,
+    /// Nothing matched — the string is being used as a hostname as-is.
+    Unlisted,
 }
 
 /// Supported target architectures for robotics platforms
@@ -118,7 +160,12 @@ impl Default for DeployConfig {
     }
 }
 
-/// Resolve a target string: either a direct `user@host` or a named target from `.horus/deploy.yaml`.
+/// Resolve a target string: either a direct `user@host` or a named target from
+/// [`DEPLOY_YAML`].
+///
+/// The `origin` on the result is not bookkeeping: "not in the inventory" is a
+/// different answer from "found it", and the caller has to say so before it
+/// runs a `--delete` sync against the guess. See [`warn_unlisted_target`].
 fn resolve_target(target: &str) -> ResolvedTarget {
     // If target contains '@', treat as direct user@host — no YAML lookup
     if target.contains('@') {
@@ -128,10 +175,11 @@ fn resolve_target(target: &str) -> ResolvedTarget {
             dir: None,
             port: None,
             identity: None,
+            origin: TargetOrigin::Direct,
         };
     }
 
-    // Try to load .horus/deploy.yaml and look up the named target
+    // Try to load the inventory and look up the named target
     if let Some(yaml) = load_deploy_yaml() {
         if let Some(entry) = yaml.targets.get(target) {
             return ResolvedTarget {
@@ -140,6 +188,7 @@ fn resolve_target(target: &str) -> ResolvedTarget {
                 dir: entry.dir.clone(),
                 port: entry.port,
                 identity: entry.identity.as_ref().map(PathBuf::from),
+                origin: TargetOrigin::Listed,
             };
         }
     }
@@ -151,15 +200,52 @@ fn resolve_target(target: &str) -> ResolvedTarget {
         dir: None,
         port: None,
         identity: None,
+        origin: TargetOrigin::Unlisted,
+    }
+}
+
+/// Say — before anything is built, transferred or deleted — that this target is
+/// not one the inventory names.
+///
+/// [`resolve_target`] falls through to "could be a bare hostname" for anything
+/// it cannot find, and said nothing about it. On a checkout with no inventory,
+/// or with the name spelled differently, `horus deploy jetson` printed a
+/// confident plan for a host called `jetson` and then ran `rsync -avz --delete`
+/// against whatever that resolved to, removing everything in the destination
+/// directory this project does not have.
+fn warn_unlisted_target(name: &str) {
+    println!(
+        "  {} '{}' is not a target in {} — treating it as a hostname.",
+        cli_output::ICON_WARN.yellow(),
+        name.yellow(),
+        DEPLOY_YAML
+    );
+    match load_deploy_yaml() {
+        Some(yaml) if !yaml.targets.is_empty() => {
+            let mut names: Vec<&str> = yaml.targets.keys().map(String::as_str).collect();
+            names.sort();
+            println!(
+                "  {} Configured targets: {}",
+                cli_output::ICON_HINT.dimmed(),
+                names.join(", ")
+            );
+        }
+        _ => println!(
+            "  {} No {} here. `horus deploy --list` shows what is configured.",
+            cli_output::ICON_HINT.dimmed(),
+            DEPLOY_YAML
+        ),
     }
 }
 
 /// Reject an ssh destination or identity that the tools downstream would read
 /// as an *option* rather than as data.
 ///
-/// `host` and `identity` come from `.horus/deploy.yaml`, which lives inside the
-/// project — i.e. inside any checkout the user cloned — and both land in the
-/// argv of `ssh` and `rsync` with nothing between them and the parser:
+/// `host` and `identity` come from [`DEPLOY_YAML`], which lives inside the
+/// project — i.e. inside any checkout the user cloned, and committed there:
+/// `cargo_gen`'s `BUILD_DIR_KEEPS` re-includes it from the `*` that ignores the
+/// rest of `.horus/`. Both land in the argv of `ssh` and `rsync` with nothing
+/// between them and the parser:
 ///
 /// * [`run_on_target`] passes the host as a bare positional
 ///   (`cmd.arg(&config.target)`). ssh reads a leading `-` as an option, and
@@ -177,7 +263,7 @@ fn validate_ssh_inputs(host: &str, identity: Option<&Path>) -> HorusResult<()> {
     fn reject(what: &str, value: &str, why: &str) -> HorusError {
         HorusError::Config(ConfigError::Other(format!(
             "Refusing to deploy: the {what} {value:?} {why}.\n\
-             Deploy targets are read from .horus/deploy.yaml, which is part of the \
+             Deploy targets are read from {DEPLOY_YAML}, which is part of the \
              checkout, and this value is passed straight into the argv of ssh/rsync — \
              where it would be parsed as an option (for example -oProxyCommand=...) \
              instead of as a destination."
@@ -215,11 +301,26 @@ fn validate_ssh_inputs(host: &str, identity: Option<&Path>) -> HorusResult<()> {
     Ok(())
 }
 
-/// Load and parse `.horus/deploy.yaml` from the current directory.
+/// Load and parse [`DEPLOY_YAML`] from the current directory.
+///
+/// A malformed inventory used to be indistinguishable from a missing one: the
+/// parse error went into `.ok()` and the deploy carried on treating every name
+/// as a bare hostname. Say which one it is — the answer decides whether
+/// `horus deploy jetson` reaches the Jetson or something DNS invented.
 fn load_deploy_yaml() -> Option<DeployYaml> {
-    let config_path = Path::new(".horus/deploy.yaml");
-    let content = std::fs::read_to_string(config_path).ok()?;
-    serde_yaml::from_str(&content).ok()
+    let content = std::fs::read_to_string(Path::new(DEPLOY_YAML)).ok()?;
+    match serde_yaml::from_str(&content) {
+        Ok(yaml) => Some(yaml),
+        Err(e) => {
+            eprintln!(
+                "{} {} could not be parsed, so no named target resolves: {}",
+                cli_output::ICON_WARN.yellow(),
+                DEPLOY_YAML,
+                e
+            );
+            None
+        }
+    }
 }
 
 /// CLI arguments for single-target deploy (internal).
@@ -232,6 +333,7 @@ pub struct DeployArgs {
     pub port: u16,
     pub identity: Option<PathBuf>,
     pub dry_run: bool,
+    pub print_service: bool,
 }
 
 /// CLI arguments for multi-target deploy.
@@ -246,6 +348,7 @@ pub struct DeployMultiArgs {
     pub port: u16,
     pub identity: Option<PathBuf>,
     pub dry_run: bool,
+    pub print_service: bool,
 }
 
 /// Run deploy to one or more targets.
@@ -261,6 +364,7 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
         port,
         identity,
         dry_run,
+        print_service,
     } = args;
 
     // Resolve target list
@@ -293,6 +397,17 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
         targets
     };
 
+    // A unit file per host, concatenated on one stdout, could not be
+    // redirected into anything useful — and each host's unit differs in the
+    // target it names. Ask for them one at a time.
+    if print_service && target_names.len() > 1 {
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "--print-service writes one unit file, but {} targets were given. \
+             Run it once per target.",
+            target_names.len()
+        ))));
+    }
+
     if target_names.len() == 1 {
         // Single target — use existing deploy path
         return run_deploy(DeployArgs {
@@ -304,6 +419,7 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
             port,
             identity,
             dry_run,
+            print_service,
         });
     }
 
@@ -402,6 +518,7 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
             port,
             identity: identity.clone(),
             dry_run,
+            print_service: false,
         });
 
         match result {
@@ -450,7 +567,34 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
     Ok(())
 }
 
-/// Run the deploy command for a single target.
+/// Wrap a string so a POSIX shell reads it as exactly one literal word.
+///
+/// One implementation, because every remote command this module builds is a
+/// single string the robot's shell re-parses: the path in `cd`, the Python
+/// entry point, each pip requirement.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Quote a remote path for `sh -c`, leaving a leading `~` unquoted.
+///
+/// `cd '~/horus_deploy'` does not work: POSIX tilde expansion happens before
+/// quote removal only for an *unquoted* tilde, so the shell looks for a
+/// literal directory named `~`. rsync's destination form (`host:~/dir/`) is
+/// expanded by the remote shell, so files land in `$HOME/dir` — and the run
+/// step could never reach them.
+fn shell_quote_preserving_tilde(path: &str) -> String {
+    if path == "~" {
+        return "~".to_string();
+    }
+    match path.strip_prefix("~/") {
+        // `~/rest` -> `~/'rest'`: tilde expands, the rest stays literal.
+        Some(rest) if !rest.is_empty() => format!("~/{}", shell_single_quote(rest)),
+        Some(_) => "~/".to_string(),
+        None => shell_single_quote(path),
+    }
+}
+
 /// Default rsync excludes.
 ///
 /// `target` is excluded as a bare pattern, and rsync matches such a pattern
@@ -466,31 +610,15 @@ pub fn run_deploy_multi(args: DeployMultiArgs) -> HorusResult<()> {
 /// wildcard needed for cross-compiled target triples pulled the whole tree
 /// back in (measured: 1,229 files, 367,917,030 bytes).
 ///
-/// The secret patterns are not hygiene: every deploy previously shipped
-/// `.horus/deploy.yaml`, which lists every robot's host, port and SSH
-/// identity path — so compromising one robot handed over the whole fleet's
-/// inventory.
-/// Quote a remote path for `sh -c`, leaving a leading `~` unquoted.
+/// The Python environments are excluded for the same reason as the build
+/// trees: they are this machine's, not the robot's. See the patterns below.
 ///
-/// `cd '~/horus_deploy'` does not work: POSIX tilde expansion happens before
-/// quote removal only for an *unquoted* tilde, so the shell looks for a
-/// literal directory named `~`. rsync's destination form (`host:~/dir/`) is
-/// expanded by the remote shell, so files land in `$HOME/dir` — and the run
-/// step could never reach them.
-fn shell_quote_preserving_tilde(path: &str) -> String {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-
-    if path == "~" {
-        return "~".to_string();
-    }
-    match path.strip_prefix("~/") {
-        // `~/rest` -> `~/'rest'`: tilde expands, the rest stays literal.
-        Some(rest) if !rest.is_empty() => format!("~/{}", quote(rest)),
-        Some(_) => "~/".to_string(),
-        None => quote(path),
-    }
-}
-
+/// Keeping the inventory off the wire is not hygiene either. It is committed
+/// config, reviewed like the rest of the checkout — that is what lets
+/// [`validate_ssh_inputs`] trust it into an ssh argv — but it also names every
+/// robot's host, port and SSH identity path, and every deploy used to copy it
+/// onto each robot in turn. Committing it to your repository and replicating it
+/// across the fleet are different decisions; only the first one was made.
 fn default_excludes() -> Vec<String> {
     [
         // Build trees, including .horus/target. The one artifact we need is
@@ -500,6 +628,17 @@ fn default_excludes() -> Vec<String> {
         "node_modules",
         "__pycache__",
         "*.pyc",
+        // The developer's Python environments, none of which run on a robot.
+        // `.horus/venv` is 13 MB whose pyvenv.cfg holds this machine's absolute
+        // paths and whose `bin/python3` is a symlink to an x86 interpreter
+        // (registry/install.rs builds it for pip); `.horus/packages` is
+        // symlinks into this machine's cache, which dangle the moment they
+        // land on the robot. install_python_deps_on_target rebuilds
+        // `.horus/packages` there with the robot's own pip and its own wheels.
+        ".horus/venv",
+        ".venv",
+        "venv",
+        ".horus/packages",
         // Never ship the fleet inventory to a member of the fleet.
         ".horus/deploy.yaml",
         // Nor credentials that happen to sit in the project directory.
@@ -518,7 +657,14 @@ fn default_excludes() -> Vec<String> {
     .collect()
 }
 
-pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
+/// Turn CLI arguments into the configuration one deploy runs with, and say
+/// where the target came from.
+///
+/// Shared with [`print_service`] so the unit file names the same host, the same
+/// directory and the same binary the deploy itself would use. Computing a path
+/// twice is exactly how the transfer step and the run step came to disagree
+/// (see [`locate_built_binary`]); there is no reason to repeat it.
+fn deploy_config_from_args(args: DeployArgs) -> HorusResult<(DeployConfig, TargetOrigin)> {
     let DeployArgs {
         target,
         remote_dir,
@@ -527,9 +673,10 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
         release,
         port,
         identity,
-        dry_run,
+        dry_run: _,
+        print_service: _,
     } = args;
-    // Resolve named target from .horus/deploy.yaml (if applicable)
+    // Resolve named target from the inventory (if applicable)
     let resolved = resolve_target(&target);
 
     // CLI args win over YAML values. For Option fields, None means "not set by user".
@@ -569,6 +716,37 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
     // Refuse the shapes that would be read as options there.
     validate_ssh_inputs(&config.target, config.identity.as_deref())?;
 
+    // A name the inventory does not have is not a typo this command can fix for
+    // the user — it becomes a hostname, and a --delete sync follows it.
+    if resolved.origin == TargetOrigin::Unlisted {
+        warn_unlisted_target(&target);
+    }
+
+    Ok((config, resolved.origin))
+}
+
+/// The exact rsync destination: `host:dir/`.
+///
+/// Every message that mentions `--delete` prints this rather than the host and
+/// the directory on separate lines. "Target: jetson" and "Remote dir:
+/// ~/horus_deploy" are the two halves of the path files are deleted from, and
+/// the confirmation prompt never put them together.
+fn sync_destination(config: &DeployConfig) -> String {
+    format!("{}:{}/", config.target, config.remote_dir)
+}
+
+pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
+    let dry_run = args.dry_run;
+    let wants_service = args.print_service;
+    let (config, _origin) = deploy_config_from_args(args)?;
+
+    // Before the banner: this writes a unit file to stdout, so anything else
+    // printed first would have to be stripped back out before it could be
+    // redirected into a file.
+    if wants_service {
+        return print_service(&config);
+    }
+
     println!("{}", "HORUS Deploy".green().bold());
     println!();
     println!("  {} {}", "Target:".cyan(), config.target);
@@ -584,6 +762,12 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
         if config.release { "release" } else { "debug" }
     );
     println!("  {} {}", "Run after:".cyan(), config.run_after);
+    println!(
+        "  {} {} {}",
+        "Deletes in:".cyan(),
+        sync_destination(&config).yellow(),
+        "(rsync --delete removes whatever is there and not here)".dimmed()
+    );
     println!();
 
     if dry_run {
@@ -605,12 +789,45 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
     // Step 2: Sync files
     println!();
     println!("{}", "Step 2: Syncing files to target...".cyan().bold());
-    sync_to_target(&config)?;
-
-    // Step 3: Run if requested
-    if config.run_after {
+    if !sync_to_target(&config)? {
+        // Answering "no" to "this deletes files on <host>" used to abort the
+        // transfer and nothing else: the deploy went on to run the project over
+        // ssh and print "Deployment complete!".
         println!();
-        println!("{}", "Step 3: Running on target...".cyan().bold());
+        println!(
+            "{} Deploy cancelled — nothing was transferred.",
+            "!".yellow()
+        );
+        return Ok(());
+    }
+
+    // The steps after the transfer depend on the language, so they are
+    // numbered as they happen rather than hardcoded.
+    let mut step = 2;
+
+    // Cross-compilation covers the Rust and C++ artifact. A Python project's
+    // imports are satisfied by wheels instead, and they have to be the robot's
+    // own — see install_python_deps_on_target.
+    if detect_deploy_language() == Language::Python {
+        step += 1;
+        println!();
+        println!(
+            "{}",
+            format!("Step {step}: Installing Python dependencies on target...")
+                .cyan()
+                .bold()
+        );
+        install_python_deps_on_target(&config)?;
+    }
+
+    // Run if requested
+    if config.run_after {
+        step += 1;
+        println!();
+        println!(
+            "{}",
+            format!("Step {step}: Running on target...").cyan().bold()
+        );
         run_on_target(&config)?;
     }
 
@@ -623,17 +840,120 @@ pub fn run_deploy(args: DeployArgs) -> HorusResult<()> {
         config.target,
         config.port
     );
+    // What was just deployed dies with the ssh session that started it. Say so
+    // where the user is looking, not only in the docs.
+    println!(
+        "  {} nothing here survives a reboot — `horus deploy {} --print-service` \
+         writes a systemd unit that does",
+        "Tip:".dimmed(),
+        config.target
+    );
 
     Ok(())
+}
+
+/// Write a systemd unit for this deploy to stdout.
+///
+/// Printed, never installed. Nothing HORUS deploys survives a reboot: there is
+/// no unit file anywhere in the tree, `launch`'s default restart policy is
+/// "never", and `--run` starts the project over the interactive ssh session, so
+/// it dies with that session. A robot fleet had no supported way to come back
+/// after a power cycle.
+///
+/// The unit is emitted rather than installed because installing one remotely
+/// means choosing between `systemctl --user` and a system unit, deciding
+/// whether to enable lingering, and holding privileges this command does not
+/// otherwise need. Printing is honest about what it knows — the host, the
+/// directory and the exact command `--run` would have used, all read back from
+/// the same [`deploy_config_from_args`] the deploy itself uses — and leaves the
+/// policy to whoever owns the robot.
+fn print_service(config: &DeployConfig) -> HorusResult<()> {
+    let (remote_cmd, _) = remote_run_command(config);
+    let unit_name = service_unit_name(config);
+
+    // WorkingDirectory is set from the deploy's own remote_dir, and ExecStart
+    // re-runs the command through `sh -lc` because remote_run_command produces
+    // a shell line (a `cd`, and for Python a PYTHONPATH assignment), not an
+    // argv systemd could exec directly.
+    println!("# {unit_name}");
+    println!("#");
+    println!("# Install as a user service (survives reboot only with lingering enabled):");
+    println!(
+        "#   scp {unit_name} {}:~/.config/systemd/user/",
+        config.target
+    );
+    println!(
+        "#   ssh {} 'systemctl --user daemon-reload && systemctl --user enable --now {unit_name}'",
+        config.target
+    );
+    println!(
+        "#   ssh {} 'sudo loginctl enable-linger $USER'   # or it stops at logout",
+        config.target
+    );
+    println!("#");
+    println!("# Or as a system service:");
+    println!("#   scp {unit_name} {}:/tmp/ && ssh {} 'sudo mv /tmp/{unit_name} /etc/systemd/system/ && sudo systemctl enable --now {unit_name}'", config.target, config.target);
+    println!();
+    println!("[Unit]");
+    println!("Description=HORUS project deployed to {}", config.target);
+    println!("After=network-online.target");
+    println!("Wants=network-online.target");
+    println!();
+    println!("[Service]");
+    println!("Type=simple");
+    // Only when it is absolute. systemd does not do tilde expansion, so
+    // `WorkingDirectory=~/horus_deploy` fails the unit outright with "Failed to
+    // determine working directory". The default remote_dir is `~/horus_deploy`,
+    // so that is the common case, not an edge one — and it costs nothing to
+    // omit, because the command below is run through a login shell that starts
+    // with the same `cd` the deploy itself uses.
+    if config.remote_dir.starts_with('/') {
+        println!("WorkingDirectory={}", config.remote_dir);
+    }
+    println!("ExecStart=/bin/sh -lc {}", shell_single_quote(&remote_cmd));
+    println!("Restart=on-failure");
+    println!("RestartSec=5");
+    println!();
+    println!("[Install]");
+    println!("WantedBy=default.target");
+
+    Ok(())
+}
+
+/// The unit filename for a deploy, derived from the remote directory.
+///
+/// The directory rather than the host: one robot can hold several deployed
+/// projects, and naming the unit after the target would make the second deploy
+/// silently replace the first one's service.
+fn service_unit_name(config: &DeployConfig) -> String {
+    let base = config
+        .remote_dir
+        .rsplit('/')
+        .find(|part| !part.is_empty() && *part != "~")
+        .unwrap_or("horus");
+    let sanitized: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("horus-{}.service", sanitized.trim_matches('-'))
 }
 
 /// Print what would be done in dry-run mode
 fn print_deploy_plan(config: &DeployConfig) {
     let target = config.arch.rust_target();
     let mode = if config.release { "--release" } else { "" };
+    let language = detect_deploy_language();
 
     println!("  1. Build:");
-    if target.is_empty() {
+    if language == Language::Python {
+        println!("     (nothing — Python)");
+    } else if target.is_empty() {
         println!("     cargo build {}", mode);
     } else {
         println!("     cargo build {} --target {}", mode, target);
@@ -642,19 +962,42 @@ fn print_deploy_plan(config: &DeployConfig) {
     println!();
     println!("  2. Sync files:");
     println!(
-        "     rsync -avz --delete -e 'ssh -p {}' ./ {}:{}",
-        config.port, config.target, config.remote_dir
+        "     rsync -avz --delete -e 'ssh -p {}' ./ {}",
+        config.port,
+        sync_destination(config)
+    );
+    // Spelling out the direction of --delete, because the plan is the last
+    // thing printed before a real run does it: it is the *destination* that
+    // loses files, and the destination is a directory on someone's robot.
+    println!(
+        "     {} everything under {} that is not in this directory is deleted",
+        cli_output::ICON_WARN.yellow(),
+        sync_destination(config).yellow()
     );
 
-    if config.run_after {
+    let mut step = 2;
+
+    if language == Language::Python {
+        step += 1;
         println!();
-        println!("  3. Run on target:");
+        println!("  {}. Install dependencies on target:", step);
         println!(
-            "     ssh -p {} {} 'cd {} && ./target/{}/horus_project'",
+            "     ssh -p {} {} '{}'",
             config.port,
             config.target,
-            config.remote_dir,
-            if config.release { "release" } else { "debug" }
+            pip_install_command(config)
+        );
+    }
+
+    if config.run_after {
+        step += 1;
+        println!();
+        println!("  {}. Run on target:", step);
+        println!(
+            "     ssh -p {} {} '{}'",
+            config.port,
+            config.target,
+            remote_run_command(config).0
         );
     }
 }
@@ -857,7 +1200,7 @@ fn build_for_target_cpp(config: &DeployConfig) -> HorusResult<()> {
 }
 
 /// Sync files to target using rsync
-fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
+fn sync_to_target(config: &DeployConfig) -> HorusResult<bool> {
     // Check if rsync is available
     if Command::new("rsync").arg("--version").output().is_err() {
         return Err(HorusError::Config(ConfigError::Other(
@@ -887,7 +1230,7 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
         std::io::stdin().read_line(&mut input).ok();
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("  Cancelled.");
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -935,7 +1278,7 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
 
     sync_binary_to_target(config)?;
 
-    Ok(())
+    Ok(true)
 }
 
 /// Transfer the built Rust binary, which the main sync deliberately excludes.
@@ -1058,74 +1401,231 @@ fn locate_built_binary_in(
     relatives.into_iter().find(|rel| root.join(rel).is_file())
 }
 
-/// Run the project on the target
-fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
-    let language = detect_deploy_language();
+/// What starts this project, as a path inside the deploy directory.
+///
+/// Resolved once and consumed three ways — the shell command `--run` sends, the
+/// dry-run plan, and `ExecStart=` in the unit [`print_service`] emits — so all
+/// three name the same file. The run step and the transfer step used to compute
+/// their paths independently, and shipped a binary to one place while exec'ing
+/// another (see [`locate_built_binary`]).
+enum RemoteEntry {
+    /// A native executable at this project-relative path.
+    Executable(String),
+    /// A Python entry point at this project-relative path, run by the robot's
+    /// own `python3`.
+    Python(String),
+}
 
-    let (run_command, display_name) = match language {
+/// The PyPI requirements this project resolved, as pip argument strings.
+///
+/// Read from `horus.lock` when there is one, so the robot installs the versions
+/// the project was last known to work with rather than whatever PyPI serves on
+/// the day it is provisioned — which is most of the point of deploying a fleet
+/// from a checkout. Falls back to the manifest's declared dependencies when the
+/// project has never been locked; those carry whatever constraint the author
+/// wrote, including none.
+fn deploy_python_requirements() -> Vec<String> {
+    if let Ok(lock) =
+        crate::lockfile::HorusLockfile::load_from(Path::new(crate::lockfile::HORUS_LOCK))
+    {
+        let pinned: Vec<String> = lock
+            .packages
+            .iter()
+            .filter(|p| p.source == "pypi")
+            .map(|p| format!("{}=={}", p.name, p.version))
+            .collect();
+        if !pinned.is_empty() {
+            return pinned;
+        }
+    }
+
+    let Ok(manifest) =
+        crate::manifest::HorusManifest::load_from(Path::new(crate::manifest::HORUS_TOML))
+    else {
+        return Vec::new();
+    };
+    manifest
+        .dependencies
+        .iter()
+        .filter(|(_, value)| value.is_pypi())
+        .map(|(name, value)| match value.version() {
+            // A bare version means that version, the way
+            // `pyproject_gen::format_pypi_dep` renders it; anything starting
+            // with an operator is already a requirement string.
+            Some(spec) if !spec.is_empty() && spec != "latest" => {
+                if spec.starts_with(['=', '>', '<', '~', '^', '!']) {
+                    format!("{name}{spec}")
+                } else {
+                    format!("{name}=={spec}")
+                }
+            }
+            _ => name.clone(),
+        })
+        .collect()
+}
+
+/// The pip invocation that populates [`REMOTE_PACKAGES_DIR`] on the robot.
+///
+/// `--target` rather than a virtualenv, and run on the robot rather than
+/// shipped from here. The developer's `.horus/venv` is unusable on a robot —
+/// its `pyvenv.cfg` records host-absolute paths and an interpreter symlink for
+/// the wrong architecture — which is why the sync now excludes it. Wheels the
+/// robot's own pip resolved are the only ones the robot's interpreter can load.
+fn pip_install_command(config: &DeployConfig) -> String {
+    let args = deploy_python_requirements()
+        .iter()
+        .map(|r| shell_single_quote(r))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!(
+        "cd {} && python3 -m pip install --upgrade --target {} {}",
+        shell_quote_preserving_tilde(&config.remote_dir),
+        shell_single_quote(REMOTE_PACKAGES_DIR),
+        args
+    )
+}
+
+/// Install the project's Python dependencies on the target.
+///
+/// Deploy used to be rsync and nothing else: `build_for_target` printed
+/// "Python project — no build step needed", the run step invoked the robot's
+/// system `python3`, and there was no `pip` anywhere in this file. So a Python
+/// deploy reported success and then died on the first `import horus`, because
+/// nothing had ever installed anything on the robot.
+fn install_python_deps_on_target(config: &DeployConfig) -> HorusResult<()> {
+    let requirements = deploy_python_requirements();
+    if requirements.is_empty() {
+        println!(
+            "  {} No Python dependencies declared — nothing to install",
+            cli_output::ICON_INFO.cyan()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "  {} Installing {} package(s) into {}",
+        cli_output::ICON_INFO.cyan(),
+        requirements.len(),
+        REMOTE_PACKAGES_DIR
+    );
+
+    let mut cmd = ssh_base(config);
+    cmd.arg(&config.target);
+    cmd.arg(pip_install_command(config));
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    let status = cmd
+        .status()
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to run SSH: {}", e))))?;
+
+    if !status.success() {
+        // Worth failing the deploy over. The files are already on the robot and
+        // `--run` is about to start a node whose imports cannot resolve, which
+        // surfaces as a traceback that never mentions pip.
+        return Err(HorusError::Config(ConfigError::Other(format!(
+            "pip install failed on {} — the project is synced but its dependencies are not installed",
+            config.target
+        ))));
+    }
+
+    println!(
+        "  {} Dependencies installed",
+        cli_output::ICON_SUCCESS.green()
+    );
+    Ok(())
+}
+
+/// Resolve [`RemoteEntry`] for the configured language.
+fn remote_entry(config: &DeployConfig) -> RemoteEntry {
+    match detect_deploy_language() {
         Language::Rust => {
             // Derive the remote path from the artifact that was actually
             // transferred. `sync_binary_to_target` sends it with `--relative`,
             // so the remote layout mirrors the local one exactly.
-            //
-            // These two used to be computed independently: the run step assumed
-            // `./target/<mode>/<bin>` while `horus build` puts the binary under
-            // `.horus/target/`. Even once the transfer was fixed, exec'ing a
-            // hand-built path would have missed it — so the location is now
-            // resolved in one place and reused.
-            let binary_path = match locate_built_binary(config) {
-                Some(p) => format!("./{}", p.display()),
+            let path = match locate_built_binary(config) {
+                Some(p) => p.display().to_string(),
                 None => {
                     let binary_name =
                         find_binary_name().unwrap_or_else(|| "horus_project".to_string());
                     let target = config.arch.rust_target();
                     let mode = if config.release { "release" } else { "debug" };
                     if target.is_empty() {
-                        format!("./.horus/target/{}/{}", mode, binary_name)
+                        format!(".horus/target/{}/{}", mode, binary_name)
                     } else {
-                        format!("./.horus/target/{}/{}/{}", target, mode, binary_name)
+                        format!(".horus/target/{}/{}/{}", target, mode, binary_name)
                     }
                 }
             };
-            (
-                format!("'{}'", binary_path.replace('\'', "'\\''")),
-                binary_path,
-            )
+            RemoteEntry::Executable(path)
         }
         Language::Python => {
-            let entry = find_python_entry().unwrap_or_else(|| "main.py".to_string());
-            let display = format!("python3 {}", entry);
-            (
-                format!("python3 '{}'", entry.replace('\'', "'\\''")),
-                display,
-            )
+            RemoteEntry::Python(find_python_entry().unwrap_or_else(|| "main.py".to_string()))
         }
         Language::Cpp | Language::Ros2 => {
             let binary_name = find_cpp_binary().unwrap_or_else(|| "horus_project".to_string());
-            let binary_path = format!(".horus/cpp-build/{}", binary_name);
-            let display = format!("build/{}", binary_name);
-            (format!("'{}'", binary_path.replace('\'', "'\\''")), display)
+            RemoteEntry::Executable(format!(".horus/cpp-build/{}", binary_name))
         }
+    }
+}
+
+/// The full command `--run` sends over ssh, and the short name to print for it.
+fn remote_run_command(config: &DeployConfig) -> (String, String) {
+    let (start, display) = match remote_entry(config) {
+        RemoteEntry::Executable(path) => (
+            shell_single_quote(&format!("./{path}")),
+            format!("./{path}"),
+        ),
+        RemoteEntry::Python(entry) => (
+            // The robot's system python3 has never heard of `horus`;
+            // install_python_deps_on_target put the wheels in
+            // `.horus/packages`, and PYTHONPATH is the whole of how the
+            // interpreter is told about them. Absolute (`$PWD`, after the cd)
+            // so a node that changes directory keeps its imports, and prepended
+            // to whatever the robot already sets rather than replacing it.
+            format!(
+                "PYTHONPATH=\"$PWD/{}${{PYTHONPATH:+:$PYTHONPATH}}\" python3 {}",
+                REMOTE_PACKAGES_DIR,
+                shell_single_quote(&entry)
+            ),
+            format!("python3 {entry}"),
+        ),
     };
 
     // A leading `~` must stay outside the quotes or the remote shell will not
     // expand it: `cd '~/horus_deploy'` fails with "can't cd to ~/horus_deploy"
     // even though rsync's own destination (`host:~/horus_deploy/`) *was*
     // expanded, so the files are there and the run step cannot reach them.
-    let remote_cmd = format!(
-        "cd {} && {}",
-        shell_quote_preserving_tilde(&config.remote_dir),
-        run_command
-    );
+    (
+        format!(
+            "cd {} && {}",
+            shell_quote_preserving_tilde(&config.remote_dir),
+            start
+        ),
+        display,
+    )
+}
 
-    // Build SSH command with ConnectTimeout
+/// An `ssh` invocation carrying this deploy's port, timeout and identity.
+///
+/// The destination is added by the caller, after [`validate_ssh_inputs`] has
+/// refused anything ssh would read as an option instead.
+fn ssh_base(config: &DeployConfig) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(["-p", &config.port.to_string()]);
     cmd.args(["-o", "ConnectTimeout=30"]);
-
     if let Some(ref identity) = config.identity {
         cmd.args(["-i", &identity.to_string_lossy()]);
     }
+    cmd
+}
+
+/// Run the project on the target
+fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
+    let (remote_cmd, display_name) = remote_run_command(config);
+
+    let mut cmd = ssh_base(config);
 
     // Allocate a TTY for interactive use
     cmd.arg("-t");
@@ -2039,6 +2539,7 @@ run = "python3 src/robot.py"
             port: 22,
             identity: None,
             dry_run: false,
+            print_service: false,
         };
         let result = run_deploy_multi(args);
         assert!(result.is_err());
@@ -2067,6 +2568,7 @@ run = "python3 src/robot.py"
             port: 22,
             identity: None,
             dry_run: false,
+            print_service: false,
         };
         let result = run_deploy_multi(args);
         std::env::set_current_dir(original).unwrap();
@@ -2144,6 +2646,7 @@ targets:
             port: 22,
             identity: None,
             dry_run: true,
+            print_service: false,
         };
         // dry_run should print plan without executing
         // We can't easily capture stdout, but verify the struct is constructible
@@ -2164,6 +2667,7 @@ targets:
             port: 22,
             identity: None,
             dry_run: false,
+            print_service: false,
         };
         assert!(args.parallel);
         assert_eq!(args.targets.len(), 2);

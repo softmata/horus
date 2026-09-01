@@ -10,6 +10,13 @@
 #
 # So this builds all three stages and then asks each image to do the job its
 # documentation claims it can do.
+#
+# And, on a release tag, it publishes them. Every other distribution channel in
+# this repository ships something — release.yml:206 uploads the binaries,
+# build-wheels.yml publishes the wheel — while `horus:cli` and `horus:dev`
+# existed only inside this workflow: no `docker push`, no registry login and no
+# `ghcr.io` string anywhere under .github/. Two images that boot, run `horus
+# new` and pass `horus check` in CI, and that no user could ever pull.
 
 name: Container Images
 
@@ -25,11 +32,16 @@ on:
       - 'Cargo.lock'
   push:
     branches: [main]
-    paths:
-      - 'Dockerfile'
-      - '.dockerignore'
-      - '.devcontainer/**'
-      - '.github/workflows/container-images.yml'
+    # v*.*.* is what makes the publish job below reachable. The `paths:` filter
+    # that used to sit here had to go with it: GitHub ANDs `paths` with
+    # `branches`/`tags`, and a tag push carries no changed-file list to match
+    # against, so keeping both would have left the release build permanently
+    # unreachable — a publish step that never runs is the bug this workflow is
+    # fixing, not a smaller version of it. The cost is a rebuild on merges that
+    # touch none of these files; the weekly cron and the PR filter above still
+    # carry the cheap cases.
+    tags:
+      - 'v*.*.*'
   schedule:
     # Weekly, so base-image drift (apt packages disappearing, a rust: tag being
     # retagged) is caught even when nobody touches these files.
@@ -48,6 +60,17 @@ jobs:
     name: Dockerfile + devcontainer
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
+    # packages: write is what lets the publish steps at the bottom push to
+    # GHCR, and it is declared here rather than at the workflow level so it
+    # stops with this job. The login itself is deliberately the *last* thing
+    # before the push: `docker build` runs the build scripts and proc macros of
+    # every transitive dependency, and there is no reason for a registry
+    # credential to be sitting in ~/.docker/config.json while that happens.
+    # Same reasoning release.yml:20-29 spells out for its own token.
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - uses: actions/checkout@v7
@@ -172,3 +195,94 @@ jobs:
             echo "::error::the devcontainer image exits instead of staying up"
             exit 1
           fi
+
+      # ── Publish ──────────────────────────────────────────────────────────
+      #
+      # Last, and only on a release tag. Everything above is a gate: an image
+      # that cannot print --version, cannot find its own man page, or cannot
+      # `horus new` + `horus check` a project never reaches the registry. The
+      # PR and cron runs stop here, so a fork's pull request builds the images
+      # and pushes nothing.
+      - name: Resolve image name and tags
+        id: publish_tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          # GHCR rejects an uppercase path component, and github.repository
+          # carries whatever case the org and repo were created with.
+          image=$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/${image}"
+          # refs/tags/v0.4.0 -> 0.4.0. The binaries (release.yml) and the wheel
+          # (build-wheels.yml) are both versioned without the leading v.
+          version="${GITHUB_REF_NAME#v}"
+          # This becomes a registry reference in a `docker push`, so it is read
+          # the same way install.sh:222-228 reads a version out of a fetched
+          # tree: reject anything that is not the character set a version tag
+          # is allowed to use, rather than letting it reach a command line.
+          case "$version" in
+              ''|*[!A-Za-z0-9.+_-]*|.*)
+                  echo "::error::refusing to publish under the tag name '${GITHUB_REF_NAME}'"
+                  exit 1
+                  ;;
+          esac
+          # The tag and the binary inside the image must name the same release.
+          # This is the container half of the mismatch install.sh had for so
+          # long: a v0.4.0 image carrying some other build is a user running a
+          # version nobody can reproduce from the tag.
+          reported=$(docker run --rm horus:cli --version | awk '{print $NF}')
+          if [ "$reported" != "$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} would publish ${image}:${version}, but the binary in horus:cli reports ${reported}"
+            exit 1
+          fi
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push horus:cli and horus:dev
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          # Through the environment, not `${{ }}` spliced into the script:
+          # release.yml:190-197 documents why a job holding a write-scoped token
+          # must not interpolate a ref name into bash.
+          IMAGE: ${{ steps.publish_tags.outputs.image }}
+          VERSION: ${{ steps.publish_tags.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Two tags per image: the immutable version, so a robot can pin the
+          # build it was commissioned with, and a moving one, so the README's
+          # copy-paste line keeps working. `latest` follows the default target,
+          # which is the slim CLI (Dockerfile:7); the dev image, the only one
+          # that can build and run a project, moves under `dev`.
+          docker tag horus:cli "${IMAGE}:${VERSION}"
+          docker tag horus:cli "${IMAGE}:latest"
+          docker tag horus:dev "${IMAGE}:${VERSION}-dev"
+          docker tag horus:dev "${IMAGE}:dev"
+          for ref in "${IMAGE}:${VERSION}" "${IMAGE}:latest" \
+                     "${IMAGE}:${VERSION}-dev" "${IMAGE}:dev"; do
+            echo "pushing ${ref}"
+            docker push "${ref}"
+          done
+          # The devcontainer stage is deliberately not published: it is built
+          # locally by .devcontainer/devcontainer.json, which names a stage, not
+          # a registry reference. Publishing it would create a second thing to
+          # keep in sync with no consumer.
+
+      - name: Pull back what was published
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE: ${{ steps.publish_tags.outputs.image }}
+          VERSION: ${{ steps.publish_tags.outputs.version }}
+        run: |
+          set -euo pipefail
+          # A push that succeeded locally is not a pull that works. Drop the
+          # local copies first, or `docker run` just re-uses them and proves
+          # nothing about the registry.
+          docker image rm -f "${IMAGE}:${VERSION}" horus:cli >/dev/null 2>&1 || true
+          docker run --rm "${IMAGE}:${VERSION}" --version

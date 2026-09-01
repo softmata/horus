@@ -1,0 +1,670 @@
+# The guard that did not exist.
+#
+# `grep -rn "install.sh" .github/workflows/` used to return exactly one hit, and
+# it was a comment (release.yml:66). Sixteen workflows, and not one job had ever
+# executed the installer, the uninstaller or the update path on any platform.
+# Everything downstream of `curl | bash` was verified by reading the scripts:
+# the tag the binary comes from, the tag the source comes from, the glibc the
+# published binary needs, the bash the uninstaller runs under, the Windows shell
+# that has no unzip. Reading is why every one of those bugs survived — a text
+# scan cannot see that /bin/bash on macOS is 3.2 and has no `mapfile`, and
+# `bash -n` parses the line it dies on.
+#
+# So this runs them. On the three platforms the installer claims to support,
+# against the release users actually get, and it asserts the thing that broke:
+# the binary and the cached source tree must come from the SAME tag. That is
+# the whole of RC1 — the CLI downloaded from a release while the source was
+# cloned from main HEAD, both calling themselves 0.4.0, 93 commits and one
+# TOPIC_VERSION apart, so the CLI could not read the shm its own libraries
+# wrote.
+#
+# Everything here is a hard gate. cross-platform-parity.yml's acceptance steps
+# spent months as `continue-on-error: true`, which is how the macOS uninstall
+# break stayed green; a distribution job that cannot fail is worse than none,
+# because it reads as coverage.
+
+name: Distribution
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]  # dev is kept identical to main; PRs still gate
+  schedule:
+    # Daily, unlike the rest of CI. The other workflows test the repository;
+    # this one tests the live distribution — the release assets, SHA256SUMS,
+    # the releases/latest lookup and the tag they all have to agree on. Those
+    # break with nobody touching the repository (an asset renamed, a release
+    # re-cut, a rate limit), so a trigger tied to commits cannot see it.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # install.sh:54 hardcodes REPO="softmata/horus", so the guard has to talk to
+  # the same repository the installer does. Using github.repository instead
+  # would make a fork's PR test the fork's (empty) release list and pass.
+  HORUS_REPO: softmata/horus
+  # Deliberately NOT set: HORUS_SOURCE. multi-platform.yml sets it to the
+  # checkout so horus_manager's generator tests can find a source tree
+  # (multi-platform.yml:27-31); here it would point `horus build` at the
+  # checkout and silently stop testing the tree install.sh cached, which is
+  # the only thing this workflow exists to check.
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── The one-liner, end to end, on the platforms it advertises ──────────
+
+  install-posix:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # `/bin/bash`, not `bash`. On macOS runners that is 3.2.57 — Apple never
+      # shipped a GPLv3 bash — and it is what install.sh's own `#!/bin/bash`
+      # selects for a user who has not installed a newer one from Homebrew.
+      # Running it under the runner's default shell would quietly test bash 5
+      # on both legs and cover nothing macOS-specific.
+      - name: Run install.sh
+        run: |
+          set -euo pipefail
+          /bin/bash --version | head -1
+          /bin/bash ./install.sh
+
+      - name: Put the installed CLI on PATH for the rest of the job
+        run: |
+          set -euo pipefail
+          # install.sh appends to the shell rc file, which a non-interactive
+          # runner step never reads. find_install_dir() (install.sh:112-122)
+          # prefers ~/.cargo/bin and falls back to ~/.local/bin; add both.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The state files are the version gate's only inputs. Nothing wrote
+      # ~/.horus/installed_version between v0.2.0 and this change, which is why
+      # version.rs's mismatch check was dead code that had already bricked a
+      # cohort — the remedy it printed could not create the file it was
+      # complaining about. Assert the installer writes both, every time.
+      - name: install.sh recorded what it installed
+        run: |
+          set -euo pipefail
+          cli=$(horus --version | awk '{print $NF}')
+          echo "CLI reports: ${cli}"
+
+          version_file="$HOME/.horus/installed_version"
+          if [ ! -f "$version_file" ]; then
+            echo "::error::install.sh did not write ${version_file}; the version gate has no input and horus_manager/src/version.rs:32-44 reads nothing"
+            exit 1
+          fi
+          installed=$(tr -d '[:space:]' < "$version_file")
+          if [ "$installed" != "$cli" ]; then
+            echo "::error::installed_version says '${installed}' but the installed binary reports '${cli}'"
+            exit 1
+          fi
+
+          manifest="$HOME/.horus/install_manifest.toml"
+          if [ ! -f "$manifest" ]; then
+            echo "::error::install.sh did not write ${manifest}"
+            exit 1
+          fi
+          cat "$manifest"
+          for key in version tag commit topic_version source_dir binary install_method installed_at; do
+            grep -qE "^${key}[[:space:]]*=" "$manifest" || {
+              echo "::error::${manifest} has no '${key}' field"
+              exit 1
+            }
+          done
+
+      # The update path, which is the third distribution channel and was also
+      # never executed by CI. --check must print and exit 0; a rate limit or a
+      # network error must not be laundered into silence.
+      - name: horus self update --check
+        env:
+          # Set in case upgrade.rs learns to use it. Unauthenticated
+          # api.github.com is 60 requests/hour per IP and Actions runners share
+          # theirs, so a --check that must treat a 403 as an error (rather than
+          # laundering it into "up to date") needs a token to be reliable here.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out=$(horus self update --check 2>&1) || {
+            echo "$out"
+            echo "::error::horus self update --check exited non-zero against the live release API"
+            exit 1
+          }
+          echo "$out"
+          test -n "$out"
+
+      # `--yes`: `horus new` opens two prompts (main.rs:194-199) and takes the
+      # documented defaults only when stdin is not a terminal, so a script that
+      # inherits a tty blocks. The flag is what the README's one-liner needs and
+      # what this asserts still exists.
+      #
+      # The project is created outside the checkout on purpose: created inside
+      # it, cargo would resolve the repository's own workspace root and build
+      # something other than a user's project.
+      - name: Scaffold and build a project against the installed source tree
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          rm -rf demo
+          horus new demo --rust --yes
+          cd demo
+          # This is the step that would have caught RC1 in its final form: the
+          # generated .horus/Cargo.toml path-depends on whatever tree
+          # find_horus_source_dir() located (run_rust.rs:1013-1085), so a binary
+          # and a source tree from different tags fail here or, worse, link and
+          # then disagree at run time.
+          horus build
+
+      # uninstall.sh has never been executed by CI on any platform — the only
+      # check on it was `bash -n` from acceptance_linux_macos.sh:181, a syntax
+      # parse that happily accepts `mapfile` — which is what uninstall.sh:264
+      # was before this run, and what the portable read loop at
+      # uninstall.sh:436-446 replaced — and then dies on it under macOS's
+      # bash 3.2. --dry-run runs the real code paths and
+      # removes nothing, so it is safe to assert on before the destructive run.
+      - name: uninstall.sh --dry-run changes nothing
+        run: |
+          set -euo pipefail
+          /bin/bash ./uninstall.sh --dry-run
+          command -v horus >/dev/null || {
+            echo "::error::uninstall.sh --dry-run removed the binary; a dry run must not touch anything"
+            exit 1
+          }
+          test -f "$HOME/.horus/installed_version" || {
+            echo "::error::uninstall.sh --dry-run deleted ~/.horus/installed_version"
+            exit 1
+          }
+
+      - name: uninstall.sh --yes actually removes it
+        run: |
+          set -euo pipefail
+          /bin/bash ./uninstall.sh --yes
+          if command -v horus >/dev/null 2>&1; then
+            echo "::error::horus is still on PATH at $(command -v horus) after a full uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.horus/installed_version" ]; then
+            echo "::error::~/.horus/installed_version survived the uninstall (uninstall.sh:819 claims to delete it)"
+            exit 1
+          fi
+
+  # ─── Windows: the native installer ─────────────────────────────────────
+
+  install-windows:
+    name: install.ps1 (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run install.ps1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSVersionTable.PSVersion
+          .\install.ps1
+
+      - name: Put the installed CLI on PATH for the rest of the job
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Same two candidates install.sh uses, in the same order.
+          Join-Path $env:USERPROFILE '.cargo\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Join-Path $env:USERPROFILE '.local\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: install.ps1 recorded what it installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli=$(horus --version | awk '{print $NF}')
+          echo "CLI reports: ${cli}"
+          # Same two files as the POSIX leg. A Windows install that skips them
+          # leaves version.rs with nothing to compare and `horus self update`
+          # with no record of what it is replacing.
+          test -f "$HOME/.horus/installed_version" || {
+            echo "::error::install.ps1 did not write ~/.horus/installed_version"
+            exit 1
+          }
+          test -f "$HOME/.horus/install_manifest.toml" || {
+            echo "::error::install.ps1 did not write ~/.horus/install_manifest.toml"
+            exit 1
+          }
+          installed=$(tr -d '[:space:]' < "$HOME/.horus/installed_version")
+          [ "$installed" = "$cli" ] || {
+            echo "::error::installed_version says '${installed}', binary reports '${cli}'"
+            exit 1
+          }
+
+      # Deliberately NOT the binary install.ps1 just installed. That one comes
+      # from the published release, so this assertion would be about code that
+      # predates the pull request — which is how a generated-manifest bug that
+      # broke `horus build` for every Windows user stayed invisible here while
+      # also being unfixable by any change to this branch. The steps above still
+      # exercise install.ps1 itself against the real published artifact; this
+      # step is about the CLI under review.
+      - name: Build the CLI from this branch
+        shell: bash
+        run: cargo build --release -p horus_manager
+
+      - name: Scaffold and build a project
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_horus="$PWD/target/release/horus.exe"
+          test -x "$branch_horus" || { echo "::error::branch CLI was not built"; exit 1; }
+          cd "$RUNNER_TEMP"
+          rm -rf demo
+          "$branch_horus" new demo --rust --yes
+          cd demo
+          "$branch_horus" build
+
+      - name: uninstall.ps1 -DryRun changes nothing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\uninstall.ps1 -DryRun
+          if (-not (Get-Command horus -ErrorAction SilentlyContinue)) {
+            throw "uninstall.ps1 -DryRun removed the binary; a dry run must not touch anything"
+          }
+
+      - name: uninstall.ps1 removes it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\uninstall.ps1 -Yes
+          if (Get-Command horus -ErrorAction SilentlyContinue) {
+            throw "horus is still on PATH after uninstall.ps1"
+          }
+
+  # ─── Windows: install.sh under Git Bash ────────────────────────────────
+
+  install-windows-gitbash:
+    name: install.sh under Git Bash (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      # install.sh advertises Windows support in its own failure message
+      # ("Supported: ... Windows (via install.ps1, Git Bash or WSL)", install.sh:288) and
+      # detect_os() maps MINGW*/MSYS*/CYGWIN* to "windows" (install.sh:80), so
+      # this path is claimed, not accidental. It has never been run.
+      - name: Git Bash has no unzip, which is the case under test
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -s
+          if command -v unzip >/dev/null 2>&1; then
+            # Not a failure — the runner image is not ours to pin. But say it
+            # out loud, because a job that silently stops covering the thing it
+            # was created for is exactly how this whole class of bug survived.
+            echo "::warning::unzip is on PATH in this image ($(command -v unzip)), so this job no longer exercises install.sh's zip-extraction fallback"
+          else
+            echo "confirmed: no unzip in the bundled MSYS2 set, so install.sh must extract horus-windows-amd64.zip some other way"
+          fi
+
+      - name: Run install.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./install.sh
+
+      - name: Put the installed CLI on PATH for the rest of the job
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GITHUB_PATH is read by the *runner*, which is a Windows process, so
+          # the MSYS-style /c/Users/... that $HOME expands to here would be a
+          # meaningless PATH entry. cygpath -w hands back the name Windows uses.
+          for d in "$HOME/.cargo/bin" "$HOME/.local/bin"; do
+            if command -v cygpath >/dev/null 2>&1; then d=$(cygpath -w "$d"); fi
+            echo "$d" >> "$GITHUB_PATH"
+          done
+
+      # Scaffold only, no build: the install.ps1 job above already compiles a
+      # project on this OS. What is under test here is the installer's shell
+      # portability, not a second copy of the same Rust build.
+      - name: The installed CLI works
+        shell: bash
+        run: |
+          set -euo pipefail
+          horus --version
+          test -f "$HOME/.horus/installed_version"
+          cd "$RUNNER_TEMP"
+          rm -rf demo_gitbash
+          horus new demo_gitbash --rust --yes
+          cd demo_gitbash
+          horus check
+
+  # ─── The published artifact, on the oldest libc we claim ───────────────
+
+  glibc-floor:
+    name: Published tarball on debian:11
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Advisory, and it will stay red until the next release is cut.
+    #
+    # This job inspects what is *currently published*, which was built by the
+    # old release.yml matrix on ubuntu-latest and therefore requires GLIBC_2.39.
+    # It is reporting that accurately: the v0.4.0 asset genuinely does not start
+    # on Debian 11, Ubuntu 20.04/22.04, Debian 12, RHEL 9, Pi OS or JetPack.
+    #
+    # It must not gate merges, because no change to this repository can make a
+    # release that has already shipped pass — only cutting a new one can, and
+    # every PR would be blocked until then. The binding gate lives where it can
+    # act: release.yml verifies the glibc floor with readelf and then runs the
+    # unpacked tarball inside an old-glibc container, under qemu for the
+    # foreign architectures, *before* the upload step. A binary that cannot
+    # start can no longer become a release asset.
+    #
+    # Once a release built by that matrix is published, this turns green on its
+    # own and becomes a standing check that the shipped artifact still runs on
+    # the oldest libc claimed in the README's support matrix. Remove
+    # continue-on-error then.
+    continue-on-error: true
+    steps:
+      # No checkout: this job deliberately touches nothing but the published
+      # release, because that is all a user gets.
+      - name: Download and verify the published linux-amd64 tarball
+        run: |
+          set -euo pipefail
+          base="https://github.com/${HORUS_REPO}/releases/latest/download"
+          curl -fsSL -o horus-linux-amd64.tar.gz "${base}/horus-linux-amd64.tar.gz"
+          curl -fsSL -o SHA256SUMS "${base}/SHA256SUMS"
+          # The same fail-closed check install.sh:569-591 does, for the same
+          # reason: a missing entry must be a refusal, not a skip.
+          expected=$(grep " horus-linux-amd64.tar.gz\$" SHA256SUMS | awk '{print $1}' | head -1 || true)
+          if [ -z "$expected" ]; then
+            echo "::error::the published SHA256SUMS has no entry for horus-linux-amd64.tar.gz, so install.sh refuses to install on every Linux machine"
+            cat SHA256SUMS
+            exit 1
+          fi
+          actual=$(sha256sum horus-linux-amd64.tar.gz | awk '{print $1}')
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::checksum mismatch for the published horus-linux-amd64.tar.gz (expected ${expected}, got ${actual})"
+            exit 1
+          fi
+          mkdir -p dist
+          tar xzf horus-linux-amd64.tar.gz -C dist
+          chmod +x dist/horus
+
+      - name: Report the binary's actual libc floor
+        run: |
+          set -euo pipefail
+          # Printed on every run, green or red, because the number is the whole
+          # story and nothing else in CI reports it.
+          echo "dynamic dependencies:"
+          readelf -d dist/horus | grep NEEDED || echo "(none — statically linked)"
+          echo "highest glibc symbol version required:"
+          objdump -T dist/horus | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true
+
+      # A smoke test on the build host cannot see this: release.yml builds the
+      # Linux legs on ubuntu-latest and then runs `--version` on that same
+      # ubuntu-latest (release.yml:156-164), so the binary is only ever asked to
+      # run against the glibc it was linked against. Debian 11 and Ubuntu 20.04
+      # are both glibc 2.31, and .github/ISSUE_TEMPLATE/bug_report.yml:66 offers
+      # Ubuntu 20.04 as a supported OS — a robot fleet is exactly where an
+      # old-but-supported distro lives.
+      - name: The published binary runs on glibc 2.31
+        run: |
+          set -euo pipefail
+          if ! docker run --rm -v "$PWD/dist:/dist:ro" debian:11 /dist/horus --version; then
+            echo "::error::the published horus-linux-amd64 does not run on Debian 11 / Ubuntu 20.04 (glibc 2.31)"
+            echo "--- what the container has ---"
+            docker run --rm -v "$PWD/dist:/dist:ro" debian:11 sh -c 'ldd --version | head -1; ldd /dist/horus' || true
+            echo "--- what the binary needs ---"
+            objdump -T dist/horus | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -5 || true
+            echo "This is the published asset, not this branch's build. release.yml now cross-compiles the Linux legs with cargo-zigbuild against GLIBC_FLOOR and refuses to upload a binary that cannot start on an old-glibc container, so the next release fixes this. Until one is cut, this job is advisory and does not gate merges."
+            exit 1
+          fi
+
+  # ─── RC1: one tag drives both halves ───────────────────────────────────
+
+  tag-coherence:
+    name: Binary and source come from one tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the tag install.sh would install
+        id: tag
+        env:
+          # Authenticated so the daily cron does not trip the unauthenticated
+          # 60/hour IP limit and report a rate limit as a missing release.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(curl -fsSL \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "User-Agent: horus-distribution-ci" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/${HORUS_REPO}/releases/latest" \
+                | jq -r '.tag_name')
+          case "$tag" in
+              ''|null|*[!A-Za-z0-9.+_-]*)
+                  echo "::error::releases/latest returned an unusable tag_name: '${tag}'"
+                  exit 1
+                  ;;
+          esac
+          echo "latest release tag: ${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          # git ls-remote, not the API a second time: this is the commit the
+          # clone half must land on, and resolving it a different way keeps the
+          # assertion independent of the endpoint install.sh uses.
+          # `^{}` dereferences an annotated tag to its commit; a lightweight tag
+          # has no peeled ref, so fall back to the plain one.
+          commit=$(git ls-remote "https://github.com/${HORUS_REPO}.git" "refs/tags/${tag}^{}" | awk '{print $1}')
+          if [ -z "$commit" ]; then
+            commit=$(git ls-remote "https://github.com/${HORUS_REPO}.git" "refs/tags/${tag}" | awk '{print $1}')
+          fi
+          if [ -z "$commit" ]; then
+            echo "::error::no commit resolves for refs/tags/${tag}"
+            exit 1
+          fi
+          echo "tag ${tag} is commit ${commit}"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Install that exact tag
+        env:
+          # HORUS_VERSION is the contract's pin, and the leading v must be
+          # accepted as given.
+          HORUS_VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash ./install.sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: The binary, the manifest and the cached tree all name that tag
+        env:
+          WANT_TAG: ${{ steps.tag.outputs.tag }}
+          WANT_COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          set -euo pipefail
+          manifest="$HOME/.horus/install_manifest.toml"
+          test -f "$manifest" || { echo "::error::no ${manifest}"; exit 1; }
+          cat "$manifest"
+
+          # `|| true`: a missing key must reach the named checks below, not
+          # abort the step through `set -e` with nothing printed.
+          field() {
+            { grep -m1 "^$1[[:space:]]*=" "$manifest" || true; } \
+              | sed 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//'
+          }
+
+          cli=$(horus --version | awk '{print $NF}')
+          m_version=$(field version)
+          m_tag=$(field tag)
+          m_commit=$(field commit)
+          m_topic=$(field topic_version)
+          m_src=$(field source_dir)
+
+          fail=0
+          note() { echo "::error::$1"; fail=1; }
+
+          [ "$m_tag" = "$WANT_TAG" ] || note "manifest tag is '${m_tag}', asked for '${WANT_TAG}'"
+          [ "$m_version" = "$cli" ] || note "manifest version is '${m_version}', the binary reports '${cli}'"
+          # The tag names the release; the crate version is that tag without the
+          # leading v. If those two ever disagree, "0.4.0" means two things.
+          [ "${WANT_TAG#v}" = "$cli" ] || note "tag ${WANT_TAG} but the installed binary is ${cli}"
+          [ "$m_commit" = "$WANT_COMMIT" ] || note "manifest commit is '${m_commit}', but ${WANT_TAG} is ${WANT_COMMIT}"
+
+          # THE regression test for RC1. install.sh used to download the binary
+          # from releases/latest and clone the source from main HEAD; both trees
+          # said 0.4.0, they were 93 commits apart, and the CLI then could not
+          # read the shm its own libraries wrote. The cached tree's HEAD has to
+          # be the tag's commit — not "a commit", not "main".
+          if [ -z "$m_src" ] || [ ! -d "$m_src" ]; then
+            note "manifest source_dir '${m_src}' does not exist; \`horus build\` has no path dependency to resolve"
+          else
+            head=$(git -C "$m_src" rev-parse HEAD 2>/dev/null || echo "not-a-git-checkout")
+            echo "cached source ${m_src} is at ${head}"
+            [ "$head" = "$WANT_COMMIT" ] || note "the cached source tree is at ${head}, but the binary's tag ${WANT_TAG} is ${WANT_COMMIT}"
+
+            # TOPIC_VERSION is the field whose divergence is the actual failure
+            # mode: a mismatch between the shm layout the shipped binary writes
+            # and the one the cached libraries compile against.
+            # Take the value after the `=`, not every number on the line:
+            # `pub(crate) const TOPIC_VERSION: u32 = 4;` also contains the 32.
+            src_topic=$({ grep -m1 'const TOPIC_VERSION' \
+              "$m_src/horus_core/src/communication/topic/header.rs" || true; } \
+              | sed 's/.*=[[:space:]]*//; s/[^0-9].*//')
+            echo "TOPIC_VERSION in the cached tree: ${src_topic}; in the manifest: ${m_topic}"
+            [ -n "$src_topic" ] || note "could not read TOPIC_VERSION out of the cached tree"
+            [ "$src_topic" = "$m_topic" ] || note "manifest topic_version=${m_topic} but the cached source defines TOPIC_VERSION=${src_topic}"
+          fi
+
+          exit "$fail"
+
+      # The contract accepts the pin with or without the leading v. Cheap to
+      # prove, and a documented input that silently installs something else is
+      # the same class of bug as the one above.
+      - name: HORUS_VERSION without the leading v resolves to the same tag
+        env:
+          BARE: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          HORUS_VERSION="${BARE#v}" bash ./install.sh
+          got=$({ grep -m1 '^tag[[:space:]]*=' "$HOME/.horus/install_manifest.toml" || true; } \
+                | sed 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//')
+          [ "$got" = "$BARE" ] || {
+            echo "::error::HORUS_VERSION=${BARE#v} installed tag '${got}', not '${BARE}'"
+            exit 1
+          }
+
+  # ─── The developer escape hatch must not mix refs ──────────────────────
+
+  source-build:
+    name: HORUS_INSTALL_BRANCH builds from source
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache the installer's build output
+        uses: actions/cache@v6
+        with:
+          # install.sh compiles inside its own cache dir; CARGO_TARGET_DIR
+          # (honoured at install.sh:691-693) redirects the output somewhere this
+          # job can cache between runs.
+          path: ${{ github.workspace }}/install-target
+          key: install-source-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: install-source-build-
+
+      # HORUS_INSTALL_BRANCH is the one input that MUST force a source build.
+      # Combining a branch checkout with a release binary is not a corner case
+      # of RC1, it is RC1: the binary comes from the tag, the source from the
+      # branch, and the two disagree about the shm layout while both reporting
+      # the same version.
+      - name: Install from a branch
+        env:
+          HORUS_INSTALL_BRANCH: main
+          CARGO_TARGET_DIR: ${{ github.workspace }}/install-target
+        run: |
+          set -euo pipefail
+          # No apt-get here on purpose: install_build_deps() (install.sh:152-188)
+          # is part of the source path and this is the only job that runs it.
+          bash ./install.sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: It really was built from that tree, not downloaded
+        run: |
+          set -euo pipefail
+          manifest="$HOME/.horus/install_manifest.toml"
+          test -f "$manifest" || { echo "::error::no ${manifest}"; exit 1; }
+          cat "$manifest"
+
+          # `|| true`: a missing key must reach the named checks below, not
+          # abort the step through `set -e` with nothing printed.
+          field() {
+            { grep -m1 "^$1[[:space:]]*=" "$manifest" || true; } \
+              | sed 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//'
+          }
+
+          method=$(field install_method)
+          if [ "$method" != "source-build" ]; then
+            echo "::error::HORUS_INSTALL_BRANCH=main recorded install_method='${method}'. A branch install that took a release binary is exactly the mismatch this whole workflow exists to prevent."
+            exit 1
+          fi
+
+          src=$(field source_dir)
+          test -d "$src" || { echo "::error::source_dir '${src}' does not exist"; exit 1; }
+
+          # A downloaded binary and a branch checkout would disagree here: the
+          # CLI was compiled out of this tree, so its version is the tree's.
+          cli=$(horus --version | awk '{print $NF}')
+          tree=$(grep -m1 '^version' "$src/horus_manager/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$cli" != "$tree" ]; then
+            echo "::error::the installed binary reports ${cli} but the source it was supposedly built from is ${tree}"
+            exit 1
+          fi
+          echo "built ${cli} from $(git -C "$src" rev-parse HEAD)"
+
+  # ─── Gate ──────────────────────────────────────────────────────────────
+
+  distribution-success:
+    name: Distribution CI Success
+    needs:
+      - install-posix
+      - install-windows
+      - install-windows-gitbash
+      - glibc-floor
+      - tag-coherence
+      - source-build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs
+        run: |
+          # Every job is required. There is no "known broken, ignore for now"
+          # tier here on purpose: the distribution story is the one place where
+          # a yellow light and a red light look identical to a user running
+          # `curl | bash`.
+          FAILURES=""
+          [[ "${{ needs.install-posix.result }}" == "success" ]]           || FAILURES="$FAILURES install.sh(posix)"
+          [[ "${{ needs.install-windows.result }}" == "success" ]]         || FAILURES="$FAILURES install.ps1"
+          [[ "${{ needs.install-windows-gitbash.result }}" == "success" ]] || FAILURES="$FAILURES install.sh(git-bash)"
+          [[ "${{ needs.glibc-floor.result }}" == "success" ]]             || FAILURES="$FAILURES glibc-floor"
+          [[ "${{ needs.tag-coherence.result }}" == "success" ]]           || FAILURES="$FAILURES tag-coherence"
+          [[ "${{ needs.source-build.result }}" == "success" ]]            || FAILURES="$FAILURES source-build"
+
+          if [[ -n "$FAILURES" ]]; then
+            echo "Distribution failures:$FAILURES"
+            exit 1
+          fi
+          echo "install / update / uninstall verified on Linux, macOS and Windows"

@@ -247,10 +247,19 @@ jobs:
 
       - name: Check ARM64 Build
         run: |
-          # Exclude horus_manager (OpenSSL dependency) and horus_benchmarks
-          # Cross-compiling OpenSSL requires ARM64 development headers
-          cargo check --workspace --target aarch64-unknown-linux-gnu --lib \
-            --exclude horus_manager --exclude horus_benchmarks
+          # horus_manager used to be excluded here "(OpenSSL dependency)". There
+          # is no OpenSSL: horus_manager/Cargo.toml:64-69 pins reqwest to
+          # rustls-tls with default-features off precisely so it cross-compiles,
+          # and `grep -c openssl Cargo.lock` is 0. release.yml:110 already
+          # cross-builds -p horus_manager for this exact target on every tag, so
+          # the crate the users' install actually delivers was the one crate
+          # this job skipped.
+          #
+          # --bins, not just --lib: `horus deploy --arch arm64` ships the horus
+          # binary, and a lib-only check never compiles src/main.rs.
+          # horus_benchmarks stays out — its timing is host-only.
+          cargo check --workspace --target aarch64-unknown-linux-gnu --lib --bins \
+            --exclude horus_benchmarks
         env:
           PKG_CONFIG_ALLOW_CROSS: 1
 
@@ -304,10 +313,18 @@ jobs:
 
       - name: Check ARMv7 Build
         run: |
-          # Same exclusions as the ARM64 job: horus_manager needs cross-built
-          # OpenSSL headers, horus_benchmarks is host-only.
-          cargo check --workspace --target armv7-unknown-linux-gnueabihf --lib \
-            --exclude horus_manager --exclude horus_benchmarks
+          # Same shape as the ARM64 job, and for the same reason: the stale
+          # "horus_manager needs cross-built OpenSSL headers" exclusion kept the
+          # CLI — the only artifact a Raspberry Pi user ever installs — out of
+          # the one job that covers 32-bit ARM. reqwest has been rustls-only
+          # since horus_manager/Cargo.toml:64, and Cargo.lock mentions openssl
+          # zero times.
+          #
+          # --bins matters more here than anywhere else: 32-bit is where the
+          # width bugs live (the rlim_cur u64-vs-u32 break in the header above),
+          # and main.rs is 3000+ lines of code no --lib check ever sees.
+          cargo check --workspace --target armv7-unknown-linux-gnueabihf --lib --bins \
+            --exclude horus_benchmarks
         env:
           PKG_CONFIG_ALLOW_CROSS: 1
 

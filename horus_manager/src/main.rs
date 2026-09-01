@@ -72,7 +72,7 @@ Development:
 
 Maintenance:
   doctor            Check this machine (toolchains, RT, shared memory)
-  self update       Update the horus CLI to latest version
+  self update       Update the horus CLI and its cached source (--check to preview)
   config            View/edit horus.toml settings
   migrate           Migrate project to unified horus.toml format
   schema            Print the horus.toml JSON Schema (for editor validation)
@@ -879,7 +879,7 @@ enum Commands {
         undo: bool,
     },
 
-    /// Manage the horus CLI itself
+    /// Manage the horus CLI itself (see `horus self update`)
     #[command(name = "self")]
     Self_ {
         #[command(subcommand)]
@@ -1037,6 +1037,15 @@ enum Commands {
         /// Show what would be done without actually doing it
         #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
+
+        /// Write a systemd unit for this deploy to stdout, and exit
+        ///
+        /// Nothing a deploy starts survives a reboot: `--run` runs the project
+        /// over the ssh session, so it stops when that session does. This emits
+        /// a unit that does survive one. It is printed, not installed — where
+        /// it goes, and whether it needs lingering, is the robot owner's call.
+        #[arg(long = "print-service")]
+        print_service: bool,
 
         /// List configured deployment targets
         #[arg(long = "list")]
@@ -1335,9 +1344,18 @@ enum OwnerCommands {
 
 #[derive(Subcommand)]
 enum SelfCommands {
-    /// Update the horus CLI to the latest version
+    /// Update the horus CLI and its cached source to the latest release
+    ///
+    /// Resolves the newest release from github.com/softmata/horus, downloads
+    /// the binary published for this platform, verifies it against the
+    /// release's SHA256SUMS, replaces this binary in place, and refreshes
+    /// ~/.horus/cache/horus@<version> at the same tag. The CLI and the source
+    /// your Rust projects are built against always move together; a mismatch
+    /// between them is what makes a node unable to read its own topics.
+    ///
+    /// Exits non-zero if the update — or the check for one — fails.
     Update {
-        /// Only check for updates, don't install
+        /// Report what an update would do, without installing anything
         #[arg(long = "check")]
         check_only: bool,
     },
@@ -2250,7 +2268,40 @@ fn json_unsupported_message(args: &[String], e: &clap::Error) -> Option<String> 
     ))
 }
 
+/// Stack for the thread the CLI actually runs on.
+///
+/// Windows gives a process's main thread 1 MiB, against 8 MiB on Linux and
+/// macOS, and a debug build of this binary sits close enough to that ceiling
+/// that `horus doctor` and `horus check` died with STATUS_STACK_OVERFLOW
+/// (0xc00000fd) on windows-latest while passing everywhere else. Verified by
+/// reproducing it on Linux under `ulimit -s 1024`, on this commit and on main
+/// — the margin was already thin and adding to a check spent it.
+///
+/// Growing one check's frame back down would only move the ceiling, and the
+/// next thing added to any command walks into it again on the one platform
+/// nobody develops on. Running the CLI on a thread whose stack we choose makes
+/// the three platforms agree instead.
+const CLI_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 fn main() {
+    // The real entry point runs on a thread with a stack we control; see
+    // CLI_STACK_SIZE. A failure to spawn leaves nothing sensible to fall back
+    // on, so it propagates rather than silently running with the default stack
+    // and crashing later somewhere less obvious.
+    let worker = std::thread::Builder::new()
+        .name("horus-cli".to_string())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(cli_main)
+        .expect("failed to spawn the CLI thread");
+    match worker.join() {
+        Ok(()) => {}
+        // The thread already printed the panic. Re-panicking here would print a
+        // second, less useful message pointing at this line.
+        Err(_) => std::process::exit(101),
+    }
+}
+
+fn cli_main() {
     // First, try to handle as a plugin command before clap parsing
     // This allows plugins to be invoked as: `horus <plugin-name> [args...]`
     let args: Vec<String> = std::env::args().collect();
@@ -2707,7 +2758,36 @@ fn run_command(command: Commands) -> HorusResult<()> {
                         if !report.is_empty() {
                             print!("{}", report);
                         }
-                        Ok(())
+
+                        // Parseable is not the same as accurate. `--check` used
+                        // to stop at "it is valid TOML", so a lockfile naming
+                        // versions nobody had installed passed the gate the
+                        // docs told people to put in CI — which is the whole
+                        // reason the pins could sit unenforced without anyone
+                        // noticing.
+                        let installed =
+                            horus_manager::lockfile::installed_packages(std::path::Path::new("."));
+                        let drift = lf.drift(&installed);
+                        if drift.is_empty() {
+                            println!(
+                                "{} horus.lock matches the installed packages",
+                                "[ok]".green()
+                            );
+                            return Ok(());
+                        }
+                        println!();
+                        println!("{} horus.lock does not describe this tree:", "[x]".red());
+                        for item in &drift {
+                            println!("  - {}", item);
+                        }
+                        println!();
+                        println!(
+                            "  Run `horus lock` to re-resolve, or install what the file pins."
+                        );
+                        Err(HorusError::Config(ConfigError::Other(format!(
+                            "{} package(s) drifted from horus.lock",
+                            drift.len()
+                        ))))
                     }
                     Err(e) => {
                         println!("{} Failed to parse horus.lock: {}", "[x]".red(), e);
@@ -2728,6 +2808,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     python: horus_manager::registry::helpers::get_python_version(),
                     cmake: None,
                 });
+
+                // Record the packages too. `horus lock` pinned the toolchain
+                // and nothing else, so the command the docs present as "pin
+                // every dependency version into horus.lock" wrote a file with
+                // no `[[package]]` entries at all. This is the one path that
+                // is allowed to move an existing pin: asking for it is what
+                // re-resolving means.
+                for pkg in horus_manager::lockfile::installed_packages(std::path::Path::new(".")) {
+                    lockfile.pin(&pkg.name, &pkg.version, &pkg.source, pkg.checksum);
+                }
 
                 lockfile
                     .save_to(lock_path)
@@ -3133,10 +3223,27 @@ fn run_command(command: Commands) -> HorusResult<()> {
             dry_run,
         } => {
             commands::pkg::run_update(package, global, dry_run)?;
-            // Check for CLI updates (non-blocking hint)
-            if let Ok(Some(latest)) = commands::upgrade::check_latest_version() {
+            // Advisory hint that a newer CLI exists. It used to ask the package
+            // registry (horusrobotics.dev/api/packages/horus/latest), which
+            // 404s, so it never fired; it now asks the same GitHub releases API
+            // that `horus self update` resolves against.
+            //
+            // A failed check is swallowed here and only here: this is a
+            // footnote to `horus update`, not the command the user ran. The one
+            // command that owes them an error when the check cannot run is
+            // `horus self update`, which returns it.
+            if let Ok(latest) = commands::upgrade::check_latest_version() {
                 let current = env!("CARGO_PKG_VERSION");
-                if latest != current {
+                // Compared as semver, not as strings, so a development build
+                // ahead of the last release is not told to "upgrade" backwards.
+                let newer = matches!(
+                    (
+                        semver::Version::parse(&latest),
+                        semver::Version::parse(current),
+                    ),
+                    (Ok(l), Ok(c)) if l > c
+                );
+                if newer {
                     println!(
                         "\n  {} horus {} available (current: {}). Run `horus self update` to upgrade.",
                         "hint:".yellow(),
@@ -3253,6 +3360,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             port,
             identity,
             dry_run,
+            print_service,
             list,
         } => {
             if list {
@@ -3269,6 +3377,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     port,
                     identity,
                     dry_run,
+                    print_service,
                 })
             }
         }
@@ -3463,9 +3572,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Self_ { command } => match command {
+            // The error is propagated, not printed and discarded: a failed
+            // update — or a failed check for one — has to exit non-zero, or a
+            // CI job pinning a version cannot tell that it did not happen.
             SelfCommands::Update { check_only } => {
-                commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)?;
-                Ok(())
+                commands::upgrade::run_upgrade(check_only).map_err(HorusError::from)
             }
         },
 

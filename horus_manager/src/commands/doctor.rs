@@ -1,7 +1,12 @@
 //! `horus doctor` — comprehensive ecosystem health check.
 //!
-//! Checks: toolchains, SHM, plugins, manifest validity, registry,
-//! system deps, disk space. Summary by default, --verbose for details.
+//! Checks, in the order they print: the install itself (which binary is
+//! running, what the installer recorded, and whether the cached source tree
+//! speaks the same topic ABI as this CLI), toolchains, manifest validity,
+//! real-time capability, shared memory, plugins, disk, languages, dependency
+//! sources, hardware, system deps, and the network — including the package
+//! registry `horus search` talks to. Summary by default, --verbose for
+//! details.
 //!
 //! With `--fix`: installs missing toolchains and system dependencies,
 //! then pins their versions in `horus.lock`.
@@ -12,7 +17,7 @@
 use anyhow::Result;
 use colored::*;
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use horus_core::drivers::NodeParams;
@@ -38,6 +43,16 @@ impl Health {
             Self::Fail => "x".red(),
         }
     }
+
+    /// The worse of two verdicts, for a check that gathers several findings and
+    /// must grade on the worst of them rather than the last one written.
+    fn worst(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Fail, _) | (_, Self::Fail) => Self::Fail,
+            (Self::Warn, _) | (_, Self::Warn) => Self::Warn,
+            _ => Self::Ok,
+        }
+    }
 }
 
 /// A single check result.
@@ -52,6 +67,10 @@ pub(crate) struct CheckResult {
 pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
     let ctx = dispatch::detect_context(&std::env::current_dir()?);
     let mut results = vec![
+        // First, because it is the only check that can see the install itself:
+        // every other one here passes on a machine whose CLI and libraries came
+        // from different refs.
+        check_installation(),
         check_toolchains(),
         check_manifest(&ctx),
         check_rt(),
@@ -63,12 +82,12 @@ pub fn run_doctor(verbose: bool, json: bool, fix: bool) -> Result<()> {
         check_drivers(&ctx),
     ];
 
-    // ── 9. System dependencies (Python, C++, system libs) ────────────────
+    // ── 11. System dependencies (Python, C++, system libs) ───────────────
     if let Some(manifest) = &ctx.manifest {
         results.push(check_system_deps(manifest));
     }
 
-    // ── 10. Network (horus_net) ──────────────────────────────────────────
+    // ── 12. Network (horus_net) ──────────────────────────────────────────
     results.push(check_network());
 
     // ── Output ───────────────────────────────────────────────────────────
@@ -464,11 +483,27 @@ fn probe(bin: &str) -> Option<String> {
 
 /// Is `name` an executable on `PATH`?
 fn on_path(name: &str) -> bool {
+    !all_on_path(name).is_empty()
+}
+
+/// *Every* executable named `name` on `PATH`, in the order `PATH` lists them.
+///
+/// The whole list rather than the first hit, because a machine can hold a
+/// ~/.local/bin/horus from one install and a ~/.cargo/bin/horus from another at
+/// a different version: PATH order decides which one `horus` means and nothing
+/// says so. A lookup that stopped at the first match could not see the pair it
+/// has to report.
+fn all_on_path(name: &str) -> Vec<PathBuf> {
     if name.contains(std::path::MAIN_SEPARATOR) {
-        return is_executable(Path::new(name));
+        let path = PathBuf::from(name);
+        return if is_executable(&path) {
+            vec![path]
+        } else {
+            Vec::new()
+        };
     }
     let Some(path) = std::env::var_os("PATH") else {
-        return false;
+        return Vec::new();
     };
     let exts: Vec<String> = std::env::var("PATHEXT")
         .map(|v| {
@@ -478,15 +513,31 @@ fn on_path(name: &str) -> bool {
                 .collect()
         })
         .unwrap_or_default();
-    std::env::split_paths(&path).any(|dir| {
+    executables_in(name, std::env::split_paths(&path), &exts)
+}
+
+/// One hit per directory, the way the OS resolves a bare command name.
+///
+/// Split from the `PATH` lookup so that "every directory, not just the first"
+/// can be tested without mutating this process's environment — the toolchain
+/// grading above is split for the same reason.
+fn executables_in(
+    name: &str,
+    dirs: impl Iterator<Item = PathBuf>,
+    exts: &[String],
+) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in dirs {
         if dir.as_os_str().is_empty() {
-            return false;
+            continue;
         }
-        is_executable(&dir.join(name))
-            || exts
-                .iter()
-                .any(|ext| is_executable(&dir.join(format!("{name}{ext}"))))
-    })
+        let candidates = std::iter::once(dir.join(name))
+            .chain(exts.iter().map(|ext| dir.join(format!("{name}{ext}"))));
+        if let Some(hit) = candidates.into_iter().find(|c| is_executable(c)) {
+            found.push(hit);
+        }
+    }
+    found
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -1233,6 +1284,466 @@ fn check_hardware_device(name: &str, params: &NodeParams, use_name: &str) -> (St
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Installation check — HORUS's own install, `horus doctor` (always runs)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Which of `find_horus_source_dir`'s branches produced the tree it handed
+/// back, inferred from the path: only its cache branches end in `horus@<ver>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceOrigin {
+    /// `HORUS_SOURCE`, or one of the fixed development locations. Whatever is
+    /// checked out there is what user projects are compiled against.
+    Checkout,
+    /// `<cache>/horus@<this CLI's version>` — the tree the installer laid down
+    /// for this exact binary.
+    CacheExact,
+    /// Some other `<cache>/horus@*`. run_rust.rs:1069-1081 accepts any cached
+    /// tree once the exact one is gone, so a CLI can end up building against a
+    /// version nothing ever asked for, and nothing says so.
+    CacheFallback,
+}
+
+/// The two halves of an install, gathered so the verdict can be graded without
+/// a checkout on disk — the case that shipped (two trees both calling
+/// themselves 0.4.0, 93 commits apart) cannot be reproduced on a machine that
+/// installed correctly.
+struct SourceFacts {
+    cli_version: String,
+    cli_topic_version: u32,
+    source: PathBuf,
+    source_version: Option<String>,
+    source_topic_version: Option<u32>,
+    origin: SourceOrigin,
+}
+
+/// Report the install HORUS is running out of, and whether its halves agree.
+///
+/// install.sh names `horus doctor` as the post-install check, but doctor used
+/// to inspect everything except HORUS: a CLI whose binary and source tree came
+/// from different refs printed a full row of green ticks while its own nodes
+/// could not read each other's topics. Everything here is a comparison rather
+/// than a presence test, because every value involved looked right on its own.
+fn check_installation() -> CheckResult {
+    let cli_version = crate::version::get_cli_version();
+    let mut details = Vec::new();
+    let mut fragments = vec![cli_version.to_string()];
+    let mut health = Health::Ok;
+
+    // ── The binary that is running ──────────────────────────────────────
+    match std::env::current_exe() {
+        Ok(exe) => details.push(format!("running: {} ({})", exe.display(), cli_version)),
+        Err(e) => details.push(format!("running: {cli_version} (current_exe failed: {e})")),
+    }
+
+    // ── Every horus on PATH, not just the one that won ──────────────────
+    //
+    // A ~/.local/bin/horus left by an old install and a ~/.cargo/bin/horus from
+    // a new one both answer to `horus`; PATH order picks the winner and says
+    // nothing. The user then reads the new version out of the release notes and
+    // runs the old binary.
+    let binaries = horus_binaries_on_path();
+    if binaries.is_empty() {
+        details.push(
+            "on PATH: no horus — this binary was invoked by path, not through PATH".to_string(),
+        );
+    }
+    for (index, (path, reported)) in binaries.iter().enumerate() {
+        let version = reported.as_deref().unwrap_or("did not answer --version");
+        let position = if index == 0 {
+            "first on PATH — this is the one `horus` runs"
+        } else {
+            "shadowed"
+        };
+        details.push(format!(
+            "on PATH: {} — {version} ({position})",
+            path.display()
+        ));
+    }
+    if let Some(conflict) = path_conflict(&binaries) {
+        health = health.worst(Health::Warn);
+        details.push(
+            "PATH order alone decides which of these `horus` means; delete the stale one \
+             or reorder PATH"
+                .to_string(),
+        );
+        fragments.push(conflict);
+    }
+
+    // ── What the install recorded about itself ──────────────────────────
+    //
+    // Absence is not an error: nothing wrote either file between v0.2.0 and the
+    // change that added install_manifest.toml, so a large cohort of working
+    // installs has neither. Say "unknown" and keep going.
+    let manifest = crate::version::get_install_manifest();
+    let legacy_version = crate::version::get_installed_version().ok().flatten();
+    match &manifest {
+        Some(record) => {
+            details.push("install record: ~/.horus/install_manifest.toml".to_string());
+            details.push(format!(
+                "  installed version: {}",
+                unknown(record.version.as_deref())
+            ));
+            details.push(format!("  tag: {}", unknown(record.tag.as_deref())));
+            details.push(format!("  commit: {}", unknown(record.commit.as_deref())));
+            details.push(format!(
+                "  install method: {}",
+                unknown(record.install_method.as_deref())
+            ));
+            details.push(format!(
+                "  source tree it points at: {}",
+                unknown(record.source_dir.as_deref().and_then(Path::to_str))
+            ));
+        }
+        None => {
+            details.push(
+                "install record: none — ~/.horus/install_manifest.toml is absent, which is \
+                 normal for an install made before install.sh wrote it"
+                    .to_string(),
+            );
+            details.push(format!(
+                "  installed version: {} (~/.horus/installed_version)",
+                unknown(legacy_version.as_deref())
+            ));
+            details.push("  tag: unknown".to_string());
+            details.push("  commit: unknown".to_string());
+            details.push("  install method: unknown".to_string());
+            details.push("  source tree it points at: unknown".to_string());
+            if legacy_version.is_none() {
+                fragments.push("no install record".to_string());
+            }
+        }
+    }
+
+    // ── Tag coherence: the CLI against the tree it builds projects with ──
+    let mut claimed: Vec<PathBuf> = manifest
+        .as_ref()
+        .and_then(|record| record.source_dir.clone())
+        .into_iter()
+        .collect();
+    match crate::commands::run::find_horus_source_dir() {
+        Ok(source) => {
+            let facts = SourceFacts {
+                cli_version: cli_version.to_string(),
+                cli_topic_version: crate::version::CLI_TOPIC_VERSION,
+                source_version: crate_version_in(&source),
+                source_topic_version: topic_version_in(&source),
+                origin: source_origin(&source, cli_version),
+                source,
+            };
+            let (source_health, summary, mut source_details) = grade_source_tree(&facts);
+            health = health.worst(source_health);
+            fragments.push(summary);
+            details.append(&mut source_details);
+            claimed.push(facts.source);
+        }
+        Err(_) => {
+            // Not fatal for a Python-only user, but `horus run` on a Rust
+            // project path-depends on this tree (cargo_gen.rs:114), so it is
+            // the difference between building and not.
+            health = health.worst(Health::Warn);
+            fragments.push("no source tree".to_string());
+            details.push(
+                "source tree: not found in any location find_horus_source_dir() consults — \
+                 Rust builds cannot resolve horus_core; run `horus self update` or reinstall"
+                    .to_string(),
+            );
+        }
+    }
+
+    // ── Cached source trees nothing claims ──────────────────────────────
+    let roots = source_cache_roots();
+    for root in &roots {
+        claimed.push(root.join(format!("horus@{cli_version}")));
+    }
+    let orphans = orphaned_source_caches_in(&roots, &claimed);
+    if !orphans.is_empty() {
+        let total: u64 = orphans.iter().map(|(_, size)| size).sum();
+        fragments.push(format!(
+            "{} in {} orphaned source cache{}",
+            format_bytes(total),
+            orphans.len(),
+            if orphans.len() == 1 { "" } else { "s" }
+        ));
+        for (path, size) in &orphans {
+            details.push(format!(
+                "orphaned cache: {} ({}) — no installed version claims it; `rm -rf {}` \
+                 reclaims the space",
+                path.display(),
+                format_bytes(*size),
+                path.display()
+            ));
+        }
+    }
+
+    CheckResult {
+        category: "Installation".to_string(),
+        health,
+        summary: fragments.join(" · "),
+        details,
+    }
+}
+
+/// "unknown" for a field the install record does not carry, so a partial record
+/// degrades one line instead of failing the check.
+fn unknown(value: Option<&str>) -> &str {
+    value.unwrap_or("unknown")
+}
+
+/// Every `horus` on PATH, in PATH order, with what each answers to `--version`.
+///
+/// Deduplicated by canonical path, so a ~/.local/bin/horus that is a symlink to
+/// the ~/.cargo/bin one is one install rather than a reported conflict.
+fn horus_binaries_on_path() -> Vec<(PathBuf, Option<String>)> {
+    let mut seen = std::collections::HashSet::new();
+    all_on_path("horus")
+        .into_iter()
+        .filter(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())))
+        .map(|path| {
+            let version = dispatch::tool_version(&path.to_string_lossy());
+            (path, version)
+        })
+        .collect()
+}
+
+/// The summary line for a PATH holding more than one HORUS, or `None` when they
+/// agree — two copies of the same version shadow each other harmlessly.
+fn path_conflict(binaries: &[(PathBuf, Option<String>)]) -> Option<String> {
+    let versions: Vec<&str> = binaries
+        .iter()
+        .map(|(_, reported)| reported.as_deref().map_or("unknown", version_token))
+        .collect();
+    let winner = *versions.first()?;
+    let mut shadowed: Vec<&str> = Vec::new();
+    for version in versions.iter().skip(1).copied() {
+        if version != winner && !shadowed.contains(&version) {
+            shadowed.push(version);
+        }
+    }
+    if shadowed.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} horus on PATH: {winner} shadows {}",
+        binaries.len(),
+        shadowed.join(", ")
+    ))
+}
+
+/// The bare version out of a `--version` line: "horus 0.4.0" -> "0.4.0".
+fn version_token(line: &str) -> &str {
+    line.split_whitespace().last().unwrap_or(line)
+}
+
+/// The shm wire-format version a source tree speaks.
+///
+/// Grepped, not linked against: `TOPIC_VERSION` is `pub(crate)` in horus_core,
+/// and the tree being read is a *different* checkout from the one this binary
+/// was compiled from — that difference is the entire point of the comparison.
+/// install.sh:803 and upgrade.rs:717 parse the same line the same way;
+/// upgrade's copy is private to that module.
+fn topic_version_in(source: &Path) -> Option<u32> {
+    let header = source.join("horus_core/src/communication/topic/header.rs");
+    let text = std::fs::read_to_string(header).ok()?;
+    let line = text
+        .lines()
+        .find(|l| l.contains("const TOPIC_VERSION") && l.contains('='))?;
+    line.rsplit('=')
+        .next()?
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// The version a source tree declares for itself.
+///
+/// horus_manager's is asked for first because it is the number `CARGO_PKG_VERSION`
+/// bakes into this binary, so it is the like-for-like comparison. horus_core's
+/// is what install.sh:462 reads, and is the fallback for a tree whose
+/// horus_manager inherits its version from the workspace.
+fn crate_version_in(source: &Path) -> Option<String> {
+    ["horus_manager", "horus_core"].iter().find_map(|package| {
+        let text = std::fs::read_to_string(source.join(package).join("Cargo.toml")).ok()?;
+        text.lines()
+            .find(|line| line.trim_start().starts_with("version"))
+            .and_then(|line| line.split('"').nth(1))
+            .map(str::to_string)
+    })
+}
+
+fn source_origin(source: &Path, cli_version: &str) -> SourceOrigin {
+    let Some(leaf) = source.file_name().and_then(|name| name.to_str()) else {
+        return SourceOrigin::Checkout;
+    };
+    if !leaf.starts_with("horus@") {
+        SourceOrigin::Checkout
+    } else if leaf == format!("horus@{cli_version}") {
+        SourceOrigin::CacheExact
+    } else {
+        SourceOrigin::CacheFallback
+    }
+}
+
+/// Grade the CLI against the tree user projects will be compiled against.
+///
+/// Pure, because the failure it exists to catch — RC1: a binary from a release
+/// tag and a source tree from main HEAD, both printing 0.4.0, with topic
+/// versions 3 and 4 — cannot be staged on a machine that installed correctly.
+/// Returns (verdict, summary fragment, detail lines).
+fn grade_source_tree(facts: &SourceFacts) -> (Health, String, Vec<String>) {
+    let leaf = facts
+        .source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("source tree");
+    let mut details = vec![
+        format!("source tree: {}", facts.source.display()),
+        format!(
+            "  version: {} (this CLI: {})",
+            unknown(facts.source_version.as_deref()),
+            facts.cli_version
+        ),
+        format!(
+            "  topic_version: {} (this CLI: {})",
+            facts
+                .source_topic_version
+                .map_or("unknown".to_string(), |v| v.to_string()),
+            facts.cli_topic_version
+        ),
+    ];
+
+    if facts.origin == SourceOrigin::CacheFallback {
+        details.push(format!(
+            "  there is no horus@{} in the cache, so find_horus_source_dir() fell back to \
+             this tree (run_rust.rs:1069) — the CLI is building against a version it never \
+             asked for",
+            facts.cli_version
+        ));
+    }
+
+    // The ABI, checked before the version string, because it is the half that
+    // actually breaks: two trees can share a version and still refuse each
+    // other's shared memory, which is exactly what shipped.
+    if let Some(topic) = facts.source_topic_version {
+        if topic != facts.cli_topic_version {
+            details.push(format!(
+                "  this CLI writes topic headers at v{} and libraries built from this tree \
+                 read v{}; nodes cannot attach to each other's shared memory. \
+                 `horus self update` puts both halves back on one tag.",
+                facts.cli_topic_version, topic
+            ));
+            return (
+                Health::Fail,
+                format!(
+                    "topic ABI break: CLI v{} vs source tree v{} — run `horus self update`",
+                    facts.cli_topic_version, topic
+                ),
+                details,
+            );
+        }
+    }
+
+    if facts.origin == SourceOrigin::CacheFallback {
+        return (
+            Health::Warn,
+            format!(
+                "source tree {leaf} is not this CLI's {} — run `horus self update`",
+                facts.cli_version
+            ),
+            details,
+        );
+    }
+
+    if matches!(&facts.source_version, Some(version) if version != &facts.cli_version) {
+        let version = facts.source_version.as_deref().unwrap_or("unknown");
+        details.push(
+            "  the CLI and the tree it builds against came from different refs; that is the \
+             shape of the shm break above, even when topic_version happens to agree today"
+                .to_string(),
+        );
+        return (
+            Health::Warn,
+            format!(
+                "source tree says {version}, CLI says {} — run `horus self update`",
+                facts.cli_version
+            ),
+            details,
+        );
+    }
+
+    if facts.source_topic_version.is_none() {
+        return (
+            Health::Ok,
+            format!("source tree {leaf} (topic_version unreadable)"),
+            details,
+        );
+    }
+
+    (
+        Health::Ok,
+        format!("source tree {leaf} (topic v{})", facts.cli_topic_version),
+        details,
+    )
+}
+
+/// The cache roots `find_horus_source_dir` searches, in its order.
+///
+/// Both, because the codebase has historically written to both: XDG
+/// (~/.cache/horus) and the ~/.horus/cache that install.sh and `horus clean`
+/// manage. Listing only one would call a live tree an orphan.
+fn source_cache_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(xdg) = crate::paths::cache_dir() {
+        roots.push(xdg);
+    }
+    if let Ok(home) = crate::paths::home_dir() {
+        let legacy = home.join(".horus/cache");
+        if !roots.contains(&legacy) {
+            roots.push(legacy);
+        }
+    }
+    roots
+}
+
+/// Cached `horus@*` trees that no install claims, with what they cost.
+///
+/// Every upgrade leaves the previous tree behind and nothing ever mentions it;
+/// on the machine this check was written for that was 727 MB of a version the
+/// user had stopped running months earlier.
+fn orphaned_source_caches_in(roots: &[PathBuf], claimed: &[PathBuf]) -> Vec<(PathBuf, u64)> {
+    let mut orphans = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_source_cache = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("horus@"));
+            if !is_source_cache || !path.is_dir() {
+                continue;
+            }
+            if claimed.iter().any(|c| same_path(c, &path)) {
+                continue;
+            }
+            orphans.push((path.clone(), dir_size(&path)));
+        }
+    }
+    orphans.sort();
+    orphans
+}
+
+/// Compare two paths by what they resolve to, so a symlinked cache root does
+/// not make a claimed tree look unclaimed.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    resolve(a) == resolve(b)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Network check — `horus doctor` (always runs)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1293,6 +1804,39 @@ fn check_network() -> CheckResult {
         }
     }
 
+    // Check 5: the package registry `horus search`, `horus add` and
+    // `horus install` all talk to.
+    //
+    // None of the probes above touch it, so a registry that is refusing every
+    // request is indistinguishable from a search with no matches: the endpoint
+    // has been answering 503 "service suspended" while `horus search` printed
+    // an empty list and exited 0. Offline is a normal state, not a fault, so
+    // this is short, single-shot and never fatal.
+    let registry_url = crate::config::registry_url();
+    if no_net {
+        details.push(format!(
+            "Registry: {registry_url} not probed (HORUS_NO_NETWORK=1)"
+        ));
+    } else {
+        match probe_registry(&registry_url) {
+            RegistryProbe::Status(code) if (200..300).contains(&code) => {
+                details.push(format!("Registry: {registry_url} answered {code}"));
+            }
+            RegistryProbe::Status(code) => {
+                details.push(format!(
+                    "Registry: {registry_url} answered HTTP {code} — `horus search` will come \
+                     back empty and `horus add` will fail until it recovers"
+                ));
+                health = Health::Warn;
+            }
+            RegistryProbe::Unreachable(error) => {
+                details.push(format!(
+                    "Registry: {registry_url} unreachable ({error}) — expected when offline"
+                ));
+            }
+        }
+    }
+
     let summary = if remote_count > 0 {
         format!("{} remote peer(s)", remote_count)
     } else {
@@ -1304,6 +1848,39 @@ fn check_network() -> CheckResult {
         health,
         summary,
         details,
+    }
+}
+
+/// What the registry said, or why it said nothing.
+enum RegistryProbe {
+    /// It answered. The code is reported verbatim, because "the registry is up"
+    /// and "the registry is returning 503" are the two cases this exists to
+    /// tell apart.
+    Status(u16),
+    /// No answer at all: no route, DNS failure, timeout. Normal offline.
+    Unreachable(String),
+}
+
+/// Ask the registry the same question `horus search` asks, briefly.
+///
+/// The search endpoint rather than the bare host, so the status reported is the
+/// one the command the user is about to run would get. Short timeouts and no
+/// retry: `horus doctor` has to finish on a machine with no network at all.
+fn probe_registry(base_url: &str) -> RegistryProbe {
+    let client = match reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
+        .user_agent("horus-doctor")
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => return RegistryProbe::Unreachable(e.to_string()),
+    };
+
+    let url = format!("{}/api/packages/search", base_url.trim_end_matches('/'));
+    match client.get(url).query(&[("q", "horus")]).send() {
+        Ok(response) => RegistryProbe::Status(response.status().as_u16()),
+        Err(e) => RegistryProbe::Unreachable(e.to_string()),
     }
 }
 
@@ -2684,5 +3261,294 @@ mod toolchain_grading_tests {
             !is_executable(dir.path()),
             "a directory is not an executable"
         );
+    }
+}
+
+#[cfg(test)]
+mod installation_tests {
+    use super::*;
+    use std::fs;
+
+    fn facts(
+        cli: &str,
+        source: &str,
+        src_version: Option<&str>,
+        topic: Option<u32>,
+    ) -> SourceFacts {
+        let source = PathBuf::from(source);
+        SourceFacts {
+            cli_version: cli.to_string(),
+            cli_topic_version: 4,
+            source_version: src_version.map(str::to_string),
+            source_topic_version: topic,
+            origin: source_origin(&source, cli),
+            source,
+        }
+    }
+
+    /// Write a source tree that looks enough like a HORUS checkout for the two
+    /// readers under test.
+    fn fake_tree(root: &Path, version: &str, topic: u32) {
+        let header = root.join("horus_core/src/communication/topic");
+        fs::create_dir_all(&header).unwrap();
+        fs::write(
+            header.join("header.rs"),
+            format!("pub(crate) const TOPIC_MAGIC: u32 = 1;\npub(crate) const TOPIC_VERSION: u32 = {topic};\n"),
+        )
+        .unwrap();
+        for package in ["horus_manager", "horus_core"] {
+            fs::create_dir_all(root.join(package)).unwrap();
+            fs::write(
+                root.join(package).join("Cargo.toml"),
+                format!("[package]\nname = \"{package}\"\nversion = \"{version}\"\n"),
+            )
+            .unwrap();
+        }
+    }
+
+    // ── The RC1 case ────────────────────────────────────────────────────
+
+    /// The defect this whole check exists for: install.sh took the binary from
+    /// a release tag and the source from main HEAD, 93 commits apart. Both
+    /// halves said 0.4.0, so every version string on the machine agreed, and
+    /// the CLI still could not read the shared memory its own libraries wrote.
+    /// A verdict that only compared version strings called this healthy.
+    #[test]
+    fn matching_versions_do_not_excuse_a_topic_break() {
+        let (health, summary, details) = grade_source_tree(&facts(
+            "0.4.0",
+            "/home/u/.horus/cache/horus@0.4.0",
+            Some("0.4.0"),
+            Some(3),
+        ));
+        assert_eq!(health, Health::Fail, "got {summary}");
+        assert!(summary.contains("topic ABI break"), "{summary}");
+        assert!(summary.contains("v4"), "{summary}");
+        assert!(summary.contains("v3"), "{summary}");
+        assert!(
+            summary.contains("horus self update"),
+            "the remedy has to be in the line the user sees by default: {summary}"
+        );
+        assert!(
+            details.iter().any(|d| d.contains("shared memory")),
+            "{details:?}"
+        );
+    }
+
+    #[test]
+    fn a_coherent_install_is_ok() {
+        let (health, summary, _) = grade_source_tree(&facts(
+            "0.4.0",
+            "/home/u/.horus/cache/horus@0.4.0",
+            Some("0.4.0"),
+            Some(4),
+        ));
+        assert_eq!(health, Health::Ok, "got {summary}");
+        assert_eq!(summary, "source tree horus@0.4.0 (topic v4)");
+    }
+
+    /// run_rust.rs:1069-1081 takes any cached `horus@*` when the exact version
+    /// is gone. That is a silent substitution today; the report has to name it,
+    /// because the tree it picked is the one user projects compile against.
+    #[test]
+    fn the_any_version_cache_fallback_is_named() {
+        let facts = facts(
+            "0.4.0",
+            "/home/u/.horus/cache/horus@0.2.2",
+            Some("0.2.2"),
+            Some(4),
+        );
+        assert_eq!(facts.origin, SourceOrigin::CacheFallback);
+        let (health, summary, details) = grade_source_tree(&facts);
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(summary.contains("horus@0.2.2"), "{summary}");
+        assert!(summary.contains("horus self update"), "{summary}");
+        assert!(
+            details.iter().any(|d| d.contains("never asked for")),
+            "{details:?}"
+        );
+    }
+
+    /// A tree older than the header the topic version is parsed from must not
+    /// be reported as a break — unknown is unknown.
+    #[test]
+    fn an_unreadable_topic_version_is_not_a_verdict() {
+        let (health, summary, _) = grade_source_tree(&facts(
+            "0.4.0",
+            "/home/u/.horus/cache/horus@0.4.0",
+            Some("0.4.0"),
+            None,
+        ));
+        assert_eq!(health, Health::Ok, "got {summary}");
+        assert!(summary.contains("unreadable"), "{summary}");
+    }
+
+    /// A development checkout at a different version is the RC1 shape with the
+    /// ABI break not yet visible: the halves came from different refs.
+    #[test]
+    fn a_checkout_at_another_version_warns() {
+        let facts = facts("0.4.0", "/home/u/softmata/horus", Some("0.5.0"), Some(4));
+        assert_eq!(facts.origin, SourceOrigin::Checkout);
+        let (health, summary, _) = grade_source_tree(&facts);
+        assert_eq!(health, Health::Warn, "got {summary}");
+        assert!(summary.contains("0.5.0"), "{summary}");
+    }
+
+    // ── Reading a tree off disk ─────────────────────────────────────────
+
+    #[test]
+    fn topic_version_and_crate_version_come_off_a_real_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_tree(dir.path(), "0.4.0", 4);
+        assert_eq!(topic_version_in(dir.path()), Some(4));
+        assert_eq!(crate_version_in(dir.path()).as_deref(), Some("0.4.0"));
+
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(topic_version_in(empty.path()), None);
+        assert_eq!(crate_version_in(empty.path()), None);
+    }
+
+    /// horus_core is the fallback, and the workspace-inherited form carries no
+    /// version to read — treating `version.workspace = true` as an answer would
+    /// report the literal string "workspace" as the installed version.
+    #[test]
+    fn an_inherited_version_falls_through_to_horus_core() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_tree(dir.path(), "0.4.0", 4);
+        fs::write(
+            dir.path().join("horus_manager/Cargo.toml"),
+            "[package]\nname = \"horus_manager\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(crate_version_in(dir.path()).as_deref(), Some("0.4.0"));
+    }
+
+    #[test]
+    fn the_topic_version_parser_accepts_both_visibilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = dir.path().join("horus_core/src/communication/topic");
+        fs::create_dir_all(&header).unwrap();
+        fs::write(
+            header.join("header.rs"),
+            "pub const TOPIC_VERSION: u32 = 7;\n",
+        )
+        .unwrap();
+        assert_eq!(topic_version_in(dir.path()), Some(7));
+    }
+
+    // ── Orphaned caches ─────────────────────────────────────────────────
+
+    /// 727 MB of a version the user stopped running months earlier, which
+    /// nothing on the machine mentioned.
+    #[test]
+    fn an_unclaimed_cache_is_reported_with_its_size() {
+        let root = tempfile::tempdir().unwrap();
+        for version in ["0.2.2", "0.4.0"] {
+            let tree = root.path().join(format!("horus@{version}"));
+            fs::create_dir_all(&tree).unwrap();
+            fs::write(tree.join("payload"), vec![b'x'; 1024]).unwrap();
+        }
+        fs::create_dir_all(root.path().join("pypi_serial@latest")).unwrap();
+
+        let claimed = vec![root.path().join("horus@0.4.0")];
+        let orphans = orphaned_source_caches_in(&[root.path().to_path_buf()], &claimed);
+        assert_eq!(orphans.len(), 1, "{orphans:?}");
+        assert_eq!(orphans[0].0, root.path().join("horus@0.2.2"));
+        assert_eq!(orphans[0].1, 1024, "the size is what makes it actionable");
+    }
+
+    #[test]
+    fn a_claimed_cache_is_never_called_an_orphan() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = root.path().join("horus@0.4.0");
+        fs::create_dir_all(&tree).unwrap();
+        let orphans = orphaned_source_caches_in(&[root.path().to_path_buf()], &[tree]);
+        assert!(orphans.is_empty(), "{orphans:?}");
+    }
+
+    // ── Duplicate binaries on PATH ──────────────────────────────────────
+
+    /// The support trap: an old ~/.local/bin/horus and a new ~/.cargo/bin/horus,
+    /// with PATH order silently deciding which one `horus` means.
+    #[test]
+    fn two_versions_on_path_are_a_conflict() {
+        let binaries = vec![
+            (
+                PathBuf::from("/h/.local/bin/horus"),
+                Some("horus 0.2.2".to_string()),
+            ),
+            (
+                PathBuf::from("/h/.cargo/bin/horus"),
+                Some("horus 0.4.0".to_string()),
+            ),
+        ];
+        let conflict = path_conflict(&binaries).expect("two versions disagree");
+        assert!(conflict.contains("0.2.2 shadows 0.4.0"), "{conflict}");
+    }
+
+    /// Two copies of the same version shadow each other harmlessly; reporting
+    /// that as a conflict would train users to ignore the check.
+    #[test]
+    fn one_version_in_two_places_is_not_a_conflict() {
+        let binaries = vec![
+            (
+                PathBuf::from("/h/.local/bin/horus"),
+                Some("horus 0.4.0".to_string()),
+            ),
+            (
+                PathBuf::from("/h/.cargo/bin/horus"),
+                Some("horus 0.4.0".to_string()),
+            ),
+        ];
+        assert_eq!(path_conflict(&binaries), None);
+        assert_eq!(path_conflict(&[]), None);
+    }
+
+    /// `on_path` is the old boolean answer over the new list. Both have to keep
+    /// agreeing, or `probe()` starts grading MSVC tools on a different rule.
+    #[test]
+    fn all_on_path_and_on_path_agree() {
+        assert!(!all_on_path("cargo").is_empty());
+        assert_eq!(on_path("cargo"), !all_on_path("cargo").is_empty());
+        assert!(all_on_path("horus_definitely_not_a_tool_xyz").is_empty());
+        assert!(!on_path("horus_definitely_not_a_tool_xyz"));
+    }
+
+    /// One hit per PATH directory, the way the OS resolves a command — and
+    /// every directory, not just the first, which is the whole point of the
+    /// widened lookup. Tested through `executables_in` so it does not have to
+    /// mutate this process's PATH, which the toolchain tests above read.
+    #[test]
+    #[cfg(unix)]
+    fn every_directory_contributes_its_own_hit() {
+        use std::os::unix::fs::PermissionsExt;
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let third = tempfile::tempdir().unwrap();
+        for dir in [first.path(), second.path()] {
+            let bin = dir.join("horus");
+            fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // A name that is present but not executable is not an install.
+        fs::write(third.path().join("horus"), "not a program").unwrap();
+
+        let dirs = [first.path(), second.path(), third.path()].map(Path::to_path_buf);
+        assert_eq!(
+            executables_in("horus", dirs.into_iter(), &[]),
+            vec![first.path().join("horus"), second.path().join("horus")],
+            "both copies must be reported, in the order the directories were searched"
+        );
+    }
+
+    // ── Health combination ──────────────────────────────────────────────
+
+    #[test]
+    fn the_worst_verdict_wins() {
+        assert_eq!(Health::Ok.worst(Health::Warn), Health::Warn);
+        assert_eq!(Health::Warn.worst(Health::Ok), Health::Warn);
+        assert_eq!(Health::Warn.worst(Health::Fail), Health::Fail);
+        assert_eq!(Health::Fail.worst(Health::Ok), Health::Fail);
+        assert_eq!(Health::Ok.worst(Health::Ok), Health::Ok);
     }
 }

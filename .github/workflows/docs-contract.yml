@@ -92,13 +92,15 @@ env:
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
   #
-  # Bumped from 9505c1d to af057d9 (horus-docs main). The old pin predated
-  # horus-docs 6d8df32, which is where the shared-memory residency knobs and
-  # HORUS_RT_SPIN_GUARD_US were written into the environment-variable
-  # reference, so `every_environment_variable_is_in_the_reference_page` failed
-  # against it for four variables the code reads and that pin's page did not
-  # document. The old pin is an ancestor of the new one.
-  DOCS_PINNED_REF: af057d9f910300276832d40c4d2c99ee3e35aba4
+  # Bumped from af057d9 to 38368c8 (horus-docs main, the merge of
+  # horus-docs#11). This branch adds HORUS_VERSION, HORUS_LOCAL_SOURCE,
+  # HORUS_PREFIX and HORUS_STRICT_VERSION, and horus-docs#11 is the commit that
+  # writes them into the environment-variable reference — so against the old
+  # pin `every_environment_variable_is_in_the_reference_page` failed for four
+  # variables this branch reads and that pin's page did not document. The old
+  # pin is an ancestor of the new one (compare af057d9...38368c8: ahead 2,
+  # behind 0), and the full suite passes against it: 14 passed, 0 failed.
+  DOCS_PINNED_REF: 38368c8421630f2965fcc9b29e131e92a3e54fb2
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────

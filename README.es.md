@@ -22,6 +22,14 @@ curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
+El instalador resuelve la última etiqueta publicada y toma de ella las dos mitades: el binario de la CLI, verificado contra el `SHA256SUMS` de esa versión, y el código fuente que deja en `~/.horus/cache/horus@<versión>`. Ambas tienen que venir de la misma etiqueta, porque `horus run` compila tu proyecto contra ese código como dependencia de ruta.
+
+Para fijar una versión concreta:
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
 Instalación manual:
 
 ```bash
@@ -30,7 +38,17 @@ cd horus
 ./install.sh
 ```
 
-Python: `pip install horus-robotics`. C++: enlaza `libhorus_cpp` e incluye `<horus/horus.hpp>`.
+Actualizar: `horus self update`, que mueve la CLI y el código en caché a la misma etiqueta nueva. Desinstalar: `curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash` — el script lista todo lo que va a borrar y pide confirmación en tu terminal. Añade `-s -- --dry-run` para solo listarlo, o `-s -- --yes` para una ejecución desatendida.
+
+Docker: `docker build --target dev -t horus:dev .`. El objetivo por defecto de `docker build .` es la imagen ligera que solo contiene la CLI y no puede compilar ni ejecutar un proyecto.
+
+C++: enlaza `libhorus_cpp` e incluye `<horus/horus.hpp>`.
+
+Python: `pip install "horus-robotics>=0.4.0"`. La última versión en PyPI es 0.1.9 y usa un formato de memoria compartida anterior al de una CLI 0.4.x; hasta que se publique 0.4.x, compila los bindings desde la caché: `pip install ~/.horus/cache/horus@0.4.0/horus_py`.
+
+Rust: no hay canal en crates.io. `cargo add horus` y `cargo install horus` descargan un crate ajeno a este proyecto.
+
+Matriz de plataformas, variables de entorno del instalador y detalles de Docker: [Install, Upgrade, Uninstall](README.md#install-upgrade-uninstall).
 
 ## ¿Por qué HORUS?
 
