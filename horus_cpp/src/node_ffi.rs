@@ -75,6 +75,17 @@ impl CppNode {
     }
 }
 
+/// The message carried by a caught panic, whatever payload type it used.
+fn panic_message(panic_info: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic_info.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 impl Node for CppNode {
     fn name(&self) -> &str {
         &self.name
@@ -90,9 +101,34 @@ impl Node for CppNode {
         // record, and the restart budget is counted by the policy, not here.
         self.failed = false;
         if let Some(ref mut init_fn) = self.init_fn {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // The C++ unwind is caught here so it never crosses the FFI
+            // boundary, but the FAILURE is reported, not discarded. This used
+            // to `let _ = ...; Ok(())`, which told the scheduler the node had
+            // initialised cleanly when its constructor had in fact thrown.
+            // The scheduler takes real care over init (it wraps `init()` in its
+            // own `catch_unwind` and maps a panic to `NodeError::InitPanic`
+            // precisely so a node that cannot start is never marked
+            // `initialized`) -- and this adapter defeated all of it for every
+            // C++ node. A node whose device handle was never opened then
+            // ticked forever against uninitialised state.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (init_fn)();
             }));
+            if let Err(panic_info) = result {
+                self.failed = true;
+                self.fail_count += 1;
+                let msg = panic_message(&panic_info);
+                horus_core::terminal::eprint_line(&format!(
+                    "[horus_cpp] PANIC in C++ node '{}' init callback: {}.",
+                    self.name, msg
+                ));
+                return Err(horus_core::HorusError::Node(
+                    horus_core::error::NodeError::InitFailed {
+                        node: self.name.clone(),
+                        reason: msg,
+                    },
+                ));
+            }
         }
         Ok(())
     }
@@ -131,13 +167,7 @@ impl Node for CppNode {
         if let Err(panic_info) = result {
             self.failed = true;
             self.fail_count += 1;
-            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic".to_string()
-            };
+            let msg = panic_message(&panic_info);
             horus_core::terminal::eprint_line(&format!(
                 "[horus_cpp] PANIC in C++ node '{}' tick callback: {}. \
                  Node is now disabled (fail_count={}).",
@@ -562,6 +592,57 @@ mod tests {
             );
         }
         assert!(node.is_failed(), "still failed");
+    }
+
+    /// A C++ node whose init callback throws must not report a clean start.
+    ///
+    /// The adapter used to `let _ = catch_unwind(...)` and return `Ok(())`,
+    /// which told the scheduler the node had initialised. That mattered more
+    /// than it looks: the scheduler wraps `init()` in its own `catch_unwind`
+    /// and maps a panic to `NodeError::InitPanic` specifically so that a node
+    /// which cannot start is never marked `initialized` -- and this adapter
+    /// silently defeated all of it for every C++ node in existence. A node
+    /// whose device handle never opened then ticked forever against
+    /// uninitialised state.
+    #[test]
+    fn panic_in_init_is_reported_as_an_init_failure() {
+        let mut node = CppNode::new("boot_fail".to_string(), Box::new(|| {}))
+            .with_lifecycle(Some(Box::new(|| panic!("device not present"))), None, None);
+
+        let result = node.init();
+
+        assert!(
+            result.is_err(),
+            "an init callback that threw must not report a clean start"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("device not present"),
+            "the failure must carry the reason the node could not start, got: {msg}"
+        );
+
+        // The unwind was contained at the boundary -- this thread is still alive
+        // to run the assertion, which is the part that was always correct.
+    }
+
+    /// A node that initialises cleanly still reports success, and `init()`
+    /// still clears the failure latch so `FailurePolicy::Restart` can work.
+    #[test]
+    fn a_clean_init_still_succeeds_and_clears_the_failure_latch() {
+        let mut node = CppNode::new(
+            "restartable".to_string(),
+            Box::new(|| panic!("tick always fails")),
+        )
+        .with_lifecycle(Some(Box::new(|| {})), None, None);
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.tick()));
+        assert!(node.is_failed(), "precondition: the node is latched failed");
+
+        assert!(node.init().is_ok(), "a clean init callback must succeed");
+        assert!(
+            !node.is_failed(),
+            "init() is what Restart calls to bring a node back; it must unlatch"
+        );
     }
 
     #[test]

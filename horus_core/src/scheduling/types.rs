@@ -599,9 +599,34 @@ impl RegisteredNode {
                 true
             }
             FailureAction::RestartNode => {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _ = self.node.init();
+                // A restart that could not re-initialise the node is not a
+                // restart. Both the error and the panic used to be dropped on
+                // the floor here (`let _ = ...` twice over), so a node whose
+                // device handle failed to reopen went straight back into the
+                // tick rotation, uninitialised, looking exactly like one that
+                // had recovered. Report it and safe the node instead; the
+                // policy's restart budget still governs whether we try again,
+                // which is why this stays `false` rather than stopping the
+                // scheduler outright.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.node.init()
                 }));
+                let failure = match outcome {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(e.to_string()),
+                    Err(_) => Some("init() panicked".to_string()),
+                };
+                if let Some(reason) = failure {
+                    crate::terminal::eprint_line(&format!(
+                        "[horus] node '{}' failed to restart: {}. \
+                         Driving it to its safe state; it is NOT running.",
+                        self.node.name(),
+                        reason
+                    ));
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.node.enter_safe_state();
+                    }));
+                }
                 false
             }
             FailureAction::SkipNode | FailureAction::Continue => false,

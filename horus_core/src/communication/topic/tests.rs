@@ -7124,21 +7124,30 @@ fn broadcast_subscriber_join_midstream() {
             while !sub2_claimed.load(Ordering::Acquire) && Instant::now() < deadline {
                 std::thread::yield_now();
             }
-            // Fail here, not thirty lines down. Publishing the suffix anyway
-            // after the wait timed out would reach the receive assertion, which
-            // says the late subscriber missed messages — a claim that never
-            // happened is a different fault with a different fix, and reporting
-            // it as message loss sends the next reader to the transport.
+            let claimed = sub2_claimed.load(Ordering::Acquire);
+            if claimed {
+                for v in (half + 1)..=n {
+                    p.send(v);
+                    std::thread::yield_now();
+                }
+            }
+            // Release the drains BEFORE asserting. Both spin on `try_recv` until
+            // `stop` is set, so a panic that skipped this store would leave two
+            // threads busy-waiting for the life of the process -- the test would
+            // report its failure and then quietly eat two cores for the rest of
+            // the suite, on runners this repo already loses tests to starvation
+            // on.
+            stop.store(true, Ordering::Release);
+            // Fail here, not thirty lines down. Reaching the receive assertion
+            // after the wait timed out would report "the late subscriber missed
+            // messages" — a claim that never happened is a different fault with
+            // a different fix, and reporting it as message loss sends the next
+            // reader to the transport.
             assert!(
-                sub2_claimed.load(Ordering::Acquire),
+                claimed,
                 "sub2 never claimed its endpoint within 10s, so the suffix was \
                  never published under the condition this test asserts on"
             );
-            for v in (half + 1)..=n {
-                p.send(v);
-                std::thread::yield_now();
-            }
-            stop.store(true, Ordering::Release);
         })
     };
 
