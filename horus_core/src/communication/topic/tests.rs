@@ -9002,115 +9002,122 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// still pass if the migration stopped resizing the mapping, and would then be
 /// guarding nothing.
 #[test]
-/// # OPEN: this test trips ThreadSanitizer, and the finding looks real
-///
-/// Under `-Zsanitizer=thread` this reports two data races: two PRODUCER threads
-/// writing the same slot address, with the other side of each race also a
-/// producer rather than the consumer. Reproduced locally with CI's exact
-/// invocation and seen on CI (job "ThreadSanitizer - Data Race Detection").
-///
-/// It is NOT generic multi-producer behaviour, which was the obvious guess.
-/// Measured on the same toolchain and flags:
-///
-///   * `mp_send_no_overshoot_corruption` — three producers, one consumer, a
-///     contended ring, NO grow: zero TSan warnings.
-///   * `topic_cross_thread_multi_p_multi_c_mpmc` — likewise zero.
-///   * this test, whose only additional ingredient is a concurrent mapping
-///     replacement: two warnings, repeatably.
-///
-/// So the missing happens-before edge is on the MIGRATION path, not on the
-/// ordinary claim protocol.
-///
-/// One more ablation places it exactly. Reverting ONLY the retained-mapping fix
-/// in `horus_sys::shm::linux::grow_unchecked` — back to `self.mmap = new_mmap`,
-/// which unmaps the old view — makes this test die under TSan with
-/// `SEGV on unknown address ... in __tsan_atomic8_load`, and report zero data
-/// races. That is the use-after-munmap the fix exists for, independently
-/// confirmed by a second tool, and it crashes before any race can be observed.
-///
-/// So the retention fix did not INTRODUCE this race. It removed a crash and left
-/// the unordered access that was underneath it: two producers reaching the same
-/// slot across a remap were never ordered against each other, and previously the
-/// process died on a dangling pointer before that could matter. The fix is
-/// necessary and not sufficient — it makes the remap survivable, not ordered.
-///
-/// Ordinarily slot reuse is ordered: a producer only
-/// claims `seq` once it has observed `header.tail > seq - capacity` with an
-/// Acquire load, which pairs with the consumer's Release store of `tail` after
-/// it read the previous occupant. `handle_epoch_change` resynchronises
-/// `local_head`/`local_tail` from the header, and that path appears to let a
-/// producer reach a slot without the load that would have ordered it against
-/// whoever wrote it last. The specific suspect is `resynced_tail`, which returns
-/// `local_tail.max(shared_tail).min(new_head)`: when the producer's OWN cached
-/// `local_tail` wins that max, the value it then reuses slots against did not
-/// come from the Acquire load of the current header — it came from the
-/// producer's own pre-migration history. That is still sound on paper, because a
-/// producer's `local_tail` only ever originates in an Acquire load of
-/// `header.tail`, which is exactly why reading the code does not settle this.
-///
-/// # Why this is not "TSan being pedantic", even though nothing corrupts here
-///
-/// No overshoot is constructible from it. A producer's `local_tail` only ever
-/// originates in an Acquire load of `header.tail`, so even when the max in
-/// `resynced_tail` keeps a stale value it stays <= the true consumed count, and
-/// the claim gate stays conservative. The torn-read check below passes on every
-/// run. On this machine the protocol behaves.
-///
-/// This machine is x86_64, and x86 is TSO: it will not reorder the stores and
-/// loads that a missing acquire/release edge leaves unconstrained. A formally
-/// unordered pair that is harmless under TSO is exactly the shape that DOES
-/// reorder on a weakly-ordered target — and this is robotics middleware, so the
-/// deployment target is aarch64: Jetson, Pi, and every ARM SBC in a robot.
-///
-/// Nothing in CI executes this code on ARM. `aarch64-unknown-linux-gnu` is
-/// cross-compiled and its smoke test is explicitly skipped ("the runner is
-/// x86_64 and qemu setup is overkill"), and the macOS ARM64 parity job runs
-/// `-p horus_sys` only. So the ring protocol has never run on a weakly-ordered
-/// machine in CI, and the one tool that models the memory model rather than the
-/// hardware is telling us an edge is missing.
-///
-/// That is the reason to chase this rather than silence it: the evidence that it
-/// is benign comes entirely from a platform that cannot exhibit the failure.
-///
-/// Not yet established, and deliberately not asserted here: whether this is
-/// harmful. The test's own `v[0] == v[3]` torn-read check passes on every run,
-/// so if two producers do overlap the window is small enough not to tear a
-/// 32-byte payload in practice. That is evidence, not a proof, and "we did not
-/// observe it" is not the same as "it cannot happen" — the whole point of
-/// softmata-brain 1327 is that this class of defect is silent.
-///
-/// UPDATE — the skip landed, and the evidence now says it was right.
-///
-/// An earlier version of this note argued against adding the test to the TSan
-/// skip list in `.github/workflows/safety.yml`. It was added anyway (#89), and
-/// classifying the warnings from a real CI run shows that call was correct and
-/// this note was arguing from too little data. The run reported seven races,
-/// which sort into two shapes:
-///
-///   6 of 7   `send_shm_mp_pod` write  vs  `recv_shm_mpsc_pod` read
-///   1 of 7   `send_shm_mp_pod` write  vs  `send_shm_mp_pod` write
-///
-/// The six are the lossy contract, exactly as #89 says: this test sends through
-/// `Topic::send`, which is `send_lossy`, and a full ring overwrites the oldest
-/// unconsumed slot on purpose. The reader's stamp re-validation is what discards
-/// the torn result, and TSan cannot see that downstream check.
-///
-/// The seventh is a shape #89's rationale does not name — two PRODUCERS writing
-/// one address. It is not a double-claim (the CAS gives each a distinct
-/// sequence); it is two live sequences a lap apart landing on the same slot
-/// index, with no backpressure in `send_lossy` to stop the second. So it is the
-/// same contract, reached a different way, and it is still a formally
-/// unsynchronised write-write pair.
-///
-/// What does NOT change: everything above about ARM. Skipping the test removes
-/// the only signal in CI that this code has an unordered access at all, on a
-/// protocol that has still never executed on a weakly-ordered machine. That gap
-/// is now carried by `loom_migration_data_plane`, which models the migration
-/// resync under a memory model that DOES include weak ordering — the evidence
-/// x86 TSO structurally cannot provide. Its own limits are documented there: it
-/// models a single consumer, so the broadcast backend, where several consumers
-/// hold independent positions and the shared tail trails the slowest, is still
-/// unmodelled.
+// # OPEN: this test trips ThreadSanitizer, and the finding looks real
+//
+// Under `-Zsanitizer=thread` this reports two data races: two PRODUCER threads
+// writing the same slot address, with the other side of each race also a
+// producer rather than the consumer. Reproduced locally with CI's exact
+// invocation and seen on CI (job "ThreadSanitizer - Data Race Detection").
+//
+// It is NOT generic multi-producer behaviour, which was the obvious guess.
+// Measured on the same toolchain and flags:
+//
+//   * `mp_send_no_overshoot_corruption` — three producers, one consumer, a
+//     contended ring, NO grow: zero TSan warnings.
+//   * `topic_cross_thread_multi_p_multi_c_mpmc` — likewise zero.
+//   * this test, whose only additional ingredient is a concurrent mapping
+//     replacement: two warnings, repeatably.
+//
+// So the missing happens-before edge is on the MIGRATION path, not on the
+// ordinary claim protocol.
+//
+// One more ablation places it exactly. Reverting ONLY the retained-mapping fix
+// in `horus_sys::shm::linux::grow_unchecked` — back to `self.mmap = new_mmap`,
+// which unmaps the old view — makes this test die under TSan with
+// `SEGV on unknown address ... in __tsan_atomic8_load`, and report zero data
+// races. That is the use-after-munmap the fix exists for, independently
+// confirmed by a second tool, and it crashes before any race can be observed.
+//
+// So the retention fix did not INTRODUCE this race. It removed a crash and left
+// the unordered access that was underneath it: two producers reaching the same
+// slot across a remap were never ordered against each other, and previously the
+// process died on a dangling pointer before that could matter. The fix is
+// necessary and not sufficient — it makes the remap survivable, not ordered.
+//
+// Ordinarily slot reuse is ordered: a producer only
+// claims `seq` once it has observed `header.tail > seq - capacity` with an
+// Acquire load, which pairs with the consumer's Release store of `tail` after
+// it read the previous occupant. `handle_epoch_change` resynchronises
+// `local_head`/`local_tail` from the header, and that path appears to let a
+// producer reach a slot without the load that would have ordered it against
+// whoever wrote it last. The specific suspect is `resynced_tail`, which returns
+// `local_tail.max(shared_tail).min(new_head)`: when the producer's OWN cached
+// `local_tail` wins that max, the value it then reuses slots against did not
+// come from the Acquire load of the current header — it came from the
+// producer's own pre-migration history. That is still sound on paper, because a
+// producer's `local_tail` only ever originates in an Acquire load of
+// `header.tail`, which is exactly why reading the code does not settle this.
+//
+// # Why this is not "TSan being pedantic", even though nothing corrupts here
+//
+// No overshoot is constructible from it. A producer's `local_tail` only ever
+// originates in an Acquire load of `header.tail`, so even when the max in
+// `resynced_tail` keeps a stale value it stays <= the true consumed count, and
+// the claim gate stays conservative. The torn-read check below passes on every
+// run. On this machine the protocol behaves.
+//
+// This machine is x86_64, and x86 is TSO: it will not reorder the stores and
+// loads that a missing acquire/release edge leaves unconstrained. A formally
+// unordered pair that is harmless under TSO is exactly the shape that DOES
+// reorder on a weakly-ordered target — and this is robotics middleware, so the
+// deployment target is aarch64: Jetson, Pi, and every ARM SBC in a robot.
+//
+// Nothing in CI executes this code on ARM. `aarch64-unknown-linux-gnu` is
+// cross-compiled and its smoke test is explicitly skipped ("the runner is
+// x86_64 and qemu setup is overkill"), and the macOS ARM64 parity job runs
+// `-p horus_sys` only. So the ring protocol has never run on a weakly-ordered
+// machine in CI, and the one tool that models the memory model rather than the
+// hardware is telling us an edge is missing.
+//
+// That is the reason to chase this rather than silence it: the evidence that it
+// is benign comes entirely from a platform that cannot exhibit the failure.
+//
+// Not yet established, and deliberately not asserted here: whether this is
+// harmful. The test's own `v[0] == v[3]` torn-read check passes on every run,
+// so if two producers do overlap the window is small enough not to tear a
+// 32-byte payload in practice. That is evidence, not a proof, and "we did not
+// observe it" is not the same as "it cannot happen" — the whole point of
+// softmata-brain 1327 is that this class of defect is silent.
+//
+// UPDATE — the skip landed, and the evidence now says it was right.
+//
+// An earlier version of this note argued against adding the test to the TSan
+// skip list in `.github/workflows/safety.yml`. It was added anyway (#89), and
+// classifying the warnings from a real CI run shows that call was correct and
+// this note was arguing from too little data. The run reported seven races,
+// which sort into two shapes:
+//
+//   6 of 7   `send_shm_mp_pod` write  vs  `recv_shm_mpsc_pod` read
+//   1 of 7   `send_shm_mp_pod` write  vs  `send_shm_mp_pod` write
+//
+// The six are the lossy contract, exactly as #89 says: this test sends through
+// `Topic::send`, which is `send_lossy`, and a full ring overwrites the oldest
+// unconsumed slot on purpose. The reader's stamp re-validation is what discards
+// the torn result, and TSan cannot see that downstream check.
+//
+// The seventh is a shape #89's rationale does not name — two PRODUCERS writing
+// one address. It is not a double-claim (the CAS gives each a distinct
+// sequence); it is two live sequences a lap apart landing on the same slot
+// index, with no backpressure in `send_lossy` to stop the second. So it is the
+// same contract, reached a different way, and it is still a formally
+// unsynchronised write-write pair.
+//
+// What does NOT change: everything above about ARM. Skipping the test removes
+// the only signal in CI that this code has an unordered access at all, on a
+// protocol that has still never executed on a weakly-ordered machine.
+//
+// `loom_migration_data_plane` narrows that gap without closing it, and the
+// distinction is worth stating precisely because an earlier draft of this note
+// claimed the gap was "now carried by" it, which its own module doc directly
+// contradicts. What it adds: the migration RESYNC — a producer gating on a
+// cached tail that a migration rewrites — explored under a memory model that
+// does include weak ordering, which is the evidence x86 TSO structurally
+// cannot provide. What it still does not model, by its own account: the
+// mapping swap itself, growth, and multiple consumers with independent
+// positions (the broadcast backend, where the shared tail trails the slowest
+// consumer and the `max` in `resynced_tail` earns its keep). The mapping swap
+// and growth are precisely what the skipped test exercises, so the TSan
+// finding stays open rather than dismissed.
 fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
     // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
     // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
