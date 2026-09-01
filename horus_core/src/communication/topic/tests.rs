@@ -7259,7 +7259,15 @@ fn mp_send_no_overshoot_corruption() {
         }
     }
     stop.store(true, Ordering::Release);
-    let sent: u64 = handles.into_iter().map(|h| h.join().unwrap_or(0)).sum();
+    // `expect`, not `unwrap_or(0)`: a producer that panicked would otherwise be
+    // recorded as having sent nothing, which lowers `sent` to match whatever the
+    // consumer drained and turns a thread that died into a passing run — or into
+    // a "message loss" verdict pointing at the transport. A panicked producer is
+    // its own fault and has to say so.
+    let sent: u64 = handles
+        .into_iter()
+        .map(|h| h.join().expect("a producer thread panicked"))
+        .sum();
 
     // Drain what is still in the ring now that the producers have stopped.
     //
@@ -7327,7 +7335,11 @@ fn mp_send_no_overshoot_corruption() {
          was intact (no GARBAGE) and no slot was re-used (no DUPLICATE), and an \
          abandoned claim would have been counted in `missed` — so this is a lost \
          message: overshoot overwrote an unconsumed slot.",
-        sent - count - missed
+        // Signed: the assertion also fires when `count + missed` EXCEEDS `sent`,
+        // and an unsigned subtraction would then panic while formatting the
+        // message — in debug by overflow, in release by printing a number near
+        // u64::MAX. Either way the real failure is replaced by a worse one.
+        sent as i128 - count as i128 - missed as i128
     );
 
     // Anti-vacuity: the corruption checks above only mean something if a
