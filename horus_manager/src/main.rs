@@ -1038,6 +1038,15 @@ enum Commands {
         #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
 
+        /// Write a systemd unit for this deploy to stdout, and exit
+        ///
+        /// Nothing a deploy starts survives a reboot: `--run` runs the project
+        /// over the ssh session, so it stops when that session does. This emits
+        /// a unit that does survive one. It is printed, not installed — where
+        /// it goes, and whether it needs lingering, is the robot owner's call.
+        #[arg(long = "print-service")]
+        print_service: bool,
+
         /// List configured deployment targets
         #[arg(long = "list")]
         list: bool,
@@ -2716,7 +2725,36 @@ fn run_command(command: Commands) -> HorusResult<()> {
                         if !report.is_empty() {
                             print!("{}", report);
                         }
-                        Ok(())
+
+                        // Parseable is not the same as accurate. `--check` used
+                        // to stop at "it is valid TOML", so a lockfile naming
+                        // versions nobody had installed passed the gate the
+                        // docs told people to put in CI — which is the whole
+                        // reason the pins could sit unenforced without anyone
+                        // noticing.
+                        let installed =
+                            horus_manager::lockfile::installed_packages(std::path::Path::new("."));
+                        let drift = lf.drift(&installed);
+                        if drift.is_empty() {
+                            println!(
+                                "{} horus.lock matches the installed packages",
+                                "[ok]".green()
+                            );
+                            return Ok(());
+                        }
+                        println!();
+                        println!("{} horus.lock does not describe this tree:", "[x]".red());
+                        for item in &drift {
+                            println!("  - {}", item);
+                        }
+                        println!();
+                        println!(
+                            "  Run `horus lock` to re-resolve, or install what the file pins."
+                        );
+                        Err(HorusError::Config(ConfigError::Other(format!(
+                            "{} package(s) drifted from horus.lock",
+                            drift.len()
+                        ))))
                     }
                     Err(e) => {
                         println!("{} Failed to parse horus.lock: {}", "[x]".red(), e);
@@ -2737,6 +2775,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     python: horus_manager::registry::helpers::get_python_version(),
                     cmake: None,
                 });
+
+                // Record the packages too. `horus lock` pinned the toolchain
+                // and nothing else, so the command the docs present as "pin
+                // every dependency version into horus.lock" wrote a file with
+                // no `[[package]]` entries at all. This is the one path that
+                // is allowed to move an existing pin: asking for it is what
+                // re-resolving means.
+                for pkg in horus_manager::lockfile::installed_packages(std::path::Path::new(".")) {
+                    lockfile.pin(&pkg.name, &pkg.version, &pkg.source, pkg.checksum);
+                }
 
                 lockfile
                     .save_to(lock_path)
@@ -3279,6 +3327,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             port,
             identity,
             dry_run,
+            print_service,
             list,
         } => {
             if list {
@@ -3295,6 +3344,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     port,
                     identity,
                     dry_run,
+                    print_service,
                 })
             }
         }
