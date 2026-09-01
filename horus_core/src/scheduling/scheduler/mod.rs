@@ -201,10 +201,46 @@ pub(crate) struct RtState {
 }
 
 /// Tick-loop timing state.
+/// One step of the tick cadence grid: how long to sleep, where the next grid
+/// point is, and whether this tick overran its whole period.
+///
+/// Split out as a pure function of (deadline, now, period) so the arithmetic can
+/// be tested without racing a real clock -- the behaviour it encodes is a timing
+/// property, and a test that measured it by sleeping would be exactly the kind
+/// of load-sensitive test this repo already loses to CPU starvation.
+///
+/// Returns `(sleep, next_deadline, overran)`.
+pub(crate) fn tick_grid_step(
+    deadline: Instant,
+    now: Instant,
+    period: Duration,
+) -> (Duration, Instant, bool) {
+    let sleep = deadline.saturating_duration_since(now);
+    let next = deadline + period;
+    if next <= now {
+        // A whole period (or more) was consumed by the work. Re-anchor instead
+        // of returning a next_deadline already in the past, which would fire a
+        // run of zero-length catch-up ticks.
+        (sleep, now + period, true)
+    } else {
+        (sleep, next, false)
+    }
+}
+
 pub(crate) struct TickState {
     pub period: Duration,
     pub current: u64,
     pub last_instant: Instant,
+    /// The instant the CURRENT tick is supposed to end.
+    ///
+    /// The loop sleeps until this and then advances it by exactly one period,
+    /// rather than sleeping a whole period after the work. See
+    /// `compute_tick_sleep` for why that distinction is the difference between
+    /// a 100 Hz scheduler and a 77 Hz one.
+    pub next_deadline: Instant,
+    /// Ticks whose work overran the whole period, so the grid had to be
+    /// re-anchored. Non-zero means the configured rate is not being achieved.
+    pub overruns: u64,
 }
 
 /// Monitoring features: safety, blackbox flight recorder, telemetry, profiling.
@@ -521,6 +557,8 @@ impl Scheduler {
                 period,
                 current: 0,
                 last_instant: now,
+                next_deadline: now,
+                overruns: 0,
             },
             clock: Arc::new(crate::core::clock::WallClock::new()),
             dependency_graph: None,
@@ -2281,11 +2319,6 @@ impl Scheduler {
                         ));
                     }
                 }
-                // Advance SimClock in deterministic mode
-                if self.pending_config.timing.deterministic_order {
-                    let dt = self.tick.period;
-                    self.clock.advance(dt);
-                }
             }
         } else {
             // No graph — sequential by priority
@@ -2298,6 +2331,25 @@ impl Scheduler {
                     ));
                 }
             }
+        }
+
+        // Advance SimClock once per TICK, on both paths.
+        //
+        // This used to sit inside the `for step in &steps` loop, so simulated
+        // time ran forward by one period per dependency-graph *step*: a graph
+        // with three steps advanced the clock three periods every tick, and a
+        // node reading `horus::now()` saw time moving at 3x rate. The no-graph
+        // fallback below never advanced it at all, so the same program's clock
+        // stopped entirely the moment its dependency graph went away. A policy
+        // trained against one of those timebases and deployed against the other
+        // is reading a different robot.
+        //
+        // The step loop is the wrong place structurally as well as numerically:
+        // steps are a parallelism/ordering decomposition of a single tick, not
+        // a sequence of instants.
+        if self.pending_config.timing.deterministic_order {
+            let dt = self.tick.period;
+            self.clock.advance(dt);
         }
 
         if !self.first_tick_done {
@@ -2924,6 +2976,11 @@ impl Scheduler {
                     ));
                 }
             }
+
+            // Anchor the cadence grid before the first tick, so the first
+            // sleep is measured from here rather than from a stale construction
+            // -time instant.
+            self.tick.next_deadline = Instant::now() + self.tick.period;
 
             // Main tick loop
             while self.is_running() {
@@ -3582,9 +3639,28 @@ impl Scheduler {
         }
     }
 
-    /// Compute the tick sleep duration.
-    fn compute_tick_sleep(&self) -> Option<Duration> {
-        let sleep_duration = if let Some(ref replay) = self.replay {
+    /// Sleep until the end of the current tick, on a phase-locked grid.
+    ///
+    /// This used to return the full period unconditionally, and the caller
+    /// sleeps AFTER running every node. So the realised cycle was
+    /// `work + period`, not `period`: a scheduler configured for 100 Hz whose
+    /// nodes took 3 ms ran at 1/(10 ms + 3 ms) = 77 Hz, and nothing said so.
+    /// Every rate in the system was a ceiling the scheduler quietly missed by
+    /// however long the work happened to take -- which is load-dependent, so
+    /// the error moved around as the robot did.
+    ///
+    /// Now the deadline is absolute and advances by exactly one period per
+    /// tick, which is what the RT executor already does. Subtracting the
+    /// elapsed work from the sleep would fix the gross error but still let the
+    /// sleep's own overshoot accumulate tick over tick; anchoring to a grid
+    /// absorbs it.
+    ///
+    /// On an overrun -- work that took a whole period or more -- the grid is
+    /// re-anchored to now rather than firing a burst of zero-length catch-up
+    /// ticks. A robot wants the next command on the grid, not five of them back
+    /// to back into an actuator.
+    fn compute_tick_sleep(&mut self) -> Option<Duration> {
+        let period = if let Some(ref replay) = self.replay {
             if replay.speed != 1.0 {
                 Duration::from_nanos((self.tick.period.as_nanos() as f64 / replay.speed) as u64)
             } else {
@@ -3594,7 +3670,23 @@ impl Scheduler {
             self.tick.period
         };
 
-        Some(sleep_duration)
+        let (sleep, next, overran) = tick_grid_step(self.tick.next_deadline, Instant::now(), period);
+        if overran {
+            self.tick.overruns += 1;
+        }
+        self.tick.next_deadline = next;
+
+        Some(sleep)
+    }
+
+    /// Ticks whose work overran the whole configured period.
+    ///
+    /// Non-zero means the scheduler is not achieving its configured rate. This
+    /// is the number a control loop needs and had no way to obtain: before the
+    /// cadence fix an overrun was indistinguishable from a normal tick, because
+    /// the loop simply slept a full period afterwards either way.
+    pub fn tick_overruns(&self) -> u64 {
+        self.tick.overruns
     }
 
     /// Increment tick counter.
@@ -5192,7 +5284,7 @@ impl Scheduler {
     ///
     /// Execution strategy depends on mode:
     ///   - Default: ready-dispatch (parallel, per-node dependency tracking)
-    ///   - Deterministic: sequential within steps, SimClock advances between steps
+    ///   - Deterministic: sequential within steps; SimClock advances once per TICK
     ///   - No graph: sequential by .order() priority (fallback)
     async fn execute_nodes(&mut self, node_filter: Option<&[&str]>) {
         // Phase 2: rebuild graph once after first tick if topology changed.
@@ -5208,7 +5300,23 @@ impl Scheduler {
 
         if let Some(ref graph) = self.dependency_graph {
             if self.pending_config.timing.deterministic_order {
-                // Deterministic mode: sequential within steps, SimClock between steps
+                // Deterministic mode: sequential within steps.
+                //
+                // The SimClock advance used to sit INSIDE this loop, one per
+                // dependency-graph step. Steps are a parallelism decomposition
+                // of a single tick, not a sequence of instants, so that ran
+                // simulated time forward by `steps * period` every tick.
+                //
+                // `should_stop_loop` bounds a deterministic `run_for` by this
+                // same clock and states the intended invariant in as many words
+                // -- "a SimClock that advances by exactly one tick period per
+                // tick" -- so the two disagreed: a 500 ms run at 100 Hz gave 25
+                // ticks for a two-node chain and 13 for a four-node chain
+                // instead of 50 for both. Adding a stage to the end of a
+                // pipeline silently cut the length of every fixed-duration run,
+                // and `horus::now()` ran fast by the depth of the graph.
+                //
+                // Advanced once per tick below, after the steps, on every path.
                 let steps: Vec<Vec<usize>> = graph.steps().to_vec();
                 for step in &steps {
                     for &node_idx in step {
@@ -5216,9 +5324,9 @@ impl Scheduler {
                             return;
                         }
                     }
-                    let dt = self.tick.period;
-                    self.clock.advance(dt);
                 }
+                let dt = self.tick.period;
+                self.clock.advance(dt);
             } else if self.nodes.len() > 1 {
                 // Ready-dispatch mode: parallel execution driven by dependency graph.
                 // Nodes run as soon as all their predecessors complete.
@@ -5499,3 +5607,89 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tick_cadence_tests {
+    use super::tick_grid_step;
+    use std::time::{Duration, Instant};
+
+    const PERIOD: Duration = Duration::from_millis(10);
+
+    /// The bug this pins: the loop slept a FULL period after running every
+    /// node, so the realised cycle was `work + period`. At 100 Hz with 8 ms of
+    /// work that is 55 Hz, and nothing anywhere reported it.
+    ///
+    /// On the grid, a tick that consumed 8 ms of its 10 ms sleeps the
+    /// REMAINING 2 ms. The old code slept 10.
+    #[test]
+    fn work_is_subtracted_from_the_sleep_not_added_to_the_period() {
+        let now = Instant::now();
+        // 8ms of a 10ms period already spent → the deadline is 2ms out.
+        let deadline = now + Duration::from_millis(2);
+
+        let (sleep, _next, overran) = tick_grid_step(deadline, now, PERIOD);
+
+        assert_eq!(
+            sleep,
+            Duration::from_millis(2),
+            "the sleep must cover only the REMAINDER of the period; sleeping a \
+             full {PERIOD:?} here is what turned a 100 Hz loop into a 55 Hz one"
+        );
+        assert!(!overran, "8ms of a 10ms period is not an overrun");
+    }
+
+    /// The grid advances from the DEADLINE, not from `now`. This is what stops
+    /// the sleep's own overshoot accumulating: waking 300us late must not push
+    /// every subsequent tick 300us later.
+    #[test]
+    fn the_next_deadline_is_one_period_from_the_last_one_not_from_now() {
+        let now = Instant::now();
+        let deadline = now - Duration::from_micros(300); // woke 300us late
+        let (_sleep, next, overran) = tick_grid_step(deadline, now, PERIOD);
+
+        assert_eq!(
+            next,
+            deadline + PERIOD,
+            "advancing from `now` would bake the 300us lateness into every \
+             future tick; advancing from the deadline absorbs it"
+        );
+        assert!(!overran, "300us late on a 10ms period is not a full overrun");
+        assert_eq!(
+            next.saturating_duration_since(now),
+            PERIOD - Duration::from_micros(300),
+            "the next sleep is correspondingly shorter, which is how the phase \
+             is recovered"
+        );
+    }
+
+    /// A tick that ate a whole period re-anchors rather than handing back a
+    /// deadline already in the past — which would fire a burst of zero-length
+    /// catch-up ticks straight into whatever the nodes drive.
+    #[test]
+    fn a_full_overrun_re_anchors_instead_of_bursting() {
+        let now = Instant::now();
+        let deadline = now - Duration::from_millis(25); // 25ms late on a 10ms period
+
+        let (sleep, next, overran) = tick_grid_step(deadline, now, PERIOD);
+
+        assert_eq!(sleep, Duration::ZERO, "already past the deadline");
+        assert!(overran, "25ms late on a 10ms period must be counted as an overrun");
+        assert_eq!(
+            next,
+            now + PERIOD,
+            "re-anchored to now; `deadline + period` would still be 15ms in the \
+             past and the next three ticks would run back to back"
+        );
+    }
+
+    /// Exactly on the deadline is the boundary case and is NOT an overrun:
+    /// `next` lands a full period in the future, so there is nothing to catch up.
+    #[test]
+    fn landing_exactly_on_the_deadline_is_not_an_overrun() {
+        let now = Instant::now();
+        let (sleep, next, overran) = tick_grid_step(now, now, PERIOD);
+        assert_eq!(sleep, Duration::ZERO);
+        assert!(!overran);
+        assert_eq!(next, now + PERIOD);
+    }
+}
