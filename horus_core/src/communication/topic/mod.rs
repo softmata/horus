@@ -3356,12 +3356,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         match self.mode() {
             // Ring-full is a real Err on these: the mp/sp send paths compare the
             // claimed sequence against `header.tail` and refuse.
-            BackendMode::SpscShm
-            | BackendMode::MpscShm
-            | BackendMode::SpmcShm
-            | BackendMode::Unknown => true,
+            BackendMode::SpscShm | BackendMode::MpscShm | BackendMode::SpmcShm => true,
             // Broadcast: overwrite-oldest by construction, no full condition.
             BackendMode::PodShm | BackendMode::FanoutShm => false,
+            // Fail closed. `Unknown` means the backend has not been resolved
+            // yet, which is the state EVERY topic is in until its first
+            // send/recv — including at the "assert this at startup" moment the
+            // doc comment above recommends. Answering `true` there made the
+            // assertion pass on a topic that was about to resolve to PodShm and
+            // silently drop, so the check a caller writes to catch a lossy
+            // e-stop channel could not catch one. An unresolved backend is not
+            // a promise of backpressure.
+            BackendMode::Unknown => false,
         }
     }
 

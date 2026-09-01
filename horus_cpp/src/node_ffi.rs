@@ -81,6 +81,14 @@ impl Node for CppNode {
     }
 
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
+        // Clear the failure latch: `init()` is what `FailurePolicy::Restart`
+        // calls to bring a node back. Now that `tick()` panics while `failed`
+        // is set, leaving it latched meant a restarted C++ node re-panicked on
+        // its very next tick and escalated straight to `FatalAfterRestarts`,
+        // stopping the scheduler — so the policy could never actually restart
+        // one. `fail_count` is deliberately kept: it is the node's cumulative
+        // record, and the restart budget is counted by the policy, not here.
+        self.failed = false;
         if let Some(ref mut init_fn) = self.init_fn {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (init_fn)();
