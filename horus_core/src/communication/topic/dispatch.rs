@@ -5,12 +5,60 @@
 //! operation, and amortized housekeeping. `try_send()` / `try_recv()` are
 //! just single indirect calls: `unsafe { (*self.send_fn.get())(self, msg) }`.
 //!
-//! This eliminates ~7ns of per-message overhead vs. the previous design where
-//! try_send/try_recv had pre/post-dispatch logic (role check, epoch check,
-//! msg_counter, lease refresh).
+//! The design moved the role check, epoch check, `msg_counter` and lease refresh
+//! out of `try_send`/`try_recv` and into these functions. The header used to
+//! claim that was worth ~7ns per message; re-measured on the harness described
+//! below, that work costs nothing measurable wherever it sits — ablating ALL of
+//! it changes the one-way figure by less than the noise. Keep the shape for the
+//! reason it is actually good (one complete path per backend, no pre/post logic
+//! to keep in sync), not for a saving that is not there.
 //!
 //! Every topic is SHM-backed, so all dispatch functions operate on the shared
 //! memory data region (or, for `FanoutShm`, a separate SHM-backed SPSC matrix).
+//!
+//! # Where the remaining time goes, measured
+//!
+//! Cross-thread one-way for `Topic<CmdVel>` (16 B POD) is ~105-118ns against a
+//! same-harness raw ring at ~55ns — `topic_probe` and `topic_probe --raw-ring`,
+//! which share threads, pinning, clock and ack protocol so the transport is the
+//! only variable.
+//!
+//! That ~55ns gap is NOT removable software work. Each of these was ablated
+//! individually on an idle machine, interleaved against the unmodified binary,
+//! with a harness that resolves a deliberate +25ns injection against a +/-1ns
+//! baseline:
+//!
+//! | ablated                                        | effect        |
+//! |------------------------------------------------|---------------|
+//! | `is_verbose()` on every send and recv            | none          |
+//! | the per-recv migration epoch check               | none          |
+//! | `messages_total` locked RMW                      | none (paced)  |
+//! | MP-claim CAS -> plain single-producer store      | ~2ns          |
+//! | ALL housekeeping + both epoch guards             | none          |
+//! | fn-pointer dispatch -> devirtualised direct call | none          |
+//! | the consumer's head gate                         | 2-4ns WORSE   |
+//!
+//! The head gate row is the informative one: removing it makes the consumer spin
+//! on the payload line and steal it from the producer, so the gate is protective
+//! rather than overhead. Removing the header line from BOTH sides at once (plain
+//! claim on the producer, no gate on the consumer) buys ~3ns and raises cache
+//! misses.
+//!
+//! `perf stat` says where the time actually is. Per message: this path takes
+//! ~1.00 cache-misses against the raw ring's ~0.66. The extra ~0.34 is coherence
+//! traffic, and `perf c2c` names the line — every HITM sample is offset 0 of the
+//! header's producer line, `sequence_or_head`, with `send_shm_mp_pod` storing and
+//! `recv_shm_mpsc_pod` loading. True sharing, not false: no other offset in that
+//! line is touched, so there is nothing to pad apart.
+//!
+//! So the budget is spent on being a general transport — a multi-producer-safe
+//! claim and a migration-aware header that both sides consult — rather than on
+//! any one line of code. Someone trying to close it should be changing the
+//! PROTOCOL, not deleting work from these functions; the work is already free.
+//! And they should check first whether it is worth it: 55ns is 0.005% of a 1 kHz
+//! control period, and the worst case that actually bounds a control loop is the
+//! OS, not this path (a bare 40-line ring shows the same 25-42us maxima on a
+//! stock PREEMPT_DYNAMIC kernel).
 //!
 //! ## Send Functions
 //!

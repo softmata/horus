@@ -29,8 +29,18 @@ jobs:
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
+      # github-actions is excluded deliberately. A patch bump there changes the
+      # code that EXECUTES inside CI, and main requires no pull-request review
+      # (required_pull_request_reviews is null), so an auto-merged action bump
+      # would land unread and then run with repository credentials. A compromised
+      # action publishing a patch release is a well-known supply-chain path, and
+      # it is the one ecosystem here where "patch" does not mean "smaller blast
+      # radius". Every other ecosystem still auto-merges patches as before; these
+      # PRs simply wait for a human to look, which is a handful per month.
       - name: Auto-Merge Patch Updates
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' &&
+          steps.metadata.outputs.package-ecosystem != 'github-actions'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
