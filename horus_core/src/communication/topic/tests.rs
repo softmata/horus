@@ -7095,13 +7095,38 @@ fn broadcast_subscriber_join_midstream() {
     let sub1: Topic<u64> = Topic::new(&name).expect("sub1");
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // sub2 becomes an addressable broadcast endpoint on its FIRST recv, not when
+    // its handle is created: `send_serde` fans out only to slots active at send
+    // time and there is no backfill, so anything published before that first
+    // recv is lost to it permanently (988c5cf8 root-caused exactly this).
+    //
+    // The test therefore has to make sub2's claim happen-before the sends it
+    // asserts on. Without this gate it depended on sub2's thread being scheduled
+    // while the producer was still running, and on a loaded runner the producer
+    // can finish all 100 sends first -- which is how CI saw "sub2 received
+    // nothing" while 30 consecutive local runs passed.
+    let sub2_claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let prod = {
         let p = producer.clone();
         let stop = stop.clone();
+        let sub2_claimed = sub2_claimed.clone();
         test_spawn(move || {
-            for v in 1..=n {
+            let half = n / 2;
+            for v in 1..=half {
                 p.send(v);
                 std::thread::yield_now(); // pace so subscribers keep up
+            }
+            // Wait for sub2 to claim its endpoint before publishing the suffix it
+            // is asserted to receive. Bounded so a claim that never happens fails
+            // the assertion below rather than hanging the suite.
+            let deadline = Instant::now() + 10_u64.secs();
+            while !sub2_claimed.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            for v in (half + 1)..=n {
+                p.send(v);
+                std::thread::yield_now();
             }
             stop.store(true, Ordering::Release);
         })
@@ -7128,9 +7153,35 @@ fn broadcast_subscriber_join_midstream() {
         })
     };
     let d1 = drain(sub1, stop.clone());
-    // sub2 joins mid-stream.
+    // sub2 joins mid-stream. Its first try_recv is the claim; announce it so the
+    // producer knows the suffix it publishes next is addressable to sub2.
     let sub2: Topic<u64> = Topic::new(&name).expect("sub2");
-    let d2 = drain(sub2, stop.clone());
+    let d2 = {
+        let stop = stop.clone();
+        let sub2_claimed = sub2_claimed.clone();
+        test_spawn(move || {
+            let mut got = Vec::new();
+            if let Some(v) = sub2.try_recv() {
+                got.push(v);
+            }
+            sub2_claimed.store(true, Ordering::Release);
+            loop {
+                match sub2.try_recv() {
+                    Some(v) => got.push(v),
+                    None => {
+                        if stop.load(Ordering::Acquire) {
+                            while let Some(v) = sub2.try_recv() {
+                                got.push(v);
+                            }
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            got
+        })
+    };
 
     prod.join().unwrap();
     let g1 = d1.join().unwrap();
@@ -7162,7 +7213,10 @@ fn broadcast_subscriber_join_midstream() {
     // sub2 joined late → a non-empty in-order suffix (broadcast delivers to it too).
     assert!(
         !g2.is_empty(),
-        "sub2 (late broadcast subscriber) received nothing"
+        "sub2 (late broadcast subscriber) received nothing even though the producer \
+         waited for its endpoint claim before publishing the second half. Messages \
+         published BEFORE that claim are legitimately lost -- there is no backfill -- \
+         but the suffix after it must arrive."
     );
 }
 
