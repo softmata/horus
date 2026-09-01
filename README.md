@@ -53,7 +53,7 @@ HORUS is a real-time distributed middleware that replaces DDS with shared-memory
 
 |             | **HORUS**                                     | **ROS2**                                    |
 |-------------|-----------------------------------------------|---------------------------------------------|
-| IPC latency | **3–304 ns median** (topology-dependent)      | 50–500 µs (DDS)                             |
+| IPC latency | **171 ns** one-way, cross-process (`cross_process_benchmark`) | ~5 µs (REP 2014)                            |
 | Scheduling  | Deterministic, 5 execution classes            | Best-effort callbacks                       |
 | RT support  | Built-in (budget, deadline, watchdog)         | Manual DDS QoS                              |
 | Safety      | Graduated watchdog, safe-state hook, BlackBox | Application-level                           |

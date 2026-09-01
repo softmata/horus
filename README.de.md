@@ -38,7 +38,7 @@ HORUS ersetzt DDS durch Shared-Memory-Ringpuffer und lockfreie Synchronisierung.
 
 | Fähigkeit | HORUS |
 |-----------|-------|
-| IPC-Latenz | Median **3–304 ns**, abhängig von Topologie und Konkurrenz |
+| IPC-Latenz | **171 ns** Einweg, prozessübergreifend (`cross_process_benchmark`) |
 | Scheduling | Deterministisch mit fünf Ausführungsklassen |
 | Echtzeit | Budgets, Deadlines, CPU-Affinität und Watchdog integriert |
 | Sicherheit | Abgestufter Watchdog, sicherer Zustand und BlackBox-Rekorder |

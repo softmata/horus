@@ -167,17 +167,37 @@ jobs:
           # here keeps the gate honest about the rest of the suite; the Windows
           # fan-out gap needs its own investigation and is NOT fixed by this.
           #
-          # mp_send_no_overshoot_corruption is skipped as more evidence of that
-          # same gap, not as a flake. Six producers into a 16-slot ring: Windows
-          # drains 1792 of 1800 and the last eight never arrive. The budget is
-          # not the constraint -- it fails identically at 30s, which is enormous
-          # for 1800 messages -- and neither GARBAGE nor DUPLICATE fires, so
-          # nothing that did arrive was torn or aliased. Messages simply never
-          # become visible, which is the signature the line above describes. It
-          # does not reproduce on Linux: 10/10 pinned to a single core, where
-          # preemption is far worse than on any two-vCPU runner. Skipping it
-          # does not fix the gap and is not meant to; it stops one job from
-          # reporting a known platform defect as if this PR caused it.
+          # mp_send_no_overshoot_corruption: OPEN WINDOWS DATA-LOSS DEFECT.
+          # Skipped to keep the gate usable, with the diagnosis recorded here so
+          # it is not re-derived from scratch. It is NOT a flake and NOT the
+          # fan-out gap above -- 988c5cf8 root-caused that one to a lazy-endpoint
+          # warm-up race, fixed it, and recorded "The data plane was never at
+          # fault", weeks before this failure.
+          #
+          # MEASURED on windows-latest, with the test instrumented to count
+          # successful sends:
+          #
+          #     consumer drained 1798/1800, producers published 1800/1800
+          #
+          # Every message was published -- try_send returned Ok 1800 times -- and
+          # two never arrived. GARBAGE and DUPLICATE did not fire, so nothing
+          # torn or aliased was delivered. That is transport loss on the
+          # multi-producer claim path: a slot overwritten before the in-order
+          # consumer reached it, on try_send, which is the API that is supposed
+          # to refuse rather than overwrite.
+          #
+          # RULED OUT:
+          #   - drain budget: fails identically at 30s, enormous for 1800 msgs
+          #   - producers giving up: published == 1800, so none abandoned
+          #   - Linux preemption: 10/10 pinned to one core (release), and 25/25
+          #     pinned to two cores built --no-default-features, which is this
+          #     job's exact configuration. It does not reproduce off Windows.
+          #
+          # Cause unknown. Six producers into a 16-slot ring; the CAS claim in
+          # send_shm_mp_pod is designed to make the room check and the claim
+          # atomic, so the loss is somewhere that reasoning does not cover.
+          # Anyone picking this up: un-skip it, the failure message reports
+          # published-vs-received and says which diagnosis each shape supports.
           # ONE line on purpose: this job runs on windows-latest, whose default
           # shell is pwsh, where a trailing `\` is NOT a line continuation --
           # it parses as "Missing expression after unary operator '--'".

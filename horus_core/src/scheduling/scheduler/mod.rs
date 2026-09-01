@@ -716,6 +716,17 @@ impl Scheduler {
     /// Budget enforcement and deadline monitoring are always active for nodes
     /// that have `.rate()` set (no flag needed).
     ///
+    /// # Coverage: real-time nodes only
+    ///
+    /// This registers a watchdog for RT nodes. A node that is not real-time is
+    /// watched only if it carries its own `.watchdog(timeout)`, because a
+    /// best-effort node is allowed to take as long as it likes and firing a
+    /// watchdog at it would be wrong.
+    ///
+    /// So a scheduler with this set and nothing but best-effort nodes has no
+    /// node watchdog at all. The builder warns and names the uncovered nodes
+    /// rather than leaving that to be inferred.
+    ///
     /// # Example
     /// ```rust,ignore
     /// let scheduler = Scheduler::new()
@@ -1447,6 +1458,37 @@ impl Scheduler {
                 } else if registered.node_watchdog.is_some() {
                     // Non-RT node with explicit per-node watchdog
                     monitor.add_critical_node(registered.name.to_string(), node_timeout);
+                }
+            }
+
+            // A scheduler-level `.watchdog()` covers RT nodes only. A non-RT
+            // node is registered above ONLY when it carries its own
+            // `.watchdog()`, so an operator who configures a watchdog on the
+            // scheduler and adds best-effort nodes gets partial coverage and no
+            // diagnostic — the same shape as the sub-millisecond bug this
+            // builder already refuses to fail silently on, where the user asked
+            // for a safety timeout and got none.
+            //
+            // Not widened to cover them: a best-effort node is allowed to take
+            // as long as it likes, and firing a watchdog at it would be wrong.
+            // What is not allowed is leaving the operator to infer the gap.
+            if watchdog_active {
+                let uncovered: Vec<&str> = self
+                    .nodes
+                    .iter()
+                    .filter(|n| !n.is_rt_node && n.node_watchdog.is_none())
+                    .map(|n| n.name.as_ref())
+                    .collect();
+                if !uncovered.is_empty() {
+                    crate::hlog!(
+                        warn,
+                        "watchdog is configured on the scheduler but covers RT nodes only; \
+                         {} node(s) are NOT watched: {}. Give a node its own \
+                         .watchdog(timeout) to cover it, or set an execution class that \
+                         makes it real-time.",
+                        uncovered.len(),
+                        uncovered.join(", ")
+                    );
                 }
             }
 
@@ -3437,6 +3479,38 @@ impl Scheduler {
 
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
+
+                // Drive every node to its safe state before unwinding.
+                //
+                // Halting the tick loop stops new commands being COMPUTED. It
+                // does not change what the hardware was last told: a motor
+                // holds its last setpoint, and the shutdown sequence that
+                // follows calls `shutdown()`, which is a lifecycle hook, not a
+                // safety one. `enter_safe_state()` is the callback whose entire
+                // purpose is putting the actuator somewhere safe, and the
+                // emergency-stop path did not call it -- so "emergency stop"
+                // meant "stop the scheduler", not "stop the robot".
+                //
+                // Nodes the scheduler still owns are safed here. Nodes an
+                // executor took are safed by their owner: `enter_safe_state()`
+                // needs `&mut dyn Node`, which only the owning thread has, so
+                // the main thread can only ask. That request is the same one
+                // the graduated watchdog ladder uses.
+                for registered in self.nodes.iter_mut() {
+                    if !registered.initialized {
+                        continue;
+                    }
+                    if Self::guard_fault_callback(|| registered.node.enter_safe_state()) {
+                        print_line(&format!(
+                            "  WARNING: '{}' panicked in enter_safe_state(); it did NOT reach a safe state",
+                            registered.name
+                        ));
+                    }
+                }
+                if let Some(ref controls) = self.node_controls {
+                    controls.request_safe_state_all();
+                }
+
                 if let Some(ref bb) = self.monitor.blackbox {
                     bb.lock().unwrap_or_else(|p| p.into_inner()).record(
                         super::blackbox::BlackBoxEvent::EmergencyStop {
@@ -4343,17 +4417,6 @@ impl Scheduler {
             self.nodes[i].last_tick = Some(Instant::now());
         }
 
-        // Feed the watchdog for every node registered as critical — RT nodes, AND
-        // non-RT nodes with an explicit `.watchdog()` (which `apply_safety_config`
-        // also registers). Gating this on `is_rt_node` alone left a non-RT watchdog
-        // node registered but never fed, so its watchdog expired and spuriously
-        // emergency-stopped the whole scheduler (SCHED-H2).
-        if self.nodes[i].is_rt_node || self.nodes[i].node_watchdog.is_some() {
-            if let Some(ref monitor) = self.monitor.safety {
-                monitor.feed_watchdog(&self.nodes[i].name);
-            }
-        }
-
         // Begin recording tick
         if let Some(ref mut recorder) = self.nodes[i].recorder {
             recorder.begin_tick(self.tick.current);
@@ -4576,6 +4639,35 @@ impl Scheduler {
         tick_duration: Duration,
         tick_result: std::thread::Result<()>,
     ) -> bool {
+        // Feed the watchdog for every node registered as critical — RT nodes, AND
+        // non-RT nodes with an explicit `.watchdog()` (which `apply_safety_config`
+        // also registers). Gating this on `is_rt_node` alone left a non-RT watchdog
+        // node registered but never fed, so its watchdog expired and spuriously
+        // emergency-stopped the whole scheduler (SCHED-H2).
+        //
+        // This is fed AFTER the tick and only when the tick actually completed.
+        // It used to be fed in `prepare_node_tick`, i.e. BEFORE the node ran,
+        // which made it a liveness check on the SCHEDULER rather than on the
+        // node: the only thing it proved was that the dispatch loop had reached
+        // this index. A node whose `tick()` hung forever never returned here, so
+        // the feed had already happened and its watchdog stayed green for as long
+        // as the process lived — the exact failure a watchdog exists to catch. A
+        // node that panicked was fed just the same, and so was a node whose tick
+        // body had been silently disabled (a failed C++ node ticks as a no-op).
+        //
+        // Reaching this point means `run_node_tick` returned, so the node either
+        // completed or unwound; `tick_result.is_ok()` separates those. Both
+        // dispatch paths funnel here — the sequential one directly, and the
+        // parallel one through the `results_rx` drain — so there is one place
+        // where "this node made progress" is decided.
+        if tick_result.is_ok()
+            && (self.nodes[i].is_rt_node || self.nodes[i].node_watchdog.is_some())
+        {
+            if let Some(ref monitor) = self.monitor.safety {
+                monitor.feed_watchdog(&self.nodes[i].name);
+            }
+        }
+
         // Profiling and monitoring
         {
             let node_name = self.nodes[i].name.as_ref();

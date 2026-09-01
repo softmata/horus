@@ -599,9 +599,33 @@ impl RegisteredNode {
                 true
             }
             FailureAction::RestartNode => {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _ = self.node.init();
-                }));
+                // A restart that could not re-initialise the node is not a
+                // restart. Both the error and the panic used to be dropped on
+                // the floor here (`let _ = ...` twice over), so a node whose
+                // device handle failed to reopen went straight back into the
+                // tick rotation, uninitialised, looking exactly like one that
+                // had recovered. Report it and safe the node instead; the
+                // policy's restart budget still governs whether we try again,
+                // which is why this stays `false` rather than stopping the
+                // scheduler outright.
+                let outcome =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.node.init()));
+                let failure = match outcome {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(e.to_string()),
+                    Err(_) => Some("init() panicked".to_string()),
+                };
+                if let Some(reason) = failure {
+                    crate::terminal::eprint_line(&format!(
+                        "[horus] node '{}' failed to restart: {}. \
+                         Driving it to its safe state; it is NOT running.",
+                        self.node.name(),
+                        reason
+                    ));
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.node.enter_safe_state();
+                    }));
+                }
                 false
             }
             FailureAction::SkipNode | FailureAction::Continue => false,
@@ -851,7 +875,25 @@ impl NodeControlMap {
             .unwrap_or(NodeHealthState::Healthy)
     }
 
-    /// Ask the executor that owns `name` to safe the node on its next pass.
+    /// Request safing for EVERY registered node.
+    ///
+    /// The emergency-stop path needs this: halting the tick loop stops new
+    /// commands being computed, but it does not change what the hardware was
+    /// last told, and the nodes an executor owns cannot be reached from the
+    /// main thread at all. Each executor honours the request from its own
+    /// thread, which is the only place `enter_safe_state()` can legally run.
+    pub fn request_safe_state_all(&self) {
+        for c in self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            c.safe_state_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     pub fn request_safe_state(&self, name: &str) {
         if let Some(c) = self
             .inner

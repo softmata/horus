@@ -7095,15 +7095,59 @@ fn broadcast_subscriber_join_midstream() {
     let sub1: Topic<u64> = Topic::new(&name).expect("sub1");
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // sub2 becomes an addressable broadcast endpoint on its FIRST recv, not when
+    // its handle is created: `send_serde` fans out only to slots active at send
+    // time and there is no backfill, so anything published before that first
+    // recv is lost to it permanently (988c5cf8 root-caused exactly this).
+    //
+    // The test therefore has to make sub2's claim happen-before the sends it
+    // asserts on. Without this gate it depended on sub2's thread being scheduled
+    // while the producer was still running, and on a loaded runner the producer
+    // can finish all 100 sends first -- which is how CI saw "sub2 received
+    // nothing" while 30 consecutive local runs passed.
+    let sub2_claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let prod = {
         let p = producer.clone();
         let stop = stop.clone();
+        let sub2_claimed = sub2_claimed.clone();
         test_spawn(move || {
-            for v in 1..=n {
+            let half = n / 2;
+            for v in 1..=half {
                 p.send(v);
                 std::thread::yield_now(); // pace so subscribers keep up
             }
+            // Wait for sub2 to claim its endpoint before publishing the suffix it
+            // is asserted to receive. Bounded so a claim that never happens fails
+            // the assertion below rather than hanging the suite.
+            let deadline = Instant::now() + 10_u64.secs();
+            while !sub2_claimed.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let claimed = sub2_claimed.load(Ordering::Acquire);
+            if claimed {
+                for v in (half + 1)..=n {
+                    p.send(v);
+                    std::thread::yield_now();
+                }
+            }
+            // Release the drains BEFORE asserting. Both spin on `try_recv` until
+            // `stop` is set, so a panic that skipped this store would leave two
+            // threads busy-waiting for the life of the process -- the test would
+            // report its failure and then quietly eat two cores for the rest of
+            // the suite, on runners this repo already loses tests to starvation
+            // on.
             stop.store(true, Ordering::Release);
+            // Fail here, not thirty lines down. Reaching the receive assertion
+            // after the wait timed out would report "the late subscriber missed
+            // messages" — a claim that never happened is a different fault with
+            // a different fix, and reporting it as message loss sends the next
+            // reader to the transport.
+            assert!(
+                claimed,
+                "sub2 never claimed its endpoint within 10s, so the suffix was \
+                 never published under the condition this test asserts on"
+            );
         })
     };
 
@@ -7128,9 +7172,35 @@ fn broadcast_subscriber_join_midstream() {
         })
     };
     let d1 = drain(sub1, stop.clone());
-    // sub2 joins mid-stream.
+    // sub2 joins mid-stream. Its first try_recv is the claim; announce it so the
+    // producer knows the suffix it publishes next is addressable to sub2.
     let sub2: Topic<u64> = Topic::new(&name).expect("sub2");
-    let d2 = drain(sub2, stop.clone());
+    let d2 = {
+        let stop = stop.clone();
+        let sub2_claimed = sub2_claimed.clone();
+        test_spawn(move || {
+            let mut got = Vec::new();
+            if let Some(v) = sub2.try_recv() {
+                got.push(v);
+            }
+            sub2_claimed.store(true, Ordering::Release);
+            loop {
+                match sub2.try_recv() {
+                    Some(v) => got.push(v),
+                    None => {
+                        if stop.load(Ordering::Acquire) {
+                            while let Some(v) = sub2.try_recv() {
+                                got.push(v);
+                            }
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            got
+        })
+    };
 
     prod.join().unwrap();
     let g1 = d1.join().unwrap();
@@ -7162,7 +7232,10 @@ fn broadcast_subscriber_join_midstream() {
     // sub2 joined late → a non-empty in-order suffix (broadcast delivers to it too).
     assert!(
         !g2.is_empty(),
-        "sub2 (late broadcast subscriber) received nothing"
+        "sub2 (late broadcast subscriber) received nothing even though the producer \
+         waited for its endpoint claim before publishing the second half. Messages \
+         published BEFORE that claim are legitimately lost -- there is no backfill -- \
+         but the suffix after it must arrive."
     );
 }
 
@@ -7190,11 +7263,20 @@ fn mp_send_no_overshoot_corruption() {
 
     let consumer: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("consumer");
     let stop = Arc::new(AtomicBool::new(false));
+    // Counts sends that actually returned Ok. Without it a shortfall is
+    // ambiguous: a producer abandons its remaining messages when `stop` fires
+    // mid-retry (the `return` below), so "consumer got 1792/1800" can mean
+    // 1800 were published and 8 were lost, or only 1792 were ever published.
+    // Those are opposite diagnoses -- one is a transport defect, the other is
+    // the test giving up -- and every previous failure message asserted one of
+    // them without the evidence to tell them apart.
+    let sent = Arc::new(AtomicU64::new(0));
     let barrier = Arc::new(Barrier::new(n_producers + 1));
     let mut handles = Vec::new();
     for pid in 0..n_producers {
         let n = name.clone();
         let stop = stop.clone();
+        let sent = sent.clone();
         let b = barrier.clone();
         handles.push(test_spawn(move || {
             // Main waits on this barrier too: unwrapping before wait() would hang
@@ -7207,7 +7289,10 @@ fn mp_send_no_overshoot_corruption() {
                 let mut m = (pid as u64) << 40 | i;
                 loop {
                     match p.try_send(m) {
-                        Ok(()) => break,
+                        Ok(()) => {
+                            sent.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
                         Err(r) => {
                             if stop.load(Ordering::Acquire) {
                                 return;
@@ -7257,17 +7342,20 @@ fn mp_send_no_overshoot_corruption() {
     for h in handles {
         let _ = h.join();
     }
+    let published = sent.load(Ordering::Relaxed);
     assert_eq!(
         count, total,
-        "consumer drained {}/{} inside the budget. What did NOT fire: GARBAGE \
-         and DUPLICATE, so everything that did arrive was intact and no slot was \
-         re-used. That narrows it to messages never becoming visible, and it \
-         does NOT distinguish the two ways that happens: overshoot overwriting a \
-         slot before the in-order consumer reached it, or the platform simply \
-         not publishing them. Read the count before guessing which — a shortfall \
-         of a handful out of 1800 that is unchanged by a 30s budget is not a \
-         producer losing a race for CPU.",
-        count, total
+        "consumer drained {count}/{total}, producers published {published}/{total}. \
+         Read those two numbers before proposing a cause:\n  \
+         published == {total} and count < {total} -> messages were published and \
+         did not arrive. That is transport loss; GARBAGE and DUPLICATE did not \
+         fire, so nothing torn or re-used arrived, which points at a slot \
+         overwritten before the in-order consumer reached it.\n  \
+         published < {total} -> the producers abandoned the rest when the drain \
+         budget expired mid-retry, so the ring stayed full and this is \
+         backpressure plus a slow consumer, NOT loss.\n\
+         The distinction was invisible before this counter existed, and every \
+         earlier failure message asserted one of the two without evidence."
     );
 }
 
@@ -9119,13 +9207,16 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 // and growth are precisely what the skipped test exercises, so the TSan
 // finding stays open rather than dismissed.
 fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
-    // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
-    // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
-    // to a multi-producer backend has to make room for the separate stamp array
-    // (+ capacity*8 = 9856). Each round now asks for that migration directly, so
-    // one would do; the rounds re-run the race against fresh interleavings, and
-    // the assertion afterwards still refuses to let the test pass having grown
-    // nothing.
+    // There is no colo -> split transition, and an earlier version of this
+    // comment said there was. `layout_kind` is chosen once in `init` and never
+    // changes. What that version actually observed -- 8832 -> 17664 on a
+    // migration -- was the SPURIOUS grow: `handle_epoch_change` sized a colo
+    // region with the split formula, demanding the `capacity * 8` stamp array a
+    // colo region does not have. That is fixed, so the old trigger correctly
+    // grows nothing now, and this test drives the grow itself.
+    //
+    // The rounds re-run the race against fresh interleavings; the assertion
+    // afterwards still refuses to let the test pass having grown nothing.
     // Nothing to race where a region cannot grow at all: on Windows a named
     // section cannot be resized, so every round would provoke the error itself
     // and then assert the mapping did not change size.
@@ -9166,7 +9257,7 @@ fn run_one_grow_race_round() -> bool {
             test_spawn(move || {
                 b.wait();
                 let mut i = 0u64;
-                // Bounded so a migration that never lands cannot spin forever.
+                // Bounded so a grow that never lands cannot spin forever.
                 while !stop.load(Ordering::Relaxed) && i < 2_000_000 {
                     let v = (w as u64) * 10_000 + i;
                     t.send([v, v, v, v]);
@@ -9200,14 +9291,7 @@ fn run_one_grow_race_round() -> bool {
         })
     };
 
-    // Drive the remap from here instead of waiting for the backend to choose
-    // multi-producer mode on its own. Which mode `migrate_to_optimal` settles on
-    // depends on how the writers and the reader interleave, and on a 2-core CI
-    // runner they interleave in a way that never reaches it — every round then
-    // leaves the mapping its original size and the test guards nothing, which is
-    // exactly what the length assertion caught. Asking for `MpscShm` directly
-    // makes the colo -> split grow happen on any core count, while the sibling
-    // clones above are live and reading through their cached pointers.
+    // Drive the grow from here rather than hoping the backend produces one.
     barrier.wait();
     let deadline = Instant::now() + Duration::from_secs(10);
 
@@ -9217,28 +9301,20 @@ fn run_one_grow_race_round() -> bool {
         std::hint::spin_loop();
     }
 
-    // Then drive the remap from here instead of waiting for the backend to pick
-    // a growing mode on its own. `migrate_to_optimal` settles on whichever mode
-    // the writer/reader interleaving suggests, and only `FanoutShm` rewrites the
-    // layout from colo to split: that is what adds the `capacity * 8` stamp array
-    // (640 + 1024 + 8192 = 9856 > 8832) and forces the grow. Left to chance it
-    // often lands on `MpscShm`, which changes no geometry — measured here at 2
-    // rounds in 4, and a 2-core CI runner hit 0 in 16, which is what the length
-    // assertion caught.
+    // Grow the region directly, while the siblings above are live.
     //
-    // The loop condition is the grow itself, not the `MigrationResult`: a
-    // `Success` that the backend immediately migrates back off does not resize
-    // anything, so success is only observable in the mapping.
-    while t.ring.storage.len() == len_before && Instant::now() < deadline {
-        let _ = BackendMigrator::new(t.ring.header()).try_migrate(BackendMode::FanoutShm);
-        std::thread::yield_now();
-    }
-
-    // Keep both sides running across the remap that just happened.
-    let after_remap = seen_count.load(Ordering::Relaxed);
-    while seen_count.load(Ordering::Relaxed) < after_remap + 200 && Instant::now() < deadline {
-        std::hint::spin_loop();
-    }
+    // The subject of this test is the REMAP -- a grow moves the base address and
+    // every sibling clone holds pointers derived from the old one -- not the
+    // route that reaches it. Driving it here rather than provoking it is the
+    // only honest option left, because no topic-level call still produces a
+    // grow for this type: the spurious colo sizing in `handle_epoch_change` is
+    // fixed, and `auto_grow_slot_size` is unreachable for a POD topic (and, for
+    // a serde one, an oversized payload spills to the pool instead of growing --
+    // measured: a Vec<u64> topic holds slot=8192 through a 512 KB message).
+    //
+    // A test that cannot reach the event it names is worth nothing, and this one
+    // says so in its own assertion below, so it drives the event.
+    let _ = t.ring.storage.grow(len_before * 2);
 
     stop.store(true, Ordering::Relaxed);
     for h in writers {
@@ -11813,4 +11889,138 @@ fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
     assert_eq!(got.len(), 200, "every send should have a matching recv");
     assert_eq!(got[0], "value-0");
     assert_eq!(got[199], "value-199");
+}
+
+/// Backpressure is a property of the BACKEND, not of the call you make.
+///
+/// `try_send` returning `Err` and `send_blocking` actually blocking are both
+/// possible only where the backend has a full condition. The broadcast backends
+/// do not: `send_shm_pod_broadcast` has a single exit and it is `Ok(())`, and
+/// `ShmFanoutRing::send_serde` documents itself as "never blocks". They
+/// overwrite the oldest unread message instead of refusing a new one.
+///
+/// This matters because the backend is chosen from participant counts at
+/// runtime (`detect_optimal_backend`: two subscribers on a POD topic selects
+/// `PodShm`), so a topic that had real backpressure during bring-up loses it
+/// when anything else subscribes -- a logger, a recorder, `horus topic echo`.
+/// `send_blocking`'s doc used to recommend it for "critical command topics
+/// (emergency stop, motor setpoints) where message loss is unacceptable", which
+/// inverts exactly then.
+///
+/// The migration is forced rather than raced: two handles in one process share a
+/// participant slot, so `sub_count` stays 1 no matter how many local handles
+/// subscribe, and the interesting backend would never be reached here.
+#[test]
+fn a_broadcast_backend_cannot_refuse_a_send() {
+    let name = unique("bp_flip");
+    let cap: u32 = 16;
+    let tx: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("tx");
+    let rx: Topic<u64> = Topic::with_capacity(&name, cap, None).expect("rx");
+    assert!(rx.recv().is_none(), "nothing published yet");
+
+    // 1P/1C: SpscShm, which has a real full condition.
+    assert!(
+        tx.provides_backpressure(),
+        "1P/1C should select a backend with backpressure, got {}",
+        tx.backend_name()
+    );
+    let mut refused = 0u32;
+    for i in 0..(cap as u64 * 8) {
+        if tx.try_send(i).is_err() {
+            refused += 1;
+        }
+    }
+    assert!(
+        refused > 0,
+        "a {cap}-slot ring with nobody draining must refuse on {}",
+        tx.backend_name()
+    );
+
+    // Now the broadcast backend a second subscriber would have selected.
+    let migrated = matches!(
+        BackendMigrator::new(tx.ring.header()).try_migrate(BackendMode::PodShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    );
+    assert!(migrated, "could not reach PodShm to test it");
+    // Deliberately NOT check_migration_now(): that calls migrate_to_optimal(),
+    // which reads the participant counts (still 1P/1C here) and would migrate
+    // straight back to SpscShm. The migration above bumps the epoch, and
+    // epoch_guard_send! re-resolves the send fn pointer on the next send.
+    while rx.recv().is_some() {}
+
+    assert!(
+        !tx.provides_backpressure(),
+        "PodShm is a broadcast ring and must report no backpressure"
+    );
+
+    let mut refused_broadcast = 0u32;
+    for i in 0..(cap as u64 * 8) {
+        if tx.try_send(i).is_err() {
+            refused_broadcast += 1;
+        }
+    }
+    assert_eq!(
+        refused_broadcast,
+        0,
+        "on {} a full ring must NOT surface as an error -- it overwrites. Same \
+         topic, same try_send, opposite delivery semantics, decided by how many \
+         things happened to subscribe. That is what provides_backpressure() is \
+         for.",
+        tx.backend_name()
+    );
+}
+
+/// A co-located topic must not grow its region on an epoch change.
+///
+/// `handle_epoch_change` sized the region with the SPLIT formula regardless of
+/// layout, and `colo_required_region_len_checked`'s own doc says why that is
+/// wrong: the split form "would demand `capacity * 8` bytes that a colo region
+/// correctly does not have". Measured for `Topic<u64>` at capacity 16: the
+/// region is 640 + 16*64 = 1664 bytes, the split formula asks for
+/// 640 + 128 + 1024 = 1792, and the consumer's mapping duly grew 1664 -> 3328
+/// on the first epoch change. Nothing needed the space.
+///
+/// On Linux that is waste: ftruncate plus a fresh MAP_SHARED view of the same
+/// file, so no byte moves. On Windows `grow_unchecked` re-opens the SAME named
+/// section and memcpys the old view onto the new one -- two views of the same
+/// physical pages -- so a live ring is copied onto itself while producers
+/// mutate it, and any write landing inside that copy is rolled back. A
+/// rolled-back `sequence_or_head` re-issues sequence numbers already published,
+/// two producers claim the same slot, and one message is destroyed with no torn
+/// read and no duplicate. That is the shape Windows CI reported for
+/// `mp_send_no_overshoot_corruption`: 1800 sends all returning Ok, 1798 values
+/// delivered.
+///
+/// Separate producer and consumer handles are required: one handle doing both
+/// takes the `role == Both` same-instance fast path, which never consults the
+/// epoch guard, so `handle_epoch_change` is never reached and the test would
+/// pass without proving anything.
+#[test]
+fn a_colo_topic_does_not_grow_its_region_on_an_epoch_change() {
+    let name = unique("colo_nogrow");
+    let tx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("tx");
+    let rx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("rx");
+    assert!(rx.recv().is_none(), "nothing published yet");
+
+    let header = tx.ring.header();
+    assert!(
+        header.is_colo(),
+        "Topic<u64> at capacity 16 should select the co-located layout; this test \
+         is about that layout and proves nothing otherwise"
+    );
+    let before = rx.ring.storage.len();
+
+    // Force an epoch change, then drive both handles so the epoch guard runs.
+    let _ = BackendMigrator::new(header).try_migrate(BackendMode::MpscShm);
+    tx.send(1);
+    let _ = rx.recv();
+
+    assert_eq!(
+        rx.ring.storage.len(),
+        before,
+        "a colo region of {before} bytes was resized by an epoch change. Nothing \
+         asked for more room: the split sizing formula demands capacity*8 bytes \
+         for a sequence array this layout does not have. On Windows a spurious \
+         grow copies the live ring onto itself."
+    );
 }

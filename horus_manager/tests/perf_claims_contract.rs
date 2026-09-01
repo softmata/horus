@@ -64,6 +64,17 @@ fn read(rel: &str) -> Option<String> {
 /// the only ROS 2 figure here is REP 2014's ~5,000 ns.
 const UNSUPPORTED_RATIOS: &[&str] = &["575x", "550x", "585x", "875x", "550-875x"];
 
+/// Competitor latency figures that appear in no benchmark, report or source in
+/// this repository.
+///
+/// The retraction removed the ratio table but left the "Why HORUS?" comparison
+/// 290 lines earlier, which carried both halves of the same error: a "3 ns"
+/// HORUS figure (a producer-side `send()` on the same-instance fast path that
+/// `cross_process_benchmark` says "exists in benchmarks and in no real node
+/// graph") set against an end-to-end "50-500 µs (DDS)" that is sourced nowhere.
+/// The only ROS 2 number in this repository is REP 2014's ~5,000 ns.
+const UNSOURCED_COMPETITOR_LATENCIES: &[&str] = &["50–500 µs", "50-500 µs", "50–500us", "50-500us"];
+
 /// Every `Cargo.toml` in the workspace, `target/` excluded.
 fn workspace_manifests() -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -148,6 +159,29 @@ fn the_readme_does_not_claim_an_unsupported_ratio() {
              30x against HORUS's end-to-end 171 ns. If a larger ratio is real, \
              add the benchmark that produces it and cite it here — the number \
              alone is not evidence."
+        );
+    }
+}
+
+/// A competitor latency on the front page needs a source too.
+///
+/// `the_readme_does_not_claim_an_unsupported_ratio` guards the ratios, which is
+/// how the claim was phrased the first time. It does not guard the inputs, so
+/// the same assertion survived in a different shape: a comparison table whose
+/// DDS column cited no measurement at all. A ratio and the two numbers it is
+/// computed from are the same claim.
+#[test]
+fn the_readme_does_not_quote_an_unsourced_competitor_latency() {
+    let readme = read("README.md").expect("README.md must exist");
+
+    for claim in UNSOURCED_COMPETITOR_LATENCIES {
+        assert!(
+            !readme.contains(claim),
+            "README.md quotes `{claim}` for DDS/ROS 2. That figure appears in no \
+             benchmark, no report and no source in this repository; the only ROS 2 \
+             number here is REP 2014's ~5,000 ns. Cite a measurement or cite REP \
+             2014 — an unsourced competitor figure is the numerator of the ratio \
+             this file already refuses."
         );
     }
 }

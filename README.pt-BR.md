@@ -38,7 +38,7 @@ O HORUS substitui DDS por buffers circulares em memória compartilhada e sincron
 
 | Recurso | HORUS |
 |---------|-------|
-| Latência IPC | Mediana de **3–304 ns**, conforme topologia e contenção |
+| Latência IPC | **171 ns** unidirecional, entre processos (`cross_process_benchmark`) |
 | Agendamento | Determinístico, com cinco classes de execução |
 | Tempo real | Orçamentos, deadlines, afinidade de CPU e watchdog integrados |
 | Segurança | Watchdog progressivo, estado seguro e gravador BlackBox |

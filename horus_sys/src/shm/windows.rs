@@ -255,7 +255,9 @@ impl ShmRegion {
             super::MAX_RETIRED_MAPPINGS
         );
 
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, INVALID_HANDLE_VALUE,
+        };
         use windows_sys::Win32::System::Memory::{
             CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
         };
@@ -277,11 +279,43 @@ impl ShmRegion {
             new_size as u32,
             name.as_ptr(),
         );
+        // Capture immediately: GetLastError is not sticky across API calls.
+        let last_error = GetLastError();
+
         anyhow::ensure!(
             !new_handle.is_null(),
             "CreateFileMappingW for grow failed: {}",
             std::io::Error::last_os_error()
         );
+
+        // A named section that already exists comes back AT ITS ORIGINAL SIZE --
+        // the size arguments above are ignored. Growing is therefore impossible,
+        // and continuing is worse than failing: `new_ptr` would be a second view
+        // of the SAME physical pages, so the copy below would memcpy the region
+        // onto itself. On a live ring that is silent corruption -- any concurrent
+        // write landing between the copy's load and store of a chunk is rolled
+        // back to its pre-copy value, and a rolled-back `sequence_or_head`
+        // re-issues sequence numbers that were already published.
+        //
+        // It only reached the copy at all when the requested size still fit the
+        // section's page-rounded extent, so `MapViewOfFile` succeeded and the
+        // "cannot be resized" error below never fired. That made the failure
+        // size-dependent and rare: Windows CI lost 2 messages in 1800.
+        //
+        // `new()` has always read ERROR_ALREADY_EXISTS to decide ownership; this
+        // path simply never did.
+        if last_error == ERROR_ALREADY_EXISTS {
+            CloseHandle(new_handle);
+            anyhow::bail!(
+                "cannot grow '{}' from {} to {} bytes: a named Windows section \
+                 already exists and cannot be resized in place. Windows auto-grow \
+                 is unsupported; growing here would map the same pages twice and \
+                 memcpy the live region onto itself.",
+                self.topic_name,
+                self.size,
+                new_size
+            );
+        }
 
         let new_ptr = MapViewOfFile(new_handle, FILE_MAP_ALL_ACCESS, 0, 0, new_size);
         if new_ptr.Value.is_null() {

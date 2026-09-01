@@ -2470,8 +2470,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // was skipped and the wrapped geometry was installed anyway.
         let declared_capacity = header.capacity as usize;
         let declared_slot = header.slot_size.load(Ordering::Acquire) as usize;
-        let declared_len =
-            shm_layout::required_region_len_checked(declared_capacity, declared_slot);
+        // Size the region with the geometry it actually has.
+        //
+        // This used the SPLIT formula unconditionally, and
+        // `colo_required_region_len_checked`'s own doc says why that is wrong:
+        // the split form "would demand `capacity * 8` bytes that a colo region
+        // correctly does not have". For `Topic<u64>` at capacity 16 the region
+        // is 640 + 16*64 = 1664 bytes and the split formula asks for
+        // 640 + 128 + 1024 = 1792, so `required > storage.len()` was true for
+        // every colo topic and EVERY epoch change fired a grow that nothing
+        // needed. Every other reader of this geometry branches on `is_colo()`
+        // -- `validate_ring_geometry`, `geometry_is_addressable`, and the
+        // `auto_grow_slot_size` path -- and this was the one that did not.
+        //
+        // On Linux the spurious grow is waste: ftruncate plus a fresh
+        // MAP_SHARED view of the same file, so no byte moves. On Windows it is
+        // not waste. `grow_unchecked` there re-opens the SAME named section and
+        // memcpys the old view onto the new one -- two views of the same
+        // physical pages -- so a live ring is copied onto itself while
+        // producers are mutating it, and any write landing inside that copy is
+        // rolled back. A rolled-back `sequence_or_head` re-issues sequence
+        // numbers that were already published, two producers then claim the
+        // same slot, and one message is destroyed with no torn read and no
+        // duplicate. That is the shape Windows CI reported: 1800 sends all
+        // returning Ok, 1798 values delivered.
+        let declared_len = if header.is_colo() {
+            shm_layout::colo_required_region_len_checked(declared_capacity, declared_slot)
+        } else {
+            shm_layout::required_region_len_checked(declared_capacity, declared_slot)
+        };
         if let Some(required) = declared_len {
             // `geometry_is_addressable(header, required)` is every part of the
             // invariant EXCEPT containment (it holds trivially against
@@ -2970,10 +2997,46 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Send a message, blocking until the ring has space or the timeout expires.
     ///
-    /// Unlike [`send()`](Self::send) which drops the message after a brief spin+yield
-    /// retry, this method guarantees delivery or returns an explicit timeout error.
-    /// Use this for critical command topics (emergency stop, motor setpoints) where
-    /// message loss is unacceptable.
+    /// Unlike [`send()`](Self::send), which drops the message after a brief
+    /// spin+yield retry, this reports a full ring instead of swallowing it --
+    /// **on the backends that have a full ring at all.**
+    ///
+    /// # This does NOT guarantee delivery on a broadcast topic
+    ///
+    /// Every phase below is a retry of `try_send`, so this method can only block
+    /// where `try_send` can fail. On `PodShm` and `FanoutShm` it cannot:
+    /// `send_shm_pod_broadcast` has one exit and it is `Ok(())`, and
+    /// `ShmFanoutRing::send_serde` documents itself as "never blocks", returning
+    /// false only for a message too large for a slot. Those backends overwrite
+    /// the oldest unread message rather than refuse a new one.
+    ///
+    /// And you do not choose the backend -- participant count does. One
+    /// subscriber gives `SpscShm` and real backpressure; a second subscriber,
+    /// including a logger or a `horus topic echo`, silently switches the same
+    /// topic to broadcast. At that point this call returns `Ok(())` in
+    /// nanoseconds without waiting, and the message it displaced is gone.
+    ///
+    /// This doc used to say the method "guarantees delivery" and to recommend it
+    /// for "critical command topics (emergency stop, motor setpoints) where
+    /// message loss is unacceptable". On a topic with two subscribers that was
+    /// exactly backwards, and it is the reason
+    /// [`provides_backpressure`](Self::provides_backpressure) now exists.
+    ///
+    /// Assert it on any topic carrying commands — but AFTER the first send or
+    /// recv, not before. A handle does not resolve its backend until it moves a
+    /// message, and an unresolved backend answers `false` (it is not a promise
+    /// of anything), so an assertion placed before the first send fires on every
+    /// topic including the ones that are fine. The check is meaningful once the
+    /// backend is known, which is also the first moment loss is possible:
+    ///
+    /// ```ignore
+    /// estop.send(Stop)?; // resolves the backend
+    /// assert!(
+    ///     estop.provides_backpressure(),
+    ///     "e-stop settled on a lossy backend ({})",
+    ///     estop.backend_name()
+    /// );
+    /// ```
     ///
     /// Strategy: spin briefly (256 iters), yield briefly (8 iters), then sleep in
     /// 100μs increments until the deadline.
@@ -3299,6 +3362,55 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpmcShm => "SpmcShm",
             BackendMode::MpscShm => "MpscShm",
             BackendMode::FanoutShm => "FanoutShm",
+        }
+    }
+
+    /// Whether a full ring can make this topic's `try_send` refuse a message.
+    ///
+    /// **This is not a property of the API you call, it is a property of the
+    /// backend, and the backend is chosen at runtime from how many participants
+    /// are attached.** A topic with one subscriber selects `SpscShm` and refuses
+    /// when full. Attach a second subscriber -- a logger, a recorder, a
+    /// `horus topic echo` -- and the same topic becomes `PodShm` or `FanoutShm`,
+    /// which overwrite instead. `send_shm_pod_broadcast` has a single exit and it
+    /// is `Ok(())`; `ShmFanoutRing::send_serde` documents itself as "never
+    /// blocks" and returns false only for a message too large for a slot.
+    ///
+    /// So on a broadcast backend `try_send` cannot report a full ring and
+    /// [`send_blocking`](Self::send_blocking) cannot block. Both still compile,
+    /// still return, and quietly lose data.
+    ///
+    /// Assert this on any topic carrying commands rather than samples — after
+    /// the first send or recv, not before it. The backend is `Unknown` until a
+    /// handle moves a message, and `Unknown` answers `false` because an
+    /// unresolved backend promises nothing, so the assertion placed earlier
+    /// fires on every topic. Once the backend is known the answer is real, and
+    /// that is also the first point at which loss can occur:
+    ///
+    /// ```ignore
+    /// estop.send(Stop)?; // resolves the backend
+    /// assert!(
+    ///     estop.provides_backpressure(),
+    ///     "e-stop topic fell back to a lossy broadcast backend ({})",
+    ///     estop.backend_name(),
+    /// );
+    /// ```
+    pub fn provides_backpressure(&self) -> bool {
+        match self.mode() {
+            // Ring-full is a real Err on these: the mp/sp send paths compare the
+            // claimed sequence against `header.tail` and refuse.
+            BackendMode::SpscShm | BackendMode::MpscShm | BackendMode::SpmcShm => true,
+            // Broadcast: overwrite-oldest by construction, no full condition.
+            BackendMode::PodShm | BackendMode::FanoutShm => false,
+            // Fail closed. `Unknown` means the backend has not been resolved
+            // yet, which is the state EVERY topic is in until its first
+            // send/recv — including at the "assert this at startup" moment the
+            // doc comment above recommends. Answering `true` there made the
+            // assertion pass on a topic that was about to resolve to PodShm and
+            // silently drop, so the check a caller writes to catch a lossy
+            // e-stop channel could not catch one. An unresolved backend is not
+            // a promise of backpressure.
+            BackendMode::Unknown => false,
         }
     }
 
@@ -3791,6 +3903,15 @@ impl<T: TopicMessage> Topic<T> {
     #[doc(hidden)]
     pub fn backend_name(&self) -> &'static str {
         self.ring.backend_name()
+    }
+
+    /// Whether a full ring can make this topic's `try_send` refuse a message.
+    ///
+    /// See [`RingTopic::provides_backpressure`]. Returns `false` on the
+    /// broadcast backends, which is what a topic silently becomes once a second
+    /// subscriber attaches.
+    pub fn provides_backpressure(&self) -> bool {
+        self.ring.provides_backpressure()
     }
 
     /// This handle's FanoutShm subscriber endpoint, if it has claimed one.
