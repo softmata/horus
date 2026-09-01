@@ -32,6 +32,36 @@ pub(crate) enum BackendMode {
     FanoutShm = 11,
 }
 
+impl BackendMode {
+    /// Whether a producer on this backend can observe a full ring and refuse.
+    ///
+    /// `PodShm` is the odd one out: `send_shm_pod_broadcast` is a bare
+    /// `fetch_add` plus an unconditional seqlock overwrite with a single exit,
+    /// `Ok(())`. It never reads `header.tail`, so it cannot fail and cannot be
+    /// waited on. Every other live backend has an error return for a full ring
+    /// (`send_fanout_shm` and `send_shm_mp_pod` two each, `send_shm_sp_pod` one).
+    ///
+    /// This matters to `send_blocking`, which promises delivery: on a backend
+    /// that cannot report fullness the promise is unkeepable, and silently
+    /// returning `Ok` on a topic documented for emergency stop is the wrong way
+    /// to discover that.
+    pub(crate) fn provides_backpressure(self) -> bool {
+        match self {
+            BackendMode::MpscShm
+            | BackendMode::SpmcShm
+            | BackendMode::SpscShm
+            | BackendMode::FanoutShm => true,
+            BackendMode::PodShm => false,
+            // Not "no backpressure" -- "not resolved yet". A freshly constructed
+            // topic reports Unknown until its first real send settles the header,
+            // and treating that as a refusal rejects topics that have simply not
+            // decided what they are. Answer permissively and let the next call,
+            // by which point the mode is real, make the decision.
+            BackendMode::Unknown => true,
+        }
+    }
+}
+
 impl From<u8> for BackendMode {
     fn from(v: u8) -> Self {
         match v {
