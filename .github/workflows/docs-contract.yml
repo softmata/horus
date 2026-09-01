@@ -465,8 +465,23 @@ jobs:
         run: |
           pip install maturin
           cd horus_py
-          maturin build --release
-          pip install --force-reinstall target/wheels/*.whl
+          # `--out`, rather than guessing where the wheel landed. horus_py is
+          # a workspace member with no [workspace] of its own, so maturin hands
+          # the build to cargo and the wheel appears under the *workspace*
+          # target dir — `target/wheels`, not `horus_py/target/wheels`, which
+          # is what this step used to install from. Naming the output directory
+          # also survives a CARGO_TARGET_DIR pointing somewhere else entirely,
+          # which `../target/wheels` would not: shipped-examples-build in this
+          # same workflow already sets one.
+          #
+          # The old path did not fail loudly. Nothing matched the glob, bash
+          # passed it through literally, and pip printed
+          #   WARNING: Requirement 'target/wheels/*.whl' looks like a filename,
+          #            but the file does not exist
+          #   ERROR: Invalid wheel filename (wrong number of parts): '*'
+          # so the job reported a wheel problem rather than a path problem.
+          maturin build --release --out dist
+          pip install --force-reinstall dist/*.whl
 
       - name: Confirm the wheel is the real module
         run: |
