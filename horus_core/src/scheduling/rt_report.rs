@@ -291,6 +291,25 @@ struct JitterResult {
     actual_hz: f64,
 }
 
+/// Deviation of each observed interval from the target period.
+///
+/// This is what "jitter" means everywhere else in this module: the fields are
+/// named `jitter_*_us`, `RtGrade::Production` documents "Jitter <50us P99", and
+/// the issue text reads "P99 jitter ... exceeds 500us threshold".
+///
+/// The measurement used to return the raw INTERVAL instead -- ~1000us for a 1kHz
+/// loop -- so the grade compared a period against a jitter budget. `p99 < 50.0`
+/// could never hold at any rate, and `p99 < 500.0` could not hold below 2kHz, so
+/// RtGrade::Production and RtGrade::Standard were both unreachable and
+/// `is_production_ready()` returned false on every machine including a correctly
+/// configured PREEMPT_RT one.
+fn jitter_from_intervals(intervals_us: &[f64], period_us: f64) -> Vec<f64> {
+    intervals_us
+        .iter()
+        .map(|interval| (interval - period_us).abs())
+        .collect()
+}
+
 fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
     let period = Duration::from_nanos(1_000_000_000 / target_hz);
     let mut timestamps =
@@ -321,10 +340,12 @@ fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
         };
     }
 
-    let mut deltas_us: Vec<f64> = timestamps
+    let period_us = 1_000_000.0 / target_hz as f64;
+    let intervals_us: Vec<f64> = timestamps
         .windows(2)
         .map(|w| w[1].duration_since(w[0]).as_nanos() as f64 / 1000.0)
         .collect();
+    let mut deltas_us = jitter_from_intervals(&intervals_us, period_us);
     deltas_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let n = deltas_us.len();
@@ -375,5 +396,55 @@ fn measure_ipc() -> (f64, f64) {
             (latency_ns, throughput)
         }
         Err(_) => (0.0, 0.0),
+    }
+}
+
+#[cfg(test)]
+mod jitter_tests {
+    use super::*;
+
+    /// A perfectly paced loop has ZERO jitter. Before the fix this returned the
+    /// period itself (1000us at 1kHz), which is what made every RT grade
+    /// unreachable.
+    ///
+    /// GATE: revert `jitter_from_intervals` to returning the interval unchanged
+    /// and this fails with 1000 != 0.
+    #[test]
+    fn a_perfectly_paced_loop_has_no_jitter() {
+        let period_us = 1000.0;
+        let intervals = vec![1000.0; 64];
+        let jitter = jitter_from_intervals(&intervals, period_us);
+        assert!(
+            jitter.iter().all(|j| *j == 0.0),
+            "a loop hitting its period exactly must report zero jitter, got {:?}",
+            &jitter[..4]
+        );
+    }
+
+    /// Jitter is the magnitude of the miss, in either direction: running early
+    /// is as much a deadline violation as running late.
+    #[test]
+    fn jitter_is_absolute_deviation_in_both_directions() {
+        let jitter = jitter_from_intervals(&[1200.0, 800.0, 1000.0], 1000.0);
+        assert_eq!(jitter, vec![200.0, 200.0, 0.0]);
+    }
+
+    /// The grade thresholds must be reachable by a well-behaved 1kHz loop.
+    /// This is the property the bug actually broke.
+    #[test]
+    fn a_good_1khz_loop_can_reach_the_production_jitter_budget() {
+        // 1kHz with +/-10us of scheduling noise: comfortably inside the 50us
+        // Production budget and the 500us Standard budget.
+        let intervals: Vec<f64> = (0..100)
+            .map(|i| if i % 2 == 0 { 1010.0 } else { 990.0 })
+            .collect();
+        let mut jitter = jitter_from_intervals(&intervals, 1000.0);
+        jitter.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p99 = jitter[(jitter.len() as f64 * 0.99) as usize];
+        assert!(
+            p99 < 50.0,
+            "p99 jitter {p99}us must fit the Production budget (<50us); before \
+             the fix this was ~1000us because the raw period was returned"
+        );
     }
 }
