@@ -851,7 +851,6 @@ impl NodeControlMap {
             .unwrap_or(NodeHealthState::Healthy)
     }
 
-    /// Ask the executor that owns `name` to safe the node on its next pass.
     /// Request safing for EVERY registered node.
     ///
     /// The emergency-stop path needs this: halting the tick loop stops new

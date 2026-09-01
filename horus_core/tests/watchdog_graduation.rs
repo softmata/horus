@@ -18,12 +18,24 @@ use std::time::Duration;
 mod common;
 use common::cleanup_stale_shm;
 
+/// Leak a node name once, at construction.
+///
+/// `Node::name` returns `&'static str`, and these harness nodes build their
+/// names at runtime from the pid so concurrent test binaries do not collide on
+/// a shm segment. Each `name()` call used to `Box::leak` a fresh copy, so the
+/// scheduler -- which calls it per tick, per health report and per watchdog
+/// event -- grew the leak without bound for the life of the process. Leaking
+/// once per node is the cost that was actually intended.
+fn leak(name: String) -> &'static str {
+    Box::leak(name.into_boxed_str())
+}
+
 // ---------------------------------------------------------------------------
 // Node that stalls permanently after N ticks (simulates hang)
 // ---------------------------------------------------------------------------
 
 struct StallAfterNode {
-    name: String,
+    name: &'static str,
     tick_count: Arc<AtomicU64>,
     stall_after: u64,
     safe_state_entered: Arc<AtomicBool>,
@@ -34,7 +46,7 @@ impl StallAfterNode {
         let ticks = Arc::new(AtomicU64::new(0));
         let safe = Arc::new(AtomicBool::new(false));
         let node = Self {
-            name: format!("{}_{}", prefix, std::process::id()),
+            name: leak(format!("{}_{}", prefix, std::process::id())),
             tick_count: ticks.clone(),
             stall_after,
             safe_state_entered: safe.clone(),
@@ -45,7 +57,7 @@ impl StallAfterNode {
 
 impl Node for StallAfterNode {
     fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn tick(&mut self) {
@@ -73,7 +85,7 @@ impl Node for StallAfterNode {
 // ---------------------------------------------------------------------------
 
 struct HealthyNode {
-    name: String,
+    name: &'static str,
     tick_count: Arc<AtomicU64>,
 }
 
@@ -81,7 +93,7 @@ impl HealthyNode {
     fn new(prefix: &str) -> (Self, Arc<AtomicU64>) {
         let ticks = Arc::new(AtomicU64::new(0));
         let node = Self {
-            name: format!("{}_{}", prefix, std::process::id()),
+            name: leak(format!("{}_{}", prefix, std::process::id())),
             tick_count: ticks.clone(),
         };
         (node, ticks)
@@ -90,7 +102,7 @@ impl HealthyNode {
 
 impl Node for HealthyNode {
     fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn tick(&mut self) {
@@ -226,12 +238,12 @@ fn test_watchdog_with_budget_violations() {
     let ticks_clone = ticks.clone();
 
     struct BudgetViolator {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
     }
     impl Node for BudgetViolator {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -240,7 +252,7 @@ fn test_watchdog_with_budget_violations() {
     }
 
     let node = BudgetViolator {
-        name,
+        name: leak(name),
         tick_count: ticks_clone,
     };
 
@@ -321,12 +333,12 @@ fn test_watchdog_short_timeout_detects_slow_node() {
     let ticks_clone = ticks.clone();
 
     struct SlowButAlive {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
     }
     impl Node for SlowButAlive {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -335,7 +347,7 @@ fn test_watchdog_short_timeout_detects_slow_node() {
     }
 
     let node = SlowButAlive {
-        name,
+        name: leak(name),
         tick_count: ticks_clone,
     };
 
@@ -366,13 +378,13 @@ fn test_watchdog_with_safe_mode_calls_enter_safe_state() {
 
     // Override to be a slow node instead of a stalling one
     struct SlowSafeNode {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
         safe_state_entered: Arc<AtomicBool>,
     }
     impl Node for SlowSafeNode {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -389,7 +401,7 @@ fn test_watchdog_with_safe_mode_calls_enter_safe_state() {
     // Use ticks and safe from StallAfterNode (already allocated)
     drop(node); // drop the StallAfterNode
     let slow_node = SlowSafeNode {
-        name: format!("wd_sm_{}", std::process::id()),
+        name: leak(format!("wd_sm_{}", std::process::id())),
         tick_count: ticks.clone(),
         safe_state_entered: safe.clone(),
     };
@@ -479,12 +491,12 @@ fn test_max_deadline_misses_stops_scheduler() {
     let _shm_guard = cleanup_stale_shm();
 
     struct DeadlineViolator {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
     }
     impl Node for DeadlineViolator {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -495,7 +507,7 @@ fn test_max_deadline_misses_stops_scheduler() {
 
     let ticks = Arc::new(AtomicU64::new(0));
     let node = DeadlineViolator {
-        name: format!("wd_maxmiss_{}", std::process::id()),
+        name: leak(format!("wd_maxmiss_{}", std::process::id())),
         tick_count: ticks.clone(),
     };
 
@@ -584,7 +596,7 @@ fn test_enter_safe_state_on_stalled_node() {
 // ---------------------------------------------------------------------------
 
 struct PanicsEveryTickNode {
-    name: String,
+    name: &'static str,
     tick_count: Arc<AtomicU64>,
     healthy_ticks: u64,
     safe_state_entered: Arc<AtomicBool>,
@@ -595,7 +607,7 @@ impl PanicsEveryTickNode {
         let ticks = Arc::new(AtomicU64::new(0));
         let safe = Arc::new(AtomicBool::new(false));
         let node = Self {
-            name: format!("{prefix}_{}", std::process::id()),
+            name: leak(format!("{prefix}_{}", std::process::id())),
             tick_count: ticks.clone(),
             healthy_ticks,
             safe_state_entered: safe.clone(),
@@ -606,7 +618,7 @@ impl PanicsEveryTickNode {
 
 impl Node for PanicsEveryTickNode {
     fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn tick(&mut self) {
@@ -677,7 +689,7 @@ fn a_node_that_only_panics_does_not_keep_its_watchdog_fed() {
 // ---------------------------------------------------------------------------
 
 struct SafeStateRecordingNode {
-    name: String,
+    name: &'static str,
     tick_count: Arc<AtomicU64>,
     safe_state_entered: Arc<AtomicBool>,
 }
@@ -687,7 +699,7 @@ impl SafeStateRecordingNode {
         let ticks = Arc::new(AtomicU64::new(0));
         let safe = Arc::new(AtomicBool::new(false));
         let node = Self {
-            name: format!("{prefix}_{}", std::process::id()),
+            name: leak(format!("{prefix}_{}", std::process::id())),
             tick_count: ticks.clone(),
             safe_state_entered: safe.clone(),
         };
@@ -697,7 +709,7 @@ impl SafeStateRecordingNode {
 
 impl Node for SafeStateRecordingNode {
     fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn tick(&mut self) {
