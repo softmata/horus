@@ -7327,25 +7327,36 @@ fn mp_send_no_overshoot_corruption() {
     // either drained or explicitly skipped and counted. Overshoot corruption
     // breaks it — an overwritten slot is in neither total.
     let missed = consumer.missed_count();
+    // Signed, because the assertion fires in BOTH directions and they are
+    // different faults with different fixes. An unsigned subtraction would also
+    // panic while formatting — in debug by overflow, in release by printing a
+    // number near u64::MAX — replacing the real failure with a worse one.
+    let delta = sent as i128 - count as i128 - missed as i128;
+    let diagnosis = if delta > 0 {
+        "so this is a LOST message: overshoot overwrote an unconsumed slot"
+    } else {
+        "so the consumer accounted for MORE messages than the producers pushed. \
+         That is not overshoot: it is a double count — a slot delivered twice \
+         without tripping the DUPLICATE check, or `missed_count` charging for a \
+         skip that was also drained"
+    };
     assert_eq!(
         count + missed,
         sent,
         "consumer drained {count} and skipped {missed} of the {sent} values the \
-         producers actually pushed, so {} went missing. Every value that arrived \
-         was intact (no GARBAGE) and no slot was re-used (no DUPLICATE), and an \
-         abandoned claim would have been counted in `missed` — so this is a lost \
-         message: overshoot overwrote an unconsumed slot.",
-        // Signed: the assertion also fires when `count + missed` EXCEEDS `sent`,
-        // and an unsigned subtraction would then panic while formatting the
-        // message — in debug by overflow, in release by printing a number near
-        // u64::MAX. Either way the real failure is replaced by a worse one.
-        sent as i128 - count as i128 - missed as i128
+         producers actually pushed: difference (sent - drained - missed) = \
+         {delta}. Every value that arrived was intact (no GARBAGE) and no slot \
+         was re-used (no DUPLICATE), and an abandoned claim would have been \
+         counted in `missed` — {diagnosis}."
     );
 
     // Anti-vacuity: the corruption checks above only mean something if a
     // substantial number of messages actually went through a contended ring.
+    // Stated as a division rather than `sent * 2 >= total` so that a large
+    // `total` cannot overflow the product and invert the predicate — which
+    // would turn the guard against a vacuous run into a guarantee of one.
     assert!(
-        sent * 2 >= total,
+        sent >= total.div_ceil(2),
         "only {sent} of {total} messages were pushed before the drain budget \
          expired, so this run exercised too little contention to be evidence \
          either way. This is a liveness result about the machine, not about \
