@@ -342,6 +342,26 @@ jobs:
     name: Published tarball on debian:11
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Advisory, and it will stay red until the next release is cut.
+    #
+    # This job inspects what is *currently published*, which was built by the
+    # old release.yml matrix on ubuntu-latest and therefore requires GLIBC_2.39.
+    # It is reporting that accurately: the v0.4.0 asset genuinely does not start
+    # on Debian 11, Ubuntu 20.04/22.04, Debian 12, RHEL 9, Pi OS or JetPack.
+    #
+    # It must not gate merges, because no change to this repository can make a
+    # release that has already shipped pass — only cutting a new one can, and
+    # every PR would be blocked until then. The binding gate lives where it can
+    # act: release.yml verifies the glibc floor with readelf and then runs the
+    # unpacked tarball inside an old-glibc container, under qemu for the
+    # foreign architectures, *before* the upload step. A binary that cannot
+    # start can no longer become a release asset.
+    #
+    # Once a release built by that matrix is published, this turns green on its
+    # own and becomes a standing check that the shipped artifact still runs on
+    # the oldest libc claimed in the README's support matrix. Remove
+    # continue-on-error then.
+    continue-on-error: true
     steps:
       # No checkout: this job deliberately touches nothing but the published
       # release, because that is all a user gets.
@@ -394,7 +414,7 @@ jobs:
             docker run --rm -v "$PWD/dist:/dist:ro" debian:11 sh -c 'ldd --version | head -1; ldd /dist/horus' || true
             echo "--- what the binary needs ---"
             objdump -T dist/horus | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -5 || true
-            echo "Fix belongs in release.yml's build-release matrix: the two Linux legs (release.yml:41-48) run on ubuntu-latest, so they link against that runner's glibc and the floor moves every time GitHub bumps the image."
+            echo "This is the published asset, not this branch's build. release.yml now cross-compiles the Linux legs with cargo-zigbuild against GLIBC_FLOOR and refuses to upload a binary that cannot start on an old-glibc container, so the next release fixes this. Until one is cut, this job is advisory and does not gate merges."
             exit 1
           fi
 

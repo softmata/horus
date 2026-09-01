@@ -938,11 +938,31 @@ fn write_driver_deps(
     }
 }
 
+/// Render a filesystem path for a TOML string value.
+///
+/// A Windows path reaches `path = "…"` as `C:\Users\runneradmin\.horus\cache\…`,
+/// and TOML reads `\U` as the opening of a unicode escape — so the generated
+/// `.horus/Cargo.toml` failed to parse before cargo could even read the
+/// manifest, on every Windows machine:
+///
+/// ```text
+/// error: too few unicode value digits, expected unicode hexadecimal value
+///   --> Cargo.toml:15:23
+///    | horus = { path = "C:\Users\runneradmin\.horus/cache\horus@0.4.0\horus" }
+/// ```
+///
+/// Cargo accepts forward slashes in a path dependency on Windows, so
+/// normalising is enough. Escaping the backslashes would also parse and makes
+/// the generated file harder to read.
+fn toml_path(path: impl std::fmt::Display) -> String {
+    path.to_string().replace('\\', "/")
+}
+
 /// Write a `[[bin]]` entry.
 fn write_bin_entry(cargo: &mut String, name: &str, path: &str) {
     writeln!(cargo, "[[bin]]").unwrap();
     writeln!(cargo, "name = \"{}\"", sanitize_cargo_name(name)).unwrap();
-    writeln!(cargo, "path = \"{}\"", path).unwrap();
+    writeln!(cargo, "path = \"{}\"", toml_path(path)).unwrap();
     writeln!(cargo).unwrap();
 }
 
@@ -1034,7 +1054,7 @@ fn write_generated_msgs_dep(cargo: &mut String, project_dir: &Path, manifest: &H
         cargo,
         "{}_msgs = {{ path = \"{}\" }}",
         sanitize_cargo_name(&manifest.package.name),
-        generated.display()
+        toml_path(generated.display())
     )
     .unwrap();
 }
@@ -1051,7 +1071,7 @@ fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &Hor
                     cargo,
                     "{} = {{ path = \"{}\", features = [{}] }}",
                     dep_name,
-                    dep_path.display(),
+                    toml_path(dep_path.display()),
                     hw_features
                         .iter()
                         .map(|f| format!("\"{}\"", f))
@@ -1064,7 +1084,7 @@ fn write_horus_path_deps(cargo: &mut String, horus_source: &Path, manifest: &Hor
                     cargo,
                     "{} = {{ path = \"{}\" }}",
                     dep_name,
-                    dep_path.display()
+                    toml_path(dep_path.display())
                 )
                 .unwrap();
             }
@@ -1264,7 +1284,7 @@ fn write_patch_sections(
                 cargo,
                 "{} = {{ path = \"{}\" }}",
                 name,
-                horus_source.join(name).display()
+                toml_path(horus_source.join(name).display())
             )
             .unwrap();
         }
@@ -1347,7 +1367,7 @@ fn write_deps_section(
                         // Resolve path relative to project dir, then make relative to .horus/
                         let abs_path = project_dir.join(p);
                         let rel = relative_to_horus(&abs_path, horus_dir);
-                        writeln!(cargo, "{} = {{ path = \"{}\" }}", name, rel).unwrap();
+                        writeln!(cargo, "{} = {{ path = \"{}\" }}", name, toml_path(&rel)).unwrap();
                     }
                 }
             }
@@ -1792,7 +1812,7 @@ pub fn generate_workspace(
                         root_cargo,
                         "{} = {{ path = \"{}\" }}",
                         dep_name,
-                        dep_path.display()
+                        toml_path(dep_path.display())
                     )
                     .unwrap();
                 }
@@ -1935,7 +1955,7 @@ fn generate_member_cargo(
         if lib_path.exists() {
             let rel = relative_to_horus(&lib_path, member_horus_dir);
             writeln!(cargo, "[lib]").unwrap();
-            writeln!(cargo, "path = \"{}\"", rel).unwrap();
+            writeln!(cargo, "path = \"{}\"", toml_path(&rel)).unwrap();
             writeln!(cargo).unwrap();
         }
     }
@@ -2013,7 +2033,7 @@ fn generate_member_cargo(
                 // Non-member path dep — relativize from member_horus_dir
                 let abs_path = member_source_dir.join(original_path);
                 let rel = relative_to_horus(&abs_path, member_horus_dir);
-                writeln!(cargo, "{} = {{ path = \"{}\" }}", name, rel).unwrap();
+                writeln!(cargo, "{} = {{ path = \"{}\" }}", name, toml_path(&rel)).unwrap();
                 continue;
             }
         }
@@ -2164,6 +2184,41 @@ fn rewrite_member_path_dep(
 
 #[cfg(test)]
 mod horus_dep_feature_tests {
+
+    /// A path dependency on Windows is `C:\\Users\\…`, and TOML reads `\\U` as the
+    /// start of a unicode escape. The generated manifest therefore failed to
+    /// parse before cargo read it — `horus build` was broken for every Windows
+    /// user, with an error naming a unicode escape nobody wrote:
+    ///
+    ///   error: too few unicode value digits, expected unicode hexadecimal value
+    ///     --> Cargo.toml:15:23
+    ///      | horus = { path = "C:\\Users\\runneradmin\\.horus/cache\\horus@0.4.0\\horus" }
+    #[test]
+    fn a_windows_path_dependency_is_valid_toml() {
+        let rendered = super::toml_path("C:\\Users\\runneradmin\\.horus/cache\\horus@0.4.0\\horus");
+        assert!(
+            !rendered.contains('\\'),
+            "a backslash in a TOML basic string opens an escape: {rendered}"
+        );
+
+        let manifest = format!("[dependencies]\nhorus = {{ path = \"{rendered}\" }}\n");
+        let parsed: toml::Value = toml::from_str(&manifest)
+            .unwrap_or_else(|e| panic!("generated manifest does not parse: {e}\n{manifest}"));
+        assert_eq!(
+            parsed["dependencies"]["horus"]["path"].as_str().unwrap(),
+            "C:/Users/runneradmin/.horus/cache/horus@0.4.0/horus"
+        );
+    }
+
+    /// A unix path is already valid and must come through untouched.
+    #[test]
+    fn a_unix_path_dependency_is_unchanged() {
+        assert_eq!(
+            super::toml_path("/home/u/.horus/cache/horus@0.4.0/horus"),
+            "/home/u/.horus/cache/horus@0.4.0/horus"
+        );
+    }
+
     use super::*;
     use crate::manifest::HorusManifest;
 
