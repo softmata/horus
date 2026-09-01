@@ -28,7 +28,65 @@ pub fn get_cli_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Get the installed library version from ~/.horus/installed_version
+/// The root of the install state: `$HORUS_PREFIX`, else `~/.horus`.
+///
+/// install.sh:245-254 resolves it exactly this way — `HORUS_PREFIX` when it is
+/// set and non-empty, `<home>/.horus` otherwise — and then writes
+/// `installed_version`, `install_manifest.toml` and `cache/` under whatever it
+/// resolved. Every reader has to agree with it: the installer learned to
+/// relocate the state before the readers did, so a `HORUS_PREFIX=/opt/horus`
+/// install (how a fleet gets provisioned, as root, for all users) wrote state
+/// that this binary then looked for in `~/.horus` and never found. The version
+/// gate was silently off for exactly the installs that most need it, and
+/// install.sh had to print a warning saying so.
+///
+/// `HORUS_PREFIX` is the whole interface. The installer's own `HORUS_STATE_DIR`
+/// is a shell-local variable it never exports, so there is no second name to
+/// read, and no way to discover a prefix install from outside its own tree —
+/// which is why uninstall.sh takes the same variable from its environment.
+pub fn state_root() -> Result<PathBuf> {
+    Ok(resolve_state_root()?.path)
+}
+
+/// The resolved root, plus whether `HORUS_PREFIX` is what chose it.
+///
+/// The flag is not cosmetic: the remedy the mismatch message prints has to
+/// carry the same variable, or re-running the installer builds a second,
+/// complete install under `~/.horus` and leaves the one on `PATH` exactly as
+/// skewed as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateRoot {
+    path: PathBuf,
+    from_prefix: bool,
+}
+
+fn resolve_state_root() -> Result<StateRoot> {
+    // var_os, not var: a prefix is a path, and a path is not required to be
+    // UTF-8. install.sh passes whatever the caller set straight to mkdir.
+    match std::env::var_os("HORUS_PREFIX") {
+        Some(prefix) if !prefix.is_empty() => Ok(StateRoot {
+            path: PathBuf::from(prefix),
+            from_prefix: true,
+        }),
+        _ => Ok(StateRoot {
+            path: crate::paths::home_dir()?.join(".horus"),
+            from_prefix: false,
+        }),
+    }
+}
+
+/// `<state root>/cache`, holding the `horus@<version>` source trees.
+///
+/// install.sh:260 derives it from its state dir the same way, so a prefix
+/// install's source tree lands here and nowhere else. `horus run` builds user
+/// projects against that tree as a path dependency (run_rust.rs ->
+/// find_horus_source_dir), so a reader that misses this root cannot build a
+/// single Rust project on a prefix install.
+pub fn cache_root() -> Result<PathBuf> {
+    Ok(state_root()?.join("cache"))
+}
+
+/// Get the installed library version from `<state root>/installed_version`
 pub fn get_installed_version() -> Result<Option<String>> {
     let version_file = get_version_file_path()?;
 
@@ -46,12 +104,12 @@ pub fn get_installed_version() -> Result<Option<String>> {
 
 /// Get the path to the version tracking file
 pub fn get_version_file_path() -> Result<PathBuf> {
-    Ok(crate::paths::home_dir()?.join(".horus/installed_version"))
+    Ok(state_root()?.join("installed_version"))
 }
 
 /// Get the path to the richer install record written alongside it.
 pub fn get_install_manifest_path() -> Result<PathBuf> {
-    Ok(crate::paths::home_dir()?.join(".horus/install_manifest.toml"))
+    Ok(state_root()?.join("install_manifest.toml"))
 }
 
 /// What install.sh and `horus self update` record about the install they made.
@@ -76,7 +134,8 @@ pub struct InstallManifest {
     pub installed_at: Option<String>,
 }
 
-/// Read ~/.horus/install_manifest.toml, or `None` when it is absent or garbled.
+/// Read `<state root>/install_manifest.toml`, or `None` when it is absent or
+/// garbled.
 ///
 /// Returns `Option`, not `Result`, so that no caller can turn "no manifest" into
 /// a failure: every install made before this file existed lacks it, and doctor.rs
@@ -119,11 +178,48 @@ enum StateSource {
 }
 
 impl StateSource {
-    fn display_path(self) -> &'static str {
+    fn file_name(self) -> &'static str {
         match self {
-            StateSource::Manifest => "~/.horus/install_manifest.toml",
-            StateSource::LegacyVersionFile => "~/.horus/installed_version",
+            StateSource::Manifest => "install_manifest.toml",
+            StateSource::LegacyVersionFile => "installed_version",
         }
+    }
+}
+
+/// The `(from <path>)` suffix on the installed-version line.
+///
+/// Built from the resolved state root rather than a hardcoded `~/.horus`:
+/// under `HORUS_PREFIX` the state lives in the prefix, and pointing the user at
+/// `~/.horus` would send them to a directory holding none of this install's
+/// files. Empty when there is no record to attribute.
+fn state_file_hint(source: Option<StateSource>, root: Option<&Path>) -> String {
+    match (source, root) {
+        (Some(source), Some(root)) => {
+            format!("(from {})", root.join(source.file_name()).display())
+        }
+        _ => String::new(),
+    }
+}
+
+/// The installer invocation that reconciles this CLI with the state root it
+/// just read.
+///
+/// A prefix install must be repaired in place. Without `HORUS_PREFIX` on the
+/// command, the installer writes a whole second install under `~/.horus` and
+/// the binary on `PATH` — the one that printed this message — stays exactly as
+/// skewed as it was.
+fn reconcile_command(cli_version: &str, root: Option<&StateRoot>) -> String {
+    match root.filter(|root| root.from_prefix) {
+        Some(root) => format!(
+            "{} | HORUS_PREFIX={} HORUS_VERSION=v{} bash",
+            INSTALL_ONE_LINER,
+            root.path.display(),
+            cli_version
+        ),
+        None => format!(
+            "{} | HORUS_VERSION=v{} bash",
+            INSTALL_ONE_LINER, cli_version
+        ),
     }
 }
 
@@ -136,6 +232,12 @@ struct VersionCheck {
     installed_version: Option<String>,
     installed_topic_version: Option<u32>,
     source: Option<StateSource>,
+    /// Where the state was read from — `~/.horus`, or the `HORUS_PREFIX` tree.
+    /// Carried so the message names files the user can actually open, and so
+    /// the remedy repairs that install rather than a fresh one beside it.
+    /// `None` only when the root could not be resolved at all, which is also
+    /// the case where nothing was read and so nothing is printed.
+    state_root: Option<StateRoot>,
 }
 
 impl VersionCheck {
@@ -196,6 +298,7 @@ fn collect_version_check() -> VersionCheck {
         installed_version,
         installed_topic_version,
         source,
+        state_root: resolve_state_root().ok(),
     }
 }
 
@@ -288,10 +391,10 @@ fn print_version_mismatch(check: &VersionCheck) {
     );
     eprintln!();
 
-    let from = match check.source {
-        Some(source) => format!("(from {})", source.display_path()),
-        None => String::new(),
-    };
+    let from = state_file_hint(
+        check.source,
+        check.state_root.as_ref().map(|root| root.path.as_path()),
+    );
     eprintln!("  CLI version:         {}", check.cli_version.green());
     if check.version_mismatch() {
         eprintln!(
@@ -341,7 +444,18 @@ fn print_version_mismatch(check: &VersionCheck) {
         );
         eprintln!("  different installs. The version string alone does not prove they agree:");
         eprintln!("  0.4.0 shipped with two different topic ABIs, which is why topic_version");
-        eprintln!("  is recorded in ~/.horus/install_manifest.toml.");
+        eprintln!(
+            "  is recorded in {}.",
+            check
+                .state_root
+                .as_ref()
+                .map(|root| root
+                    .path
+                    .join("install_manifest.toml")
+                    .display()
+                    .to_string())
+                .unwrap_or_else(|| "install_manifest.toml".to_string())
+        );
     }
     eprintln!();
 
@@ -350,11 +464,7 @@ fn print_version_mismatch(check: &VersionCheck) {
     eprintln!("or install the exact version this CLI came from:");
     eprintln!(
         "  {}",
-        format!(
-            "{} | HORUS_VERSION=v{} bash",
-            INSTALL_ONE_LINER, check.cli_version
-        )
-        .cyan()
+        reconcile_command(&check.cli_version, check.state_root.as_ref()).cyan()
     );
     if let Some(horus_root) = find_horus_source() {
         eprintln!("or, from your HORUS checkout:");
@@ -414,6 +524,41 @@ mod tests {
             installed_version: None,
             installed_topic_version: None,
             source: None,
+            state_root: Some(StateRoot {
+                path: PathBuf::from("/home/u/.horus"),
+                from_prefix: false,
+            }),
+        }
+    }
+
+    /// Swap `HORUS_PREFIX` for the duration of a test and put it back.
+    ///
+    /// Env vars are process-global and the test binary is threaded, so every
+    /// test that reads or writes this one takes CWD_LOCK — the same lock the
+    /// HORUS_SOURCE tests in run_rust.rs use for the same reason.
+    struct PrefixGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl PrefixGuard {
+        fn set(value: Option<&Path>) -> Self {
+            let guard = PrefixGuard {
+                previous: std::env::var_os("HORUS_PREFIX"),
+            };
+            match value {
+                Some(path) => std::env::set_var("HORUS_PREFIX", path),
+                None => std::env::remove_var("HORUS_PREFIX"),
+            }
+            guard
+        }
+    }
+
+    impl Drop for PrefixGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("HORUS_PREFIX", previous),
+                None => std::env::remove_var("HORUS_PREFIX"),
+            }
         }
     }
 
@@ -459,6 +604,10 @@ mod tests {
 
     #[test]
     fn test_get_version_file_path_ends_with_expected() {
+        // Holds the env lock: a concurrent HORUS_PREFIX test would legitimately
+        // move this path out of ~/.horus.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(None);
         let path = get_version_file_path().unwrap();
         assert!(
             path.ends_with(".horus/installed_version"),
@@ -481,6 +630,8 @@ mod tests {
     fn test_get_install_manifest_path_ends_with_expected() {
         // install.sh and `horus self update` write to this exact path; if it
         // moves, the gate silently stops reading anything.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(None);
         let path = get_install_manifest_path().unwrap();
         assert!(
             path.ends_with(".horus/install_manifest.toml"),
@@ -641,6 +792,136 @@ installed_at = "2026-08-31T00:00:00Z"
         // Reads the real ~/.horus; whatever is there, it may not panic and may
         // not be an error type.
         let _ = get_install_manifest();
+    }
+
+    // ========================================================================
+    // state root resolution (HORUS_PREFIX)
+    // ========================================================================
+
+    #[test]
+    fn state_root_defaults_to_dot_horus_under_home() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(None);
+        let root = resolve_state_root().unwrap();
+        assert_eq!(root.path, crate::paths::home_dir().unwrap().join(".horus"));
+        assert!(!root.from_prefix);
+        assert_eq!(cache_root().unwrap(), root.path.join("cache"));
+    }
+
+    #[test]
+    fn state_root_follows_horus_prefix() {
+        // install.sh:245-247 sets its state dir to HORUS_PREFIX itself, not to
+        // a .horus underneath it. Reading the wrong one of those two is the
+        // same silent miss as not reading the prefix at all.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(Some(Path::new("/opt/horus")));
+
+        let root = resolve_state_root().unwrap();
+        assert_eq!(root.path, PathBuf::from("/opt/horus"));
+        assert!(root.from_prefix);
+        assert_eq!(
+            get_version_file_path().unwrap(),
+            PathBuf::from("/opt/horus/installed_version")
+        );
+        assert_eq!(
+            get_install_manifest_path().unwrap(),
+            PathBuf::from("/opt/horus/install_manifest.toml")
+        );
+        assert_eq!(cache_root().unwrap(), PathBuf::from("/opt/horus/cache"));
+    }
+
+    #[test]
+    fn an_empty_horus_prefix_is_not_a_prefix() {
+        // `HORUS_PREFIX= horus run` reaches install.sh's `[ -n "$HORUS_PREFIX" ]`
+        // as unset; rooting the state at "" here would resolve every state file
+        // to a relative path that moves with the working directory.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(Some(Path::new("")));
+        let root = resolve_state_root().unwrap();
+        assert!(!root.from_prefix);
+        assert_eq!(root.path, crate::paths::home_dir().unwrap().join(".horus"));
+    }
+
+    #[test]
+    fn state_written_under_a_prefix_is_read_back_from_it() {
+        // The end-to-end miss this fixes: install.sh wrote these two files into
+        // the prefix and every reader looked in ~/.horus, so a fleet install had
+        // no version gate at all.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prefix_dir = tempfile::tempdir().unwrap();
+        let _prefix = PrefixGuard::set(Some(prefix_dir.path()));
+
+        fs::write(prefix_dir.path().join("installed_version"), "0.3.1\n").unwrap();
+        fs::write(
+            prefix_dir.path().join("install_manifest.toml"),
+            "version = \"0.3.1\"\ntopic_version = 3\n",
+        )
+        .unwrap();
+
+        assert_eq!(get_installed_version().unwrap().as_deref(), Some("0.3.1"));
+        let manifest = get_install_manifest().expect("the manifest in the prefix must be read");
+        assert_eq!(manifest.version.as_deref(), Some("0.3.1"));
+        assert_eq!(manifest.topic_version, Some(3));
+
+        let check = collect_version_check();
+        assert_eq!(check.installed_version.as_deref(), Some("0.3.1"));
+        assert_eq!(check.installed_topic_version, Some(3));
+        assert_eq!(check.source, Some(StateSource::Manifest));
+        assert_eq!(
+            check.state_root.as_ref().map(|root| root.path.clone()),
+            Some(prefix_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn the_message_names_the_file_it_actually_read() {
+        // "(from ~/.horus/install_manifest.toml)" is a lie on a prefix install,
+        // and the file it names does not exist there.
+        assert_eq!(
+            state_file_hint(Some(StateSource::Manifest), Some(Path::new("/opt/horus"))),
+            "(from /opt/horus/install_manifest.toml)"
+        );
+        assert_eq!(
+            state_file_hint(
+                Some(StateSource::LegacyVersionFile),
+                Some(Path::new("/home/u/.horus"))
+            ),
+            "(from /home/u/.horus/installed_version)"
+        );
+        assert_eq!(state_file_hint(None, Some(Path::new("/opt/horus"))), "");
+        assert_eq!(state_file_hint(Some(StateSource::Manifest), None), "");
+    }
+
+    #[test]
+    fn the_remedy_carries_the_prefix_it_would_have_to_repair() {
+        // Without HORUS_PREFIX the one-liner installs a second, complete tree
+        // under ~/.horus and leaves the skewed binary on PATH untouched.
+        let prefixed = reconcile_command(
+            "0.4.0",
+            Some(&StateRoot {
+                path: PathBuf::from("/opt/horus"),
+                from_prefix: true,
+            }),
+        );
+        assert!(
+            prefixed.contains("HORUS_PREFIX=/opt/horus"),
+            "prefix install remedy must name the prefix: {prefixed}"
+        );
+        assert!(prefixed.contains("HORUS_VERSION=v0.4.0"), "{prefixed}");
+
+        let plain = reconcile_command(
+            "0.4.0",
+            Some(&StateRoot {
+                path: PathBuf::from("/home/u/.horus"),
+                from_prefix: false,
+            }),
+        );
+        assert!(
+            !plain.contains("HORUS_PREFIX"),
+            "a default install must not be told to set a prefix: {plain}"
+        );
+        assert!(plain.contains("HORUS_VERSION=v0.4.0"), "{plain}");
+        assert!(!reconcile_command("0.4.0", None).contains("HORUS_PREFIX"));
     }
 
     // ========================================================================

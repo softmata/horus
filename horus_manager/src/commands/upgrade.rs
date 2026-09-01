@@ -632,7 +632,8 @@ fn write_error(e: std::io::Error, dir: &Path) -> anyhow::Error {
             "no permission to write to {}. `horus self update` replaces the binary in place, so it \
              needs write access to that directory.\n  \
              Retry as: sudo -E \"$(command -v horus)\" self update\n  \
-             (-E keeps HOME, so the source cache stays in your own ~/.horus rather than root's)\n  \
+             (-E keeps HOME and HORUS_PREFIX, so the state and source cache stay where the \
+             install put them rather than under root's home)\n  \
              Or reinstall into a directory you own: curl -fsSL https://horusrobotics.dev/install | bash",
             dir.display()
         );
@@ -672,7 +673,7 @@ fn clone_at_tag(tag: &str, into: &Path) -> Result<PathBuf> {
     Ok(dest)
 }
 
-/// Move a fetched tree into `~/.horus/cache/horus@<version>`.
+/// Move a fetched tree into `<state root>/cache/horus@<version>`.
 ///
 /// The `horus@<version>` name is a contract with two readers that rebuild it
 /// from CARGO_PKG_VERSION rather than discovering it (run_rust.rs:1062,
@@ -775,7 +776,7 @@ fn build_from_source(src: &Path, work: &Path) -> Result<PathBuf> {
 
 // ── Installed state ─────────────────────────────────────────────────────────
 
-/// The record written to `~/.horus/install_manifest.toml`. install.sh writes
+/// The record written to `<state root>/install_manifest.toml`. install.sh writes
 /// the same fields; version.rs and doctor.rs read them, and must tolerate the
 /// file being absent — every install before this one predates it.
 #[derive(Debug, serde::Serialize)]
@@ -792,7 +793,7 @@ struct InstallManifest {
     installed_at: String,
 }
 
-/// Write both state files into `home` (normally `~/.horus`).
+/// Write both state files into `home` — the root [`horus_home`] resolved.
 fn write_install_state(home: &Path, manifest: &InstallManifest) -> Result<()> {
     std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
 
@@ -821,20 +822,21 @@ fn write_install_state(home: &Path, manifest: &InstallManifest) -> Result<()> {
     Ok(())
 }
 
-/// `~/.horus`, where the install state files live.
+/// Where the install state files live: `$HORUS_PREFIX`, else `~/.horus`.
 ///
-/// Not HORUS_PREFIX, even though install.sh:233 relocates the state dir for a
-/// system-wide install: version.rs:29 reads ~/.horus/installed_version and
-/// run_rust.rs looks for the cached source under ~/.horus/cache, so writing
-/// anywhere else would produce state this binary never reads back.
+/// Resolved by version.rs so that the writer and the readers cannot disagree.
+/// They did: this wrote to ~/.horus unconditionally while install.sh:245-247
+/// put a HORUS_PREFIX install's state in the prefix, so `horus self update` on
+/// a system-wide install updated the binary and then recorded that fact in a
+/// directory nothing on that machine reads — including the next `self update`.
 fn horus_home() -> Result<PathBuf> {
-    Ok(crate::paths::home_dir()?.join(".horus"))
+    crate::version::state_root()
 }
 
-/// `~/.horus/cache` — where install.sh puts the source tree and `horus clean`
-/// and uninstall.sh manage it.
+/// `<state root>/cache` — where install.sh puts the source tree and `horus
+/// clean` and uninstall.sh manage it.
 fn cache_root() -> Result<PathBuf> {
-    Ok(crate::paths::home_dir()?.join(".horus/cache"))
+    crate::version::cache_root()
 }
 
 /// The binary this process is running from: the one that has to be replaced.
@@ -1426,6 +1428,44 @@ mod tests {
 
         // Let the tempdir clean itself up.
         std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // ── Where the state goes ────────────────────────────────────────────
+
+    #[test]
+    fn state_and_cache_roots_follow_horus_prefix() {
+        // Both roots are resolved by version.rs so the writer here and the
+        // readers there cannot disagree. They did: this wrote ~/.horus while
+        // install.sh:245-247 put a prefix install's state in the prefix, so
+        // `self update` recorded the new version where nothing reads it.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("HORUS_PREFIX");
+        std::env::set_var("HORUS_PREFIX", "/opt/horus");
+        let home = horus_home();
+        let cache = cache_root();
+        match previous {
+            Some(previous) => std::env::set_var("HORUS_PREFIX", previous),
+            None => std::env::remove_var("HORUS_PREFIX"),
+        }
+
+        assert_eq!(home.unwrap(), PathBuf::from("/opt/horus"));
+        assert_eq!(cache.unwrap(), PathBuf::from("/opt/horus/cache"));
+    }
+
+    #[test]
+    fn state_and_cache_roots_default_to_dot_horus() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("HORUS_PREFIX");
+        std::env::remove_var("HORUS_PREFIX");
+        let home = horus_home();
+        let cache = cache_root();
+        if let Some(previous) = previous {
+            std::env::set_var("HORUS_PREFIX", previous);
+        }
+
+        let home = home.unwrap();
+        assert_eq!(home, crate::paths::home_dir().unwrap().join(".horus"));
+        assert_eq!(cache.unwrap(), home.join("cache"));
     }
 
     // ── Install state ───────────────────────────────────────────────────
