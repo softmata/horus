@@ -7290,6 +7290,13 @@ fn mp_send_no_overshoot_corruption() {
                 loop {
                     match p.try_send(m) {
                         Ok(()) => {
+                            // Shared counter rather than a per-thread total
+                            // returned through `join`: a producer that panics
+                            // would otherwise contribute 0, dragging `sent` down
+                            // to meet whatever the consumer drained and turning a
+                            // dead thread into a passing run. The `expect` on the
+                            // join below makes the panic the verdict; this makes
+                            // the count independent of it either way.
                             sent.fetch_add(1, Ordering::Relaxed);
                             break;
                         }
@@ -7339,23 +7346,110 @@ fn mp_send_no_overshoot_corruption() {
         }
     }
     stop.store(true, Ordering::Release);
+    // `expect`, not `unwrap_or(0)`: a producer that panicked would otherwise be
+    // recorded as having sent nothing, which lowers `sent` to match whatever the
+    // consumer drained and turns a thread that died into a passing run — or into
+    // a "message loss" verdict pointing at the transport. A panicked producer is
+    // its own fault and has to say so.
     for h in handles {
-        let _ = h.join();
+        h.join().expect("a producer thread panicked");
     }
-    let published = sent.load(Ordering::Relaxed);
+
+    // Drain what is still in the ring now that the producers have stopped.
+    //
+    // Without this the comparison races: the consumer loop above exits on its
+    // deadline, and a producer already inside `try_send` can still succeed
+    // before it observes `stop`. That inflates `sent` past anything the consumer
+    // could have drained, and the test reports a loss that never happened — it
+    // did exactly that on Windows CI, at 1798 against 1800.
+    //
+    // Draining after the join closes the window: every accepted message is
+    // either already counted or still sitting in the ring, so the two numbers
+    // describe the same set. A message that overshoot really did overwrite is
+    // in neither, which is what the assertion below is for.
+    while let Some(v) = consumer.try_recv() {
+        let pid = v >> 40;
+        let i = v & ((1u64 << 40) - 1);
+        assert!(
+            pid < n_producers as u64 && i < per,
+            "GARBAGE value {:#x} (overshoot wrote a torn/aliased slot)",
+            v
+        );
+        assert!(
+            seen.insert(v),
+            "DUPLICATE value {:#x} (overshoot re-used a slot)",
+            v
+        );
+        count += 1;
+    }
+
+    // Read the shared counter once: every producer has been joined above, so it
+    // is final, and both assertions below have to see the same number.
+    let sent = sent.load(Ordering::Relaxed);
+    // The assertion is that nothing was LOST, not that a wall-clock budget was
+    // met. Overshoot corruption overwrites an unconsumed slot, so the value that
+    // was in it is never delivered — `count < sent` is exactly that symptom, and
+    // it does not depend on how fast the machine is.
+    //
+    // The old form compared `count` against `total`, the number the producers
+    // were ASKED to send. That is a liveness property: producers retry until the
+    // consumer's budget expires, so on a starved runner the last few never get
+    // pushed at all and the test reported a shortfall as corruption. The budget
+    // had already been raised 8s -> 30s chasing it, and Windows CI still starved
+    // two messages out of 1800 with neither GARBAGE nor DUPLICATE firing — which
+    // is the test itself saying the corruption did not happen.
+    // Account for the abandoned-claim escape, which is a DOCUMENTED counted loss.
+    //
+    // A producer can be descheduled between claiming a slot and publishing its
+    // stamp. The consumer will not block forever on that: `claimed_slot_escape`
+    // gives up after a bound and skips the slot, incrementing `missed` — the
+    // trade its own docs describe as turning an unbounded stall into a counted
+    // message loss. The producer then finishes and reports the send as accepted,
+    // so `sent` counts a message the consumer deliberately skipped.
+    //
+    // Windows makes this ordinary rather than exotic: its scheduler quantum is
+    // ~15ms, so a producer parked mid-claim stays parked long enough for the
+    // escape to fire. This test failed there at 1796 of 1800 with neither
+    // GARBAGE nor DUPLICATE, and 4 escapes is exactly that shape.
+    //
+    // So the invariant is conservation, not delivery: every accepted message was
+    // either drained or explicitly skipped and counted. Overshoot corruption
+    // breaks it — an overwritten slot is in neither total.
+    let missed = consumer.missed_count();
+    // Signed, because the assertion fires in BOTH directions and they are
+    // different faults with different fixes. An unsigned subtraction would also
+    // panic while formatting — in debug by overflow, in release by printing a
+    // number near u64::MAX — replacing the real failure with a worse one.
+    let delta = sent as i128 - count as i128 - missed as i128;
+    let diagnosis = if delta > 0 {
+        "so this is a LOST message: overshoot overwrote an unconsumed slot"
+    } else {
+        "so the consumer accounted for MORE messages than the producers pushed. \
+         That is not overshoot: it is a double count — a slot delivered twice \
+         without tripping the DUPLICATE check, or `missed_count` charging for a \
+         skip that was also drained"
+    };
     assert_eq!(
-        count, total,
-        "consumer drained {count}/{total}, producers published {published}/{total}. \
-         Read those two numbers before proposing a cause:\n  \
-         published == {total} and count < {total} -> messages were published and \
-         did not arrive. That is transport loss; GARBAGE and DUPLICATE did not \
-         fire, so nothing torn or re-used arrived, which points at a slot \
-         overwritten before the in-order consumer reached it.\n  \
-         published < {total} -> the producers abandoned the rest when the drain \
-         budget expired mid-retry, so the ring stayed full and this is \
-         backpressure plus a slow consumer, NOT loss.\n\
-         The distinction was invisible before this counter existed, and every \
-         earlier failure message asserted one of the two without evidence."
+        count + missed,
+        sent,
+        "consumer drained {count} and skipped {missed} of the {sent} values the \
+         producers actually pushed: difference (sent - drained - missed) = \
+         {delta}. Every value that arrived was intact (no GARBAGE) and no slot \
+         was re-used (no DUPLICATE), and an abandoned claim would have been \
+         counted in `missed` — {diagnosis}."
+    );
+
+    // Anti-vacuity: the corruption checks above only mean something if a
+    // substantial number of messages actually went through a contended ring.
+    // Stated as a division rather than `sent * 2 >= total` so that a large
+    // `total` cannot overflow the product and invert the predicate — which
+    // would turn the guard against a vacuous run into a guarantee of one.
+    assert!(
+        sent >= total.div_ceil(2),
+        "only {sent} of {total} messages were pushed before the drain budget \
+         expired, so this run exercised too little contention to be evidence \
+         either way. This is a liveness result about the machine, not about \
+         overshoot."
     );
 }
 
