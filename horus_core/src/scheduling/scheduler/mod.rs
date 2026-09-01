@@ -3315,6 +3315,45 @@ impl Scheduler {
     ///
     /// Returns `true` if the scheduler should stop (emergency stop triggered).
     fn check_safety_monitors(&mut self) -> bool {
+        // An EXTERNAL safe-state request -- a lost network link under
+        // `safety.on_link_lost = "safe_state"` -- reaches the scheduler as a
+        // state written by `install_safe_state_hook`. Consume it here and
+        // actually safe the robot.
+        //
+        // Nothing used to read that state. The hook set it, printed "nodes
+        // safing, scheduler continues", and no node was safed: the operator who
+        // chose per-node safing over a full halt got neither. This is the one
+        // safety path with no node to blame, so every node is driven, by both
+        // routes -- the scheduler owns only BestEffort nodes after the class
+        // partition, and `enter_safe_state()` needs `&mut dyn Node`, so an
+        // executor-owned node is reached through the shared control map and
+        // safed by its owning executor's `honor_safe_state_request`.
+        if self
+            .monitor
+            .safety
+            .as_ref()
+            .is_some_and(|m| m.take_external_safe_state())
+        {
+            if let Some(ref controls) = self.node_controls {
+                controls.request_safe_state_all();
+            }
+            for registered in self.nodes.iter_mut() {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    registered.node.enter_safe_state()
+                }))
+                .is_err()
+                {
+                    // It did not reach a safe state. Stop it rather than let it
+                    // keep ticking as though it had.
+                    registered.is_stopped = true;
+                    print_line(&format!(
+                        " SAFE STATE: '{}' PANICKED in enter_safe_state; node stopped",
+                        registered.name
+                    ));
+                }
+            }
+        }
+
         if let Some(ref monitor) = self.monitor.safety {
             // Use graduated check for per-node health state transitions
             monitor.check_watchdogs_graduated(&mut self.monitor.watchdog_graduated_buf);

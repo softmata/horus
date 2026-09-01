@@ -752,6 +752,14 @@ pub(crate) struct SafetyMonitor {
     degradation_policy: DegradationPolicy,
     /// Per-node degradation state
     degradation_states: Mutex<HashMap<String, NodeDegradationState>>,
+    /// A NEW external safe-state request the tick loop has not acted on yet.
+    ///
+    /// Separate from `state`, which latches `SafetyState::SafeState` as an
+    /// observable CONDITION and must stay set. This is the EDGE: it is raised
+    /// once per external trigger and cleared once the scheduler has driven the
+    /// nodes, so one link loss produces one round of safing rather than a fresh
+    /// request on every tick for the rest of the run.
+    external_safe_state_pending: AtomicBool,
 }
 
 /// A cheap, cloneable handle for feeding node watchdogs from another thread.
@@ -823,6 +831,7 @@ impl SafetyMonitor {
             degrade_activations: AtomicU64::new(0),
             degradation_policy: DegradationPolicy::default(),
             degradation_states: Mutex::new(HashMap::new()),
+            external_safe_state_pending: AtomicBool::new(false),
         }
     }
 
@@ -1297,11 +1306,19 @@ impl SafetyMonitor {
     /// Deliberately does NOT set `emergency_stop`: that flag ends the run loop,
     /// which is exactly the outcome an operator choosing `safe_state` over
     /// `stop` asked to avoid.
-    pub(crate) fn install_safe_state_hook(&self) {
+    pub(crate) fn install_safe_state_hook(self: &Arc<Self>) {
         let state = Arc::clone(&self.state);
+        let pending = Arc::clone(self);
         set_safe_state_hook(move |reason| {
             *state.lock() = SafetyState::SafeState;
+            pending
+                .external_safe_state_pending
+                .store(true, Ordering::Release);
             use std::io::Write;
+            // The claim in this line is now true. The scheduler's tick loop
+            // consumes the state via `take_external_safe_state` and drives every
+            // node to `enter_safe_state()`; until it did, this message was the
+            // only thing that happened.
             let _ = writeln!(
                 std::io::stderr(),
                 " SAFE STATE (external): {reason} — nodes safing, scheduler continues"
@@ -1318,6 +1335,22 @@ impl SafetyMonitor {
             use std::io::Write;
             let _ = writeln!(std::io::stderr(), " EMERGENCY STOP (external): {reason}");
         });
+    }
+
+    /// Consume a pending EXTERNAL safe-state request, if one was raised.
+    ///
+    /// `install_safe_state_hook` used to set `SafetyState::SafeState` and print
+    /// "nodes safing, scheduler continues" -- and nothing anywhere read that
+    /// state. The only write was the hook's own; `grep SafetyState::` outside
+    /// this file returned nothing. So `safety.on_link_lost = "safe_state"` told
+    /// the operator the robot was safing and safed no node: a robot that lost
+    /// its link to the fleet controller kept executing its last command, with a
+    /// reassuring line on stderr.
+    ///
+    /// The state is cleared on read so one link-loss produces one round of
+    /// safing rather than a safing request on every tick forever.
+    pub(crate) fn take_external_safe_state(&self) -> bool {
+        self.external_safe_state_pending.swap(false, Ordering::AcqRel)
     }
 
     /// Get current safety state
