@@ -2268,7 +2268,40 @@ fn json_unsupported_message(args: &[String], e: &clap::Error) -> Option<String> 
     ))
 }
 
+/// Stack for the thread the CLI actually runs on.
+///
+/// Windows gives a process's main thread 1 MiB, against 8 MiB on Linux and
+/// macOS, and a debug build of this binary sits close enough to that ceiling
+/// that `horus doctor` and `horus check` died with STATUS_STACK_OVERFLOW
+/// (0xc00000fd) on windows-latest while passing everywhere else. Verified by
+/// reproducing it on Linux under `ulimit -s 1024`, on this commit and on main
+/// — the margin was already thin and adding to a check spent it.
+///
+/// Growing one check's frame back down would only move the ceiling, and the
+/// next thing added to any command walks into it again on the one platform
+/// nobody develops on. Running the CLI on a thread whose stack we choose makes
+/// the three platforms agree instead.
+const CLI_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 fn main() {
+    // The real entry point runs on a thread with a stack we control; see
+    // CLI_STACK_SIZE. A failure to spawn leaves nothing sensible to fall back
+    // on, so it propagates rather than silently running with the default stack
+    // and crashing later somewhere less obvious.
+    let worker = std::thread::Builder::new()
+        .name("horus-cli".to_string())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(cli_main)
+        .expect("failed to spawn the CLI thread");
+    match worker.join() {
+        Ok(()) => {}
+        // The thread already printed the panic. Re-panicking here would print a
+        // second, less useful message pointing at this line.
+        Err(_) => std::process::exit(101),
+    }
+}
+
+fn cli_main() {
     // First, try to handle as a plugin command before clap parsing
     // This allows plugins to be invoked as: `horus <plugin-name> [args...]`
     let args: Vec<String> = std::env::args().collect();
