@@ -59,6 +59,16 @@ macro_rules! impl_topic_ffi {
                 publisher.topic.send(msg);
             }
 
+            /// Messages this publisher could not place and gave up on.
+            ///
+            /// `send()` retries briefly and then drops rather than blocking. A
+            /// rising value means the ring is saturated and downstream is too slow.
+            pub fn [<publisher_ $snake _dropped_count>](
+                publisher: &FfiPublisher<$type_path>,
+            ) -> u64 {
+                publisher.topic.dropped_count()
+            }
+
             /// Get the topic name.
             pub fn [<publisher_ $snake _name>](publisher: &FfiPublisher<$type_path>) -> &str {
                 publisher.topic.name()
@@ -84,6 +94,18 @@ macro_rules! impl_topic_ffi {
                 subscriber: &FfiSubscriber<$type_path>,
             ) -> bool {
                 subscriber.topic.has_message()
+            }
+
+            /// Messages this subscriber was lapped past and never delivered.
+            ///
+            /// HORUS topics are lossy by design -- a full ring overwrites the
+            /// oldest unconsumed slot rather than blocking the publisher. Without
+            /// this, a C++ node had no way to learn that it had missed a sensor
+            /// frame; the counter existed in Rust and stopped at the FFI boundary.
+            pub fn [<subscriber_ $snake _missed_count>](
+                subscriber: &FfiSubscriber<$type_path>,
+            ) -> u64 {
+                subscriber.topic.missed_count()
             }
 
             /// Get the topic name.
