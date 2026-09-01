@@ -99,6 +99,27 @@ pub fn trigger_external_safe_state(reason: String) {
 /// on the safety path — never an unwrap-panic.
 static PENDING_LOCAL_ESTOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Serialises the tests that latch an emergency stop.
+///
+/// `PENDING_LOCAL_ESTOP` is a single process-global slot and `take()` empties
+/// it, but cargo runs this file's tests concurrently in one binary. Every test
+/// that latches a local e-stop writes its reason there on the rising edge, so a
+/// neighbour could overwrite the reason a test had just queued, or drain it
+/// before that test looked. `trigger_queues_the_fleet_broadcast_on_the_rising_edge`
+/// failed intermittently on `main` for exactly that reason -- nothing to do with
+/// the invariant it was written to check.
+///
+/// Every test that reaches `trigger_emergency_stop`, by any route, must hold
+/// this. It is not about thread-safety of the code under test, which is fine;
+/// it is about two tests sharing one mailbox.
+#[cfg(test)]
+static ESTOP_QUEUE_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn estop_queue_guard() -> std::sync::MutexGuard<'static, ()> {
+    ESTOP_QUEUE_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Drain the pending LOCAL-origin e-stop reason (if any) for network broadcast.
 ///
 /// Called by horus_net's replicator tick. Returns `Some(reason)` exactly once per
@@ -1093,15 +1114,39 @@ impl SafetyMonitor {
     /// dispatch and `evaluate_degradation`; only the `max_deadline_misses`
     /// ceiling — an explicitly configured number — stops the robot here.
     pub(crate) fn record_deadline_miss_with_severity(&self, node_name: &str, severity_us: u64) {
-        let misses = self.deadline_misses.fetch_add(1, Ordering::SeqCst) + 1;
+        // Process-wide total, kept for the timing report only. It used to be
+        // the e-stop trigger, and as a LIFETIME count across EVERY node that
+        // was indefensible on a real robot: `max_deadline_misses` defaults to
+        // 100, so a 1 kHz arm that missed its deadline once every few minutes
+        // and recovered immediately each time -- 0.0028% of its ticks over an
+        // hour, an exceptionally healthy control loop -- accumulated its way to
+        // a full emergency stop. Nothing reset it, so a long enough run halted
+        // regardless of health, and one badly tuned node spent the whole
+        // robot's budget.
+        self.deadline_misses.fetch_add(1, Ordering::SeqCst);
 
-        // Track per-node deadline miss data
-        self.budget_enforcer
-            .lock()
-            .record_deadline_miss(node_name, severity_us);
+        // The ceiling is now per node and CONSECUTIVE, which is the thing an
+        // operator setting a "maximum deadline misses" actually means: this node
+        // is not keeping up right now. A run of misses is a node in trouble; a
+        // scattered few that each recover are jitter, and jitter on a stock
+        // kernel is not a reason to stop a robot. `consecutive_misses` is reset
+        // by `check_budget` on any tick that did not violate, so recovery
+        // genuinely clears the count.
+        let consecutive = {
+            let mut enforcer = self.budget_enforcer.lock();
+            enforcer.record_deadline_miss(node_name, severity_us);
+            enforcer
+                .node_timing
+                .get(node_name)
+                .map(|s| s.consecutive_misses)
+                .unwrap_or(0)
+        };
 
-        if misses >= self.max_deadline_misses {
-            self.trigger_emergency_stop(format!("Too many deadline misses: {}", misses));
+        if consecutive >= self.max_deadline_misses {
+            self.trigger_emergency_stop(format!(
+                "node '{}' missed its deadline {} times consecutively (limit {})",
+                node_name, consecutive, self.max_deadline_misses
+            ));
         }
     }
 
@@ -1421,6 +1466,7 @@ mod tests {
     /// Verify that feeding a watchdog resets the expiry flag.
     #[test]
     fn test_watchdog_feed_clears_expired() {
+        let _estop_serial = super::estop_queue_guard();
         use std::thread;
 
         let wd = Watchdog::new(10_u64.ms());
@@ -1451,6 +1497,7 @@ mod tests {
     /// (double panic); post-fix it latches, ignores the write error, and exits 0.
     #[test]
     fn emergency_stop_latches_even_when_stderr_write_fails() {
+        let _estop_serial = super::estop_queue_guard();
         // Child branch: parent redirected our stderr to /dev/full before exec.
         if std::env::var("HORUS_ESTOP_STDERR_CHILD").is_ok() {
             let monitor = SafetyMonitor::new(100);
@@ -1564,6 +1611,7 @@ mod tests {
     /// ceiling.
     #[test]
     fn test_critical_node_deadline_miss_does_not_trigger_emergency_stop() {
+        let _estop_serial = super::estop_queue_guard();
         let monitor = SafetyMonitor::new(100);
         monitor.add_critical_node("critical".to_string(), 1_u64.secs());
 
@@ -2519,6 +2567,7 @@ mod tests {
 
     #[test]
     fn test_emergency_stop_sets_flag_and_state() {
+        let _estop_serial = super::estop_queue_guard();
         let monitor = SafetyMonitor::new(100);
         assert!(!monitor.is_emergency_stop());
 
@@ -2527,23 +2576,72 @@ mod tests {
         assert!(monitor.is_emergency_stop());
     }
 
-    /// Inverted alongside `test_critical_node_deadline_miss_does_not_trigger_emergency_stop`:
-    /// watchdog membership is no longer an escalation trigger, so neither a
-    /// watchdogged nor a plain node e-stops on a single miss. The e-stop now
-    /// comes from the explicitly configured `max_deadline_misses` ceiling.
+    /// The defect this change exists for: a healthy robot must not e-stop just
+    /// for running a long time.
+    ///
+    /// `deadline_misses` was a process-wide count that NOTHING ever reset, and
+    /// `max_deadline_misses` defaults to 100. So a 1 kHz arm that missed its
+    /// deadline once every few minutes and recovered immediately -- 0.0028% of
+    /// its ticks over an hour, an exceptionally healthy control loop -- ground
+    /// its way to a full emergency stop, and a longer run would always get
+    /// there eventually whatever its health. That is a timer wearing a safety
+    /// threshold's name.
+    ///
+    /// Here one node misses ten times the ceiling, recovering between each. It
+    /// must not stop the robot.
+    #[test]
+    fn a_node_that_recovers_between_misses_never_reaches_the_ceiling() {
+        let _estop_serial = super::estop_queue_guard();
+        let ceiling = 5u64;
+        let monitor = SafetyMonitor::new(ceiling);
+        monitor.set_tick_budget("wheel_controller".to_string(), Duration::from_millis(1));
+
+        for _ in 0..(ceiling * 10) {
+            monitor.record_deadline_miss("wheel_controller");
+            // A tick inside budget: `check_budget` clears the consecutive run.
+            let _ = monitor.check_tick_budget("wheel_controller", Duration::from_micros(100));
+        }
+
+        assert!(
+            !monitor.is_emergency_stop(),
+            "{} misses, each immediately recovered, must not e-stop a robot \
+             whose ceiling is {} consecutive",
+            ceiling * 10,
+            ceiling
+        );
+    }
+
+    /// Watchdog membership is not an escalation trigger, so neither a
+    /// watchdogged nor a plain node e-stops on a single miss. The e-stop comes
+    /// from the configured `max_deadline_misses` ceiling — reached by ONE node,
+    /// consecutively.
+    ///
+    /// The earlier version of this test summed a miss on `arm_controller` with
+    /// two on `balance_controller` to reach a ceiling of 3. That is the
+    /// process-wide reading: one node's misses spent another node's safety
+    /// budget, so a chatty logger could halt an arm.
     #[test]
     fn test_deadline_misses_estop_only_at_the_configured_ceiling() {
+        let _estop_serial = super::estop_queue_guard();
         let monitor = SafetyMonitor::new(3);
         monitor.add_critical_node("balance_controller".to_string(), Duration::from_millis(100));
 
         monitor.record_deadline_miss("arm_controller");
         assert!(!monitor.is_emergency_stop());
 
-        // A watchdogged node missing once is no longer fatal either.
+        // A watchdogged node missing once is not fatal either.
         monitor.record_deadline_miss("balance_controller");
         assert!(!monitor.is_emergency_stop());
 
-        // Third miss reaches max_deadline_misses = 3 — that is what stops us.
+        // A second consecutive miss on it is still under the ceiling of 3 — and
+        // the unrelated `arm_controller` miss does not count toward it.
+        monitor.record_deadline_miss("balance_controller");
+        assert!(
+            !monitor.is_emergency_stop(),
+            "arm_controller's miss must not count toward balance_controller's ceiling"
+        );
+
+        // Its third consecutive miss reaches the ceiling.
         monitor.record_deadline_miss("balance_controller");
         assert!(monitor.is_emergency_stop());
     }
@@ -3042,26 +3140,47 @@ mod tests {
         assert_eq!(enforcer.get_overrun_count(), 1099);
     }
 
-    /// Multiple deadline misses just under max should not trigger emergency stop,
-    /// but the Nth miss (at max) should trigger it.
+    /// The ceiling is per node and consecutive, so misses spread across
+    /// DIFFERENT nodes never reach it.
+    ///
+    /// This test used to record one miss each on ten different nodes and expect
+    /// an e-stop, which is the behaviour that made `max_deadline_misses` a
+    /// lifetime process-wide total: ten unrelated nodes each hiccuping once
+    /// halted the robot, and nothing ever reset the count, so a long enough run
+    /// halted whatever its health. Now one node has to miss `max` times in a row
+    /// -- it is not keeping up, right now -- which is what the setting reads as.
     #[test]
     fn test_deadline_miss_threshold_exact() {
+        let _estop_serial = super::estop_queue_guard();
         let max_misses = 10u64;
         let monitor = SafetyMonitor::new(max_misses);
 
-        // Record max_misses - 1 misses on non-critical nodes
-        for i in 0..(max_misses - 1) {
+        // Misses scattered across many nodes must NOT reach the ceiling, however
+        // many there are in total.
+        for i in 0..(max_misses * 3) {
             monitor.record_deadline_miss(&format!("node_{}", i));
+        }
+        assert!(
+            !monitor.is_emergency_stop(),
+            "{} misses spread over {} different nodes must not e-stop: none of \
+             them missed twice in a row",
+            max_misses * 3,
+            max_misses * 3
+        );
+
+        // But one node missing max_misses - 1 times consecutively still must not.
+        for i in 0..(max_misses - 1) {
+            monitor.record_deadline_miss("one_bad_node");
             assert!(
                 !monitor.is_emergency_stop(),
-                "should not estop at miss {} / {}",
+                "should not estop at consecutive miss {} / {}",
                 i + 1,
                 max_misses
             );
         }
 
-        // The Nth miss triggers emergency stop
-        monitor.record_deadline_miss("final_node");
+        // The Nth CONSECUTIVE miss on that same node triggers emergency stop.
+        monitor.record_deadline_miss("one_bad_node");
         assert!(
             monitor.is_emergency_stop(),
             "should estop at miss {}/{}",
@@ -3309,6 +3428,7 @@ mod tests {
     /// Multiple emergency stop triggers: idempotent — state stays EmergencyStop.
     #[test]
     fn test_multiple_emergency_stops_idempotent() {
+        let _estop_serial = super::estop_queue_guard();
         let monitor = SafetyMonitor::new(100);
 
         monitor.trigger_emergency_stop("first".to_string());
@@ -3338,6 +3458,7 @@ mod tests {
     /// set unconditional.
     #[test]
     fn test_rising_edge_queues_pending_only_on_edge() {
+        let _estop_serial = super::estop_queue_guard();
         // Global slot — drain any residue left by other tests first.
         let _ = take_pending_local_estop();
 
@@ -3371,6 +3492,7 @@ mod tests {
     /// Proven RED→GREEN by forcing the set unconditional.
     #[test]
     fn test_antistorm_remote_estop_not_rebroadcast() {
+        let _estop_serial = super::estop_queue_guard();
         // Global slot — drain any residue left by other tests first.
         let _ = take_pending_local_estop();
 
@@ -3547,6 +3669,7 @@ mod estop_trigger_tests {
     /// reporting Normal and queued nothing for the fleet broadcast.
     #[test]
     fn trigger_from_a_handle_latches_state_like_the_monitor() {
+        let _estop_serial = super::estop_queue_guard();
         let monitor = SafetyMonitor::new(10);
         let trigger = monitor.estop_trigger();
 
@@ -3567,6 +3690,7 @@ mod estop_trigger_tests {
     /// told this one stopped.
     #[test]
     fn trigger_queues_the_fleet_broadcast_on_the_rising_edge() {
+        let _guard = estop_queue_guard();
         let _ = take_pending_local_estop(); // clear any prior test's edge
         let monitor = SafetyMonitor::new(10);
         let trigger = monitor.estop_trigger();
@@ -3584,6 +3708,7 @@ mod estop_trigger_tests {
     /// halting gets a broadcast per tick.
     #[test]
     fn a_second_trigger_does_not_requeue_a_broadcast() {
+        let _guard = estop_queue_guard();
         let _ = take_pending_local_estop();
         let monitor = SafetyMonitor::new(10);
         let trigger = monitor.estop_trigger();
