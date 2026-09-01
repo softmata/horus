@@ -1,9 +1,14 @@
-//! Real-time scheduling — priority, memory locking, CPU affinity.
+//! Real-time scheduling — priority, memory locking, CPU affinity, locking.
 //!
 //! Provides platform-specific RT primitives:
 //! - **Linux**: `SCHED_FIFO` + `mlockall` + `sched_setaffinity`
 //! - **macOS**: `THREAD_TIME_CONSTRAINT_POLICY` via Mach
 //! - **Windows**: `REALTIME_PRIORITY_CLASS` + `SetThreadPriority`
+//!
+//! Plus [`PiMutex`], the priority-inheriting mutex. Setting `SCHED_FIFO` on a
+//! control thread is only half the job: a plain futex lock shared with a
+//! lower-priority thread reintroduces unbounded blocking no matter how the
+//! scheduler is configured, so the lock belongs next to the scheduling calls.
 //!
 //! Higher-level types (RtConfig, RuntimeCapabilities) remain in horus_core.
 //! This module provides the raw platform primitives they call.
@@ -14,8 +19,11 @@ use std::time::Duration;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod pi_mutex;
 #[cfg(target_os = "windows")]
 mod windows;
+
+pub use pi_mutex::{priority_inheritance_available, PiMutex, PiMutexGuard};
 
 // ============================================================================
 // RT Capabilities (platform-aware detection)
