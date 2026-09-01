@@ -466,7 +466,12 @@ jobs:
           pip install maturin
           cd horus_py
           maturin build --release
-          pip install --force-reinstall target/wheels/*.whl
+          # horus_py is a workspace member, so cargo (and maturin, which
+          # shells out to it) puts the wheel under the *workspace* target
+          # dir, i.e. ../target/wheels, not horus_py/target/wheels. The
+          # literal-glob "no such file" pip previously reported was this
+          # path being wrong, not the glob failing to expand.
+          pip install --force-reinstall ../target/wheels/*.whl
 
       - name: Confirm the wheel is the real module
         run: |
