@@ -27,27 +27,50 @@
 //! binary*, which is why `--test-threads=1` helps; it has no say over the other
 //! test binaries.
 //!
-//! # The release-mode half of that, which is NOT contention
+//! # A release-only failure that did NOT hold up
 //!
-//! Measured separately: in a `--release` build these fail roughly 2 runs in 5
-//! even when the file is run ALONE and serialized, on an idle machine, with the
-//! Python extension built by `maturin develop --release` in a venv exactly as CI
-//! does. The same file passes 22/22 in a debug build under the same conditions.
-//! It reproduces identically on `origin/main`, so it predates the branch this
-//! note was written on.
+//! A note here previously claimed these fail roughly 2 runs in 5 in a `--release`
+//! build even when run alone on an idle machine, and pointed at a release/debug
+//! split as the thing to chase. Retested: 22/22 in a full release run, plus 15
+//! consecutive runs of the individual test — five of them under ten CPU spinners
+//! (ten `yes > /dev/null` processes, one per core, to keep every core busy while
+//! the test ran), with and without clearing `/dev/shm` between runs. The claim
+//! does not reproduce and is withdrawn.
 //!
-//! The failure shape is always the same: the Python child reports having sent
-//! its full count (`CHILD_SENT:396`) and the Rust side receives 0. So the child
-//! runs and publishes; nothing arrives. A wall-clock window that a loaded
-//! machine closes early does not explain a run where the machine is idle and the
-//! sender completed, which is why "contention" is not the whole story here and
-//! the release/debug split is the thing to chase — most likely a difference in
-//! how fast the Rust side reaches its first `recv()` relative to the child's
-//! startup, since release removes most of the setup cost on one side only.
+//! What most likely produced it, recorded so nobody re-derives it: those
+//! measurements were taken while the Python extension was being rebuilt and
+//! reinstalled repeatedly — a force-reinstalled wheel in site-packages, then
+//! `maturin develop --release` into a virtualenv that was later deleted, while
+//! `PYTHONPATH` pointed at the in-tree `horus_py/`. A child that loads a
+//! half-installed or mismatched extension connects to nothing, and "sent 396,
+//! received 0" is exactly that shape: a clean zero rather than a partial count.
 //!
-//! Recorded rather than fixed: the fix belongs with someone who can decide
-//! whether the receive loops should wait for a subscriber to register instead of
-//! racing a deadline, which is a change to what these tests assert.
+//! Treat that as an observed pattern and not a rule. A timing race often does
+//! leave a partial count, which is why the zero stood out — but it can produce a
+//! clean zero too, if the child never completes its subscription before the
+//! producer finishes. The count is a hint about where to look first, not a
+//! diagnosis; the check below is what actually settles it.
+//!
+//! The lesson is about method, not this code: when a cross-language test starts
+//! failing, check WHICH extension the child actually loaded before concluding
+//! anything about the transport. `PYTHONPATH` takes precedence over
+//! site-packages, so a stale in-tree `.so` — or one built against a different
+//! `TOPIC_VERSION` — silently wins, and the symptom is a clean zero.
+//!
+//! Concretely, print it from the child before anything else runs:
+//!
+//! ```python
+//! import horus, horus._horus as ext
+//! print("horus     :", horus.__file__)
+//! print("extension :", ext.__file__)
+//! print("version   :", horus.__version__)
+//! ```
+//!
+//! `ext.__file__` is the one that matters — `horus/__init__.py` can resolve from
+//! the in-tree package while the compiled module comes from somewhere else
+//! entirely. If those two paths straddle a virtualenv boundary, or the version
+//! disagrees with the Rust side, stop and fix the install before reading
+//! anything into the transport.
 //!
 //! Widening the windows is not a fix on its own: the loops run to their
 //! deadline rather than stopping once they have what they need, so a longer
