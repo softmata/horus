@@ -608,9 +608,8 @@ impl RegisteredNode {
                 // policy's restart budget still governs whether we try again,
                 // which is why this stays `false` rather than stopping the
                 // scheduler outright.
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.node.init()
-                }));
+                let outcome =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.node.init()));
                 let failure = match outcome {
                     Ok(Ok(())) => None,
                     Ok(Err(e)) => Some(e.to_string()),

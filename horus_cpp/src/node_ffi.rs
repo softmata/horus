@@ -606,8 +606,11 @@ mod tests {
     /// uninitialised state.
     #[test]
     fn panic_in_init_is_reported_as_an_init_failure() {
-        let mut node = CppNode::new("boot_fail".to_string(), Box::new(|| {}))
-            .with_lifecycle(Some(Box::new(|| panic!("device not present"))), None, None);
+        let mut node = CppNode::new("boot_fail".to_string(), Box::new(|| {})).with_lifecycle(
+            Some(Box::new(|| panic!("device not present"))),
+            None,
+            None,
+        );
 
         let result = node.init();
 
