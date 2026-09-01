@@ -1,4 +1,4 @@
-# HORUS Installer (Windows, PowerShell)
+﻿# HORUS Installer (Windows, PowerShell)
 #
 # One-line install:
 #   irm https://github.com/softmata/horus/raw/main/install.ps1 | iex

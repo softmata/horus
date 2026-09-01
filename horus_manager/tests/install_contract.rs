@@ -89,6 +89,39 @@ fn clone_is_piped(code: &str) -> bool {
 
 /// The shipped binary is meant to carry `schema` — the crate comment says so.
 /// Disabling default features contradicts that and, for a while, did not build.
+/// Windows PowerShell 5.1 reads a BOM-less file as ANSI, not UTF-8.
+///
+/// Every `.ps1` here contains non-ASCII (box-drawing and check marks in the
+/// output), and without a BOM 5.1 mis-decodes those bytes and then fails to
+/// parse the script — `acceptance_windows.ps1` died with
+/// "Missing closing '}' in statement block" pointing at a line whose braces are
+/// balanced. It went unseen because the job carried `continue-on-error`.
+///
+/// pwsh 7 defaults to UTF-8 and does not need the BOM, so this cannot be caught
+/// by running the scripts on a modern shell; the byte has to be asserted.
+#[test]
+fn powershell_scripts_are_bom_prefixed_utf8() {
+    let mut missing = Vec::new();
+    for rel in [
+        "install.ps1",
+        "uninstall.ps1",
+        "tests/docker/acceptance_windows.ps1",
+    ] {
+        let bytes = std::fs::read(repo_root().join(rel))
+            .unwrap_or_else(|e| panic!("{rel} must exist: {e}"));
+        let has_non_ascii = bytes.iter().any(|b| !b.is_ascii());
+        let has_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+        if has_non_ascii && !has_bom {
+            missing.push(rel);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these .ps1 files contain non-ASCII and have no UTF-8 BOM, so Windows \
+         PowerShell 5.1 will mis-decode and fail to parse them: {missing:?}"
+    );
+}
+
 #[test]
 fn install_sh_does_not_disable_default_features() {
     let text = install_sh();

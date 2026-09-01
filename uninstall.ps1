@@ -1,4 +1,4 @@
-# HORUS Uninstallation Script v2.7.0 (Windows PowerShell)
+﻿# HORUS Uninstallation Script v2.7.0 (Windows PowerShell)
 # Complete removal of HORUS CLI, libraries, binaries, cache, and artifacts
 # Native Windows PowerShell version — no bash/MSYS2 required
 #
