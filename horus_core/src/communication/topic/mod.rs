@@ -2421,7 +2421,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         //   producers doing CAS start from a stale head.
         if local.cached_mode.is_cross_process() {
             if local.role.can_recv() {
-                header.tail.store(local.local_tail, Ordering::Release);
+                // fetch_max, not store: on SpmcShm this word is not this
+                // handle's private position. `recv_shm_spmc_pod` CAS-coordinates
+                // competing consumers THROUGH it, and `is_cross_process()`
+                // includes SpmcShm, so a handle whose batched local_tail lags
+                // the cursor would publish its own value over a claim another
+                // consumer had already made -- and the next CAS hands those
+                // messages out a second time.
+                //
+                // The consumer-join flush above already reasons this way and
+                // says so: "fetch_max never moves the shared tail backward, so
+                // it is safe even if a concurrent SpmcShm consumer has already
+                // advanced it". This site published the same value with a plain
+                // store. Modelled in tests/loom_spmc_epoch_flush.rs, which goes
+                // RED with the store and green with fetch_max.
+                //
+                // No behaviour change for the single-consumer backends: there
+                // the batched local_tail is always at or ahead of the shared
+                // word, so the max is the store.
+                header.tail.fetch_max(local.local_tail, Ordering::Release);
             }
             if local.role.can_send() {
                 header
