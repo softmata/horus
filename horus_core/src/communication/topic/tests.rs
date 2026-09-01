@@ -11698,3 +11698,152 @@ fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
     assert_eq!(got[0], "value-0");
     assert_eq!(got[199], "value-199");
 }
+
+/// Diagnostic: is loss accounted for on every backend?
+#[test]
+fn probe_loss_accounting_per_backend() {
+    for mode in [
+        BackendMode::SpscShm,
+        BackendMode::MpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::PodShm,
+        BackendMode::FanoutShm,
+    ] {
+        let name = unique(&format!("probe_acct_{mode:?}"));
+        let t: Topic<u64> = Topic::with_capacity(&name, 64, None).expect("create");
+        let sub: Topic<u64> = Topic::new(&name).expect("sub");
+        t.send(0);
+        let _ = sub.try_recv();
+        if !matches!(t.force_migrate(mode), MigrationResult::Success { .. }) {
+            eprintln!("ACCT {mode:?}: unavailable");
+            continue;
+        }
+        trigger_shm_dispatch(&name);
+        // FanoutShm needs a per-(pub,sub) channel attach before it can deliver;
+        // pump a few messages through so the pairing is established.
+        for _ in 0..8 {
+            t.send(u64::MAX);
+            let _ = sub.try_recv();
+        }
+        while sub.try_recv().is_some() {}
+
+        const N: u64 = 5000;
+        for i in 0..N {
+            t.send(i);
+        }
+        // A single None does not mean empty: the lap-resume path re-seats the
+        // cursor and returns None without reading the slot it landed on. Keep
+        // polling until several consecutive Nones.
+        let mut got = 0u64;
+        let mut empties = 0;
+        while empties < 5 {
+            if sub.try_recv().is_some() {
+                got += 1;
+                empties = 0;
+            } else {
+                empties += 1;
+            }
+        }
+        let missed = sub.missed_count();
+        let dropped = t.dropped_count();
+        let accounted = got + missed + dropped;
+        eprintln!(
+            "ACCT {:?} (actual {:?}): sent={N} got={got} missed={missed} \
+             dropped={dropped} accounted={accounted} unaccounted={}",
+            mode,
+            t.mode(),
+            N as i64 - accounted as i64
+        );
+    }
+}
+
+// ============================================================================
+// Loss accounting: a lossy transport must not lose messages SILENTLY
+// ============================================================================
+
+/// Every message a publisher accepts is either delivered, counted as missed, or
+/// counted as dropped. None may simply vanish.
+///
+/// This is the property that makes "lossy by design" acceptable in robotics. A
+/// dropped sensor frame is survivable; a dropped frame nobody can detect is not,
+/// because a supervisor cannot distinguish a quiet sensor from a dead one.
+///
+/// Loss is counted at whichever end it occurs, which differs per backend and is
+/// why this sweeps all of them:
+///   - backpressured (MpscShm/SpmcShm): the producer gives up, `dropped_count`
+///   - overwriting (PodShm/FanoutShm): the consumer is lapped, `missed_count`
+///
+/// Two things this test had to get right, both of which produced a convincing
+/// false positive first:
+///   - FanoutShm needs a per-(publisher,subscriber) channel attach before it
+///     delivers anything. Without pumping a few messages first the subscriber
+///     receives 0 and the run looks like a counting bug.
+///   - A single `try_recv() -> None` does NOT mean the ring is empty. The
+///     lap-resume path re-seats the cursor half a lap back and returns None
+///     without reading the slot it landed on, so a `while is_some()` drain exits
+///     with capacity/2 messages still readable — which presents as exactly
+///     `capacity/2` unaccounted messages, reproducibly, and looks like a real
+///     off-by-half-capacity defect.
+#[test]
+fn no_message_is_lost_without_being_counted() {
+    const N: u64 = 5000;
+    const CAP: u32 = 64;
+
+    for mode in [
+        BackendMode::MpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::PodShm,
+        BackendMode::FanoutShm,
+    ] {
+        let name = unique(&format!("loss_acct_{mode:?}"));
+        let t: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("create");
+        let sub: Topic<u64> = Topic::new(&name).expect("sub");
+        t.send(0);
+        let _ = sub.try_recv();
+
+        if !matches!(t.force_migrate(mode), MigrationResult::Success { .. }) {
+            eprintln!("skipping {mode:?}: unavailable on this platform");
+            continue;
+        }
+        trigger_shm_dispatch(&name);
+
+        // Establish the fanout pairing; harmless on the other backends.
+        for _ in 0..8 {
+            t.send(u64::MAX);
+            let _ = sub.try_recv();
+        }
+        while sub.try_recv().is_some() {}
+
+        let missed_before = sub.missed_count();
+        let dropped_before = t.dropped_count();
+
+        for i in 0..N {
+            t.send(i);
+        }
+
+        let mut got = 0u64;
+        let mut empties = 0;
+        while empties < 5 {
+            if sub.try_recv().is_some() {
+                got += 1;
+                empties = 0;
+            } else {
+                empties += 1;
+            }
+        }
+
+        let missed = sub.missed_count() - missed_before;
+        let dropped = t.dropped_count() - dropped_before;
+        let accounted = got + missed + dropped;
+
+        assert_eq!(
+            accounted,
+            N,
+            "{mode:?}: {N} messages were accepted but only {accounted} are \
+             accounted for (delivered {got}, missed {missed}, dropped \
+             {dropped}) — {} vanished with no counter recording them. A lossy \
+             transport is only safe for robotics if the loss is observable.",
+            N as i64 - accounted as i64
+        );
+    }
+}
