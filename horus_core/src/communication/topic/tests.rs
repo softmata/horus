@@ -9072,13 +9072,16 @@ fn a_handle_that_lost_the_fanout_attach_race_rejoins() {
 /// guarding nothing.
 #[test]
 fn a_clone_growing_the_mapping_does_not_strand_its_siblings() {
-    // The remap is a colo -> split layout transition: `[u64; 4]` is 32 bytes, so
-    // the topic starts co-located (640 + 128*64 = 8832 bytes) and the migration
-    // to a multi-producer backend has to make room for the separate stamp array
-    // (+ capacity*8 = 9856). Each round now asks for that migration directly, so
-    // one would do; the rounds re-run the race against fresh interleavings, and
-    // the assertion afterwards still refuses to let the test pass having grown
-    // nothing.
+    // There is no colo -> split transition, and an earlier version of this
+    // comment said there was. `layout_kind` is chosen once in `init` and never
+    // changes. What that version actually observed -- 8832 -> 17664 on a
+    // migration -- was the SPURIOUS grow: `handle_epoch_change` sized a colo
+    // region with the split formula, demanding the `capacity * 8` stamp array a
+    // colo region does not have. That is fixed, so the old trigger correctly
+    // grows nothing now, and this test drives the grow itself.
+    //
+    // The rounds re-run the race against fresh interleavings; the assertion
+    // afterwards still refuses to let the test pass having grown nothing.
     // Nothing to race where a region cannot grow at all: on Windows a named
     // section cannot be resized, so every round would provoke the error itself
     // and then assert the mapping did not change size.
@@ -9119,7 +9122,7 @@ fn run_one_grow_race_round() -> bool {
             test_spawn(move || {
                 b.wait();
                 let mut i = 0u64;
-                // Bounded so a migration that never lands cannot spin forever.
+                // Bounded so a grow that never lands cannot spin forever.
                 while !stop.load(Ordering::Relaxed) && i < 2_000_000 {
                     let v = (w as u64) * 10_000 + i;
                     t.send([v, v, v, v]);
@@ -9153,14 +9156,7 @@ fn run_one_grow_race_round() -> bool {
         })
     };
 
-    // Drive the remap from here instead of waiting for the backend to choose
-    // multi-producer mode on its own. Which mode `migrate_to_optimal` settles on
-    // depends on how the writers and the reader interleave, and on a 2-core CI
-    // runner they interleave in a way that never reaches it — every round then
-    // leaves the mapping its original size and the test guards nothing, which is
-    // exactly what the length assertion caught. Asking for `MpscShm` directly
-    // makes the colo -> split grow happen on any core count, while the sibling
-    // clones above are live and reading through their cached pointers.
+    // Drive the grow from here rather than hoping the backend produces one.
     barrier.wait();
     let deadline = Instant::now() + Duration::from_secs(10);
 
@@ -9170,28 +9166,20 @@ fn run_one_grow_race_round() -> bool {
         std::hint::spin_loop();
     }
 
-    // Then drive the remap from here instead of waiting for the backend to pick
-    // a growing mode on its own. `migrate_to_optimal` settles on whichever mode
-    // the writer/reader interleaving suggests, and only `FanoutShm` rewrites the
-    // layout from colo to split: that is what adds the `capacity * 8` stamp array
-    // (640 + 1024 + 8192 = 9856 > 8832) and forces the grow. Left to chance it
-    // often lands on `MpscShm`, which changes no geometry — measured here at 2
-    // rounds in 4, and a 2-core CI runner hit 0 in 16, which is what the length
-    // assertion caught.
+    // Grow the region directly, while the siblings above are live.
     //
-    // The loop condition is the grow itself, not the `MigrationResult`: a
-    // `Success` that the backend immediately migrates back off does not resize
-    // anything, so success is only observable in the mapping.
-    while t.ring.storage.len() == len_before && Instant::now() < deadline {
-        let _ = BackendMigrator::new(t.ring.header()).try_migrate(BackendMode::FanoutShm);
-        std::thread::yield_now();
-    }
-
-    // Keep both sides running across the remap that just happened.
-    let after_remap = seen_count.load(Ordering::Relaxed);
-    while seen_count.load(Ordering::Relaxed) < after_remap + 200 && Instant::now() < deadline {
-        std::hint::spin_loop();
-    }
+    // The subject of this test is the REMAP -- a grow moves the base address and
+    // every sibling clone holds pointers derived from the old one -- not the
+    // route that reaches it. Driving it here rather than provoking it is the
+    // only honest option left, because no topic-level call still produces a
+    // grow for this type: the spurious colo sizing in `handle_epoch_change` is
+    // fixed, and `auto_grow_slot_size` is unreachable for a POD topic (and, for
+    // a serde one, an oversized payload spills to the pool instead of growing --
+    // measured: a Vec<u64> topic holds slot=8192 through a 512 KB message).
+    //
+    // A test that cannot reach the event it names is worth nothing, and this one
+    // says so in its own assertion below, so it drives the event.
+    let _ = t.ring.storage.grow(len_before * 2);
 
     stop.store(true, Ordering::Relaxed);
     for h in writers {
@@ -11844,5 +11832,60 @@ fn a_broadcast_backend_cannot_refuse_a_send() {
          things happened to subscribe. That is what provides_backpressure() is \
          for.",
         tx.backend_name()
+    );
+}
+
+/// A co-located topic must not grow its region on an epoch change.
+///
+/// `handle_epoch_change` sized the region with the SPLIT formula regardless of
+/// layout, and `colo_required_region_len_checked`'s own doc says why that is
+/// wrong: the split form "would demand `capacity * 8` bytes that a colo region
+/// correctly does not have". Measured for `Topic<u64>` at capacity 16: the
+/// region is 640 + 16*64 = 1664 bytes, the split formula asks for
+/// 640 + 128 + 1024 = 1792, and the consumer's mapping duly grew 1664 -> 3328
+/// on the first epoch change. Nothing needed the space.
+///
+/// On Linux that is waste: ftruncate plus a fresh MAP_SHARED view of the same
+/// file, so no byte moves. On Windows `grow_unchecked` re-opens the SAME named
+/// section and memcpys the old view onto the new one -- two views of the same
+/// physical pages -- so a live ring is copied onto itself while producers
+/// mutate it, and any write landing inside that copy is rolled back. A
+/// rolled-back `sequence_or_head` re-issues sequence numbers already published,
+/// two producers claim the same slot, and one message is destroyed with no torn
+/// read and no duplicate. That is the shape Windows CI reported for
+/// `mp_send_no_overshoot_corruption`: 1800 sends all returning Ok, 1798 values
+/// delivered.
+///
+/// Separate producer and consumer handles are required: one handle doing both
+/// takes the `role == Both` same-instance fast path, which never consults the
+/// epoch guard, so `handle_epoch_change` is never reached and the test would
+/// pass without proving anything.
+#[test]
+fn a_colo_topic_does_not_grow_its_region_on_an_epoch_change() {
+    let name = unique("colo_nogrow");
+    let tx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("tx");
+    let rx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("rx");
+    assert!(rx.recv().is_none(), "nothing published yet");
+
+    let header = tx.ring.header();
+    assert!(
+        header.is_colo(),
+        "Topic<u64> at capacity 16 should select the co-located layout; this test \
+         is about that layout and proves nothing otherwise"
+    );
+    let before = rx.ring.storage.len();
+
+    // Force an epoch change, then drive both handles so the epoch guard runs.
+    let _ = BackendMigrator::new(header).try_migrate(BackendMode::MpscShm);
+    tx.send(1);
+    let _ = rx.recv();
+
+    assert_eq!(
+        rx.ring.storage.len(),
+        before,
+        "a colo region of {before} bytes was resized by an epoch change. Nothing \
+         asked for more room: the split sizing formula demands capacity*8 bytes \
+         for a sequence array this layout does not have. On Windows a spurious \
+         grow copies the live ring onto itself."
     );
 }

@@ -2470,8 +2470,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // was skipped and the wrapped geometry was installed anyway.
         let declared_capacity = header.capacity as usize;
         let declared_slot = header.slot_size.load(Ordering::Acquire) as usize;
-        let declared_len =
-            shm_layout::required_region_len_checked(declared_capacity, declared_slot);
+        // Size the region with the geometry it actually has.
+        //
+        // This used the SPLIT formula unconditionally, and
+        // `colo_required_region_len_checked`'s own doc says why that is wrong:
+        // the split form "would demand `capacity * 8` bytes that a colo region
+        // correctly does not have". For `Topic<u64>` at capacity 16 the region
+        // is 640 + 16*64 = 1664 bytes and the split formula asks for
+        // 640 + 128 + 1024 = 1792, so `required > storage.len()` was true for
+        // every colo topic and EVERY epoch change fired a grow that nothing
+        // needed. Every other reader of this geometry branches on `is_colo()`
+        // -- `validate_ring_geometry`, `geometry_is_addressable`, and the
+        // `auto_grow_slot_size` path -- and this was the one that did not.
+        //
+        // On Linux the spurious grow is waste: ftruncate plus a fresh
+        // MAP_SHARED view of the same file, so no byte moves. On Windows it is
+        // not waste. `grow_unchecked` there re-opens the SAME named section and
+        // memcpys the old view onto the new one -- two views of the same
+        // physical pages -- so a live ring is copied onto itself while
+        // producers are mutating it, and any write landing inside that copy is
+        // rolled back. A rolled-back `sequence_or_head` re-issues sequence
+        // numbers that were already published, two producers then claim the
+        // same slot, and one message is destroyed with no torn read and no
+        // duplicate. That is the shape Windows CI reported: 1800 sends all
+        // returning Ok, 1798 values delivered.
+        let declared_len = if header.is_colo() {
+            shm_layout::colo_required_region_len_checked(declared_capacity, declared_slot)
+        } else {
+            shm_layout::required_region_len_checked(declared_capacity, declared_slot)
+        };
         if let Some(required) = declared_len {
             // `geometry_is_addressable(header, required)` is every part of the
             // invariant EXCEPT containment (it holds trivially against
