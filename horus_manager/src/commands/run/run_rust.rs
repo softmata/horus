@@ -1136,14 +1136,13 @@ fn warn_cached_version_skew(found: &Path) {
     };
     let cli_version = env!("CARGO_PKG_VERSION");
 
-    log::warn!(
-        "no cached HORUS source for CLI {}; falling back to {}",
-        cli_version,
-        found.display()
-    );
-
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
+        log::warn!(
+            "no cached HORUS source for CLI {}; falling back to {}",
+            cli_version,
+            found.display()
+        );
         eprintln!(
             "{} no cached HORUS source for this CLI ({}) — building against {} from {} instead.",
             "warning:".yellow().bold(),

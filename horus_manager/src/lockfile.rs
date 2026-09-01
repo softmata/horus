@@ -532,16 +532,22 @@ pub fn installed_packages(project_dir: &Path) -> Vec<LockedPackage> {
                     if let Some((name, version)) =
                         target.strip_prefix("pypi_").and_then(split_name_version)
                     {
-                        // pip is asked for `latest` when the manifest names no
-                        // version, so the directory name cannot answer this one
-                        // — the installed dist-info can.
-                        let version = if version == "latest" {
-                            match dist_info_version(&path) {
-                                Some(v) => v,
-                                None => continue,
-                            }
-                        } else {
-                            version.to_string()
+                        // The directory name is not authoritative. `install.rs`
+                        // builds it from the *requirement* in the manifest, so a
+                        // `numpy = ">=1.24"` dependency produces
+                        // `pypi_numpy@1.24` while pip resolves and installs
+                        // 1.26.4 — and `latest` names no version at all. The
+                        // dist-info is what pip actually wrote, so it wins
+                        // whenever it exists; the suffix is only the fallback
+                        // for a layout that has none.
+                        //
+                        // This matters more than it reads: these pins are
+                        // enforced now, so a version the directory name merely
+                        // implied would be installed on every other machine.
+                        let version = match dist_info_version(&path) {
+                            Some(resolved) => resolved,
+                            None if version == "latest" => continue,
+                            None => version.to_string(),
                         };
                         pins.push(LockedPackage::new(name, &version, "pypi", checksum));
                     } else if let Some((name, version)) = split_name_version(target.as_str()) {
@@ -578,7 +584,14 @@ pub fn installed_packages(project_dir: &Path) -> Vec<LockedPackage> {
             else {
                 continue;
             };
-            if pins.iter().any(|pinned| pinned.name == name) {
+            // Identity is (name, source), not name alone: a registry package
+            // and a PyPI distribution may share a name, and matching on the
+            // name only dropped the real PyPI dependency out of the computed
+            // set and out of horus.lock.
+            if pins
+                .iter()
+                .any(|pinned| pinned.name == name && pinned.source == "pypi")
+            {
                 continue;
             }
             if let Some(version) = marker_version(&path) {
@@ -725,6 +738,78 @@ pub fn hash_config(config_content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cache directory name is derived from the manifest's *requirement*,
+    /// so `numpy = ">=1.24"` produces `pypi_numpy@1.24` while pip resolves and
+    /// installs something newer. Reading the pin off the directory name
+    /// recorded 1.24 — and since the pins are enforced now, every other machine
+    /// would then be held at a version this one never installed.
+    #[test]
+    fn a_range_constrained_pin_records_what_pip_installed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache");
+        let packages = root.join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+
+        // The cache dir carries the requirement's lower bound, not the
+        // resolved version; the dist-info pip wrote carries the truth.
+        let installed = cache.join("pypi_numpy@1.24");
+        fs::create_dir_all(installed.join("numpy-1.26.4.dist-info")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&installed, packages.join("numpy")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&installed, packages.join("numpy")).unwrap();
+
+        let pins = installed_packages(root);
+        let numpy = pins
+            .iter()
+            .find(|p| p.name == "numpy")
+            .unwrap_or_else(|| panic!("numpy was not pinned at all: {pins:?}"));
+        assert_eq!(
+            numpy.version, "1.26.4",
+            "the pin must be the version pip installed, not the requirement's \
+             lower bound taken from the cache directory name: {pins:?}"
+        );
+    }
+
+    /// A registry package and a PyPI distribution may share a name. Pass 2
+    /// deduped on the name alone, so a `<name>.pypi.json` marker was dropped
+    /// whenever any pin already used that name — losing a real dependency from
+    /// horus.lock.
+    #[test]
+    fn a_pypi_marker_survives_a_registry_package_of_the_same_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cache = root.join("cache");
+        let packages = root.join(".horus/packages");
+        fs::create_dir_all(&packages).unwrap();
+
+        let registry_pkg = cache.join("telemetry@2.0.0");
+        fs::create_dir_all(&registry_pkg).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&registry_pkg, packages.join("telemetry")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&registry_pkg, packages.join("telemetry")).unwrap();
+
+        fs::write(
+            packages.join("telemetry.pypi.json"),
+            r#"{"name":"telemetry","version":"0.5.1","source":"PyPI"}"#,
+        )
+        .unwrap();
+
+        let pins = installed_packages(root);
+        assert!(
+            pins.iter()
+                .any(|p| p.name == "telemetry" && p.source == "registry" && p.version == "2.0.0"),
+            "the registry package must still be pinned: {pins:?}"
+        );
+        assert!(
+            pins.iter()
+                .any(|p| p.name == "telemetry" && p.source == "pypi" && p.version == "0.5.1"),
+            "the PyPI distribution shares a name and is a different package: {pins:?}"
+        );
+    }
 
     #[test]
     fn new_lockfile_defaults() {
