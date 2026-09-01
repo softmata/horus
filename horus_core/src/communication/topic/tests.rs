@@ -7124,6 +7124,16 @@ fn broadcast_subscriber_join_midstream() {
             while !sub2_claimed.load(Ordering::Acquire) && Instant::now() < deadline {
                 std::thread::yield_now();
             }
+            // Fail here, not thirty lines down. Publishing the suffix anyway
+            // after the wait timed out would reach the receive assertion, which
+            // says the late subscriber missed messages — a claim that never
+            // happened is a different fault with a different fix, and reporting
+            // it as message loss sends the next reader to the transport.
+            assert!(
+                sub2_claimed.load(Ordering::Acquire),
+                "sub2 never claimed its endpoint within 10s, so the suffix was \
+                 never published under the condition this test asserts on"
+            );
             for v in (half + 1)..=n {
                 p.send(v);
                 std::thread::yield_now();

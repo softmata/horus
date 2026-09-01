@@ -3020,11 +3020,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// for "critical command topics (emergency stop, motor setpoints) where
     /// message loss is unacceptable". On a topic with two subscribers that was
     /// exactly backwards, and it is the reason
-    /// [`provides_backpressure`](Self::provides_backpressure) now exists. Assert
-    /// it at startup on any topic carrying commands:
+    /// [`provides_backpressure`](Self::provides_backpressure) now exists.
+    ///
+    /// Assert it on any topic carrying commands — but AFTER the first send or
+    /// recv, not before. A handle does not resolve its backend until it moves a
+    /// message, and an unresolved backend answers `false` (it is not a promise
+    /// of anything), so an assertion placed before the first send fires on every
+    /// topic including the ones that are fine. The check is meaningful once the
+    /// backend is known, which is also the first moment loss is possible:
     ///
     /// ```ignore
-    /// assert!(estop.provides_backpressure(), "e-stop is on a lossy backend");
+    /// estop.send(Stop)?; // resolves the backend
+    /// assert!(
+    ///     estop.provides_backpressure(),
+    ///     "e-stop settled on a lossy backend ({})",
+    ///     estop.backend_name()
+    /// );
     /// ```
     ///
     /// Strategy: spin briefly (256 iters), yield briefly (8 iters), then sleep in
@@ -3369,10 +3380,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// [`send_blocking`](Self::send_blocking) cannot block. Both still compile,
     /// still return, and quietly lose data.
     ///
-    /// Assert this at startup on any topic carrying commands rather than
-    /// samples:
+    /// Assert this on any topic carrying commands rather than samples — after
+    /// the first send or recv, not before it. The backend is `Unknown` until a
+    /// handle moves a message, and `Unknown` answers `false` because an
+    /// unresolved backend promises nothing, so the assertion placed earlier
+    /// fires on every topic. Once the backend is known the answer is real, and
+    /// that is also the first point at which loss can occur:
     ///
     /// ```ignore
+    /// estop.send(Stop)?; // resolves the backend
     /// assert!(
     ///     estop.provides_backpressure(),
     ///     "e-stop topic fell back to a lossy broadcast backend ({})",
