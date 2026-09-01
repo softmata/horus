@@ -70,7 +70,10 @@ fn an_external_safe_state_request_safes_the_robot_exactly_once() {
     let n = safed.load(Ordering::Relaxed);
     let t = ticks.load(Ordering::Relaxed);
 
-    assert!(t > 0, "the node never ticked, so this run exercised nothing");
+    assert!(
+        t > 0,
+        "the node never ticked, so this run exercised nothing"
+    );
 
     // The fix: the request is consumed and the node is actually safed.
     assert!(

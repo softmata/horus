@@ -4322,10 +4322,7 @@ mod tests {
         );
         let found = find_queued(before..after, |t| t.contains("ring_reporter"))
             .expect("the isolate line must be in the ring");
-        assert!(
-            found.contains("isolated"),
-            "queued the wrong line: {found}"
-        );
+        assert!(found.contains("isolated"), "queued the wrong line: {found}");
     }
 
     /// The ring is BOUNDED and the producer never waits on the consumer.

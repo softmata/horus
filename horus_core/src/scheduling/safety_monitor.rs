@@ -1395,7 +1395,8 @@ impl SafetyMonitor {
     /// The state is cleared on read so one link-loss produces one round of
     /// safing rather than a safing request on every tick forever.
     pub(crate) fn take_external_safe_state(&self) -> bool {
-        self.external_safe_state_pending.swap(false, Ordering::AcqRel)
+        self.external_safe_state_pending
+            .swap(false, Ordering::AcqRel)
     }
 
     /// Get current safety state

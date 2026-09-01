@@ -3709,7 +3709,8 @@ impl Scheduler {
             self.tick.period
         };
 
-        let (sleep, next, overran) = tick_grid_step(self.tick.next_deadline, Instant::now(), period);
+        let (sleep, next, overran) =
+            tick_grid_step(self.tick.next_deadline, Instant::now(), period);
         if overran {
             self.tick.overruns += 1;
         }
@@ -5692,7 +5693,10 @@ mod tick_cadence_tests {
             "advancing from `now` would bake the 300us lateness into every \
              future tick; advancing from the deadline absorbs it"
         );
-        assert!(!overran, "300us late on a 10ms period is not a full overrun");
+        assert!(
+            !overran,
+            "300us late on a 10ms period is not a full overrun"
+        );
         assert_eq!(
             next.saturating_duration_since(now),
             PERIOD - Duration::from_micros(300),
@@ -5712,7 +5716,10 @@ mod tick_cadence_tests {
         let (sleep, next, overran) = tick_grid_step(deadline, now, PERIOD);
 
         assert_eq!(sleep, Duration::ZERO, "already past the deadline");
-        assert!(overran, "25ms late on a 10ms period must be counted as an overrun");
+        assert!(
+            overran,
+            "25ms late on a 10ms period must be counted as an overrun"
+        );
         assert_eq!(
             next,
             now + PERIOD,
