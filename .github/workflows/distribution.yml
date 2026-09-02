@@ -280,13 +280,29 @@ jobs:
             throw "uninstall.ps1 -DryRun removed the binary; a dry run must not touch anything"
           }
 
+      # Asserts on the filesystem, not on Get-Command. PowerShell caches command
+      # discovery for the life of a session, and uninstall.ps1 looks `horus` up
+      # itself while deciding what to remove — so a Get-Command in the same
+      # session afterwards can answer from that cache and report a binary the
+      # script has already deleted. The log from that failure showed
+      # uninstall.ps1 removing C:\Users\runneradmin\.cargo\bin\horus.exe and
+      # reporting "Uninstallation Complete, Removed: 6 component(s)" immediately
+      # before the check claimed horus was still on PATH.
+      #
+      # Both directories are checked because install.ps1 falls back to
+      # ~\.local\bin when Rust is absent, which is exactly the pre-built-binary
+      # user, and uninstall.ps1 clears both.
       - name: uninstall.ps1 removes it
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           .\uninstall.ps1 -Yes
-          if (Get-Command horus -ErrorAction SilentlyContinue) {
-            throw "horus is still on PATH after uninstall.ps1"
+          $left = @(
+            (Join-Path $env:USERPROFILE '.cargo\bin\horus.exe'),
+            (Join-Path $env:USERPROFILE '.local\bin\horus.exe')
+          ) | Where-Object { Test-Path $_ }
+          if ($left) {
+            throw "uninstall.ps1 left the binary behind: $($left -join ', ')"
           }
 
   # ─── Windows: install.sh under Git Bash ────────────────────────────────
