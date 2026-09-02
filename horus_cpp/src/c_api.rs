@@ -529,6 +529,30 @@ pub unsafe extern "C" fn horus_subscriber_cmd_vel_has_msg(sub: *const HorusSubsc
     topic_ffi::subscriber_cmd_vel_has_msg(sub)
 }
 
+/// Messages this subscriber was lapped past and never delivered.
+///
+/// cmd_vel predates `impl_pod_topic_c_api!` and is written out by hand, so it
+/// does not inherit what that macro generates -- these two have to be spelled
+/// out or the C++ header declares symbols that do not exist.
+#[no_mangle]
+pub unsafe extern "C" fn horus_subscriber_cmd_vel_missed_count(sub: *const HorusSubscriber) -> u64 {
+    if sub.is_null() {
+        return 0;
+    }
+    let sub = &*(sub as *const topic_ffi::FfiSubscriber<horus_robotics::CmdVel>);
+    topic_ffi::subscriber_cmd_vel_missed_count(sub)
+}
+
+/// Messages this publisher gave up on rather than blocking.
+#[no_mangle]
+pub unsafe extern "C" fn horus_publisher_cmd_vel_dropped_count(pub_: *const HorusPublisher) -> u64 {
+    if pub_.is_null() {
+        return 0;
+    }
+    let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<horus_robotics::CmdVel>);
+    topic_ffi::publisher_cmd_vel_dropped_count(pub_)
+}
+
 // ─── Generic Pod Topic C API Macro ───────────────────────────────────────
 //
 // Generates new/destroy/send/recv/has_msg for any #[repr(C)] Pod message type.
@@ -613,6 +637,27 @@ macro_rules! impl_pod_topic_c_api {
                 if sub.is_null() { return false; }
                 let sub = &*(sub as *const topic_ffi::FfiSubscriber<$rust_type>);
                 topic_ffi::[<subscriber_ $snake _has_msg>](sub)
+            }
+
+            /// Messages this subscriber was lapped past. See topic_ffi for why
+            /// a lossy transport needs this to be reachable from C++.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_subscriber_ $snake _missed_count>](
+                sub: *const HorusSubscriber,
+            ) -> u64 {
+                if sub.is_null() { return 0; }
+                let sub = &*(sub as *const topic_ffi::FfiSubscriber<$rust_type>);
+                topic_ffi::[<subscriber_ $snake _missed_count>](sub)
+            }
+
+            /// Messages this publisher dropped rather than blocking on.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<horus_publisher_ $snake _dropped_count>](
+                pub_: *const HorusPublisher,
+            ) -> u64 {
+                if pub_.is_null() { return 0; }
+                let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<$rust_type>);
+                topic_ffi::[<publisher_ $snake _dropped_count>](pub_)
             }
         }
     };

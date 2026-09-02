@@ -1206,6 +1206,44 @@ impl PyTopic {
         )
     }
 
+    /// Messages this subscriber was lapped past and never delivered.
+    ///
+    /// HORUS topics are lossy by design: a full ring overwrites the oldest
+    /// unconsumed slot rather than blocking the publisher. This counter is how a
+    /// subscriber finds out it happened. For a sensor stream, a rising value
+    /// means frames are being dropped and the consumer is not keeping up.
+    ///
+    /// The count is per-handle and process-local — it reflects what THIS handle
+    /// missed, not a topic-wide total, and it is not visible to other processes.
+    ///
+    /// Returns:
+    ///     Messages skipped past for this subscriber (u64)
+    fn missed_count(&self) -> u64 {
+        topic_dispatch!(
+            &self.topic_type,
+            t,
+            topic_lock(t).map(|g| g.missed_count()).unwrap_or(0)
+        )
+    }
+
+    /// Messages this publisher could not place and gave up on.
+    ///
+    /// The publisher-side counterpart of `missed_count`. `send()` retries
+    /// briefly and then drops rather than blocking; each drop increments this.
+    /// A rising value means the ring is saturated and downstream is too slow.
+    ///
+    /// The count is per-handle and process-local.
+    ///
+    /// Returns:
+    ///     Messages dropped by this publisher (u64)
+    fn dropped_count(&self) -> u64 {
+        topic_dispatch!(
+            &self.topic_type,
+            t,
+            topic_lock(t).map(|g| g.dropped_count()).unwrap_or(0)
+        )
+    }
+
     /// Number of active publishers on this topic.
     ///
     /// Returns:

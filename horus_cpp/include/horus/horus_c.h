@@ -90,7 +90,8 @@ HorusSubscriber* horus_subscriber_cmd_vel_new(const char* topic_name);
 void             horus_subscriber_cmd_vel_destroy(HorusSubscriber* sub);
 int              horus_subscriber_cmd_vel_recv(const HorusSubscriber* sub, HorusCmdVel* out);
 bool             horus_subscriber_cmd_vel_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_cmd_vel_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_cmd_vel_dropped_count(const HorusPublisher* p);
 /* ── Pod Message Topics (all 11 types) ───────────────────────────────────── */
 /* All Pod types use void* for send/recv — C++ templates handle type safety. */
 /* Layout: identical #[repr(C)] in Rust and C/C++. Direct memcpy.            */
@@ -103,7 +104,8 @@ HorusSubscriber* horus_subscriber_laser_scan_new(const char* topic_name);
 void             horus_subscriber_laser_scan_destroy(HorusSubscriber* sub);
 int              horus_subscriber_laser_scan_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_laser_scan_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_laser_scan_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_laser_scan_dropped_count(const HorusPublisher* p);
 /* Imu */
 HorusPublisher*  horus_publisher_imu_new(const char* topic_name);
 void             horus_publisher_imu_destroy(HorusPublisher* pub_);
@@ -112,7 +114,8 @@ HorusSubscriber* horus_subscriber_imu_new(const char* topic_name);
 void             horus_subscriber_imu_destroy(HorusSubscriber* sub);
 int              horus_subscriber_imu_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_imu_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_imu_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_imu_dropped_count(const HorusPublisher* p);
 /* Odometry */
 HorusPublisher*  horus_publisher_odometry_new(const char* topic_name);
 void             horus_publisher_odometry_destroy(HorusPublisher* pub_);
@@ -121,7 +124,8 @@ HorusSubscriber* horus_subscriber_odometry_new(const char* topic_name);
 void             horus_subscriber_odometry_destroy(HorusSubscriber* sub);
 int              horus_subscriber_odometry_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_odometry_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_odometry_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_odometry_dropped_count(const HorusPublisher* p);
 /* JointState */
 HorusPublisher*  horus_publisher_joint_state_new(const char* topic_name);
 void             horus_publisher_joint_state_destroy(HorusPublisher* pub_);
@@ -130,7 +134,8 @@ HorusSubscriber* horus_subscriber_joint_state_new(const char* topic_name);
 void             horus_subscriber_joint_state_destroy(HorusSubscriber* sub);
 int              horus_subscriber_joint_state_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_joint_state_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_joint_state_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_joint_state_dropped_count(const HorusPublisher* p);
 /* Twist */
 HorusPublisher*  horus_publisher_twist_new(const char* topic_name);
 void             horus_publisher_twist_destroy(HorusPublisher* pub_);
@@ -139,7 +144,8 @@ HorusSubscriber* horus_subscriber_twist_new(const char* topic_name);
 void             horus_subscriber_twist_destroy(HorusSubscriber* sub);
 int              horus_subscriber_twist_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_twist_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_twist_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_twist_dropped_count(const HorusPublisher* p);
 /* Pose2D */
 HorusPublisher*  horus_publisher_pose2d_new(const char* topic_name);
 void             horus_publisher_pose2d_destroy(HorusPublisher* pub_);
@@ -148,7 +154,8 @@ HorusSubscriber* horus_subscriber_pose2d_new(const char* topic_name);
 void             horus_subscriber_pose2d_destroy(HorusSubscriber* sub);
 int              horus_subscriber_pose2d_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_pose2d_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_pose2d_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_pose2d_dropped_count(const HorusPublisher* p);
 /* TransformStamped */
 HorusPublisher*  horus_publisher_transform_stamped_new(const char* topic_name);
 void             horus_publisher_transform_stamped_destroy(HorusPublisher* pub_);
@@ -157,7 +164,8 @@ HorusSubscriber* horus_subscriber_transform_stamped_new(const char* topic_name);
 void             horus_subscriber_transform_stamped_destroy(HorusSubscriber* sub);
 int              horus_subscriber_transform_stamped_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_transform_stamped_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_transform_stamped_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_transform_stamped_dropped_count(const HorusPublisher* p);
 /* NavGoal */
 HorusPublisher*  horus_publisher_nav_goal_new(const char* topic_name);
 void             horus_publisher_nav_goal_destroy(HorusPublisher* pub_);
@@ -166,7 +174,8 @@ HorusSubscriber* horus_subscriber_nav_goal_new(const char* topic_name);
 void             horus_subscriber_nav_goal_destroy(HorusSubscriber* sub);
 int              horus_subscriber_nav_goal_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_nav_goal_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_nav_goal_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_nav_goal_dropped_count(const HorusPublisher* p);
 /* Heartbeat */
 HorusPublisher*  horus_publisher_heartbeat_new(const char* topic_name);
 void             horus_publisher_heartbeat_destroy(HorusPublisher* pub_);
@@ -175,7 +184,8 @@ HorusSubscriber* horus_subscriber_heartbeat_new(const char* topic_name);
 void             horus_subscriber_heartbeat_destroy(HorusSubscriber* sub);
 int              horus_subscriber_heartbeat_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_heartbeat_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_heartbeat_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_heartbeat_dropped_count(const HorusPublisher* p);
 /* EmergencyStop */
 HorusPublisher*  horus_publisher_emergency_stop_new(const char* topic_name);
 void             horus_publisher_emergency_stop_destroy(HorusPublisher* pub_);
@@ -184,7 +194,8 @@ HorusSubscriber* horus_subscriber_emergency_stop_new(const char* topic_name);
 void             horus_subscriber_emergency_stop_destroy(HorusSubscriber* sub);
 int              horus_subscriber_emergency_stop_recv(const HorusSubscriber* sub, void* out);
 bool             horus_subscriber_emergency_stop_has_msg(const HorusSubscriber* sub);
-
+uint64_t         horus_subscriber_emergency_stop_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_emergency_stop_dropped_count(const HorusPublisher* p);
 /* ── Additional Pod Types (void* API — all generated by impl_pod_topic_c_api! macro) */
 /* Each type has: _new, _destroy, _send, _new (sub), _destroy (sub), _recv, _has_msg */
 /* Sensor */
@@ -195,7 +206,8 @@ HorusSubscriber* horus_subscriber_range_sensor_new(const char* t);
 void             horus_subscriber_range_sensor_destroy(HorusSubscriber* s);
 int              horus_subscriber_range_sensor_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_range_sensor_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_range_sensor_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_range_sensor_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_battery_state_new(const char* t);
 void             horus_publisher_battery_state_destroy(HorusPublisher* p);
 void             horus_publisher_battery_state_send(const HorusPublisher* p, const void* m);
@@ -203,7 +215,8 @@ HorusSubscriber* horus_subscriber_battery_state_new(const char* t);
 void             horus_subscriber_battery_state_destroy(HorusSubscriber* s);
 int              horus_subscriber_battery_state_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_battery_state_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_battery_state_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_battery_state_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_nav_sat_fix_new(const char* t);
 void             horus_publisher_nav_sat_fix_destroy(HorusPublisher* p);
 void             horus_publisher_nav_sat_fix_send(const HorusPublisher* p, const void* m);
@@ -211,7 +224,8 @@ HorusSubscriber* horus_subscriber_nav_sat_fix_new(const char* t);
 void             horus_subscriber_nav_sat_fix_destroy(HorusSubscriber* s);
 int              horus_subscriber_nav_sat_fix_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_nav_sat_fix_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_nav_sat_fix_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_nav_sat_fix_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_magnetic_field_new(const char* t);
 void             horus_publisher_magnetic_field_destroy(HorusPublisher* p);
 void             horus_publisher_magnetic_field_send(const HorusPublisher* p, const void* m);
@@ -219,7 +233,8 @@ HorusSubscriber* horus_subscriber_magnetic_field_new(const char* t);
 void             horus_subscriber_magnetic_field_destroy(HorusSubscriber* s);
 int              horus_subscriber_magnetic_field_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_magnetic_field_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_magnetic_field_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_magnetic_field_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_temperature_new(const char* t);
 void             horus_publisher_temperature_destroy(HorusPublisher* p);
 void             horus_publisher_temperature_send(const HorusPublisher* p, const void* m);
@@ -227,7 +242,8 @@ HorusSubscriber* horus_subscriber_temperature_new(const char* t);
 void             horus_subscriber_temperature_destroy(HorusSubscriber* s);
 int              horus_subscriber_temperature_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_temperature_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_temperature_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_temperature_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_fluid_pressure_new(const char* t);
 void             horus_publisher_fluid_pressure_destroy(HorusPublisher* p);
 void             horus_publisher_fluid_pressure_send(const HorusPublisher* p, const void* m);
@@ -235,7 +251,8 @@ HorusSubscriber* horus_subscriber_fluid_pressure_new(const char* t);
 void             horus_subscriber_fluid_pressure_destroy(HorusSubscriber* s);
 int              horus_subscriber_fluid_pressure_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_fluid_pressure_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_fluid_pressure_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_fluid_pressure_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_illuminance_new(const char* t);
 void             horus_publisher_illuminance_destroy(HorusPublisher* p);
 void             horus_publisher_illuminance_send(const HorusPublisher* p, const void* m);
@@ -243,7 +260,8 @@ HorusSubscriber* horus_subscriber_illuminance_new(const char* t);
 void             horus_subscriber_illuminance_destroy(HorusSubscriber* s);
 int              horus_subscriber_illuminance_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_illuminance_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_illuminance_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_illuminance_dropped_count(const HorusPublisher* p);
 /* Control */
 HorusPublisher*  horus_publisher_motor_command_new(const char* t);
 void             horus_publisher_motor_command_destroy(HorusPublisher* p);
@@ -252,7 +270,8 @@ HorusSubscriber* horus_subscriber_motor_command_new(const char* t);
 void             horus_subscriber_motor_command_destroy(HorusSubscriber* s);
 int              horus_subscriber_motor_command_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_motor_command_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_motor_command_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_motor_command_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_differential_drive_command_new(const char* t);
 void             horus_publisher_differential_drive_command_destroy(HorusPublisher* p);
 void             horus_publisher_differential_drive_command_send(const HorusPublisher* p, const void* m);
@@ -260,7 +279,8 @@ HorusSubscriber* horus_subscriber_differential_drive_command_new(const char* t);
 void             horus_subscriber_differential_drive_command_destroy(HorusSubscriber* s);
 int              horus_subscriber_differential_drive_command_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_differential_drive_command_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_differential_drive_command_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_differential_drive_command_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_servo_command_new(const char* t);
 void             horus_publisher_servo_command_destroy(HorusPublisher* p);
 void             horus_publisher_servo_command_send(const HorusPublisher* p, const void* m);
@@ -268,7 +288,8 @@ HorusSubscriber* horus_subscriber_servo_command_new(const char* t);
 void             horus_subscriber_servo_command_destroy(HorusSubscriber* s);
 int              horus_subscriber_servo_command_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_servo_command_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_servo_command_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_servo_command_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_pid_config_new(const char* t);
 void             horus_publisher_pid_config_destroy(HorusPublisher* p);
 void             horus_publisher_pid_config_send(const HorusPublisher* p, const void* m);
@@ -276,7 +297,8 @@ HorusSubscriber* horus_subscriber_pid_config_new(const char* t);
 void             horus_subscriber_pid_config_destroy(HorusSubscriber* s);
 int              horus_subscriber_pid_config_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_pid_config_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_pid_config_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_pid_config_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_trajectory_point_new(const char* t);
 void             horus_publisher_trajectory_point_destroy(HorusPublisher* p);
 void             horus_publisher_trajectory_point_send(const HorusPublisher* p, const void* m);
@@ -284,7 +306,8 @@ HorusSubscriber* horus_subscriber_trajectory_point_new(const char* t);
 void             horus_subscriber_trajectory_point_destroy(HorusSubscriber* s);
 int              horus_subscriber_trajectory_point_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_trajectory_point_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_trajectory_point_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_trajectory_point_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_joint_command_new(const char* t);
 void             horus_publisher_joint_command_destroy(HorusPublisher* p);
 void             horus_publisher_joint_command_send(const HorusPublisher* p, const void* m);
@@ -292,7 +315,8 @@ HorusSubscriber* horus_subscriber_joint_command_new(const char* t);
 void             horus_subscriber_joint_command_destroy(HorusSubscriber* s);
 int              horus_subscriber_joint_command_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_joint_command_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_joint_command_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_joint_command_dropped_count(const HorusPublisher* p);
 /* Geometry */
 HorusPublisher*  horus_publisher_point3_new(const char* t);
 void             horus_publisher_point3_destroy(HorusPublisher* p);
@@ -301,7 +325,8 @@ HorusSubscriber* horus_subscriber_point3_new(const char* t);
 void             horus_subscriber_point3_destroy(HorusSubscriber* s);
 int              horus_subscriber_point3_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_point3_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_point3_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_point3_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_vector3_new(const char* t);
 void             horus_publisher_vector3_destroy(HorusPublisher* p);
 void             horus_publisher_vector3_send(const HorusPublisher* p, const void* m);
@@ -309,7 +334,8 @@ HorusSubscriber* horus_subscriber_vector3_new(const char* t);
 void             horus_subscriber_vector3_destroy(HorusSubscriber* s);
 int              horus_subscriber_vector3_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_vector3_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_vector3_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_vector3_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_quaternion_new(const char* t);
 void             horus_publisher_quaternion_destroy(HorusPublisher* p);
 void             horus_publisher_quaternion_send(const HorusPublisher* p, const void* m);
@@ -317,7 +343,8 @@ HorusSubscriber* horus_subscriber_quaternion_new(const char* t);
 void             horus_subscriber_quaternion_destroy(HorusSubscriber* s);
 int              horus_subscriber_quaternion_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_quaternion_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_quaternion_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_quaternion_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_pose3d_new(const char* t);
 void             horus_publisher_pose3d_destroy(HorusPublisher* p);
 void             horus_publisher_pose3d_send(const HorusPublisher* p, const void* m);
@@ -325,7 +352,8 @@ HorusSubscriber* horus_subscriber_pose3d_new(const char* t);
 void             horus_subscriber_pose3d_destroy(HorusSubscriber* s);
 int              horus_subscriber_pose3d_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_pose3d_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_pose3d_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_pose3d_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_pose_stamped_new(const char* t);
 void             horus_publisher_pose_stamped_destroy(HorusPublisher* p);
 void             horus_publisher_pose_stamped_send(const HorusPublisher* p, const void* m);
@@ -333,7 +361,8 @@ HorusSubscriber* horus_subscriber_pose_stamped_new(const char* t);
 void             horus_subscriber_pose_stamped_destroy(HorusSubscriber* s);
 int              horus_subscriber_pose_stamped_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_pose_stamped_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_pose_stamped_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_pose_stamped_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_pose_with_covariance_new(const char* t);
 void             horus_publisher_pose_with_covariance_destroy(HorusPublisher* p);
 void             horus_publisher_pose_with_covariance_send(const HorusPublisher* p, const void* m);
@@ -341,7 +370,8 @@ HorusSubscriber* horus_subscriber_pose_with_covariance_new(const char* t);
 void             horus_subscriber_pose_with_covariance_destroy(HorusSubscriber* s);
 int              horus_subscriber_pose_with_covariance_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_pose_with_covariance_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_pose_with_covariance_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_pose_with_covariance_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_twist_with_covariance_new(const char* t);
 void             horus_publisher_twist_with_covariance_destroy(HorusPublisher* p);
 void             horus_publisher_twist_with_covariance_send(const HorusPublisher* p, const void* m);
@@ -349,7 +379,8 @@ HorusSubscriber* horus_subscriber_twist_with_covariance_new(const char* t);
 void             horus_subscriber_twist_with_covariance_destroy(HorusSubscriber* s);
 int              horus_subscriber_twist_with_covariance_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_twist_with_covariance_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_twist_with_covariance_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_twist_with_covariance_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_accel_new(const char* t);
 void             horus_publisher_accel_destroy(HorusPublisher* p);
 void             horus_publisher_accel_send(const HorusPublisher* p, const void* m);
@@ -357,7 +388,8 @@ HorusSubscriber* horus_subscriber_accel_new(const char* t);
 void             horus_subscriber_accel_destroy(HorusSubscriber* s);
 int              horus_subscriber_accel_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_accel_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_accel_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_accel_dropped_count(const HorusPublisher* p);
 HorusPublisher*  horus_publisher_accel_stamped_new(const char* t);
 void             horus_publisher_accel_stamped_destroy(HorusPublisher* p);
 void             horus_publisher_accel_stamped_send(const HorusPublisher* p, const void* m);
@@ -365,7 +397,8 @@ HorusSubscriber* horus_subscriber_accel_stamped_new(const char* t);
 void             horus_subscriber_accel_stamped_destroy(HorusSubscriber* s);
 int              horus_subscriber_accel_stamped_recv(const HorusSubscriber* s, void* o);
 bool             horus_subscriber_accel_stamped_has_msg(const HorusSubscriber* s);
-
+uint64_t         horus_subscriber_accel_stamped_missed_count(const HorusSubscriber* s);
+uint64_t         horus_publisher_accel_stamped_dropped_count(const HorusPublisher* p);
 /* Detection + Vision + Nav + Diagnostics + Force + Tracking + Landmark + Input + Audio + Clock + Perception */
 /* All follow same pattern: horus_publisher_<name>_new/_destroy/_send + horus_subscriber_<name>_new/_destroy/_recv/_has_msg */
 #define HORUS_DECLARE_TOPIC(name) \
@@ -375,7 +408,9 @@ bool             horus_subscriber_accel_stamped_has_msg(const HorusSubscriber* s
     HorusSubscriber* horus_subscriber_##name##_new(const char* t); \
     void             horus_subscriber_##name##_destroy(HorusSubscriber* s); \
     int              horus_subscriber_##name##_recv(const HorusSubscriber* s, void* o); \
-    bool             horus_subscriber_##name##_has_msg(const HorusSubscriber* s);
+    bool             horus_subscriber_##name##_has_msg(const HorusSubscriber* s); \
+    uint64_t         horus_subscriber_##name##_missed_count(const HorusSubscriber* s); \
+    uint64_t         horus_publisher_##name##_dropped_count(const HorusPublisher* p);
 
 HORUS_DECLARE_TOPIC(bounding_box_2d)
 HORUS_DECLARE_TOPIC(bounding_box_3d)
