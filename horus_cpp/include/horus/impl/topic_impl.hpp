@@ -46,7 +46,8 @@ public: \
         if (inner_) horus_publisher_##c_snake##_send(inner_, &msg); \
     } \
     /* Messages this publisher gave up on rather than blocking. */ \
-    [[nodiscard]] uint64_t dropped_count() const { \
+    /* noexcept: a null check and a C call, neither of which can throw. */ \
+    [[nodiscard]] uint64_t dropped_count() const noexcept { \
         return inner_ ? horus_publisher_##c_snake##_dropped_count(inner_) : 0; \
     } \
     const std::string& name() const { return name_; } \
@@ -84,7 +85,8 @@ public: \
     /* Messages this subscriber was lapped past. Topics are lossy by design: a \
        full ring overwrites the oldest unconsumed slot rather than blocking the \
        publisher, so a rising value means frames are being dropped. */ \
-    [[nodiscard]] uint64_t missed_count() const { \
+    /* noexcept: a null check and a C call, neither of which can throw. */ \
+    [[nodiscard]] uint64_t missed_count() const noexcept { \
         return inner_ ? horus_subscriber_##c_snake##_missed_count(inner_) : 0; \
     } \
     bool has_msg() const { \
@@ -128,7 +130,7 @@ public:
     }
 
     /// Messages this publisher gave up on rather than blocking.
-    [[nodiscard]] uint64_t dropped_count() const {
+    [[nodiscard]] uint64_t dropped_count() const noexcept {
         return inner_ ? horus_publisher_cmd_vel_dropped_count(inner_) : 0;
     }
     const std::string& name() const { return name_; }
@@ -169,7 +171,7 @@ public:
     bool has_msg() const { return inner_ ? horus_subscriber_cmd_vel_has_msg(inner_) : false; }
 
     /// Messages this subscriber was lapped past and never delivered.
-    [[nodiscard]] uint64_t missed_count() const {
+    [[nodiscard]] uint64_t missed_count() const noexcept {
         return inner_ ? horus_subscriber_cmd_vel_missed_count(inner_) : 0;
     }
     const std::string& name() const { return name_; }

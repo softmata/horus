@@ -555,8 +555,14 @@ pub unsafe extern "C" fn horus_publisher_cmd_vel_dropped_count(pub_: *const Horu
 
 // ─── Generic Pod Topic C API Macro ───────────────────────────────────────
 //
-// Generates new/destroy/send/recv/has_msg for any #[repr(C)] Pod message type.
+// Generates, for any #[repr(C)] Pod message type:
+//   publisher:  _new, _destroy, _send, _dropped_count
+//   subscriber: _new, _destroy, _recv, _has_msg, _missed_count
 // The C and Rust types must have identical memory layout (both #[repr(C)]).
+//
+// Every name here is an exported ABI symbol, so adding or removing one is a
+// breaking change for compiled consumers — keep this list current with the
+// macro body.
 
 macro_rules! impl_pod_topic_c_api {
     ($snake:ident, $rust_type:path) => {
@@ -645,7 +651,9 @@ macro_rules! impl_pod_topic_c_api {
             pub unsafe extern "C" fn [<horus_subscriber_ $snake _missed_count>](
                 sub: *const HorusSubscriber,
             ) -> u64 {
-                if sub.is_null() { return 0; }
+                if sub.is_null() {
+                    return 0;
+                }
                 let sub = &*(sub as *const topic_ffi::FfiSubscriber<$rust_type>);
                 topic_ffi::[<subscriber_ $snake _missed_count>](sub)
             }
@@ -655,7 +663,9 @@ macro_rules! impl_pod_topic_c_api {
             pub unsafe extern "C" fn [<horus_publisher_ $snake _dropped_count>](
                 pub_: *const HorusPublisher,
             ) -> u64 {
-                if pub_.is_null() { return 0; }
+                if pub_.is_null() {
+                    return 0;
+                }
                 let pub_ = &*(pub_ as *const topic_ffi::FfiPublisher<$rust_type>);
                 topic_ffi::[<publisher_ $snake _dropped_count>](pub_)
             }

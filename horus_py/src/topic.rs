@@ -1216,14 +1216,20 @@ impl PyTopic {
     /// The count is per-handle and process-local — it reflects what THIS handle
     /// missed, not a topic-wide total, and it is not visible to other processes.
     ///
+    /// Raises:
+    ///     RuntimeError: if the topic lock is poisoned. This deliberately does
+    ///         NOT fall back to 0 — a counter whose whole purpose is surfacing
+    ///         loss must never answer "no loss" when what it means is "could
+    ///         not read". Nothing downstream can tell those apart from a 0.
+    ///
     /// Returns:
     ///     Messages skipped past for this subscriber (u64)
-    fn missed_count(&self) -> u64 {
-        topic_dispatch!(
+    fn missed_count(&self) -> PyResult<u64> {
+        Ok(topic_dispatch!(
             &self.topic_type,
             t,
-            topic_lock(t).map(|g| g.missed_count()).unwrap_or(0)
-        )
+            topic_lock(t)?.missed_count()
+        ))
     }
 
     /// Messages this publisher could not place and gave up on.
@@ -1234,14 +1240,18 @@ impl PyTopic {
     ///
     /// The count is per-handle and process-local.
     ///
+    /// Raises:
+    ///     RuntimeError: if the topic lock is poisoned. As with
+    ///         `missed_count`, 0 is not an acceptable stand-in for "unknown".
+    ///
     /// Returns:
     ///     Messages dropped by this publisher (u64)
-    fn dropped_count(&self) -> u64 {
-        topic_dispatch!(
+    fn dropped_count(&self) -> PyResult<u64> {
+        Ok(topic_dispatch!(
             &self.topic_type,
             t,
-            topic_lock(t).map(|g| g.dropped_count()).unwrap_or(0)
-        )
+            topic_lock(t)?.dropped_count()
+        ))
     }
 
     /// Number of active publishers on this topic.
