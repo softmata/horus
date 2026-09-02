@@ -137,6 +137,75 @@ jobs:
           RUST_LOG: debug
           PYTHONPATH: ${{ github.workspace }}/horus_py
 
+      # `--test '*'` above does NOT reach #[ignore]d tests, and nothing else
+      # passed --ignored for horus_core: every `--ignored`/`--include-ignored`
+      # in this repo targets horus_manager (ci.yml's source_resolver step and
+      # docs-contract.yml). 85 horus_core tests were therefore dead -- 76 of
+      # them carrying a bare #[ignore] with no reason string -- including the
+      # entire cross-process chaos suite, ipc_torture, and
+      # crash_recovery_kill9_and_reconnect.
+      #
+      # Counted as `grep -cE '^\s*#\[ignore'` over horus_core/tests. An
+      # unanchored `grep -c '#\[ignore'` returns 93 because it also matches
+      # prose inside module doc comments; an earlier draft of this comment
+      # quoted that number.
+      #
+      # The #[ignore] is the mechanism these suites are built on, not neglect:
+      # they re-exec their own test binary as child processes (see
+      # chaos_cross_process.rs, which spawns `<test> --exact --ignored` per
+      # role) so that publisher and subscriber are genuinely separate
+      # processes. chaos_cross_process.rs:8 documents the intended invocation.
+      # It just never had a runner.
+      #
+      # Suites are named explicitly rather than globbed. Three others
+      # (cli_runtime_integration, launch_and_workflow, real_project_ipc)
+      # resolve `target/debug/examples/...` and the `horus` binary by hardcoded
+      # path, so they need a debug build of `-p horus --examples` and
+      # horus_manager on top of the release build above. They are left out
+      # until that prerequisite is wired, rather than added here to fail on a
+      # missing file.
+      #
+      # rust_python_matrix is included, but only after fixing it: turning it
+      # on unchanged would have made a required gate red. It was failing --
+      #
+      #   rust_python_matrix.rs:241  rp_all_message_types_rust_to_python
+      #   panicked: Python should receive messages across types, got 0
+      #
+      # -- because all five of its publisher nodes answered to one hardcoded
+      # name, and a scheduler holding five nodes under a single name ran none
+      # of them. `Rust sent` was 0 for every type, so the message blamed the
+      # Python binding for a Rust scheduler that never ticked. The child's
+      # stderr was muted, which is what left that unexplained. Both fixed in
+      # this change; the suite passes 3/3.
+      #
+      # This runs 55 of those 85. The rest stay dead and are not claimed
+      # otherwise: cli_runtime_integration (18), launch_and_workflow (5) and
+      # real_project_ipc (3) need the debug build described above; and
+      # participant_count_leak,
+      # crash_recovery's panic_hook_subprocess_helper (a subprocess entry
+      # point, not a test), loom_pod_broadcast and acceptance_topic's flaky
+      # high-frequency scenario are each ignored deliberately.
+      #
+      # Measured locally at ~5 min for the 55 tests, all passing, with no
+      # /dev/shm growth across the run.
+      - name: Run cross-process and chaos suites (#[ignore]d)
+        timeout-minutes: 25
+        run: |
+          for suite in chaos_cross_process ipc_torture production_validation \
+                       chaos_monkey message_type_matrix multi_scheduler_matrix \
+                       hardware_emulation chaos_xp_schedulers \
+                       production_fanout_battle params_intent log_system_tests \
+                       rust_python_full_matrix rust_python_matrix \
+                       humanoid_stress matrix_sweep; do
+            echo "::group::$suite"
+            cargo test -p horus_core --release --test "$suite" -- \
+              --ignored --test-threads=1 --nocapture
+            echo "::endgroup::"
+          done
+        env:
+          RUST_BACKTRACE: 1
+          PYTHONPATH: ${{ github.workspace }}/horus_py
+
       # Verify shared memory cleanup
       - name: Verify SHM Cleanup
         run: |

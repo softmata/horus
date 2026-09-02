@@ -228,6 +228,36 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # The Python suite is the ONLY coverage the horus_py binding layer has:
+      # this workspace passes --exclude horus_py to cargo test here, to
+      # coverage.yml's llvm-cov, to safety.yml's miri/sanitizer runs and to
+      # integration-tests.yml, and the crate ships no Rust tests/ directory.
+      # Nothing ran the Python side either -- no workflow invoked pytest at all,
+      # so 413 test functions, 442 cases after parametrisation, sat in the tree
+      # looking like coverage while gating nothing. The extension is already
+      # built and installed into .venv above for the Rust cross-language tests,
+      # so this is one step, not a new job: the whole suite runs in ~30s.
+      - name: Run horus_py Python test suite
+        run: |
+          # Mirrors [project.optional-dependencies].test in horus_py/pyproject.toml
+          .venv/bin/pip install pytest pytest-cov pytest-timeout numpy
+          # horus/__init__.py CATCHES ImportError and falls back to "mock mode"
+          # with Topic = None and a RuntimeWarning, so `import horus` succeeds
+          # even when the extension was never built. Without this assert, a
+          # silently-failed `maturin develop` above leaves the whole suite
+          # running against a null API -- the job stays green and the coverage
+          # it is here to provide is gone. Fail on the build, not on the tests.
+          "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
+          import horus, sys
+          if horus.Topic is None:
+              sys.exit("horus imported in MOCK MODE -- the extension did not build, "
+                       "so the suite below would test nothing")
+          PY
+          cd horus_py
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest tests/ -p no:cacheprovider
+        env:
+          RUST_BACKTRACE: 1
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest

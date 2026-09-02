@@ -7,6 +7,7 @@ Generates Rust PyO3 message classes from Python definitions.
 import os
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+import re
 from dataclasses import dataclass
 
 try:
@@ -78,9 +79,34 @@ def parse_field_type(type_str: str) -> Tuple[str, str]:
     if type_lower in TYPE_MAP:
         return TYPE_MAP[type_lower]
 
-    # Handle array types like [f32; 3]
-    if type_str.startswith("[") and "]" in type_str:
-        return (type_str, "[0.0; 3]")  # Simplified
+    # Handle array types like [f32; 3]. The default has to be built from this
+    # array's own element type and length: a hardcoded "[0.0; 3]" gave `[i32; 5]`
+    # a float default of the wrong length.
+    array = re.match(r"^\[\s*([A-Za-z0-9_]+)\s*;\s*(\d+)\s*\]$", type_str.strip())
+    if array:
+        elem, count = array.group(1), array.group(2)
+        # Resolve the element through TYPE_MAP rather than echoing the token
+        # back. HORUS spells some scalars the way a message author would --
+        # `float`, `int`, `string` -- and those are not Rust type names, so
+        # `[float; 3]` used to emit `[float; 3]` and fail to compile with E0412.
+        # Unknown elements raise here for the same reason the scalar path does:
+        # falling back to `Default::default()` accepted `[weird; 2]` silently
+        # and produced Rust that does not build, at which point the error is
+        # rustc's rather than this generator's.
+        if elem.lower() not in TYPE_MAP:
+            raise ValueError(
+                f"Unknown array element type: {elem} in {type_str}. "
+                f"Valid types: {list(TYPE_MAP.keys())}"
+            )
+        elem_rust, elem_default = TYPE_MAP[elem.lower()]
+        # `[expr; N]` requires the element to be Copy, so a String or Vec
+        # default has to be built per-slot instead -- `[String::new(); 2]` is
+        # E0277, not a value.
+        if elem_default.endswith("::new()"):
+            default = f"std::array::from_fn(|_| {elem_default})"
+        else:
+            default = f"[{elem_default}; {count}]"
+        return (f"[{elem_rust}; {count}]", default)
 
     # Handle Vec<T> directly
     if type_str.startswith("Vec<"):
@@ -147,25 +173,42 @@ def _generate_rust_code(msg: MessageDef) -> str:
         struct_fields.append(f"""    #[pyo3(get, set)]
     pub {field.name}: {field.rust_type},""")
 
-    # Build constructor params
+    # Which fields would LIKE a default: Vec fields become Option<_>, and a
+    # field literally named `timestamp` gets its type's zero value.
+    wants_default = [
+        f.rust_type.startswith("Vec<") or f.name == "timestamp" for f in msg.fields
+    ]
+
+    # Rust (and therefore pyo3's #[pyo3(signature = ...)]) rejects a defaulted
+    # parameter followed by a required one, so only the TRAILING run of
+    # would-be-defaulted fields may actually carry a default. Declaring
+    # `[("samples", "vec_f32"), ("count", "i32")]` used to emit
+    # `signature = (samples=None, count)`, which does not compile.
+    has_default = [False] * len(msg.fields)
+    for i in reversed(range(len(msg.fields))):
+        trailing_ok = i == len(msg.fields) - 1 or has_default[i + 1]
+        has_default[i] = wants_default[i] and trailing_ok
+
     constructor_params = []
     constructor_defaults = []
-    for field in msg.fields:
-        if field.rust_type.startswith("Vec<"):
-            # Optional Vec fields
+    for field, defaulted in zip(msg.fields, has_default):
+        if defaulted and field.rust_type.startswith("Vec<"):
             constructor_params.append(f"{field.name}: Option<{field.rust_type}>")
             constructor_defaults.append(f"{field.name}=None")
-        elif field.name == "timestamp":
+        elif defaulted:
+            # `timestamp=0` was emitted regardless of type; `0` is an integer
+            # literal and does not coerce to f64, so a f64 timestamp did not
+            # compile. field.default carries the right literal for the type.
             constructor_params.append(f"{field.name}: {field.rust_type}")
-            constructor_defaults.append(f"{field.name}=0")
+            constructor_defaults.append(f"{field.name}={field.default}")
         else:
             constructor_params.append(f"{field.name}: {field.rust_type}")
             constructor_defaults.append(f"{field.name}")
 
     # Build field assignments in constructor
     field_assignments = []
-    for field in msg.fields:
-        if field.rust_type.startswith("Vec<"):
+    for field, defaulted in zip(msg.fields, has_default):
+        if defaulted and field.rust_type.startswith("Vec<"):
             field_assignments.append(f"            {field.name}: {field.name}.unwrap_or_default(),")
         else:
             field_assignments.append(f"            {field.name},")
@@ -177,6 +220,10 @@ def _generate_rust_code(msg: MessageDef) -> str:
             repr_fields.append(f"{field.name}={{:.3}}")
         elif field.rust_type.startswith("Vec<"):
             repr_fields.append(f"{field.name}=[{{}} items]")
+        elif field.rust_type.startswith("["):
+            # Fixed-size arrays do not implement Display, only Debug. `{}` here
+            # made every array-typed message fail to compile with E0277.
+            repr_fields.append(f"{field.name}={{:?}}")
         else:
             repr_fields.append(f"{field.name}={{}}")
 
