@@ -906,6 +906,24 @@ impl NodeControlMap {
         }
     }
 
+    /// Ask every registered node's owning executor to safe it.
+    ///
+    /// The fleet-wide counterpart to `request_safe_state`. Used by the external
+    /// safe-state path (a lost network link under
+    /// `safety.on_link_lost = "safe_state"`), which has no single node to blame
+    /// and must safe the whole robot.
+    pub fn request_safe_state_all(&self) {
+        for c in self
+            .inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            c.safe_state_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     /// Consume a pending safing request, returning whether one was set.
     ///
     /// Clears the flag, so a request is honoured exactly once per raise.
