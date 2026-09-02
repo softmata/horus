@@ -564,7 +564,53 @@ impl PyTopic {
         };
 
         let effective_endpoint = endpoint.clone().unwrap_or_else(|| topic_name.clone());
-        let is_network = endpoint.as_ref().is_some_and(|e| e.contains('@'));
+
+        // An `@host` in the endpoint is DISCARDED, so say so.
+        //
+        // `create_topic`/`create_pool_topic` both split on '@', keep the name and
+        // throw the host away, then build an ordinary local SHM topic -- while
+        // the constructor's own docstring advertises
+        // `"topic@host:port"  - Direct UDP to specific host`. `create_topic`
+        // even comments "Check if this is a network endpoint" immediately before
+        // doing it, and reports failures as "Failed to create network Topic".
+        //
+        // So a user who wrote `Topic(CmdVel, endpoint="cmdvel@192.168.1.5:9000")`
+        // to drive a second machine got a topic that published to shared memory
+        // on THIS one and dropped every cross-machine message in silence -- and
+        // `stats()["is_network"]` agreed it was networked, because that flag was
+        // derived from the string containing '@' rather than from anything being
+        // connected. On a robot that is a command stream that appears configured
+        // and goes nowhere.
+        //
+        // Warned rather than raised, matching the `net=True` path in
+        // `horus/__init__.py`, which has the same shape and the same cause: LAN
+        // replication is a Rust-only feature and is not wired into these
+        // bindings. Raising would break callers who are already (unknowingly)
+        // running local-only.
+        let host_requested = endpoint.as_ref().and_then(|e| e.split_once('@'));
+        if let Some((_, host)) = host_requested {
+            let _ = pyo3::PyErr::warn(
+                py,
+                &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+                &std::ffi::CString::new(format!(
+                    "Topic endpoint '{}' names host '{}', but the host is IGNORED: this \
+                     topic is local shared memory only and cross-machine messages are \
+                     silently dropped. LAN replication is currently a Rust-only feature \
+                     (build horus with `--features net`). Remove the '@{}' to make the \
+                     local-only behaviour explicit.",
+                    endpoint.as_deref().unwrap_or(""),
+                    host,
+                    host
+                ))
+                .unwrap_or_else(|_| std::ffi::CString::new("topic endpoint host ignored").unwrap()),
+                1,
+            );
+        }
+        // NOT `endpoint.contains('@')`. This flag is read back by
+        // `is_network_topic()` and `stats()["is_network"]`, and answering true
+        // for a topic that is local shared memory is the lie above, reported by
+        // the API itself.
+        let is_network = false;
         let cap = capacity.unwrap_or(1024);
 
         // Create typed Topic. POD types are handled by macro-generated create_pod_topic().

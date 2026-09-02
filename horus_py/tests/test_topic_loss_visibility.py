@@ -318,3 +318,54 @@ class TestPoolBackedTopics:
                       endpoint=_endpoint("pool_tensor", unique_test_prefix))
         with pytest.raises(NotImplementedError):
             topic.try_send(None)
+
+
+class TestEndpointHostIsNotSilentlyDropped:
+    """An `@host` in an endpoint is discarded, so it must say so.
+
+    `create_topic`/`create_pool_topic` both split on '@', keep the name and throw
+    the host away, then build an ordinary local SHM topic — while the
+    constructor's docstring advertises ``"topic@host:port"`` as *Direct UDP to
+    specific host*. A user driving a second machine got a topic that published
+    to shared memory on this one and dropped every cross-machine message in
+    silence, and ``stats()["is_network"]`` agreed it was networked because that
+    flag was derived from the string containing '@'.
+    """
+
+    def test_an_endpoint_host_warns_that_it_is_ignored(self):
+        import warnings
+        import horus
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            horus.Topic(horus.CmdVel, endpoint="ep_warn_cmdvel@192.168.1.5:9000")
+
+        msgs = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+        assert msgs, "an ignored endpoint host must warn, not pass silently"
+        assert "192.168.1.5" in msgs[0], f"the warning must name the host it dropped: {msgs[0]}"
+        assert "IGNORED" in msgs[0] or "ignored" in msgs[0]
+
+    def test_a_local_topic_does_not_claim_to_be_networked(self):
+        import warnings
+        import horus
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            t = horus.Topic(horus.CmdVel, endpoint="ep_flag_cmdvel@10.0.0.9:9000")
+
+        assert t.stats()["is_network"] is False, (
+            "the topic is local shared memory; reporting is_network=True because the "
+            "endpoint string contained '@' is the API reporting the very lie that "
+            "makes this hard to notice"
+        )
+
+    def test_a_plain_endpoint_still_warns_about_nothing(self):
+        import warnings
+        import horus
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            horus.Topic(horus.CmdVel, endpoint="ep_plain_cmdvel")
+
+        assert not [w for w in caught if issubclass(w.category, RuntimeWarning)], \
+            "a local endpoint with no host must not warn"
