@@ -197,7 +197,12 @@ if ($DryRun) {
     Write-Info "Dry run: nothing was removed."
     Write-Host "  Re-run without -DryRun (add -Yes to skip the prompts) to uninstall."
     Write-Host ""
-    exit 0
+    # `return`, not `exit`. The header documents running this remotely as
+    # `& ([scriptblock]::Create((irm ...)))`, and a bare `exit` inside a
+    # scriptblock terminates the HOST -- the console closes on the person who
+    # asked only to be SHOWN what would be removed. `return` ends the script
+    # under both that form and `.\uninstall.ps1`.
+    return
 }
 
 # -Yes IS the answer to this question, which is why it is not routed through
@@ -207,7 +212,9 @@ if (-not $Yes) {
     $reply = Read-Host "  ? Are you sure you want to uninstall HORUS? [y/N]"
     if ($reply -ne "y" -and $reply -ne "Y") {
         Write-Host "`n  Uninstallation cancelled." -ForegroundColor Green
-        exit 0
+        # See the -DryRun early return above: `exit` would close the console of
+        # someone who just answered "no".
+        return
     }
 }
 
@@ -367,13 +374,26 @@ if (Test-Path $HorusLocalAppData) {
 # enough to offer to uninstall a package that is not installed.
 if (Get-Command pip -ErrorAction SilentlyContinue) {
     & pip show horus-robotics 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    $pipHasPackage = ($LASTEXITCODE -eq 0)
+    if ($pipHasPackage) {
         if (Confirm-Removal "Uninstall Python package horus-robotics?" "y") {
             & pip uninstall -y horus-robotics 2>&1 | Out-Null
             Write-OK "Uninstalled Python horus-robotics"
             $Removed++
         }
     }
+    # `pip show` is a PROBE. A non-zero status from it means "not installed",
+    # which is the ordinary outcome, not a failure of this script -- but it is
+    # the LAST external command on that path, so PowerShell hands it to the
+    # caller as the script's own status. A completely successful uninstall then
+    # reported failure to `pwsh -Command`, to a CI step, and to any wrapper that
+    # checks, with nothing in the output to say why.
+    #
+    # Cleared here rather than with a trailing `exit 0`: the documented remote
+    # form is `& ([scriptblock]::Create((irm ...)))`, and a bare `exit` inside a
+    # scriptblock terminates the HOST -- it would close the console of anyone who
+    # uninstalled the way the header tells them to.
+    $global:LASTEXITCODE = 0
 }
 
 # ============================================================================
@@ -405,12 +425,3 @@ Write-Host "  - System packages were NOT removed"
 Write-Host "  - To reinstall: .\install.sh (Git Bash), or"
 Write-Host "    curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash"
 Write-Host ""
-
-# Exit explicitly. Without this the script's status is whatever $LASTEXITCODE
-# the last external command happened to leave behind, and the last one is the
-# `pip show horus-robotics` PROBE above -- which returns 1 precisely when the
-# package is not installed, i.e. on the ordinary path. A completely successful
-# uninstall then reports failure to anything that checks, with no message to
-# say why: `pwsh -Command`, a CI step, or a user's own wrapper script. This
-# script reports its problems by printing them, so the status is 0.
-exit 0
