@@ -340,7 +340,14 @@ fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
         };
     }
 
-    let period_us = 1_000_000.0 / target_hz as f64;
+    // Derived from `period`, not recomputed from `target_hz`. `period` is
+    // integer nanoseconds, so for rates that do not divide 1e9 evenly it is
+    // truncated (7 Hz: 142857142 ns, not 142857142.857), and computing the
+    // jitter baseline independently in floating point would measure against a
+    // period the loop never actually slept for. The gap is at most 0.857 ns
+    // against a 50 us Production threshold, so no grade was ever affected —
+    // this is one source of truth rather than a numeric fix.
+    let period_us = period.as_nanos() as f64 / 1000.0;
     let intervals_us: Vec<f64> = timestamps
         .windows(2)
         .map(|w| w[1].duration_since(w[0]).as_nanos() as f64 / 1000.0)
@@ -414,8 +421,14 @@ mod jitter_tests {
         let period_us = 1000.0;
         let intervals = vec![1000.0; 64];
         let jitter = jitter_from_intervals(&intervals, period_us);
+        // Epsilon rather than `== 0.0`: `period_us` is derived from a Duration
+        // in the caller, so a future rate whose nanosecond period does not
+        // divide evenly can leave sub-nanosecond residue. The gate is unharmed
+        // — reverting `jitter_from_intervals` yields 1000.0, six orders of
+        // magnitude above this bound.
+        const EPS_US: f64 = 1e-6;
         assert!(
-            jitter.iter().all(|j| *j == 0.0),
+            jitter.iter().all(|j| j.abs() <= EPS_US),
             "a loop hitting its period exactly must report zero jitter, got {:?}",
             &jitter[..4]
         );
