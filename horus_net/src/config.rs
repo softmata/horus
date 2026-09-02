@@ -21,6 +21,15 @@ pub struct NetConfig {
     pub import: ImportConfig,
     /// Export deny patterns (e.g., ["camera.*", "debug.*"]).
     pub deny_export: Vec<String>,
+    /// Topic patterns exported as a full stream rather than a per-tick sample.
+    ///
+    /// The exporter polls on a timer, so by default a replicated topic leaves
+    /// this machine at the tick rate (~20 Hz) whatever rate it is published at.
+    /// That is right for state — a pose, a battery level — and wrong for a
+    /// measurement stream, where the receiver integrates every sample. List the
+    /// streams here (globs allowed) and every message crosses.
+    /// Env: `HORUS_NET_EXPORT_STREAM=odom,joint_states,lidar.*`.
+    pub export_stream: Vec<String>,
     /// Safety heartbeat settings.
     pub safety: SafetyConfig,
     /// Posture for acting on authenticated remote e-stop packets.
@@ -201,6 +210,11 @@ pub struct TopicNetConfig {
     pub redundant_copies: Option<u8>,
     /// Link-lost action override for this topic.
     pub on_link_lost: Option<String>,
+    /// Export sampling override: "stream" (every message) or "latest" (newest
+    /// sample per export tick). Unrecognised values fall through to
+    /// `export_stream` and then to the default rather than picking a mode for
+    /// the operator.
+    pub export_sampling: Option<String>,
     /// Optimizers enabled for this topic.
     pub optimizers: Option<Vec<String>>,
     /// Spatial radius (for spatial optimizer).
@@ -240,6 +254,7 @@ impl Default for NetConfig {
             // — the guard was permanently `Auto`.
             import: ImportConfig::from_env(),
             deny_export: csv_env("HORUS_NET_DENY_EXPORT"),
+            export_stream: csv_env("HORUS_NET_EXPORT_STREAM"),
             safety: SafetyConfig::default(),
             estop_remote: EstopRemotePolicy::from_env(),
             optimizers: csv_env("HORUS_NET_OPTIMIZERS"),
@@ -287,6 +302,7 @@ impl NetConfig {
             secret: None,
             import: ImportConfig::Auto,
             deny_export: vec![],
+            export_stream: vec![],
             safety: SafetyConfig::default(),
             estop_remote: EstopRemotePolicy::Warn,
             optimizers: vec![],
@@ -307,6 +323,34 @@ impl NetConfig {
             }
         }
         None
+    }
+
+    /// How much of a topic's ring the exporter should take on each poll.
+    ///
+    /// A per-topic override wins; otherwise the topic is a stream if it matches
+    /// any `export_stream` pattern; otherwise it is sampled. The default is the
+    /// sampled one because it is the bandwidth floor — turning a whole fleet
+    /// into full streams without being asked could saturate the link the safety
+    /// heartbeat shares — but a sampled topic that is actually losing messages
+    /// says so on the console (see [`crate::shm_reader::SkipReport`]) instead of
+    /// decimating in silence.
+    pub fn export_sampling(&self, topic_name: &str) -> crate::shm_reader::ExportSampling {
+        if let Some(mode) = self
+            .topic_config(topic_name)
+            .and_then(|c| c.export_sampling.as_deref())
+            .and_then(crate::shm_reader::ExportSampling::parse)
+        {
+            return mode;
+        }
+        if self
+            .export_stream
+            .iter()
+            .any(|p| crate::guard::glob_match_topic(topic_name, p))
+        {
+            crate::shm_reader::ExportSampling::AllSlots
+        } else {
+            crate::shm_reader::ExportSampling::LatestOnly
+        }
     }
 
     /// Compute the secret hash (4 bytes) if a secret is configured.
@@ -414,6 +458,7 @@ mod tests {
             secret: None,
             import: ImportConfig::Auto,
             deny_export: vec![],
+            export_stream: vec![],
             safety: SafetyConfig::default(),
             estop_remote: EstopRemotePolicy::Warn,
             optimizers: vec![],

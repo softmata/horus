@@ -92,13 +92,15 @@ env:
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
   #
-  # Bumped from 9505c1d to af057d9 (horus-docs main). The old pin predated
-  # horus-docs 6d8df32, which is where the shared-memory residency knobs and
-  # HORUS_RT_SPIN_GUARD_US were written into the environment-variable
-  # reference, so `every_environment_variable_is_in_the_reference_page` failed
-  # against it for four variables the code reads and that pin's page did not
-  # document. The old pin is an ancestor of the new one.
-  DOCS_PINNED_REF: af057d9f910300276832d40c4d2c99ee3e35aba4
+  # Bumped from af057d9 to 38368c8 (horus-docs main, the merge of
+  # horus-docs#11). This branch adds HORUS_VERSION, HORUS_LOCAL_SOURCE,
+  # HORUS_PREFIX and HORUS_STRICT_VERSION, and horus-docs#11 is the commit that
+  # writes them into the environment-variable reference — so against the old
+  # pin `every_environment_variable_is_in_the_reference_page` failed for four
+  # variables this branch reads and that pin's page did not document. The old
+  # pin is an ancestor of the new one (compare af057d9...38368c8: ahead 2,
+  # behind 0), and the full suite passes against it: 14 passed, 0 failed.
+  DOCS_PINNED_REF: 38368c8421630f2965fcc9b29e131e92a3e54fb2
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────
@@ -108,7 +110,7 @@ jobs:
     name: CLI contract (hermetic)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -119,7 +121,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -171,10 +173,10 @@ jobs:
     name: CLI contract (live docs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout horus-docs
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: softmata/horus-docs
           ref: ${{ env.DOCS_PINNED_REF }}
@@ -196,7 +198,7 @@ jobs:
       # writer of that key, so there is no path from docs content into a cache
       # that trusted jobs consume.
       - name: Restore Cargo cache (read-only)
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -300,7 +302,7 @@ jobs:
       # One target directory for every example. See the note above.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
@@ -313,7 +315,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libudev-dev pkg-config cmake g++ make
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -337,10 +339,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout horus-docs
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: softmata/horus-docs
           ref: ${{ env.DOCS_PINNED_REF }}
@@ -360,7 +362,7 @@ jobs:
       # the registry and git-db entries, which dominate restore time, are
       # identical either way.
       - name: Restore Cargo cache (read-only)
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -421,7 +423,7 @@ jobs:
 
       - name: Upload sweep log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs-example-sweep
           path: sweep.log
@@ -440,10 +442,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout horus-docs
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: softmata/horus-docs
           ref: ${{ env.DOCS_PINNED_REF }}
@@ -457,7 +459,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -465,8 +467,23 @@ jobs:
         run: |
           pip install maturin
           cd horus_py
-          maturin build --release
-          pip install --force-reinstall target/wheels/*.whl
+          # `--out`, rather than guessing where the wheel landed. horus_py is
+          # a workspace member with no [workspace] of its own, so maturin hands
+          # the build to cargo and the wheel appears under the *workspace*
+          # target dir — `target/wheels`, not `horus_py/target/wheels`, which
+          # is what this step used to install from. Naming the output directory
+          # also survives a CARGO_TARGET_DIR pointing somewhere else entirely,
+          # which `../target/wheels` would not: shipped-examples-build in this
+          # same workflow already sets one.
+          #
+          # The old path did not fail loudly. Nothing matched the glob, bash
+          # passed it through literally, and pip printed
+          #   WARNING: Requirement 'target/wheels/*.whl' looks like a filename,
+          #            but the file does not exist
+          #   ERROR: Invalid wheel filename (wrong number of parts): '*'
+          # so the job reported a wheel problem rather than a path problem.
+          maturin build --release --out dist
+          pip install --force-reinstall dist/*.whl
 
       - name: Confirm the wheel is the real module
         run: |

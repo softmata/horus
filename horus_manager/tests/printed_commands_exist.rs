@@ -119,7 +119,16 @@ fn printed_commands(src: &str) -> BTreeSet<(String, Option<String>)> {
         let Some(first) = words.next().filter(|w| !w.is_empty()) else {
             continue;
         };
-        if NOT_COMMANDS.contains(&first) || first.chars().next().is_some_and(|c| c.is_uppercase()) {
+        // An uppercase initial is prose. A leading digit is a version: the
+        // string being matched is `--version` output ("horus 0.4.0"), which is
+        // quoted exactly like a command and is not one — no subcommand starts
+        // with a digit.
+        if NOT_COMMANDS.contains(&first)
+            || first
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
+        {
             continue;
         }
         let second = words

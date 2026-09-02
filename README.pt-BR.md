@@ -22,6 +22,14 @@ curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
+O instalador resolve a última tag publicada e tira dela as duas metades: o binário da CLI, verificado contra o `SHA256SUMS` daquela versão, e o código-fonte que fica em `~/.horus/cache/horus@<versão>`. As duas precisam vir da mesma tag, porque `horus run` compila o seu projeto contra esse código como dependência de caminho.
+
+Para fixar uma versão específica:
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
 Instalação manual:
 
 ```bash
@@ -30,7 +38,17 @@ cd horus
 ./install.sh
 ```
 
-Python: `pip install horus-robotics`. C++: vincule `libhorus_cpp` e inclua `<horus/horus.hpp>`.
+Atualizar: `horus self update`, que move a CLI e o código em cache para a mesma tag nova. Desinstalar: `curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash` — o script lista tudo o que vai apagar e pede confirmação no seu terminal. Acrescente `-s -- --dry-run` para apenas listar, ou `-s -- --yes` para uma execução não assistida.
+
+Docker: `docker build --target dev -t horus:dev .`. O alvo padrão de `docker build .` é a imagem enxuta que traz só a CLI e não consegue compilar nem executar um projeto.
+
+C++: vincule `libhorus_cpp` e inclua `<horus/horus.hpp>`.
+
+Python: `pip install "horus-robotics>=0.4.0"`. A versão mais recente no PyPI é a 0.1.9 e usa um formato de memória compartilhada anterior ao de uma CLI 0.4.x; enquanto a 0.4.x não for publicada, compile os bindings a partir do cache: `pip install ~/.horus/cache/horus@0.4.0/horus_py`.
+
+Rust: não há canal no crates.io. `cargo add horus` e `cargo install horus` baixam um crate que não pertence a este projeto.
+
+Matriz de plataformas, variáveis de ambiente do instalador e detalhes de Docker: [Install, Upgrade, Uninstall](README.md#install-upgrade-uninstall).
 
 ## Por que HORUS?
 
@@ -38,7 +56,7 @@ O HORUS substitui DDS por buffers circulares em memória compartilhada e sincron
 
 | Recurso | HORUS |
 |---------|-------|
-| Latência IPC | Mediana de **3–304 ns**, conforme topologia e contenção |
+| Latência IPC | **171 ns** unidirecional, entre processos (`cross_process_benchmark`) |
 | Agendamento | Determinístico, com cinco classes de execução |
 | Tempo real | Orçamentos, deadlines, afinidade de CPU e watchdog integrados |
 | Segurança | Watchdog progressivo, estado seguro e gravador BlackBox |

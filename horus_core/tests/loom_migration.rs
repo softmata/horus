@@ -23,6 +23,33 @@
 //!
 //! Loom explores O(exponential) interleavings. All tests use 2-3 threads
 //! and minimal operations to keep exploration tractable.
+//!
+//! # NOT covered: slot-reuse ordering across a migration
+//!
+//! Everything above models the migration CONTROL plane — the lock, the epoch,
+//! the mode switch. Nothing here models the DATA plane across a migration:
+//! whether a producer that resynchronises through `handle_epoch_change` is still
+//! ordered against whoever last wrote the slot it goes on to claim.
+//!
+//! That gap is not hypothetical. ThreadSanitizer reports exactly that race in
+//! `a_clone_growing_the_mapping_does_not_strand_its_siblings` — two producers
+//! writing one slot, neither ordered against the other — and it is specific to
+//! the remap: the same contention with no grow
+//! (`mp_send_no_overshoot_corruption`, `topic_cross_thread_multi_p_multi_c_mpmc`)
+//! reports nothing.
+//!
+//! Reading the code does not settle it. Both sides of the resync
+//! (`sequence_or_head` and `tail` in `handle_epoch_change`) use Acquire, and the
+//! producer claim gate takes an Acquire load of `tail` before reusing a slot, so
+//! the edge looks present on paper. Loom is the tool that would decide it,
+//! because it enumerates the interleavings instead of arguing about them.
+//!
+//! A model would need: two producers claiming by CAS, one consumer reading and
+//! publishing `tail` with its batching, and a migration resynchronising local
+//! head/tail mid-stream — then assert that no slot is written by two producers
+//! without an intervening consumer read. The usual loom caveat applies harder
+//! than usual here: a model that drifts from the real claim path would prove
+//! something about the model.
 
 use loom::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use loom::sync::Arc;

@@ -73,7 +73,7 @@ jobs:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         # The gate's baseline is a cache artifact, not a git history walk, so it
         # does not need this. Kept for provenance: the report records the commit
@@ -86,7 +86,7 @@ jobs:
         components: rustfmt, clippy
 
     - name: Setup Python
-      uses: actions/setup-python@v7
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: '3.11'
 
@@ -120,7 +120,7 @@ jobs:
         nproc
 
     - name: Cache cargo dependencies
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/bin/
@@ -131,7 +131,7 @@ jobs:
         key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Restore rolling baseline
-      uses: actions/cache/restore@v6
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: benchmarks/${{ env.BENCH_HISTORY }}
         # The primary key is deliberately unique per run so it never hits: the
@@ -267,14 +267,14 @@ jobs:
       # build fails for the same reason and the gate gets disabled.
       if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
       continue-on-error: true
-      uses: actions/cache/save@v6
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: benchmarks/${{ env.BENCH_HISTORY }}
         key: benchmark-history-main-${{ github.run_id }}
 
     - name: Upload benchmark results
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: benchmark-results
         path: |
@@ -286,7 +286,7 @@ jobs:
 
     - name: Comment PR with results
       if: always() && github.event_name == 'pull_request'
-      uses: actions/github-script@v9
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
           const fs = require('fs');

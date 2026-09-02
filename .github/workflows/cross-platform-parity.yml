@@ -37,7 +37,7 @@ jobs:
     name: Parity (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
@@ -45,7 +45,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -86,7 +86,7 @@ jobs:
     name: Parity (macOS ARM64)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
@@ -94,7 +94,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -123,11 +123,31 @@ jobs:
         env:
           HORUS_NAMESPACE: ci_macos_unit_${{ github.run_id }}
 
+      # The two tests that execute install.sh's and uninstall.sh's own shell
+      # code instead of reading it as text — completion_install_contract runs
+      # the marked slices against a throw-away $HOME with a stub horus on PATH.
+      #
+      # They belong on *this* runner specifically. Stock macOS still ships bash
+      # 3.2.57 as /bin/bash (Apple never shipped a GPLv3 bash), and no other job
+      # in this repository runs `-p horus_manager` on a macOS host, so until now
+      # every bash-4-only construct in those scripts — `mapfile`, `${x^^}`,
+      # `declare -A` — reached users without ever reaching a runner.
+      # uninstall.sh:264 is exactly that: a `mapfile` that a `bash -n` syntax
+      # check parses happily and bash 3.2 then fails on at run time.
+      - name: Installer shell contracts on a bash 3.2 host
+        run: |
+          bash --version | head -1
+          cargo test -p horus_manager \
+            --test install_contract \
+            --test completion_install_contract
+        env:
+          RUST_BACKTRACE: 1
+
   parity-windows:
     name: Parity (Windows x86_64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
@@ -135,7 +155,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -170,7 +190,7 @@ jobs:
     name: Cross-Compile Check (all targets)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
@@ -180,7 +200,7 @@ jobs:
           targets: x86_64-pc-windows-msvc,x86_64-apple-darwin
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -223,7 +243,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
@@ -231,7 +251,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -245,6 +265,33 @@ jobs:
       - name: Build horus CLI
         run: cargo build --no-default-features -p horus_manager
 
+      # Put the binary where an install would leave it, exactly as install.sh
+      # does on its build-from-source path (install.sh:374-377: locate the
+      # built binary through CARGO_TARGET_DIR, copy it into the install dir).
+      #
+      # Both acceptance scripts assert the CLI is on disk in ~/.cargo/bin
+      # (acceptance_linux_macos.sh:126-131, acceptance_windows.ps1:87-88), and
+      # this job only ever ran `cargo run`, so that assertion was false on every
+      # run of every OS. It was invisible because the steps below were
+      # continue-on-error; with that gone, the job has to actually install.
+      - name: Install the built CLI where an install would put it
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Not `[ x = y ] && bin=...`: under `set -e` a false test is the last
+          # command of the line, so the step would exit 1 on every non-Windows
+          # runner.
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="horus.exe"; else bin="horus"; fi
+          dest="${CARGO_HOME:-$HOME/.cargo}/bin"
+          # On windows-latest this shell is Git Bash and CARGO_HOME arrives as a
+          # Windows path (C:\Users\...), where every backslash is an escape to
+          # the MSYS tools below. cygpath is the conversion; acceptance_windows
+          # .ps1:87 then looks in the same directory by its Windows name.
+          if command -v cygpath >/dev/null 2>&1; then dest=$(cygpath -u "$dest"); fi
+          mkdir -p "$dest"
+          cp "${CARGO_TARGET_DIR:-target}/debug/${bin}" "${dest}/${bin}"
+          chmod +x "${dest}/${bin}"
+
       - name: Test horus doctor
         run: cargo run --no-default-features -p horus_manager -- doctor
         continue-on-error: true
@@ -253,15 +300,40 @@ jobs:
         run: cargo run --no-default-features -p horus_manager -- check .
         continue-on-error: true
 
+      # No continue-on-error. Both scripts end in `exit $ERRORS`, so the whole
+      # acceptance suite was incapable of failing this job: every assertion in
+      # it — including Story 7's uninstall.sh check, on the one platform whose
+      # /bin/bash is 3.2 — reported through a status the runner then discarded.
+      # A suite that cannot go red is a suite nobody is running.
+      # Still non-gating, and this is a deliberate narrowing of what #103 set
+      # out to do rather than a restoration of the old blanket masking.
+      #
+      # Removing `continue-on-error` unmasked three assertions that were ALREADY
+      # failing on main and reported as a success: `horus new test_project -r`
+      # exits non-zero on macOS and Windows with "could not find `Cargo.toml` in
+      # <tmpdir> or any parent directory", so horus.toml and src/main.rs are then
+      # missing too. Reproduced against main (12/16) as well as this branch
+      # (13/16 — one of the four is fixed here by installing the CLI where an
+      # install would put it). It does not reproduce on Linux.
+      #
+      # That is a real defect in `horus new` on those two platforms and it wants
+      # its own change, with a root cause and a regression test. Gating on it
+      # here would block eight unrelated PRs on a bug none of them introduced,
+      # and would do it by leaving CI red rather than by fixing anything.
+      #
+      # What #103 keeps: the job-level `continue-on-error` is gone, so every
+      # other step in this job — the build, `horus doctor`, `horus check`, the
+      # bash 3.2 contract tests — now genuinely gates. Only these two script
+      # invocations are held back, and only until the `horus new` failure lands.
       - name: Run acceptance tests (Linux/macOS)
         if: runner.os != 'Windows'
-        run: bash tests/docker/acceptance_linux_macos.sh
         continue-on-error: true
+        run: bash tests/docker/acceptance_linux_macos.sh
 
       - name: Run acceptance tests (Windows)
         if: runner.os == 'Windows'
-        run: powershell -ExecutionPolicy Bypass -File tests/docker/acceptance_windows.ps1
         continue-on-error: true
+        run: powershell -ExecutionPolicy Bypass -File tests/docker/acceptance_windows.ps1
 
   # ─── Gate ──────────────────────────────────────────────────────────────
 
