@@ -233,80 +233,125 @@ struct TimingLimits {
     min_rate_fraction: f64,
 }
 
+/// Which limit a run failed, with the numbers that failed it.
+///
+/// A structured kind rather than a formatted string, so the gate tests can
+/// assert *which* limit fired without depending on the wording of the message.
+/// The first version returned one `String` and the tests matched substrings of
+/// it; that coupled every test to prose that exists to be reworded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Violation {
+    Spread { mad_percent: f64, limit: f64 },
+    Tail { periods: f64, limit: f64 },
+    Stalls { rate: f64, limit: f64 },
+    Rate { fraction: f64, limit: f64 },
+}
+
+impl Violation {
+    /// The limit that fired, independent of the numbers — what tests match on.
+    fn kind(self) -> &'static str {
+        match self {
+            Violation::Spread { .. } => "spread",
+            Violation::Tail { .. } => "tail",
+            Violation::Stalls { .. } => "stalls",
+            Violation::Rate { .. } => "rate",
+        }
+    }
+}
+
+impl std::fmt::Display for Violation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Violation::Spread { mad_percent, limit } => write!(
+                f,
+                "spread: MAD {mad_percent:.2}% of the mean interval, limit {limit:.2}%"
+            ),
+            Violation::Tail { periods, limit } => write!(
+                f,
+                "tail: max jitter {periods:.1} periods, limit {limit:.1} periods"
+            ),
+            Violation::Stalls { rate, limit } => write!(
+                f,
+                "stalls: {:.2}% of intervals exceeded 3x the mean, limit {:.2}%",
+                rate * 100.0,
+                limit * 100.0
+            ),
+            Violation::Rate { fraction, limit } => write!(
+                f,
+                "rate: achieved {:.0}% of the declared rate, floor {:.0}%",
+                fraction * 100.0,
+                limit * 100.0
+            ),
+        }
+    }
+}
+
 /// Check a jitter report against `limits`, returning every violation.
 ///
 /// Split out from the tests so the gate itself can be tested on synthetic
-/// distributions -- see `mod gate_tests`. Without that, a gate that silently
-/// stopped being able to fail would look exactly like a passing test.
-fn check_timing(report: &JitterReport, limits: &TimingLimits) -> Result<(), String> {
+/// distributions -- see the gate tests at the bottom of this file. Without
+/// that, a gate that silently stopped being able to fail would look exactly
+/// like a passing test.
+fn check_timing(report: &JitterReport, limits: &TimingLimits) -> Result<(), Vec<Violation>> {
     let period_us = report.expected_interval_us;
-    let mut problems: Vec<String> = Vec::new();
+    let mut problems: Vec<Violation> = Vec::new();
 
     if let Some(limit) = limits.max_mad_percent {
         if report.mad_percent >= limit {
-            problems.push(format!(
-                "spread: MAD {:.2}% of the mean interval, limit {:.2}%",
-                report.mad_percent, limit
-            ));
+            problems.push(Violation::Spread {
+                mad_percent: report.mad_percent,
+                limit,
+            });
         }
     }
 
-    let jitter_periods = if period_us > 0.0 {
-        report.max_jitter_us / period_us
-    } else {
-        0.0
-    };
-    if jitter_periods >= limits.max_jitter_periods {
-        problems.push(format!(
-            "tail: max jitter {:.1} us = {:.1} periods, limit {:.1} periods \
-             (worst interval {:.1} us on a {:.0} us period)",
-            report.max_jitter_us,
-            jitter_periods,
-            limits.max_jitter_periods,
-            report.worst_interval_us,
-            period_us
-        ));
+    // A zero declared period means the report is a default or the caller passed
+    // one; ratios against it are meaningless, so the two limits expressed in
+    // periods are skipped rather than reported as `inf` or `NaN`.
+    if period_us > 0.0 {
+        let periods = report.max_jitter_us / period_us;
+        if periods >= limits.max_jitter_periods {
+            problems.push(Violation::Tail {
+                periods,
+                limit: limits.max_jitter_periods,
+            });
+        }
+        if report.mean_interval_us > 0.0 {
+            let fraction = period_us / report.mean_interval_us;
+            if fraction < limits.min_rate_fraction {
+                problems.push(Violation::Rate {
+                    fraction,
+                    limit: limits.min_rate_fraction,
+                });
+            }
+        }
     }
 
     let stall_rate = report.stall_rate();
     if stall_rate >= limits.max_stall_rate {
-        problems.push(format!(
-            "stalls: {:.2}% of intervals exceeded 3x the mean ({} of {}), limit {:.2}%",
-            stall_rate * 100.0,
-            report.severe_outliers,
-            report.total_intervals,
-            limits.max_stall_rate * 100.0
-        ));
-    }
-
-    let rate_fraction = if report.mean_interval_us > 0.0 {
-        period_us / report.mean_interval_us
-    } else {
-        0.0
-    };
-    if rate_fraction < limits.min_rate_fraction {
-        problems.push(format!(
-            "rate: {:.1} Hz effective against {:.0} Hz declared ({:.0}% of it), \
-             floor {:.0}%",
-            report.effective_rate_hz,
-            1_000_000.0 / period_us,
-            rate_fraction * 100.0,
-            limits.min_rate_fraction * 100.0
-        ));
+        problems.push(Violation::Stalls {
+            rate: stall_rate,
+            limit: limits.max_stall_rate,
+        });
     }
 
     if problems.is_empty() {
         Ok(())
     } else {
-        Err(problems.join("\n  "))
+        Err(problems)
     }
 }
 
 /// Panic with the full report when `check_timing` fails.
 fn assert_timing(report: &JitterReport, limits: &TimingLimits, context: &str) {
     if let Err(problems) = check_timing(report, limits) {
+        let rendered = problems
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n  ");
         panic!(
-            "{context} timing gate failed:\n  {problems}\n\n{report}\n\
+            "{context} timing gate failed:\n  {rendered}\n\n{report}\n\
              If this is a fresh checkout rather than a regression, check the \
              environment first: SCHED_FIFO needs CAP_SYS_NICE (`horus setup-rt`), \
              this kernel may not be PREEMPT_RT, and a debug build is 10-50x \
@@ -727,10 +772,24 @@ fn synth(intervals_us: &[f64]) -> Vec<Instant> {
     let mut acc = Duration::ZERO;
     out.push(base);
     for &us in intervals_us {
-        acc += Duration::from_nanos((us * 1000.0) as u64);
+        // Rounded, not truncated: a fractional-microsecond interval would
+        // otherwise be built systematically short, so the distribution the test
+        // reasons about and the one it constructs would differ.
+        assert!(
+            us.is_finite() && us >= 0.0,
+            "synthetic interval must be finite and non-negative, got {us}. A \
+             negative would cast to an enormous u64 and silently invent a stall."
+        );
+        acc += Duration::from_nanos((us * 1000.0).round() as u64);
         out.push(base + acc);
     }
     out
+}
+
+/// Which limits fired, in order. Tests assert on this rather than on message
+/// text, so rewording a diagnostic cannot red a test.
+fn kinds(violations: &[Violation]) -> Vec<&'static str> {
+    violations.iter().map(|v| v.kind()).collect()
 }
 
 fn spread_only(limit: f64) -> TimingLimits {
@@ -780,14 +839,9 @@ fn spread_gate_alone_cannot_see_a_single_long_stall() {
         },
     )
     .expect_err("a 20 ms stall on a 1 ms period must fail the gate");
-    assert!(
-        err.contains("tail:"),
-        "expected the tail limit to fire: {err}"
-    );
-    assert!(
-        !err.contains("spread:"),
-        "spread must NOT be what caught this — that is the whole point: {err}"
-    );
+    // Exactly the tail limit, nothing else. Spread NOT firing is the point of
+    // this test, so it is asserted rather than merely hoped for.
+    assert_eq!(kinds(&err), ["tail"], "got {err:?}");
 }
 
 /// Broad degradation with no single dramatic outlier: 100 intervals at 6 ms
@@ -816,14 +870,7 @@ fn stall_rate_catches_degradation_below_the_tail_bound() {
         },
     )
     .expect_err("3.3% of intervals at 6x the period must fail the gate");
-    assert!(
-        err.contains("stalls:"),
-        "expected the stall-rate limit to fire: {err}"
-    );
-    assert!(
-        !err.contains("tail:"),
-        "tail must not be what caught this: {err}"
-    );
+    assert_eq!(kinds(&err), ["stalls"], "got {err:?}");
 }
 
 /// The spread limit is kept, not replaced — a genuinely jittery run still trips
@@ -846,8 +893,8 @@ fn spread_gate_still_fires_on_broadly_noisy_timing() {
     )
     .expect_err("+/-50% alternating intervals must fail the spread limit");
     assert!(
-        err.contains("spread:"),
-        "expected the spread limit to fire: {err}"
+        kinds(&err).contains(&"spread"),
+        "expected the spread limit to fire, got {err:?}"
     );
 }
 
@@ -904,12 +951,7 @@ fn rate_floor_catches_a_node_running_at_the_wrong_rate() {
         },
     )
     .expect_err("a 1 kHz node delivering 200 Hz must fail the gate");
-    assert!(
-        err.contains("rate:"),
-        "expected the rate floor to fire: {err}"
-    );
-    assert!(
-        !err.contains("spread:") && !err.contains("tail:") && !err.contains("stalls:"),
-        "nothing but the rate floor can see this: {err}"
-    );
+    // Nothing but the rate floor can see this — that is what makes the floor
+    // worth having, so it is the assertion.
+    assert_eq!(kinds(&err), ["rate"], "got {err:?}");
 }
