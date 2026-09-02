@@ -581,9 +581,10 @@ pub enum SendBlockingError {
     /// emergency stop and motor setpoints, and reporting success for a delivery
     /// nobody guaranteed is worse on that path than refusing loudly.
     #[error(
-        "send_blocking cannot guarantee delivery on a broadcast backend: it \
-         overwrites unconsumed slots and never reports a full ring. Migrate the \
-         topic to a backpressured backend (MpscShm, SpscShm, SpmcShm or \
+        "send_blocking cannot guarantee delivery on this topic's backend \
+         (PodShm): it overwrites unconsumed slots and never reports a full \
+         ring, so there is nothing for a blocking send to wait on. Migrate to \
+         a backend that applies backpressure (MpscShm, SpscShm, SpmcShm or \
          FanoutShm), or use send()/try_send() and accept the documented loss."
     )]
     NoBackpressure,
@@ -3014,7 +3015,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // would reject a topic that simply has not decided what it is yet --
         // which is what `send_blocking_serde_type` does, and it is legitimate.
         self.initialize_backend();
-        if !self.local().cached_mode.provides_backpressure() {
+
+        // `cached_mode` can still be `Unknown` here -- `initialize_backend`
+        // does not always settle it, and two existing tests
+        // (`send_blocking_serde_type`, `send_blocking_succeeds_when_ring_has_space`)
+        // legitimately reach this point that way. Answering "Unknown means
+        // backpressure" would hand back a guarantee this call cannot make if the
+        // topic is really a PodShm broadcast, so consult the header, which is
+        // authoritative, before concluding anything.
+        //
+        // A topic whose HEADER is also Unknown has genuinely not decided what it
+        // is, and refusing it would reject a topic for not having been used yet.
+        // The HEADER, not this handle's cache. `cached_mode` goes stale: a
+        // handle that has already sent keeps its negotiated mode while the
+        // topic migrates underneath it, so a topic sitting on PodShm was
+        // answering "yes, backpressure" from a cache that said SpscShm. Reading
+        // the header makes the answer depend on what the topic is now.
+        //
+        // `Unknown` from the header means the topic has genuinely not decided
+        // yet, and `provides_backpressure` answers permissively for it —
+        // refusing there would reject a topic for not having been used.
+        let effective = self.mode();
+        if !effective.provides_backpressure() {
             return Err(SendBlockingError::NoBackpressure);
         }
 

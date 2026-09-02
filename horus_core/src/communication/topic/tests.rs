@@ -11716,14 +11716,27 @@ fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
 fn send_blocking_refuses_a_backend_that_cannot_apply_backpressure() {
     let name = unique("sb_no_backpressure");
     let t: Topic<u64> = Topic::new(&name).expect("create");
-    // Drive it onto the POD broadcast backend, the default for POD types.
     t.send(0);
     let _ = t.recv();
 
-    if t.mode() != BackendMode::PodShm {
-        eprintln!("skipping: expected PodShm, got {:?}", t.mode());
+    // Migrate explicitly rather than hoping the default lands on PodShm. It
+    // does not: one handle that both sends and receives negotiates SpscShm, so
+    // the old `if t.mode() != PodShm { return }` skipped on every run of this
+    // machine -- the test for the PR's headline behaviour was not executing.
+    if !matches!(
+        t.force_migrate(BackendMode::PodShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    ) {
+        eprintln!("PodShm unavailable in this build; nothing to check");
         return;
     }
+    trigger_shm_dispatch(&name);
+    assert_eq!(
+        t.mode(),
+        BackendMode::PodShm,
+        "migration reported success but the topic is not PodShm — skipping here \
+         would hide exactly the regression this test exists to catch"
+    );
 
     let r = t.send_blocking(1, 5_u64.ms());
     assert!(
@@ -11756,5 +11769,48 @@ fn send_blocking_still_works_where_backpressure_exists() {
         r.is_ok(),
         "a backpressured backend with a drained ring must still accept a \
          blocking send; got {r:?}"
+    );
+}
+
+/// A handle that has not yet cached a backend must still refuse `send_blocking`
+/// when the topic really is a broadcast one.
+///
+/// This is the gap the `Unknown` fallback closes. `initialize_backend()` does
+/// not always settle `cached_mode` — `send_blocking_serde_type` and
+/// `send_blocking_succeeds_when_ring_has_space` both reach the guard with
+/// `Unknown` legitimately, which is why `Unknown` cannot simply mean "no
+/// backpressure". But answering "Unknown means backpressure" hands back a
+/// guarantee the call cannot honour when the header says PodShm. The guard
+/// consults the header in that case, so the answer depends on what the topic
+/// IS, not on whether this particular handle has sent anything yet.
+#[test]
+fn send_blocking_refuses_broadcast_even_on_a_handle_that_has_not_resolved_yet() {
+    let name = unique("sb_unknown_pod");
+    let owner: Topic<u64> = Topic::with_capacity(&name, 64, None).expect("create");
+    let _sub: Topic<u64> = Topic::with_capacity(&name, 64, None).expect("sub");
+    owner.send(0);
+    if !matches!(
+        owner.force_migrate(BackendMode::PodShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    ) {
+        eprintln!("PodShm unavailable here; nothing to check");
+        return;
+    }
+    trigger_shm_dispatch(&name);
+
+    // A handle that has never sent: its cached mode is not the header's.
+    let fresh: Topic<u64> = Topic::with_capacity(&name, 64, None).expect("fresh");
+    assert_eq!(
+        fresh.mode(),
+        BackendMode::PodShm,
+        "precondition: the topic must really be PodShm for this to test anything"
+    );
+
+    let err = fresh
+        .send_blocking(7u64, std::time::Duration::from_millis(20))
+        .expect_err("a PodShm topic cannot apply backpressure, so send_blocking must refuse");
+    assert!(
+        matches!(err, SendBlockingError::NoBackpressure),
+        "expected NoBackpressure, got {err:?}"
     );
 }
