@@ -36,6 +36,104 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
+## [0.5.0] — 2026-09-02
+
+100 commits since 0.4.0 (2026-08-22), against a cadence rule that says cut at
+50. Minor rather than patch: the shared-memory ABI changed, and three
+behaviours changed with it. Pre-1.0, so they ride in the minor slot.
+
+Version numbers move 0.4.0 -> 0.5.0 across `horus`, `horus_core`,
+`horus_manager`, `horus_types`, `horus_py`, `horus_macros` and `benchmarks`.
+`horus_sys` moves 0.2.0 -> 0.3.0 for the public API it gained (`PiMutex`,
+`PiMutexGuard`, `ResidencyPolicy`); its layout is unchanged. `horus_net`,
+`horus_cpp` and `horus_cpp_macros` stay at 0.1.0.
+
+### Compatibility
+
+- **Do not mix 0.4.x and 0.5.0 processes on one machine's shared memory.**
+  `TOPIC_VERSION` moves 3 -> 4. Every millisecond timestamp in the topic
+  header — participant leases, `last_topology_change_ms`, `stall_since_ms` —
+  moved from `CLOCK_REALTIME` to `CLOCK_MONOTONIC`. The fields did not change
+  layout, size or alignment; they changed MEANING. A v3 process stamps a lease
+  at ~1.75e12 (ms since 1970) and a v4 process stamps the same field at ~1e7
+  (ms since boot), and nothing in the segment says which epoch a number came
+  from. Mixed, they mis-judge liveness in both directions at once: the v3
+  writer's leases look permanently expired to a v4 reader, whose slot is then
+  reclaimed underneath a live process, and the v4 writer's leases look ~55
+  years in the future to a v3 reader, which never reaps a crashed one. There is
+  no in-band discriminator that could make this safe, so `Topic`'s open path
+  refuses a mismatched segment outright and names both versions. Restart every
+  node in a namespace together.
+
+- **`send_blocking` now refuses on `FanoutShm`.** It already refused on
+  `PodShm`. `FanoutShm` was classified as backpressured because
+  `send_fanout_shm` has two `Err` returns, but neither is a full ring — one is
+  endpoint-slot exhaustion and one is an oversized message — and the ring
+  itself is drop-oldest (`send_pod` is documented "Never fails"). So
+  `send_blocking` was returning `Ok` for a delivery nothing guaranteed, on the
+  emergency-stop and motor-setpoint path its own documentation points at. The
+  `NoBackpressure` error also used to recommend migrating TO `FanoutShm` to
+  get backpressure, which moved the caller between two lossy backends and
+  changed nothing.
+
+- **`Topic.missed_count()` and `.dropped_count()` raise in Python.** They
+  returned `0` when the topic lock was poisoned, so `0` meant both "no loss"
+  and "could not read" — in the two methods whose entire purpose is telling
+  those apart. Both return `PyResult<u64>` and raise `RuntimeError`. Callers
+  that treated the return as infallible need a `try`.
+
+### Added
+
+- Loss counters on the Python and C++ bindings: `missed_count()` on the
+  subscriber, `dropped_count()` on the publisher, both in `stats()`. A topic is
+  lossy by design, and until now only Rust could see it.
+- A priority-inheritance mutex (`PiMutex`) the 1 kHz thread can wait on without
+  unbounded inversion.
+- Action chunks, and a consumer that reports when one has expired rather than
+  acting on it.
+- `horus lock --check` for pin drift, and `--print-service` for the systemd
+  unit `horus deploy` installs.
+- `distribution.yml`: CI now executes `install.sh`, `install.ps1`,
+  `uninstall.sh` and `uninstall.ps1` on Ubuntu, macOS, Windows, Git Bash and
+  `debian:11`, and checks that the binary and the source come from one tag.
+  None of these scripts had ever been run by CI on any platform.
+
+### Fixed
+
+- `install.sh` resolves ONE tag and uses it for both the binary and the source
+  tree. They could previously come from different refs — a released binary
+  against `main` source — with both reporting the same version.
+- Windows: `horus build` emitted `C:\Users\...` into generated TOML, where
+  `\U` is an invalid escape, so it failed for every Windows user; the CLI now
+  runs on a 16 MB thread instead of the 1 MB main-thread stack it was
+  overflowing; `install.ps1` is a native PowerShell installer.
+- `uninstall.ps1` exited 1 after a completely successful uninstall — the last
+  external command on the ordinary path is a `pip show` PROBE, which returns 1
+  when the package is absent — and deleted a TOML-escaped path that never
+  existed while leaving the real binary behind.
+- RT grades were unreachable: `rt_report` measured jitter as the raw interval,
+  so `RtGrade::Production` (p99 < 50us) and `Standard` (p99 < 500us) could not
+  be met at any rate and `is_production_ready()` returned false on every
+  machine, including a correctly configured PREEMPT_RT one.
+- Replay at a speed other than 1.0 anchored the cadence grid on the unscaled
+  period, so the first tick was the wrong length.
+- Network topics were silently decimated to the export tick rate.
+- An epoch flush could drag the `SpmcShm` cursor backward.
+- `msggen` emitted `[float; 3]` verbatim (not a Rust type), `[String::new(); 2]`
+  (which needs `Copy`), and accepted unknown array element types silently.
+- Shared memory: abandoned regions are reclaimed inside a namespace still in
+  use; a tensor pool whose creator died before writing its header is reclaimed;
+  a lost `FanoutShm` attach no longer strands a subscriber; a region sibling
+  `Topic` clones still point into is no longer unmapped.
+
+### Testing
+
+- The Python suite runs in CI for the first time: 413 test functions, 442 cases.
+  Nothing had ever invoked pytest, and `--exclude horus_py` appears in every
+  other Rust gate, so the binding layer had no coverage at all.
+- 55 `horus_core` tests that were compiled but never executed now run — the
+  cross-process chaos suites, `ipc_torture`, and the kill-9 reconnect test.
+
 ## [0.4.0] — 2026-08-22
 
 The first release since 0.2.2 (2026-07-19). **0.3.0 was tagged and never
