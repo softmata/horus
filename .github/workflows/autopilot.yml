@@ -206,7 +206,14 @@ jobs:
           # help land changes to what executes inside CI with nobody reading
           # them. Excluding bot authors keeps this job out of that loop entirely;
           # dependabot's own workflow is unaffected either way.
-          # ONE PR per run, the oldest.
+          # A failed `gh pr list` prints nothing and exits non-zero, which
+          # without this reads as "the queue is empty" and the job reports
+          # success having done nothing. Silent no-op is the worst failure mode
+          # for an unattended job: the convoy would appear healthy while every
+          # PR starved. Fail loudly instead.
+          set -euo pipefail
+
+          # ONE PR per run, the lowest-numbered.
           #
           # Updating every behind branch at once looks faster and is not: main
           # takes one merge at a time, and that merge puts every other branch
@@ -214,6 +221,8 @@ jobs:
           # nothing. With ten PRs queued that is ~600 jobs burned to land one.
           # Updating only the front runner costs one CI cycle per merge, and
           # the push trigger above starts the next one the moment it lands.
+          # `|| exit` is redundant under `set -e` but states the intent at the
+          # point it matters: no candidate list means stop, not proceed empty.
           candidates=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
             --limit 50 --json number,mergeStateStatus,autoMergeRequest,author \
             -q '[.[] | select(.autoMergeRequest != null)
