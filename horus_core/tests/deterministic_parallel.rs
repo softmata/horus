@@ -420,6 +420,14 @@ fn deterministic_fallback_to_order_tiers() {
 /// would let their participants join this chain's graph and change its shape --
 /// which is exactly the confound this test is trying to measure.
 fn chained(n: usize, count: Arc<AtomicU64>) -> Scheduler {
+    // The name and edge tables below are fixed-size and hand-written, so this
+    // helper is only correct for the two shapes it was built for. Without this
+    // the next caller to try `chained(6, ..)` gets an out-of-bounds panic
+    // pointing at an array literal rather than at their call.
+    assert!(
+        n == 2 || n == 4,
+        "chained() supports a 2- or 4-node chain, got {n}"
+    );
     let names: [[&str; 4]; 2] = [
         ["clk2_a", "clk2_b", "clk2_c", "clk2_d"],
         ["clk4_a", "clk4_b", "clk4_c", "clk4_d"],

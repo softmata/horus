@@ -59,13 +59,32 @@ fn an_external_safe_state_request_safes_the_robot_exactly_once() {
 
     // Fire the external trigger once the scheduler is running and has installed
     // its hook. Before it is installed, `trigger_external_safe_state` escalates
-    // to an emergency stop instead, which is a different path.
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(120));
+    // to an emergency stop instead, which is a different path -- so a test that
+    // fires too early silently stops testing the thing it names.
+    //
+    // Wait on an observable fact rather than a duration. A fixed sleep encodes
+    // a guess about how fast the host is, and this suite already runs on a
+    // loaded CI box under ASan and coverage instrumentation, where the guess is
+    // worst. The first tick is proof the scheduler is past start-up, which is
+    // what the hook installation is ordered against.
+    let ready = ticks.clone();
+    let trigger = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ready.load(Ordering::Relaxed) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the scheduler never ticked within 5 s; the trigger would have \
+                 raced hook installation instead of exercising it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         horus_core::scheduling::trigger_external_safe_state("test: peer lost".to_string());
     });
 
     scheduler.run_for(600_u64.ms()).unwrap();
+    // Joined, so a failure inside the trigger thread fails this test rather
+    // than being swallowed when the process moves on.
+    trigger.join().expect("the trigger thread panicked");
 
     let n = safed.load(Ordering::Relaxed);
     let t = ticks.load(Ordering::Relaxed);
@@ -88,9 +107,12 @@ fn an_external_safe_state_request_safes_the_robot_exactly_once() {
     // safing, not a fresh `enter_safe_state()` every tick for the rest of the
     // run. `SafetyState::SafeState` stays latched as an observable condition,
     // which is why consuming the state itself would have been the wrong fix.
-    assert!(
-        n < t / 4,
-        "safed {n} times over {t} ticks — the request is being re-consumed every \
-         tick instead of once per raise"
+    // The test is named "exactly once", so assert exactly once rather than an
+    // upper bound that a request consumed on every third tick would also pass.
+    // One node, one raise, one safing.
+    assert_eq!(
+        n, 1,
+        "safed {n} times over {t} ticks for a single raise — the request is a \
+         latched LEVEL being re-consumed, not an edge handled once"
     );
 }

@@ -555,7 +555,14 @@ pub unsafe extern "C" fn horus_publisher_cmd_vel_dropped_count(pub_: *const Horu
 
 // ─── Generic Pod Topic C API Macro ───────────────────────────────────────
 //
-// Generates new/destroy/send/recv/has_msg for any #[repr(C)] Pod message type.
+// Generates, for any #[repr(C)] Pod message type:
+//   publisher:  _new, _destroy, _send, _dropped_count
+//   subscriber: _new, _destroy, _recv, _has_msg, _missed_count
+//
+// Every name here is an exported ABI symbol, so this list is the checklist for
+// editing the macro -- the two counters are easy to leave out of a new arm and
+// nothing but a link error in someone else's build would say so.
+//
 // The C and Rust types must have identical memory layout (both #[repr(C)]).
 
 macro_rules! impl_pod_topic_c_api {

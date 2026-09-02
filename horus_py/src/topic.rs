@@ -1594,7 +1594,7 @@ impl PyTopic {
             // read this subscriber attempted and did not get, while a miss is a
             // message it was never offered. Summing them would hide the one the
             // subscriber cannot otherwise detect.
-            dict.set_item("missed_count", self.missed_count())?;
+            dict.set_item("missed_count", self.missed_count()?)?;
             dict.set_item("is_network", self.is_network)?;
             dict.set_item("backend", self.backend_type())?;
 
@@ -1651,12 +1651,12 @@ impl PyTopic {
     ///     msg = topic.recv()
     ///     if topic.missed_count() > before:
     ///         node.log_warning("state stream lapped us - sample is not continuous")
-    fn missed_count(&self) -> u64 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.missed_count()).unwrap_or(0)
-        )
+    fn missed_count(&self) -> PyResult<u64> {
+        // Raises rather than reporting 0 on a poisoned lock. This whole method
+        // exists so a Python caller can tell "I lost samples" from "I did not",
+        // and unwrap_or(0) spends exactly that distinction to avoid an error
+        // path -- the failure would arrive disguised as the good news.
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.missed_count()))
     }
 
     /// Messages this publisher could not place and gave up on.
@@ -1669,12 +1669,13 @@ impl PyTopic {
     ///
     /// Returns:
     ///     Messages dropped by this publisher (u64)
-    fn dropped_count(&self) -> u64 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.dropped_count()).unwrap_or(0)
-        )
+    ///
+    /// Raises:
+    ///     RuntimeError: the topic lock is poisoned, so the count is unknown.
+    ///     It is not reported as 0 -- that is a real reading.
+    fn dropped_count(&self) -> PyResult<u64> {
+        // Raises rather than reporting 0; see `missed_count`.
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.dropped_count()))
     }
 
     /// Number of active publishers on this topic.

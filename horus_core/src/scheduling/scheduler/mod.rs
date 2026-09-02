@@ -3019,10 +3019,19 @@ impl Scheduler {
                 }
             }
 
-            // Anchor the cadence grid before the first tick, so the first
-            // sleep is measured from here rather than from a stale construction
-            // -time instant.
-            self.tick.next_deadline = Instant::now() + self.tick.period;
+            // Anchor the cadence grid before the first tick, so the first sleep
+            // is measured from here rather than from a stale construction-time
+            // instant.
+            //
+            // Anchored with the SAME effective period `compute_tick_sleep` will
+            // step by. Under replay at a speed other than 1.0 those differ, and
+            // anchoring on the unscaled period made the first grid step the
+            // wrong length -- a 2x replay slept a full real period before its
+            // first tick instead of half of one. Only the first step was
+            // affected, because every later one is derived from this deadline
+            // rather than from the clock, which is precisely what makes it the
+            // kind of thing nobody notices.
+            self.tick.next_deadline = Instant::now() + self.effective_tick_period();
 
             // Main tick loop
             while self.is_running() {
@@ -3772,16 +3781,22 @@ impl Scheduler {
     /// re-anchored to now rather than firing a burst of zero-length catch-up
     /// ticks. A robot wants the next command on the grid, not five of them back
     /// to back into an actuator.
-    fn compute_tick_sleep(&mut self) -> Option<Duration> {
-        let period = if let Some(ref replay) = self.replay {
-            if replay.speed != 1.0 {
+    /// The period the cadence grid actually steps by.
+    ///
+    /// This is `tick.period` scaled by the replay speed, and it is the one
+    /// source of truth for it: the grid anchor and every grid step have to
+    /// agree, and they did not when each computed the scaling itself.
+    fn effective_tick_period(&self) -> Duration {
+        match self.replay {
+            Some(ref replay) if replay.speed != 1.0 => {
                 Duration::from_nanos((self.tick.period.as_nanos() as f64 / replay.speed) as u64)
-            } else {
-                self.tick.period
             }
-        } else {
-            self.tick.period
-        };
+            _ => self.tick.period,
+        }
+    }
+
+    fn compute_tick_sleep(&mut self) -> Option<Duration> {
+        let period = self.effective_tick_period();
 
         let (sleep, next, overran) =
             tick_grid_step(self.tick.next_deadline, Instant::now(), period);
