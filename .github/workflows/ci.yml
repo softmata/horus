@@ -228,6 +228,25 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # The Python suite is the ONLY coverage the horus_py binding layer has:
+      # this workspace passes --exclude horus_py to cargo test here, to
+      # coverage.yml's llvm-cov, to safety.yml's miri/sanitizer runs and to
+      # integration-tests.yml, and the crate ships no Rust tests/ directory.
+      # Nothing ran the Python side either -- no workflow invoked pytest at all,
+      # so 351 test functions (117 of them cross-language parity checks, 65
+      # tensor-API checks) sat in the tree looking like coverage while gating
+      # nothing. The extension is already built and installed into .venv above
+      # for the Rust cross-language tests, so this is one step, not a new job:
+      # the whole suite runs in ~30s.
+      - name: Run horus_py Python test suite
+        run: |
+          # Mirrors [project.optional-dependencies].test in horus_py/pyproject.toml
+          .venv/bin/pip install pytest pytest-cov pytest-timeout numpy
+          cd horus_py
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest tests/ -p no:cacheprovider
+        env:
+          RUST_BACKTRACE: 1
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest
