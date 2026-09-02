@@ -877,11 +877,17 @@ impl NodeControlMap {
 
     /// Request safing for EVERY registered node.
     ///
-    /// The emergency-stop path needs this: halting the tick loop stops new
-    /// commands being computed, but it does not change what the hardware was
-    /// last told, and the nodes an executor owns cannot be reached from the
-    /// main thread at all. Each executor honours the request from its own
-    /// thread, which is the only place `enter_safe_state()` can legally run.
+    /// Both fleet-wide safing paths use this, and neither has a single node to
+    /// blame. The emergency-stop path needs it because halting the tick loop
+    /// stops new commands being computed but does not change what the hardware
+    /// was last told. The external safe-state path (a lost link under
+    /// `safety.on_link_lost = "safe_state"`) needs it because the operator
+    /// chose per-node safing over a halt, so the loop keeps running and only
+    /// the nodes are safed.
+    ///
+    /// Nodes an executor owns cannot be reached from the main thread at all, so
+    /// each executor honours the request from its own thread -- the only place
+    /// `enter_safe_state()` can legally run.
     pub fn request_safe_state_all(&self) {
         for c in self
             .inner
@@ -900,24 +906,6 @@ impl NodeControlMap {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(name)
-        {
-            c.safe_state_requested
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-    }
-
-    /// Ask every registered node's owning executor to safe it.
-    ///
-    /// The fleet-wide counterpart to `request_safe_state`. Used by the external
-    /// safe-state path (a lost network link under
-    /// `safety.on_link_lost = "safe_state"`), which has no single node to blame
-    /// and must safe the whole robot.
-    pub fn request_safe_state_all(&self) {
-        for c in self
-            .inner
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
         {
             c.safe_state_requested
                 .store(true, std::sync::atomic::Ordering::Release);
