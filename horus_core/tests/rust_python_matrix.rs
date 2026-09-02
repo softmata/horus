@@ -95,7 +95,10 @@ horus.run(sub, duration=6.0, tick_rate=200)
         .arg(&py_file)
         .env("RESULT_DIR", result_dir().to_str().unwrap())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // stderr is NOT muted: a traceback in the child is the only
+        // explanation this test can give, and muting it turned a dead
+        // scheduler into an unexplained "Python received 0".
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
 
@@ -115,7 +118,12 @@ horus.run(sub, duration=6.0, tick_rate=200)
         for TypedPub<T>
     {
         fn name(&self) -> &str {
-            "typed_pub"
+            // The topic name, which is unique per node. This used to be the
+            // literal "typed_pub" for all five publishers, and a scheduler
+            // holding five nodes that all answer to one name ran none of them:
+            // every count came back 0, including `Rust sent`, so the failure
+            // read as "Python received nothing" and pointed at the binding.
+            &self.name
         }
         fn init(&mut self) -> horus_core::error::HorusResult<()> {
             self.topic = Some(Topic::new(&self.name)?);
@@ -381,7 +389,10 @@ horus.run(pub, duration=3.0, tick_rate=100)
     let mut py = Command::new("python3")
         .arg(&py_file)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // stderr is NOT muted: a traceback in the child is the only
+        // explanation this test can give, and muting it turned a dead
+        // scheduler into an unexplained "Python received 0".
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
 
@@ -535,7 +546,10 @@ horus.run(node, duration=5.0, tick_rate=100)
         .arg(&py_file)
         .env("RESULT_DIR", result_dir().to_str().unwrap())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // stderr is NOT muted: a traceback in the child is the only
+        // explanation this test can give, and muting it turned a dead
+        // scheduler into an unexplained "Python received 0".
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
 

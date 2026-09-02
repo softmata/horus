@@ -165,20 +165,18 @@ jobs:
       # until that prerequisite is wired, rather than added here to fail on a
       # missing file.
       #
-      # rust_python_matrix is left out for a DIFFERENT reason, recorded here
-      # because the obvious reading of the list above is wrong: it contains no
-      # `target/debug` reference at all (`grep -c target/debug` is 0) and has
-      # the same shape as rust_python_full_matrix, which IS run here. It is
-      # excluded because one of its three tests actually fails --
+      # rust_python_matrix is included, but only after fixing it: turning it
+      # on unchanged would have made a required gate red. It was failing --
       #
       #   rust_python_matrix.rs:241  rp_all_message_types_rust_to_python
       #   panicked: Python should receive messages across types, got 0
       #
-      # reproduced against a release build of the extension from this tree, not
-      # a stale one (2 passed, 1 failed). Adding the suite on the strength of
-      # "it has no hardcoded paths" would turn a required gate red. The two
-      # passing tests are worth having once that one is fixed or ignored on its
-      # own; until then this is a known gap, not an oversight.
+      # -- because all five of its publisher nodes answered to one hardcoded
+      # name, and a scheduler holding five nodes under a single name ran none
+      # of them. `Rust sent` was 0 for every type, so the message blamed the
+      # Python binding for a Rust scheduler that never ticked. The child's
+      # stderr was muted, which is what left that unexplained. Both fixed in
+      # this change; the suite passes 3/3.
       #
       # This runs 52 of those 85. The rest stay dead and are not claimed
       # otherwise: cli_runtime_integration (18), launch_and_workflow (5) and
@@ -197,7 +195,8 @@ jobs:
                        chaos_monkey message_type_matrix multi_scheduler_matrix \
                        hardware_emulation chaos_xp_schedulers \
                        production_fanout_battle params_intent log_system_tests \
-                       rust_python_full_matrix humanoid_stress matrix_sweep; do
+                       rust_python_full_matrix rust_python_matrix \
+                       humanoid_stress matrix_sweep; do
             echo "::group::$suite"
             cargo test -p horus_core --release --test "$suite" -- \
               --ignored --test-threads=1 --nocapture
