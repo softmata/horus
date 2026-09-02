@@ -369,3 +369,106 @@ class TestEndpointHostIsNotSilentlyDropped:
 
         assert not [w for w in caught if issubclass(w.category, RuntimeWarning)], \
             "a local endpoint with no host must not warn"
+
+
+# ============================================================================
+# dropped_count — the PUBLISHER can see what it gave up on
+# ============================================================================
+
+
+class TestDroppedCount:
+    """The publisher-side counter, which had no Python coverage at all.
+
+    `missed_count` is exercised above. `dropped_count` was not, anywhere: with
+    its body replaced by `Ok(0)` the entire Python suite still passes. A
+    counter nothing checks is indistinguishable from one that is wired to
+    nothing, which is the failure this class exists to make impossible.
+    """
+
+    def test_stats_reports_dropped_count(self, unique_test_prefix):
+        """dropped_count is in stats() too, next to its subscriber-side twin.
+
+        stats() carried missed_count but not dropped_count, so the dict an
+        operator actually reads showed the loss this subscriber SUFFERED and
+        none of the loss this publisher CAUSED -- which is the half they can act
+        on, by slowing the producer or growing the ring.
+        """
+        topic = Topic(CmdVel, capacity=SMALL,
+                      endpoint=_endpoint("dropped_stats", unique_test_prefix))
+        stats = topic.stats()
+        assert "dropped_count" in stats, (
+            "stats() reported missed_count but not dropped_count, so the "
+            "publisher side of the same question is invisible where operators look"
+        )
+        assert stats["dropped_count"] == topic.dropped_count()
+
+    def test_dropped_count_starts_at_zero(self, unique_test_prefix):
+        """A fresh publisher has given up on nothing, and says so as an int."""
+        endpoint = _endpoint("dropped_zero", unique_test_prefix)
+        pub = Topic(CmdVel, capacity=64, endpoint=endpoint)
+
+        dropped = pub.dropped_count()
+
+        assert isinstance(dropped, int), f"dropped_count returned {type(dropped)}"
+        assert dropped == 0, f"a fresh publisher cannot have dropped {dropped}"
+
+    def test_nothing_the_publisher_accepts_simply_vanishes(self, unique_test_prefix):
+        """Flooding an undrained ring must be fully accounted for.
+
+        Every message the publisher accepts is delivered, missed, or dropped;
+        none may just disappear. The sum is asserted rather than any single
+        counter because WHICH one moves is a property of the backend -- the
+        queued backends refuse at the publisher (`dropped`), the broadcast ones
+        lap the consumer (`missed`).
+
+        `dropped > 0` is asserted separately and on purpose. Two same-thread
+        handles collapse onto a single-consumer ring, which is backpressured,
+        so on this path the loss is all publisher-side and `missed` is 0. If a
+        change to backend selection ever flips this to broadcast, the sum still
+        holds while the publisher-side coverage silently evaporates -- and that
+        is precisely the disappearance this class was written to catch.
+
+        The subscriber is polled once before anything is sent: registration is
+        lazy, and without that attach the publisher has no consumer to outrun,
+        counts nothing, and the run reads as thousands of silently lost
+        messages -- which looks exactly like a counting bug and is not one.
+        """
+        endpoint = _endpoint("dropped_overrun", unique_test_prefix)
+        pub = Topic(CmdVel, capacity=64, endpoint=endpoint)
+        sub = Topic(CmdVel, capacity=64, endpoint=endpoint)
+
+        sub.try_recv()  # lazy registration — there is a consumer to outrun now
+
+        sent = 2000
+        for i in range(sent):
+            pub.send(CmdVel(linear=float(i), angular=0.0))
+
+        got = 0
+        empty_polls = 0
+        # One empty poll does not mean empty; poll until several in a row are.
+        while empty_polls < 5:
+            if sub.try_recv() is not None:
+                got += 1
+                empty_polls = 0
+            else:
+                empty_polls += 1
+
+        missed = sub.missed_count()
+        dropped = pub.dropped_count()
+
+        assert got < sent, (
+            f"this test is only meaningful if the ring actually overran, but "
+            f"all {sent} messages were delivered"
+        )
+        assert dropped > 0, (
+            f"{sent} sent into a {64}-slot ring with a stalled consumer and the "
+            f"publisher reports 0 dropped. Either dropped_count is not wired to "
+            f"anything, or the backend changed to a broadcast one and this test "
+            f"has stopped covering the publisher side (got={got} missed={missed})."
+        )
+        assert got + missed + dropped == sent, (
+            f"{sent} sent, but {got} delivered + {missed} missed + {dropped} "
+            f"dropped = {got + missed + dropped}. Loss no counter records is "
+            f"loss a supervisor cannot act on: it cannot tell a quiet sensor "
+            f"from a dead one."
+        )

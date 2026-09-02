@@ -1595,6 +1595,14 @@ impl PyTopic {
             // message it was never offered. Summing them would hide the one the
             // subscriber cannot otherwise detect.
             dict.set_item("missed_count", self.missed_count()?)?;
+            // The publisher-side counterpart, for the same reason and with the
+            // same distinction from `send_failures`: a send failure is a call
+            // that returned an error, while a drop is a message send() accepted
+            // and then gave up on after its retries. An operator reading this
+            // dict saw the loss the SUBSCRIBER suffered and none of the loss the
+            // PUBLISHER caused, which is the half they can actually act on by
+            // slowing the producer or growing the ring.
+            dict.set_item("dropped_count", self.dropped_count()?)?;
             dict.set_item("is_network", self.is_network)?;
             dict.set_item("backend", self.backend_type())?;
 
@@ -1645,6 +1653,12 @@ impl PyTopic {
     ///
     /// Returns:
     ///     Number of missed messages (int)
+    ///
+    /// Raises:
+    ///     RuntimeError: the topic lock is poisoned, so the count is unknown.
+    ///     It deliberately does NOT fall back to 0 — a counter whose whole
+    ///     purpose is surfacing loss must never answer "no loss" when what it
+    ///     means is "could not read".
     ///
     /// Examples:
     ///     before = topic.missed_count()
