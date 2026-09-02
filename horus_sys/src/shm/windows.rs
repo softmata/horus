@@ -49,19 +49,26 @@ pub struct ShmRegion {
 /// Size in bytes of the section behind `handle`, or `None` if it cannot be
 /// measured.
 ///
-/// Maps the whole section (length 0 always succeeds regardless of the size the
-/// caller wanted) purely to ask `VirtualQuery` how big it is, then unmaps.
+/// Maps with length 0, which requests the WHOLE section rather than a caller-
+/// chosen window — that is what avoids the "view larger than section" mismatch
+/// this function exists to diagnose. It is not a guarantee of success: the call
+/// can still fail (insufficient rights, for one), and `None` is returned then.
+///
+/// Mapped `FILE_MAP_READ`, not `FILE_MAP_ALL_ACCESS`. `VirtualQuery` only reads
+/// the mapping's metadata, and asking for write access means the measurement
+/// fails wherever the caller has read but not write — which is precisely a case
+/// where the informative "capacity mismatch" message is worth having and the
+/// bare "error 5" is not.
 ///
 /// # Safety
 ///
 /// `handle` must be a valid file-mapping handle.
 unsafe fn measure_section(handle: *mut std::ffi::c_void) -> Option<usize> {
     use windows_sys::Win32::System::Memory::{
-        MapViewOfFile, UnmapViewOfFile, VirtualQuery, FILE_MAP_ALL_ACCESS,
-        MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
+        MapViewOfFile, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ, MEMORY_BASIC_INFORMATION,
     };
 
-    let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
     let ptr = view.Value as *mut u8;
     if ptr.is_null() {
         return None;
@@ -77,9 +84,10 @@ unsafe fn measure_section(handle: *mut std::ffi::c_void) -> Option<usize> {
     } else {
         Some(info.RegionSize)
     };
-    UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
-        Value: ptr as *mut std::ffi::c_void,
-    });
+    // Unmap the address `MapViewOfFile` returned, rather than rebuilding one
+    // from `ptr`. The reconstruction happened to be identical, but it is an
+    // assumption about the struct's layout that nothing here needs to make.
+    UnmapViewOfFile(view);
     measured
 }
 
