@@ -27,7 +27,7 @@ Das Installationsskript ermittelt das neueste Release-Tag und nimmt beide Hälft
 Eine bestimmte Version festnageln:
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.5.0 bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
 ```
 
 Manuelle Installation:
@@ -44,7 +44,7 @@ Docker: `docker build --target dev -t horus:dev .`. Das Standardziel von `docker
 
 C++: `libhorus_cpp` linken und `<horus/horus.hpp>` einbinden.
 
-Python: `pip install "horus-robotics>=0.5.0"`. Die neueste Version auf PyPI ist 0.1.9 und verwendet ein älteres Shared-Memory-Format als eine 0.4.x-CLI; solange 0.4.x dort nicht veröffentlicht ist, die Bindings aus dem Cache bauen: `pip install ~/.horus/cache/horus@0.5.0/horus_py`.
+Python: `pip install "horus-robotics>=0.4.0"`. Die neueste Version auf PyPI ist 0.1.9 und verwendet ein älteres Shared-Memory-Format als eine 0.4.x-CLI; solange 0.4.x dort nicht veröffentlicht ist, die Bindings aus dem Cache bauen: `pip install ~/.horus/cache/horus@0.4.0/horus_py`.
 
 Rust: es gibt keinen crates.io-Kanal. `cargo add horus` und `cargo install horus` laden eine fremde Crate gleichen Namens.
 

@@ -12,7 +12,7 @@
 **Real-time distributed middleware for Rust, Python, and C++. Sub-200ns IPC.**
 
 [![CI](https://github.com/softmata/horus/actions/workflows/ci.yml/badge.svg)](https://github.com/softmata/horus/actions)
-[![Version](https://img.shields.io/badge/v0.5.0-blue.svg)](https://github.com/softmata/horus/releases)
+[![Version](https://img.shields.io/badge/v0.4.0-blue.svg)](https://github.com/softmata/horus/releases)
 [![Rust](https://img.shields.io/badge/rust-%3E%3D1.90-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](https://isocpp.org/)
@@ -46,7 +46,7 @@ of the pipe — that is the environment `bash` reads; on the left it lands in
 curl's, where nothing reads it and you silently get the latest release anyway:
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.5.0 bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
 ```
 
 Or install manually:
@@ -60,12 +60,12 @@ Python API; CMake 3.20+ and a C++17 compiler for the C++ API.
 
 **C++**: link against `libhorus_cpp` and `#include <horus/horus.hpp>`.
 
-**Python**: `pip install "horus-robotics>=0.5.0"` — keep the floor. The newest
+**Python**: `pip install "horus-robotics>=0.4.0"` — keep the floor. The newest
 release on PyPI is 0.1.9, from March 2026, and it speaks an older shared-memory
 format than a 0.4.x CLI: bare `pip install horus-robotics` gets you a package
 that imports, runs, and sees none of your topics. The floor turns that into a
 resolver error instead. Until 0.4.x reaches PyPI, build the bindings from the
-tree the installer already cached: `pip install ~/.horus/cache/horus@0.5.0/horus_py`.
+tree the installer already cached: `pip install ~/.horus/cache/horus@0.4.0/horus_py`.
 
 **Rust**: there is no crates.io channel. `cargo add horus` and `cargo install
 horus` fetch an unrelated crate that happens to own the name; HORUS's own crates
@@ -514,7 +514,7 @@ same job, and is how you move to a *particular* release — including back to an
 older one:
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.5.0 bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
 ```
 
 To see what you are running: `horus --version` reports the CLI, and
@@ -602,7 +602,7 @@ on a single-board computer.
 
 | Variable                       | Effect                                                                          |
 |--------------------------------|---------------------------------------------------------------------------------|
-| `HORUS_VERSION=v0.5.0`         | install exactly that release — binary and source. Leading `v` optional          |
+| `HORUS_VERSION=v0.4.0`         | install exactly that release — binary and source. Leading `v` optional          |
 | `HORUS_BUILD_FROM_SOURCE=1`    | skip the prebuilt binary, compile the source at the resolved tag                 |
 | `HORUS_LOCAL_SOURCE=/path`     | use a source tree already on disk — no clone, nothing fetched for it (air-gapped) |
 | `HORUS_PREFIX=/opt/horus`      | install root override — `<prefix>/bin` for the binary, `<prefix>` in place of `~/.horus`. A root install with no `SUDO_USER` refuses without it, rather than installing for root alone |

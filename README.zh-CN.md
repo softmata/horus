@@ -27,7 +27,7 @@ horus new my_robot && cd my_robot && horus run
 固定到某个版本：
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.5.0 bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
 ```
 
 也可以手动安装：
@@ -44,7 +44,7 @@ Docker：`docker build --target dev -t horus:dev .`。`docker build .` 的默认
 
 C++：链接 `libhorus_cpp`，并包含 `<horus/horus.hpp>`。
 
-Python：`pip install "horus-robotics>=0.5.0"`。PyPI 上的最新版本是 0.1.9，其共享内存格式早于 0.4.x 的 CLI；在 0.4.x 发布之前，请从缓存的源码构建绑定：`pip install ~/.horus/cache/horus@0.5.0/horus_py`。
+Python：`pip install "horus-robotics>=0.4.0"`。PyPI 上的最新版本是 0.1.9，其共享内存格式早于 0.4.x 的 CLI；在 0.4.x 发布之前，请从缓存的源码构建绑定：`pip install ~/.horus/cache/horus@0.4.0/horus_py`。
 
 Rust：没有 crates.io 渠道。`cargo add horus` 和 `cargo install horus` 取到的是同名的无关 crate。
 

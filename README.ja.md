@@ -27,7 +27,7 @@ horus new my_robot && cd my_robot && horus run
 バージョンを固定する場合：
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.5.0 bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
 ```
 
 手動インストール：
@@ -44,7 +44,7 @@ Docker：`docker build --target dev -t horus:dev .`。`docker build .` の既定
 
 C++：`libhorus_cpp` をリンクし、`<horus/horus.hpp>` をインクルードします。
 
-Python：`pip install "horus-robotics>=0.5.0"`。PyPI の最新版は 0.1.9 で、0.4.x の CLI とは共有メモリの形式が異なります。0.4.x が公開されるまでは、キャッシュされたソースからビルドしてください：`pip install ~/.horus/cache/horus@0.5.0/horus_py`。
+Python：`pip install "horus-robotics>=0.4.0"`。PyPI の最新版は 0.1.9 で、0.4.x の CLI とは共有メモリの形式が異なります。0.4.x が公開されるまでは、キャッシュされたソースからビルドしてください：`pip install ~/.horus/cache/horus@0.4.0/horus_py`。
 
 Rust：crates.io のチャンネルはありません。`cargo add horus` と `cargo install horus` は同名の無関係なクレートを取得します。
 

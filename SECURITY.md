@@ -43,7 +43,7 @@ same release tag, verifying each download against that release's `SHA256SUMS`. T
 land on a specific release instead:
 
 ```bash
-curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.5.0 bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
 ```
 
 Both halves have to move together. A patched CLI running against the previous
