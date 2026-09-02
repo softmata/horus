@@ -244,6 +244,18 @@ jobs:
           gh pr update-branch "$front" --repo "$GITHUB_REPOSITORY" \
             || echo "::warning::could not update #$front"
 
+          # Re-arm auto-merge. Updating a branch CLEARS it, and this job
+          # selects candidates by auto-merge being enabled -- so without this
+          # line every PR the convoy helps drops out of the convoy's own queue
+          # permanently, and is never looked at again. Measured on the live
+          # repo: `gh pr update-branch 124` left it `autoMergeRequest=null`,
+          # and seven PRs updated earlier were all sitting disarmed.
+          #
+          # Re-arming only restores the state the PR was selected for; it
+          # cannot arm a PR that did not already have auto-merge on.
+          gh pr merge "$front" --repo "$GITHUB_REPOSITORY" --auto --squash \
+            || echo "::warning::could not re-arm auto-merge on #$front"
+
           if [ "$total" -gt 1 ]; then
             # paste joins with a single separator and no trailing one; `tr`
             # left a dangling space that made the list awkward to copy.
