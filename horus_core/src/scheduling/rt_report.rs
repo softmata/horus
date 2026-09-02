@@ -291,6 +291,19 @@ struct JitterResult {
     actual_hz: f64,
 }
 
+/// Absolute deviation of each inter-tick interval from the nominal period, in us.
+///
+/// Split out from [`measure_jitter`] so the arithmetic can be tested without a
+/// live clock -- the bug this replaced could not be caught any other way, since
+/// the wrong answer is only wrong relative to a period the caller knows and the
+/// function did not use.
+fn deviations_us(intervals_us: &[f64], period_us: f64) -> Vec<f64> {
+    intervals_us
+        .iter()
+        .map(|iv| (iv - period_us).abs())
+        .collect()
+}
+
 fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
     let period = Duration::from_nanos(1_000_000_000 / target_hz);
     let mut timestamps =
@@ -321,14 +334,26 @@ fn measure_jitter(target_hz: u64, duration: Duration) -> JitterResult {
         };
     }
 
-    let mut deltas_us: Vec<f64> = timestamps
+    let intervals_us: Vec<f64> = timestamps
         .windows(2)
         .map(|w| w[1].duration_since(w[0]).as_nanos() as f64 / 1000.0)
         .collect();
+    let actual_hz = intervals_us.len() as f64 / duration.as_secs_f64();
+
+    // Jitter is the DEVIATION from the nominal period, not the interval itself.
+    // This used to report the raw interval, which at the 1 kHz benchmark rate is
+    // ~1000us on a perfectly idle machine. Every threshold downstream reads this
+    // as a deviation: `RtGrade::Production` wants p99 < 50, `Standard` wants
+    // p99 < 500, and an issue fires above 500. Against a ~1000us interval all
+    // three are decided before the machine is even measured -- Production and
+    // Standard were arithmetically unreachable on every host on earth, and every
+    // report carried a spurious "P99 jitter 1000us exceeds 500us threshold".
+    // `target_period_us` was already being computed and stored in the report,
+    // which is the tell that deviation was always the intent.
+    let mut deltas_us = deviations_us(&intervals_us, period.as_nanos() as f64 / 1000.0);
     deltas_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let n = deltas_us.len();
-    let actual_hz = n as f64 / duration.as_secs_f64();
 
     JitterResult {
         samples: n,
@@ -375,5 +400,59 @@ fn measure_ipc() -> (f64, f64) {
             (latency_ns, throughput)
         }
         Err(_) => (0.0, 0.0),
+    }
+}
+
+#[cfg(test)]
+mod jitter_arithmetic_tests {
+    use super::*;
+
+    /// Jitter is a deviation, not an interval.
+    ///
+    /// A 1 kHz loop ticking perfectly has intervals of 1000us and jitter of ZERO.
+    /// Reporting 1000 here is what made `RtGrade::Production` (p99 < 50) and
+    /// `RtGrade::Standard` (p99 < 500) unreachable on every machine.
+    #[test]
+    fn a_perfect_thousand_hz_loop_has_no_jitter() {
+        let period_us = 1000.0;
+        let intervals = vec![1000.0; 64];
+        let dev = deviations_us(&intervals, period_us);
+        assert!(
+            dev.iter().all(|d| *d == 0.0),
+            "a perfectly paced loop must report zero jitter, got {:?}",
+            &dev[..4]
+        );
+    }
+
+    /// Late and early ticks are both jitter, and both count positively.
+    #[test]
+    fn deviation_is_symmetric_and_absolute() {
+        let dev = deviations_us(&[1040.0, 960.0, 1000.0], 1000.0);
+        assert_eq!(dev, vec![40.0, 40.0, 0.0]);
+    }
+
+    /// The grades have to be reachable by a machine that actually behaves.
+    ///
+    /// This is the assertion the old code could not satisfy: feed it the timing
+    /// of a well-tuned host (within 20us of nominal) and the p99 must land under
+    /// the 50us Production bar, not at the 1000us interval.
+    #[test]
+    fn a_well_tuned_host_clears_the_production_bar() {
+        let period_us = 1000.0;
+        let mut intervals: Vec<f64> = (0..1000)
+            .map(|i| period_us + ((i % 40) as f64 - 20.0))
+            .collect();
+        // One bad tick, so p99 is exercised rather than max.
+        intervals.push(period_us + 900.0);
+
+        let mut dev = deviations_us(&intervals, period_us);
+        dev.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p99 = dev[(dev.len() as f64 * 0.99) as usize];
+
+        assert!(
+            p99 < 50.0,
+            "p99 deviation {p99}us should clear the 50us Production bar; the old \
+             code reported the interval (~{period_us}us) and could never clear it"
+        );
     }
 }

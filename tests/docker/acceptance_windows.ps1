@@ -1,4 +1,4 @@
-# ═══════════════════════════════════════════════════════════════════════════
+﻿# ═══════════════════════════════════════════════════════════════════════════
 # HORUS Cross-Platform CLI Acceptance Tests (Windows)
 #
 # PowerShell version of the acceptance test suite.

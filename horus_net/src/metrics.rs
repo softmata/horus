@@ -26,6 +26,11 @@ pub struct TopicMetrics {
     pub messages_sent: AtomicU64,
     pub messages_received: AtomicU64,
     pub messages_dropped: AtomicU64,
+    /// Local messages that existed in SHM and never left this machine —
+    /// decimated by latest-only export sampling, or lapped in the ring before
+    /// the exporter reached them. Counted separately from `messages_dropped`,
+    /// which is an import-side refusal: this one is data the LAN never saw.
+    pub messages_skipped: AtomicU64,
     pub bytes_sent: AtomicU64,
     pub bytes_received: AtomicU64,
     pub last_sequence: AtomicU32,
@@ -55,6 +60,9 @@ pub struct TopicSnapshot {
     pub messages_sent: u64,
     pub messages_received: u64,
     pub messages_dropped: u64,
+    /// Local messages that never reached the network. See
+    /// [`TopicMetrics::messages_skipped`].
+    pub messages_skipped: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -120,6 +128,20 @@ impl NetMetrics {
         tm.messages_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record local messages that were never exported.
+    ///
+    /// The export path polls SHM on a timer and, by default, takes the newest
+    /// slot per tick. Everything else published in that tick is gone — and used
+    /// to be gone with no counter anywhere, so a topic replicating at 20 Hz
+    /// instead of 500 Hz was indistinguishable from a topic published at 20 Hz.
+    pub fn record_topic_skipped(&mut self, topic_hash: u32, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let tm = self.topics.entry(topic_hash).or_default();
+        tm.messages_skipped.fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Take a consistent snapshot for reporting.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let peers = self
@@ -144,6 +166,7 @@ impl NetMetrics {
                 messages_sent: tm.messages_sent.load(Ordering::Relaxed),
                 messages_received: tm.messages_received.load(Ordering::Relaxed),
                 messages_dropped: tm.messages_dropped.load(Ordering::Relaxed),
+                messages_skipped: tm.messages_skipped.load(Ordering::Relaxed),
                 bytes_sent: tm.bytes_sent.load(Ordering::Relaxed),
                 bytes_received: tm.bytes_received.load(Ordering::Relaxed),
             })
@@ -192,6 +215,25 @@ mod tests {
         assert_eq!(snap.topics[0].messages_received, 1);
         assert_eq!(snap.topics[0].messages_dropped, 1);
         assert_eq!(snap.topics[0].bytes_sent, 128);
+    }
+
+    #[test]
+    fn skipped_messages_are_counted_per_topic() {
+        let mut m = NetMetrics::new();
+        m.record_topic_send(100, 64);
+        m.record_topic_skipped(100, 24);
+        m.record_topic_skipped(100, 24);
+        // A zero delta must not conjure a topic row out of nothing.
+        m.record_topic_skipped(200, 0);
+
+        let snap = m.snapshot();
+        assert_eq!(snap.topics.len(), 1);
+        assert_eq!(snap.topics[0].messages_sent, 1);
+        assert_eq!(
+            snap.topics[0].messages_skipped, 48,
+            "the 48 messages this topic published and never exported must be \
+             visible somewhere"
+        );
     }
 
     #[test]

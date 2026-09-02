@@ -2,6 +2,26 @@
 //!
 //! These are the building blocks that the scheduler composes for different
 //! execution strategies (sequential, parallel, future RT-thread, etc.).
+//!
+//! # Everything above `run_tick` runs on an RT thread
+//!
+//! `honor_safe_state_request` and `apply_degradation_action` are reached only
+//! from `rt_executor` -- the scheduler keeps its own main-thread copy of the
+//! degradation dispatch -- so they execute on a SCHED_FIFO thread, inside the
+//! tick. They therefore report through `rt_diag`, which formats into a
+//! statically allocated ring and never allocates, blocks or enters the kernel,
+//! rather than through `print_line`.
+//!
+//! `print_line` does `isatty` + `tcgetattr`, takes the process-global stdout
+//! lock, then `write` and `flush`. Pointed at a slow consumer -- a serial
+//! console, a pipe nobody is reading -- that write blocks for as long as the
+//! reader takes, on the thread driving an actuator. Two of these sites are the
+//! `Isolate` and `Kill` rungs, which are not even verbose-gated and which safe
+//! or shut down the node in the same breath: the worst possible place to wait
+//! on a terminal.
+//!
+//! The drain half is started by `RtExecutor::start` on the caller's thread
+//! before any RT thread exists, so a line queued from here always has a drainer.
 
 use std::time::{Duration, Instant};
 
@@ -54,13 +74,13 @@ pub(crate) fn honor_safe_state_request(
         // latched by the ladder when it raised the request.
         node.is_stopped = true;
         if monitors.verbose {
-            crate::terminal::print_line(&format!(
+            super::rt_executor::rt_diag(format_args!(
                 " Watchdog critical: '{}' PANICKED in enter_safe_state on its executor",
                 node.name
             ));
         }
     } else if monitors.verbose {
-        crate::terminal::print_line(&format!(
+        super::rt_executor::rt_diag(format_args!(
             " Watchdog critical: '{}' entered safe state on its executor",
             node.name
         ));
@@ -96,7 +116,7 @@ pub(crate) fn apply_degradation_action(
         DegradationAction::None => {}
         DegradationAction::Warn(ref name) => {
             if monitors.verbose {
-                crate::terminal::print_line(&format!(
+                super::rt_executor::rt_diag(format_args!(
                     " Degradation: '{name}' — sustained timing violations, monitoring"
                 ));
             }
@@ -120,7 +140,7 @@ pub(crate) fn apply_degradation_action(
             node.rate_hz = Some(new_rate_hz);
             node.last_tick = Some(Instant::now());
             if monitors.verbose {
-                crate::terminal::print_line(&format!(
+                super::rt_executor::rt_diag(format_args!(
                     " Degradation: '{name}' — reducing rate to {new_rate_hz:.1} Hz"
                 ));
             }
@@ -135,7 +155,7 @@ pub(crate) fn apply_degradation_action(
             if panicked {
                 node.is_stopped = true;
             }
-            crate::terminal::print_line(&format!(
+            super::rt_executor::rt_diag(format_args!(
                 " Degradation: '{name}' — isolated, entered safe state{}",
                 if panicked {
                     " FAILED (panicked) — node stopped"
@@ -155,7 +175,7 @@ pub(crate) fn apply_degradation_action(
             }))
             .is_err();
             node.is_stopped = true;
-            crate::terminal::print_line(&format!(
+            super::rt_executor::rt_diag(format_args!(
                 " KILL: '{name}' — permanently removed from execution after shutdown(){}",
                 if panicked { " (shutdown panicked)" } else { "" }
             ));
@@ -175,7 +195,7 @@ pub(crate) fn apply_degradation_action(
             node.last_tick = Some(Instant::now());
             set_health(node, NodeHealthState::Healthy);
             if monitors.verbose {
-                crate::terminal::print_line(&format!(
+                super::rt_executor::rt_diag(format_args!(
                     " Recovery: '{name}' — restored to {original_rate_hz:.1} Hz"
                 ));
             }
@@ -183,7 +203,7 @@ pub(crate) fn apply_degradation_action(
         DegradationAction::Deisolate(ref name) => {
             set_health(node, NodeHealthState::Warning);
             if monitors.verbose {
-                crate::terminal::print_line(&format!(
+                super::rt_executor::rt_diag(format_args!(
                     " Recovery: '{name}' — de-isolated, resuming at reduced rate"
                 ));
             }

@@ -7,6 +7,7 @@ pub mod dtype;
 #[doc(hidden)]
 pub mod tensor;
 
+pub mod action_chunk;
 #[doc(hidden)]
 pub mod costmap_descriptor;
 #[doc(hidden)]
@@ -104,6 +105,7 @@ macro_rules! impl_tensor_accessors {
 }
 
 // User-facing types (re-exported via horus::prelude)
+pub use action_chunk::{ActionAt, ActionChunk};
 pub use device::Device;
 pub use dtype::TensorDtype;
 pub use image_encoding::ImageEncoding;

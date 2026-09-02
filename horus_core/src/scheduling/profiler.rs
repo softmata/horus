@@ -112,10 +112,24 @@ impl RuntimeProfiler {
 
         let duration_us = duration.as_micros() as f64;
 
-        self.node_stats
-            .entry(node_name.to_string())
-            .or_default()
-            .update(duration_us);
+        // `entry()` takes an owned key, so it allocates on EVERY call --
+        // including the hit path, where the key already exists and the String is
+        // built only to be dropped again. This runs on the RT thread, once per
+        // node per tick, from `rt_executor`'s `try_lock` on the profiler, with
+        // `enabled` defaulting to true. `malloc` has no WCET bound: arena
+        // contention takes it to `brk`/`mmap` and a page fault, inside the tick.
+        //
+        // The steady state is a hit -- a node's name is inserted on its first
+        // tick and never again -- so look up by borrow first and only pay for
+        // the key on the one tick that actually needs it.
+        if let Some(stats) = self.node_stats.get_mut(node_name) {
+            stats.update(duration_us);
+        } else {
+            self.node_stats
+                .entry(node_name.to_string())
+                .or_default()
+                .update(duration_us);
+        }
     }
 
     /// Record a failure for a node
@@ -124,10 +138,16 @@ impl RuntimeProfiler {
             return;
         }
 
-        self.node_stats
-            .entry(node_name.to_string())
-            .or_default()
-            .record_failure();
+        // Same reasoning as `record` above: this one is reached from the RT
+        // thread's panic path, where an unbounded `malloc` is worse still.
+        if let Some(stats) = self.node_stats.get_mut(node_name) {
+            stats.record_failure();
+        } else {
+            self.node_stats
+                .entry(node_name.to_string())
+                .or_default()
+                .record_failure();
+        }
     }
 }
 

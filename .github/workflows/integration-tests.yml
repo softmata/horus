@@ -41,7 +41,7 @@ jobs:
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -52,7 +52,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -101,16 +101,29 @@ jobs:
         run: |
           # Latency percentile assertions are performance/stress gates, not IPC
           # correctness checks. They are sensitive to shared-runner scheduling
-          # (the 1P4S case intermittently leaves one subscriber unscheduled) and
-          # are exercised by the dedicated benchmark/stress workflows.
+          # (the 1P4S case intermittently leaves one subscriber unscheduled).
           #
           # The stress_rt_* family is the same class and coverage.yml has always
           # skipped all four; this job just never matched it. They assert RT
-          # timing consistency -- stress_rt_isolation_from_compute_nodes wants
-          # CV under 15% -- while eight compute nodes saturate the box. On a
+          # timing consistency while eight compute nodes saturate the box. On a
           # dedicated machine that is a real property. On a shared two-vCPU
-          # runner it measures the runner: this job saw 34.24%, and what such a
-          # number is evidence of is neighbours, not a regression in HORUS.
+          # runner it measures the runner: this job saw 34.24% spread, and what
+          # such a number is evidence of is neighbours, not a regression in
+          # HORUS.
+          #
+          # These five tests therefore run NOWHERE in CI. An earlier version of
+          # this comment said they were "exercised by the dedicated
+          # benchmark/stress workflows"; they are not. benchmarks.yml runs the
+          # binaries in benchmarks/ (cross_process_benchmark,
+          # robotics_messages_benchmark) and gates on the real-time suitability
+          # lines those print -- it never invokes these cargo tests, and
+          # `grep -rn stress_rt .github/workflows/` matches only the two files
+          # that skip them. They are developer-run gates. Anyone changing the
+          # tick path should run them locally:
+          #   cargo test -p horus_core --test stress_rt_contention -- --nocapture
+          # The gate-logic tests in that file (spread_gate_*, stall_rate_*,
+          # clean_timing_*) are pure and fast, and DO run here -- they carry no
+          # timing dependency, so the reasoning above does not apply to them.
           cargo test --workspace --exclude horus_py --release --test '*' -- \
             --test-threads=1 --nocapture \
             --skip shm_fanout_latency_percentiles_cross_thread \
@@ -127,10 +140,15 @@ jobs:
       # `--test '*'` above does NOT reach #[ignore]d tests, and nothing else
       # passed --ignored for horus_core: every `--ignored`/`--include-ignored`
       # in this repo targets horus_manager (ci.yml's source_resolver step and
-      # docs-contract.yml). 96 horus_core tests were therefore dead -- 91 of
+      # docs-contract.yml). 85 horus_core tests were therefore dead -- 76 of
       # them carrying a bare #[ignore] with no reason string -- including the
       # entire cross-process chaos suite, ipc_torture, and
       # crash_recovery_kill9_and_reconnect.
+      #
+      # Counted as `grep -cE '^\s*#\[ignore'` over horus_core/tests. An
+      # unanchored `grep -c '#\[ignore'` returns 93 because it also matches
+      # prose inside module doc comments; an earlier draft of this comment
+      # quoted that number.
       #
       # The #[ignore] is the mechanism these suites are built on, not neglect:
       # they re-exec their own test binary as child processes (see
@@ -139,15 +157,38 @@ jobs:
       # processes. chaos_cross_process.rs:8 documents the intended invocation.
       # It just never had a runner.
       #
-      # Suites are named explicitly rather than globbed: four others
-      # (cli_runtime_integration, launch_and_workflow, real_project_ipc,
-      # rust_python_matrix) resolve `target/debug/examples/...` and the `horus`
-      # binary by hardcoded path, so they need a debug build of
-      # `-p horus --examples` and horus_manager on top of the release build
-      # above. They are left out until that prerequisite is wired, rather than
-      # added here to fail on a missing file.
+      # Suites are named explicitly rather than globbed. Three others
+      # (cli_runtime_integration, launch_and_workflow, real_project_ipc)
+      # resolve `target/debug/examples/...` and the `horus` binary by hardcoded
+      # path, so they need a debug build of `-p horus --examples` and
+      # horus_manager on top of the release build above. They are left out
+      # until that prerequisite is wired, rather than added here to fail on a
+      # missing file.
       #
-      # Measured locally at ~5 min for the 53 tests, all passing, with no
+      # rust_python_matrix is left out for a DIFFERENT reason, recorded here
+      # because the obvious reading of the list above is wrong: it contains no
+      # `target/debug` reference at all (`grep -c target/debug` is 0) and has
+      # the same shape as rust_python_full_matrix, which IS run here. It is
+      # excluded because one of its three tests actually fails --
+      #
+      #   rust_python_matrix.rs:241  rp_all_message_types_rust_to_python
+      #   panicked: Python should receive messages across types, got 0
+      #
+      # reproduced against a release build of the extension from this tree, not
+      # a stale one (2 passed, 1 failed). Adding the suite on the strength of
+      # "it has no hardcoded paths" would turn a required gate red. The two
+      # passing tests are worth having once that one is fixed or ignored on its
+      # own; until then this is a known gap, not an oversight.
+      #
+      # This runs 52 of those 85. The rest stay dead and are not claimed
+      # otherwise: cli_runtime_integration (18), launch_and_workflow (5) and
+      # real_project_ipc (3) need the debug build described above;
+      # rust_python_matrix (3) is discussed below; and participant_count_leak,
+      # crash_recovery's panic_hook_subprocess_helper (a subprocess entry
+      # point, not a test), loom_pod_broadcast and acceptance_topic's flaky
+      # high-frequency scenario are each ignored deliberately.
+      #
+      # Measured locally at ~5 min for the 52 tests, all passing, with no
       # /dev/shm growth across the run.
       - name: Run cross-process and chaos suites (#[ignore]d)
         timeout-minutes: 25
@@ -182,7 +223,7 @@ jobs:
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -195,7 +236,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -856,7 +897,7 @@ jobs:
       # generated project therefore compiles cold — that is the cost of actually
       # building against the real horus crate, which is this job's whole point.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -867,7 +908,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -1006,7 +1047,7 @@ jobs:
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -1017,7 +1058,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/

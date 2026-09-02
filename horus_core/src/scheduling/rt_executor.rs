@@ -4284,6 +4284,47 @@ mod tests {
         );
     }
 
+    /// The degradation ladder reports through the ring, not through stdout.
+    ///
+    /// `apply_degradation_action` is reached only from this executor, i.e. from
+    /// a SCHED_FIFO thread inside the tick, and it used to call
+    /// `print_line(&format!(...))`. `print_line` does `isatty` + `tcgetattr`,
+    /// takes the process-global stdout lock, then writes and flushes: pointed at
+    /// a serial console or a pipe nobody is reading, that blocks for as long as
+    /// the reader takes, on the thread driving an actuator.
+    ///
+    /// `Isolate` and `Kill` are the two rungs that were not even verbose-gated,
+    /// and both safe or shut down the node in the same breath -- the worst place
+    /// in the system to wait on a terminal. This asserts the line is queued
+    /// rather than printed.
+    #[test]
+    fn the_degradation_ladder_reports_through_the_ring_not_stdout() {
+        use super::super::safety_monitor::DegradationAction;
+        use std::sync::atomic::AtomicU64;
+
+        let monitors = test_monitors();
+        let mut node = make_rt_registered("ring_reporter", Arc::new(AtomicU64::new(0)));
+        node.rate_hz = Some(100.0);
+        monitors.node_controls.register("ring_reporter");
+
+        let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
+        super::super::primitives::apply_degradation_action(
+            &mut node,
+            DegradationAction::Isolate("ring_reporter".to_string()),
+            &monitors,
+        );
+        let after = RT_DIAG_HEAD.load(Ordering::Relaxed);
+
+        assert!(
+            after > before,
+            "Isolate queued nothing — it is still going straight to stdout from \
+             the RT thread"
+        );
+        let found = find_queued(before..after, |t| t.contains("ring_reporter"))
+            .expect("the isolate line must be in the ring");
+        assert!(found.contains("isolated"), "queued the wrong line: {found}");
+    }
+
     /// The ring is BOUNDED and the producer never waits on the consumer.
     ///
     /// That is the whole point: a deadline miss must not be able to block the

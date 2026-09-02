@@ -22,6 +22,14 @@ curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
+Das Installationsskript ermittelt das neueste Release-Tag und nimmt beide Hälften daraus: die CLI-Binärdatei, geprüft gegen die `SHA256SUMS` dieses Releases, und den Quellbaum, der unter `~/.horus/cache/horus@<Version>` abgelegt wird. Beide müssen aus demselben Tag stammen, denn `horus run` kompiliert dein Projekt als Pfadabhängigkeit gegen diesen Quellbaum.
+
+Eine bestimmte Version festnageln:
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
 Manuelle Installation:
 
 ```bash
@@ -30,7 +38,17 @@ cd horus
 ./install.sh
 ```
 
-Python: `pip install horus-robotics`. C++: `libhorus_cpp` linken und `<horus/horus.hpp>` einbinden.
+Aktualisieren: `horus self update` — hebt CLI und zwischengespeicherten Quellbaum gemeinsam auf dasselbe neue Tag. Deinstallieren: `curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash` — das Skript listet auf, was es entfernen wird, und fragt im Terminal nach. Mit `-s -- --dry-run` wird nur aufgelistet, mit `-s -- --yes` läuft es unbeaufsichtigt.
+
+Docker: `docker build --target dev -t horus:dev .`. Das Standardziel von `docker build .` ist das schlanke Image mit ausschließlich der CLI; es kann kein Projekt bauen oder ausführen.
+
+C++: `libhorus_cpp` linken und `<horus/horus.hpp>` einbinden.
+
+Python: `pip install "horus-robotics>=0.4.0"`. Die neueste Version auf PyPI ist 0.1.9 und verwendet ein älteres Shared-Memory-Format als eine 0.4.x-CLI; solange 0.4.x dort nicht veröffentlicht ist, die Bindings aus dem Cache bauen: `pip install ~/.horus/cache/horus@0.4.0/horus_py`.
+
+Rust: es gibt keinen crates.io-Kanal. `cargo add horus` und `cargo install horus` laden eine fremde Crate gleichen Namens.
+
+Plattformmatrix, Umgebungsvariablen des Installers und Docker-Details: [Install, Upgrade, Uninstall](README.md#install-upgrade-uninstall).
 
 ## Warum HORUS?
 
@@ -38,7 +56,7 @@ HORUS ersetzt DDS durch Shared-Memory-Ringpuffer und lockfreie Synchronisierung.
 
 | Fähigkeit | HORUS |
 |-----------|-------|
-| IPC-Latenz | Median **3–304 ns**, abhängig von Topologie und Konkurrenz |
+| IPC-Latenz | **171 ns** Einweg, prozessübergreifend (`cross_process_benchmark`) |
 | Scheduling | Deterministisch mit fünf Ausführungsklassen |
 | Echtzeit | Budgets, Deadlines, CPU-Affinität und Watchdog integriert |
 | Sicherheit | Abgestufter Watchdog, sicherer Zustand und BlackBox-Rekorder |

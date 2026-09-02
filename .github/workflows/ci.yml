@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -52,7 +52,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -110,7 +110,7 @@ jobs:
           components: clippy
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -146,7 +146,7 @@ jobs:
     env:
       HORUS_NAMESPACE: ci_${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -233,15 +233,26 @@ jobs:
       # coverage.yml's llvm-cov, to safety.yml's miri/sanitizer runs and to
       # integration-tests.yml, and the crate ships no Rust tests/ directory.
       # Nothing ran the Python side either -- no workflow invoked pytest at all,
-      # so 351 test functions (117 of them cross-language parity checks, 65
-      # tensor-API checks) sat in the tree looking like coverage while gating
-      # nothing. The extension is already built and installed into .venv above
-      # for the Rust cross-language tests, so this is one step, not a new job:
-      # the whole suite runs in ~30s.
+      # so 407 test functions, 434 cases after parametrisation, sat in the tree
+      # looking like coverage while gating nothing. The extension is already
+      # built and installed into .venv above for the Rust cross-language tests,
+      # so this is one step, not a new job: the whole suite runs in ~30s.
       - name: Run horus_py Python test suite
         run: |
           # Mirrors [project.optional-dependencies].test in horus_py/pyproject.toml
           .venv/bin/pip install pytest pytest-cov pytest-timeout numpy
+          # horus/__init__.py CATCHES ImportError and falls back to "mock mode"
+          # with Topic = None and a RuntimeWarning, so `import horus` succeeds
+          # even when the extension was never built. Without this assert, a
+          # silently-failed `maturin develop` above leaves the whole suite
+          # running against a null API -- the job stays green and the coverage
+          # it is here to provide is gone. Fail on the build, not on the tests.
+          "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
+          import horus, sys
+          if horus.Topic is None:
+              sys.exit("horus imported in MOCK MODE -- the extension did not build, "
+                       "so the suite below would test nothing")
+          PY
           cd horus_py
           "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest tests/ -p no:cacheprovider
         env:
@@ -252,7 +263,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -275,7 +286,7 @@ jobs:
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo-audit
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-audit
           key: ${{ runner.os }}-cargo-audit-${{ steps.audit_epoch.outputs.week }}
@@ -299,7 +310,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -310,7 +321,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -340,7 +351,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -351,7 +362,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -392,6 +403,18 @@ jobs:
         env:
           RUST_LOG: loom=debug
 
+      # loom_migration covers the epoch/lock (control plane) and loom_mp_claim
+      # covers the CAS claim, but neither combines them -- and the TSan warning
+      # on the migration path needs BOTH a ring wrap and a migration to appear.
+      # This model is the intersection: a cached consumer position, batched
+      # publishes so the shared tail lags, and a resync mid-drain. Its gate is
+      # documented in the file: dropping the `max` from `resynced_tail` makes it
+      # deliver a slot twice.
+      - name: Loom — migration resync vs. data plane (horus_core)
+        run: cargo test -p horus_core --test loom_migration_data_plane -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
       - name: Loom — participant registration (horus_core)
         run: cargo test -p horus_core --test loom_participant -- --nocapture
         env:
@@ -406,7 +429,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Scan for stub test anti-patterns
         run: |

@@ -4,6 +4,22 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # A pushed tag is not the only way a version tag reaches this repository, and
+  # for six of them a push is not what happened. No workflow run of any kind
+  # exists on the refs v0.1.7, v0.1.8, v0.1.9, v0.2.0, v0.2.1 or v0.2.2 — `gh
+  # api "repos/softmata/horus/actions/runs?branch=v0.2.2"` reports total_count
+  # 0, while the same query for v0.4.0 (a tag that really was `git push`ed)
+  # reports 2 — so GitHub never delivered a tag `push` event for them, which is
+  # why this workflow has two runs in its entire history against eight version
+  # tags, and why PyPI sat on 0.1.9 for five months. Four of those six carry a
+  # GitHub Release created by a user account minutes after the tagged commit:
+  # the tag was born with the Release instead of being pushed. Listening for the
+  # Release covers that path, and cannot double-fire on the normal one — the
+  # Release that release.yml's `create-release` job cuts from a pushed tag is
+  # authored by github-actions[bot], and events raised by GITHUB_TOKEN never
+  # start new runs.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       publish:
@@ -19,16 +35,73 @@ env:
 permissions:
   contents: read
 
+# Two triggers can now describe the same tag (someone pushes v1.2.3 and then
+# publishes a draft Release for it by hand). PyPI upload is not transactional —
+# two runs pushing the same six files at once can interleave into a
+# half-published version — so serialize per ref. Deliberately not
+# cancel-in-progress: a duplicate must fail loudly on the collision below, not
+# vanish as a cancelled run.
+concurrency:
+  group: build-wheels-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # Runs before anything else, and everything else needs it. maturin stamps the
+  # distribution from horus_py/pyproject.toml, never from the tag being built,
+  # so a tag cut without bumping that file rebuilds and re-uploads the previous
+  # version's number. Paired with the `--skip-existing` this job's descendant
+  # used to pass, that was a green no-op: v0.2.0, v0.2.1, v0.2.2 and v0.4.0 all
+  # reported success while pip kept serving 0.1.9. Disagreement is a release
+  # bug, so refuse the whole run here rather than after six build jobs.
+  version-guard:
+    name: Verify Tag Matches Package Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare tag with horus_py/pyproject.toml
+        id: check
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("horus_py/pyproject.toml","rb"))["project"]["version"])')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "horus_py/pyproject.toml declares version $version"
+
+          # The Rust crate version is not what maturin ships, but the two
+          # drifting apart means one of them was missed during a release bump.
+          # Tolerate `version.workspace = true`, which is not a string.
+          crate_version="$(python3 -c 'import tomllib; v = tomllib.load(open("horus_py/Cargo.toml","rb"))["package"]["version"]; print(v if isinstance(v, str) else "")')"
+          if [ -n "$crate_version" ] && [ "$crate_version" != "$version" ]; then
+            echo "::error::horus_py/Cargo.toml is $crate_version but horus_py/pyproject.toml is $version. Bump both."
+            exit 1
+          fi
+
+          # workflow_dispatch can run against a branch, where there is no tag to
+          # agree with; the version output above is still what gets published.
+          case "${GITHUB_REF}" in
+            refs/tags/*) ;;
+            *) echo "Ref ${GITHUB_REF} is not a tag; skipping the tag comparison."; exit 0 ;;
+          esac
+
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} would publish horus-robotics ${version} (expected tag v${version}). The commit you tagged did not bump horus_py/pyproject.toml — bump it and retag, or the upload republishes the wrong version."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} agrees with horus_py/pyproject.toml"
+
   linux:
     name: Build Linux Wheels
+    needs: version-guard
     runs-on: ubuntu-latest
     strategy:
       matrix:
         target: [x86_64, aarch64]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -43,20 +116,21 @@ jobs:
           working-directory: horus_py
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-linux-${{ matrix.target }}
           path: horus_py/dist
 
   macos:
     name: Build macOS Wheels
+    needs: version-guard
     runs-on: macos-latest
     strategy:
       matrix:
         target: [x86_64, aarch64]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -70,20 +144,21 @@ jobs:
           working-directory: horus_py
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-macos-${{ matrix.target }}
           path: horus_py/dist
 
   windows:
     name: Build Windows Wheels
+    needs: version-guard
     runs-on: windows-latest
     strategy:
       matrix:
         target: [x64]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -97,17 +172,18 @@ jobs:
           working-directory: horus_py
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-windows-${{ matrix.target }}
           path: horus_py/dist
 
   sdist:
     name: Build Source Distribution
+    needs: version-guard
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
@@ -117,17 +193,25 @@ jobs:
           working-directory: horus_py
 
       - name: Upload sdist
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-sdist
           path: horus_py/dist
 
   release:
     name: Publish to PyPI
-    needs: [linux, macos, windows, sdist]
+    # test-install belongs here. It used to run *beside* this job, both hanging
+    # off the build jobs, so the upload raced twelve import tests it was
+    # supposed to be gated on and could publish a wheel that fails to import.
+    needs: [version-guard, linux, macos, windows, sdist, test-install]
     runs-on: ubuntu-latest
-    # Only run on tag pushes or manual trigger with publish=true
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    # Publish on a tag (pushed, or carried by a published Release) or on an
+    # explicit manual request. Checking the event as well as the ref matters:
+    # workflow_dispatch can be aimed at a tag, and without the event check that
+    # alone would publish even with publish=false.
+    if: >-
+      ((github.event_name == 'push' || github.event_name == 'release') && startsWith(github.ref, 'refs/tags/'))
+      || (github.event_name == 'workflow_dispatch' && inputs.publish)
     environment:
       name: pypi
       url: https://pypi.org/p/horus-robotics
@@ -135,7 +219,7 @@ jobs:
       id-token: write  # For trusted publishing
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: wheels-*
           path: dist
@@ -144,13 +228,52 @@ jobs:
       - name: List all wheels
         run: ls -lah dist/
 
+      # `maturin upload` needs a username/password and read MATURIN_PYPI_TOKEN
+      # from a secret that was never set, so every upload 403'd
+      # ("Invalid or non-existent authentication information") even though the
+      # job already declared `environment: pypi` and `id-token: write` — it was
+      # configured for trusted publishing and then authenticated the old way.
+      # This action mints the OIDC token those two settings exist to provide,
+      # so there is no PyPI secret to leak or rotate. maturin also prints
+      # "the maturin upload and publish commands are deprecated" on every run.
+      # No skip-existing: a version already on PyPI means the tag did not bump
+      # horus_py/pyproject.toml, and that must be a red run, not a quiet pass.
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          command: upload
-          args: --non-interactive --skip-existing dist/*
+          packages-dir: dist
+          print-hash: true
+
+  verify-pypi:
+    name: Verify PyPI Publication
+    needs: [version-guard, release]
+    runs-on: ubuntu-latest
+    steps:
+      # A green upload step is not the same thing as a usable release: PyPI
+      # served 0.1.9 to `pip install horus-robotics` for five months while four
+      # tags reported success. Ask the JSON endpoint pip resolves against and
+      # fail if it is not serving what this run built.
+      - name: Poll pypi.org for the published version
         env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+          EXPECTED: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          served=""
+          for attempt in $(seq 1 20); do
+            # Fastly caches the JSON API, so a fresh upload takes a moment to
+            # become visible; a transient failure must not end the poll early.
+            served="$(curl -fsSL --max-time 30 -H 'Accept: application/json' \
+              https://pypi.org/pypi/horus-robotics/json \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["info"]["version"])' || true)"
+            echo "attempt ${attempt}/20: pypi.org serves '${served:-<unavailable>}', expecting '${EXPECTED}'"
+            if [ "$served" = "$EXPECTED" ]; then
+              echo "pip install horus-robotics now resolves to ${EXPECTED}"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::pypi.org still serves '${served:-<unavailable>}' five minutes after publishing ${EXPECTED}. The release did not land."
+          exit 1
 
   test-install:
     name: Test Installation
@@ -162,12 +285,12 @@ jobs:
         python-version: ['3.9', '3.10', '3.11', '3.12']
     steps:
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Download wheels
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: wheels-*
           path: dist

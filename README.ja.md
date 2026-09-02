@@ -22,6 +22,14 @@ curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
+インストーラーは最新のリリースタグを解決し、そのタグから両方を取得します。ひとつはそのリリースの `SHA256SUMS` で検証された CLI バイナリ、もうひとつは `~/.horus/cache/horus@<バージョン>` に置かれるソースツリーです。`horus run` はこのソースをパス依存としてプロジェクトをビルドするため、両者は必ず同じタグから来る必要があります。
+
+バージョンを固定する場合：
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
 手動インストール：
 
 ```bash
@@ -30,7 +38,17 @@ cd horus
 ./install.sh
 ```
 
-Python：`pip install horus-robotics`。C++：`libhorus_cpp` をリンクし、`<horus/horus.hpp>` をインクルードします。
+更新：`horus self update` は CLI とキャッシュされたソースを同じ新しいタグへまとめて更新します。アンインストール：`curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash`。削除対象を一覧表示し、端末で確認を求めます。`-s -- --dry-run` を付けると一覧の表示だけ、`-s -- --yes` を付けると無人実行になります。
+
+Docker：`docker build --target dev -t horus:dev .`。`docker build .` の既定のターゲットは CLI だけを含む軽量イメージで、プロジェクトのビルドも実行もできません。
+
+C++：`libhorus_cpp` をリンクし、`<horus/horus.hpp>` をインクルードします。
+
+Python：`pip install "horus-robotics>=0.4.0"`。PyPI の最新版は 0.1.9 で、0.4.x の CLI とは共有メモリの形式が異なります。0.4.x が公開されるまでは、キャッシュされたソースからビルドしてください：`pip install ~/.horus/cache/horus@0.4.0/horus_py`。
+
+Rust：crates.io のチャンネルはありません。`cargo add horus` と `cargo install horus` は同名の無関係なクレートを取得します。
+
+対応プラットフォーム一覧、インストーラーの環境変数、Docker の詳細：[Install, Upgrade, Uninstall](README.md#install-upgrade-uninstall)。
 
 ## HORUS を選ぶ理由
 
@@ -38,7 +56,7 @@ HORUS は DDS の代わりに共有メモリのリングバッファとロック
 
 | 機能 | HORUS |
 |------|-------|
-| IPC レイテンシ | トポロジーと競合に応じて中央値 **3–304 ns** |
+| IPC レイテンシ | プロセス間・片道 **171 ns**（`cross_process_benchmark`） |
 | スケジューリング | 5 種類の実行クラスによる決定論的実行 |
 | リアルタイム | バジェット、デッドライン、CPU アフィニティ、ウォッチドッグを内蔵 |
 | 安全性 | 段階的ウォッチドッグ、安全状態、BlackBox レコーダー |

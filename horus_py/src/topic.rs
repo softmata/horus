@@ -96,6 +96,94 @@ fn topic_lock<T>(lock: &Mutex<T>) -> PyResult<std::sync::MutexGuard<'_, T>> {
         .map_err(|e| PyRuntimeError::new_err(format!("Topic lock poisoned: {e}")))
 }
 
+/// Encode an arbitrary Python object as a `GenericMessage` (MessagePack payload).
+///
+/// Shared by `send`, `try_send`, and `send_blocking` so an untyped
+/// `Topic("name")` reports the *same* error for the same unencodable object no
+/// matter which of the three the caller reached for.
+fn generic_message_from_py(py: Python, message: &Py<PyAny>) -> PyResult<GenericMessage> {
+    let bound = message.bind(py);
+    let value: serde_json::Value = pythonize::depythonize(bound).map_err(|e| {
+        pyo3::exceptions::PyTypeError::new_err(format!("Failed to convert Python object: {}", e))
+    })?;
+    let msgpack_bytes = rmp_serde::to_vec(&value).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "Failed to serialize to MessagePack: {}",
+            e
+        ))
+    })?;
+    GenericMessage::new(msgpack_bytes)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// Validate a Python `timeout_s` argument and convert it to a `Duration`.
+///
+/// `Duration::from_secs_f64` *panics* on NaN, negatives, and values past
+/// `Duration::MAX` — and a panic across the FFI boundary aborts the interpreter
+/// rather than raising something a robot's supervisor can catch. A bad timeout
+/// is a caller mistake, so it becomes a `ValueError`.
+fn parse_timeout(timeout_s: f64) -> PyResult<std::time::Duration> {
+    if !timeout_s.is_finite()
+        || timeout_s < 0.0
+        || timeout_s > std::time::Duration::MAX.as_secs_f64()
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "timeout_s must be a finite, non-negative number of seconds (got {timeout_s})"
+        )));
+    }
+    Ok(std::time::Duration::from_secs_f64(timeout_s))
+}
+
+/// The exception raised when `send_blocking` runs out of time.
+///
+/// Routed through `errors::to_py_err` so it arrives as `HorusTimeoutError` —
+/// the same type every other blocking HORUS call raises — carrying the topic
+/// name and both durations, because "the send timed out" without saying which
+/// topic is useless on a robot publishing to thirty of them.
+fn send_timeout_err(
+    topic: &str,
+    elapsed: std::time::Duration,
+    deadline: std::time::Duration,
+) -> PyErr {
+    crate::errors::to_py_err(send_timeout_error(topic, elapsed, deadline))
+}
+
+/// The `HorusError` behind [`send_timeout_err`], split out so its wording can be
+/// asserted on without a Python interpreter to unwrap a `PyErr` with.
+fn send_timeout_error(
+    topic: &str,
+    elapsed: std::time::Duration,
+    deadline: std::time::Duration,
+) -> horus_core::error::HorusError {
+    horus_core::error::HorusError::Timeout(horus_core::error::TimeoutError {
+        resource: format!("send_blocking on topic {topic}"),
+        elapsed,
+        deadline: Some(deadline),
+    })
+}
+
+/// The exception raised when a pool-backed topic is asked for a send mode it
+/// does not have.
+///
+/// `Image`/`PointCloud`/`DepthImage`/`Tensor` travel as pool descriptors, and
+/// `horus_core` exposes no `send_blocking` for them at all. Saying so — and
+/// naming the type and the call that does work — beats a bare `TypeError` from
+/// a failed downcast.
+fn unsupported_send_mode(call: &str, type_name: &str) -> PyErr {
+    pyo3::exceptions::PyNotImplementedError::new_err(unsupported_send_mode_msg(call, type_name))
+}
+
+/// The wording of [`unsupported_send_mode`], split out so it can be asserted on
+/// without a Python interpreter to unwrap a `PyErr` with.
+fn unsupported_send_mode_msg(call: &str, type_name: &str) -> String {
+    format!(
+        "{call}() is not available for {type_name} topics: pool-backed messages \
+         (Image, PointCloud, DepthImage, Tensor) are transported as descriptors \
+         and horus_core provides no backpressure-aware send for them. Use send(), \
+         which is drop-oldest, and watch stats()['missed_count'] on the subscriber."
+    )
+}
+
 /// Log a failed Python node callback at debug level instead of silently dropping it.
 /// Used for non-critical observability calls (log_pub/sub)
 /// that must never crash the data path.
@@ -227,6 +315,78 @@ macro_rules! pod_topic_types {
                             } else {
                                 Ok(Some(None))
                             }
+                        }
+                    )*
+                    _ => Ok(None), // Special types — caller handles
+                }
+            }
+
+            /// Try to send a POD message without blocking.
+            ///
+            /// `Ok(Some(true))` sent, `Ok(Some(false))` refused because the ring
+            /// was full, `Ok(None)` not a POD type (caller handles it).
+            fn try_send_pod(
+                &self, py: Python, message: &Py<PyAny>, node: &Option<Py<PyAny>>,
+                start: std::time::Instant,
+            ) -> PyResult<Option<bool>> {
+                match &self.topic_type {
+                    $(
+                        TopicType::$rust_ty(topic) => {
+                            let pyref = message.extract::<PyRef<$py_ty>>(py)?;
+                            let val = pyref.inner.clone();
+                            let summary = if node.is_some() {
+                                use horus::core::LogSummary;
+                                Some(val.log_summary())
+                            } else { None };
+                            let topic_ref = topic.clone();
+                            let sent = py.detach(|| {
+                                topic_ref.lock().expect("lock").try_send(val).is_ok()
+                            });
+                            if sent {
+                                if let Some(s) = summary {
+                                    log_ipc_event(py, node, &self.name, s,
+                                        start.elapsed().as_nanos() as u64, "log_pub");
+                                }
+                            }
+                            Ok(Some(sent))
+                        }
+                    )*
+                    _ => Ok(None), // Special types — caller handles
+                }
+            }
+
+            /// Send a POD message, waiting up to `timeout` for ring space.
+            ///
+            /// `Ok(Some(true))` sent, `Ok(Some(false))` the ring stayed full for
+            /// the whole timeout, `Ok(None)` not a POD type (caller handles it).
+            fn send_blocking_pod(
+                &self, py: Python, message: &Py<PyAny>, node: &Option<Py<PyAny>>,
+                timeout: std::time::Duration, start: std::time::Instant,
+            ) -> PyResult<Option<bool>> {
+                match &self.topic_type {
+                    $(
+                        TopicType::$rust_ty(topic) => {
+                            let pyref = message.extract::<PyRef<$py_ty>>(py)?;
+                            let val = pyref.inner.clone();
+                            let summary = if node.is_some() {
+                                use horus::core::LogSummary;
+                                Some(val.log_summary())
+                            } else { None };
+                            let topic_ref = topic.clone();
+                            // The whole point of this call is to park until the
+                            // consumer drains, so the GIL cannot be held across it:
+                            // a 10 ms wait here would stop every other Python thread
+                            // in the process for 10 ms.
+                            let sent = py.detach(|| {
+                                topic_ref.lock().expect("lock").send_blocking(val, timeout).is_ok()
+                            });
+                            if sent {
+                                if let Some(s) = summary {
+                                    log_ipc_event(py, node, &self.name, s,
+                                        start.elapsed().as_nanos() as u64, "log_pub");
+                                }
+                            }
+                            Ok(Some(sent))
                         }
                     )*
                     _ => Ok(None), // Special types — caller handles
@@ -404,7 +564,53 @@ impl PyTopic {
         };
 
         let effective_endpoint = endpoint.clone().unwrap_or_else(|| topic_name.clone());
-        let is_network = endpoint.as_ref().is_some_and(|e| e.contains('@'));
+
+        // An `@host` in the endpoint is DISCARDED, so say so.
+        //
+        // `create_topic`/`create_pool_topic` both split on '@', keep the name and
+        // throw the host away, then build an ordinary local SHM topic -- while
+        // the constructor's own docstring advertises
+        // `"topic@host:port"  - Direct UDP to specific host`. `create_topic`
+        // even comments "Check if this is a network endpoint" immediately before
+        // doing it, and reports failures as "Failed to create network Topic".
+        //
+        // So a user who wrote `Topic(CmdVel, endpoint="cmdvel@192.168.1.5:9000")`
+        // to drive a second machine got a topic that published to shared memory
+        // on THIS one and dropped every cross-machine message in silence -- and
+        // `stats()["is_network"]` agreed it was networked, because that flag was
+        // derived from the string containing '@' rather than from anything being
+        // connected. On a robot that is a command stream that appears configured
+        // and goes nowhere.
+        //
+        // Warned rather than raised, matching the `net=True` path in
+        // `horus/__init__.py`, which has the same shape and the same cause: LAN
+        // replication is a Rust-only feature and is not wired into these
+        // bindings. Raising would break callers who are already (unknowingly)
+        // running local-only.
+        let host_requested = endpoint.as_ref().and_then(|e| e.split_once('@'));
+        if let Some((_, host)) = host_requested {
+            let _ = pyo3::PyErr::warn(
+                py,
+                &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+                &std::ffi::CString::new(format!(
+                    "Topic endpoint '{}' names host '{}', but the host is IGNORED: this \
+                     topic is local shared memory only and cross-machine messages are \
+                     silently dropped. LAN replication is currently a Rust-only feature \
+                     (build horus with `--features net`). Remove the '@{}' to make the \
+                     local-only behaviour explicit.",
+                    endpoint.as_deref().unwrap_or(""),
+                    host,
+                    host
+                ))
+                .unwrap_or_else(|_| std::ffi::CString::new("topic endpoint host ignored").unwrap()),
+                1,
+            );
+        }
+        // NOT `endpoint.contains('@')`. This flag is read back by
+        // `is_network_topic()` and `stats()["is_network"]`, and answering true
+        // for a topic that is local shared memory is the lie above, reported by
+        // the API itself.
+        let is_network = false;
         let cap = capacity.unwrap_or(1024);
 
         // Create typed Topic. POD types are handled by macro-generated create_pod_topic().
@@ -591,21 +797,7 @@ impl PyTopic {
                 success
             }
             TopicType::Generic(topic) => {
-                let bound = message.bind(py);
-                let value: serde_json::Value = pythonize::depythonize(bound).map_err(|e| {
-                    pyo3::exceptions::PyTypeError::new_err(format!(
-                        "Failed to convert Python object: {}",
-                        e
-                    ))
-                })?;
-                let msgpack_bytes = rmp_serde::to_vec(&value).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "Failed to serialize to MessagePack: {}",
-                        e
-                    ))
-                })?;
-                let msg = GenericMessage::new(msgpack_bytes)
-                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                let msg = generic_message_from_py(py, &message)?;
                 use horus::core::LogSummary;
                 let log_summary = msg.log_summary();
                 let topic_ref = topic.clone();
@@ -629,6 +821,227 @@ impl PyTopic {
         };
 
         Ok(result)
+    }
+
+    /// Try to send a message, reporting whether it was actually published.
+    ///
+    /// `send()` is fire-and-forget: when the ring buffer is full it overwrites
+    /// the oldest unread slot and still answers True. `try_send()` does not —
+    /// it returns False and leaves the buffer untouched, which is the only way
+    /// a Python publisher can find out that a message did not get through.
+    ///
+    /// Args:
+    ///     message: Message object (CmdVel, Pose2D, etc.)
+    ///     node: Optional Node for automatic logging with IPC timing
+    ///
+    /// Returns:
+    ///     True if the message was published, False if the buffer was full.
+    ///
+    /// Raises:
+    ///     NotImplementedError: Tensor topics have no non-blocking send path.
+    ///
+    /// Examples:
+    ///     if not topic.try_send(CmdVel(1.5, 0.5)):
+    ///         node.log_warning("cmd_vel full - command not delivered")
+    #[pyo3(signature = (message, node=None))]
+    fn try_send(&self, py: Python, message: Py<PyAny>, node: Option<Py<PyAny>>) -> PyResult<bool> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        // Fast path: POD types (generated by pod_topic_types! macro)
+        if let Some(sent) = self.try_send_pod(py, &message, &node, start)? {
+            return Ok(sent);
+        }
+
+        // Special types: pool-backed + generic
+        match &self.topic_type {
+            TopicType::Image(topic) => {
+                let py_img: PyRef<PyImage> = message.extract(py)?;
+                let img = py_img.inner().clone();
+                let log_msg = format!("Image({}x{})", img.height(), img.width());
+                let topic_ref = topic.clone();
+                let sent = py.detach(|| {
+                    topic_ref
+                        .lock()
+                        .expect("topic lock poisoned")
+                        .try_send(img)
+                        .is_ok()
+                });
+                if sent && node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                Ok(sent)
+            }
+            TopicType::PointCloud(topic) => {
+                let py_pc: PyRef<PyPointCloud> = message.extract(py)?;
+                let pc = py_pc.inner().clone();
+                let log_msg = format!("PointCloud({} pts)", pc.point_count());
+                let topic_ref = topic.clone();
+                let sent = py.detach(|| {
+                    topic_ref
+                        .lock()
+                        .expect("topic lock poisoned")
+                        .try_send(pc)
+                        .is_ok()
+                });
+                if sent && node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                Ok(sent)
+            }
+            TopicType::DepthImage(topic) => {
+                let py_depth: PyRef<PyDepthImage> = message.extract(py)?;
+                let depth = py_depth.inner().clone();
+                let log_msg = format!("DepthImage({}x{})", depth.height(), depth.width());
+                let topic_ref = topic.clone();
+                let sent = py.detach(|| {
+                    topic_ref
+                        .lock()
+                        .expect("topic lock poisoned")
+                        .try_send(depth)
+                        .is_ok()
+                });
+                if sent && node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                Ok(sent)
+            }
+            TopicType::Generic(topic) => {
+                let msg = generic_message_from_py(py, &message)?;
+                use horus::core::LogSummary;
+                let log_summary = msg.log_summary();
+                let topic_ref = topic.clone();
+                let sent = py.detach(|| {
+                    topic_ref
+                        .lock()
+                        .expect("topic lock poisoned")
+                        .try_send(msg)
+                        .is_ok()
+                });
+                if sent && node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_summary,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                Ok(sent)
+            }
+            TopicType::Tensor(_) => Err(unsupported_send_mode("try_send", "Tensor")),
+            _ => unreachable!("try_send_pod handles all POD types"),
+        }
+    }
+
+    /// Send a message, waiting up to `timeout_s` for room in the ring buffer.
+    ///
+    /// For topics where losing a message is not acceptable — emergency stop,
+    /// motor setpoints, a goal handoff. Applies backpressure instead of
+    /// overwriting: it parks until the subscriber drains a slot, and raises if
+    /// it never does. The GIL is released while waiting, so other Python
+    /// threads keep running.
+    ///
+    /// It does hold THIS Topic object's internal lock for the whole wait, so a
+    /// thread sharing the same Topic instance cannot recv() until the wait ends
+    /// — and on a full ring that means it cannot be the one to free the slot.
+    /// Give the consumer its own Topic handle on the same name.
+    ///
+    /// Args:
+    ///     message: Message object (CmdVel, Pose2D, etc.)
+    ///     timeout_s: Seconds to wait for space. 0.0 means "try once".
+    ///     node: Optional Node for automatic logging with IPC timing
+    ///
+    /// Raises:
+    ///     HorusTimeoutError: the buffer stayed full for the whole timeout;
+    ///         the message was NOT published.
+    ///     ValueError: timeout_s is negative, NaN, or infinite.
+    ///     NotImplementedError: pool-backed topics (Image, PointCloud,
+    ///         DepthImage, Tensor) have no blocking send path.
+    ///
+    /// Examples:
+    ///     try:
+    ///         estop.send_blocking(EmergencyStop(True), 0.05)
+    ///     except horus.HorusTimeoutError:
+    ///         node.log_error("e-stop not delivered")
+    #[pyo3(signature = (message, timeout_s, node=None))]
+    fn send_blocking(
+        &self,
+        py: Python,
+        message: Py<PyAny>,
+        timeout_s: f64,
+        node: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        use std::time::Instant;
+        let start = Instant::now();
+        let timeout = parse_timeout(timeout_s)?;
+
+        // Fast path: POD types (generated by pod_topic_types! macro)
+        if let Some(sent) = self.send_blocking_pod(py, &message, &node, timeout, start)? {
+            return if sent {
+                Ok(())
+            } else {
+                Err(send_timeout_err(&self.name, start.elapsed(), timeout))
+            };
+        }
+
+        // Special types: generic is supported; pool-backed transports are not.
+        match &self.topic_type {
+            TopicType::Generic(topic) => {
+                let msg = generic_message_from_py(py, &message)?;
+                use horus::core::LogSummary;
+                let log_summary = msg.log_summary();
+                let topic_ref = topic.clone();
+                let sent = py.detach(|| {
+                    topic_ref
+                        .lock()
+                        .expect("topic lock poisoned")
+                        .send_blocking(msg, timeout)
+                        .is_ok()
+                });
+                if !sent {
+                    return Err(send_timeout_err(&self.name, start.elapsed(), timeout));
+                }
+                if node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_summary,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                Ok(())
+            }
+            TopicType::Image(_) => Err(unsupported_send_mode("send_blocking", "Image")),
+            TopicType::PointCloud(_) => Err(unsupported_send_mode("send_blocking", "PointCloud")),
+            TopicType::DepthImage(_) => Err(unsupported_send_mode("send_blocking", "DepthImage")),
+            TopicType::Tensor(_) => Err(unsupported_send_mode("send_blocking", "Tensor")),
+            _ => unreachable!("send_blocking_pod handles all POD types"),
+        }
     }
 
     /// Receive a message (returns typed object matching Topic's type)
@@ -1063,8 +1476,14 @@ impl PyTopic {
 
     /// Get topic statistics as a dictionary
     ///
+    /// `send_failures` counts sends this publisher could not place;
+    /// `missed_count` counts messages this subscriber lost to a publisher that
+    /// outran it. Those are different failures at opposite ends of the link,
+    /// and nothing else in this dict reports the second one.
+    ///
     /// Returns:
-    ///     Dictionary with keys: messages_sent, messages_received, send_failures, recv_failures
+    ///     Dictionary with keys: messages_sent, messages_received, send_failures,
+    ///     recv_failures, missed_count, is_network, backend.
     fn stats(&self) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
         Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
@@ -1171,6 +1590,11 @@ impl PyTopic {
             dict.set_item("messages_received", metrics.messages_received())?;
             dict.set_item("send_failures", metrics.send_failures())?;
             dict.set_item("recv_failures", metrics.recv_failures())?;
+            // Deliberately NOT folded into recv_failures: a recv failure is a
+            // read this subscriber attempted and did not get, while a miss is a
+            // message it was never offered. Summing them would hide the one the
+            // subscriber cannot otherwise detect.
+            dict.set_item("missed_count", self.missed_count()?)?;
             dict.set_item("is_network", self.is_network)?;
             dict.set_item("backend", self.backend_type())?;
 
@@ -1206,24 +1630,33 @@ impl PyTopic {
         )
     }
 
-    /// Messages this subscriber was lapped past and never delivered.
+    /// Messages this subscriber never saw because the publisher lapped it.
     ///
-    /// HORUS topics are lossy by design: a full ring overwrites the oldest
-    /// unconsumed slot rather than blocking the publisher. This counter is how a
-    /// subscriber finds out it happened. For a sensor stream, a rising value
-    /// means frames are being dropped and the consumer is not keeping up.
+    /// The ring buffer is drop-oldest. When a publisher outruns this
+    /// subscriber it overwrites unread slots, and the next recv() quietly
+    /// resumes further along the ring — every message it hands back is
+    /// well-formed and recent, so nothing about the data says a gap happened.
+    /// This counter is the only record that one did: a 30 Hz consumer of a
+    /// 500 Hz stream reads valid samples forever while dropping 15 of every 16,
+    /// and without this it looks exactly like a consumer dropping none.
     ///
-    /// The count is per-handle and process-local — it reflects what THIS handle
-    /// missed, not a topic-wide total, and it is not visible to other processes.
+    /// Counts THIS handle's losses only — it is per-subscriber local state, not
+    /// a topic-wide figure — and is monotonic for the life of the handle.
     ///
     /// Returns:
-    ///     Messages skipped past for this subscriber (u64)
-    fn missed_count(&self) -> u64 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.missed_count()).unwrap_or(0)
-        )
+    ///     Number of missed messages (int)
+    ///
+    /// Examples:
+    ///     before = topic.missed_count()
+    ///     msg = topic.recv()
+    ///     if topic.missed_count() > before:
+    ///         node.log_warning("state stream lapped us - sample is not continuous")
+    fn missed_count(&self) -> PyResult<u64> {
+        // Raises rather than reporting 0 on a poisoned lock. This whole method
+        // exists so a Python caller can tell "I lost samples" from "I did not",
+        // and unwrap_or(0) spends exactly that distinction to avoid an error
+        // path -- the failure would arrive disguised as the good news.
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.missed_count()))
     }
 
     /// Messages this publisher could not place and gave up on.
@@ -1236,12 +1669,13 @@ impl PyTopic {
     ///
     /// Returns:
     ///     Messages dropped by this publisher (u64)
-    fn dropped_count(&self) -> u64 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.dropped_count()).unwrap_or(0)
-        )
+    ///
+    /// Raises:
+    ///     RuntimeError: the topic lock is poisoned, so the count is unknown.
+    ///     It is not reported as 0 -- that is a real reading.
+    fn dropped_count(&self) -> PyResult<u64> {
+        // Raises rather than reporting 0; see `missed_count`.
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.dropped_count()))
     }
 
     /// Number of active publishers on this topic.
@@ -1493,6 +1927,103 @@ mod tests {
 
         let result = topic_lock(&lock);
         assert!(result.is_err(), "topic_lock should fail on poisoned lock");
+    }
+
+    /// `send_blocking(msg, -1.0)` must raise, not abort the interpreter.
+    ///
+    /// `Duration::from_secs_f64` panics on a negative, and a panic unwinding
+    /// through the pyo3 boundary takes the whole process with it — a robot loses
+    /// its controller because someone typo'd a timeout.
+    #[test]
+    fn parse_timeout_rejects_negative() {
+        assert!(
+            parse_timeout(-1.0).is_err(),
+            "a negative timeout must be an error, not a panic"
+        );
+    }
+
+    /// NaN and infinity reach `from_secs_f64` from Python as plain floats.
+    #[test]
+    fn parse_timeout_rejects_nan_and_infinity() {
+        assert!(
+            parse_timeout(f64::NAN).is_err(),
+            "NaN timeout must be rejected"
+        );
+        assert!(
+            parse_timeout(f64::INFINITY).is_err(),
+            "infinite timeout must be rejected"
+        );
+        assert!(
+            parse_timeout(f64::NEG_INFINITY).is_err(),
+            "negative-infinite timeout must be rejected"
+        );
+    }
+
+    /// A timeout past `Duration::MAX` also panics `from_secs_f64`.
+    #[test]
+    fn parse_timeout_rejects_overflow() {
+        let too_big = std::time::Duration::MAX.as_secs_f64() * 2.0;
+        assert!(
+            parse_timeout(too_big).is_err(),
+            "an out-of-range timeout must be rejected"
+        );
+    }
+
+    /// Ordinary timeouts convert, including the "try once" zero.
+    #[test]
+    fn parse_timeout_accepts_valid_seconds() {
+        assert_eq!(parse_timeout(0.0).unwrap(), std::time::Duration::ZERO);
+        assert_eq!(
+            parse_timeout(0.05).unwrap(),
+            std::time::Duration::from_millis(50)
+        );
+        assert_eq!(
+            parse_timeout(2.0).unwrap(),
+            std::time::Duration::from_secs(2)
+        );
+    }
+
+    /// The timeout error must name the topic and route to HorusTimeoutError.
+    ///
+    /// "send timed out" with no topic name is not actionable on a robot
+    /// publishing to thirty of them.
+    #[test]
+    fn send_timeout_error_names_the_topic_and_the_deadline() {
+        let err = send_timeout_error(
+            "cmd_vel",
+            std::time::Duration::from_millis(52),
+            std::time::Duration::from_millis(50),
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cmd_vel"),
+            "timeout message must name the topic: {msg}"
+        );
+        assert!(
+            msg.contains("send_blocking"),
+            "timeout message must name the call: {msg}"
+        );
+        assert!(
+            msg.contains("50ms"),
+            "timeout message must carry the deadline: {msg}"
+        );
+        assert!(
+            matches!(err, horus_core::error::HorusError::Timeout(_)),
+            "must be the Timeout variant so to_py_err maps it to HorusTimeoutError"
+        );
+    }
+
+    /// The pool-backed refusal must say which call and which type, and point at
+    /// the counter that makes the loss visible instead.
+    #[test]
+    fn unsupported_send_mode_msg_is_actionable() {
+        let msg = unsupported_send_mode_msg("send_blocking", "Image");
+        assert!(msg.contains("send_blocking()"), "must name the call: {msg}");
+        assert!(msg.contains("Image"), "must name the message type: {msg}");
+        assert!(
+            msg.contains("missed_count"),
+            "must point at the visible alternative: {msg}"
+        );
     }
 
     /// log_py_callback does not panic on Err (it logs and swallows).
