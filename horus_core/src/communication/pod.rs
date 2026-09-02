@@ -225,6 +225,9 @@ unsafe impl PodMessage for crate::types::ImageDescriptor {}
 unsafe impl PodMessage for crate::types::PointCloudDescriptor {}
 unsafe impl PodMessage for crate::types::DepthImageDescriptor {}
 
+// Policy-rate action chunk — repr(C), Pod, read at servo rate off the ring
+unsafe impl PodMessage for crate::types::ActionChunk {}
+
 // ============================================================================
 // LogSummary for unified types (orphan rule: LogSummary defined here in horus_core)
 // ============================================================================
@@ -260,6 +263,26 @@ impl LogSummary for crate::types::PointCloudDescriptor {
             "PointCloud({} pts, {}, {:?})",
             self.point_count(),
             kind,
+            self.dtype(),
+        )
+    }
+}
+
+impl LogSummary for crate::types::ActionChunk {
+    fn log_summary(&self) -> String {
+        // The span is the number a reader chasing a stale-chunk fault wants:
+        // how long this chunk covers before the servo loop runs out of policy.
+        let span_us = match self.end_ns() {
+            Some(end) => ((end - self.t0_ns()) / 1_000).to_string(),
+            None => "?".to_string(),
+        };
+        format!(
+            "ActionChunk(seq {}, {}x{}, dt {}us, span {}us, {:?})",
+            self.seq(),
+            self.horizon(),
+            self.action_dim(),
+            self.dt_ns() / 1_000,
+            span_us,
             self.dtype(),
         )
     }
@@ -312,6 +335,26 @@ mod tests {
     #[test]
     fn test_pod_message_size() {
         assert_eq!(TestMsg::SIZE, 16); // 8 + 4 + 4 = 16 bytes
+    }
+
+    /// The action chunk is published at policy rate and read at servo rate, so
+    /// it has to take the ~50 ns byte-copy path rather than bincode.  It rides
+    /// the ring as a fixed 256-byte descriptor; the actions themselves stay in
+    /// the pool.
+    #[test]
+    fn action_chunk_takes_the_zero_copy_pod_path() {
+        use crate::types::ActionChunk;
+
+        assert!(
+            is_pod::<ActionChunk>(),
+            "ActionChunk must be routed to the zero-copy path"
+        );
+        assert_eq!(<ActionChunk as PodMessage>::SIZE, 256);
+
+        let chunk: ActionChunk = <ActionChunk as PodMessage>::zeroed();
+        let restored = ActionChunk::from_bytes(chunk.as_bytes()).unwrap();
+        assert_eq!(restored.horizon(), 0);
+        assert_eq!(restored.seq(), 0);
     }
 
     #[test]
