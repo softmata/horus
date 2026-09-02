@@ -11703,29 +11703,6 @@ fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
 // Loss accounting: a lossy transport must not lose messages SILENTLY
 // ============================================================================
 
-/// Every message a publisher accepts is either delivered, counted as missed, or
-/// counted as dropped. None may simply vanish.
-///
-/// This is the property that makes "lossy by design" acceptable in robotics. A
-/// dropped sensor frame is survivable; a dropped frame nobody can detect is not,
-/// because a supervisor cannot distinguish a quiet sensor from a dead one.
-///
-/// Loss is counted at whichever end it occurs, which differs per backend and is
-/// why this sweeps all of them:
-///   - backpressured (MpscShm/SpmcShm): the producer gives up, `dropped_count`
-///   - overwriting (PodShm/FanoutShm): the consumer is lapped, `missed_count`
-///
-/// Two things this test had to get right, both of which produced a convincing
-/// false positive first:
-///   - FanoutShm needs a per-(publisher,subscriber) channel attach before it
-///     delivers anything. Without pumping a few messages first the subscriber
-///     receives 0 and the run looks like a counting bug.
-///   - A single `try_recv() -> None` does NOT mean the ring is empty. The
-///     lap-resume path re-seats the cursor half a lap back and returns None
-///     without reading the slot it landed on, so a `while is_some()` drain exits
-///     with capacity/2 messages still readable — which presents as exactly
-///     `capacity/2` unaccounted messages, reproducibly, and looks like a real
-///     off-by-half-capacity defect.
 /// Messages pumped to establish the FanoutShm per-(publisher,subscriber)
 /// channel before measurement starts.
 const LOSS_ACCT_PRIME: usize = 8;
@@ -11755,6 +11732,29 @@ fn drain_fully(sub: &Topic<u64>) -> u64 {
     got
 }
 
+/// Every message a publisher accepts is either delivered, counted as missed, or
+/// counted as dropped. None may simply vanish.
+///
+/// This is the property that makes "lossy by design" acceptable in robotics. A
+/// dropped sensor frame is survivable; a dropped frame nobody can detect is not,
+/// because a supervisor cannot distinguish a quiet sensor from a dead one.
+///
+/// Loss is counted at whichever end it occurs, which differs per backend and is
+/// why this sweeps all of them:
+///   - backpressured (MpscShm/SpmcShm): the producer gives up, `dropped_count`
+///   - overwriting (PodShm/FanoutShm): the consumer is lapped, `missed_count`
+///
+/// Two things this test had to get right, both of which produced a convincing
+/// false positive first:
+///   - FanoutShm needs a per-(publisher,subscriber) channel attach before it
+///     delivers anything. Without pumping a few messages first the subscriber
+///     receives 0 and the run looks like a counting bug.
+///   - A single `try_recv() -> None` does NOT mean the ring is empty. The
+///     lap-resume path re-seats the cursor half a lap back and returns None
+///     without reading the slot it landed on, so a `while is_some()` drain exits
+///     with capacity/2 messages still readable — which presents as exactly
+///     `capacity/2` unaccounted messages, reproducibly, and looks like a real
+///     off-by-half-capacity defect.
 #[test]
 fn no_message_is_lost_without_being_counted() {
     const N: u64 = 5000;
