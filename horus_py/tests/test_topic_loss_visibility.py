@@ -385,6 +385,23 @@ class TestDroppedCount:
     nothing, which is the failure this class exists to make impossible.
     """
 
+    def test_stats_reports_dropped_count(self, unique_test_prefix):
+        """dropped_count is in stats() too, next to its subscriber-side twin.
+
+        stats() carried missed_count but not dropped_count, so the dict an
+        operator actually reads showed the loss this subscriber SUFFERED and
+        none of the loss this publisher CAUSED -- which is the half they can act
+        on, by slowing the producer or growing the ring.
+        """
+        topic = Topic(CmdVel, capacity=SMALL,
+                      endpoint=_endpoint("dropped_stats", unique_test_prefix))
+        stats = topic.stats()
+        assert "dropped_count" in stats, (
+            "stats() reported missed_count but not dropped_count, so the "
+            "publisher side of the same question is invisible where operators look"
+        )
+        assert stats["dropped_count"] == topic.dropped_count()
+
     def test_dropped_count_starts_at_zero(self, unique_test_prefix):
         """A fresh publisher has given up on nothing, and says so as an int."""
         endpoint = _endpoint("dropped_zero", unique_test_prefix)
