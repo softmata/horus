@@ -12178,3 +12178,152 @@ fn send_blocking_still_works_where_backpressure_exists() {
          blocking send; got {r:?}"
     );
 }
+
+// ============================================================================
+// Loss accounting: a lossy transport must not lose messages SILENTLY
+// ============================================================================
+
+/// Messages pumped to establish the FanoutShm per-(publisher,subscriber)
+/// channel before measurement starts.
+const LOSS_ACCT_PRIME: usize = 8;
+
+/// Consecutive empty polls that together mean "the ring really is drained".
+///
+/// One `None` does not: the lap-resume path re-seats the cursor half a lap back
+/// and returns `None` WITHOUT reading the slot it landed on, so a
+/// `while try_recv().is_some()` loop exits with `capacity/2` messages still
+/// readable. Every drain in this test goes through `drain_fully` for that
+/// reason — an early-exiting pre-drain leaks warm-up messages into the measured
+/// count just as surely as an early-exiting final drain hides delivered ones.
+const LOSS_ACCT_EMPTY_POLLS: usize = 5;
+
+/// Drain until `LOSS_ACCT_EMPTY_POLLS` polls in a row come back empty.
+fn drain_fully(sub: &Topic<u64>) -> u64 {
+    let mut got = 0u64;
+    let mut empties = 0;
+    while empties < LOSS_ACCT_EMPTY_POLLS {
+        if sub.try_recv().is_some() {
+            got += 1;
+            empties = 0;
+        } else {
+            empties += 1;
+        }
+    }
+    got
+}
+
+/// Every message a publisher accepts is either delivered, counted as missed, or
+/// counted as dropped. None may simply vanish.
+///
+/// This is the property that makes "lossy by design" acceptable in robotics. A
+/// dropped sensor frame is survivable; a dropped frame nobody can detect is not,
+/// because a supervisor cannot distinguish a quiet sensor from a dead one.
+///
+/// Loss is counted at whichever end it occurs, which differs per backend and is
+/// why this sweeps all of them:
+///   - backpressured (MpscShm/SpmcShm): the producer gives up, `dropped_count`
+///   - overwriting (PodShm/FanoutShm): the consumer is lapped, `missed_count`
+///
+/// Two things this test had to get right, both of which produced a convincing
+/// false positive first:
+///   - FanoutShm needs a per-(publisher,subscriber) channel attach before it
+///     delivers anything. Without pumping a few messages first the subscriber
+///     receives 0 and the run looks like a counting bug.
+///   - A single `try_recv() -> None` does NOT mean the ring is empty. The
+///     lap-resume path re-seats the cursor half a lap back and returns None
+///     without reading the slot it landed on, so a `while is_some()` drain exits
+///     with capacity/2 messages still readable — which presents as exactly
+///     `capacity/2` unaccounted messages, reproducibly, and looks like a real
+///     off-by-half-capacity defect.
+#[test]
+fn no_message_is_lost_without_being_counted() {
+    const N: u64 = 5000;
+    const CAP: u32 = 64;
+    let mut backends_checked = 0;
+
+    for mode in [
+        BackendMode::MpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::PodShm,
+        BackendMode::FanoutShm,
+    ] {
+        let name = unique(&format!("loss_acct_{mode:?}"));
+        let t: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("create");
+        // Both ends must state the same capacity. A bare `Topic::new` here maps
+        // a default-sized view over the smaller CAP segment, which Linux
+        // tolerates and Windows rejects with
+        // `MapViewOfFile failed: error 5` (ERROR_ACCESS_DENIED).
+        let sub: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("sub");
+        t.send(0);
+        let _ = sub.try_recv();
+
+        // Only a genuine "not available here" skips. `NotNeeded` means the
+        // topic is ALREADY on this backend, which is a reason to measure it,
+        // not to skip it; the earlier `!matches!(.., Success)` treated it as
+        // unavailable and silently dropped that backend from the sweep.
+        // Contention and outright failure are real problems and must not be
+        // laundered into "unavailable on this platform".
+        match t.force_migrate(mode) {
+            MigrationResult::Success { .. } | MigrationResult::NotNeeded => {}
+            other @ (MigrationResult::AlreadyInProgress | MigrationResult::LockContention) => {
+                panic!(
+                    "{mode:?}: migration did not complete ({other:?}). This test \
+                     is single-threaded, so there is nothing to contend with — \
+                     treat this as a real failure, not a skip."
+                );
+            }
+            MigrationResult::Failed => {
+                eprintln!("skipping {mode:?}: not available in this build");
+                continue;
+            }
+        }
+        backends_checked += 1;
+        trigger_shm_dispatch(&name);
+
+        // Establish the fanout pairing; harmless on the other backends.
+        for _ in 0..LOSS_ACCT_PRIME {
+            t.send(u64::MAX);
+            let _ = sub.try_recv();
+        }
+        drain_fully(&sub);
+
+        let missed_before = sub.missed_count();
+        let dropped_before = t.dropped_count();
+
+        for i in 0..N {
+            t.send(i);
+        }
+
+        let got = drain_fully(&sub);
+
+        let missed = sub.missed_count() - missed_before;
+        let dropped = t.dropped_count() - dropped_before;
+        let accounted = got + missed + dropped;
+
+        // Stated as a signed delta: over-accounting is a different bug from
+        // under-accounting (leftover buffered messages read into `got`, or a
+        // counter incremented twice) and calling it "vanished" would misdirect
+        // whoever reads the failure.
+        let delta = accounted as i64 - N as i64;
+        let verdict = match delta.signum() {
+            -1 => format!("{} vanished with no counter recording them", -delta),
+            1 => format!("{delta} more were accounted for than were ever sent"),
+            _ => String::new(),
+        };
+        assert_eq!(
+            accounted, N,
+            "{mode:?}: {N} messages were accepted but {accounted} are accounted \
+             for (delivered {got}, missed {missed}, dropped {dropped}) — \
+             {verdict}. A lossy transport is only safe for robotics if the loss \
+             is observable."
+        );
+    }
+
+    // Without this, a platform where every backend is unavailable passes this
+    // test having checked nothing at all.
+    assert!(
+        backends_checked > 0,
+        "no backend was available, so the loss-accounting invariant was not \
+         checked on anything. That is a broken environment, not a pass."
+    );
+}
