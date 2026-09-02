@@ -35,7 +35,7 @@ fn test_tensor_pool_alloc_returns_error_when_full() {
         ..Default::default()
     };
 
-    let pool_id = 9800 + (std::process::id() % 100);
+    let pool_id = 10200 + (std::process::id() % 100);
     let pool = TensorPool::new(pool_id, config).expect("create small pool");
 
     // Allocate all 4 slots
