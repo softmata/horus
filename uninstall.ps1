@@ -108,7 +108,13 @@ if (Test-Path $ManifestRead) {
     $binaryLine = Select-String -Path $ManifestRead -Pattern '^\s*binary\s*=\s*"(.+)"' |
                   Select-Object -First 1
     if ($binaryLine) {
-        Add-InstallDir (Split-Path -Parent $binaryLine.Matches[0].Groups[1].Value)
+        # The manifest is TOML: a Windows path is stored as a basic string, so
+        # every separator arrives here doubled ("C:\\Users\\..."). Handing that
+        # to Split-Path yields a directory that is textually distinct from the
+        # real one, so the binary gets listed twice and the copy that is removed
+        # is the one that never existed. Undo TOML's escaping first.
+        $recorded = $binaryLine.Matches[0].Groups[1].Value -replace '\\\\', '\'
+        Add-InstallDir (Split-Path -Parent $recorded)
     }
 }
 
@@ -399,3 +405,12 @@ Write-Host "  - System packages were NOT removed"
 Write-Host "  - To reinstall: .\install.sh (Git Bash), or"
 Write-Host "    curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash"
 Write-Host ""
+
+# Exit explicitly. Without this the script's status is whatever $LASTEXITCODE
+# the last external command happened to leave behind, and the last one is the
+# `pip show horus-robotics` PROBE above -- which returns 1 precisely when the
+# package is not installed, i.e. on the ordinary path. A completely successful
+# uninstall then reports failure to anything that checks, with no message to
+# say why: `pwsh -Command`, a CI step, or a user's own wrapper script. This
+# script reports its problems by printing them, so the status is 0.
+exit 0
