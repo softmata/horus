@@ -28,8 +28,14 @@
 //! So `check_timing` bounds three things: spread (`max_mad_percent`), the
 //! single worst excursion in units of the declared period
 //! (`max_jitter_periods`), and how often intervals run past 3x the mean
-//! (`max_stall_rate`). Every limit is set from measurements recorded at its
-//! call site, not from a target someone hoped for.
+//! (`max_stall_rate`), and how close the achieved rate came to the declared one
+//! (`min_rate_fraction`). That last one exists because measuring jitter against
+//! the mean observed interval -- which is what makes it aliasing-robust -- also
+//! makes rate error invisible: a 1 kHz node delivering 200 Hz keeps a flawless
+//! jitter profile around its own wrong period, and the tick-count asserts let
+//! it through, since `ticks >= 500` over 5 s permits exactly that 100 Hz.
+//! Every limit is set from measurements recorded at its call site, not from a
+//! target someone hoped for.
 //!
 //! # Where these run
 //!
@@ -216,6 +222,15 @@ struct TimingLimits {
     max_jitter_periods: f64,
     /// Fraction of intervals longer than 3x the mean interval.
     max_stall_rate: f64,
+    /// Lowest acceptable effective rate, as a fraction of the declared rate.
+    ///
+    /// Jitter is measured against the *mean observed* interval, which makes it
+    /// robust to rate aliasing but also blind to rate error: a node declared at
+    /// 1 kHz that actually runs at 200 Hz has a beautiful jitter profile around
+    /// its own wrong period. The tick-count asserts alone were far too loose to
+    /// catch that -- `ticks >= 500` over 5 s permits 100 Hz from a 1 kHz node,
+    /// a 10x rate collapse -- so state the rate as a fraction and let it fail.
+    min_rate_fraction: f64,
 }
 
 /// Check a jitter report against `limits`, returning every violation.
@@ -261,6 +276,22 @@ fn check_timing(report: &JitterReport, limits: &TimingLimits) -> Result<(), Stri
             report.severe_outliers,
             report.total_intervals,
             limits.max_stall_rate * 100.0
+        ));
+    }
+
+    let rate_fraction = if report.mean_interval_us > 0.0 {
+        period_us / report.mean_interval_us
+    } else {
+        0.0
+    };
+    if rate_fraction < limits.min_rate_fraction {
+        problems.push(format!(
+            "rate: {:.1} Hz effective against {:.0} Hz declared ({:.0}% of it), \
+             floor {:.0}%",
+            report.effective_rate_hz,
+            1_000_000.0 / period_us,
+            rate_fraction * 100.0,
+            limits.min_rate_fraction * 100.0
         ));
     }
 
@@ -401,6 +432,7 @@ fn stress_rt_1khz_under_cpu_contention() {
             max_mad_percent: None,
             max_jitter_periods: 15.0,
             max_stall_rate: 0.05,
+            min_rate_fraction: 0.40,
         },
         "1kHz under CPU contention",
     );
@@ -458,6 +490,7 @@ fn stress_rt_1khz_baseline_no_contention() {
             max_mad_percent: Some(10.0),
             max_jitter_periods: 8.0,
             max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
         },
         "baseline (no contention)",
     );
@@ -580,6 +613,7 @@ fn stress_rt_multi_rate_under_contention() {
             max_mad_percent: None,
             max_jitter_periods: 25.0,
             max_stall_rate: 0.05,
+            min_rate_fraction: 0.40,
         },
         "1kHz node in multi-rate mix",
     );
@@ -668,6 +702,7 @@ fn stress_rt_isolation_from_compute_nodes() {
             max_mad_percent: Some(15.0),
             max_jitter_periods: 10.0,
             max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
         },
         "RT node isolated from compute nodes",
     );
@@ -703,6 +738,7 @@ fn spread_only(limit: f64) -> TimingLimits {
         max_mad_percent: Some(limit),
         max_jitter_periods: f64::INFINITY,
         max_stall_rate: 1.0,
+        min_rate_fraction: 0.0,
     }
 }
 
@@ -740,6 +776,7 @@ fn spread_gate_alone_cannot_see_a_single_long_stall() {
             max_mad_percent: Some(10.0),
             max_jitter_periods: 8.0,
             max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
         },
     )
     .expect_err("a 20 ms stall on a 1 ms period must fail the gate");
@@ -775,6 +812,7 @@ fn stall_rate_catches_degradation_below_the_tail_bound() {
             max_mad_percent: None,
             max_jitter_periods: 8.0,
             max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
         },
     )
     .expect_err("3.3% of intervals at 6x the period must fail the gate");
@@ -803,6 +841,7 @@ fn spread_gate_still_fires_on_broadly_noisy_timing() {
             max_mad_percent: Some(10.0),
             max_jitter_periods: 8.0,
             max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
         },
     )
     .expect_err("+/-50% alternating intervals must fail the spread limit");
@@ -827,7 +866,50 @@ fn clean_timing_passes_every_limit() {
             max_mad_percent: Some(10.0),
             max_jitter_periods: 8.0,
             max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
         },
     )
     .expect("a run within +/-6 us of a 1 ms period must pass");
+}
+
+/// A node running at a fifth of its declared rate has excellent jitter — around
+/// its own wrong period. Neither spread nor tail nor stalls can see that, and
+/// `ticks >= 500` over 5 s cannot either: a 1 kHz node delivering 100 Hz clears
+/// it. Only the rate floor does.
+#[test]
+fn rate_floor_catches_a_node_running_at_the_wrong_rate() {
+    // 200 Hz, metronomically. Every interval identical, so spread is zero.
+    let intervals = vec![5000.0; 3000];
+    let report = compute_jitter_stats(&synth(&intervals), Duration::from_millis(1));
+
+    assert!(
+        report.mad_percent < 0.01,
+        "this case is only interesting if the timing looks flawless, but MAD \
+         was {:.4}%",
+        report.mad_percent
+    );
+    assert!(
+        report.max_jitter_us < 1.0,
+        "and if the tail looks flawless, but max jitter was {:.1} us",
+        report.max_jitter_us
+    );
+
+    let err = check_timing(
+        &report,
+        &TimingLimits {
+            max_mad_percent: Some(10.0),
+            max_jitter_periods: 8.0,
+            max_stall_rate: 0.02,
+            min_rate_fraction: 0.40,
+        },
+    )
+    .expect_err("a 1 kHz node delivering 200 Hz must fail the gate");
+    assert!(
+        err.contains("rate:"),
+        "expected the rate floor to fire: {err}"
+    );
+    assert!(
+        !err.contains("spread:") && !err.contains("tail:") && !err.contains("stalls:"),
+        "nothing but the rate floor can see this: {err}"
+    );
 }
