@@ -12327,3 +12327,43 @@ fn no_message_is_lost_without_being_counted() {
          checked on anything. That is a broken environment, not a pass."
     );
 }
+
+/// Both BROADCAST backends must report that they cannot apply backpressure.
+///
+/// `FanoutShm` used to be classified as backpressured because `send_fanout_shm`
+/// has two `Err` returns. Neither is a full ring: one is endpoint-slot
+/// exhaustion (all 16 publisher slots live) and one is a message too large for a
+/// slot. The ring itself is drop-oldest -- `ShmFanoutRing::send_pod` is
+/// documented "Never fails" and `try_send_serde`'s `false` is "unrelated to
+/// backpressure -- sends never block".
+///
+/// The consequence was not cosmetic. `send_blocking` refuses only where
+/// `provides_backpressure()` is false, so on a FanoutShm topic it returned `Ok`
+/// for a delivery nothing guaranteed -- on the emergency-stop and motor-setpoint
+/// path its own documentation points at. This asserts the classification
+/// directly, because the value is read at runtime to decide that.
+#[test]
+fn neither_broadcast_backend_claims_backpressure() {
+    assert!(
+        !BackendMode::PodShm.provides_backpressure(),
+        "PodShm overwrites unread slots and has no full condition"
+    );
+    assert!(
+        !BackendMode::FanoutShm.provides_backpressure(),
+        "FanoutShm is drop-oldest per subscriber channel: send_pod never fails \
+         and try_send_serde's false means 'too large', not 'full'"
+    );
+
+    // The queued backends genuinely can refuse, and must keep saying so -- the
+    // fix must not have made send_blocking useless everywhere.
+    for m in [
+        BackendMode::MpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::SpscShm,
+    ] {
+        assert!(
+            m.provides_backpressure(),
+            "{m:?} has a full-ring error return and must remain waitable"
+        );
+    }
+}

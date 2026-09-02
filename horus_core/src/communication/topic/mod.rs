@@ -583,8 +583,9 @@ pub enum SendBlockingError {
     #[error(
         "send_blocking cannot guarantee delivery on a broadcast backend: it \
          overwrites unconsumed slots and never reports a full ring. Migrate the \
-         topic to a backpressured backend (MpscShm, SpscShm, SpmcShm or \
-         FanoutShm), or use send()/try_send() and accept the documented loss."
+         topic to a backpressured backend (MpscShm, SpscShm or SpmcShm), or use \
+         send()/try_send() and accept the documented loss. Not FanoutShm: it is \
+         the other broadcast backend and is drop-oldest too."
     )]
     NoBackpressure,
 }

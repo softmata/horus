@@ -35,23 +35,29 @@ pub(crate) enum BackendMode {
 impl BackendMode {
     /// Whether a producer on this backend can observe a full ring and refuse.
     ///
-    /// `PodShm` is the odd one out: `send_shm_pod_broadcast` is a bare
-    /// `fetch_add` plus an unconditional seqlock overwrite with a single exit,
-    /// `Ok(())`. It never reads `header.tail`, so it cannot fail and cannot be
-    /// waited on. Every other live backend has an error return for a full ring
-    /// (`send_fanout_shm` and `send_shm_mp_pod` two each, `send_shm_sp_pod` one).
+    /// The two BROADCAST backends cannot. `PodShm`'s
+    /// `send_shm_pod_broadcast` is a bare `fetch_add` plus an unconditional
+    /// seqlock overwrite with a single exit, `Ok(())`; it never reads
+    /// `header.tail`. `FanoutShm` is the same shape one level down:
+    /// `ShmFanoutRing::send_pod` documents "Drop-oldest fan-out ... Never
+    /// fails", and `try_send_serde` says its `false` is "unrelated to
+    /// backpressure -- sends never block".
+    ///
+    /// `send_fanout_shm` DOES have two `Err` returns, which is what this used
+    /// to be read off, but neither is a full ring: one is endpoint-slot
+    /// exhaustion (COMM-H1, all 16 publisher slots live) and one is a message
+    /// too large for a slot. "Has an error return" and "can report fullness"
+    /// are different properties, and only the second one can be waited on.
     ///
     /// This matters to `send_blocking`, which promises delivery: on a backend
     /// that cannot report fullness the promise is unkeepable, and silently
     /// returning `Ok` on a topic documented for emergency stop is the wrong way
-    /// to discover that.
+    /// to discover that. Counting FanoutShm as backpressured meant exactly that
+    /// `Ok` -- on a backend that overwrites the unread setpoint.
     pub(crate) fn provides_backpressure(self) -> bool {
         match self {
-            BackendMode::MpscShm
-            | BackendMode::SpmcShm
-            | BackendMode::SpscShm
-            | BackendMode::FanoutShm => true,
-            BackendMode::PodShm => false,
+            BackendMode::MpscShm | BackendMode::SpmcShm | BackendMode::SpscShm => true,
+            BackendMode::PodShm | BackendMode::FanoutShm => false,
             // Not "no backpressure" -- "not resolved yet". A freshly constructed
             // topic reports Unknown until its first real send settles the header,
             // and treating that as a refusal rejects topics that have simply not
