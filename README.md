@@ -34,6 +34,21 @@ curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash
 horus new my_robot && cd my_robot && horus run
 ```
 
+The installer resolves the latest release tag and takes both halves from it: the
+prebuilt CLI, verified against that release's `SHA256SUMS`, and the matching
+source tree, cached at `~/.horus/cache/horus@<version>`. Both come from the same
+tag on purpose — `horus run` compiles your project against that cached tree as a
+path dependency, so a CLI built from one revision and libraries from another
+gives you nodes that cannot read each other's shared memory.
+
+Pin the tag when you want the same install twice. The variable goes on the right
+of the pipe — that is the environment `bash` reads; on the left it lands in
+curl's, where nothing reads it and you silently get the latest release anyway:
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
 Or install manually:
 
 ```bash
@@ -43,7 +58,22 @@ git clone https://github.com/softmata/horus.git && cd horus && ./install.sh
 **Requires Rust 1.90 or newer** (`rustup update stable`). Python 3.9+ for the
 Python API; CMake 3.20+ and a C++17 compiler for the C++ API.
 
-Python: `pip install horus-robotics` · C++: link against `libhorus_cpp` and `#include <horus/horus.hpp>`
+**C++**: link against `libhorus_cpp` and `#include <horus/horus.hpp>`.
+
+**Python**: `pip install "horus-robotics>=0.4.0"` — keep the floor. The newest
+release on PyPI is 0.1.9, from March 2026, and it speaks an older shared-memory
+format than a 0.4.x CLI: bare `pip install horus-robotics` gets you a package
+that imports, runs, and sees none of your topics. The floor turns that into a
+resolver error instead. Until 0.4.x reaches PyPI, build the bindings from the
+tree the installer already cached: `pip install ~/.horus/cache/horus@0.4.0/horus_py`.
+
+**Rust**: there is no crates.io channel. `cargo add horus` and `cargo install
+horus` fetch an unrelated crate that happens to own the name; HORUS's own crates
+carry git and path dependencies that `cargo package` rejects, so none of them are
+published. `horus new` and `horus run` point Cargo at the cached source instead.
+
+Docker, upgrading, uninstalling and the platform matrix are in
+[Install, Upgrade, Uninstall](#install-upgrade-uninstall).
 
 ---
 
@@ -53,7 +83,7 @@ HORUS is a real-time distributed middleware that replaces DDS with shared-memory
 
 |             | **HORUS**                                     | **ROS2**                                    |
 |-------------|-----------------------------------------------|---------------------------------------------|
-| IPC latency | **3–304 ns median** (topology-dependent)      | 50–500 µs (DDS)                             |
+| IPC latency | **171 ns** one-way, cross-process (`cross_process_benchmark`) | ~5 µs (REP 2014)                            |
 | Scheduling  | Deterministic, 5 execution classes            | Best-effort callbacks                       |
 | RT support  | Built-in (budget, deadline, watchdog)         | Manual DDS QoS                              |
 | Safety      | Graduated watchdog, safe-state hook, BlackBox | Application-level                           |
@@ -332,6 +362,7 @@ horus topic echo camera.rgb     # watch messages (works across all languages)
 horus monitor                   # TUI system dashboard
 horus deploy pi@192.168.1.50    # deploy to robot
 horus doctor                    # ecosystem health check
+horus self update               # upgrade the CLI and the cached source together
 ```
 
 40+ commands. [Full CLI reference →](https://docs.horusrobotics.dev/development/cli-reference)
@@ -463,6 +494,122 @@ cargo run -p horus --example 05_realtime       # RT with deadline enforcement
 ```
 
 [Full examples →](examples/) · [Tutorials →](https://docs.horusrobotics.dev/tutorials/01-sensor-node-rust) · [ROS 2 bridge recipe →](https://docs.horusrobotics.dev/recipes/ros2-bridge)
+
+---
+
+## Install, Upgrade, Uninstall
+
+### Upgrade
+
+```bash
+horus self update           # move the CLI and the cached source to the latest release
+horus self update --check   # report current vs latest, change nothing
+```
+
+`horus self update` resolves the latest release, verifies the download against
+that release's `SHA256SUMS`, replaces the binary, and refreshes
+`~/.horus/cache/horus@<version>` at the same tag. Both halves move together, for
+the reason in [Get Started](#get-started). Re-running the installer does the
+same job, and is how you move to a *particular* release — including back to an
+older one:
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | HORUS_VERSION=v0.4.0 bash
+```
+
+To see what you are running: `horus --version` reports the CLI, and
+`~/.horus/install_manifest.toml` records what the last install put on the machine
+— version, tag, commit and method. The CLI compares the two itself and warns when
+they have drifted apart, naming the command that reconciles them; set
+`HORUS_STRICT_VERSION=1` to make that a hard failure instead, which is what you
+want in CI.
+
+### Uninstall
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash
+```
+
+Or `./uninstall.sh` from a clone. It prints an inventory first — binaries,
+`~/.horus` (cache, install manifest, credentials, config), shell completions, the
+man page, the shell-profile lines and `/dev/shm/horus_*` — and asks before
+deleting any of it, on your terminal even when the script itself arrived through
+the pipe. `--dry-run` prints that inventory and removes nothing. `--yes` runs
+unattended and keeps `~/.horus/config.toml`, your credentials and the Cargo
+registry cache, so an automated run never removes more than a supervised one
+would by default:
+
+```bash
+curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | bash -s -- --yes
+```
+
+With no terminal and no `--yes` — a CI job, a provisioning script — it stops and
+says so rather than guessing at a default.
+
+### Docker
+
+```bash
+docker build --target dev -t horus:dev .
+docker run --rm -it --shm-size=1g -v "$PWD:/work" -w /work horus:dev run
+```
+
+`--target dev` is the one you want. A bare `docker build .` builds the default
+stage, the slim CLI image the [Dockerfile](Dockerfile) tags `horus:cli` — 284 MB,
+no language toolchains. It can inspect a system, validate a manifest and read
+logs, but it cannot build or run a project: `horus run` there stops at `H060
+Rust toolchain not installed`. The dev image carries Rust, Python and CMake and
+costs 3.98 GB for them.
+
+Nodes talk through shared memory, so a container that runs them needs a real
+`/dev/shm` — the 64 MB default is small for image or point-cloud topics, hence
+`--shm-size`. Add `--ipc=host` for IPC between containers, and `--cap-add=SYS_NICE`
+for real-time nodes: without it every RT thread drops to normal priority, and a
+benchmark in that container measures the container. Each release tag publishes
+both images to GitHub Container Registry — `ghcr.io/softmata/horus:dev` and
+`:latest`, plus the immutable `:<version>` and `:<version>-dev` to pin a robot
+to — so `docker build` is only needed for a fork or an unreleased commit. The
+Dockerfile header covers the rest, including how to keep file ownership on bind
+mounts.
+
+### Platform Support
+
+| Platform              | Prebuilt binary             | Notes                                     |
+|-----------------------|-----------------------------|-------------------------------------------|
+| Linux x86_64          | `horus-linux-amd64.tar.gz`  | glibc 2.28 or newer                       |
+| Linux aarch64         | `horus-linux-arm64.tar.gz`  | glibc 2.28 or newer — Pi OS 64-bit, Jetson |
+| Linux armv7 (32-bit)  | `horus-linux-armv7.tar.gz`  | glibc 2.28 or newer — Pi OS 32-bit         |
+| macOS Apple Silicon   | `horus-macos-arm64.tar.gz`  |                                           |
+| macOS Intel           | `horus-macos-amd64.tar.gz`  |                                           |
+| Windows x86_64        | `horus-windows-amd64.zip`   | `install.ps1`, or `install.sh` under Git Bash / WSL |
+
+On Windows, PowerShell takes the same install with the same knobs — set them as
+their own statement, since PowerShell has no `VAR=value command` prefix:
+
+```powershell
+irm https://github.com/softmata/horus/raw/main/install.ps1 | iex
+```
+
+The Linux binaries are linked against glibc rather than static, and are
+cross-compiled against a glibc 2.28 floor — Debian 10, Ubuntu 18.04, RHEL 8 —
+which the release workflow reads back out of each ELF and enforces. Releases cut
+before that floor existed, `v0.4.0` and earlier, were built natively on the CI
+runner and need glibc 2.39, so they will not start on Pi OS, JetPack, Ubuntu
+22.04, Debian 12 or RHEL 9. Below the floor, or on a musl distro such as Alpine,
+install with `HORUS_BUILD_FROM_SOURCE=1` and compile; budget hours, not minutes,
+on a single-board computer.
+
+### Installer Options
+
+| Variable                       | Effect                                                                          |
+|--------------------------------|---------------------------------------------------------------------------------|
+| `HORUS_VERSION=v0.4.0`         | install exactly that release — binary and source. Leading `v` optional          |
+| `HORUS_BUILD_FROM_SOURCE=1`    | skip the prebuilt binary, compile the source at the resolved tag                 |
+| `HORUS_LOCAL_SOURCE=/path`     | use a source tree already on disk — no clone, nothing fetched for it (air-gapped) |
+| `HORUS_PREFIX=/opt/horus`      | install root override — `<prefix>/bin` for the binary, `<prefix>` in place of `~/.horus`. A root install with no `SUDO_USER` refuses without it, rather than installing for root alone |
+| `HORUS_INSTALL_BRANCH=dev`     | developer escape hatch: build from a branch. Forces a source build — a branch is never paired with a release binary |
+| `HORUS_NO_SHELL_INTEGRATION=1` | leave shell rc files alone (skips `horus env --init`, which shadows cargo/pip/cmake inside HORUS projects) |
+
+[Installation guide →](https://docs.horusrobotics.dev/getting-started/installation)
 
 ---
 

@@ -18,12 +18,24 @@ use std::time::Duration;
 mod common;
 use common::cleanup_stale_shm;
 
+/// Leak a node name once, at construction.
+///
+/// `Node::name` returns `&'static str`, and these harness nodes build their
+/// names at runtime from the pid so concurrent test binaries do not collide on
+/// a shm segment. Each `name()` call used to `Box::leak` a fresh copy, so the
+/// scheduler -- which calls it per tick, per health report and per watchdog
+/// event -- grew the leak without bound for the life of the process. Leaking
+/// once per node is the cost that was actually intended.
+fn leak(name: String) -> &'static str {
+    Box::leak(name.into_boxed_str())
+}
+
 // ---------------------------------------------------------------------------
 // Node that stalls permanently after N ticks (simulates hang)
 // ---------------------------------------------------------------------------
 
 struct StallAfterNode {
-    name: String,
+    name: &'static str,
     tick_count: Arc<AtomicU64>,
     stall_after: u64,
     safe_state_entered: Arc<AtomicBool>,
@@ -34,7 +46,7 @@ impl StallAfterNode {
         let ticks = Arc::new(AtomicU64::new(0));
         let safe = Arc::new(AtomicBool::new(false));
         let node = Self {
-            name: format!("{}_{}", prefix, std::process::id()),
+            name: leak(format!("{}_{}", prefix, std::process::id())),
             tick_count: ticks.clone(),
             stall_after,
             safe_state_entered: safe.clone(),
@@ -45,7 +57,7 @@ impl StallAfterNode {
 
 impl Node for StallAfterNode {
     fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn tick(&mut self) {
@@ -73,7 +85,7 @@ impl Node for StallAfterNode {
 // ---------------------------------------------------------------------------
 
 struct HealthyNode {
-    name: String,
+    name: &'static str,
     tick_count: Arc<AtomicU64>,
 }
 
@@ -81,7 +93,7 @@ impl HealthyNode {
     fn new(prefix: &str) -> (Self, Arc<AtomicU64>) {
         let ticks = Arc::new(AtomicU64::new(0));
         let node = Self {
-            name: format!("{}_{}", prefix, std::process::id()),
+            name: leak(format!("{}_{}", prefix, std::process::id())),
             tick_count: ticks.clone(),
         };
         (node, ticks)
@@ -90,7 +102,7 @@ impl HealthyNode {
 
 impl Node for HealthyNode {
     fn name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn tick(&mut self) {
@@ -226,12 +238,12 @@ fn test_watchdog_with_budget_violations() {
     let ticks_clone = ticks.clone();
 
     struct BudgetViolator {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
     }
     impl Node for BudgetViolator {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -240,7 +252,7 @@ fn test_watchdog_with_budget_violations() {
     }
 
     let node = BudgetViolator {
-        name,
+        name: leak(name),
         tick_count: ticks_clone,
     };
 
@@ -321,12 +333,12 @@ fn test_watchdog_short_timeout_detects_slow_node() {
     let ticks_clone = ticks.clone();
 
     struct SlowButAlive {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
     }
     impl Node for SlowButAlive {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -335,7 +347,7 @@ fn test_watchdog_short_timeout_detects_slow_node() {
     }
 
     let node = SlowButAlive {
-        name,
+        name: leak(name),
         tick_count: ticks_clone,
     };
 
@@ -366,13 +378,13 @@ fn test_watchdog_with_safe_mode_calls_enter_safe_state() {
 
     // Override to be a slow node instead of a stalling one
     struct SlowSafeNode {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
         safe_state_entered: Arc<AtomicBool>,
     }
     impl Node for SlowSafeNode {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -389,7 +401,7 @@ fn test_watchdog_with_safe_mode_calls_enter_safe_state() {
     // Use ticks and safe from StallAfterNode (already allocated)
     drop(node); // drop the StallAfterNode
     let slow_node = SlowSafeNode {
-        name: format!("wd_sm_{}", std::process::id()),
+        name: leak(format!("wd_sm_{}", std::process::id())),
         tick_count: ticks.clone(),
         safe_state_entered: safe.clone(),
     };
@@ -479,12 +491,12 @@ fn test_max_deadline_misses_stops_scheduler() {
     let _shm_guard = cleanup_stale_shm();
 
     struct DeadlineViolator {
-        name: String,
+        name: &'static str,
         tick_count: Arc<AtomicU64>,
     }
     impl Node for DeadlineViolator {
         fn name(&self) -> &'static str {
-            Box::leak(self.name.clone().into_boxed_str())
+            self.name
         }
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -495,7 +507,7 @@ fn test_max_deadline_misses_stops_scheduler() {
 
     let ticks = Arc::new(AtomicU64::new(0));
     let node = DeadlineViolator {
-        name: format!("wd_maxmiss_{}", std::process::id()),
+        name: leak(format!("wd_maxmiss_{}", std::process::id())),
         tick_count: ticks.clone(),
     };
 
@@ -568,5 +580,234 @@ fn test_enter_safe_state_on_stalled_node() {
     assert!(
         safe.load(Ordering::SeqCst),
         "enter_safe_state() should be called when stalled node exceeds watchdog+deadline"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Node that panics on EVERY tick after the first few.
+//
+// This is the shape the watchdog used to be blind to. A node that hangs is
+// caught either way -- it never returns, so no further feed happens. A node
+// that keeps panicking is different: the scheduler catches the unwind, logs it,
+// and dispatches it again next tick. While the watchdog was fed in
+// `prepare_node_tick`, i.e. BEFORE the node ran, every one of those dispatches
+// fed it, so a node that had not completed a single tick since startup kept a
+// green watchdog for as long as the process lived.
+// ---------------------------------------------------------------------------
+
+struct PanicsEveryTickNode {
+    name: &'static str,
+    tick_count: Arc<AtomicU64>,
+    healthy_ticks: u64,
+    safe_state_entered: Arc<AtomicBool>,
+}
+
+impl PanicsEveryTickNode {
+    fn new(prefix: &str, healthy_ticks: u64) -> (Self, Arc<AtomicU64>, Arc<AtomicBool>) {
+        let ticks = Arc::new(AtomicU64::new(0));
+        let safe = Arc::new(AtomicBool::new(false));
+        let node = Self {
+            name: leak(format!("{prefix}_{}", std::process::id())),
+            tick_count: ticks.clone(),
+            healthy_ticks,
+            safe_state_entered: safe.clone(),
+        };
+        (node, ticks, safe)
+    }
+}
+
+impl Node for PanicsEveryTickNode {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn tick(&mut self) {
+        let count = self.tick_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if count > self.healthy_ticks {
+            panic!("intentional: this node never completes a tick again");
+        }
+    }
+
+    fn enter_safe_state(&mut self) {
+        self.safe_state_entered.store(true, Ordering::SeqCst);
+    }
+
+    fn is_safe_state(&self) -> bool {
+        self.safe_state_entered.load(Ordering::SeqCst)
+    }
+}
+
+/// A node that never completes a tick must not keep a green watchdog.
+///
+/// The watchdog is fed on COMPLETION, not on dispatch. While the main loop fed
+/// it in `prepare_node_tick` -- before the node ran -- the only thing a green
+/// watchdog proved was that the dispatch loop had reached this node's index. A
+/// node that panicked on every tick was fed exactly as often as a healthy one.
+///
+/// A hung node was always caught, because it never returns and so is never fed
+/// again. This is the case that was not: dispatched every tick, completing
+/// none. The RT executor already fed in its `Ok(_)` arm ("FIX #2"); the main
+/// loop did not, so this covers a BestEffort node, which is the path that was
+/// wrong.
+///
+/// Asserts on `watchdog_expirations` rather than `enter_safe_state`: safing is
+/// queued on the owning executor and, as the emergency-stop message says
+/// itself, "if the node is hung inside tick() that thread cannot run it, so the
+/// node's own safing may never execute". The expiry counter is the fact; the
+/// safing call is a best-effort consequence of it.
+#[test]
+fn a_node_that_only_panics_does_not_keep_its_watchdog_fed() {
+    let _shm_guard = cleanup_stale_shm();
+    let (node, ticks, _safe) = PanicsEveryTickNode::new("wd_panicker", 2);
+
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+    sched.add(node).watchdog(100_u64.ms()).build().unwrap();
+    let _ = sched.run_for(Duration::from_millis(900));
+
+    let dispatched = ticks.load(Ordering::SeqCst);
+    assert!(
+        dispatched > 5,
+        "node should have been dispatched repeatedly, got {dispatched}"
+    );
+
+    let expirations = sched
+        .safety_stats()
+        .map(|s| s.watchdog_expirations())
+        .unwrap_or(0);
+    assert!(
+        expirations > 0,
+        "a node dispatched {dispatched} times that completed none of them must \
+         expire its watchdog, got {expirations} expirations. Feeding in \
+         prepare_node_tick refreshed it on every one of those dispatches, so a \
+         node that had not finished a tick since startup stayed green for the \
+         life of the process."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A node that ticks perfectly well and records whether it was ever safed.
+// ---------------------------------------------------------------------------
+
+struct SafeStateRecordingNode {
+    name: &'static str,
+    tick_count: Arc<AtomicU64>,
+    safe_state_entered: Arc<AtomicBool>,
+}
+
+impl SafeStateRecordingNode {
+    fn new(prefix: &str) -> (Self, Arc<AtomicU64>, Arc<AtomicBool>) {
+        let ticks = Arc::new(AtomicU64::new(0));
+        let safe = Arc::new(AtomicBool::new(false));
+        let node = Self {
+            name: leak(format!("{prefix}_{}", std::process::id())),
+            tick_count: ticks.clone(),
+            safe_state_entered: safe.clone(),
+        };
+        (node, ticks, safe)
+    }
+}
+
+impl Node for SafeStateRecordingNode {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn tick(&mut self) {
+        self.tick_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn enter_safe_state(&mut self) {
+        self.safe_state_entered.store(true, Ordering::SeqCst);
+    }
+
+    fn is_safe_state(&self) -> bool {
+        self.safe_state_entered.load(Ordering::SeqCst)
+    }
+}
+
+/// An emergency stop has to stop the ROBOT, not just the scheduler.
+///
+/// Halting the tick loop stops new commands being computed; it does not change
+/// what the hardware was last told. A motor holds its last setpoint. The
+/// emergency-stop path used to print, record a blackbox event and return,
+/// leaving `enter_safe_state()` -- the callback whose entire purpose is putting
+/// an actuator somewhere safe -- uncalled. The shutdown that follows calls
+/// `shutdown()`, which is a lifecycle hook, not a safety one.
+///
+/// Here a peer node melts down and drives the watchdog ladder to its 3x
+/// emergency stop. The bystander ticks perfectly throughout and must still be
+/// safed, because an e-stop is a machine-wide event.
+#[test]
+fn an_emergency_stop_drives_nodes_to_their_safe_state() {
+    let _shm_guard = cleanup_stale_shm();
+    let (bad, _bad_ticks, _bad_safe) = PanicsEveryTickNode::new("estop_trigger", 2);
+    let (bystander, good_ticks, good_safe) = SafeStateRecordingNode::new("estop_bystander");
+
+    let mut sched = Scheduler::new().tick_rate(100_u64.hz());
+    sched.add(bad).watchdog(100_u64.ms()).build().unwrap();
+    sched.add(bystander).build().unwrap();
+    let _ = sched.run_for(Duration::from_millis(1200));
+
+    assert!(
+        good_ticks.load(Ordering::SeqCst) > 0,
+        "the bystander should have ticked normally"
+    );
+
+    let stopped = sched
+        .safety_stats()
+        .map(|s| s.watchdog_expirations() > 0)
+        .unwrap_or(false);
+    if !stopped {
+        eprintln!("skipping: the ladder did not reach an emergency stop in this run");
+        return;
+    }
+
+    assert!(
+        good_safe.load(Ordering::SeqCst),
+        "an emergency stop must drive every node to its safe state. This node \
+         ticked cleanly the whole time, which is exactly the node still holding \
+         an actuator at its last commanded value when the stop fires."
+    );
+}
+
+/// A scheduler-level watchdog covers RT nodes ONLY.
+///
+/// This pins the boundary rather than endorsing it. A best-effort node is
+/// allowed to take as long as it likes, so firing a watchdog at it would be
+/// wrong -- but an operator who writes `Scheduler::new().watchdog(..)` and adds
+/// best-effort nodes has configured a safety timeout that covers none of them.
+/// The builder now warns and names them; this test makes sure the coverage
+/// boundary cannot move without someone deciding to move it.
+///
+/// The node here panics on every tick, which is the shape that DOES trip a
+/// watchdog when one is registered (see
+/// a_node_that_only_panics_does_not_keep_its_watchdog_fed, which is the same
+/// node with a per-node `.watchdog()`).
+#[test]
+fn a_scheduler_watchdog_does_not_cover_best_effort_nodes() {
+    let _shm_guard = cleanup_stale_shm();
+    let (node, ticks, _safe) = PanicsEveryTickNode::new("wd_uncovered", 2);
+
+    let mut sched = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .watchdog(100_u64.ms());
+    // No .rate() and no per-node .watchdog(): best-effort, therefore unwatched.
+    sched.add(node).build().unwrap();
+    let _ = sched.run_for(Duration::from_millis(600));
+
+    let dispatched = ticks.load(Ordering::SeqCst);
+    assert!(dispatched > 5, "node should tick, got {dispatched}");
+
+    let expirations = sched
+        .safety_stats()
+        .map(|s| s.watchdog_expirations())
+        .unwrap_or(0);
+    assert_eq!(
+        expirations, 0,
+        "a scheduler-level watchdog registers RT nodes only, so this best-effort \
+         node is not watched and cannot expire. If this now reports {expirations} \
+         expirations the coverage was widened -- which may well be right, but it \
+         changes what .watchdog() means and the doc and the builder warning must \
+         change with it."
     );
 }

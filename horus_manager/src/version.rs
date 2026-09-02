@@ -1,14 +1,92 @@
 use anyhow::{bail, Context, Result};
 use colored::*;
+use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The canonical one-line installer, quoted in the mismatch message.
+///
+/// Kept next to the message it appears in so a URL change is one edit. This is
+/// the form README.md:33 publishes; the version pin has to go on `bash`, not on
+/// `curl`, because `VAR=x curl ... | bash` exports the variable to *curl* and
+/// the installer never sees it.
+const INSTALL_ONE_LINER: &str = "curl -fsSL https://github.com/softmata/horus/raw/main/install.sh";
+
+/// The topic-header version this binary was compiled against.
+///
+/// Mirrors `TOPIC_VERSION` in horus_core/src/communication/topic/header.rs,
+/// which is `pub(crate)` and so cannot be imported from here. This — not the
+/// version string — is what decides whether the CLI can attach to the shared
+/// memory the installed libraries create: a CLI and a source tree that both
+/// called themselves "0.4.0" were once 93 commits apart with topic versions 3
+/// and 4, and the version string had no way to say so.
+/// `cli_topic_version_matches_horus_core` fails if the two ever drift.
+pub const CLI_TOPIC_VERSION: u32 = 4;
 
 /// Get the CLI version from Cargo.toml at compile time
 pub fn get_cli_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Get the installed library version from ~/.horus/installed_version
+/// The root of the install state: `$HORUS_PREFIX`, else `~/.horus`.
+///
+/// install.sh:245-254 resolves it exactly this way — `HORUS_PREFIX` when it is
+/// set and non-empty, `<home>/.horus` otherwise — and then writes
+/// `installed_version`, `install_manifest.toml` and `cache/` under whatever it
+/// resolved. Every reader has to agree with it: the installer learned to
+/// relocate the state before the readers did, so a `HORUS_PREFIX=/opt/horus`
+/// install (how a fleet gets provisioned, as root, for all users) wrote state
+/// that this binary then looked for in `~/.horus` and never found. The version
+/// gate was silently off for exactly the installs that most need it, and
+/// install.sh had to print a warning saying so.
+///
+/// `HORUS_PREFIX` is the whole interface. The installer's own `HORUS_STATE_DIR`
+/// is a shell-local variable it never exports, so there is no second name to
+/// read, and no way to discover a prefix install from outside its own tree —
+/// which is why uninstall.sh takes the same variable from its environment.
+pub fn state_root() -> Result<PathBuf> {
+    Ok(resolve_state_root()?.path)
+}
+
+/// The resolved root, plus whether `HORUS_PREFIX` is what chose it.
+///
+/// The flag is not cosmetic: the remedy the mismatch message prints has to
+/// carry the same variable, or re-running the installer builds a second,
+/// complete install under `~/.horus` and leaves the one on `PATH` exactly as
+/// skewed as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateRoot {
+    path: PathBuf,
+    from_prefix: bool,
+}
+
+fn resolve_state_root() -> Result<StateRoot> {
+    // var_os, not var: a prefix is a path, and a path is not required to be
+    // UTF-8. install.sh passes whatever the caller set straight to mkdir.
+    match std::env::var_os("HORUS_PREFIX") {
+        Some(prefix) if !prefix.is_empty() => Ok(StateRoot {
+            path: PathBuf::from(prefix),
+            from_prefix: true,
+        }),
+        _ => Ok(StateRoot {
+            path: crate::paths::home_dir()?.join(".horus"),
+            from_prefix: false,
+        }),
+    }
+}
+
+/// `<state root>/cache`, holding the `horus@<version>` source trees.
+///
+/// install.sh:260 derives it from its state dir the same way, so a prefix
+/// install's source tree lands here and nowhere else. `horus run` builds user
+/// projects against that tree as a path dependency (run_rust.rs ->
+/// find_horus_source_dir), so a reader that misses this root cannot build a
+/// single Rust project on a prefix install.
+pub fn cache_root() -> Result<PathBuf> {
+    Ok(state_root()?.join("cache"))
+}
+
+/// Get the installed library version from `<state root>/installed_version`
 pub fn get_installed_version() -> Result<Option<String>> {
     let version_file = get_version_file_path()?;
 
@@ -25,81 +103,377 @@ pub fn get_installed_version() -> Result<Option<String>> {
 }
 
 /// Get the path to the version tracking file
-fn get_version_file_path() -> Result<PathBuf> {
-    Ok(crate::paths::home_dir()?.join(".horus/installed_version"))
+pub fn get_version_file_path() -> Result<PathBuf> {
+    Ok(state_root()?.join("installed_version"))
 }
 
-/// Check if the CLI version matches the installed library version
-pub fn check_version_compatibility() -> Result<()> {
-    let cli_version = get_cli_version();
+/// Get the path to the richer install record written alongside it.
+pub fn get_install_manifest_path() -> Result<PathBuf> {
+    Ok(state_root()?.join("install_manifest.toml"))
+}
+
+/// What install.sh and `horus self update` record about the install they made.
+///
+/// Every field is optional and unknown keys are ignored on purpose: this file
+/// is written by a shell script and read by a binary that may be older or newer
+/// than the script that wrote it, so a field that is missing, renamed or added
+/// must degrade the diagnostic rather than fail the command the user asked for.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct InstallManifest {
+    pub version: Option<String>,
+    pub tag: Option<String>,
+    pub commit: Option<String>,
+    /// The horus_core topic-header version of the installed tree. Compared
+    /// against [`CLI_TOPIC_VERSION`]; this is the only field that can prove an
+    /// ABI break, since two different trees can share one version string.
+    pub topic_version: Option<u32>,
+    pub source_dir: Option<PathBuf>,
+    pub binary: Option<PathBuf>,
+    pub install_method: Option<String>,
+    pub installed_at: Option<String>,
+}
+
+/// Read `<state root>/install_manifest.toml`, or `None` when it is absent or
+/// garbled.
+///
+/// Returns `Option`, not `Result`, so that no caller can turn "no manifest" into
+/// a failure: every install made before this file existed lacks it, and doctor.rs
+/// and the version gate both have to keep working for those users.
+pub fn get_install_manifest() -> Option<InstallManifest> {
+    let path = get_install_manifest_path().ok()?;
+    read_install_manifest_at(&path)
+}
+
+fn read_install_manifest_at(path: &Path) -> Option<InstallManifest> {
+    if !path.exists() {
+        return None;
+    }
+
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) => {
+            log::debug!("could not read {}: {}", path.display(), e);
+            return None;
+        }
+    };
+
+    match toml::from_str::<InstallManifest>(&text) {
+        Ok(manifest) => Some(manifest),
+        Err(e) => {
+            // A truncated or hand-edited manifest is a diagnostic we lose, not a
+            // reason to refuse to run.
+            log::warn!("ignoring malformed {}: {}", path.display(), e);
+            None
+        }
+    }
+}
+
+/// Which file supplied the installed-side numbers, so the message can point at
+/// the thing the user would have to look at or delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateSource {
+    Manifest,
+    LegacyVersionFile,
+}
+
+impl StateSource {
+    fn file_name(self) -> &'static str {
+        match self {
+            StateSource::Manifest => "install_manifest.toml",
+            StateSource::LegacyVersionFile => "installed_version",
+        }
+    }
+}
+
+/// The `(from <path>)` suffix on the installed-version line.
+///
+/// Built from the resolved state root rather than a hardcoded `~/.horus`:
+/// under `HORUS_PREFIX` the state lives in the prefix, and pointing the user at
+/// `~/.horus` would send them to a directory holding none of this install's
+/// files. Empty when there is no record to attribute.
+fn state_file_hint(source: Option<StateSource>, root: Option<&Path>) -> String {
+    match (source, root) {
+        (Some(source), Some(root)) => {
+            format!("(from {})", root.join(source.file_name()).display())
+        }
+        _ => String::new(),
+    }
+}
+
+/// The installer invocation that reconciles this CLI with the state root it
+/// just read.
+///
+/// A prefix install must be repaired in place. Without `HORUS_PREFIX` on the
+/// command, the installer writes a whole second install under `~/.horus` and
+/// the binary on `PATH` — the one that printed this message — stays exactly as
+/// skewed as it was.
+fn reconcile_command(cli_version: &str, root: Option<&StateRoot>) -> String {
+    match root.filter(|root| root.from_prefix) {
+        Some(root) => format!(
+            "{} | HORUS_PREFIX={} HORUS_VERSION=v{} bash",
+            INSTALL_ONE_LINER,
+            root.path.display(),
+            cli_version
+        ),
+        None => format!(
+            "{} | HORUS_VERSION=v{} bash",
+            INSTALL_ONE_LINER, cli_version
+        ),
+    }
+}
+
+/// The comparison the gate makes, gathered once so that the printer, the strict
+/// gate and the tests all reason about the same values.
+#[derive(Debug, Clone)]
+struct VersionCheck {
+    cli_version: String,
+    cli_topic_version: u32,
+    installed_version: Option<String>,
+    installed_topic_version: Option<u32>,
+    source: Option<StateSource>,
+    /// Where the state was read from — `~/.horus`, or the `HORUS_PREFIX` tree.
+    /// Carried so the message names files the user can actually open, and so
+    /// the remedy repairs that install rather than a fresh one beside it.
+    /// `None` only when the root could not be resolved at all, which is also
+    /// the case where nothing was read and so nothing is printed.
+    state_root: Option<StateRoot>,
+}
+
+impl VersionCheck {
+    fn version_mismatch(&self) -> bool {
+        matches!(&self.installed_version, Some(v) if v != &self.cli_version)
+    }
+
+    /// A differing topic version is not a cosmetic mismatch: it is the shm ABI.
+    fn topic_mismatch(&self) -> bool {
+        matches!(self.installed_topic_version, Some(t) if t != self.cli_topic_version)
+    }
+
+    fn is_compatible(&self) -> bool {
+        !self.version_mismatch() && !self.topic_mismatch()
+    }
+}
+
+/// Read whatever install state exists. Nothing here is fatal: a machine with no
+/// record at all yields a check that compares clean, which is the pre-existing
+/// behaviour for the (large) cohort that never had these files written.
+fn collect_version_check() -> VersionCheck {
+    let cli_version = get_cli_version().to_string();
     log::debug!("CLI version: {}", cli_version);
 
-    match get_installed_version()? {
-        Some(installed_version) => {
-            log::debug!("installed library version: {}", installed_version);
-            if cli_version != installed_version {
-                print_version_mismatch(cli_version, &installed_version);
-                bail!("Version mismatch detected");
-            }
-            Ok(())
+    // An unreadable version file (permissions, a directory in its place) must not
+    // take down `horus new`; downgrade it to a missing record.
+    let legacy_version = match get_installed_version() {
+        Ok(version) => version,
+        Err(e) => {
+            log::warn!("could not read the installed version file: {}", e);
+            None
         }
-        None => {
-            // No version file found - libraries might not be installed
-            Ok(())
-        }
+    };
+
+    // Prefer the manifest: it is the only record carrying topic_version, and the
+    // bare installed_version string provably cannot express the break that
+    // actually shipped.
+    let manifest = get_install_manifest();
+    let installed_topic_version = manifest.as_ref().and_then(|m| m.topic_version);
+    let (installed_version, source) = match manifest.as_ref().and_then(|m| m.version.clone()) {
+        Some(version) => (Some(version), Some(StateSource::Manifest)),
+        None => match legacy_version {
+            Some(version) => (Some(version), Some(StateSource::LegacyVersionFile)),
+            None => (None, manifest.as_ref().map(|_| StateSource::Manifest)),
+        },
+    };
+
+    log::debug!(
+        "installed HORUS: version={:?} topic_version={:?} source={:?}",
+        installed_version,
+        installed_topic_version,
+        source
+    );
+
+    VersionCheck {
+        cli_version,
+        cli_topic_version: CLI_TOPIC_VERSION,
+        installed_version,
+        installed_topic_version,
+        source,
+        state_root: resolve_state_root().ok(),
     }
 }
 
-/// Check version and prompt user if mismatch detected
+/// `HORUS_STRICT_VERSION=1` turns the warning back into a hard failure.
+///
+/// The default is a warning because the old unconditional `bail!` permanently
+/// bricked the alpha..v0.1.9 cohort: `horus new` and any dependency-resolving
+/// `horus run` exited 1, and the remedy the message printed (./install.sh) could
+/// not clear it, because nothing had written ~/.horus/installed_version since
+/// v0.2.0. CI, which wants a mismatched toolchain to fail loudly, opts back in.
+fn strict_version_gate() -> bool {
+    std::env::var("HORUS_STRICT_VERSION")
+        .as_deref()
+        .map(env_flag_is_set)
+        .unwrap_or(false)
+}
+
+fn env_flag_is_set(value: &str) -> bool {
+    value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+}
+
+/// Check if the CLI version matches the installed library version.
+///
+/// Never fails on a *missing* record — only on a mismatch, and only when
+/// HORUS_STRICT_VERSION is set. The old shape had this inverted: no file passed
+/// silently while a stale file was unrecoverably fatal.
+pub fn check_version_compatibility() -> Result<()> {
+    report_mismatch(&collect_version_check(), strict_version_gate())
+}
+
+/// Same check, kept as its own entry point for the `horus new` dispatch in
+/// main.rs. The two used to differ only in which remedy they printed, and there
+/// is one remedy block now.
 pub fn check_and_prompt_update() -> Result<()> {
-    let cli_version = get_cli_version();
+    check_version_compatibility()
+}
 
-    if let Some(installed_version) = get_installed_version()? {
-        if cli_version != installed_version {
-            print_version_mismatch(cli_version, &installed_version);
-
-            // Find HORUS source directory
-            if let Some(horus_root) = find_horus_source() {
-                println!("\n{} To update libraries, run:", "".cyan());
-                println!(
-                    "  {}",
-                    format!("cd {} && ./install.sh", horus_root.display()).cyan()
-                );
-            } else {
-                println!("\n{} To update libraries:", "".cyan());
-                println!("  1. Navigate to your HORUS source directory");
-                println!("  2. Run: {}", "./install.sh".cyan());
-            }
-
-            bail!("Library version mismatch");
-        }
+fn report_mismatch(check: &VersionCheck, strict: bool) -> Result<()> {
+    if check.is_compatible() {
+        return Ok(());
     }
 
+    print_version_mismatch(check);
+
+    if strict {
+        if check.topic_mismatch() {
+            bail!(
+                "HORUS topic ABI mismatch: CLI topic_version {} vs installed {} \
+                 (HORUS_STRICT_VERSION is set)",
+                check.cli_topic_version,
+                check
+                    .installed_topic_version
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
+        }
+        bail!(
+            "HORUS version mismatch: CLI {} vs installed {} (HORUS_STRICT_VERSION is set)",
+            check.cli_version,
+            check.installed_version.as_deref().unwrap_or("unknown")
+        );
+    }
+
+    eprintln!(
+        "{} Continuing anyway. Set {} to make this a hard error (CI).",
+        "Note:".cyan(),
+        "HORUS_STRICT_VERSION=1".cyan()
+    );
+    eprintln!();
     Ok(())
 }
 
-/// Print version mismatch warning
-fn print_version_mismatch(cli_version: &str, installed_version: &str) {
+/// Print the version mismatch warning: both sides, both topic versions when
+/// known, and the exact command that reconciles them.
+fn print_version_mismatch(check: &VersionCheck) {
+    let installed = check.installed_version.as_deref().unwrap_or("unknown");
     log::warn!(
-        "Version mismatch: CLI={}, libraries={}. Run install.sh to update.",
-        cli_version,
-        installed_version
+        "Version mismatch: CLI={} (topic {}), installed={} (topic {:?}). Run `horus self update`.",
+        check.cli_version,
+        check.cli_topic_version,
+        installed,
+        check.installed_topic_version
     );
+
     eprintln!();
     eprintln!(
         "{} {}",
-        "".yellow().bold(),
-        "Version mismatch detected!".yellow().bold()
+        "!".yellow().bold(),
+        "HORUS version mismatch".yellow().bold()
     );
     eprintln!();
-    eprintln!("  CLI version:       {}", cli_version.green());
-    eprintln!("  Installed libraries: {}", installed_version.red());
+
+    let from = state_file_hint(
+        check.source,
+        check.state_root.as_ref().map(|root| root.path.as_path()),
+    );
+    eprintln!("  CLI version:         {}", check.cli_version.green());
+    if check.version_mismatch() {
+        eprintln!(
+            "  Installed HORUS:     {} {}",
+            installed.red(),
+            from.dimmed()
+        );
+    } else {
+        eprintln!(
+            "  Installed HORUS:     {} {}",
+            installed.green(),
+            from.dimmed()
+        );
+    }
+
+    if let Some(installed_topic) = check.installed_topic_version {
+        eprintln!(
+            "  CLI topic ABI:       {}",
+            check.cli_topic_version.to_string().green()
+        );
+        if check.topic_mismatch() {
+            eprintln!(
+                "  Installed topic ABI: {}",
+                installed_topic.to_string().red()
+            );
+        } else {
+            eprintln!(
+                "  Installed topic ABI: {}",
+                installed_topic.to_string().green()
+            );
+        }
+    }
     eprintln!();
+
+    if check.topic_mismatch() {
+        eprintln!(
+            "{} The shared-memory layout differs between the two.",
+            "ABI break:".red().bold()
+        );
+        eprintln!("  Nodes built against the installed libraries publish topic segments this");
+        eprintln!("  CLI's runtime refuses to attach to. `horus run` will fail with a topic");
+        eprintln!("  version error rather than corrupt data, but it will fail.");
+    } else {
+        eprintln!(
+            "{} The CLI and the libraries your projects build against are",
+            "Note:".cyan()
+        );
+        eprintln!("  different installs. The version string alone does not prove they agree:");
+        eprintln!("  0.4.0 shipped with two different topic ABIs, which is why topic_version");
+        eprintln!(
+            "  is recorded in {}.",
+            check
+                .state_root
+                .as_ref()
+                .map(|root| root
+                    .path
+                    .join("install_manifest.toml")
+                    .display()
+                    .to_string())
+                .unwrap_or_else(|| "install_manifest.toml".to_string())
+        );
+    }
+    eprintln!();
+
+    eprintln!("{}", "Reconcile with:".cyan());
+    eprintln!("  {}", "horus self update".cyan());
+    eprintln!("or install the exact version this CLI came from:");
     eprintln!(
-        "{} The CLI and libraries must be the same version.",
-        "Note:".cyan()
+        "  {}",
+        reconcile_command(&check.cli_version, check.state_root.as_ref()).cyan()
     );
-    eprintln!("  This ensures API compatibility between your code and the runtime.");
+    if let Some(horus_root) = find_horus_source() {
+        eprintln!("or, from your HORUS checkout:");
+        eprintln!(
+            "  {}",
+            format!("cd {} && ./install.sh", horus_root.display()).cyan()
+        );
+    }
+    eprintln!();
 }
 
 /// Find the HORUS source directory by looking for install.sh
@@ -116,7 +490,11 @@ fn find_horus_source() -> Option<PathBuf> {
     for path in search_paths {
         let install_script = path.join("install.sh");
         if install_script.exists() {
-            return Some(path);
+            // The first three candidates are relative, and this path is printed
+            // as a `cd` the user pastes later from some other directory, where
+            // "cd .." names a different place than it did here. Resolve it while
+            // we still know the process cwd.
+            return Some(path.canonicalize().unwrap_or(path));
         }
     }
 
@@ -136,7 +514,53 @@ fn extract_version_from_path(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+
+    /// A check with no install state at all — the shape every install made
+    /// before install.sh started writing these files produces.
+    fn empty_check() -> VersionCheck {
+        VersionCheck {
+            cli_version: "0.4.0".to_string(),
+            cli_topic_version: CLI_TOPIC_VERSION,
+            installed_version: None,
+            installed_topic_version: None,
+            source: None,
+            state_root: Some(StateRoot {
+                path: PathBuf::from("/home/u/.horus"),
+                from_prefix: false,
+            }),
+        }
+    }
+
+    /// Swap `HORUS_PREFIX` for the duration of a test and put it back.
+    ///
+    /// Env vars are process-global and the test binary is threaded, so every
+    /// test that reads or writes this one takes CWD_LOCK — the same lock the
+    /// HORUS_SOURCE tests in run_rust.rs use for the same reason.
+    struct PrefixGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl PrefixGuard {
+        fn set(value: Option<&Path>) -> Self {
+            let guard = PrefixGuard {
+                previous: std::env::var_os("HORUS_PREFIX"),
+            };
+            match value {
+                Some(path) => std::env::set_var("HORUS_PREFIX", path),
+                None => std::env::remove_var("HORUS_PREFIX"),
+            }
+            guard
+        }
+    }
+
+    impl Drop for PrefixGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("HORUS_PREFIX", previous),
+                None => std::env::remove_var("HORUS_PREFIX"),
+            }
+        }
+    }
 
     // ========================================================================
     // get_cli_version tests
@@ -180,6 +604,10 @@ mod tests {
 
     #[test]
     fn test_get_version_file_path_ends_with_expected() {
+        // Holds the env lock: a concurrent HORUS_PREFIX test would legitimately
+        // move this path out of ~/.horus.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(None);
         let path = get_version_file_path().unwrap();
         assert!(
             path.ends_with(".horus/installed_version"),
@@ -196,6 +624,21 @@ mod tests {
             "Version file path should be absolute, got: {:?}",
             path
         );
+    }
+
+    #[test]
+    fn test_get_install_manifest_path_ends_with_expected() {
+        // install.sh and `horus self update` write to this exact path; if it
+        // moves, the gate silently stops reading anything.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(None);
+        let path = get_install_manifest_path().unwrap();
+        assert!(
+            path.ends_with(".horus/install_manifest.toml"),
+            "Path should end with .horus/install_manifest.toml, got: {:?}",
+            path
+        );
+        assert!(path.is_absolute(), "Manifest path should be absolute");
     }
 
     // ========================================================================
@@ -261,6 +704,338 @@ mod tests {
     }
 
     // ========================================================================
+    // install_manifest reader tests
+    // ========================================================================
+
+    #[test]
+    fn test_read_install_manifest_missing_file_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("install_manifest.toml");
+        assert!(
+            read_install_manifest_at(&missing).is_none(),
+            "a missing manifest must read as None, never as an error"
+        );
+    }
+
+    #[test]
+    fn test_read_install_manifest_full_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install_manifest.toml");
+        fs::write(
+            &path,
+            r#"
+version = "0.4.0"
+tag = "v0.4.0"
+commit = "0123456789abcdef0123456789abcdef01234567"
+topic_version = 4
+source_dir = "/home/u/.horus/cache/horus@0.4.0"
+binary = "/home/u/.cargo/bin/horus"
+install_method = "release-binary"
+installed_at = "2026-08-31T00:00:00Z"
+"#,
+        )
+        .unwrap();
+
+        let manifest = read_install_manifest_at(&path).expect("well-formed manifest should parse");
+        assert_eq!(manifest.version.as_deref(), Some("0.4.0"));
+        assert_eq!(manifest.tag.as_deref(), Some("v0.4.0"));
+        assert_eq!(manifest.topic_version, Some(4));
+        assert_eq!(manifest.install_method.as_deref(), Some("release-binary"));
+        assert_eq!(
+            manifest.source_dir,
+            Some(PathBuf::from("/home/u/.horus/cache/horus@0.4.0"))
+        );
+    }
+
+    #[test]
+    fn test_read_install_manifest_garbled_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install_manifest.toml");
+        // Half-written file: install.sh interrupted mid-write leaves exactly this.
+        fs::write(&path, "version = \"0.4.0\"\ntopic_ver").unwrap();
+        assert!(
+            read_install_manifest_at(&path).is_none(),
+            "a garbled manifest must degrade to None, not blow up the command"
+        );
+    }
+
+    #[test]
+    fn test_read_install_manifest_partial_record() {
+        // An older install.sh that wrote fewer fields still gives us a version.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install_manifest.toml");
+        fs::write(&path, "version = \"0.3.1\"\n").unwrap();
+
+        let manifest = read_install_manifest_at(&path).expect("partial manifest should parse");
+        assert_eq!(manifest.version.as_deref(), Some("0.3.1"));
+        assert_eq!(manifest.topic_version, None);
+    }
+
+    #[test]
+    fn test_read_install_manifest_ignores_unknown_keys() {
+        // A newer install.sh must not brick an older CLI's diagnostics.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("install_manifest.toml");
+        fs::write(
+            &path,
+            "version = \"0.4.0\"\ntopic_version = 4\nfuture_field = \"whatever\"\n",
+        )
+        .unwrap();
+
+        let manifest = read_install_manifest_at(&path).expect("unknown keys should be ignored");
+        assert_eq!(manifest.version.as_deref(), Some("0.4.0"));
+        assert_eq!(manifest.topic_version, Some(4));
+    }
+
+    #[test]
+    fn test_get_install_manifest_never_panics() {
+        // Reads the real ~/.horus; whatever is there, it may not panic and may
+        // not be an error type.
+        let _ = get_install_manifest();
+    }
+
+    // ========================================================================
+    // state root resolution (HORUS_PREFIX)
+    // ========================================================================
+
+    #[test]
+    fn state_root_defaults_to_dot_horus_under_home() {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(None);
+        let root = resolve_state_root().unwrap();
+        assert_eq!(root.path, crate::paths::home_dir().unwrap().join(".horus"));
+        assert!(!root.from_prefix);
+        assert_eq!(cache_root().unwrap(), root.path.join("cache"));
+    }
+
+    #[test]
+    fn state_root_follows_horus_prefix() {
+        // install.sh:245-247 sets its state dir to HORUS_PREFIX itself, not to
+        // a .horus underneath it. Reading the wrong one of those two is the
+        // same silent miss as not reading the prefix at all.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(Some(Path::new("/opt/horus")));
+
+        let root = resolve_state_root().unwrap();
+        assert_eq!(root.path, PathBuf::from("/opt/horus"));
+        assert!(root.from_prefix);
+        assert_eq!(
+            get_version_file_path().unwrap(),
+            PathBuf::from("/opt/horus/installed_version")
+        );
+        assert_eq!(
+            get_install_manifest_path().unwrap(),
+            PathBuf::from("/opt/horus/install_manifest.toml")
+        );
+        assert_eq!(cache_root().unwrap(), PathBuf::from("/opt/horus/cache"));
+    }
+
+    #[test]
+    fn an_empty_horus_prefix_is_not_a_prefix() {
+        // `HORUS_PREFIX= horus run` reaches install.sh's `[ -n "$HORUS_PREFIX" ]`
+        // as unset; rooting the state at "" here would resolve every state file
+        // to a relative path that moves with the working directory.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _prefix = PrefixGuard::set(Some(Path::new("")));
+        let root = resolve_state_root().unwrap();
+        assert!(!root.from_prefix);
+        assert_eq!(root.path, crate::paths::home_dir().unwrap().join(".horus"));
+    }
+
+    #[test]
+    fn state_written_under_a_prefix_is_read_back_from_it() {
+        // The end-to-end miss this fixes: install.sh wrote these two files into
+        // the prefix and every reader looked in ~/.horus, so a fleet install had
+        // no version gate at all.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prefix_dir = tempfile::tempdir().unwrap();
+        let _prefix = PrefixGuard::set(Some(prefix_dir.path()));
+
+        fs::write(prefix_dir.path().join("installed_version"), "0.3.1\n").unwrap();
+        fs::write(
+            prefix_dir.path().join("install_manifest.toml"),
+            "version = \"0.3.1\"\ntopic_version = 3\n",
+        )
+        .unwrap();
+
+        assert_eq!(get_installed_version().unwrap().as_deref(), Some("0.3.1"));
+        let manifest = get_install_manifest().expect("the manifest in the prefix must be read");
+        assert_eq!(manifest.version.as_deref(), Some("0.3.1"));
+        assert_eq!(manifest.topic_version, Some(3));
+
+        let check = collect_version_check();
+        assert_eq!(check.installed_version.as_deref(), Some("0.3.1"));
+        assert_eq!(check.installed_topic_version, Some(3));
+        assert_eq!(check.source, Some(StateSource::Manifest));
+        assert_eq!(
+            check.state_root.as_ref().map(|root| root.path.clone()),
+            Some(prefix_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn the_message_names_the_file_it_actually_read() {
+        // "(from ~/.horus/install_manifest.toml)" is a lie on a prefix install,
+        // and the file it names does not exist there.
+        assert_eq!(
+            state_file_hint(Some(StateSource::Manifest), Some(Path::new("/opt/horus"))),
+            "(from /opt/horus/install_manifest.toml)"
+        );
+        assert_eq!(
+            state_file_hint(
+                Some(StateSource::LegacyVersionFile),
+                Some(Path::new("/home/u/.horus"))
+            ),
+            "(from /home/u/.horus/installed_version)"
+        );
+        assert_eq!(state_file_hint(None, Some(Path::new("/opt/horus"))), "");
+        assert_eq!(state_file_hint(Some(StateSource::Manifest), None), "");
+    }
+
+    #[test]
+    fn the_remedy_carries_the_prefix_it_would_have_to_repair() {
+        // Without HORUS_PREFIX the one-liner installs a second, complete tree
+        // under ~/.horus and leaves the skewed binary on PATH untouched.
+        let prefixed = reconcile_command(
+            "0.4.0",
+            Some(&StateRoot {
+                path: PathBuf::from("/opt/horus"),
+                from_prefix: true,
+            }),
+        );
+        assert!(
+            prefixed.contains("HORUS_PREFIX=/opt/horus"),
+            "prefix install remedy must name the prefix: {prefixed}"
+        );
+        assert!(prefixed.contains("HORUS_VERSION=v0.4.0"), "{prefixed}");
+
+        let plain = reconcile_command(
+            "0.4.0",
+            Some(&StateRoot {
+                path: PathBuf::from("/home/u/.horus"),
+                from_prefix: false,
+            }),
+        );
+        assert!(
+            !plain.contains("HORUS_PREFIX"),
+            "a default install must not be told to set a prefix: {plain}"
+        );
+        assert!(plain.contains("HORUS_VERSION=v0.4.0"), "{plain}");
+        assert!(!reconcile_command("0.4.0", None).contains("HORUS_PREFIX"));
+    }
+
+    // ========================================================================
+    // gate semantics
+    // ========================================================================
+
+    #[test]
+    fn test_missing_install_state_is_not_fatal() {
+        // The pre-fix code returned Ok here too, but for the wrong reason: a
+        // missing file was the *silent* path while a stale file was fatal.
+        let check = empty_check();
+        assert!(check.is_compatible());
+        report_mismatch(&check, false).expect("no install record must never fail the command");
+        report_mismatch(&check, true).expect("nothing to compare is not a mismatch, even in CI");
+    }
+
+    #[test]
+    fn test_version_mismatch_warns_but_does_not_error() {
+        let check = VersionCheck {
+            installed_version: Some("0.1.9".to_string()),
+            source: Some(StateSource::LegacyVersionFile),
+            ..empty_check()
+        };
+        assert!(check.version_mismatch());
+        assert!(!check.is_compatible());
+        // This is the alpha..v0.1.9 brick: it used to bail!, with a printed
+        // remedy that could not clear it.
+        report_mismatch(&check, false)
+            .expect("a stale installed_version must not fail the command");
+    }
+
+    #[test]
+    fn test_version_mismatch_is_fatal_under_strict() {
+        let check = VersionCheck {
+            installed_version: Some("0.1.9".to_string()),
+            source: Some(StateSource::LegacyVersionFile),
+            ..empty_check()
+        };
+        let err = report_mismatch(&check, true).expect_err("HORUS_STRICT_VERSION=1 must hard-fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0.4.0"),
+            "error should name the CLI version: {msg}"
+        );
+        assert!(
+            msg.contains("0.1.9"),
+            "error should name the installed version: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_topic_version_mismatch_is_reported_as_an_abi_break() {
+        // The break that actually shipped: both trees said 0.4.0, the binary
+        // came from the tag (topic 3) and the source from main (topic 4).
+        let check = VersionCheck {
+            cli_topic_version: 3,
+            installed_version: Some("0.4.0".to_string()),
+            installed_topic_version: Some(4),
+            source: Some(StateSource::Manifest),
+            ..empty_check()
+        };
+        assert!(
+            !check.version_mismatch(),
+            "the version strings are equal — that is the whole point"
+        );
+        assert!(check.topic_mismatch());
+        assert!(!check.is_compatible());
+
+        report_mismatch(&check, false).expect("an ABI break still warns rather than bails");
+        let err = report_mismatch(&check, true).expect_err("strict mode must fail on an ABI break");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("topic"),
+            "strict error should name the topic ABI, not just the version: {msg}"
+        );
+        assert!(msg.contains('3') && msg.contains('4'), "both sides: {msg}");
+    }
+
+    #[test]
+    fn test_matching_manifest_is_silent() {
+        let check = VersionCheck {
+            installed_version: Some("0.4.0".to_string()),
+            installed_topic_version: Some(CLI_TOPIC_VERSION),
+            source: Some(StateSource::Manifest),
+            ..empty_check()
+        };
+        assert!(check.is_compatible());
+        report_mismatch(&check, true).expect("a matching install passes even in strict mode");
+    }
+
+    #[test]
+    fn test_check_version_compatibility_reads_real_state_without_erroring() {
+        // Whatever this machine has in ~/.horus, the default (non-strict) gate
+        // returns Ok. Skipped when the ambient environment has opted into the
+        // hard gate, which is the one case where a mismatch legitimately fails.
+        if strict_version_gate() {
+            return;
+        }
+        check_version_compatibility().expect("the default gate must never fail a command");
+        check_and_prompt_update().expect("the default gate must never fail a command");
+    }
+
+    #[test]
+    fn test_env_flag_is_set_accepts_documented_spellings() {
+        assert!(env_flag_is_set("1"));
+        assert!(env_flag_is_set("true"));
+        assert!(env_flag_is_set("TRUE"));
+        assert!(env_flag_is_set("yes"));
+        assert!(!env_flag_is_set("0"));
+        assert!(!env_flag_is_set(""));
+        assert!(!env_flag_is_set("no"));
+    }
+
+    // ========================================================================
     // find_horus_source tests
     // ========================================================================
 
@@ -286,10 +1061,66 @@ mod tests {
     fn test_print_version_mismatch_does_not_panic() {
         // Smoke test: print_version_mismatch is a pure side-effect function
         // (writes to stderr). We verify it handles edge cases without panicking,
-        // including empty strings and pre-release versions.
-        print_version_mismatch("1.0.0", "0.9.0"); // normal mismatch
-        print_version_mismatch("", ""); // empty versions
-        print_version_mismatch("1.0.0-beta", "1.0.0"); // pre-release vs release
+        // including empty strings, pre-release versions and a record that has a
+        // topic_version but no version string.
+        print_version_mismatch(&VersionCheck {
+            cli_version: "1.0.0".to_string(),
+            installed_version: Some("0.9.0".to_string()),
+            source: Some(StateSource::LegacyVersionFile),
+            ..empty_check()
+        });
+        print_version_mismatch(&VersionCheck {
+            cli_version: String::new(),
+            installed_version: Some(String::new()),
+            ..empty_check()
+        });
+        print_version_mismatch(&VersionCheck {
+            cli_version: "1.0.0-beta".to_string(),
+            installed_version: Some("1.0.0".to_string()),
+            installed_topic_version: Some(9),
+            source: Some(StateSource::Manifest),
+            ..empty_check()
+        });
+        print_version_mismatch(&VersionCheck {
+            installed_version: None,
+            installed_topic_version: Some(9),
+            source: Some(StateSource::Manifest),
+            ..empty_check()
+        });
+    }
+
+    // ========================================================================
+    // topic ABI mirror
+    // ========================================================================
+
+    #[test]
+    fn cli_topic_version_matches_horus_core() {
+        // CLI_TOPIC_VERSION mirrors a pub(crate) constant this crate cannot
+        // import, so nothing but this test stops the two from drifting — and a
+        // stale mirror would report "compatible" for exactly the shm break it
+        // exists to catch. Skipped only when the sibling crate's source is not
+        // on disk, which cannot happen in this workspace.
+        let header = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../horus_core/src/communication/topic/header.rs");
+        let Ok(source) = fs::read_to_string(&header) else {
+            return;
+        };
+        let declared = source
+            .lines()
+            .find_map(|line| {
+                let line = line.trim();
+                let rest = line
+                    .strip_prefix("pub(crate) const TOPIC_VERSION: u32 = ")
+                    .or_else(|| line.strip_prefix("pub const TOPIC_VERSION: u32 = "))?;
+                rest.trim_end_matches(';').trim().parse::<u32>().ok()
+            })
+            .expect("could not find TOPIC_VERSION in horus_core topic/header.rs");
+        assert_eq!(
+            declared, CLI_TOPIC_VERSION,
+            "horus_core TOPIC_VERSION moved to {} — bump CLI_TOPIC_VERSION and the \
+             topic_version install.sh writes, or the gate will call an ABI break compatible",
+            declared
+        );
     }
 
     // ========================================================================

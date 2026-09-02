@@ -39,13 +39,13 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -81,13 +81,13 @@ jobs:
     name: macOS ARM64
     runs-on: macos-14  # M1 runner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -120,13 +120,13 @@ jobs:
     name: Windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -167,17 +167,37 @@ jobs:
           # here keeps the gate honest about the rest of the suite; the Windows
           # fan-out gap needs its own investigation and is NOT fixed by this.
           #
-          # mp_send_no_overshoot_corruption is skipped as more evidence of that
-          # same gap, not as a flake. Six producers into a 16-slot ring: Windows
-          # drains 1792 of 1800 and the last eight never arrive. The budget is
-          # not the constraint -- it fails identically at 30s, which is enormous
-          # for 1800 messages -- and neither GARBAGE nor DUPLICATE fires, so
-          # nothing that did arrive was torn or aliased. Messages simply never
-          # become visible, which is the signature the line above describes. It
-          # does not reproduce on Linux: 10/10 pinned to a single core, where
-          # preemption is far worse than on any two-vCPU runner. Skipping it
-          # does not fix the gap and is not meant to; it stops one job from
-          # reporting a known platform defect as if this PR caused it.
+          # mp_send_no_overshoot_corruption: OPEN WINDOWS DATA-LOSS DEFECT.
+          # Skipped to keep the gate usable, with the diagnosis recorded here so
+          # it is not re-derived from scratch. It is NOT a flake and NOT the
+          # fan-out gap above -- 988c5cf8 root-caused that one to a lazy-endpoint
+          # warm-up race, fixed it, and recorded "The data plane was never at
+          # fault", weeks before this failure.
+          #
+          # MEASURED on windows-latest, with the test instrumented to count
+          # successful sends:
+          #
+          #     consumer drained 1798/1800, producers published 1800/1800
+          #
+          # Every message was published -- try_send returned Ok 1800 times -- and
+          # two never arrived. GARBAGE and DUPLICATE did not fire, so nothing
+          # torn or aliased was delivered. That is transport loss on the
+          # multi-producer claim path: a slot overwritten before the in-order
+          # consumer reached it, on try_send, which is the API that is supposed
+          # to refuse rather than overwrite.
+          #
+          # RULED OUT:
+          #   - drain budget: fails identically at 30s, enormous for 1800 msgs
+          #   - producers giving up: published == 1800, so none abandoned
+          #   - Linux preemption: 10/10 pinned to one core (release), and 25/25
+          #     pinned to two cores built --no-default-features, which is this
+          #     job's exact configuration. It does not reproduce off Windows.
+          #
+          # Cause unknown. Six producers into a 16-slot ring; the CAS claim in
+          # send_shm_mp_pod is designed to make the room check and the claim
+          # atomic, so the loss is somewhere that reasoning does not cover.
+          # Anyone picking this up: un-skip it, the failure message reports
+          # published-vs-received and says which diagnosis each shape supports.
           # ONE line on purpose: this job runs on windows-latest, whose default
           # shell is pwsh, where a trailing `\` is NOT a line continuation --
           # it parses as "Missing expression after unary operator '--'".
@@ -191,7 +211,7 @@ jobs:
     name: Linux ARM64 (Cross)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -206,7 +226,7 @@ jobs:
           targets: aarch64-unknown-linux-gnu
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -227,10 +247,19 @@ jobs:
 
       - name: Check ARM64 Build
         run: |
-          # Exclude horus_manager (OpenSSL dependency) and horus_benchmarks
-          # Cross-compiling OpenSSL requires ARM64 development headers
-          cargo check --workspace --target aarch64-unknown-linux-gnu --lib \
-            --exclude horus_manager --exclude horus_benchmarks
+          # horus_manager used to be excluded here "(OpenSSL dependency)". There
+          # is no OpenSSL: horus_manager/Cargo.toml:64-69 pins reqwest to
+          # rustls-tls with default-features off precisely so it cross-compiles,
+          # and `grep -c openssl Cargo.lock` is 0. release.yml:110 already
+          # cross-builds -p horus_manager for this exact target on every tag, so
+          # the crate the users' install actually delivers was the one crate
+          # this job skipped.
+          #
+          # --bins, not just --lib: `horus deploy --arch arm64` ships the horus
+          # binary, and a lib-only check never compiles src/main.rs.
+          # horus_benchmarks stays out — its timing is host-only.
+          cargo check --workspace --target aarch64-unknown-linux-gnu --lib --bins \
+            --exclude horus_benchmarks
         env:
           PKG_CONFIG_ALLOW_CROSS: 1
 
@@ -247,7 +276,7 @@ jobs:
     name: Linux ARMv7 (Cross, 32-bit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -263,7 +292,7 @@ jobs:
           targets: armv7-unknown-linux-gnueabihf
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -284,10 +313,18 @@ jobs:
 
       - name: Check ARMv7 Build
         run: |
-          # Same exclusions as the ARM64 job: horus_manager needs cross-built
-          # OpenSSL headers, horus_benchmarks is host-only.
-          cargo check --workspace --target armv7-unknown-linux-gnueabihf --lib \
-            --exclude horus_manager --exclude horus_benchmarks
+          # Same shape as the ARM64 job, and for the same reason: the stale
+          # "horus_manager needs cross-built OpenSSL headers" exclusion kept the
+          # CLI — the only artifact a Raspberry Pi user ever installs — out of
+          # the one job that covers 32-bit ARM. reqwest has been rustls-only
+          # since horus_manager/Cargo.toml:64, and Cargo.lock mentions openssl
+          # zero times.
+          #
+          # --bins matters more here than anywhere else: 32-bit is where the
+          # width bugs live (the rlim_cur u64-vs-u32 break in the header above),
+          # and main.rs is 3000+ lines of code no --lib check ever sees.
+          cargo check --workspace --target armv7-unknown-linux-gnueabihf --lib --bins \
+            --exclude horus_benchmarks
         env:
           PKG_CONFIG_ALLOW_CROSS: 1
 
@@ -312,7 +349,7 @@ jobs:
       matrix:
         rust: ["1.92.0"]  # MSRV
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |

@@ -1009,6 +1009,39 @@ pub(super) fn clean_build_cache() -> Result<()> {
     Ok(())
 }
 
+/// The cache roots that may hold an installer-cached `horus@<version>` tree,
+/// in search order.
+///
+/// Three, because the codebase has historically used two and the installer can
+/// be pointed at a third: horus_sys::platform::cache_dir() is XDG
+/// (~/.cache/horus), install.sh / uninstall.sh and `horus clean` manage
+/// ~/.horus/cache, and a HORUS_PREFIX install (install.sh:245-260 — the root
+/// and fleet case) puts the tree under $HORUS_PREFIX/cache. Before the prefix
+/// root was searched, a prefix install could not build a single Rust project
+/// until the user exported HORUS_SOURCE by hand, which is what install.sh:1099
+/// had to tell them to do.
+fn cache_roots() -> Vec<PathBuf> {
+    let legacy_cache = install::home_dir().join(".horus/cache");
+    let mut roots: Vec<PathBuf> = Vec::new();
+    // A prefix is configuration, not a discovered default, so it goes first —
+    // but only when it names somewhere other than ~/.horus, or it would push
+    // the legacy root ahead of the XDG one for everybody else.
+    if let Ok(prefixed) = crate::version::cache_root() {
+        if prefixed != legacy_cache {
+            roots.push(prefixed);
+        }
+    }
+    if let Ok(xdg_cache) = crate::paths::cache_dir() {
+        if !roots.contains(&xdg_cache) {
+            roots.push(xdg_cache);
+        }
+    }
+    if !roots.contains(&legacy_cache) {
+        roots.push(legacy_cache);
+    }
+    roots
+}
+
 /// Find the HORUS source directory by checking common locations
 pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
     log::debug!("searching for HORUS source directory");
@@ -1040,23 +1073,11 @@ pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
 
     // Fallback: source cached by the installer as <cache>/horus@<version>.
     //
-    // Two cache roots are searched because the codebase has historically used
-    // both: horus_sys::platform::cache_dir() is XDG (~/.cache/horus), while
-    // install.sh/uninstall.sh and `horus clean` manage ~/.horus/cache. Checking
-    // both means the source is found regardless of which one wrote it.
-    //
     // Prefer the version matching this CLI binary; otherwise accept any cached
     // horus@* tree. The version used to be hardcoded to "0.1.0", which meant the
     // cache escape hatch could never hit once the workspace moved past it.
     // Every candidate is validated by the same horus/Cargo.toml marker used above.
-    let mut cache_roots: Vec<PathBuf> = Vec::new();
-    if let Ok(xdg_cache) = crate::paths::cache_dir() {
-        cache_roots.push(xdg_cache);
-    }
-    let legacy_cache = install::home_dir().join(".horus/cache");
-    if !cache_roots.contains(&legacy_cache) {
-        cache_roots.push(legacy_cache);
-    }
+    let cache_roots = cache_roots();
 
     for cache_dir in &cache_roots {
         let exact = cache_dir.join(format!("horus@{}", env!("CARGO_PKG_VERSION")));
@@ -1078,6 +1099,7 @@ pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
                 .is_some_and(|n| n.starts_with("horus@"));
             if is_horus_pkg && path.join("horus/Cargo.toml").exists() {
                 log::debug!("found HORUS source in cache: {:?}", path);
+                warn_cached_version_skew(&path);
                 return Ok(path);
             }
         }
@@ -1092,6 +1114,60 @@ pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
          2. Set HORUS_SOURCE environment variable to your HORUS source directory\n\
          3. Clone HORUS to ~/softmata/horus or ~/horus"
     )
+}
+
+/// Warn that the cached source handed back is not the version that was asked
+/// for.
+///
+/// The loop above falls back to any `horus@*` tree so that people whose cache
+/// predates this CLI keep building today — deleting the fallback would turn a
+/// silent skew into a hard failure for them. But taken silently it is the same
+/// root cause as the install bug: a crate version is not an identity, and
+/// nothing here checks that the tree it found is the one this binary was built
+/// against. Two trees both calling themselves 0.4.0 were 93 commits apart with
+/// different topic ABIs, and the first symptom was a node that could not attach
+/// to the shm its own libraries wrote. Name both versions instead.
+///
+/// Printed once per process: find_horus_source_dir() is called from cargo_gen,
+/// msg, new and run_cpp, several times in one `horus run`.
+fn warn_cached_version_skew(found: &Path) {
+    let Some(found_version) = cached_version_skew(found, env!("CARGO_PKG_VERSION")) else {
+        return;
+    };
+    let cli_version = env!("CARGO_PKG_VERSION");
+
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        log::warn!(
+            "no cached HORUS source for CLI {}; falling back to {}",
+            cli_version,
+            found.display()
+        );
+        eprintln!(
+            "{} no cached HORUS source for this CLI ({}) — building against {} from {} instead.",
+            "warning:".yellow().bold(),
+            cli_version,
+            found_version,
+            found.display()
+        );
+        eprintln!("  That name is a crate version, and a crate version is not an identity: the");
+        eprintln!("  tree your nodes compile against is not the one this CLI was built from, so");
+        eprintln!("  the two can disagree about the shared-memory layout.");
+        eprintln!(
+            "  Reconcile with `horus self update`, or set HORUS_SOURCE to the matching tree."
+        );
+    });
+}
+
+/// The version in a `horus@<version>` directory name when it is not
+/// `cli_version`; `None` when they agree or the name carries no version.
+fn cached_version_skew(found: &Path, cli_version: &str) -> Option<String> {
+    let found_version = found
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.split_once('@'))
+        .map(|(_, version)| version)?;
+    (found_version != cli_version).then(|| found_version.to_string())
 }
 
 /// Say so when `[rust]` cannot take effect.
@@ -1431,6 +1507,94 @@ version = "0.1.0"
     }
 
     // ── find_horus_source_dir ────────────────────────────────────────────
+
+    /// Swap HORUS_PREFIX for the duration of a test and put it back. Held
+    /// under CWD_LOCK like the HORUS_SOURCE tests below: env vars are
+    /// process-global and this binary runs tests on threads.
+    fn with_horus_prefix<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = env::var_os("HORUS_PREFIX");
+        match value {
+            Some(prefix) => env::set_var("HORUS_PREFIX", prefix),
+            None => env::remove_var("HORUS_PREFIX"),
+        }
+        let out = f();
+        match previous {
+            Some(previous) => env::set_var("HORUS_PREFIX", previous),
+            None => env::remove_var("HORUS_PREFIX"),
+        }
+        out
+    }
+
+    #[test]
+    fn cache_roots_search_a_prefix_install_first() {
+        // install.sh:245-260 puts a HORUS_PREFIX install's source tree in
+        // $HORUS_PREFIX/cache, and nothing here used to look there — so a
+        // fleet install could not build a Rust project at all.
+        let roots = with_horus_prefix(Some("/opt/horus"), cache_roots);
+        assert_eq!(roots.first(), Some(&PathBuf::from("/opt/horus/cache")));
+        assert!(
+            roots.contains(&install::home_dir().join(".horus/cache")),
+            "the existing roots must survive: {roots:?}"
+        );
+        if let Ok(xdg) = crate::paths::cache_dir() {
+            assert!(
+                roots.contains(&xdg),
+                "the existing roots must survive: {roots:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_roots_without_a_prefix_keep_the_existing_order() {
+        // With no prefix the resolved root *is* ~/.horus/cache, and adding it
+        // ahead of the XDG root would quietly change which cached tree wins
+        // for everyone who never sets HORUS_PREFIX.
+        let roots = with_horus_prefix(None, cache_roots);
+        let mut expected: Vec<PathBuf> = Vec::new();
+        if let Ok(xdg) = crate::paths::cache_dir() {
+            expected.push(xdg);
+        }
+        let legacy = install::home_dir().join(".horus/cache");
+        if !expected.contains(&legacy) {
+            expected.push(legacy);
+        }
+        assert_eq!(roots, expected);
+    }
+
+    #[test]
+    fn cache_roots_do_not_repeat_a_prefix_that_is_the_default() {
+        // HORUS_PREFIX=$HOME/.horus is the same directory by another name.
+        let home_horus = install::home_dir().join(".horus");
+        let roots = with_horus_prefix(Some(home_horus.to_str().unwrap()), cache_roots);
+        let legacy = home_horus.join("cache");
+        assert_eq!(
+            roots.iter().filter(|root| *root == &legacy).count(),
+            1,
+            "{roots:?}"
+        );
+    }
+
+    #[test]
+    fn a_cached_tree_of_another_version_is_reported_not_swallowed() {
+        // The any-horus@* fallback is kept so caches written before this CLI
+        // keep working, but taken silently it hides exactly the skew that ships
+        // a CLI which cannot read its own libraries' shm.
+        assert_eq!(
+            cached_version_skew(Path::new("/home/u/.horus/cache/horus@0.3.1"), "0.4.0"),
+            Some("0.3.1".to_string())
+        );
+        assert_eq!(
+            cached_version_skew(Path::new("/home/u/.horus/cache/horus@0.4.0"), "0.4.0"),
+            None,
+            "the exact version is not a skew"
+        );
+        assert_eq!(
+            cached_version_skew(Path::new("/home/u/.horus/cache/horus"), "0.4.0"),
+            None,
+            "a name with no version cannot name one in the warning"
+        );
+    }
 
     #[test]
     fn find_horus_source_dir_with_env_var() {

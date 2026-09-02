@@ -46,6 +46,16 @@ const TIMER_INTERVAL: Duration = Duration::from_millis(50);
 /// No-peers diagnostic timeout.
 const NO_PEERS_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Most messages one topic contributes to a single export tick.
+///
+/// Only a streaming topic (`ExportSampling::AllSlots`) can reach it; a sampled
+/// one contributes one. It bounds the work and the burst of a stream topic without
+/// losing anything: `ShmRingReader` resumes from its own cursor, so the
+/// remainder is exported on the next tick rather than dropped. At the 50 ms
+/// timer that is 1280 messages/second/topic sustained, which covers a 1 kHz
+/// joint-state stream with room to catch up after a stall.
+const MAX_EXPORT_BATCH: usize = 64;
+
 /// The Replicator — one per process, started by the Scheduler.
 /// Size of the packet scratch buffers.
 ///
@@ -737,6 +747,10 @@ impl Replicator {
             .collect();
 
         let mut outbox: Vec<wire::OutMessage> = Vec::new();
+        // Collected while the readers are borrowed, applied once the loop ends.
+        let mut skipped: Vec<(u32, u64)> = Vec::new();
+        let mut reports: Vec<String> = Vec::new();
+        let now = Instant::now();
 
         for topic_name in topic_names {
             let reader = match self.readers.get_mut(&topic_name) {
@@ -744,8 +758,29 @@ impl Replicator {
                 None => continue,
             };
 
-            if let Some(raw) = reader.try_read_latest() {
-                let topic_hash = wire::topic_hash(&topic_name);
+            // How much of the ring this topic's mode takes. A stream topic
+            // hands back everything published since the previous tick, bounded
+            // by MAX_EXPORT_BATCH; a sampled topic hands back the newest slot
+            // and counts the rest as skipped.
+            let before_skipped = reader.skipped_total();
+            let batch = reader.read_pending(MAX_EXPORT_BATCH);
+            let topic_hash = wire::topic_hash(&topic_name);
+            skipped.push((
+                topic_hash,
+                reader.skipped_total().saturating_sub(before_skipped),
+            ));
+
+            // Say it out loud, on the topic's own terms and at most once every
+            // SKIP_REPORT_INTERVAL. A replicated topic that is being decimated
+            // has to announce it: from the far end, odometry arriving at 20 Hz
+            // because the exporter sampled it is indistinguishable from odometry
+            // that is published at 20 Hz, and the fleet operator debugging a
+            // drifting position estimate has no thread to pull on.
+            if let Some(report) = reader.due_report(now) {
+                reports.push(report.message());
+            }
+
+            for raw in batch {
                 let priority = Priority::auto_infer(&topic_name, false, raw.data.len());
                 let reliability = Reliability::default_for(priority);
 
@@ -760,6 +795,13 @@ impl Replicator {
                     encoding: raw.encoding,
                 });
             }
+        }
+
+        for (topic_hash, count) in skipped {
+            self.metrics.record_topic_skipped(topic_hash, count);
+        }
+        for line in reports {
+            horus_core::terminal::eprint_line(&line);
         }
 
         if outbox.is_empty() {
@@ -871,11 +913,15 @@ impl Replicator {
         // settled, which is the moment a robot starts doing useful work.
         //
         // Driving it from the timer makes export data-driven at the tick rate
-        // rather than topology-driven. `try_read_latest` takes the newest
-        // sample, so a topic faster than TIMER_INTERVAL is downsampled rather
-        // than backlogged — the right trade for the state-like data that
-        // crosses machines, and the same semantic the latched-message resend
-        // below already relies on.
+        // rather than topology-driven — but the tick rate then becomes the
+        // export rate. `try_read_latest` takes the newest sample and leaves the
+        // rest, so EVERY replicated topic was pinned at ~20 Hz however fast its
+        // publisher ran, and nothing counted or said so: a 500 Hz odometry
+        // stream crossed the LAN at 20 Hz and looked, at the far end, exactly
+        // like a 20 Hz odometry stream. Sampling is right for state and wrong
+        // for a measurement stream, so it is now a per-topic choice
+        // (`export_stream` / `HORUS_NET_EXPORT_STREAM`), and whichever way a
+        // topic is set, what it drops is counted and reported.
         //
         // The eventfd path stays: a newly registered topic is still exported
         // immediately rather than waiting up to TIMER_INTERVAL.
@@ -1205,8 +1251,11 @@ impl Replicator {
 
         for m in &all_matches {
             if m.export && !self.readers.contains_key(&m.topic) {
-                self.readers
-                    .insert(m.topic.clone(), ShmRingReader::new(&m.topic));
+                let sampling = self.config.export_sampling(&m.topic);
+                self.readers.insert(
+                    m.topic.clone(),
+                    ShmRingReader::new(&m.topic).with_sampling(sampling),
+                );
             }
             if m.import && !self.writers.contains_key(&m.topic) {
                 if let Some(writer) = ShmRingWriter::open(&m.topic) {
@@ -1615,6 +1664,193 @@ mod tests {
         assert!(
             !fired.load(Ordering::SeqCst),
             "a later unkeyed e-stop episode must not halt"
+        );
+    }
+
+    // ─── Export sampling: what leaves this machine, and what is admitted lost ──
+    //
+    // These drive the private export path against a real SHM ring and a real
+    // UDP socket standing in for the remote subscriber, because the bug they
+    // pin was invisible at every layer above: the exporter took one slot per
+    // 50 ms tick and dropped the rest with no counter, so a 500 Hz odometry
+    // stream reached the fleet at 20 Hz and looked from there exactly like a
+    // 20 Hz odometry stream.
+
+    /// A replicator that exports `topic` to a peer listening on `sub_addr`.
+    fn exporting_replicator(topic: &str, sub_addr: SocketAddr, stream: bool) -> Replicator {
+        let type_hash = wire::topic_hash(topic);
+        let registry = Arc::new(TopicRegistry::new());
+        registry.register(
+            topic,
+            type_hash,
+            std::mem::size_of::<horus_robotics::CmdVel>() as u32,
+            crate::registry::TopicRole::Publisher,
+            true,
+        );
+
+        let mut config = NetConfig::test_config(0);
+        if stream {
+            config.export_stream = vec![topic.to_string()];
+        }
+        let mut rep = Replicator::new(registry, config).unwrap();
+
+        // A peer that subscribes to the topic, announced from the socket the
+        // test is listening on.
+        let announcement = crate::discovery::PeerAnnouncement {
+            peer_id: [0x5A; 16],
+            data_port: sub_addr.port(),
+            secret_hash: [0u8; 4],
+            has_secret: false,
+            topics: vec![crate::discovery::WireTopicEntry {
+                name: topic.to_string(),
+                type_hash,
+                type_size: std::mem::size_of::<horus_robotics::CmdVel>() as u32,
+                role: 2, // subscriber
+                is_pod: 1,
+                priority: 0,
+            }],
+            source_addr: sub_addr,
+        };
+        rep.peers.update_peer(&announcement);
+        rep.update_matches();
+        assert!(
+            rep.readers.contains_key(topic),
+            "the topic must be matched for export before the test means anything"
+        );
+        rep
+    }
+
+    fn publish_shm(path: &std::path::Path, linear: f32) {
+        let cmd = horus_robotics::CmdVel::new(linear, 0.0);
+        // SAFETY: CmdVel is POD; this is the byte form the ring holds.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &cmd as *const horus_robotics::CmdVel as *const u8,
+                std::mem::size_of::<horus_robotics::CmdVel>(),
+            )
+        };
+        assert!(horus_core::communication::write_topic_slot_bytes(
+            path, bytes
+        ));
+    }
+
+    /// Drain every datagram already queued on `sock` and return the CmdVel
+    /// `linear` field of each message they carry.
+    fn drain_exported(sock: &std::net::UdpSocket) -> Vec<f32> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 65536];
+        while let Ok((n, _)) = sock.recv_from(&mut buf) {
+            let (_, messages) = match wire::decode_packet(&buf[..n]) {
+                Some(p) => p,
+                None => continue,
+            };
+            for m in messages {
+                assert_eq!(
+                    m.payload.len(),
+                    std::mem::size_of::<horus_robotics::CmdVel>()
+                );
+                // SAFETY: the payload is the CmdVel bytes written into SHM.
+                let cmd: horus_robotics::CmdVel =
+                    unsafe { std::ptr::read_unaligned(m.payload.as_ptr() as *const _) };
+                out.push(cmd.linear);
+            }
+        }
+        out
+    }
+
+    fn export_test_topic(base: &str) -> String {
+        use std::sync::atomic::AtomicU32;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("exp_{base}_{id}_{}", std::process::id())
+    }
+
+    #[test]
+    fn a_burst_reaches_the_subscriber_intact_when_the_topic_is_a_stream() {
+        let sub = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sub.set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        let sub_addr = sub.local_addr().unwrap();
+
+        let name = export_test_topic("burst");
+        let _topic: horus_core::communication::Topic<horus_robotics::CmdVel> =
+            horus_core::communication::Topic::new(&name).expect("create topic");
+        let path = horus_sys::shm::topic_shm_path(&name);
+
+        let mut rep = exporting_replicator(&name, sub_addr, true);
+
+        // First tick starts the reader at "now".
+        publish_shm(&path, 0.0);
+        rep.handle_export();
+        assert_eq!(drain_exported(&sub), vec![0.0]);
+
+        // 50 messages published between two export ticks — a publisher running
+        // 25x faster than the timer.
+        const BURST: usize = 50;
+        for i in 1..=BURST {
+            publish_shm(&path, i as f32);
+        }
+        rep.handle_export();
+
+        let crossed = drain_exported(&sub);
+        let expected: Vec<f32> = (1..=BURST).map(|i| i as f32).collect();
+        assert_eq!(
+            crossed, expected,
+            "every message published between two ticks must reach the peer, in order"
+        );
+
+        let snap = rep.metrics.snapshot();
+        let topic = snap
+            .topics
+            .iter()
+            .find(|t| t.topic_hash == wire::topic_hash(&name))
+            .expect("the topic must appear in the metrics");
+        assert_eq!(topic.messages_sent, BURST as u64 + 1);
+        assert_eq!(topic.messages_skipped, 0);
+    }
+
+    #[test]
+    fn the_default_still_samples_but_no_longer_hides_what_it_dropped() {
+        let sub = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sub.set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        let sub_addr = sub.local_addr().unwrap();
+
+        let name = export_test_topic("sampled");
+        let _topic: horus_core::communication::Topic<horus_robotics::CmdVel> =
+            horus_core::communication::Topic::new(&name).expect("create topic");
+        let path = horus_sys::shm::topic_shm_path(&name);
+
+        let mut rep = exporting_replicator(&name, sub_addr, false);
+
+        publish_shm(&path, 0.0);
+        rep.handle_export();
+        assert_eq!(drain_exported(&sub), vec![0.0]);
+
+        // One tick of a 500 Hz publisher.
+        for i in 1..=25 {
+            publish_shm(&path, i as f32);
+        }
+        rep.handle_export();
+
+        assert_eq!(
+            drain_exported(&sub),
+            vec![25.0],
+            "the default is unchanged: the freshest sample, once per tick"
+        );
+
+        let snap = rep.metrics.snapshot();
+        let topic = snap
+            .topics
+            .iter()
+            .find(|t| t.topic_hash == wire::topic_hash(&name))
+            .expect("the topic must appear in the metrics");
+        assert_eq!(topic.messages_sent, 2);
+        assert_eq!(
+            topic.messages_skipped, 24,
+            "the 24 samples that never left this machine have to be visible \
+             somewhere, or a 25x downsample is indistinguishable from a slow \
+             publisher"
         );
     }
 }

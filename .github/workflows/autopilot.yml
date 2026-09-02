@@ -10,13 +10,18 @@ name: Autopilot
 #             from unexplained ones, and opens an issue only for failures that
 #             RECUR. Most red CI here is the runner, not the code.
 #   convoy  — main requires branches be up to date, and GitHub's auto-merge does
-#             not update them, so queued PRs starve. This updates them. It calls
+#             not update them, so queued PRs starve. This updates ONE. It calls
 #             `gh pr update-branch` and nothing else.
 
 on:
   schedule:
     # 06:00 UTC, after the existing nightly/weekly crons have reported.
     - cron: '0 6 * * *'
+  # Every merge invalidates every other queued branch, so that is exactly when
+  # the next one needs updating. Without this the convoy advances once a day:
+  # ten queued PRs took ten days regardless of how fast CI ran.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Default deny; each job takes only what it needs.
@@ -29,6 +34,11 @@ concurrency:
 jobs:
   triage:
     name: Triage failures on main
+    # Not on push. The push trigger exists for the convoy, which must react to
+    # each merge; triage reads the last N failed runs and opens issues, and
+    # doing that once per merge would be both noisy and pointless — its input
+    # is a rolling window, not the merge that just happened.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -36,7 +46,7 @@ jobs:
       actions: read
       issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Classify recent failures
         id: classify
@@ -181,7 +191,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - name: Update queued PRs that have fallen behind
+      - name: Update the front of the queue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -196,15 +206,38 @@ jobs:
           # help land changes to what executes inside CI with nobody reading
           # them. Excluding bot authors keeps this job out of that loop entirely;
           # dependabot's own workflow is unaffected either way.
-          gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
-            --json number,mergeStateStatus,autoMergeRequest,author \
-            -q '.[] | select(.autoMergeRequest != null)
-                    | select(.author.is_bot != true)
-                    | select((.author.login // "") | startswith("app/") | not)
-                    | select(.mergeStateStatus == "BEHIND") | .number' \
-          | while read -r n; do
-              [ -z "$n" ] && continue
-              echo "PR #$n is BEHIND with auto-merge on — updating branch"
-              gh pr update-branch "$n" --repo "$GITHUB_REPOSITORY" || \
-                echo "::warning::could not update #$n"
-            done
+          # ONE PR per run, the oldest.
+          #
+          # Updating every behind branch at once looks faster and is not: main
+          # takes one merge at a time, and that merge puts every other branch
+          # behind again, so the rest of the fleet re-runs its whole matrix for
+          # nothing. With ten PRs queued that is ~600 jobs burned to land one.
+          # Updating only the front runner costs one CI cycle per merge, and
+          # the push trigger above starts the next one the moment it lands.
+          candidates=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --limit 50 --json number,mergeStateStatus,autoMergeRequest,author \
+            -q '[.[] | select(.autoMergeRequest != null)
+                     | select(.author.is_bot != true)
+                     | select((.author.login // "") | startswith("app/") | not)
+                     | select(.mergeStateStatus == "BEHIND") | .number]
+                | sort | .[]')
+
+          if [ -z "$candidates" ]; then
+            echo "No queued PR is behind. Nothing to do."
+            exit 0
+          fi
+
+          total=$(printf '%s\n' "$candidates" | wc -l | tr -d ' ')
+          front=$(printf '%s\n' "$candidates" | head -1)
+          printf '%s queued PR(s) behind; updating #%s, rest wait.\n' \
+            "$total" "$front"
+
+          gh pr update-branch "$front" --repo "$GITHUB_REPOSITORY" \
+            || echo "::warning::could not update #$front"
+
+          if [ "$total" -gt 1 ]; then
+            # paste joins with a single separator and no trailing one; `tr`
+            # left a dangling space that made the list awkward to copy.
+            rest=$(printf '%s\n' "$candidates" | tail -n +2 | paste -sd' ' -)
+            printf 'Still waiting: %s\n' "$rest"
+          fi
