@@ -12118,3 +12118,63 @@ fn a_colo_topic_does_not_grow_its_region_on_an_epoch_change() {
          grow copies the live ring onto itself."
     );
 }
+
+// ============================================================================
+// send_blocking must not report success it cannot back
+// ============================================================================
+
+/// `send_blocking` documents itself for "emergency stop, motor setpoints" and
+/// promises "delivery or an explicit timeout error". On the default POD
+/// broadcast backend it could keep neither promise: `send_shm_pod_broadcast` has
+/// a single exit, `Ok(())`, so phase 1's `try_send` always succeeded and the
+/// method returned Ok having guaranteed nothing — the slot may be overwritten
+/// before any subscriber reads it.
+///
+/// GATE: remove the `provides_backpressure` guard in `send_blocking` and this
+/// fails, because the call returns Ok on a backend that cannot deliver.
+#[test]
+fn send_blocking_refuses_a_backend_that_cannot_apply_backpressure() {
+    let name = unique("sb_no_backpressure");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    // Drive it onto the POD broadcast backend, the default for POD types.
+    t.send(0);
+    let _ = t.recv();
+
+    if t.mode() != BackendMode::PodShm {
+        eprintln!("skipping: expected PodShm, got {:?}", t.mode());
+        return;
+    }
+
+    let r = t.send_blocking(1, 5_u64.ms());
+    assert!(
+        matches!(r, Err(SendBlockingError::NoBackpressure)),
+        "send_blocking on a broadcast backend must refuse rather than report a \
+         delivery it cannot guarantee; got {r:?}"
+    );
+}
+
+/// The refusal must be specific to backends that cannot report a full ring —
+/// it must not break the backends where blocking is meaningful.
+#[test]
+fn send_blocking_still_works_where_backpressure_exists() {
+    let name = unique("sb_with_backpressure");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(0);
+    let _ = t.recv();
+
+    if !matches!(
+        t.force_migrate(BackendMode::MpscShm),
+        MigrationResult::Success { .. }
+    ) {
+        eprintln!("skipping: MpscShm unavailable");
+        return;
+    }
+    trigger_shm_dispatch(&name);
+
+    let r = t.send_blocking(7, 50_u64.ms());
+    assert!(
+        r.is_ok(),
+        "a backpressured backend with a drained ring must still accept a \
+         blocking send; got {r:?}"
+    );
+}

@@ -571,6 +571,22 @@ pub enum SendBlockingError {
     /// The ring buffer remained full for the entire timeout duration.
     #[error("send_blocking timed out: ring buffer full")]
     Timeout,
+    /// This topic's backend cannot apply backpressure, so delivery cannot be
+    /// guaranteed and waiting would be meaningless.
+    ///
+    /// `PodShm` broadcast overwrites the oldest unconsumed slot unconditionally
+    /// and its send has no failure path, so there is nothing to wait for: the
+    /// message is written and may be overwritten again before any subscriber
+    /// reads it. Returning this is deliberate. `send_blocking` is documented for
+    /// emergency stop and motor setpoints, and reporting success for a delivery
+    /// nobody guaranteed is worse on that path than refusing loudly.
+    #[error(
+        "send_blocking cannot guarantee delivery on a broadcast backend: it \
+         overwrites unconsumed slots and never reports a full ring. Migrate the \
+         topic to a backpressured backend (MpscShm, SpscShm, SpmcShm or \
+         FanoutShm), or use send()/try_send() and accept the documented loss."
+    )]
+    NoBackpressure,
 }
 
 impl From<SendBlockingError> for crate::error::HorusError {
@@ -3068,6 +3084,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         msg: T,
         timeout: std::time::Duration,
     ) -> Result<(), SendBlockingError> {
+        // A backend with no backpressure cannot keep this method's promise. Its
+        // send always succeeds and overwrites whatever was there, so phase 1
+        // below would return Ok on the first call having guaranteed nothing --
+        // on a topic whose documentation names emergency stop as the use case.
+        // Refuse instead, and say what to do about it.
+        //
+        // Resolve the backend first. A freshly constructed handle caches
+        // `Unknown` until something forces initialisation, and refusing on that
+        // would reject a topic that simply has not decided what it is yet --
+        // which is what `send_blocking_serde_type` does, and it is legitimate.
+        self.initialize_backend();
+        if !self.local().cached_mode.provides_backpressure() {
+            return Err(SendBlockingError::NoBackpressure);
+        }
+
         let deadline = std::time::Instant::now() + timeout;
 
         // Phase 1: try_send (immediate)
