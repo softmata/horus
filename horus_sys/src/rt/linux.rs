@@ -47,6 +47,51 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
     }
 }
 
+/// Set this thread's timer slack, in nanoseconds.
+///
+/// Linux gives every thread 50 us of timer slack by default (see
+/// `/proc/self/timerslack_ns`). The kernel is then free to delay any
+/// `nanosleep`, `clock_nanosleep`, `futex` timeout or poll wake by up to that
+/// much, so it can batch wakeups and save power. For a periodic control loop
+/// that is a 50 us error added to every single wake.
+///
+/// It applies to SCHED_OTHER threads. A SCHED_FIFO/RR thread already gets zero
+/// slack from the kernel, so this call is a no-op for a fully privileged RT
+/// deployment -- and exactly what is needed for the one that could not get
+/// SCHED_FIFO, which is the common case (it needs CAP_SYS_NICE, and a plain
+/// `cargo test` or an unprivileged container does not have it). HORUS
+/// deliberately continues at normal priority when that happens, and this is
+/// what makes that fallback behave.
+///
+/// Measured on an idle 12-core box, 3000 iterations of a 1 kHz
+/// `clock_nanosleep(TIMER_ABSTIME)` loop, wake lateness:
+///
+/// ```text
+///   50000 ns slack (default):  p50 55.8 us   p90 63.8 us   p99 101-271 us
+///       1 ns slack:            p50  4.3 us   p90 16.7 us   p99  25-116 us
+/// ```
+pub(super) fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
+    // SAFETY: PR_SET_TIMERSLACK takes a single unsigned long argument and
+    // affects only the calling thread. A value of 0 means "restore the
+    // default", which is why the caller is expected to pass >= 1.
+    let result = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, nanoseconds as libc::c_ulong) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+            .map_err(|e| anyhow::anyhow!("prctl(PR_SET_TIMERSLACK, {}) failed: {}", nanoseconds, e))
+    }
+}
+
+/// This thread's current timer slack in nanoseconds, if it can be read.
+pub(super) fn timer_slack_ns() -> Option<u64> {
+    std::fs::read_to_string("/proc/self/timerslack_ns")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Set SCHED_FIFO priority for the current thread.
 pub(super) fn set_realtime_priority(priority: i32) -> anyhow::Result<()> {
     // SAFETY: pid 0 = current thread; sched_param is properly initialized

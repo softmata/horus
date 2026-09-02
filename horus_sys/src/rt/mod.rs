@@ -141,6 +141,43 @@ pub fn lock_memory() -> anyhow::Result<()> {
     }
 }
 
+/// Set this thread's timer slack in nanoseconds (Linux only).
+///
+/// Linux defaults to 50 us of slack per thread, which the kernel may add to any
+/// timed wait. That is 5 % of a 1 kHz period, applied to every wake. Setting it
+/// to 1 ns is what RT applications do.
+///
+/// A SCHED_FIFO/RR thread already gets zero slack, so this matters precisely
+/// for the degraded path where `set_realtime_priority` was refused for lack of
+/// CAP_SYS_NICE and HORUS continued at normal priority.
+///
+/// Returns `Ok(())` and does nothing on platforms without the concept, so
+/// callers do not need to branch.
+pub fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_timer_slack(nanoseconds)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = nanoseconds;
+        Ok(())
+    }
+}
+
+/// This thread's current timer slack in nanoseconds, or `None` where the
+/// platform has no such setting.
+pub fn timer_slack_ns() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::timer_slack_ns()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// Pin the current thread to a specific CPU core.
 ///
 /// Uses the `core_affinity` crate which is cross-platform.

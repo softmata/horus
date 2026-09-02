@@ -1645,6 +1645,33 @@ impl RtExecutor {
             }
         }
 
+        // Drop timer slack, and do it HERE rather than wherever the process
+        // configured itself, because PR_SET_TIMERSLACK is PER-THREAD. Setting
+        // it on the thread that built the scheduler does nothing for this one.
+        //
+        // Linux hands every thread 50 us of slack by default and may delay any
+        // timed wait by up to that much. `CyclicWaiter` below sleeps to an
+        // absolute deadline and then guard-spins the last stretch of the
+        // period; the guard is a fraction of the period (20 us at 1 kHz), so
+        // 50 us of slack overshoots the point the spin was meant to take over
+        // and the spin cannot recover time already gone.
+        //
+        // The kernel gives SCHED_FIFO/RR threads zero slack, so when
+        // `rt_policy_active` is true this changes nothing. It is for the branch
+        // directly above, where the priority request was refused for want of
+        // CAP_SYS_NICE and the thread stayed SCHED_OTHER -- a plain
+        // `cargo test`, an unprivileged container, most developer machines.
+        if !rt_policy_active {
+            if let Err(e) = horus_sys::rt::set_timer_slack(1) {
+                if monitors.verbose {
+                    print_line(&format!(
+                        "[RT-thread] Could not reduce timer slack: {e} (timed waits \
+                         may be delayed by the kernel default, typically 50us)"
+                    ));
+                }
+            }
+        }
+
         // `rt_cpus` arrives already resolved: `start_pool` applied the `.core(n)`
         // override and the round-robin assignment together, because only it can
         // see every chain at once and therefore only it can detect two chains
