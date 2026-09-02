@@ -227,13 +227,17 @@ jobs:
             exit 0
           fi
 
-          total=$(echo "$candidates" | wc -l | tr -d ' ')
-          front=$(echo "$candidates" | head -1)
-          echo "$total queued PR(s) behind; updating #$front, rest wait."
+          total=$(printf '%s\n' "$candidates" | wc -l | tr -d ' ')
+          front=$(printf '%s\n' "$candidates" | head -1)
+          printf '%s queued PR(s) behind; updating #%s, rest wait.\n' \
+            "$total" "$front"
 
           gh pr update-branch "$front" --repo "$GITHUB_REPOSITORY" \
             || echo "::warning::could not update #$front"
 
           if [ "$total" -gt 1 ]; then
-            echo "Still waiting: $(echo "$candidates" | tail -n +2 | tr '\n' ' ')"
+            # paste joins with a single separator and no trailing one; `tr`
+            # left a dangling space that made the list awkward to copy.
+            rest=$(printf '%s\n' "$candidates" | tail -n +2 | paste -sd' ' -)
+            printf 'Still waiting: %s\n' "$rest"
           fi
