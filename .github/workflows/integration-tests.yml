@@ -178,15 +178,15 @@ jobs:
       # stderr was muted, which is what left that unexplained. Both fixed in
       # this change; the suite passes 3/3.
       #
-      # This runs 52 of those 85. The rest stay dead and are not claimed
+      # This runs 55 of those 85. The rest stay dead and are not claimed
       # otherwise: cli_runtime_integration (18), launch_and_workflow (5) and
-      # real_project_ipc (3) need the debug build described above;
-      # rust_python_matrix (3) is discussed below; and participant_count_leak,
+      # real_project_ipc (3) need the debug build described above; and
+      # participant_count_leak,
       # crash_recovery's panic_hook_subprocess_helper (a subprocess entry
       # point, not a test), loom_pod_broadcast and acceptance_topic's flaky
       # high-frequency scenario are each ignored deliberately.
       #
-      # Measured locally at ~5 min for the 52 tests, all passing, with no
+      # Measured locally at ~5 min for the 55 tests, all passing, with no
       # /dev/shm growth across the run.
       - name: Run cross-process and chaos suites (#[ignore]d)
         timeout-minutes: 25

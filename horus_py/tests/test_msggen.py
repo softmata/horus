@@ -50,6 +50,41 @@ class TestParseFieldType:
         assert rust_type == type_str
         assert got == default
 
+    @pytest.mark.parametrize("type_str,rust_type,default", [
+        ("[float; 3]", "[f64; 3]", "[0.0; 3]"),
+        ("[int; 4]", "[i64; 4]", "[0; 4]"),
+        ("[boolean; 2]", "[bool; 2]", "[false; 2]"),
+    ])
+    def test_array_element_is_resolved_to_a_rust_type(self, type_str, rust_type, default):
+        """HORUS spellings are not Rust type names.
+
+        The element token used to be echoed back verbatim, so `[float; 3]`
+        emitted `[float; 3]` — `float` is a legal HORUS scalar and not a Rust
+        type, and the generated file failed to compile with E0412. The scalar
+        path has always mapped these; the array path did not.
+        """
+        assert parse_field_type(type_str) == (rust_type, default)
+
+    def test_non_copy_array_default_is_built_per_slot(self):
+        """`[expr; N]` requires Copy, and String is not.
+
+        `[String; 2]` used to default to `[String::new(); 2]`, which is E0277
+        rather than a value. Each slot has to be constructed on its own.
+        """
+        rust_type, default = parse_field_type("[string; 2]")
+        assert rust_type == "[String; 2]"
+        assert default == "std::array::from_fn(|_| String::new())"
+
+    def test_unknown_array_element_is_rejected(self):
+        """An unknown element raises here, as it does for a bare scalar.
+
+        It used to fall back to `Default::default()` and emit Rust that does
+        not build, which moved the error from this generator to rustc — with
+        no mention of the message definition that caused it.
+        """
+        with pytest.raises(ValueError, match="Unknown array element type"):
+            parse_field_type("[weird; 2]")
+
     def test_vec_passthrough(self):
         assert parse_field_type("Vec<f32>") == ("Vec<f32>", "Vec::new()")
 

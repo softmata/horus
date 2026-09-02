@@ -233,7 +233,7 @@ jobs:
       # coverage.yml's llvm-cov, to safety.yml's miri/sanitizer runs and to
       # integration-tests.yml, and the crate ships no Rust tests/ directory.
       # Nothing ran the Python side either -- no workflow invoked pytest at all,
-      # so 407 test functions, 434 cases after parametrisation, sat in the tree
+      # so 413 test functions, 442 cases after parametrisation, sat in the tree
       # looking like coverage while gating nothing. The extension is already
       # built and installed into .venv above for the Rust cross-language tests,
       # so this is one step, not a new job: the whole suite runs in ~30s.

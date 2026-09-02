@@ -85,8 +85,28 @@ def parse_field_type(type_str: str) -> Tuple[str, str]:
     array = re.match(r"^\[\s*([A-Za-z0-9_]+)\s*;\s*(\d+)\s*\]$", type_str.strip())
     if array:
         elem, count = array.group(1), array.group(2)
-        elem_default = TYPE_MAP.get(elem.lower(), (elem, "Default::default()"))[1]
-        return (type_str, f"[{elem_default}; {count}]")
+        # Resolve the element through TYPE_MAP rather than echoing the token
+        # back. HORUS spells some scalars the way a message author would --
+        # `float`, `int`, `string` -- and those are not Rust type names, so
+        # `[float; 3]` used to emit `[float; 3]` and fail to compile with E0412.
+        # Unknown elements raise here for the same reason the scalar path does:
+        # falling back to `Default::default()` accepted `[weird; 2]` silently
+        # and produced Rust that does not build, at which point the error is
+        # rustc's rather than this generator's.
+        if elem.lower() not in TYPE_MAP:
+            raise ValueError(
+                f"Unknown array element type: {elem} in {type_str}. "
+                f"Valid types: {list(TYPE_MAP.keys())}"
+            )
+        elem_rust, elem_default = TYPE_MAP[elem.lower()]
+        # `[expr; N]` requires the element to be Copy, so a String or Vec
+        # default has to be built per-slot instead -- `[String::new(); 2]` is
+        # E0277, not a value.
+        if elem_default.endswith("::new()"):
+            default = f"std::array::from_fn(|_| {elem_default})"
+        else:
+            default = f"[{elem_default}; {count}]"
+        return (f"[{elem_rust}; {count}]", default)
 
     # Handle Vec<T> directly
     if type_str.startswith("Vec<"):
