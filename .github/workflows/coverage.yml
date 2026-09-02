@@ -42,7 +42,7 @@ jobs:
       # topic contention tests. Propagate a larger stack to libtest workers.
       RUST_MIN_STACK: "16777216"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -60,7 +60,7 @@ jobs:
         uses: taiki-e/install-action@ae83f8e2d0da9969dc5a35e824115e142fd3c341 # cargo-llvm-cov
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -135,7 +135,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload HTML Report as Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
           path: coverage-html/
