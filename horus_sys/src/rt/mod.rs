@@ -1,4 +1,5 @@
-//! Real-time scheduling — priority, memory locking, CPU affinity, locking.
+//! Real-time scheduling — priority, memory locking, CPU affinity, and
+//! priority-inheriting locking.
 //!
 //! Provides platform-specific RT primitives:
 //! - **Linux**: `SCHED_FIFO` + `mlockall` + `sched_setaffinity`

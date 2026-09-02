@@ -69,7 +69,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # `/bin/bash`, not `bash`. On macOS runners that is 3.2.57 — Apple never
       # shipped a GPLv3 bash — and it is what install.sh's own `#!/bin/bash`
@@ -208,7 +208,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run install.ps1
         shell: pwsh
@@ -312,7 +312,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # install.sh advertises Windows support in its own failure message
       # ("Supported: ... Windows (via install.ps1, Git Bash or WSL)", install.sh:288) and
@@ -454,7 +454,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Resolve the tag install.sh would install
         id: tag
@@ -589,10 +589,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache the installer's build output
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           # install.sh compiles inside its own cache dir; CARGO_TARGET_DIR
           # (honoured at install.sh:691-693) redirects the output somewhere this
