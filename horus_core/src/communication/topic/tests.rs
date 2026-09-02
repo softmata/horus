@@ -11699,64 +11699,6 @@ fn a_non_pod_round_trip_on_one_handle_returns_every_value() {
     assert_eq!(got[199], "value-199");
 }
 
-/// Diagnostic: is loss accounted for on every backend?
-#[test]
-fn probe_loss_accounting_per_backend() {
-    for mode in [
-        BackendMode::SpscShm,
-        BackendMode::MpscShm,
-        BackendMode::SpmcShm,
-        BackendMode::PodShm,
-        BackendMode::FanoutShm,
-    ] {
-        let name = unique(&format!("probe_acct_{mode:?}"));
-        let t: Topic<u64> = Topic::with_capacity(&name, 64, None).expect("create");
-        let sub: Topic<u64> = Topic::new(&name).expect("sub");
-        t.send(0);
-        let _ = sub.try_recv();
-        if !matches!(t.force_migrate(mode), MigrationResult::Success { .. }) {
-            eprintln!("ACCT {mode:?}: unavailable");
-            continue;
-        }
-        trigger_shm_dispatch(&name);
-        // FanoutShm needs a per-(pub,sub) channel attach before it can deliver;
-        // pump a few messages through so the pairing is established.
-        for _ in 0..8 {
-            t.send(u64::MAX);
-            let _ = sub.try_recv();
-        }
-        while sub.try_recv().is_some() {}
-
-        const N: u64 = 5000;
-        for i in 0..N {
-            t.send(i);
-        }
-        // A single None does not mean empty: the lap-resume path re-seats the
-        // cursor and returns None without reading the slot it landed on. Keep
-        // polling until several consecutive Nones.
-        let mut got = 0u64;
-        let mut empties = 0;
-        while empties < 5 {
-            if sub.try_recv().is_some() {
-                got += 1;
-                empties = 0;
-            } else {
-                empties += 1;
-            }
-        }
-        let missed = sub.missed_count();
-        let dropped = t.dropped_count();
-        let accounted = got + missed + dropped;
-        eprintln!(
-            "ACCT {:?} (actual {:?}): sent={N} got={got} missed={missed} \
-             dropped={dropped} accounted={accounted} unaccounted={}",
-            mode,
-            t.mode(),
-            N as i64 - accounted as i64
-        );
-    }
-}
-
 // ============================================================================
 // Loss accounting: a lossy transport must not lose messages SILENTLY
 // ============================================================================
@@ -11797,7 +11739,11 @@ fn no_message_is_lost_without_being_counted() {
     ] {
         let name = unique(&format!("loss_acct_{mode:?}"));
         let t: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("create");
-        let sub: Topic<u64> = Topic::new(&name).expect("sub");
+        // Both ends must state the same capacity. A bare `Topic::new` here maps
+        // a default-sized view over the smaller CAP segment, which Linux
+        // tolerates and Windows rejects with
+        // `MapViewOfFile failed: error 5` (ERROR_ACCESS_DENIED).
+        let sub: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("sub");
         t.send(0);
         let _ = sub.try_recv();
 
