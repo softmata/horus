@@ -9,7 +9,7 @@
 //! | Module | Purpose |
 //! |--------|---------|
 //! | [`shm`] | Shared memory IPC (zero-copy cross-process) |
-//! | [`rt`] | Real-time scheduling (priority, memory lock, affinity) |
+//! | [`rt`] | Real-time scheduling (priority, memory lock, affinity, [`rt::PiMutex`]) |
 //! | [`process`] | Process signals, lifecycle, session/user IDs |
 //! | [`fs`] | Symlinks, file locks, permissions, dev_null |
 //! | [`time`] | High-resolution monotonic timing and precise sleep |
