@@ -46,6 +46,51 @@ pub struct ShmRegion {
     owner: bool,
 }
 
+/// Size in bytes of the section behind `handle`, or `None` if it cannot be
+/// measured.
+///
+/// Maps with length 0, which requests the WHOLE section rather than a caller-
+/// chosen window — that is what avoids the "view larger than section" mismatch
+/// this function exists to diagnose. It is not a guarantee of success: the call
+/// can still fail (insufficient rights, for one), and `None` is returned then.
+///
+/// Mapped `FILE_MAP_READ`, not `FILE_MAP_ALL_ACCESS`. `VirtualQuery` only reads
+/// the mapping's metadata, and asking for write access means the measurement
+/// fails wherever the caller has read but not write — which is precisely a case
+/// where the informative "capacity mismatch" message is worth having and the
+/// bare "error 5" is not.
+///
+/// # Safety
+///
+/// `handle` must be a valid file-mapping handle.
+unsafe fn measure_section(handle: *mut std::ffi::c_void) -> Option<usize> {
+    use windows_sys::Win32::System::Memory::{
+        MapViewOfFile, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ, MEMORY_BASIC_INFORMATION,
+    };
+
+    let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
+    let ptr = view.Value as *mut u8;
+    if ptr.is_null() {
+        return None;
+    }
+    let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+    let written = VirtualQuery(
+        ptr as *const std::ffi::c_void,
+        &mut info,
+        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+    );
+    let measured = if written == 0 {
+        None
+    } else {
+        Some(info.RegionSize)
+    };
+    // Unmap the address `MapViewOfFile` returned, rather than rebuilding one
+    // from `ptr`. The reconstruction happened to be identical, but it is an
+    // assumption about the struct's layout that nothing here needs to make.
+    UnmapViewOfFile(view);
+    measured
+}
+
 impl ShmRegion {
     /// Open an existing region without creating one when the publisher is absent.
     pub fn open_existing(name: &str, minimum_size: usize) -> Result<Self> {
@@ -152,9 +197,37 @@ impl ShmRegion {
 
         let ptr = view.Value as *mut u8;
         if ptr.is_null() {
-            unsafe { CloseHandle(handle) };
             // SAFETY: GetLastError is always safe
-            anyhow::bail!("MapViewOfFile failed: error {}", unsafe { GetLastError() });
+            let map_err = unsafe { GetLastError() };
+
+            // The common cause is invisible in the error code. A named Windows
+            // section cannot be resized (see `grow_unchecked`), so when the
+            // section already existed and the caller asks to map more than the
+            // creator made, MapViewOfFile refuses with ERROR_ACCESS_DENIED (5).
+            // "error 5" tells the reader nothing about a capacity mismatch, and
+            // the same code covers genuine permission problems. Measure the
+            // section and say which one it was.
+            if !is_owner {
+                // SAFETY: handle is a valid section handle, checked non-null above.
+                let existing = unsafe { measure_section(handle) };
+                unsafe { CloseHandle(handle) };
+                if let Some(actual) = existing.filter(|&a| a < size) {
+                    anyhow::bail!(
+                        "shared memory region '{name}' already exists at {actual} bytes, \
+                         but this handle asked to map {size}. A named Windows section \
+                         cannot be resized, so the mapping was refused \
+                         (MapViewOfFile error {map_err}). Open the region with the same \
+                         capacity its creator used. Linux and macOS tolerate this \
+                         mismatch, so code that works there can fail only here."
+                    );
+                }
+                anyhow::bail!(
+                    "MapViewOfFile failed for existing region '{name}' ({size} bytes \
+                     requested): error {map_err}"
+                );
+            }
+            unsafe { CloseHandle(handle) };
+            anyhow::bail!("MapViewOfFile failed: error {map_err}");
         }
 
         if is_owner {
@@ -377,3 +450,51 @@ impl Drop for ShmRegion {
 // SAFETY: ShmRegion uses OS-level shared memory with no thread-local state
 unsafe impl Send for ShmRegion {}
 unsafe impl Sync for ShmRegion {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capacity mismatch must say so, not just "error 5".
+    ///
+    /// This is the failure a subscriber hits when it opens a topic with a
+    /// different capacity than the publisher created it with. It is invisible on
+    /// Linux and macOS, so the only place the message can be wrong is the only
+    /// place it is ever read.
+    #[test]
+    fn reopening_a_section_larger_than_it_is_explains_itself() {
+        let name = format!("shm_size_mismatch_{}", std::process::id());
+
+        let _creator = ShmRegion::new(&name, 4096).expect("create the small section");
+
+        let err = ShmRegion::new(&name, 1 << 20)
+            .expect_err("mapping 1 MiB over a 4 KiB section must fail on Windows");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("already exists at"),
+            "the error must name the mismatch, got: {msg}"
+        );
+        assert!(
+            msg.contains("cannot be resized"),
+            "the error must say why it is unfixable by retrying, got: {msg}"
+        );
+        assert!(
+            msg.contains(&name),
+            "the error must name the region, got: {msg}"
+        );
+        assert!(
+            msg.contains("1048576"),
+            "the error must state the size that was asked for, got: {msg}"
+        );
+    }
+
+    /// The improved branch must not swallow the ordinary create path: a fresh
+    /// region of a sane size still works.
+    #[test]
+    fn creating_a_fresh_section_still_succeeds() {
+        let name = format!("shm_fresh_{}", std::process::id());
+        let region = ShmRegion::new(&name, 4096).expect("fresh create");
+        assert!(region.len() >= 4096, "got {}", region.len());
+    }
+}
