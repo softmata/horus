@@ -35,6 +35,29 @@
 //! Producers mirror `send_shm_mp_pod`: CAS-claim with an in-loop room check
 //! against the *shared* tail, then Release the ready flag.
 //!
+//! ## Where the lagging tail comes from
+//!
+//! Worth being precise, because the production path does NOT always leave the
+//! shared tail stale. `Topic::handle_epoch_change` (`topic/mod.rs`) flushes the
+//! consumer's batched position first:
+//!
+//! ```text
+//! if local.cached_mode.is_cross_process() {
+//!     if local.role.can_recv() {
+//!         header.tail.store(local.local_tail, Ordering::Release);
+//! ```
+//!
+//! So for a cross-process consumer that is itself the one handling the epoch,
+//! `shared_tail == local_tail` at the resync and the `max` in `resynced_tail`
+//! is a no-op. This model is not that case. It is the case where the flush did
+//! not run for the participant doing the resync -- both conditions above are
+//! guards, and a handle that fails either reaches `resynced_tail` with a shared
+//! tail that still lags. The `max` is what makes those paths safe, and this
+//! model is what checks it.
+//!
+//! Read the model as "the shared tail lags at the resync point", not as "the
+//! shared tail always lags at the resync point". The second would be wrong.
+//!
 //! # Gate — this model is not vacuous
 //!
 //! Removing the `max` from `resynced_tail` (adopting the shared tail wholesale,
@@ -269,9 +292,16 @@ impl<'a, const CAP: usize> Consumer<'a, CAP> {
 
 /// One producer thread pair + a consumer that drains across a migration.
 /// Three threads total, per the loom job's stated budget.
-fn run<const CAP: usize>(sends_per_producer: usize) {
+/// `expect_reuse` states whether this configuration can actually wrap onto an
+/// occupied slot. It is asserted after the model runs, against the largest
+/// number of sends any interleaving landed, so a configuration cannot quietly
+/// stop exercising what its caller believes it exercises.
+fn run<const CAP: usize>(sends_per_producer: usize, expect_reuse: bool) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = Some(3);
+    // Plain std atomics: this is bookkeeping ABOUT the model, not part of it.
+    let peak_sent = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let recorder = std::sync::Arc::clone(&peak_sent);
     builder.check(move || {
         let ring = Arc::new(Ring::<CAP>::new());
 
@@ -328,6 +358,7 @@ fn run<const CAP: usize>(sends_per_producer: usize) {
         }
 
         let sent: u32 = p1.join().unwrap() + p2.join().unwrap();
+        recorder.fetch_max(sent, std::sync::atomic::Ordering::Relaxed);
 
         // Anything the producers landed after our last look is still readable.
         loop {
@@ -352,19 +383,58 @@ fn run<const CAP: usize>(sends_per_producer: usize) {
              delivered twice across the migration boundary"
         );
     });
+
+    // Coverage, asserted rather than assumed.
+    let peak = peak_sent.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    if expect_reuse {
+        assert!(
+            peak > CAP,
+            "CAP={CAP} was supposed to force slot reuse, but the best \
+             interleaving landed only {peak} sends. Nothing wrapped, so this \
+             configuration is not testing what its caller thinks it is."
+        );
+    } else {
+        assert_eq!(
+            peak, 1,
+            "CAP={CAP} is the degenerate configuration and is expected to land \
+             exactly one send. It landed {peak}, so the reasoning recorded at \
+             the call site no longer holds and the comment there is now wrong."
+        );
+    }
 }
 
 #[test]
 fn loom_migration_resync_does_not_expose_unread_slot_cap1() {
-    // One slot: every send after the first must wrap onto a slot the consumer
-    // may not have read yet. The tightest reuse pressure available.
-    run::<1>(2);
+    // The degenerate case, and it does NOT exercise slot reuse. Measured across
+    // all 4501 interleavings: every one lands sent=1, got=1.
+    //
+    // It cannot be otherwise. A producer needs `head - shared_tail < CAP`, so
+    // at CAP=1 it needs `head == shared_tail`; the consumer only stores to the
+    // shared tail once BATCH=2 receives have accumulated, and only one message
+    // can ever be in flight to be received. The first send fills the ring, the
+    // consumer reads it but cannot publish, and the producer is blocked for the
+    // rest of the run.
+    //
+    // Lowering BATCH to 1 would unblock it and is exactly the wrong fix: the
+    // header records that publishing on every message makes `shared_tail ==
+    // local_tail` at all times, which turns the `max` in `resynced_tail` into a
+    // no-op and the whole model vacuous. At CAP=1, lag and progress are
+    // mutually exclusive; no value of BATCH gives both.
+    //
+    // What it still models is worth keeping, and the header ablation is the
+    // proof: one message, one slot, a migration mid-drain, and a resync that
+    // must not hand that single message back a second time -- "cap1: read 2
+    // messages but only 1 were sent". cap2 is what covers wrap.
+    run::<1>(2, false);
 }
 
 #[test]
 fn loom_migration_resync_does_not_expose_unread_slot_cap2() {
-    // Two slots, two producers: reuse still forced, one more interleaving layer.
-    run::<2>(2);
+    // Two slots, two producers. This is the case that actually wraps: measured
+    // interleavings land 2, 3 and 4 sends through 2 slots, so a slot is reused
+    // up to twice while a migration resync is in flight. `expect_reuse` holds
+    // the model to that.
+    run::<2>(2, true);
 }
 
 /// Pins `resynced_tail` against the same cases the in-crate unit tests assert,
