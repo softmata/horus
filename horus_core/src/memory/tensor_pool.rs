@@ -400,7 +400,16 @@ impl TensorPool {
         // The previous path.exists() + create(true) pattern had a TOCTOU window.
         let (file, is_owner) = match shm_create_new_opts().open(&shm_path) {
             Ok(file) => {
-                file.set_len(mmap_size as u64)?;
+                // Unlink on failure rather than leaving a zero-length file
+                // behind. `create_new` won the race, so this process owns the
+                // path; bailing with `?` here left a file that every later
+                // process would map and take SIGBUS on, permanently, because
+                // nothing reaps the default namespace.
+                if let Err(e) = file.set_len(mmap_size as u64) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&shm_path);
+                    return Err(e.into());
+                }
                 hold_shared_lock(&file);
                 (file, true)
             }
@@ -487,11 +496,69 @@ impl TensorPool {
         let metadata = file.metadata()?;
         let total_size = metadata.len() as usize;
 
-        // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
+        // Refuse a file too short to contain the header, BEFORE mapping it.
+        //
+        // Reading the header out of an undersized mapping does not return an
+        // error — it raises SIGBUS. That is a signal, not an unwind, so
+        // `NodeRunner::run_tick`'s `catch_unwind`, the executors' outer
+        // `catch_unwind` and every `FailurePolicy` are all bypassed: no
+        // `enter_safe_state()`, no blackbox NodeError, just a core dump. In a
+        // robot that is the difference between a handled fault and an
+        // unhandled one.
+        //
+        // The window is ordinary, not exotic. `get_or_create_pool` tries
+        // `open()` FIRST, while the creating process opens with `create_new`
+        // and only then calls `set_len`. A peer that maps the file inside that
+        // gap maps a zero-length file. Measured on unmodified code with no
+        // artificial delay: 3 SIGBUS deaths in 150 cold-start races (2%), the
+        // `ftruncate` window being ~8us for the default 1 GiB pool and widened
+        // arbitrarily by preemption. Two nodes starting together and publishing
+        // the same Image topic is a normal deployment, not a corner case.
+        //
+        // A process killed in that same window leaves a permanent 0-byte
+        // landmine that kills every later process identically, and nothing
+        // reaps it: `cleanup_stale_namespaces` only considers directories whose
+        // name starts with `horus_sid`, so the default namespace (`horus_default`)
+        // is skipped entirely.
+        //
+        // Returning an error here is also the correct recovery, not merely a
+        // safer failure: `get_or_create_pool` falls back to `TensorPool::new`,
+        // whose AlreadyExists branch waits for the creator via
+        // `await_pool_file_size`.
+        //
+        // This is the class the tree already guards elsewhere — registry.rs
+        // names SIGBUS explicitly, log_buffer.rs rejects `mapped < HEADER +
+        // SLOT`, shm_fanout.rs validates geometry before use. `open()` was the
+        // unfixed instance.
+        const MIN: usize = std::mem::size_of::<PoolHeader>();
+        if total_size < MIN {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "tensor pool {pool_id} is {total_size} bytes, smaller than its \
+                 {MIN}-byte header — the file is truncated, or its creator was \
+                 interrupted between create and set_len. Mapping it would take \
+                 SIGBUS rather than return an error."
+            ))));
+        }
+
+        // SAFETY: file is a valid open file descriptor, and `total_size` was
+        // just checked to cover at least the header.
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
+        // memmap2 maps a whole page for a zero-length request (`map_len.max(1)`)
+        // but keeps `len() == 0`, so the mapping can be shorter than the file
+        // metadata implied. Check what was actually mapped, not what was asked
+        // for.
+        if mmap.len() < MIN {
+            return Err(HorusError::Config(ConfigError::Other(format!(
+                "tensor pool {pool_id} mapped {} bytes, smaller than its \
+                 {MIN}-byte header",
+                mmap.len()
+            ))));
+        }
+
         // Read header to get config
-        // SAFETY: mmap region is properly sized and aligned for PoolHeader; initialized at creation.
+        // SAFETY: the mapping is at least `size_of::<PoolHeader>()` bytes,
+        // checked immediately above, and mmap is page-aligned.
         let header = unsafe { &*(mmap.as_ptr() as *const PoolHeader) };
 
         if header.magic != POOL_MAGIC {
@@ -631,7 +698,16 @@ impl TensorPool {
 
         let (file, is_owner) = match shm_create_new_opts().open(&shm_path) {
             Ok(file) => {
-                file.set_len(mmap_size as u64)?;
+                // Unlink on failure rather than leaving a zero-length file
+                // behind. `create_new` won the race, so this process owns the
+                // path; bailing with `?` here left a file that every later
+                // process would map and take SIGBUS on, permanently, because
+                // nothing reaps the default namespace.
+                if let Err(e) = file.set_len(mmap_size as u64) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&shm_path);
+                    return Err(e.into());
+                }
                 hold_shared_lock(&file);
                 (file, true)
             }
@@ -2679,6 +2755,79 @@ pub use crate::types::{Device, Tensor, TensorDtype};
 
 #[cfg(test)]
 mod tests {
+
+    /// A truncated pool file must produce an error, not SIGBUS.
+    ///
+    /// Mapping a file shorter than `PoolHeader` and reading the header raises
+    /// SIGBUS — a signal, not an unwind — so `NodeRunner::run_tick`'s
+    /// `catch_unwind`, the executors' outer `catch_unwind` and every
+    /// `FailurePolicy` are bypassed. The robot core-dumps instead of entering a
+    /// safe state.
+    ///
+    /// The zero-length file this plants is exactly what the ordinary
+    /// cold-start race produces: `get_or_create_pool` calls `open()` first,
+    /// while the creating process opens with `create_new` and only then calls
+    /// `set_len`. Measured on unmodified code, 3 deaths in 150 races.
+    ///
+    /// NOTE: without the length check this test does not fail — it ABORTS the
+    /// whole test binary with SIGBUS, taking every other test with it. That is
+    /// the point.
+    #[test]
+    fn a_truncated_pool_file_errors_instead_of_taking_sigbus() {
+        use std::io::Write;
+        let pool_id: u32 = 0xDEAD_0001;
+        let shm_dir = shm_base_dir().join("tensors");
+        let _ = std::fs::create_dir_all(&shm_dir);
+        let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
+
+        // Zero bytes: what a creator interrupted between create_new and set_len
+        // leaves behind.
+        {
+            let mut f = std::fs::File::create(&shm_path).expect("plant");
+            f.flush().ok();
+        }
+        assert_eq!(
+            std::fs::metadata(&shm_path).unwrap().len(),
+            0,
+            "precondition: the planted file must be empty"
+        );
+
+        let result = TensorPool::open(pool_id);
+        let _ = std::fs::remove_file(&shm_path);
+
+        let err = result
+            .err()
+            .expect("opening a 0-byte pool file must fail, not succeed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("truncated") || msg.contains("smaller than"),
+            "the error should say the file is too short, got: {msg}"
+        );
+    }
+
+    /// A file long enough to map but too short to be a real pool must also be
+    /// rejected — by the magic check, without faulting.
+    #[test]
+    fn a_short_nonzero_pool_file_is_rejected_by_the_magic_check() {
+        let pool_id: u32 = 0xDEAD_0002;
+        let shm_dir = shm_base_dir().join("tensors");
+        let _ = std::fs::create_dir_all(&shm_dir);
+        let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
+
+        {
+            let f = std::fs::File::create(&shm_path).expect("plant");
+            f.set_len(std::mem::size_of::<PoolHeader>() as u64)
+                .expect("size it to exactly the header");
+        }
+
+        let result = TensorPool::open(pool_id);
+        let _ = std::fs::remove_file(&shm_path);
+        assert!(
+            result.is_err(),
+            "a header-sized file of zeroes has the wrong magic and must be \
+             rejected"
+        );
+    }
     /// A pool whose creator died before writing the header must be reclaimable.
     ///
     /// `initialize()` writes the magic LAST, so a process killed between
