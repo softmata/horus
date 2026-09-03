@@ -3458,14 +3458,51 @@ fn telemetry_export_failures_reach_the_log() {
 
     let first_unread = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
 
+    // Ends the run on an OBSERVED export failure rather than on a wall-clock
+    // guess about when the 1000 ms interval elapses inside a fixed `run_for`.
+    // The scheduler ticks this node, then runs `periodic_monitoring` in the same
+    // iteration, so the line is picked up one tick (10 ms) after it is written
+    // and `finalize_run` follows immediately with the final export. `run_for`
+    // below is therefore a timeout, not a schedule: a loaded machine that
+    // stalls the tick loop costs latency here instead of a failure, and the
+    // window in which the shared log ring could evict the line before the
+    // assertions read it shrinks from hundreds of milliseconds to one tick.
+    struct StopOnExportFailure {
+        since: u64,
+        running: Arc<AtomicBool>,
+    }
+    impl Node for StopOnExportFailure {
+        fn name(&self) -> &str {
+            "telemetry_probe"
+        }
+        fn tick(&mut self) {
+            let reported = crate::core::log_buffer::GLOBAL_LOG_BUFFER
+                .get_since(self.since)
+                .into_iter()
+                .any(|entry| entry.message.contains("[TELEMETRY] Export failed"));
+            if reported {
+                self.running.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+
     let mut scheduler = Scheduler::new()
         .tick_rate(100_u64.hz())
         .telemetry(&endpoint);
-    scheduler.add(CounterNode::new("telemetry_probe")).build();
+    let running = scheduler.running_flag();
+    scheduler
+        .add(StopOnExportFailure {
+            since: first_unread,
+            running,
+        })
+        .build();
 
-    // Longer than the 1000 ms export interval, so the periodic export runs at
-    // least once before `finalize_run` performs the final one.
-    scheduler.run_for(1400_u64.ms()).unwrap();
+    // Upper bound, not the expected duration. The export interval starts when
+    // `finalize_config` builds the manager, just before the run clock does, so
+    // the periodic export normally reports ~1.0 s in and the node above ends
+    // the run right there. Five seconds leaves room for a four-second stall
+    // before the assertions below report what was actually logged.
+    scheduler.run_for(5000_u64.ms()).unwrap();
 
     let reported: Vec<String> = crate::core::log_buffer::GLOBAL_LOG_BUFFER
         .get_since(first_unread)

@@ -274,13 +274,22 @@ impl TelemetryManager {
 
     /// Export to local file
     ///
-    /// Every error names the path it was writing. The scheduler reports this
-    /// string and nothing else in that line says where the export was going —
-    /// "Permission denied (os error 13)" on its own is not something an
-    /// operator can act on.
+    /// Every error names the destination file — including the `create_dir_all`
+    /// failure, which names the parent it could not create as well, since the
+    /// two paths differ and only one of them is the thing to go fix. The
+    /// scheduler reports this string and nothing else in that line says where
+    /// the export was going — "Permission denied (os error 13)" on its own is
+    /// not something an operator can act on.
     fn export_to_file(&self, path: &PathBuf, snapshot: &TelemetrySnapshot) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("{}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "{}: creating parent directory {}: {}",
+                    path.display(),
+                    parent.display(),
+                    e
+                )
+            })?;
         }
 
         let json = serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string())?;
