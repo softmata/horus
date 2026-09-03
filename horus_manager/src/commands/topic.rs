@@ -9,7 +9,7 @@ use colored::*;
 use horus_core::core::DurationExt;
 use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::io::{IsTerminal, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// List all active topics
 pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
@@ -880,6 +880,96 @@ fn print_endpoints(heading: &str, names: &[String], count: u32) {
     }
 }
 
+/// Why a live `topic hz` / `topic bw` watch has nothing new to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallCause {
+    /// The counter is readable and simply is not advancing: the publisher is
+    /// alive but silent, or it was SIGKILLed — which leaves the /dev/shm region
+    /// mapped, so every read keeps succeeding and returns the same number.
+    NoMessages,
+    /// The region stopped being readable at all: unlinked, truncated, or no
+    /// longer a HORUS topic. Only `hz` can tell this apart, because
+    /// `read_latest_slot_bytes` reports "gone" and "nothing new" as the same
+    /// `None`.
+    CounterUnreadable,
+}
+
+/// Wall-clock watchdog for the live `topic hz` and `topic bw` readouts.
+///
+/// Both loops printed only when the counter moved, so a publisher that died
+/// mid-measurement left its last figure standing with the cursor parked on it:
+/// SIGKILLing a 20 Hz publisher left `Rate: 20.19 Hz (window: 10)` — no
+/// trailing newline — unchanged on the terminal for the next 20 s, which is
+/// indistinguishable from a live readout, and the non-TTY run went completely
+/// silent for 24 s. `examples/camera_perception/README.md` tells operators to
+/// run `horus topic hz camera.image` to verify a camera's rate, so the silence
+/// hides exactly what the command exists to detect.
+struct StallWatch {
+    last_message: Instant,
+    last_report: Option<Instant>,
+}
+
+impl StallWatch {
+    /// Silence shorter than this is not a stall. HORUS topics legitimately run
+    /// down to a few Hz, and `topic list` already needs a 500 ms window to read
+    /// a rate at all, so a gap has to span several of those before it means
+    /// anything.
+    const TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// Repeat the stall line on the same once-a-second cadence the rate lines
+    /// use, not on every 10 ms poll of the loop.
+    const REPEAT: Duration = Duration::from_secs(1);
+
+    fn new(now: Instant) -> Self {
+        Self {
+            last_message: now,
+            last_report: None,
+        }
+    }
+
+    /// The stream delivered something; it is live again.
+    fn saw_message(&mut self, now: Instant) {
+        self.last_message = now;
+        self.last_report = None;
+    }
+
+    /// How long the stream has been silent, on the polls where that is worth
+    /// printing.
+    fn poll(&mut self, now: Instant) -> Option<Duration> {
+        let silent = now.duration_since(self.last_message);
+        if silent < Self::TIMEOUT {
+            return None;
+        }
+        if let Some(reported) = self.last_report {
+            if now.duration_since(reported) < Self::REPEAT {
+                return None;
+            }
+        }
+        self.last_report = Some(now);
+        Some(silent)
+    }
+}
+
+/// The reading a stalled watch prints in place of a rate.
+///
+/// `zero_reading` is what the stream is actually delivering right now
+/// ("0.00 Hz", "0.00 B/s") — stating it beats leaving the previous number up,
+/// which is the whole defect.
+fn stall_line(silent: Duration, zero_reading: &str, cause: StallCause) -> String {
+    match cause {
+        StallCause::NoMessages => format!(
+            "{} (no new messages for {:.1}s)",
+            zero_reading,
+            silent.as_secs_f64()
+        ),
+        StallCause::CounterUnreadable => format!(
+            "{} (topic counter unreadable for {:.1}s)",
+            zero_reading,
+            silent.as_secs_f64()
+        ),
+    }
+}
+
 /// Measure topic publish rate
 pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     use horus_core::communication::read_topic_messages_total;
@@ -946,9 +1036,13 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     let mut last_line_print = Instant::now();
     let is_tty = std::io::stdout().is_terminal();
 
+    let mut stall = StallWatch::new(start_time);
+
     while running.load(std::sync::atomic::Ordering::SeqCst) {
-        let current_total = read_topic_messages_total(&topic_path).unwrap_or(last_total);
+        let reading = read_topic_messages_total(&topic_path);
+        let current_total = reading.unwrap_or(last_total);
         if current_total > last_total {
+            stall.saw_message(Instant::now());
             let new_msgs = current_total - last_total;
             total_messages += new_msgs;
             last_total = current_total;
@@ -995,6 +1089,22 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
                     }
                 }
             }
+        } else if let Some(silent) = stall.poll(Instant::now()) {
+            let cause = if reading.is_some() {
+                StallCause::NoMessages
+            } else {
+                StallCause::CounterUnreadable
+            };
+            let line = stall_line(silent, "0.00 Hz", cause);
+            if is_tty {
+                // The leading \r and the trailing padding overwrite the
+                // in-place rate line this replaces; it is longer than that
+                // line, so none of the stale figure survives.
+                println!("\r  {} {}    ", cli_output::ICON_WARN.yellow(), line);
+            } else {
+                println!("  {} {}", cli_output::ICON_WARN, line);
+            }
+            last_line_print = Instant::now();
         }
 
         std::thread::sleep(10_u64.ms());
@@ -1081,6 +1191,7 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
     let mut last_write_idx: u64 = 0;
     let mut last_line_print = Instant::now();
     let is_tty = std::io::stdout().is_terminal();
+    let mut stall = StallWatch::new(Instant::now());
 
     loop {
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1088,6 +1199,7 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
         }
 
         if let Some(slot) = read_latest_slot_bytes(&topic_path, last_write_idx) {
+            stall.saw_message(Instant::now());
             last_write_idx = slot.write_idx;
             samples.push_back((Instant::now(), slot.payload.len()));
 
@@ -1154,6 +1266,17 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
                     }
                 }
             }
+        } else if let Some(silent) = stall.poll(Instant::now()) {
+            // `read_latest_slot_bytes` returns `None` both for "no new message"
+            // and for "the region is gone", so bandwidth cannot name the cause
+            // the way `hz` can.
+            let line = stall_line(silent, "0.00 B/s", StallCause::NoMessages);
+            if is_tty {
+                println!("\r  {} {}    ", cli_output::ICON_WARN.yellow(), line);
+            } else {
+                println!("  {} {}", cli_output::ICON_WARN, line);
+            }
+            last_line_print = Instant::now();
         }
 
         std::thread::sleep(10_u64.ms());
@@ -1683,5 +1806,129 @@ mod pub_echo_roundtrip_tests {
         let mut data = 2u64.to_le_bytes().to_vec();
         data.extend_from_slice(&[0xff, 0xfe]);
         assert!(bincode_string(&data).is_none());
+    }
+}
+
+#[cfg(test)]
+mod stall_watch_tests {
+    use super::*;
+
+    /// The defect: `topic hz` and `topic bw` printed only when the counter
+    /// moved, so a publisher killed mid-measurement left its last figure
+    /// standing. A 20 Hz publisher SIGKILLed under `topic hz` on a tty left the
+    /// literal bytes `\r  Rate: 20.19 Hz (window: 10)` — no trailing newline,
+    /// cursor parked — on screen for the next 20 s while the topic was dead.
+    #[test]
+    fn a_dead_publisher_is_reported_instead_of_leaving_the_last_rate_frozen() {
+        let t0 = Instant::now();
+        let mut watch = StallWatch::new(t0);
+
+        // 20 Hz of traffic. Every poll that carries a message keeps it quiet.
+        for ms in (0..2_000).step_by(50) {
+            watch.saw_message(t0 + Duration::from_millis(ms));
+            assert_eq!(
+                watch.poll(t0 + Duration::from_millis(ms + 10)),
+                None,
+                "a live stream must not be called stalled (at {ms} ms)"
+            );
+        }
+
+        // The publisher dies after the message at t0+1.95s. A gap of one or two
+        // messages is not yet a stall.
+        let killed = Duration::from_millis(1_950);
+        assert_eq!(watch.poll(t0 + killed + Duration::from_millis(500)), None);
+
+        // Past the timeout the watch demands a line rather than letting the
+        // stale rate stand.
+        let silent = watch
+            .poll(t0 + killed + Duration::from_millis(2_100))
+            .expect("2.1s without a message is a stall and must be reported");
+        assert!(
+            (silent.as_secs_f64() - 2.1).abs() < 0.01,
+            "the line must state how long the stream has been silent, got {silent:?}"
+        );
+    }
+
+    #[test]
+    fn the_stall_line_repeats_once_a_second_not_on_every_poll() {
+        let t0 = Instant::now();
+        let mut watch = StallWatch::new(t0);
+        assert!(watch.poll(t0 + Duration::from_millis(2_000)).is_some());
+
+        // The sampling loop polls every 10 ms; that must not become 100 lines
+        // of scrollback a second.
+        for ms in (2_010..3_000).step_by(10) {
+            assert_eq!(
+                watch.poll(t0 + Duration::from_millis(ms)),
+                None,
+                "a second stall line inside the same second (at {ms} ms)"
+            );
+        }
+        assert!(watch.poll(t0 + Duration::from_millis(3_010)).is_some());
+    }
+
+    #[test]
+    fn a_slow_but_live_publisher_is_never_called_stalled() {
+        // 1 Hz is an ordinary HORUS topic, not a broken one, and the watch runs
+        // between its messages 100 times each second.
+        let t0 = Instant::now();
+        let mut watch = StallWatch::new(t0);
+        for sec in 0..30 {
+            let sent = t0 + Duration::from_secs(sec);
+            watch.saw_message(sent);
+            for ms in (0..1_000).step_by(10) {
+                assert_eq!(
+                    watch.poll(sent + Duration::from_millis(ms)),
+                    None,
+                    "1 Hz reported as stalled at {sec}s + {ms} ms"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_publisher_that_comes_back_stops_being_reported() {
+        let t0 = Instant::now();
+        let mut watch = StallWatch::new(t0);
+        assert!(watch.poll(t0 + Duration::from_millis(2_500)).is_some());
+
+        watch.saw_message(t0 + Duration::from_millis(3_000));
+        for ms in (3_010..4_900).step_by(10) {
+            assert_eq!(
+                watch.poll(t0 + Duration::from_millis(ms)),
+                None,
+                "still reporting a stall after the stream recovered (at {ms} ms)"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stall_line_states_the_zero_reading_and_the_cause() {
+        assert_eq!(
+            stall_line(
+                Duration::from_millis(3_400),
+                "0.00 Hz",
+                StallCause::NoMessages
+            ),
+            "0.00 Hz (no new messages for 3.4s)"
+        );
+        assert_eq!(
+            stall_line(
+                Duration::from_millis(12_000),
+                "0.00 B/s",
+                StallCause::NoMessages
+            ),
+            "0.00 B/s (no new messages for 12.0s)"
+        );
+        // A region that stopped being mappable is a different diagnosis — the
+        // topic is gone, not idle — and only `hz` can tell the two apart.
+        assert_eq!(
+            stall_line(
+                Duration::from_secs(5),
+                "0.00 Hz",
+                StallCause::CounterUnreadable
+            ),
+            "0.00 Hz (topic counter unreadable for 5.0s)"
+        );
     }
 }
