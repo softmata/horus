@@ -879,6 +879,12 @@ impl TopicHeader {
             if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != pid {
                 continue;
             }
+            // Locked per candidate rather than once around the loop: the body
+            // below calls `finish_claim`, which takes this same lock through
+            // `mark_thread_live`, and `std::sync::Mutex` is not reentrant — a
+            // guard held across the loop would deadlock the registration it is
+            // meant to speed up. The cost it saves is at most MAX_PARTICIPANTS
+            // = 16 uncontended locks on a startup-shaped path.
             if thread_is_live(p.thread_id_hash.load(Ordering::Acquire)) {
                 continue;
             }
@@ -1927,6 +1933,24 @@ pub(crate) fn hash_thread_id(id: std::thread::ThreadId) -> u64 {
 /// process's participants are judged by `is_process_alive` instead, and a
 /// process-local set needs no header version bump and no `ParticipantEntry`
 /// bytes.
+///
+/// # The key is a 32-bit hash, and 32-bit hashes collide
+///
+/// `ParticipantEntry::thread_id_hash` is already `u32`, and already
+/// load-bearing: the FIRST pass of `register_role` matches on it to find this
+/// thread's own entry. A collision there is the dangerous direction — a new
+/// thread silently adopts a live thread's registration and its role bits.
+/// Here it is the safe one, and only the safe one: a collision can only make
+/// this set answer "live" for a thread that has ended, which costs one
+/// reclaimable slot and surfaces as the existing "No available participant
+/// slots" error. Loud, and it says what to do about it.
+///
+/// So widening is not worth what it costs: `thread_id_hash` is a
+/// shared-memory field whose struct has `size_of::<ParticipantEntry>() == 24`
+/// asserted in two places (this module's tests and `topic/tests.rs`), and
+/// growing it means a `TOPIC_VERSION` bump that every already-mapped segment
+/// pays for. If the pass-0 collision is ever worth closing, widen the field
+/// once, for that reason, and this set follows for free.
 static LIVE_THREADS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
 
 fn live_threads() -> &'static Mutex<HashSet<u32>> {
@@ -2960,57 +2984,71 @@ mod tests {
     #[test]
     fn a_running_thread_never_loses_its_slot_to_a_new_registration() {
         let h = make_header(8, 8, true, 16);
-        let header_ptr = &h as *const TopicHeader as usize;
 
-        // A subscriber on another thread, parked for the whole test so there is
-        // no doubt it is still there.
-        let (registered_tx, registered_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let victim = std::thread::spawn(move || {
-            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
-            // outlives this thread (main thread joins before h is dropped).
-            let h = unsafe { &*(header_ptr as *const TopicHeader) };
-            let slot = h.register_consumer().expect("subscriber registers");
-            let hash = hash_thread_id(std::thread::current().id()) as u32;
-            registered_tx.send((slot, hash)).unwrap();
-            release_rx.recv().ok();
-        });
-        let (victim_slot, victim_hash) = registered_rx.recv().expect("subscriber registered");
-        assert_eq!(h.sub_count(), 1);
+        // `scope`, not `spawn`: the victim borrows `&h` directly, so the test
+        // needs no raw pointer and no `unsafe` — `TopicHeader` is all atomics
+        // and PODs, so it is `Sync` on its own. The scope's join is also what
+        // makes the borrow sound on the FAILURE path: with `spawn`, an assertion
+        // that fired below unwound the test frame and dropped `h` while the
+        // still-parked victim held a pointer into it.
+        std::thread::scope(|s| {
+            // The channels live inside the scope so that an assertion failure
+            // drops `release_tx` as it unwinds. That releases the victim, and
+            // the scope's join finishes instead of hanging on a parked thread.
+            let (registered_tx, registered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 
-        // Its lease has run out — all that says is that it has been polling
-        // below the refresh rate.
-        h.participants[victim_slot]
-            .lease_expires_ms
-            .store(1, Ordering::Release);
+            // A subscriber on another thread, parked for the whole test so there
+            // is no doubt it is still there.
+            let header = &h;
+            s.spawn(move || {
+                let slot = header.register_consumer().expect("subscriber registers");
+                let hash = hash_thread_id(std::thread::current().id()) as u32;
+                registered_tx.send((slot, hash)).unwrap();
+                release_rx.recv().ok();
+            });
+            let (victim_slot, victim_hash) = registered_rx.recv().expect("subscriber registered");
+            assert_eq!(h.sub_count(), 1);
 
-        // Every other slot is held, with a lease that is still good, so the two
-        // safe passes find nothing and the last resort runs.
-        let fresh = current_time_ms() + 60_000;
-        for i in 0..MAX_PARTICIPANTS {
-            if i != victim_slot {
-                plant_participant(&h, i, std::process::id(), 1, fresh);
+            // Its lease has run out — all that says is that it has been polling
+            // below the refresh rate.
+            h.participants[victim_slot]
+                .lease_expires_ms
+                .store(1, Ordering::Release);
+
+            // Every other slot is held, with a lease that is still good, so the
+            // two safe passes find nothing and the last resort runs.
+            let fresh = current_time_ms() + 60_000;
+            for i in 0..MAX_PARTICIPANTS {
+                if i != victim_slot {
+                    plant_participant(&h, i, std::process::id(), 1, fresh);
+                }
             }
-        }
 
-        let result = h.register_producer();
+            let result = h.register_producer();
 
-        assert!(
-            result.is_err(),
-            "the only reclaimable-looking slot belongs to a thread that is still \
-             running, so there is no slot to hand out; got {result:?}"
-        );
-        assert_eq!(
-            h.sub_count(),
-            1,
-            "the running subscriber is still registered and still reading"
-        );
-        let entry = &h.participants[victim_slot];
-        assert_eq!(entry.thread_id_hash.load(Ordering::Acquire), victim_hash);
-        assert_eq!(entry.role.load(Ordering::Acquire), 2);
+            assert!(
+                result.is_err(),
+                "the only reclaimable-looking slot belongs to a thread that is still \
+                 running, so there is no slot to hand out; got {result:?}"
+            );
+            assert_eq!(
+                h.sub_count(),
+                1,
+                "the running subscriber is still registered and still reading"
+            );
+            let entry = &h.participants[victim_slot];
+            assert_eq!(entry.thread_id_hash.load(Ordering::Acquire), victim_hash);
+            assert_eq!(
+                entry.role.load(Ordering::Acquire),
+                2,
+                "still exactly the bit `register_consumer` sets — `register_role(2, \
+                 &self.subscriber_count)` — not overwritten by the producer that \
+                 tried to take the slot"
+            );
 
-        release_tx.send(()).ok();
-        victim.join().unwrap();
+            release_tx.send(()).ok();
+        });
     }
 
     // ── Topology detection ──────────────────────────────────────────────
