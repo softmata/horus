@@ -5,18 +5,21 @@
 //! Its own test binary on purpose: `RuntimeParams::new` resolves the parameter
 //! file relative to the process working directory, and `set_current_dir` is
 //! process-global, so this cannot share a binary with tests running in parallel
-//! next to it. Cargo runs test binaries one at a time, so this one owns the
-//! process cwd for as long as it holds it.
+//! next to it. Alone in a binary it owns the process cwd outright, and no
+//! ordering guarantee from the test runner is needed for that: every other test
+//! binary is a separate process with its own cwd, so they cannot see this one's
+//! chdir whether the runner interleaves them or not.
 
 use horus_cpp::{params_get_f64, params_new};
 use std::path::PathBuf;
 
-/// Enters a scratch directory and guarantees the process cwd is restored, and
-/// the directory removed, even if the test panics while inside it.
+/// Enters a scratch directory and restores the process cwd on the way out, even
+/// if the test panics while inside it. Removing the directory afterwards is
+/// best effort; the cwd restore is not — see `Drop`.
 ///
 /// Order matters on drop: the cwd is restored BEFORE the directory is removed,
 /// so the process is never left sitting in a deleted working directory, where
-/// every later relative path — including the next test binary's — fails.
+/// every later relative path in this process fails.
 struct ScratchCwd {
     previous: PathBuf,
     dir: PathBuf,
@@ -33,8 +36,29 @@ impl ScratchCwd {
 
 impl Drop for ScratchCwd {
     fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.previous);
+        let restored = std::env::set_current_dir(&self.previous);
+
+        // Removing the scratch directory stays best effort. It is named per
+        // pid and nanosecond, so a leaked one is inert and never adopted by a
+        // later run; failing the test over it would turn an already-decided
+        // result red for a reason the test does not assert.
         let _ = std::fs::remove_dir_all(&self.dir);
+
+        // The cwd is not best effort. A silent failure here leaves the whole
+        // process in the scratch directory — deleted, after the line above —
+        // and every relative path the rest of this binary touches then fails
+        // somewhere far from the cause. That is exactly the confusing
+        // follow-on failure this guard exists to prevent, so say it here.
+        // Not while unwinding, though: a panic during a panic aborts the
+        // process and buries the assertion failure that started it.
+        if !std::thread::panicking() {
+            restored.unwrap_or_else(|e| {
+                panic!(
+                    "could not restore the working directory to {}: {e}",
+                    self.previous.display()
+                )
+            });
+        }
     }
 }
 
