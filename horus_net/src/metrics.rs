@@ -17,6 +17,16 @@ pub struct PeerMetrics {
     pub bytes_received: AtomicU64,
     pub packets_sent: AtomicU64,
     pub packets_received: AtomicU64,
+    /// Sends this machine's own socket refused — the datagram never left.
+    ///
+    /// Deliberately NOT a liveness signal for the peer. UDP is connectionless,
+    /// so `send_to` reports success for a destination that is gone: measured
+    /// here on Linux 7.0, 20000/20000 sends to an off-net host and 20000/20000
+    /// to a closed port both returned Ok. What this counts is local refusal
+    /// (EINVAL, ENETUNREACH, EMSGSIZE) — packets that `packets_sent` used to
+    /// absorb as delivered because the send result was discarded. Dead links
+    /// are `heartbeat::SafetyHeartbeat`'s job.
+    pub send_errors: AtomicU64,
     pub last_seen_ms: AtomicU64,
 }
 
@@ -52,6 +62,8 @@ pub struct PeerSnapshot {
     pub bytes_received: u64,
     pub packets_sent: u64,
     pub packets_received: u64,
+    /// See [`PeerMetrics::send_errors`] — local refusals, not lost packets.
+    pub send_errors: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -95,13 +107,31 @@ impl NetMetrics {
     }
 
     /// Record bytes sent to a peer.
+    ///
+    /// `peer_hash` is the DESTINATION's id hash — the value that peer stamps
+    /// into the packets it sends us — never our own. Keying on ourselves
+    /// collapses every peer into one row filed under this node.
+    ///
+    /// Call this only for a send the socket accepted; a refused one goes to
+    /// [`Self::record_send_error`].
     pub fn record_send(&mut self, peer_hash: u16, bytes: usize) {
         let pm = self.peers.entry(peer_hash).or_default();
         pm.bytes_sent.fetch_add(bytes as u64, Ordering::Relaxed);
         pm.packets_sent.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a send to a peer that the local socket refused.
+    ///
+    /// See [`PeerMetrics::send_errors`] for what this does and does not mean.
+    pub fn record_send_error(&mut self, peer_hash: u16) {
+        let pm = self.peers.entry(peer_hash).or_default();
+        pm.send_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record bytes received from a peer.
+    ///
+    /// `peer_hash` is the SENDER's id hash, resolved from the datagram itself
+    /// — see [`Self::record_send`] for why our own id is the wrong key.
     pub fn record_recv(&mut self, peer_hash: u16, bytes: usize) {
         let pm = self.peers.entry(peer_hash).or_default();
         pm.bytes_received.fetch_add(bytes as u64, Ordering::Relaxed);
@@ -155,6 +185,7 @@ impl NetMetrics {
                 bytes_received: pm.bytes_received.load(Ordering::Relaxed),
                 packets_sent: pm.packets_sent.load(Ordering::Relaxed),
                 packets_received: pm.packets_received.load(Ordering::Relaxed),
+                send_errors: pm.send_errors.load(Ordering::Relaxed),
             })
             .collect();
 
@@ -234,6 +265,23 @@ mod tests {
             "the 48 messages this topic published and never exported must be \
              visible somewhere"
         );
+    }
+
+    #[test]
+    fn a_refused_send_is_not_counted_as_a_delivered_one() {
+        let mut m = NetMetrics::new();
+        m.record_send(0x1234, 100);
+        m.record_send_error(0x1234);
+        m.record_send_error(0x1234);
+
+        let snap = m.snapshot();
+        assert_eq!(snap.peers.len(), 1);
+        assert_eq!(
+            snap.peers[0].packets_sent, 1,
+            "only the send the socket accepted may count as sent"
+        );
+        assert_eq!(snap.peers[0].bytes_sent, 100);
+        assert_eq!(snap.peers[0].send_errors, 2);
     }
 
     #[test]
