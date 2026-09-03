@@ -2649,6 +2649,43 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.local().missed
     }
 
+    /// Slots this ring can hold. Used to size the producer's keep-alive queue.
+    ///
+    /// Prefers the capacity `sync_local` validated against this handle's mapping
+    /// over a fresh read of the shared header, exactly as `init_shm_backend`
+    /// does and for the same reason: this number bounds how many pool slots the
+    /// producer pins, and a header rewritten to `u32::MAX` would have it hold a
+    /// reference to every frame it ever sent until the pool ran dry. Before this
+    /// handle has synced (cached capacity 0) there is nothing validated to use,
+    /// so fall back to the header.
+    ///
+    /// Meant to be read per publish, not cached by the caller: `sync_local`
+    /// adopts a new capacity across a grow, and the keep-alive depth has to grow
+    /// with it.
+    pub(crate) fn ring_capacity(&self) -> u32 {
+        match self.local().cached_capacity as u32 {
+            0 => self.header().capacity,
+            cached => cached,
+        }
+    }
+
+    /// Record messages this handle lost for a reason the ring itself cannot see.
+    ///
+    /// The pool-backed types need this: a frame whose backing was released
+    /// before the subscriber read it is lost, but the ring dropped nothing and
+    /// lapped nobody, so no counter inside the ring has anything to report.
+    /// Without this the loss is invisible to `missed_count()` and to
+    /// `stats()`, which is the difference between a lossy transport and an
+    /// unaccountable one.
+    pub(crate) fn note_missed(&self, n: u64) {
+        // One binding, read and written through: `local()` hands out a fresh
+        // `&mut LocalState` derived from the `UnsafeCell` on every call, and two
+        // of them in one statement is a question about evaluation order nobody
+        // should have to answer while reading a counter update.
+        let local = self.local();
+        local.missed = local.missed.wrapping_add(n);
+    }
+
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
     pub fn metrics(&self) -> TopicMetrics {
         TopicMetrics::new(
@@ -3630,13 +3667,15 @@ pub struct Topic<T: TopicMessage> {
     /// How many times `resolve_owner` has looked for a node context and not
     /// found one. Bounds the per-send cost for a topic that has no owner.
     owner_attempts: std::cell::Cell<u16>,
-    /// Keep-alive reference(s) to the last pool-backed message sent, released on
-    /// the next send (or on Drop) so the producer's transport reference does not
-    /// leak. `(pool, primary, secondary)` — the exact pool the retain was taken
-    /// on (so release always matches, even for the auto-pool Tensor path);
-    /// `secondary` is `Some` only for the dual-tensor `CostMap`. Always `None`
-    /// for non-pool-backed message types.
-    last_sent_keepalive: std::cell::Cell<Option<(Arc<TensorPool>, Tensor, Option<Tensor>)>>,
+    /// Keep-alive reference(s) to the pool-backed messages this handle has sent
+    /// that the ring can still reach. Oldest first; an entry is released once
+    /// the ring's capacity has lapped past it (or on Drop), so the producer's
+    /// transport reference does not leak. `(pool, primary, secondary)` — the
+    /// exact pool the retain was taken on (so release always matches, even for
+    /// the auto-pool Tensor path); `secondary` is `Some` only for the
+    /// dual-tensor `CostMap`. Stays empty for non-pool-backed message types.
+    sent_keepalives:
+        std::cell::RefCell<std::collections::VecDeque<(Arc<TensorPool>, Tensor, Option<Tensor>)>>,
 }
 
 // SAFETY (Send): an owned `Topic` carries its `RingTopic` (itself `Send`) plus
@@ -3646,10 +3685,11 @@ unsafe impl<T: TopicMessage> Send for Topic<T> where T::Wire: Send {}
 
 // No `Sync` impl, for the same reason as `RingTopic` above: `send`/`recv` take
 // `&self` and mutate `registered_pub`/`registered_sub`/`owner_attempts` and the
-// `last_sent_keepalive` `Cell`. Two threads sharing one `&Topic<Image>` could
-// both `Cell::replace` the same keep-alive tuple and release the pool slot
+// `sent_keepalives` `RefCell`. Two threads sharing one `&Topic<Image>` could
+// both push and evict from the same keep-alive queue and release the pool slot
 // twice — a use-after-free of shared-memory the subscribers are still reading.
-// `Cell` makes `Topic` `!Sync` all by itself.
+// `RefCell` makes `Topic` `!Sync` all by itself, exactly as the `Cell` it
+// replaced did.
 
 // Compile-time guard: `Topic` must stay `Send` (owned handles move between
 // threads all over the tree) even though it is no longer `Sync`. If a future
@@ -3832,11 +3872,11 @@ impl<T: TopicMessage> Topic<T> {
             .unwrap_or_else(pool_registry::global_pool)
     }
 
-    /// Publish a new pool-backed keep-alive (on `self.pool`) and release the
-    /// previous one, which has now been superseded (drop-oldest). Subscribers
-    /// each hold their own `try_from_wire` reference, so releasing the transport
-    /// reference here can only ever drop the producer's ref — never a live
-    /// reader's.
+    /// Record a new pool-backed keep-alive (on `self.pool`) and release the ones
+    /// the ring can no longer reach — one reference per ring slot, oldest
+    /// evicted first. Subscribers each hold their own `try_from_wire` reference,
+    /// so releasing the transport reference here can only ever drop the
+    /// producer's ref — never a live reader's.
     #[inline]
     fn publish_keepalive(&self, primary: Tensor, secondary: Option<Tensor>) {
         let pool = self.keepalive_pool();
@@ -3852,11 +3892,40 @@ impl<T: TopicMessage> Topic<T> {
         primary: Tensor,
         secondary: Option<Tensor>,
     ) {
-        if let Some(prev) = self
-            .last_sent_keepalive
-            .replace(Some((pool, primary, secondary)))
-        {
-            release_keepalive_tuple(prev);
+        // Hold one reference per slot the ring can hold, not one in total.
+        //
+        // This used to be a depth-1 `Cell`: every send released the previous
+        // frame's pool reference, so a frame that was still sitting unread in
+        // the ring had its backing freed the moment the next one was published.
+        // `try_from_wire` then failed its `try_retain` and `recv()` returned
+        // `None` while `pending_count()` was non-zero — which also breaks
+        // `while let Some(f) = topic.recv()` drain loops.
+        //
+        // Nothing counted that loss, and correctly so: the ring dropped
+        // nothing and lapped nobody, so `dropped_count()` and `missed_count()`
+        // had nothing to report. Measured on a realistic pipeline (publisher
+        // ~10 kHz, subscriber polling ~2 kHz, separate threads) it was 500
+        // frames sent and 1 received, every counter at zero. These are the
+        // Image / PointCloud / DepthImage / Tensor types — camera, lidar and
+        // depth, the highest-volume payloads a robot carries.
+        //
+        // The bound is the ring's own capacity because that is exactly how many
+        // descriptors can be outstanding. Fewer re-creates the bug for the
+        // difference; more pins pool slots the ring can no longer reach.
+        //
+        // Read on every publish rather than resolved once: `sync_local` adopts a
+        // larger capacity across a grow, and a depth frozen at the pre-grow
+        // value would free frames the enlarged ring can still hand out — this
+        // same bug, in the window after a migration. `ring_capacity` reads local
+        // state this handle already caches, not the shared header.
+        let depth = self.ring.ring_capacity().max(1) as usize;
+
+        let mut q = self.sent_keepalives.borrow_mut();
+        q.push_back((pool, primary, secondary));
+        while q.len() > depth {
+            if let Some(prev) = q.pop_front() {
+                release_keepalive_tuple(prev);
+            }
         }
     }
 }
@@ -3866,7 +3935,7 @@ impl<T: TopicMessage> Drop for Topic<T> {
         // Release the final message's keep-alive so it isn't leaked when the
         // producer stops sending. A late subscriber is unaffected: it holds its
         // own reference (`try_from_wire`), which keeps the slot alive.
-        if let Some(ka) = self.last_sent_keepalive.take() {
+        for ka in self.sent_keepalives.borrow_mut().drain(..) {
             release_keepalive_tuple(ka);
         }
     }
@@ -4098,7 +4167,7 @@ where
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
-            last_sent_keepalive: std::cell::Cell::new(None),
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -4160,7 +4229,7 @@ where
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
-            last_sent_keepalive: std::cell::Cell::new(None),
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -4190,7 +4259,7 @@ where
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
-            last_sent_keepalive: std::cell::Cell::new(None),
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
         })
     }
 }
@@ -4285,8 +4354,9 @@ where
             owner_node: self.owner_node.clone(),
             owner_attempts: self.owner_attempts.clone(),
             // A fresh clone has sent nothing yet; each handle tracks and releases
-            // only its own last-sent keep-alive, so clones never double-release.
-            last_sent_keepalive: std::cell::Cell::new(None),
+            // only the keep-alives it published itself, so clones never
+            // double-release.
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
         }
     }
 }
@@ -4299,13 +4369,16 @@ impl Topic<Image> {
     /// Send an image (zero-copy).
     ///
     /// Accepts both owned and borrowed images: `topic.send(img)` or `topic.send(&img)`.
-    /// Retains the tensor so it stays alive for receivers, then sends the
-    /// descriptor through the ring buffer.
+    /// Sends the descriptor through the ring buffer, then retains the tensor so
+    /// it stays alive for receivers until the ring has lapped past the frame.
     pub fn send(&self, img: impl Borrow<Image>) {
         self.register_pub("Image");
         let wire = img.borrow().to_wire(&self.pool);
-        self.publish_keepalive(*wire.tensor(), None);
+        // Ring first, then retain — `try_send` already does this. Retaining
+        // first meant a frame the ring immediately dropped still displaced the
+        // keep-alive of a previously published, still-unread frame.
         self.ring.send(wire);
+        self.publish_keepalive(*wire.tensor(), None);
     }
 
     /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
@@ -4325,7 +4398,16 @@ impl Topic<Image> {
     pub fn recv(&self) -> Option<Image> {
         self.register_sub("Image");
         let wire = self.ring.recv()?;
-        Image::try_from_wire(wire, &self.pool)
+        // A frame whose backing was already released is lost. The ring dropped
+        // nothing and lapped nobody, so nothing inside it can count this —
+        // record it here or it is invisible to every counter.
+        match Image::try_from_wire(wire, &self.pool) {
+            Some(v) => Some(v),
+            None => {
+                self.ring.note_missed(1);
+                None
+            }
+        }
     }
 }
 
@@ -4340,8 +4422,11 @@ impl Topic<PointCloud> {
     pub fn send(&self, pc: impl Borrow<PointCloud>) {
         self.register_pub("PointCloud");
         let wire = pc.borrow().to_wire(&self.pool);
-        self.publish_keepalive(*wire.tensor(), None);
+        // Ring first, then retain — `try_send` already does this. Retaining
+        // first meant a frame the ring immediately dropped still displaced the
+        // keep-alive of a previously published, still-unread frame.
         self.ring.send(wire);
+        self.publish_keepalive(*wire.tensor(), None);
     }
 
     /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
@@ -4361,7 +4446,16 @@ impl Topic<PointCloud> {
     pub fn recv(&self) -> Option<PointCloud> {
         self.register_sub("PointCloud");
         let wire = self.ring.recv()?;
-        PointCloud::try_from_wire(wire, &self.pool)
+        // A frame whose backing was already released is lost. The ring dropped
+        // nothing and lapped nobody, so nothing inside it can count this —
+        // record it here or it is invisible to every counter.
+        match PointCloud::try_from_wire(wire, &self.pool) {
+            Some(v) => Some(v),
+            None => {
+                self.ring.note_missed(1);
+                None
+            }
+        }
     }
 }
 
@@ -4376,8 +4470,11 @@ impl Topic<DepthImage> {
     pub fn send(&self, depth: impl Borrow<DepthImage>) {
         self.register_pub("DepthImage");
         let wire = depth.borrow().to_wire(&self.pool);
-        self.publish_keepalive(*wire.tensor(), None);
+        // Ring first, then retain — `try_send` already does this. Retaining
+        // first meant a frame the ring immediately dropped still displaced the
+        // keep-alive of a previously published, still-unread frame.
         self.ring.send(wire);
+        self.publish_keepalive(*wire.tensor(), None);
     }
 
     /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
@@ -4397,7 +4494,16 @@ impl Topic<DepthImage> {
     pub fn recv(&self) -> Option<DepthImage> {
         self.register_sub("DepthImage");
         let wire = self.ring.recv()?;
-        DepthImage::try_from_wire(wire, &self.pool)
+        // A frame whose backing was already released is lost. The ring dropped
+        // nothing and lapped nobody, so nothing inside it can count this —
+        // record it here or it is invisible to every counter.
+        match DepthImage::try_from_wire(wire, &self.pool) {
+            Some(v) => Some(v),
+            None => {
+                self.ring.note_missed(1);
+                None
+            }
+        }
     }
 }
 
