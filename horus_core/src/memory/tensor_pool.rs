@@ -72,14 +72,38 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// This is what makes "is the creator still alive?" answerable: with every
 /// holder on `LOCK_SH`, a non-blocking `LOCK_EX` upgrade succeeds only when
 /// nobody else has the file open. See `TensorPool::validate_or_reclaim`.
-/// Best-effort — a filesystem without `flock` support simply means abandoned
-/// pools are never reclaimed, which is the behaviour that existed before.
+///
+/// `EINTR` is retried rather than swallowed. `flock` blocks while another
+/// process holds `LOCK_EX` — `is_shm_file_stale` takes exactly that, briefly,
+/// on every candidate it tests — so a signal delivered in that window used to
+/// leave the handle unlocked. That was harmless while the reaper never ran; now
+/// that it does, an unlocked live pool is a pool that gets unlinked an hour
+/// later, which is the failure this lock exists to prevent.
+///
+/// A failure that is not `EINTR` stays best-effort and is logged: it means the
+/// filesystem has no working `flock` (or the kernel lock table is full), and
+/// the alternative — failing `TensorPool::open` — would take a healthy robot's
+/// camera consumer down over a reclamation risk that is an hour away and
+/// conditional. Abandoned pools then simply go unreclaimed, the behaviour that
+/// existed before any of this.
 #[cfg(unix)]
 fn hold_shared_lock(file: &File) {
     use std::os::unix::io::AsRawFd;
-    // SAFETY: `file` is a valid open descriptor; LOCK_SH is a valid flock op.
-    unsafe {
-        libc::flock(file.as_raw_fd(), libc::LOCK_SH);
+    loop {
+        // SAFETY: `file` is a valid open descriptor; LOCK_SH is a valid flock op.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        if rc == 0 {
+            return;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        log::warn!(
+            "flock(LOCK_SH) failed on a tensor pool ({err}); the pool is unprotected \
+             against reap_abandoned_files and abandoned pools here cannot be reclaimed"
+        );
+        return;
     }
 }
 

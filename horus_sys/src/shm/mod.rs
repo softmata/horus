@@ -1486,11 +1486,29 @@ fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
     let now = std::time::SystemTime::now();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // `entry.file_type()` is the type `readdir` already returned — an
+        // lstat, which never follows. `path.is_dir()`/`path.is_file()` are
+        // `stat`, so a symlink here read as whatever it pointed at: a link to a
+        // directory made the recursion below walk straight out of the namespace
+        // and reap files wherever it led, and a link to a file made
+        // `is_shm_file_stale` open and `LOCK_EX` a stranger's file while the
+        // age and size came from the link itself. Only a real directory is
+        // descended into and only a regular file is a candidate; `entry`s own
+        // `metadata()` below is lstat too, so it now describes that same
+        // regular file.
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => {
+                result.skipped += 1;
+                continue;
+            }
+        };
+        if file_type.is_dir() {
             reap_dir(&path, result);
             continue;
         }
-        if !path.is_file() {
+        if !file_type.is_file() {
+            result.skipped += 1;
             continue;
         }
         // A topic's `.meta` sidecar sits beside the region it describes and is
@@ -1568,6 +1586,31 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
     )
 }
 
+/// Reap the abandoned regions inside one namespace directory, if it is ours.
+///
+/// The ownership test is `lstat` on the directory, not a uid parsed out of its
+/// name — these namespaces (`horus_default`, `horus_test_<hash>`, a sanitized
+/// `HORUS_NAMESPACE`) carry no uid in the name at all, our own included. The
+/// parent is `/dev/shm`, mode 1777, so a directory being named `horus_default`
+/// is not evidence that we are the one who created it: any local user can win
+/// that name before the first HORUS process on the box does. Ownership is the
+/// only thing that separates "regions we leaked" from "a stranger's directory
+/// we were pointed at", so it gates our own namespace exactly as it gates
+/// everyone else's.
+fn reap_owned_namespace(
+    path: &std::path::Path,
+    current_uid: u32,
+    result: &mut NamespaceCleanupResult,
+) {
+    if dir_owner_uid(path) != Some(current_uid) {
+        return;
+    }
+    let reaped = reap_abandoned_files(path);
+    result.removed += reaped.removed;
+    result.bytes_freed += reaped.bytes_freed;
+    result.errors.extend(reaped.errors);
+}
+
 /// The scan itself, against an explicit parent directory.
 ///
 /// Split out so it is testable: the real parent is `/dev/shm`, shared with
@@ -1624,12 +1667,12 @@ fn cleanup_stale_namespaces_in(
 
         if dir_name == current_ns {
             // Our own namespace is never removed, but regions a crashed process
-            // left inside it still can be — see `reap_abandoned_files`.
-            let reaped = reap_abandoned_files(&entry.path());
-            result.removed += reaped.removed;
-            result.bytes_freed += reaped.bytes_freed;
+            // left inside it still can be — see `reap_abandoned_files`. Gated on
+            // ownership like every other arm: `horus_<ns>` matching the name we
+            // would have chosen does not prove we chose it, in a parent any
+            // local user can write to.
+            reap_owned_namespace(&entry.path(), current_uid, &mut result);
             result.skipped += 1;
-            result.errors.extend(reaped.errors);
             continue;
         }
 
@@ -1642,12 +1685,7 @@ fn cleanup_stale_namespaces_in(
             // its unheld, hour-old regions go. Ownership is taken from the
             // filesystem rather than the name, which for these directories
             // carries no uid.
-            if dir_owner_uid(&entry.path()) == Some(current_uid) {
-                let reaped = reap_abandoned_files(&entry.path());
-                result.removed += reaped.removed;
-                result.bytes_freed += reaped.bytes_freed;
-                result.errors.extend(reaped.errors);
-            }
+            reap_owned_namespace(&entry.path(), current_uid, &mut result);
             result.skipped += 1;
             continue;
         };
@@ -1989,6 +2027,177 @@ mod tests {
             result.removed, 3,
             "two reaped regions and one removed namespace: {result:?}"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A symlink is neither a namespace nor a region, at either level of the
+    /// scan.
+    ///
+    /// The real parent is `/dev/shm`, mode 1777: any local user can create
+    /// `horus_anything` there, and the sticky bit only stops them *deleting*
+    /// entries that are not theirs. So both loops have to refuse to follow a
+    /// link. The parent loop already did — `entry.file_type()` is the `readdir`
+    /// type, an lstat — but nothing pinned that behaviour down. `reap_dir` did
+    /// not: it asked `path.is_dir()` and `path.is_file()`, which are `stat` and
+    /// follow, so a link to a directory made the recursion walk out of the
+    /// namespace tree and reap whatever it found there, and a link to a file
+    /// made `is_shm_file_stale` open and `LOCK_EX` a stranger's file, with the
+    /// age and size read off the link.
+    #[test]
+    #[cfg(unix)]
+    fn the_scan_follows_no_symlink_at_either_level() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+
+        // SAFETY: getuid() cannot fail and touches no memory.
+        let current_uid = unsafe { libc::getuid() };
+
+        let root = std::env::temp_dir().join(format!("horus_symlink_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let parent = root.join("shm");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&parent).expect("create scan parent");
+        std::fs::create_dir_all(elsewhere.join("topics")).expect("create the link target");
+
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        let plant = |path: std::path::PathBuf| {
+            std::fs::create_dir_all(path.parent().expect("planted file has a parent"))
+                .expect("create planted dir");
+            std::fs::write(&path, b"x").expect("plant file");
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open to set time");
+            f.set_modified(two_hours_ago).expect("backdate");
+            path
+        };
+        // Backdate a symlink itself rather than its target: `set_modified`
+        // opens, and open follows. Without this the planted links would be
+        // seconds old and the age gate, not the symlink check, would be what
+        // spared them — the test would pass with the bug still in.
+        let backdate_link = |path: &std::path::Path| {
+            let secs = two_hours_ago
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("two hours ago is after the epoch")
+                .as_secs() as i64;
+            let times = [
+                libc::timespec {
+                    tv_sec: secs,
+                    tv_nsec: 0,
+                },
+                libc::timespec {
+                    tv_sec: secs,
+                    tv_nsec: 0,
+                },
+            ];
+            let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path has no NUL");
+            // SAFETY: `c` is a valid NUL-terminated path for the life of the
+            // call and `times` is a two-element timespec array, as utimensat
+            // requires.
+            let rc = unsafe {
+                libc::utimensat(
+                    libc::AT_FDCWD,
+                    c.as_ptr(),
+                    times.as_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            assert_eq!(rc, 0, "backdating the link itself must succeed");
+        };
+
+        // Old, unlocked, and named exactly like the things the reaper takes —
+        // but outside the tree, reachable only through a link.
+        let outside_region = plant(elsewhere.join("topics").join("abandoned_region"));
+        let outside_file = plant(elsewhere.join("not_ours"));
+
+        // (1) namespace-level links, which the parent loop must not accept as
+        //     directories. The sid one is shaped so that every other gate would
+        //     pass it: our uid, and a session that is long dead.
+        let evil_ns = parent.join("horus_evil");
+        let evil_sid_ns = parent.join(format!("horus_sid99999999_uid{current_uid}"));
+        symlink(&elsewhere, &evil_ns).expect("plant namespace symlink");
+        symlink(&elsewhere, &evil_sid_ns).expect("plant namespace symlink");
+
+        // (2) region-level links inside a real namespace of ours: one to a
+        //     directory, which `reap_dir` would recurse into, and one to a
+        //     file, which it would `LOCK_EX` and unlink.
+        let ours = parent.join("horus_default");
+        std::fs::create_dir_all(ours.join("topics")).expect("create our namespace");
+        let dir_link = ours.join("topics").join("elsewhere");
+        let file_link = ours.join("topics").join("not_ours");
+        symlink(elsewhere.join("topics"), &dir_link).expect("plant dir symlink");
+        symlink(&outside_file, &file_link).expect("plant file symlink");
+        backdate_link(&dir_link);
+        backdate_link(&file_link);
+        let real_region = plant(ours.join("topics").join("abandoned_region"));
+
+        let result = cleanup_stale_namespaces_in(&parent, "horus_default", current_uid);
+
+        assert!(
+            outside_region.exists() && outside_file.exists() && elsewhere.is_dir(),
+            "nothing reachable only through a symlink may be reaped or removed: {result:?}"
+        );
+        for link in [&evil_ns, &evil_sid_ns, &dir_link, &file_link] {
+            assert!(
+                link.symlink_metadata().is_ok(),
+                "the link itself is left alone too — {} was neither followed nor unlinked",
+                link.display()
+            );
+        }
+        assert!(
+            !real_region.exists(),
+            "the one real abandoned region, sitting beside the links, is still reaped"
+        );
+        assert_eq!(
+            result.removed, 1,
+            "exactly the one real region and nothing through a link: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Bearing our namespace's name is not evidence of being our namespace.
+    ///
+    /// `create_shm_dir_all` already refuses to build inside a base directory it
+    /// does not own, for the reason its comment gives: "/dev/shm is mode 1777
+    /// and the namespace defaults to the fixed literal `default`, so the base
+    /// path is predictable and racing us to it is trivial." The reaper's
+    /// `dir_name == current_ns` arm was the one place that took the name as
+    /// proof and reaped without asking, so it is gated on `lstat` like every
+    /// other arm.
+    #[test]
+    #[cfg(unix)]
+    fn a_namespace_named_like_ours_but_owned_by_another_uid_is_not_reaped() {
+        // SAFETY: getuid() cannot fail and touches no memory.
+        let current_uid = unsafe { libc::getuid() };
+
+        let root = std::env::temp_dir().join(format!("horus_foreign_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let region = root.join("horus_default").join("topics").join("region");
+        std::fs::create_dir_all(region.parent().expect("region has a parent"))
+            .expect("create the planted namespace");
+        std::fs::write(&region, b"x").expect("plant region");
+        std::fs::File::options()
+            .write(true)
+            .open(&region)
+            .expect("open to set time")
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
+            .expect("backdate");
+
+        // Old, unlocked, in a directory named exactly what we would name ours —
+        // everything the reaper takes, except that the tree belongs to
+        // `current_uid` and the scan is running as somebody else. Driving it
+        // from the uid parameter is what makes this testable without root.
+        let result =
+            cleanup_stale_namespaces_in(&root, "horus_default", current_uid.wrapping_add(1));
+
+        assert!(
+            region.exists(),
+            "a `horus_default` we do not own is a stranger's directory, not ours to \
+             reap into: {result:?}"
+        );
+        assert_eq!(result.removed, 0, "nothing may be removed: {result:?}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
