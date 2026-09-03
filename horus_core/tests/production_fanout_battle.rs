@@ -1816,7 +1816,14 @@ fn orphan_topic_files(topic: &str) -> Vec<std::path::PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.is_file()
+            // `symlink_metadata`, not `Path::is_file()`: the latter follows
+            // symlinks, so a link sitting where a region file should be is a
+            // way straight back out of this namespace — the escape route the
+            // whole helper exists to close. `horus_sys::shm` already refuses
+            // a symlinked SHM directory for the same reason
+            // (verify_shm_dir_ownership, horus_sys/src/shm/mod.rs), and
+            // /dev/shm is mode 1777.
+            std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
                 && p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n == topic || n.starts_with(&suffixed))
@@ -1824,15 +1831,42 @@ fn orphan_topic_files(topic: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
+/// Open an SHM backing file for writing without following a symlink.
+///
+/// `orphan_topic_files` screens links out of the *selection*; `O_NOFOLLOW`
+/// closes the window between that check and this open, so neither half of a
+/// swap race can redirect a write out of `shm_topics_dir()`.
+fn open_region_for_write(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path)
+}
+
 /// Overwrite the first 8 bytes of an SHM region — where the magic lives — with
 /// garbage, leaving the length of the file and every other byte alone.
+///
+/// Returns `false` without touching the file if it is shorter than the pattern:
+/// `write_all` would then *grow* it, and "leaves the length alone" is the one
+/// property this helper owes its callers. A real region is far larger than 8
+/// bytes, so a short file here means the selection matched something that is
+/// not a region, which is not something to silently rewrite.
 fn corrupt_magic_bytes(path: &std::path::Path) -> bool {
-    let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) else {
+    const GARBAGE: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+    let Ok(mut f) = open_region_for_write(path) else {
         return false;
     };
+    // Measured through the open handle rather than the path, so the length the
+    // check saw is the length of the file being written.
+    if f.metadata().map(|m| m.len()).unwrap_or(0) < GARBAGE.len() as u64 {
+        return false;
+    }
     use std::io::Write;
-    f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE])
-        .is_ok()
+    f.write_all(&GARBAGE).is_ok()
 }
 
 /// SHM corruption detection: corrupted magic bytes must not cause SIGSEGV.
@@ -1960,19 +1994,37 @@ fn fault_shm_recovery_after_corruption() {
 
     // Zero the head of the orphans this test's own child left (see
     // `orphan_topic_files` — never another namespace's files).
+    use std::io::Write;
+    let mut zeroed = 0usize;
     for path in orphan_topic_files(&name) {
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            let zeros = vec![0u8; metadata.len().min(8192) as usize];
-            // Deliberately not `fs::write`: that opens O_TRUNC, so it does not
-            // zero the first 8 KiB of the region, it cuts the region down to
-            // them — and a still-mapped region then takes SIGBUS past the new
-            // end of file, which is not the corruption this test recovers from.
-            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&path) {
-                use std::io::Write;
-                let _ = f.write_all(&zeros);
-            }
-        }
+        // Deliberately not `fs::write`: that opens O_TRUNC, so it does not
+        // zero the first 8 KiB of the region, it cuts the region down to
+        // them — and a still-mapped region then takes SIGBUS past the new
+        // end of file, which is not the corruption this test recovers from.
+        //
+        // Every failure below is fatal rather than ignored: these are this
+        // test's own files, in its own namespace, under the `cleanup_stale_shm`
+        // guard held for the whole body, so failing to open or write one is a
+        // real fault. Swallowing it left the test asserting nothing but that
+        // `Topic::new` works, under a name that promises recovery-from-
+        // corruption.
+        let mut f = open_region_for_write(&path)
+            .unwrap_or_else(|e| panic!("open orphan {} to corrupt it: {e}", path.display()));
+        let len = f
+            .metadata()
+            .unwrap_or_else(|e| panic!("stat orphan {}: {e}", path.display()))
+            .len();
+        let zeros = vec![0u8; len.min(8192) as usize];
+        f.write_all(&zeros)
+            .unwrap_or_else(|e| panic!("zero orphan {}: {e}", path.display()));
+        zeroed += 1;
     }
+    // Deliberately not `assert!(zeroed > 0)`: whether the SIGKILLed child got
+    // far enough to leave a backing file is timing-dependent, and the sibling
+    // `fault_shm_magic_corruption_rejected` tolerates zero for the same reason.
+    // The count is printed so a run that corrupted nothing says so instead of
+    // looking identical to one that did.
+    eprintln!("Zeroed the head of {zeroed} orphan SHM files");
 
     // Clean up corrupted files
     let _shm_guard = cleanup_stale_shm();
@@ -1997,6 +2049,12 @@ fn fault_shm_recovery_after_corruption() {
 /// concurrent `cargo test` on the box owns a `/dev/shm/horus_test_<hash>`.
 /// Both live in sibling directories of ours and are indistinguishable from it
 /// to a walk that starts at the SHM root.
+///
+/// A symlink planted in our own topics dir is the second way out, and one a
+/// name-and-directory filter alone does not close: `Path::is_file()` follows
+/// it. Measured against these fixtures with the pre-`symlink_metadata`
+/// selection, the foreign region came back with head
+/// `de ad be ef ca fe ba be`.
 #[test]
 fn shm_corruption_stays_inside_this_namespace() {
     if !horus_sys::shm::regions_are_file_backed() {
@@ -2036,6 +2094,16 @@ fn shm_corruption_stays_inside_this_namespace() {
     let ours = topics_dir.join(&name);
     std::fs::write(&ours, &intact).expect("plant our region");
 
+    // A symlink inside our own topics dir, named so the prefix filter matches
+    // it, pointing at the foreign region. `Path::is_file()` follows it and the
+    // corruption lands in the other namespace; `symlink_metadata` does not.
+    // /dev/shm is mode 1777, which is why horus_sys screens SHM directories
+    // for exactly this.
+    #[cfg(unix)]
+    let link = topics_dir.join(format!("{name}_link"));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign, &link).expect("plant symlink decoy");
+
     for path in orphan_topic_files(&name) {
         corrupt_magic_bytes(&path);
     }
@@ -2061,6 +2129,8 @@ fn shm_corruption_stays_inside_this_namespace() {
     );
 
     let _ = std::fs::remove_file(&ours);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&link);
 }
 
 // ============================================================================
