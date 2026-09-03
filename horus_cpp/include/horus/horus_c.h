@@ -78,8 +78,9 @@ int               horus_node_builder_build(HorusNodeBuilder* builder, HorusSched
 
 /* Why the last publisher/subscriber constructor on THIS thread returned null.
    Writes at most buf_len-1 bytes plus a NUL, returns the bytes written, or -1
-   if buf is null or buf_len is 0. Only meaningful immediately after a
-   constructor returned null. */
+   if buf is null or buf_len is 0. Every topic constructor clears the slot
+   before it tries, so this returns 0 after one that succeeded and that call's
+   own reason after one that returned null. */
 int              horus_topic_last_error(char* buf, size_t buf_len);
 
 /* ── CmdVel Topic ────────────────────────────────────────────────────────── */

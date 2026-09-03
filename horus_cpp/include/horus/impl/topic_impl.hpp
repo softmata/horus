@@ -23,7 +23,8 @@ namespace detail {
 /// Reason the topic constructor that just returned null failed.
 ///
 /// Must be called immediately after that constructor — the C API parks the
-/// reason in a per-thread slot the next failing constructor overwrites.
+/// reason in a per-thread slot the next topic constructor on this thread
+/// clears, whether that one goes on to succeed or fail.
 /// 512 bytes covers every reason horus_core produces: the longest quotes the
 /// rejected topic name, and names over 255 chars are rejected by length before
 /// the quoting path is reached.
