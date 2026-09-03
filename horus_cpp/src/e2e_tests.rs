@@ -233,7 +233,7 @@ mod tests {
     fn e2e_params_pipeline() {
         use crate::params_ffi::*;
 
-        let params = params_new();
+        let params = params_new().expect("no params.yaml in the test working directory");
 
         // Set various types
         params_set_f64(&params, "max_speed", 2.5).unwrap();

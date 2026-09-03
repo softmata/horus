@@ -36,6 +36,17 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
+### Fixed
+
+- **cpp** — a malformed `.horus/config/params.yaml` no longer downgrades a C++
+  node to the built-in safety limits. `horus::Params` was the only one of the
+  three bindings that started anyway: Rust's `RuntimeParams::new()` returns
+  `Err` and Python's `Params()` raises, but the C++ constructor took
+  `unwrap_or_default()` and served `max_speed = 1.0` and
+  `emergency_stop_distance = 0.3` under the operator's name, with no channel to
+  tell the caller. `horus_params_new` now returns `NULL` on that path and the
+  `horus::Params` constructor throws `horus::Error`.
+
 ## [0.4.0] — 2026-08-22
 
 The first release since 0.2.2 (2026-07-19). **0.3.0 was tagged and never
