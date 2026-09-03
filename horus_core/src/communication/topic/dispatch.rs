@@ -276,7 +276,7 @@ fn spill_to_pool<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static
 ) -> Option<SpillDescriptor> {
     use crate::types::{Device, TensorDtype};
 
-    let pool = topic.get_or_create_spill_pool();
+    let pool = topic.get_or_create_spill_pool()?;
     let tensor = pool
         .alloc(&[bytes.len() as u64], TensorDtype::U8, Device::cpu())
         .ok()?;
@@ -1027,7 +1027,9 @@ fn deserialize_spill_slot<T: DeserializeOwned>(
 /// for the SP/MP backends; FanoutShm uses `read_spilled_retained` instead.
 fn read_spilled_once<T: DeserializeOwned>(spill: SpillDescriptor, topic_name: &str) -> Option<T> {
     let tensor = spill.to_tensor();
-    let pool = super::pool_registry::get_or_create_pool(topic_name);
+    // No usable pool => the payload is unreachable => a counted miss, the same
+    // answer this returns for a superseded slot. It used to be a panic.
+    let pool = super::pool_registry::get_or_create_pool(topic_name).ok()?;
     // Pin the slot across the read, exactly as `read_spilled_retained` does.
     //
     // "There is exactly one reader" was true and still is; what it did not cover
@@ -1068,7 +1070,8 @@ fn read_spilled_retained<T: DeserializeOwned>(
     topic_name: &str,
 ) -> Option<T> {
     let tensor = spill.to_tensor();
-    let pool = super::pool_registry::get_or_create_pool(topic_name);
+    // No usable pool => the payload is unreachable => a counted miss.
+    let pool = super::pool_registry::get_or_create_pool(topic_name).ok()?;
     // Pin the slot for the read. Err => superseded + freed => clean miss.
     if pool.try_retain(&tensor).is_err() {
         return None;
@@ -1163,11 +1166,15 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 // `try_retain` around their read (`read_spilled_retained`), so a
                 // release here can never tear an in-progress read. Evict BEFORE the
                 // alloc so the pool always has a free slot for the new spill.
-                let pool = topic.get_or_create_spill_pool();
-                let window = (local.cached_capacity as usize).max(1);
-                while local.spill_keepalive.len() >= window {
-                    if let Some(old) = local.spill_keepalive.pop_front() {
-                        pool.release(&old);
+                // No pool => nothing was ever spilled on this handle, so there
+                // is nothing to evict; `spill_to_pool` below returns `None` for
+                // the same reason and the `None` arm sends inline.
+                if let Some(pool) = topic.get_or_create_spill_pool() {
+                    let window = (local.cached_capacity as usize).max(1);
+                    while local.spill_keepalive.len() >= window {
+                        if let Some(old) = local.spill_keepalive.pop_front() {
+                            pool.release(&old);
+                        }
                     }
                 }
                 // Hoisted out of the `match` scrutinee so the shared borrow of

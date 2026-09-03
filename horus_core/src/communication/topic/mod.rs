@@ -2356,19 +2356,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// seed (FNV-1a hash), so publisher and subscriber processes converge on
     /// the same shared memory file.
     ///
+    /// `None` when the pool cannot be opened or created — a pool file left by a
+    /// different `POOL_VERSION` or geometry. Spilling is an optimisation for
+    /// messages larger than a ring slot, so the caller falls back to the inline
+    /// send it already has for a full pool, rather than panicking mid-tick.
+    ///
     /// # Safety
     /// Must be called from the owning thread (Topic is !Sync for mutation).
     /// Uses UnsafeCell — same single-thread guarantee as all other dispatch code.
-    pub(crate) fn get_or_create_spill_pool(&self) -> Arc<TensorPool> {
+    pub(crate) fn get_or_create_spill_pool(&self) -> Option<Arc<TensorPool>> {
         // SAFETY: single-thread ownership — Topic<T> is !Send+!Sync for mutation.
         // UnsafeCell access is safe because dispatch functions run on the owning thread.
         let pool_ref = unsafe { &mut *self.spill_pool.get() };
         if let Some(pool) = pool_ref {
-            return Arc::clone(pool);
+            return Some(Arc::clone(pool));
         }
-        let pool = pool_registry::get_or_create_pool(&self.name);
+        let pool = pool_registry::get_or_create_pool(&self.name).ok()?;
         *pool_ref = Some(Arc::clone(&pool));
-        pool
+        Some(pool)
     }
 
     /// Migration check — reads `migration_epoch` from the SHM header and calls
@@ -3829,7 +3834,7 @@ impl<T: TopicMessage> Topic<T> {
         self.pool
             .as_ref()
             .cloned()
-            .unwrap_or_else(pool_registry::global_pool)
+            .unwrap_or_else(pool_registry::fallback_pool)
     }
 
     /// Publish a new pool-backed keep-alive (on `self.pool`) and release the
@@ -4077,7 +4082,7 @@ where
         let name_str: String = name.into();
         let ring = RingTopic::new(name_str)?;
         let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
+            Some(pool_registry::global_pool()?)
         } else {
             None
         };
@@ -4141,7 +4146,7 @@ where
         let name_str: String = name.into();
         let ring = RingTopic::new_with_kind(name_str, topic_kind)?;
         let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
+            Some(pool_registry::global_pool()?)
         } else {
             None
         };
@@ -4173,7 +4178,7 @@ where
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         let ring = RingTopic::with_capacity(name, capacity, slot_size)?;
         let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
+            Some(pool_registry::global_pool()?)
         } else {
             None
         };
@@ -4407,8 +4412,13 @@ impl Topic<DepthImage> {
 
 impl Topic<Tensor> {
     /// Get or create the auto-managed tensor pool for this topic.
+    ///
+    /// Fallible for the same reason [`Topic::new`] is: a pool file left behind
+    /// by a build with a different `POOL_VERSION` or geometry cannot be opened
+    /// *or* recreated, and this used to turn that into a panic on the
+    /// per-frame allocation path.
     #[doc(hidden)]
-    pub fn pool(&self) -> Arc<TensorPool> {
+    pub fn pool(&self) -> HorusResult<Arc<TensorPool>> {
         pool_registry::get_or_create_pool(self.ring.name())
     }
 
@@ -4420,7 +4430,7 @@ impl Topic<Tensor> {
         dtype: crate::types::TensorDtype,
         device: crate::types::Device,
     ) -> HorusResult<crate::memory::TensorHandle> {
-        let pool = self.pool();
+        let pool = self.pool()?;
         crate::memory::TensorHandle::alloc(pool, shape, dtype, device)
     }
 
@@ -4438,7 +4448,9 @@ impl Topic<Tensor> {
     pub fn recv_handle(&self) -> Option<crate::memory::TensorHandle> {
         self.register_sub("Tensor");
         let tensor = self.ring.recv()?;
-        let pool = self.pool();
+        // An unusable pool reads as "nothing to receive" — `recv_handle` already
+        // returns `None` for a superseded slot, and the caller polls again.
+        let pool = self.pool().ok()?;
         // Take a generation-guarded reference so each subscriber owns its own: a
         // co-subscriber dropping its handle cannot free the slot out from under
         // us. `Err` => the slot was superseded (drop-oldest) before we read it

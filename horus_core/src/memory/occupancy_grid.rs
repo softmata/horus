@@ -48,7 +48,7 @@ impl OccupancyGrid {
     ///
     /// Allocates shared memory from a global pool. Cells are initialized to -1 (unknown).
     pub fn new(width: u32, height: u32, resolution: f32) -> HorusResult<Self> {
-        Self::new_on(width, height, resolution, global_pool())
+        Self::new_on(width, height, resolution, global_pool()?)
     }
 
     /// Create an occupancy grid backed by a specific pool.

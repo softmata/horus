@@ -77,7 +77,7 @@ impl CostMap {
         resolution: f32,
         inflation_radius: f32,
     ) -> HorusResult<Self> {
-        Self::new_on(width, height, resolution, inflation_radius, global_pool())
+        Self::new_on(width, height, resolution, inflation_radius, global_pool()?)
     }
 
     /// Create a cost map backed by a specific pool.

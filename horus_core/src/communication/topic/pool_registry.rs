@@ -11,6 +11,7 @@ use std::sync::Arc;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 
+use crate::error::HorusResult;
 use crate::memory::{TensorPool, TensorPoolConfig};
 
 lazy_static! {
@@ -53,22 +54,39 @@ fn auto_pool_config() -> TensorPoolConfig {
 /// When creating a new pool, GPU hardware is auto-detected and the optimal
 /// allocator backend is selected (managed memory on Jetson, pinned memory
 /// on discrete GPU, mmap on CPU-only).
-pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
+///
+/// # Errors
+///
+/// Returns the error from `TensorPool::new` when neither opening nor creating
+/// the pool works. Both fail together whenever the file on disk disagrees with
+/// this process: a `POOL_VERSION` mismatch, a geometry mismatch, or a file
+/// shorter than this process's geometry. That disagreement is not exotic —
+/// `TensorPool::drop` never unlinks and the filename carries no version, so an
+/// in-place upgrade across any of the four `POOL_VERSION` bumps leaves a
+/// poisoned file behind for the next run to find.
+///
+/// This used to `.expect()`, which turned every one of those into a panic on
+/// the per-frame allocation path, out of constructors (`Topic::new`,
+/// `Image::new`, ...) that return `HorusResult` and so advertise an error
+/// channel the panic bypassed. Inside a tick `NodeRunner::run_tick`'s
+/// `catch_unwind` swallowed it — a measured run had the camera node enter 8
+/// ticks, complete 0, and the process still exit 0 — and outside one it killed
+/// the process.
+pub(crate) fn get_or_create_pool(topic_name: &str) -> HorusResult<Arc<TensorPool>> {
     let mut pools = TOPIC_POOLS.lock();
     if let Some(pool) = pools.get(topic_name) {
-        return Arc::clone(pool);
+        return Ok(Arc::clone(pool));
     }
 
     let pid = pool_id_from_name(topic_name);
 
     let pool = Arc::new(match TensorPool::open(pid) {
         Ok(p) => p,
-        Err(_) => TensorPool::new(pid, auto_pool_config())
-            .expect("failed to create tensor pool for topic"),
+        Err(_) => TensorPool::new(pid, auto_pool_config())?,
     });
 
     pools.insert(topic_name.to_string(), Arc::clone(&pool));
-    pool
+    Ok(pool)
 }
 
 /// Get or create a device-specific tensor pool for a topic name.
@@ -80,8 +98,29 @@ const GLOBAL_POOL_NAME: &str = "__horus_global__";
 ///
 /// Used by `Image::new()`, `PointCloud::new()`, `DepthImage::new()` when
 /// creating types outside of a Topic context. Also used by Python bindings.
-pub(crate) fn global_pool() -> Arc<TensorPool> {
+pub(crate) fn global_pool() -> HorusResult<Arc<TensorPool>> {
     get_or_create_pool(GLOBAL_POOL_NAME)
+}
+
+/// The pool a pool-backed handle falls back to when it carries none.
+///
+/// Unreachable for the types that call it: `Topic::<T>::new` builds the pool
+/// for every `T::needs_pool()` type before the handle exists and `Clone` copies
+/// it, so an `Image`/`PointCloud`/`DepthImage`/`CostMap`/`TensorHandle` handle
+/// reaches `from_wire` or a keep-alive publish with `Some(pool)` — and by then
+/// the pool has already been opened once, so this call hits the cache above
+/// rather than the file.
+///
+/// It exists only because `TopicMessage::from_wire` returns `Self`: it has no
+/// error channel to propagate into, and giving it one would change a trait
+/// every message type implements. Every caller that *does* have a channel —
+/// `try_from_wire`, the constructors, the spill paths — takes the fallible
+/// [`global_pool`] instead.
+pub(crate) fn fallback_pool() -> Arc<TensorPool> {
+    global_pool().expect(
+        "a pool-backed handle always carries its pool (Topic::new builds it), so the \
+         global pool was already opened successfully before this point",
+    )
 }
 
 #[cfg(test)]
@@ -106,5 +145,80 @@ mod tests {
     fn test_pool_id_nonzero() {
         let id = pool_id_from_name("");
         assert_ne!(id, 0);
+    }
+
+    /// A pool file this process disagrees with must be an error, not a panic.
+    ///
+    /// `TensorPool::drop` never unlinks and the filename carries no version, so
+    /// a pool file outlives the process that made it, and an in-place upgrade
+    /// across a `POOL_VERSION` bump leaves one behind for the next run to find
+    /// (a stale 1 GB `tensor_pool_1` was sitting in the default namespace on the
+    /// machine this was written on). Both halves of `get_or_create_pool` then
+    /// fail on it, which is what the planted file below reproduces: `open()`
+    /// rejects the header version, and the `TensorPool::new` fallback rejects
+    /// the geometry the older build laid the file out with.
+    ///
+    /// The `.expect()` this replaces made that a panic out of `Topic::new`,
+    /// `Image::new` and friends — all of which return `HorusResult` — and it
+    /// fired on every call, because the failure happens before `pools.insert`
+    /// and so is never cached. Inside a scheduler tick `catch_unwind` swallowed
+    /// it and the node produced nothing while the process still exited 0;
+    /// outside one it killed the process.
+    ///
+    /// NOTE: without the fix this test does not fail on an assert — it panics
+    /// inside `get_or_create_pool`, which is the defect itself.
+    #[test]
+    fn a_pool_file_this_build_disagrees_with_errors_instead_of_panicking() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let topic = "__horus_test_pool_registry_version_mismatch__";
+        let pid = pool_id_from_name(topic);
+        let path = crate::memory::platform::shm_base_dir()
+            .join("tensors")
+            .join(format!("tensor_pool_{}", pid));
+        let _ = std::fs::remove_file(&path);
+
+        // Plant a real, fully initialized pool whose geometry is NOT
+        // `auto_pool_config()`'s, then let it drop — the file stays.
+        {
+            let config = TensorPoolConfig {
+                pool_size: 64 * 1024,
+                max_slots: 4,
+                ..TensorPoolConfig::default()
+            };
+            TensorPool::new(pid, config).expect("planting the stale pool file");
+        }
+
+        // Age it by one `POOL_VERSION`. `PoolHeader` is `repr(C)` with
+        // `magic: u64` first, so `version: u32` sits at offset 8.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .expect("reopening the planted pool file");
+            let mut version = [0u8; 4];
+            f.seek(SeekFrom::Start(8)).expect("seek to header version");
+            f.read_exact(&mut version).expect("read header version");
+            let older = u32::from_le_bytes(version).wrapping_sub(1);
+            f.seek(SeekFrom::Start(8)).expect("seek to header version");
+            f.write_all(&older.to_le_bytes())
+                .expect("write header version");
+            f.flush().expect("flush header version");
+        }
+
+        let result = get_or_create_pool(topic);
+        let _ = std::fs::remove_file(&path);
+
+        let err = result
+            .err()
+            .expect("a pool file from another POOL_VERSION must fail, not open");
+        // Nothing was cached, so the next caller gets the same error rather
+        // than a half-built pool.
+        assert!(
+            !TOPIC_POOLS.lock().contains_key(topic),
+            "a pool that could not be opened must not be registered: {}",
+            err
+        );
     }
 }
