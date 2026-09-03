@@ -5,6 +5,7 @@
 //!
 //! See blueprint section 15.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -134,21 +135,36 @@ impl NetMetrics {
     ///
     /// A key already present always resolves, so a real fleet never loses
     /// counters it had; only unseen keys are refused once full.
+    ///
+    /// One hash and one probe, not two. The first draft asked
+    /// `contains_key` and then `entry`, which hashes the same key twice on
+    /// every call — and every call is a datagram this process just sent or
+    /// received, so the module's "near-zero overhead" claim has to mean the
+    /// cheaper one. `Entry` answers "present?" and "where does it go?" from a
+    /// single lookup. `len` is read before the borrow because `entry` holds
+    /// `self.peers` for the whole match; it is the length before any insert,
+    /// which is the same quantity the two-lookup form compared.
     fn peer_entry(&mut self, peer_hash: u16) -> Option<&mut PeerMetrics> {
-        if !self.peers.contains_key(&peer_hash) && self.peers.len() >= crate::netfilter::MAX_PEERS {
-            if !self.cap_warned {
-                self.cap_warned = true;
-                horus_core::terminal::eprint_line(&format!(
-                    "[horus_net] Per-peer metrics table is full ({} peers); traffic from \
-                     further peers is uncounted. If this is not a real fleet of that size, \
-                     a host is forging sender ids — check HORUS_NET_ALLOW_PEERS. (Fires \
-                     once.)",
-                    crate::netfilter::MAX_PEERS
-                ));
+        let peers_len = self.peers.len();
+        match self.peers.entry(peer_hash) {
+            Entry::Occupied(row) => Some(row.into_mut()),
+            Entry::Vacant(slot) if peers_len < crate::netfilter::MAX_PEERS => {
+                Some(slot.insert(PeerMetrics::default()))
             }
-            return None;
+            Entry::Vacant(_) => {
+                if !self.cap_warned {
+                    self.cap_warned = true;
+                    horus_core::terminal::eprint_line(&format!(
+                        "[horus_net] Per-peer metrics table is full ({} peers); traffic from \
+                         further peers is uncounted. If this is not a real fleet of that size, \
+                         a host is forging sender ids — check HORUS_NET_ALLOW_PEERS. (Fires \
+                         once.)",
+                        crate::netfilter::MAX_PEERS
+                    ));
+                }
+                None
+            }
         }
-        Some(self.peers.entry(peer_hash).or_default())
     }
 
     /// Record bytes sent to a peer.
