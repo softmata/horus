@@ -11,7 +11,9 @@ name: Autopilot
 #             RECUR. Most red CI here is the runner, not the code.
 #   convoy  — main requires branches be up to date, and GitHub's auto-merge does
 #             not update them, so queued PRs starve. This updates ONE. It calls
-#             `gh pr update-branch` and nothing else.
+#             `gh pr update-branch`, then `gh pr merge --auto` to put back the
+#             auto-merge that updating a branch clears — arming the same flag
+#             the PR was selected for, never merging anything itself.
 
 on:
   schedule:
@@ -239,8 +241,12 @@ jobs:
           printf '%s queued PR(s) behind; updating #%s, rest wait.\n' \
             "$total" "$front"
 
-          gh pr update-branch "$front" --repo "$GITHUB_REPOSITORY" \
-            || echo "::warning::could not update #$front"
+          if gh pr update-branch "$front" --repo "$GITHUB_REPOSITORY"; then
+            updated=1
+          else
+            updated=0
+            echo "::warning::could not update #$front"
+          fi
 
           # Re-arm auto-merge. Updating a branch CLEARS it, and this job selects
           # candidates BY auto-merge being enabled — so without this line every
@@ -255,8 +261,28 @@ jobs:
           # Re-arming only restores the state the PR was selected for. It cannot
           # arm a PR that did not already have auto-merge on, so the
           # human-intent guard in the selection filter is unchanged.
-          gh pr merge "$front" --repo "$GITHUB_REPOSITORY" --auto --squash \
-            || echo "::warning::could not re-arm auto-merge on #$front"
+          #
+          # A failed re-arm is fatal only when the update SUCCEEDED, and that
+          # asymmetry is the whole point:
+          #   update failed  -> auto-merge was never cleared, the PR is still a
+          #                     candidate, and the next run retries it. That is
+          #                     self-healing, so a warning is the honest report.
+          #   update worked  -> auto-merge is gone and nothing else puts it
+          #                     back. The PR has left this job's candidate list
+          #                     for good, and a warning on a green run is
+          #                     exactly the silent no-op the `set -e` above
+          #                     exists to stop.
+          if ! gh pr merge "$front" --repo "$GITHUB_REPOSITORY" --auto --squash
+          then
+            if [ "$updated" -eq 1 ]; then
+              echo "::error::#$front was updated but could not be re-armed, so"
+              echo "::error::its auto-merge is now OFF and this job will not see"
+              echo "::error::it again. Re-arm with: gh pr merge $front --auto --squash"
+              exit 1
+            fi
+            echo "::warning::could not re-arm auto-merge on #$front; its update"
+            echo "::warning::also failed, so auto-merge was never cleared"
+          fi
 
           if [ "$total" -gt 1 ]; then
             # paste joins with a single separator and no trailing one; `tr`
