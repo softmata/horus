@@ -61,6 +61,27 @@ const CARGO_FLAGS_TAKING_A_VALUE: [&str; 15] = [
     "-j",
 ];
 
+/// The same thing for libtest, applied only after `--`. Disjoint from the list
+/// above on purpose: `--test` is a cargo flag naming a target and takes a
+/// value, while libtest has no `--test` at all, and `--test-threads` is the
+/// reverse. `--skip` is deliberately absent — it is matched earlier so its
+/// value is captured rather than discarded.
+///
+/// Every `--test-threads` in these workflows is written `--test-threads=1`
+/// today, which needs no entry here because the value rides along in the token.
+/// The space-separated spelling is equally valid and is what this guards: left
+/// unhandled, `-- --test-threads 1` files `1` as a positional filter, and a
+/// filter of `1` selects `topic_cross_thread_1p_multi_c_spmc` while excluding
+/// `topic_cross_thread_mpmc_pre_initialized_99_percent`, which contains no `1`.
+const LIBTEST_FLAGS_TAKING_A_VALUE: [&str; 6] = [
+    "--test-threads",
+    "--logfile",
+    "--format",
+    "--color",
+    "--shuffle-seed",
+    "-Z",
+];
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -159,7 +180,17 @@ fn harness_args(cmd: &str) -> HarnessArgs {
             break;
         }
         args.next();
-        if head == "test" || head == "llvm-cov" {
+        if head == "test" {
+            break;
+        }
+        if head == "llvm-cov" {
+            // `cargo llvm-cov` with no subcommand implies `test`, so the
+            // subcommand is optional and can only be consumed conditionally.
+            // Left in place it parses as a positional filter: `cargo llvm-cov
+            // test --lib` would run only tests whose path contains `test`.
+            if matches!(args.peek(), Some(&"test") | Some(&"nextest")) {
+                args.next();
+            }
             break;
         }
     }
@@ -172,7 +203,12 @@ fn harness_args(cmd: &str) -> HarnessArgs {
         } else if arg == "--skip" {
             skips.extend(args.next().map(str::to_string));
         } else if arg.starts_with('-') {
-            if !after_dashdash && CARGO_FLAGS_TAKING_A_VALUE.contains(&arg) {
+            let takes_a_separate_value = if after_dashdash {
+                LIBTEST_FLAGS_TAKING_A_VALUE.contains(&arg)
+            } else {
+                CARGO_FLAGS_TAKING_A_VALUE.contains(&arg)
+            };
+            if takes_a_separate_value {
                 args.next();
             }
         } else {
@@ -261,4 +297,132 @@ fn the_pr_gate_is_one_of_those_runners() {
              takes them back to zero runners.\n  {cmd}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unit coverage for the two matchers above.
+//
+// Both assertions in this file reduce to "some parsed command runs this test
+// path", so every way the parsers can misread a command surfaces there as a
+// bare pass or fail with no indication of which. One direction of that is
+// silent: a `harness_args` that stopped recognising `--skip` yields an empty
+// `skips`, `runs()` then answers true for everything, and the contract passes
+// while nothing executes. The `cmds.len() >= 6` guard does not catch it — that
+// checks only that commands were *found*, not that they were read correctly.
+//
+// So pin the readings directly, including the spellings CI does not use today
+// but is free to adopt tomorrow.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shell_commands_joins_continuations_and_drops_prose() {
+    const BLOCK: &str = r#"
+      - name: Run Tests
+        run: |
+          # cargo test --workspace --lib, named here only in prose
+          cargo test --workspace --exclude horus_py --lib --no-fail-fast -- \
+            --test-threads=1 \
+            --skip test_robotics_autonomous_car_perception
+      - name: The one-line form
+        run: cargo test -p horus_core --lib -- --skip something
+"#;
+
+    let cmds = shell_commands(BLOCK);
+
+    // Every `--skip` in these workflows sits on a continuation line. Read as
+    // physical lines, the `cargo test` and its exclusions are unrelated
+    // strings and the contract cannot see either.
+    assert!(
+        cmds.iter().any(|c| c.as_str()
+            == "cargo test --workspace --exclude horus_py --lib --no-fail-fast \
+                -- --test-threads=1 --skip test_robotics_autonomous_car_perception"),
+        "continuation lines were not joined into one command: {cmds:#?}"
+    );
+
+    assert!(
+        cmds.iter()
+            .any(|c| c.as_str() == "cargo test -p horus_core --lib -- --skip something"),
+        "the one-line `run:` form was not unwrapped: {cmds:#?}"
+    );
+
+    // docs-contract.yml discusses `cargo test --workspace --lib` in a comment.
+    // Counting that as a job makes this file pass while nothing runs.
+    assert!(
+        !cmds.iter().any(|c| c.contains("named here only in prose")),
+        "a `#` comment was collected as a command: {cmds:#?}"
+    );
+}
+
+#[test]
+fn harness_args_reads_the_spellings_ci_can_use() {
+    let spmc = MUST_RUN_SOMEWHERE[0];
+    let mpmc = MUST_RUN_SOMEWHERE[1];
+    let pre_init = MUST_RUN_SOMEWHERE[2];
+
+    // ci.yml's gate, as it stands after this change.
+    let gate = harness_args(
+        "cargo test --workspace --exclude horus_py --lib --no-fail-fast -- \
+         --test-threads=1 --skip test_robotics_autonomous_car_perception",
+    );
+    assert!(
+        gate.filters.is_empty(),
+        "`horus_py` (the value of --exclude) leaked in as a filter: {:?}",
+        gate.filters
+    );
+    assert_eq!(gate.skips, ["test_robotics_autonomous_car_perception"]);
+    assert!(gate.runs(spmc) && gate.runs(mpmc) && gate.runs(pre_init));
+
+    // `--skip` in both spellings, and a pattern that matches by substring.
+    let skipped = harness_args(
+        "cargo test --no-default-features -p horus_core --lib -- \
+         --skip topic_cross_thread_1p_multi_c_spmc --skip=topic_cross_thread_multi_p_multi_c_mpmc",
+    );
+    assert!(
+        !skipped.runs(spmc),
+        "the space-separated --skip was dropped"
+    );
+    assert!(!skipped.runs(mpmc), "the --skip= form was dropped");
+    assert!(skipped.runs(pre_init));
+
+    // The space-separated `--test-threads`. libtest accepts it, and without the
+    // value being swallowed `1` becomes a positional filter — which selects
+    // `..._1p_multi_c_spmc` and silently drops `..._pre_initialized_99_percent`.
+    let spaced = harness_args("cargo test -p horus_core --lib -- --test-threads 1");
+    assert!(
+        spaced.filters.is_empty(),
+        "`1`, the value of --test-threads, was filed as a test-name filter: {:?}",
+        spaced.filters
+    );
+    assert!(spaced.runs(spmc) && spaced.runs(mpmc) && spaced.runs(pre_init));
+
+    // `cargo llvm-cov test` — the explicit spelling of coverage.yml's bare
+    // `cargo llvm-cov`. `test` is a subcommand, not a filter.
+    let cov = harness_args("cargo llvm-cov test --workspace --lib -- --test-threads=1");
+    assert!(
+        cov.filters.is_empty(),
+        "the `test` subcommand was parsed as a test-name filter: {:?}",
+        cov.filters
+    );
+    assert!(cov.runs(spmc) && cov.runs(mpmc) && cov.runs(pre_init));
+
+    // The bare form still parses, and `+toolchain` / `miri` are not filters.
+    let bare = harness_args("cargo llvm-cov --workspace --lib -- --skip topic_cross_thread");
+    assert!(bare.filters.is_empty() && !bare.runs(spmc));
+    let miri = harness_args("cargo +nightly miri test -p horus_core --lib");
+    assert!(miri.filters.is_empty() && miri.runs(spmc));
+
+    // A real positional filter must still be read as one — that is the whole
+    // reason cargo's value-taking flags are enumerated.
+    let named = harness_args("cargo test -p horus_manager --lib source_resolver -- --ignored");
+    assert_eq!(named.filters, ["source_resolver"]);
+    assert!(!named.runs(spmc));
+
+    // `--exact` turns substring matching into equality, for filters and skips.
+    let exact = harness_args("cargo test -p horus_core --lib -- --exact topic_cross_thread");
+    assert!(
+        !exact.runs(spmc),
+        "--exact was ignored: a bare stem matched a full path"
+    );
+    let exact_hit = harness_args(&format!("cargo test -p horus_core --lib -- --exact {spmc}"));
+    assert!(exact_hit.runs(spmc) && !exact_hit.runs(mpmc));
 }
