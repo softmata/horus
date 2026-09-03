@@ -284,12 +284,31 @@ mod tests {
     // superseded (unread) message is released on the next send, so a stream of
     // sends does not leak pool slots. Before the fix, `to_wire`'s retain was
     // never balanced for multi-subscriber topics and each send leaked a slot.
+    /// A topic name no other run, process or test shares.
+    ///
+    /// These two tests used fixed names. A SHM topic outlives the process that
+    /// created it, so a fixed name means a previous run's region — possibly
+    /// with an incompatible geometry — is what the next run attaches to. That
+    /// is not hypothetical in this repo: a topic name shared between two
+    /// message types is what produces `signal: 7, SIGBUS` in #144, and a
+    /// leftover region of the wrong shape produces the "shared header declares
+    /// slot_size N" refusal. Neither failure names the test that caused it.
+    fn unique_topic(suffix: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "test.comm_h2.keepalive.{suffix}.{}.{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
     #[test]
     fn image_topic_holds_keepalives_for_the_whole_ring_then_releases() {
         use crate::communication::topic::Topic;
         const CAP: u32 = 4;
-        let topic = Topic::<Image>::with_capacity("test.comm_h2.keepalive.bound", CAP, None)
-            .expect("topic");
+        let name = unique_topic("bound");
+        let topic = Topic::<Image>::with_capacity(&name, CAP, None).expect("topic");
 
         let a = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc a");
         let pool = a.pool().clone();
@@ -335,10 +354,11 @@ mod tests {
         const CAP: u32 = 8;
         const SENT: usize = 5;
 
-        let tx =
-            Topic::<Image>::with_capacity("test.comm_h2.keepalive.drain", CAP, None).expect("tx");
-        let rx =
-            Topic::<Image>::with_capacity("test.comm_h2.keepalive.drain", CAP, None).expect("rx");
+        // ONE name for both handles -- they must meet on the same topic -- but a
+        // name no other run shares.
+        let name = unique_topic("drain");
+        let tx = Topic::<Image>::with_capacity(&name, CAP, None).expect("tx");
+        let rx = Topic::<Image>::with_capacity(&name, CAP, None).expect("rx");
 
         for i in 0..SENT {
             let img = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc");
