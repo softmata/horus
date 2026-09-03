@@ -5,9 +5,11 @@
 //! rendezvous. It contains participant tracking, topology detection, and
 //! migration coordination.
 
+use std::collections::HashSet;
 use std::mem;
 use std::mem::offset_of;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use crate::error::{HorusError, HorusResult};
 
@@ -765,6 +767,10 @@ impl TopicHeader {
         now_ms: u64,
         timeout_ms: u64,
     ) {
+        // The one place a thread takes ownership of a slot, so the one place to
+        // record it as a live owner: the last-resort pass in `register_role`
+        // refuses to reclaim an entry whose thread is still running.
+        mark_thread_live(thread_hash);
         p.pid.store(pid, Ordering::Release);
         p.thread_id_hash.store(thread_hash, Ordering::Release);
         p.role.store(role_bit, Ordering::Release);
@@ -846,10 +852,23 @@ impl TopicHeader {
         }
 
         // Pass 3, last resort: a stale entry belonging to a thread of THIS
-        // process. `Drop for Topic` does not deregister, so a finished thread's
-        // slot is never reclaimed by anything else — and the reaper skips our
-        // own pid deliberately, because it cannot tell a departed thread from a
-        // busy one. A foreign live pid is never stolen.
+        // process that has ENDED. `Drop for Topic` does not deregister, so a
+        // finished thread's slot is never reclaimed by anything else — and the
+        // reaper skips our own pid deliberately, because it cannot tell a
+        // departed thread from a busy one. A foreign live pid is never stolen.
+        //
+        // "Ended" is asked of `thread_is_live`, not of the lease. The lease was
+        // the whole bug the paragraph above describes, and passes 1-2 only
+        // removed it for the case where a free slot exists: leases refresh every
+        // `LEASE_CHECK_INTERVAL` = 64 polls (dispatch.rs), so a subscriber
+        // polling at 1 Hz sits expired for ~92% of every cycle while draining
+        // the ring normally. Stealing from it decrements `subscriber_count`
+        // under a live reader — the under-count direction, the dangerous one:
+        // `nothing_is_draining` then sees `sub_count() == 0` and the lossy
+        // `send` starts retiring slots the victim has not read yet, and the
+        // victim never recovers, because `ensure_role` short-circuits on the
+        // role it already believes it holds. Refusing the registration outright
+        // is the honest alternative.
         for (i, p) in self.participants.iter().enumerate() {
             if p.active.load(Ordering::Acquire) != 1 {
                 continue;
@@ -858,6 +877,9 @@ impl TopicHeader {
                 continue;
             }
             if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != pid {
+                continue;
+            }
+            if thread_is_live(p.thread_id_hash.load(Ordering::Acquire)) {
                 continue;
             }
             if p.active
@@ -1888,6 +1910,80 @@ pub(crate) fn hash_thread_id(id: std::thread::ThreadId) -> u64 {
     hasher.finish()
 }
 
+/// Thread hashes of THIS process that own a participant slot and are still
+/// running.
+///
+/// `register_role`'s last-resort pass reclaims a lease-expired slot from our own
+/// pid — nothing else can, because `Drop` does not deregister (see
+/// `tests/participant_count_leak.rs` for why that is still open) and the reaper
+/// skips our own pid deliberately. What it must not do is take one from a thread
+/// that is still using it, and the lease cannot tell it apart: leases are
+/// refreshed every `LEASE_CHECK_INTERVAL` = 64 polls (dispatch.rs), so a
+/// subscriber polling at 1 Hz — an ordinary robotics rate — is expired for most
+/// of every cycle while reading perfectly well.
+///
+/// Process-local rather than another shared-memory field, because the entries
+/// that pass can touch are already restricted to `pid == ours`: a foreign
+/// process's participants are judged by `is_process_alive` instead, and a
+/// process-local set needs no header version bump and no `ParticipantEntry`
+/// bytes.
+static LIVE_THREADS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+
+fn live_threads() -> &'static Mutex<HashSet<u32>> {
+    LIVE_THREADS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Takes this thread's hash back out of [`LIVE_THREADS`] when the thread ends.
+///
+/// Thread exit is the event that makes a slot genuinely reclaimable, and a
+/// thread-local's destructor is the only notification of it this crate gets:
+/// the participant table is in shared memory and the handles that registered
+/// against it are long gone by then.
+struct LiveThreadTicket(u32);
+
+impl Drop for LiveThreadTicket {
+    fn drop(&mut self) {
+        live_threads()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+thread_local! {
+    static LIVE_THREAD_TICKET: std::cell::RefCell<Option<LiveThreadTicket>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record this thread as a live owner of participant slots.
+///
+/// The hash goes into the set only from inside the thread-local that will take
+/// it out again: an entry with no ticket behind it would mark the thread live
+/// for the life of the process and make every slot it holds permanently
+/// unreclaimable — trading a wrong steal for a slow leak. `try_with` fails only
+/// while this thread's TLS is already being destroyed, and a thread that far
+/// into its exit has no slot worth protecting.
+fn mark_thread_live(thread_hash: u32) {
+    let _ = LIVE_THREAD_TICKET.try_with(|ticket| {
+        let mut ticket = ticket.borrow_mut();
+        if ticket.is_none() {
+            live_threads()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(thread_hash);
+            *ticket = Some(LiveThreadTicket(thread_hash));
+        }
+    });
+}
+
+/// True while a thread of this process carrying this hash is still running.
+fn thread_is_live(thread_hash: u32) -> bool {
+    live_threads()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&thread_hash)
+}
+
 /// Monotonic milliseconds — the timebase for every timestamp this header keeps.
 ///
 /// Participant leases, `last_topology_change_ms` and the drain-stall detector
@@ -2848,6 +2944,73 @@ mod tests {
         .join()
         .unwrap();
         result.unwrap_err();
+    }
+
+    /// A slot may only be taken from a thread that has ENDED.
+    ///
+    /// `register_role`'s last-resort pass reclaims a lease-expired slot held by
+    /// our own pid, and an expired lease proves nothing about the owner: leases
+    /// refresh every `LEASE_CHECK_INTERVAL` = 64 polls (dispatch.rs), so a
+    /// subscriber polling at 1 Hz is expired for ~92% of every cycle while
+    /// draining the ring normally. Taking its slot decremented
+    /// `subscriber_count` under a live reader, after which `nothing_is_draining`
+    /// reads `sub_count() == 0` and the lossy `send` retires slots that reader
+    /// has not taken yet — the same silent loss passes 1-2 were introduced to
+    /// eliminate, still reachable through pass 3 whenever the table is full.
+    #[test]
+    fn a_running_thread_never_loses_its_slot_to_a_new_registration() {
+        let h = make_header(8, 8, true, 16);
+        let header_ptr = &h as *const TopicHeader as usize;
+
+        // A subscriber on another thread, parked for the whole test so there is
+        // no doubt it is still there.
+        let (registered_tx, registered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let victim = std::thread::spawn(move || {
+            // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
+            // outlives this thread (main thread joins before h is dropped).
+            let h = unsafe { &*(header_ptr as *const TopicHeader) };
+            let slot = h.register_consumer().expect("subscriber registers");
+            let hash = hash_thread_id(std::thread::current().id()) as u32;
+            registered_tx.send((slot, hash)).unwrap();
+            release_rx.recv().ok();
+        });
+        let (victim_slot, victim_hash) = registered_rx.recv().expect("subscriber registered");
+        assert_eq!(h.sub_count(), 1);
+
+        // Its lease has run out — all that says is that it has been polling
+        // below the refresh rate.
+        h.participants[victim_slot]
+            .lease_expires_ms
+            .store(1, Ordering::Release);
+
+        // Every other slot is held, with a lease that is still good, so the two
+        // safe passes find nothing and the last resort runs.
+        let fresh = current_time_ms() + 60_000;
+        for i in 0..MAX_PARTICIPANTS {
+            if i != victim_slot {
+                plant_participant(&h, i, std::process::id(), 1, fresh);
+            }
+        }
+
+        let result = h.register_producer();
+
+        assert!(
+            result.is_err(),
+            "the only reclaimable-looking slot belongs to a thread that is still \
+             running, so there is no slot to hand out; got {result:?}"
+        );
+        assert_eq!(
+            h.sub_count(),
+            1,
+            "the running subscriber is still registered and still reading"
+        );
+        let entry = &h.participants[victim_slot];
+        assert_eq!(entry.thread_id_hash.load(Ordering::Acquire), victim_hash);
+        assert_eq!(entry.role.load(Ordering::Acquire), 2);
+
+        release_tx.send(()).ok();
+        victim.join().unwrap();
     }
 
     // ── Topology detection ──────────────────────────────────────────────
