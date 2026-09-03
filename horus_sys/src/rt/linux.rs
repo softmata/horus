@@ -59,9 +59,10 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
 /// batch wakeups and save power. For a periodic control loop that is a 50 us
 /// error added to every single wake.
 ///
-/// `nanoseconds` of 0 is not "no slack": the kernel reads a non-positive
-/// argument as "restore this thread's inherited default" and puts the 50 us
-/// back. That is why the callers in this workspace pass 1.
+/// `nanoseconds` of 0 is not "no slack": 0 is the one value the kernel reads as
+/// "restore this thread's inherited default", and it puts the 50 us back. Every
+/// other value is the slack itself. That is why the callers in this workspace
+/// pass 1.
 ///
 /// It applies to SCHED_OTHER threads. A SCHED_FIFO/RR thread already gets zero
 /// slack from the kernel, so this call is a no-op for a fully privileged RT
@@ -595,16 +596,34 @@ mod tests {
 
     /// 0 is the kernel's "restore the inherited default", not "no slack" --
     /// the contract the doc comment promises and the reason callers pass 1.
+    ///
+    /// The default is not the constant 50000: a thread inherits whatever its
+    /// spawning thread's slack was at the moment of the spawn, and slack
+    /// survives fork and exec, so a test binary launched from anything that had
+    /// already lowered its own slack starts lower. Read the inherited value
+    /// from inside the thread instead of assuming it.
     #[test]
     fn zero_restores_the_default_rather_than_setting_zero() {
         std::thread::spawn(|| {
-            set_timer_slack(1).expect("set 1 ns");
-            assert_eq!(timer_slack_ns(), Some(1));
+            let inherited = timer_slack_ns().expect("read the inherited default");
+
+            // Probe with a value the inherited default is not, so "restored the
+            // default" and "kept what I just set" cannot look the same.
+            let probe = if inherited == 1 { 2 } else { 1 };
+            set_timer_slack(probe).expect("set the probe value");
+            assert_eq!(timer_slack_ns(), Some(probe));
 
             set_timer_slack(0).expect("set 0");
             let restored = timer_slack_ns().expect("read slack back");
             assert_ne!(restored, 0, "0 must not arm zero slack");
-            assert_ne!(restored, 1, "0 must not leave the previous value in place");
+            assert_ne!(
+                restored, probe,
+                "0 must not leave the previous value in place"
+            );
+            assert_eq!(
+                restored, inherited,
+                "0 must restore the default this thread inherited at spawn"
+            );
         })
         .join()
         .expect("spawned thread panicked");

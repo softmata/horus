@@ -151,11 +151,11 @@ pub fn lock_memory() -> anyhow::Result<()> {
 /// for the degraded path where `set_realtime_priority` was refused for lack of
 /// CAP_SYS_NICE and HORUS continued at normal priority.
 ///
-/// `nanoseconds` is the slack itself, and 0 is not "no slack": Linux reads a
-/// non-positive argument as "restore this thread's inherited default" and hands
-/// back the 50 us. Pass 1 for the tightest setting. A value too wide for the
-/// target's `unsigned long` (32 bits on armv7) is refused with an error rather
-/// than wrapped into a smaller one.
+/// `nanoseconds` is the slack itself, except for 0: 0 is the one value Linux
+/// reads as "restore this thread's inherited default", and it hands back the
+/// 50 us. Pass 1 for the tightest setting. A value too wide for the target's
+/// `unsigned long` (32 bits on armv7) is refused with an error rather than
+/// wrapped into a smaller one.
 ///
 /// Returns `Ok(())` and does nothing on platforms without the concept, so
 /// callers do not need to branch.
