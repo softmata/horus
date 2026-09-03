@@ -202,13 +202,35 @@ pub const COLO_PAYLOAD_OFF: usize = 8;
 /// eligibility rule, not a soft preference.
 pub const COLO_MAX_PAYLOAD: usize = CACHE_LINE - COLO_PAYLOAD_OFF;
 
-/// Whether a topic of `type_size` bytes should use the colo layout.
+/// Whether a topic of `type_size` bytes and `type_align` alignment should use
+/// the colo layout.
 ///
 /// POD only: a serde topic carries its own in-slot length word and variable
 /// payload, so there is no fixed geometry to co-locate.
+///
+/// Alignment is a hard gate, not a preference, and it is the reason this
+/// function takes an alignment at all. A colo payload starts `COLO_PAYLOAD_OFF`
+/// bytes into a slot that itself starts on a cache line, so its address is
+/// `8 mod 16` in **every** slot of **every** colo region, and nothing anywhere
+/// rounds a slot up to `align_of::<T>()`. Selecting colo on `type_size` alone
+/// therefore handed a 16-byte, 16-aligned message (`#[repr(align(16))]`, a
+/// `u128` field, an SSE vector) a home it cannot legally occupy: a release
+/// build vectorised the 16-byte publish into `movaps %xmm0,(%rax)` with `rax`
+/// ending in 0x288 — 648, `HEADER_SIZE + COLO_PAYLOAD_OFF` — and took SIGSEGV
+/// on the first `send`, while debug builds emitted two 8-byte stores and
+/// passed.
+///
+/// Such a type falls back to the split layout, whose data region starts at
+/// `640 + capacity * 8` — aligned for it at every capacity but 1.
 #[inline]
-pub const fn colo_eligible(is_pod: bool, type_size: usize) -> bool {
-    is_pod && type_size > 0 && type_size <= COLO_MAX_PAYLOAD
+pub const fn colo_eligible(is_pod: bool, type_size: usize, type_align: usize) -> bool {
+    is_pod
+        && type_size > 0
+        && type_size <= COLO_MAX_PAYLOAD
+        // `is_multiple_of` rather than `%`: `align_of` is never 0, but this is a
+        // `pub` predicate, and a 0 answers "not eligible" here instead of
+        // dividing by zero.
+        && COLO_PAYLOAD_OFF.is_multiple_of(type_align)
 }
 
 /// Bytes per colo slot: stamp + payload, rounded up to whole cache lines.

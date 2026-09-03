@@ -113,9 +113,16 @@
 //!    write and read of each slot. CAS operations use `AcqRel` for read-modify-
 //!    write consistency.
 //!
-//! 6. **SIMD operations**: `simd_aware_read`/`simd_aware_write` require aligned,
-//!    non-overlapping source/dest within the data region. The SHM layout ensures
-//!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
+//! 6. **SIMD operations**: `simd_aware_read`/`simd_aware_write` require
+//!    non-overlapping source/dest within the data region. They do NOT require
+//!    alignment, and must not: no `slot_size` rounding to `mem::align_of::<T>()`
+//!    exists anywhere in the layout — this invariant claimed one for years and
+//!    there was none. A split slot sits at `640 + capacity * 8 + i *
+//!    size_of::<T>()` and a colo payload at `640 + i * stride + 8`, so a
+//!    16-aligned message is 8 mod 16 in a colo region and in a capacity-1 split
+//!    one. Both helpers therefore copy bytes; a typed `ptr::read`/`ptr::write`
+//!    on a slot is UB and, for the shapes LLVM vectorises, a `movaps` fault in
+//!    release that debug builds do not reproduce.
 
 use std::sync::atomic::{fence, Ordering};
 
@@ -1341,8 +1348,8 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // cached_seq_ptr points to the per-slot ready-flag array (set unconditionally
-    // in ensure_role). index*8 is within bounds. simd_aware_write handles alignment
-    // (slot_size is rounded to align_of::<T>()).
+    // in ensure_role). index*8 is within bounds. simd_aware_write copies bytes, so
+    // the slot needs no alignment — nothing rounds slot_size to align_of::<T>().
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
@@ -1883,7 +1890,8 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // The producer's Release store on sequence_or_head was observed via our Acquire load.
-    // simd_aware_read handles alignment (slot_size rounded to align_of::<T>()).
+    // simd_aware_read copies bytes, so the slot needs no alignment — nothing
+    // rounds slot_size to align_of::<T>().
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         simd_aware_read(base.add((tail & mask) as usize))

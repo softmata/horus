@@ -604,8 +604,25 @@ impl From<SendBlockingError> for crate::error::HorusError {
 
 /// Write a message to a ring buffer slot, using SIMD streaming stores for large POD types.
 ///
+/// Byte copy, never `ptr::write::<T>`, for the same reason
+/// `simd_aware_read_uninit` reads bytes rather than a `T`: a slot is untyped
+/// shared memory at an address the *layout* picked, not memory the compiler
+/// aligned for `T`. `colo_eligible` now keeps types stricter than
+/// `COLO_PAYLOAD_OFF` off the colo geometry, but the split geometry is not
+/// aligned either — its data region starts at `640 + capacity * 8`, which is
+/// 8 mod 16 for `capacity == 1` — and rounding that up would move an offset
+/// `horus_net`'s `ShmRingWriter` and `header::read_slot_inner` each compute
+/// independently. A typed store is what turned that into a fault: LLVM
+/// vectorised `ptr::write` of a 16-byte `#[repr(align(16))]` message into
+/// `movaps %xmm0,(%rax)` and the first `send` took SIGSEGV in release while
+/// passing in debug.
+///
+/// `mem::forget` drops nothing that needed dropping: every caller is a
+/// `dispatch::send_shm_*_pod` path, and `is_pod` implies `!needs_drop::<T>()`.
+///
 /// # Safety
-/// `dst` must be valid for writes of `size_of::<T>()` bytes and properly aligned.
+/// `dst` must be valid for writes of `size_of::<T>()` bytes. Alignment is NOT
+/// required.
 #[inline(always)]
 unsafe fn simd_aware_write<T>(dst: *mut T, msg: T) {
     if mem::size_of::<T>() >= SIMD_COPY_THRESHOLD {
@@ -614,16 +631,21 @@ unsafe fn simd_aware_write<T>(dst: *mut T, msg: T) {
             dst as *mut u8,
             mem::size_of::<T>(),
         );
-        mem::forget(msg);
     } else {
-        std::ptr::write(dst, msg);
+        std::ptr::copy_nonoverlapping(
+            &msg as *const T as *const u8,
+            dst as *mut u8,
+            mem::size_of::<T>(),
+        );
     }
+    mem::forget(msg);
 }
 
 /// Read a message from a ring buffer slot, using SIMD prefetched reads for large POD types.
 ///
 /// # Safety
-/// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
+/// `src` must be valid for reads of `size_of::<T>()` bytes, and must hold a
+/// valid `T`. Alignment is not required — the copy underneath is byte-wise.
 #[inline(always)]
 unsafe fn simd_aware_read<T>(src: *const T) -> T {
     simd_aware_read_uninit(src).assume_init()
@@ -642,9 +664,10 @@ unsafe fn simd_aware_read<T>(src: *const T) -> T {
 /// bytes are dropped as raw memory and never become a `T`.
 ///
 /// # Safety
-/// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
-/// The caller must only `assume_init()` the result once it has established that
-/// the bytes are a valid, fully-written `T`.
+/// `src` must be valid for reads of `size_of::<T>()` bytes. Alignment is not
+/// required — the copy is byte-wise. The caller must only `assume_init()` the
+/// result once it has established that the bytes are a valid, fully-written
+/// `T`.
 #[inline(always)]
 unsafe fn simd_aware_read_uninit<T>(src: *const T) -> mem::MaybeUninit<T> {
     let mut msg = mem::MaybeUninit::<T>::uninit();
@@ -1006,7 +1029,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // horus_py contains no slot-size computation at all (nor does
         // horus_cpp) — both are FFI wrappers over this same Rust code, so
         // there is only one side.
-        let colo = layout::colo_eligible(is_pod, type_size as usize);
+        let colo = layout::colo_eligible(is_pod, type_size as usize, type_align as usize);
         let actual_slot_size = if is_pod {
             let ts = type_size as usize;
             if colo {
@@ -2759,6 +2782,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
                 // masked to ring capacity, so it is always in bounds. The capacity check above
                 // ensures the slot is not occupied (no unconsumed data will be overwritten).
+                // `simd_aware_write` rather than `ptr::write`, on both branches,
+                // for the reason given at its definition: a slot address is
+                // whatever the layout put it at, and a typed store to one that
+                // is not `align_of::<T>()`-aligned is UB — a `movaps` fault in
+                // release for the shapes LLVM vectorises.
                 unsafe {
                     let idx = (head & local.cached_capacity_mask) as usize;
                     let (stamp, data) = dispatch::slot_ptrs::<T>(local, idx);
@@ -2770,10 +2798,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         // path could previously skip stamping entirely.
                         let seq = head.wrapping_add(1);
                         (*stamp).store(seq | layout::SLOT_WRITING, Ordering::Release);
-                        std::ptr::write(data, msg);
+                        simd_aware_write(data, msg);
                         (*stamp).store(seq, Ordering::Release);
                     } else {
-                        std::ptr::write(data, msg);
+                        simd_aware_write(data, msg);
                     }
                 }
                 local.local_head = head.wrapping_add(1);
@@ -3176,12 +3204,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
                 // masked to ring capacity, so it is always in bounds. The head-tail check above
                 // ensures the slot contains a valid, initialized message written by send().
+                // `simd_aware_read` and not `ptr::read`, mirroring the write
+                // side: the slot carries no alignment guarantee for `T`, and a
+                // typed load from one is UB.
                 let msg = unsafe {
                     let (_, data) = dispatch::slot_ptrs::<T>(
                         local,
                         (tail & local.cached_capacity_mask) as usize,
                     );
-                    std::ptr::read(data as *const T)
+                    simd_aware_read(data as *const T)
                 };
                 local.local_tail = tail.wrapping_add(1);
                 local.msg_counter = local.msg_counter.wrapping_add(1);

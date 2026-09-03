@@ -536,7 +536,7 @@ impl TopicHeader {
         // lives — the disagreement mode that made the horus_net offset drift
         // a silent corruption instead of a loud failure.
         self.layout_kind.store(
-            if layout::colo_eligible(is_pod, type_size as usize) {
+            if layout::colo_eligible(is_pod, type_size as usize, type_align as usize) {
                 layout::LAYOUT_COLO
             } else {
                 layout::LAYOUT_SPLIT
