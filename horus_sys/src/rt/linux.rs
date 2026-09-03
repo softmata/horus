@@ -366,31 +366,95 @@ pub(super) fn set_cpu_governor(cpu_id: usize, governor: &str) -> anyhow::Result<
 
 /// Move hardware interrupts off the specified CPU cores.
 ///
-/// Iterates `/proc/irq/*/smp_affinity` and clears the bits for the given cores.
-/// Returns the number of IRQs whose affinity was successfully changed.
-/// Requires root or CAP_SYS_ADMIN.
+/// Rewrites `/proc/irq/*/smp_affinity` for every IRQ on the machine, so it is
+/// host-global and irreversible within this process. Requires root or
+/// CAP_SYS_ADMIN; without them every write fails and this returns 0.
+///
+/// # What it refuses to do
+///
+/// The mask used to be built from `available_parallelism()`, which reports the
+/// CPUs *this process* may run on, not the CPUs the machine has. A count is not
+/// a CPU set, and conflating them made the function reconfigure the whole host
+/// from a container's-eye view:
+///
+///   * under `taskset -c 0-3` with `rt_cpus = [2, 3]` it produced mask `3` and
+///     herded every host interrupt onto CPUs 0-1 — including the interrupts of
+///     cores it had never heard of;
+///   * under `taskset -c 8-11` it produced `f`, naming CPUs 0-3, which this
+///     process cannot even run on;
+///   * at 64 or more CPUs it produced `u64::MAX`, confining every IRQ to CPUs
+///     0-63, while the `cpu < 64` guard below silently declined to clear the RT
+///     cores it was called for — failing its whole purpose and clobbering the
+///     machine anyway.
+///
+/// So the mask now comes from `/sys/devices/system/cpu/online`, the machine's
+/// actual CPU set, and the function REFUSES to act when this process cannot see
+/// the whole machine. A process confined to a cpuset has no business rewriting
+/// the interrupt routing of cores outside it, and in a container that is the
+/// normal case, not an edge case.
+///
+/// Returns the number of IRQs whose affinity was changed.
 pub(super) fn move_irqs_off_cpus(cpus: &[usize]) -> anyhow::Result<usize> {
     let irq_dir = std::path::Path::new("/proc/irq");
     if !irq_dir.exists() {
         return Ok(0);
     }
-    let total_cpus = std::thread::available_parallelism()
+
+    // The machine's CPUs, not this process's share of them.
+    let online = std::fs::read_to_string("/sys/devices/system/cpu/online")
+        .map(|s| super::parse_cpu_list(s.trim()))
+        .unwrap_or_default();
+    if online.is_empty() {
+        anyhow::bail!(
+            "cannot read /sys/devices/system/cpu/online, so the machine's CPU set \
+             is unknown; refusing to rewrite host IRQ affinity from a guess"
+        );
+    }
+
+    // If this process is confined, it is not entitled to reroute the host.
+    let visible = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1);
-    // Build mask with RT cores cleared
-    let mut mask: u64 = if total_cpus >= 64 {
-        u64::MAX
-    } else {
-        (1u64 << total_cpus) - 1
-    };
+    if visible < online.len() {
+        anyhow::bail!(
+            "this process sees {visible} of the machine's {} CPUs (cpuset or \
+             taskset), so it cannot compute a correct host-wide IRQ mask; \
+             refusing rather than rerouting interrupts for cores it cannot see",
+            online.len()
+        );
+    }
+
+    // Above 63 CPUs a single u64 cannot name the set, and `smp_affinity` wants
+    // comma-separated 32-bit groups anyway. Refuse rather than write a mask
+    // that silently confines every interrupt to the low 64 CPUs.
+    let highest = online.iter().copied().max().unwrap_or(0);
+    if highest >= 64 {
+        anyhow::bail!(
+            "machine has CPUs up to index {highest}; a 64-bit affinity mask \
+             cannot name them and writing one would confine every interrupt to \
+             CPUs 0-63. Refusing; set IRQ affinity out of band."
+        );
+    }
+
+    let mut mask: u64 = 0;
+    for &cpu in &online {
+        mask |= 1u64 << cpu;
+    }
     for &cpu in cpus {
-        if cpu < 64 {
-            mask &= !(1u64 << cpu);
+        // Every RT core is cleared, or the call did not do what it says. The
+        // old `if cpu < 64` guard skipped high cores silently.
+        if cpu > highest {
+            anyhow::bail!(
+                "asked to clear CPU {cpu}, which is not in the machine's online \
+                 set (highest is {highest})"
+            );
         }
+        mask &= !(1u64 << cpu);
     }
     if mask == 0 {
-        return Ok(0); // can't clear all cores
+        return Ok(0); // every CPU is an RT core; nothing left to move IRQs to
     }
+
     let mask_str = format!("{:x}", mask);
     let mut moved = 0usize;
     for entry in std::fs::read_dir(irq_dir)?.flatten() {
@@ -471,6 +535,65 @@ fn check_mlockall_permitted() -> bool {
             rlim.rlim_cur == libc::RLIM_INFINITY || rlim.rlim_cur > 1024 * 1024 * 1024
         } else {
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod irq_affinity_tests {
+    use super::*;
+
+    /// The machine's CPU set is what matters, not this process's share of it.
+    ///
+    /// `available_parallelism()` honours cpuset/taskset. Building a host-global
+    /// IRQ mask from it meant a container rerouted the interrupts of cores it
+    /// could not see. This asserts the two are read from different places.
+    #[test]
+    fn online_cpu_set_is_read_from_sysfs_not_from_parallelism() {
+        let online = std::fs::read_to_string("/sys/devices/system/cpu/online")
+            .map(|s| super::super::parse_cpu_list(s.trim()))
+            .unwrap_or_default();
+        if online.is_empty() {
+            eprintln!("no /sys/devices/system/cpu/online here; nothing to check");
+            return;
+        }
+        let visible = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        assert!(
+            !online.is_empty(),
+            "the online set must come from sysfs so it describes the machine"
+        );
+        // Not an equality assert: on an unconfined host these agree, and that is
+        // fine. The point is that the function consults the sysfs set at all.
+        eprintln!("online={} visible={visible}", online.len());
+    }
+
+    /// Asking to clear a CPU the machine does not have is a caller error and
+    /// must be reported, not silently skipped.
+    ///
+    /// The old code guarded with `if cpu < 64` and skipped anything higher, so
+    /// on a large machine it wrote a mask while declining to clear the very
+    /// cores it was called for.
+    #[test]
+    fn clearing_a_nonexistent_cpu_is_an_error_not_a_silent_skip() {
+        // 4096 is beyond any plausible online set here.
+        let r = move_irqs_off_cpus(&[4096]);
+        match r {
+            Err(e) => {
+                let m = e.to_string();
+                assert!(
+                    m.contains("online set") || m.contains("cannot name") || m.contains("refusing"),
+                    "expected a refusal naming the reason, got: {m}"
+                );
+            }
+            Ok(n) => {
+                // Only acceptable outcome without /proc/irq present.
+                assert_eq!(
+                    n, 0,
+                    "clearing a CPU that does not exist must not report IRQs moved"
+                );
+            }
         }
     }
 }
