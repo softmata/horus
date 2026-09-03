@@ -5860,3 +5860,123 @@ fn a_zero_copy_publisher_is_attributed_under_a_real_scheduler() {
          (none)\""
     );
 }
+
+// ---------------------------------------------------------------------------
+// RT nodes joined by a topic edge are not ordered against each other
+// ---------------------------------------------------------------------------
+
+/// Two RT nodes connected by a topic must be reported, because the executor
+/// gives them no ordering.
+///
+/// Every RT node becomes its own single-node chain, and the RT executor does not
+/// sequence chains against each other (the `rt_chains` construction says so in
+/// as many words). So an RT consumer downstream of an RT producer reads the
+/// producer's PREVIOUS tick at a phase offset fixed when the threads started.
+/// Nothing about that is visible at runtime: the edge exists, data flows, and
+/// every value looks plausible while being one cycle stale.
+///
+/// On a legged robot that edge is estimator -> controller, and one stale cycle
+/// of state estimate at 1 kHz is a real torque error. It has to be said out loud
+/// at build time.
+#[test]
+fn rt_nodes_joined_by_a_topic_are_reported_as_unordered() {
+    let _guard = lock_scheduler();
+
+    struct Producer {
+        out: crate::communication::topic::Topic<u64>,
+    }
+    impl Node for Producer {
+        fn name(&self) -> &'static str {
+            "rt_producer"
+        }
+        fn tick(&mut self) {
+            let _ = self.out.send(1u64);
+        }
+    }
+    struct Consumer {
+        inp: crate::communication::topic::Topic<u64>,
+    }
+    impl Node for Consumer {
+        fn name(&self) -> &'static str {
+            "rt_consumer"
+        }
+        fn tick(&mut self) {
+            let _ = self.inp.recv();
+        }
+    }
+
+    let topic = format!("rt_edge_probe_{}", std::process::id());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
+    let _ = scheduler
+        .add(Producer {
+            out: crate::communication::topic::Topic::new(&topic).expect("pub topic"),
+        })
+        .rate(1000_u64.hz())
+        .build();
+    let _ = scheduler
+        .add(Consumer {
+            inp: crate::communication::topic::Topic::new(&topic).expect("sub topic"),
+        })
+        .rate(1000_u64.hz())
+        .build();
+
+    // Roles are normally learned from real send/recv during ticks. Declare them
+    // directly so the graph has edges without running the scheduler.
+    let tnr = crate::communication::topic_node_registry();
+    tnr.register_with_type(
+        &topic,
+        "rt_producer",
+        crate::communication::topic::NodeTopicRole::Publisher,
+        "u64",
+    );
+    tnr.register_with_type(
+        &topic,
+        "rt_consumer",
+        crate::communication::topic::NodeTopicRole::Subscriber,
+        "u64",
+    );
+
+    scheduler.build_dependency_graph();
+
+    let edges =
+        Scheduler::unordered_rt_edges(&scheduler.nodes, scheduler.dependency_graph.as_ref());
+
+    assert!(
+        edges
+            .iter()
+            .any(|(p, c)| p == "rt_producer" && c == "rt_consumer"),
+        "an RT->RT topic edge was not reported; found {:?}. Two RT nodes sharing \
+         a topic get no ordering from the executor and the consumer silently \
+         reads a one-cycle-old value.",
+        edges
+    );
+}
+
+/// A node with no RT peer must produce no report.
+///
+/// The warning is only useful if it is quiet when there is nothing to say; a
+/// warning that fires on every graph trains people to ignore it.
+#[test]
+fn a_lone_rt_node_reports_nothing() {
+    let _guard = lock_scheduler();
+
+    struct Solo;
+    impl Node for Solo {
+        fn name(&self) -> &'static str {
+            "rt_solo"
+        }
+        fn tick(&mut self) {}
+    }
+
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
+    let _ = scheduler.add(Solo).rate(1000_u64.hz()).build();
+    scheduler.build_dependency_graph();
+
+    let edges =
+        Scheduler::unordered_rt_edges(&scheduler.nodes, scheduler.dependency_graph.as_ref());
+    assert!(
+        edges.is_empty(),
+        "a single RT node with no peers reported {:?}",
+        edges
+    );
+}

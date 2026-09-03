@@ -1543,6 +1543,52 @@ impl Scheduler {
         }
     }
 
+    /// Topic edges between two RT nodes, which the executor does not order.
+    ///
+    /// Returns `(producer, consumer)` name pairs rather than printing, so the
+    /// detection can be tested without standing up executors or capturing
+    /// stdout. The caller does the reporting.
+    fn unordered_rt_edges(
+        nodes: &[super::types::RegisteredNode],
+        graph: Option<&super::dependency_graph::DependencyGraph>,
+    ) -> Vec<(String, String)> {
+        let mut found = Vec::new();
+        use super::types::ExecutionClass;
+
+        let Some(graph) = graph else { return found };
+        if !graph.has_topic_metadata() {
+            // No edges were derived, so there is nothing to say. Staying quiet
+            // is right here: a false "your nodes are unordered" on a graph that
+            // simply has no metadata would train people to ignore the warning.
+            return found;
+        }
+        let successors = graph.successors();
+        if successors.len() != nodes.len() {
+            // Indices would not line up with names; say nothing rather than
+            // name the wrong pair of nodes.
+            return found;
+        }
+
+        let is_rt = |i: usize| matches!(nodes[i].execution_class, ExecutionClass::Rt);
+
+        for (producer, downstream) in successors.iter().enumerate() {
+            if !is_rt(producer) {
+                continue;
+            }
+            for &consumer in downstream {
+                if consumer >= nodes.len() || !is_rt(consumer) {
+                    continue;
+                }
+                found.push((
+                    nodes[producer].name.to_string(),
+                    nodes[consumer].name.to_string(),
+                ));
+            }
+        }
+
+        found
+    }
+
     /// Apply OS-level RT optimizations (memory locking, scheduling, affinity, NUMA).
     fn apply_rt_optimizations(
         &mut self,
@@ -1776,7 +1822,74 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.set_os_priority(99)?;  // Highest priority
     /// ```
-    #[doc(hidden)]
+    /// Apply RT hygiene to the CALLING thread, in the order that works.
+    ///
+    /// `run()` does all of this for the threads it spawns. A scheduler driven
+    /// externally through [`tick_once()`](Self::tick_once) ticks on the
+    /// caller's thread instead, and that thread gets none of it — so a fieldbus
+    /// integration (`ec_receive_processdata()` -> `tick_once()` ->
+    /// `ec_send_processdata()`) runs the control loop on an ordinary
+    /// `SCHED_OTHER` thread with pageable memory unless it asks.
+    ///
+    /// Order is not arbitrary and is the reason this exists as one call:
+    ///
+    /// 1. `mlockall` FIRST, so every later allocation is locked as it is made.
+    ///    Locking after the stack has grown leaves the already-faulted pages
+    ///    fine but does nothing for what the thread has yet to touch.
+    /// 2. Pre-fault the stack, so the first deep call in the loop does not take
+    ///    a page fault at cycle time. With memory already locked, the faulted
+    ///    pages stay resident.
+    /// 3. Raise scheduling priority, so the thread is only made
+    ///    latency-critical once its memory is in order.
+    /// 4. Pin last — affinity is independent of the rest, and doing it after
+    ///    the policy change keeps the placement decision on the final policy.
+    ///
+    /// Returns the degradations that occurred rather than failing: a caller
+    /// that must not run degraded should inspect the result and refuse, the
+    /// same choice [`require_rt()`](Self::require_rt) makes for `run()`. An
+    /// empty vector means everything requested was applied.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let degraded = sched.prepare_current_thread_rt(80, Some(2), 8 << 20);
+    /// if !degraded.is_empty() {
+    ///     // Do not arm the robot on a thread that did not get what it asked for.
+    ///     return Err(format!("RT setup incomplete: {degraded:?}").into());
+    /// }
+    /// loop {
+    ///     bus.receive()?;
+    ///     sched.tick_once()?;
+    ///     bus.send()?;
+    /// }
+    /// ```
+    pub fn prepare_current_thread_rt(
+        &self,
+        priority: i32,
+        cpu: Option<usize>,
+        prefault_bytes: usize,
+    ) -> Vec<String> {
+        let mut degradations = Vec::new();
+
+        if let Err(e) = self.lock_memory() {
+            degradations.push(format!("memory locking: {e}"));
+        }
+        if prefault_bytes > 0 {
+            if let Err(e) = self.prefault_stack(prefault_bytes) {
+                degradations.push(format!("stack prefault: {e}"));
+            }
+        }
+        if let Err(e) = self.set_os_priority(priority) {
+            degradations.push(format!("rt priority: {e}"));
+        }
+        if let Some(cpu_id) = cpu {
+            if let Err(e) = self.pin_to_cpu(cpu_id) {
+                degradations.push(format!("cpu affinity: {e}"));
+            }
+        }
+
+        degradations
+    }
+
     pub fn set_os_priority(&self, priority: i32) -> crate::error::HorusResult<()> {
         if !(1..=99).contains(&priority) {
             return Err(crate::error::HorusError::config(
@@ -1799,7 +1912,6 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.pin_to_cpu(7)?;
     /// ```
-    #[doc(hidden)]
     pub fn pin_to_cpu(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
         super::rt::set_thread_affinity(&[cpu_id])?;
         print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
@@ -1814,7 +1926,6 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.lock_memory()?;
     /// ```
-    #[doc(hidden)]
     pub fn lock_memory(&self) -> crate::error::HorusResult<()> {
         super::rt::lock_all_memory()?;
         print_line("[OK] Memory locked (no page faults)");
@@ -1829,7 +1940,6 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.prefault_stack(8 * 1024 * 1024)?;  // 8MB stack
     /// ```
-    #[doc(hidden)]
     pub fn prefault_stack(&self, stack_size: usize) -> crate::error::HorusResult<()> {
         super::rt::prefault_stack(stack_size)?;
         print_line(&format!(
@@ -2759,6 +2869,42 @@ impl Scheduler {
                 // - AsyncIo nodes → AsyncExecutor (tokio blocking pool)
                 // - BestEffort nodes → stay in self.nodes for main-thread sequential execution
                 let all_nodes = std::mem::take(&mut self.nodes);
+
+                // Warn on RT->RT topic edges before the partition consumes the
+                // list, while node names and graph indices still line up.
+                //
+                // Every RT node becomes its own single-node chain below, and the
+                // executor gives NO ordering guarantee between chains (see the
+                // comment at the `rt_chains` construction). So an RT consumer
+                // downstream of an RT producer reads the producer's PREVIOUS
+                // tick, at a phase offset fixed when the threads happened to
+                // start. That is invisible: the graph edge exists, the data
+                // flows, every value looks plausible, and it is simply one
+                // cycle stale at an offset nobody chose.
+                //
+                // On a legged robot this is the estimator->controller edge, and
+                // one stale cycle of state estimate at 1 kHz is a real torque
+                // error. Silence is the wrong default for a hazard whose only
+                // symptom is slightly-wrong numbers, so name it: which two
+                // nodes, and what to do about it.
+                for (producer, consumer) in
+                    Self::unordered_rt_edges(&all_nodes, self.dependency_graph.as_ref())
+                {
+                    print_line(&format!(
+                        "[SCHEDULER] '{producer}' -> '{consumer}': both are real-time \
+                         nodes, and the RT executor does not order RT nodes against \
+                         each other. '{consumer}' will read the value '{producer}' \
+                         published on its PREVIOUS tick, at a phase offset fixed at \
+                         thread start."
+                    ));
+                    print_line(
+                        "  To sequence them: put both in one node, or drive the chain \
+                         yourself with tick_once(). To keep them independent, treat \
+                         the input as one cycle old — which for a state estimate \
+                         feeding a controller is a real torque error.",
+                    );
+                }
+
                 let groups = super::types::group_nodes_by_class(all_nodes);
 
                 // BestEffort nodes remain on the main thread
@@ -4539,12 +4685,34 @@ impl Scheduler {
         }
 
         // Rate limiting (skip in deterministic mode — SimClock controls timing)
+        //
+        // The comparison carries a half-driving-period tolerance for the same
+        // reason rt_executor.rs does (see "halving the effective rate of every
+        // RT node" there). `last_tick` is stamped inside the tick, after this
+        // gate, so an on-time cycle measures a hair under one period and a
+        // strict `<` refuses it — the node then fires every *other* cycle.
+        //
+        // This path is the one `tick_once()` uses, which is how a fieldbus
+        // drives HORUS: ec_receive_processdata() -> tick_once() ->
+        // ec_send_processdata(). There the effect is worse than on the internal
+        // loop, because the cycle arrives on the BUS's crystal rather than this
+        // host's CLOCK_MONOTONIC, so "a hair early" is the normal case rather
+        // than a boundary condition. Measured before this tolerance: a
+        // .rate(1000hz) node saw 240 of 400 cycles from a 1 kHz drive.
+        //
+        // The tolerance is half the DRIVING period (the scheduler's configured
+        // tick rate), not half the node's own period. That bound is what keeps
+        // a slower node honest: a 100 Hz node driven at 1 kHz can be admitted at
+        // most 500 us early, never a full period early, so it cannot be
+        // accelerated toward the drive rate.
         if !self.pending_config.timing.deterministic_order {
             if let Some(rate_hz) = registered.rate_hz {
                 if let Some(last_tick) = registered.last_tick {
                     let elapsed_secs = (Instant::now() - last_tick).as_secs_f64();
                     let period_secs = if rate_hz > 0.0 { 1.0 / rate_hz } else { 0.0 };
-                    if elapsed_secs < period_secs {
+                    let drive_hz = self.pending_config.timing.global_rate_hz;
+                    let tolerance_secs = if drive_hz > 0.0 { 0.5 / drive_hz } else { 0.0 };
+                    if elapsed_secs < period_secs - tolerance_secs {
                         return false;
                     }
                 }
