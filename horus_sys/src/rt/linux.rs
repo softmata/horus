@@ -49,11 +49,19 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
 
 /// Set this thread's timer slack, in nanoseconds.
 ///
-/// Linux gives every thread 50 us of timer slack by default (see
-/// `/proc/self/timerslack_ns`). The kernel is then free to delay any
-/// `nanosleep`, `clock_nanosleep`, `futex` timeout or poll wake by up to that
-/// much, so it can batch wakeups and save power. For a periodic control loop
-/// that is a 50 us error added to every single wake.
+/// A thread starts with 50 us of timer slack: 50000 ns is the value the kernel
+/// gives `init_task`, and every task inherits its parent's current slack as its
+/// own default across both fork and exec, so 50 us is what anything launched
+/// from an ordinary shell begins with. It is inherited rather than fixed, so a
+/// process started under something that had already lowered its own slack
+/// starts lower. The kernel is then free to delay any `nanosleep`,
+/// `clock_nanosleep`, `futex` timeout or poll wake by up to that much, so it can
+/// batch wakeups and save power. For a periodic control loop that is a 50 us
+/// error added to every single wake.
+///
+/// `nanoseconds` of 0 is not "no slack": the kernel reads a non-positive
+/// argument as "restore this thread's inherited default" and puts the 50 us
+/// back. That is why the callers in this workspace pass 1.
 ///
 /// It applies to SCHED_OTHER threads. A SCHED_FIFO/RR thread already gets zero
 /// slack from the kernel, so this call is a no-op for a fully privileged RT
@@ -71,10 +79,22 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
 ///       1 ns slack:            p50  4.3 us   p90 16.7 us   p99  25-116 us
 /// ```
 pub(super) fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
+    // The prctl argument is an `unsigned long`, which is 32 bits on
+    // armv7-unknown-linux-gnueabihf -- a target multi-platform.yml checks on
+    // every PR. A bare `as` cast wraps there instead of failing, so a caller
+    // asking for 5_000_000_000 ns would silently arm 705 ms and still be told
+    // it succeeded. Reject what the target cannot represent.
+    let slack = libc::c_ulong::try_from(nanoseconds).map_err(|_| {
+        anyhow::anyhow!(
+            "timer slack {} ns does not fit this target's unsigned long (max {} ns)",
+            nanoseconds,
+            libc::c_ulong::MAX
+        )
+    })?;
+
     // SAFETY: PR_SET_TIMERSLACK takes a single unsigned long argument and
-    // affects only the calling thread. A value of 0 means "restore the
-    // default", which is why the caller is expected to pass >= 1.
-    let result = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, nanoseconds as libc::c_ulong) };
+    // affects only the calling thread.
+    let result = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, slack) };
     if result == 0 {
         Ok(())
     } else {
@@ -84,12 +104,31 @@ pub(super) fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
 }
 
 /// This thread's current timer slack in nanoseconds, if it can be read.
+///
+/// Asks `PR_GET_TIMERSLACK` rather than reading `/proc/self/timerslack_ns`,
+/// because slack is per-thread and that file is not:
+///
+/// - `/proc/self` is the thread-group leader's directory, so every thread but
+///   the leader would be reporting some other task's slack;
+/// - the kernel only lets a task read another task's `timerslack_ns` with
+///   CAP_SYS_NICE, so in practice the read does not even return the wrong
+///   number off the leader -- it fails with EPERM and this returns `None` for a
+///   thread whose slack is perfectly well set;
+/// - `timerslack_ns` exists only in the tgid directory, so there is no
+///   `/proc/self/task/<tid>/timerslack_ns` to read instead.
+///
+/// prctl returns the value through a C `int`, so a slack above `i32::MAX`
+/// (2.1 s, far past anything a timed wait would want) cannot come back through
+/// it and yields `None`.
 pub(super) fn timer_slack_ns() -> Option<u64> {
-    std::fs::read_to_string("/proc/self/timerslack_ns")
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    // SAFETY: PR_GET_TIMERSLACK takes no further arguments and reports the
+    // calling thread's slack as the return value.
+    let result = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK) };
+    if result < 0 {
+        None
+    } else {
+        Some(result as u64)
+    }
 }
 
 /// Set SCHED_FIFO priority for the current thread.
@@ -516,6 +555,73 @@ fn check_mlockall_permitted() -> bool {
             rlim.rlim_cur == libc::RLIM_INFINITY || rlim.rlim_cur > 1024 * 1024 * 1024
         } else {
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property the whole pair exists for. `timer_slack_ns` used to read
+    /// `/proc/self/timerslack_ns`, which is the thread-group leader's file: the
+    /// spawned thread's read returned EPERM (`None`) instead of its own 7777,
+    /// because the kernel guards another task's `timerslack_ns` behind
+    /// CAP_SYS_NICE. The RT thread that `set_timer_slack` is called on is never
+    /// the leader, so that is the only thread anyone would ask about.
+    #[test]
+    fn timer_slack_is_per_thread() {
+        let original = timer_slack_ns().expect("read this thread's slack");
+        set_timer_slack(4321).expect("set slack on this thread");
+
+        let spawned = std::thread::spawn(|| {
+            set_timer_slack(7777).expect("set slack on the spawned thread");
+            timer_slack_ns()
+        })
+        .join()
+        .expect("spawned thread panicked");
+
+        assert_eq!(spawned, Some(7777), "spawned thread reported another task");
+        assert_eq!(
+            timer_slack_ns(),
+            Some(4321),
+            "this thread's slack changed when another thread set its own"
+        );
+
+        // Under `--test-threads=1` (how CI runs these) this is the harness
+        // thread every other test also runs on, so hand it back unchanged.
+        set_timer_slack(original).expect("restore slack");
+    }
+
+    /// 0 is the kernel's "restore the inherited default", not "no slack" --
+    /// the contract the doc comment promises and the reason callers pass 1.
+    #[test]
+    fn zero_restores_the_default_rather_than_setting_zero() {
+        std::thread::spawn(|| {
+            set_timer_slack(1).expect("set 1 ns");
+            assert_eq!(timer_slack_ns(), Some(1));
+
+            set_timer_slack(0).expect("set 0");
+            let restored = timer_slack_ns().expect("read slack back");
+            assert_ne!(restored, 0, "0 must not arm zero slack");
+            assert_ne!(restored, 1, "0 must not leave the previous value in place");
+        })
+        .join()
+        .expect("spawned thread panicked");
+    }
+
+    /// On armv7 (a required multi-platform.yml job) `c_ulong` is 32 bits and
+    /// the `as` cast this used to do would wrap a wider request into a small
+    /// one and still report success. The guard makes this a no-op on 64-bit
+    /// targets, where every `u64` fits and there is nothing to reject.
+    #[test]
+    fn a_value_too_wide_for_c_ulong_is_rejected_not_wrapped() {
+        if libc::c_ulong::try_from(u64::MAX).is_err() {
+            let err = set_timer_slack(u64::MAX).expect_err("should not have been accepted");
+            assert!(
+                err.to_string().contains("does not fit"),
+                "unexpected error: {err}"
+            );
         }
     }
 }
