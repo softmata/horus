@@ -56,34 +56,65 @@ fn rate_node_ticks_once_per_external_cycle() {
     const CYCLES: u64 = 400;
     const PERIOD: Duration = Duration::from_micros(1000);
 
-    // A bus cycle arrives on the bus's clock, not ours. Emulate that faithfully:
-    // sleep to an absolute grid so the cadence does not accumulate our own
-    // overhead, which is exactly how a real master hands off cycles.
+    // A bus cycle arrives on the BUS's clock, not ours, and a bus master that
+    // falls behind does not then deliver a burst of backlogged cycles — it
+    // drops them and carries on from the present. Model that, because the naive
+    // version (spin to `start + n*PERIOD` for every n) does the opposite: when
+    // this thread is preempted it returns to find several targets already past
+    // and fires them back to back with no spacing at all. Those bunched cycles
+    // are correctly refused by the rate gate, and the test then measures host
+    // load rather than the gate. Under load average ~43 it read 66/400 on code
+    // that reads 399/400 on an idle box — a flaky gate, and a flaky gate in a
+    // required check is worse than no gate.
+    //
+    // So: skip missed slots, and count only the cycles actually delivered near
+    // their slot. `delivered` is the denominator the assertion uses, which makes
+    // the ratio independent of how much of the run the host stole.
+    let mut delivered: u64 = 0;
     let start = Instant::now();
-    for c in 0..CYCLES {
-        let target = start + PERIOD * (c as u32);
+    let mut target = start;
+    for _ in 0..CYCLES {
+        let now = Instant::now();
+        if now > target + PERIOD {
+            // Fell behind by at least a whole cycle: realign to the present
+            // instead of replaying the backlog, exactly as a bus master would.
+            let behind = now.duration_since(target).as_nanos() as u64;
+            let skip = behind / PERIOD.as_nanos() as u64 + 1;
+            target += PERIOD * (skip as u32);
+            continue;
+        }
         while Instant::now() < target {
             std::hint::spin_loop();
         }
         scheduler.tick_once().expect("tick_once");
+        delivered += 1;
+        target += PERIOD;
     }
 
     let observed = ticks.load(Ordering::Relaxed);
-    eprintln!("{} bus cycles -> {} node ticks", CYCLES, observed);
+    eprintln!(
+        "{} on-time bus cycles delivered (of {} attempted) -> {} node ticks",
+        delivered, CYCLES, observed
+    );
 
-    // The failure this pins is a HALVING (or worse): the strict gate rejects the
-    // boundary cycle every time, so the node sees ~50%. Requiring 90% leaves room
-    // for the first cycle and for genuine host stalls while still failing hard on
-    // a systematic every-other-cycle refusal.
-    let floor = (CYCLES as f64 * 0.90) as u64;
+    assert!(
+        delivered >= 50,
+        "host delivered only {delivered} on-time cycles of {CYCLES}; too few to \
+         conclude anything about the rate gate"
+    );
+
+    // The failure this pins is a systematic refusal of the boundary cycle: the
+    // node sees ~50-60% of cycles, or worse. 90% of DELIVERED cycles leaves room
+    // for the first cycle and for a stall inside an otherwise on-time run.
+    let floor = (delivered as f64 * 0.90) as u64;
     assert!(
         observed >= floor,
         "a .rate(1000hz) node driven by a 1 kHz external cycle ticked only {} \
-         times in {} cycles (needed >= {}). The rate gate is refusing cycles \
-         that arrive a hair early; the RT executor solved this with a \
+         times in {} on-time cycles (needed >= {}). The rate gate is refusing \
+         cycles that arrive a hair early; the RT executor solved this with a \
          half-period tolerance and the externally-driven path needs the same.",
         observed,
-        CYCLES,
+        delivered,
         floor
     );
 }
