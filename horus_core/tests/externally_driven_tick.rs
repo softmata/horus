@@ -42,16 +42,23 @@ impl Node for CycleNode {
 
 /// Drive the scheduler from a simulated 1 kHz bus and require that a
 /// `.rate(1000hz)` node ticks on (nearly) every cycle.
+/// A node that fails to register turns every gate below into a vacuous pass:
+/// the tick count stays 0, and the assertion reports "the node did not tick"
+/// for a scheduler that was never given one. Registration failure is a test
+/// bug and it must name itself.
+const NODE_MUST_REGISTER: &str = "node failed to register; without it this gate asserts nothing";
+
 #[test]
 fn rate_node_ticks_once_per_external_cycle() {
     let ticks = Arc::new(AtomicU64::new(0));
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
-    let _ = scheduler
+    scheduler
         .add(CycleNode {
             ticks: ticks.clone(),
         })
         .rate(1000_u64.hz())
-        .build();
+        .build()
+        .expect(NODE_MUST_REGISTER);
 
     const CYCLES: u64 = 400;
     const PERIOD: Duration = Duration::from_micros(1000);
@@ -159,14 +166,15 @@ fn slower_node_is_not_accelerated_by_the_tolerance() {
     let ticks = Arc::new(AtomicU64::new(0));
     let min_gap_ns = Arc::new(AtomicU64::new(u64::MAX));
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
-    let _ = scheduler
+    scheduler
         .add(SpacingNode {
             ticks: ticks.clone(),
             min_gap_ns: min_gap_ns.clone(),
             last: None,
         })
         .rate(100_u64.hz())
-        .build();
+        .build()
+        .expect(NODE_MUST_REGISTER);
 
     const CYCLES: u64 = 400;
     const PERIOD: Duration = Duration::from_micros(1000);
@@ -247,12 +255,13 @@ fn slower_node_is_not_accelerated_by_the_tolerance() {
 fn bus_driven_thread_can_request_rt_and_learn_what_it_got() {
     let ticks = Arc::new(AtomicU64::new(0));
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
-    let _ = scheduler
+    scheduler
         .add(CycleNode {
             ticks: ticks.clone(),
         })
         .rate(1000_u64.hz())
-        .build();
+        .build()
+        .expect(NODE_MUST_REGISTER);
 
     let degradations = scheduler.prepare_current_thread_rt(80, None, 1 << 20);
     eprintln!("rt setup degradations: {:?}", degradations);

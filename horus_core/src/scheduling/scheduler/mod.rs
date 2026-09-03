@@ -1890,6 +1890,7 @@ impl Scheduler {
         degradations
     }
 
+    #[doc(hidden)]
     pub fn set_os_priority(&self, priority: i32) -> crate::error::HorusResult<()> {
         if !(1..=99).contains(&priority) {
             return Err(crate::error::HorusError::config(
@@ -1912,6 +1913,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.pin_to_cpu(7)?;
     /// ```
+    #[doc(hidden)]
     pub fn pin_to_cpu(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
         super::rt::set_thread_affinity(&[cpu_id])?;
         print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
@@ -1926,6 +1928,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.lock_memory()?;
     /// ```
+    #[doc(hidden)]
     pub fn lock_memory(&self) -> crate::error::HorusResult<()> {
         super::rt::lock_all_memory()?;
         print_line("[OK] Memory locked (no page faults)");
@@ -1940,6 +1943,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.prefault_stack(8 * 1024 * 1024)?;  // 8MB stack
     /// ```
+    #[doc(hidden)]
     pub fn prefault_stack(&self, stack_size: usize) -> crate::error::HorusResult<()> {
         super::rt::prefault_stack(stack_size)?;
         print_line(&format!(

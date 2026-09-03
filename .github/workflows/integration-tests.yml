@@ -286,7 +286,7 @@ jobs:
       # Kept running, and kept SEPARATE, so the day it stops dying is visible.
       # It goes back to gating when the topic-layer fix lands -- not when a
       # runner happens to be quiet.
-      - name: "multi_scheduler_matrix (advisory — known SIGBUS, see #140)"
+      - name: "multi_scheduler_matrix (advisory — known SIGBUS, see #144)"
         continue-on-error: true
         timeout-minutes: 15
         run: |
