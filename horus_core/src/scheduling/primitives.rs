@@ -271,8 +271,18 @@ pub(crate) fn set_node_tick_context(
         .rate_hz
         .map(|hz| Duration::from_secs_f64(1.0 / hz))
         .unwrap_or(tick_period);
+    // One clock reading, not two. All three `Clock` impls define `now()` and
+    // `elapsed()` as the same quantity (`WallClock` has both call
+    // `epoch.elapsed()`; `SimClock` has both load `self.nanos`; `ReplayClock`
+    // defines `elapsed()` via `now()`), so deriving one from the other is an
+    // exact substitution rather than an approximation.
+    //
+    // Worth ~30ns per node per tick on WallClock and nothing on SimClock —
+    // 0.27% of the measured 11.2us p50 jitter, so this will not move any
+    // latency figure and is not offered as an RT fix. What it does remove is a
+    // within-tick disagreement between `horus::now()` and `horus::elapsed()`.
     let sim_time = clock.elapsed();
-    let tick_start_ci = clock.now();
+    let tick_start_ci = crate::core::clock::ClockInstant::from_nanos(sim_time.as_nanos() as u64);
     crate::core::tick_context::set_tick_context(
         &node.name,
         tick_number,

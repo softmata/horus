@@ -11,7 +11,7 @@
 //! | what | `horus_core` | the `horus_net` copy |
 //! |---|---|---|
 //! | data region start | `640 + capacity*8` | `640` — the seq array was omitted |
-//! | `messages_total` | offset 56 | offset 48 — which is `topic_kind` |
+//! | `messages_total` | offset 136 (was 56 before v4) | offset 48 — which is `topic_kind` |
 //! | serde slot length | `slot + 8` | `slot + 0` — which is the ready word |
 //! | per-slot ready flag | published every send | never written |
 //!
@@ -181,7 +181,9 @@ pub const LAYOUT_COLO: u8 = 1;
 
 /// `layout_kind: AtomicU8` — which of the two geometries this region uses.
 ///
-/// Carved out of `_pad1a`, so `messages_total` stays at 56 and every offset
+/// Carved out of `_pad1a`, so every offset above it is unchanged — which is
+/// the point: it displaces nothing. (`messages_total` itself sits at 136; byte
+/// 56 is `_pad1b`.) Every offset
 /// above is unchanged.
 pub const OFF_LAYOUT_KIND: usize = 49;
 

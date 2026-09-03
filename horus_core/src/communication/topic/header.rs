@@ -262,7 +262,7 @@ pub(crate) struct TopicHeader {
     /// Which slot geometry the data region uses: `LAYOUT_SPLIT` or
     /// `LAYOUT_COLO` (see `shm_layout`).
     ///
-    /// Carved out of `_pad1a`, so `messages_total` keeps offset 56 and every
+    /// Carved out of `_pad1a`, so it displaces nothing and every
     /// constant in `shm_layout` is unchanged. Atomic because a reader in
     /// another process loads it while attaching.
     pub(crate) layout_kind: AtomicU8,
@@ -1760,7 +1760,7 @@ pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
 ///
 /// Unlike `read_topic_sequence` (which reads `sequence_or_head` at offset 64,
 /// flushed lazily for some backends), this reads the `messages_total` counter
-/// (offset 56) which is atomically incremented on **every** send() regardless
+/// (offset 136) which is atomically incremented on **every** send() regardless
 /// of backend type. Use this for accurate rate measurement.
 pub fn read_topic_messages_total(path: &std::path::Path) -> Option<u64> {
     let mmap = map_topic_region(path)?;
@@ -1770,7 +1770,7 @@ pub fn read_topic_messages_total(path: &std::path::Path) -> Option<u64> {
     if magic != TOPIC_MAGIC {
         return None;
     }
-    // SAFETY: offset 56 is within the validated header (messages_total field).
+    // SAFETY: offset 136 is within the validated header (messages_total field).
     let total = unsafe {
         std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, messages_total)) as *const u64)
     };

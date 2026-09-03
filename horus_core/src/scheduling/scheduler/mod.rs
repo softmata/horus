@@ -4845,7 +4845,9 @@ impl Scheduler {
             // `record()` no-ops. Same samples, same Welford state, one fewer
             // `malloc`/`free` pair per node per tick.
             match profiler.node_stats.get_mut(node_name) {
-                Some(stats) => stats.update(tick_duration.as_micros() as f64),
+                // Fractional microseconds — `as_micros()` floors a sub-microsecond
+                // tick to 0. See RtStats::record_execution.
+                Some(stats) => stats.update(tick_duration.as_secs_f64() * 1_000_000.0),
                 None => profiler.record(node_name, tick_duration),
             }
         }
