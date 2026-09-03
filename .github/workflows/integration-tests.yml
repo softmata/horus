@@ -216,7 +216,7 @@ jobs:
       # unrelated PRs at random. That is the same reasoning this file already
       # applies to stress_rt_* above -- "what such a number is evidence of is
       # neighbours, not a regression in HORUS".
-      - name: Single-process #[ignore]d suites (gating)
+      - name: "Single-process #[ignore]d suites (gating)"
         timeout-minutes: 25
         run: |
           for suite in ipc_torture chaos_monkey message_type_matrix \
@@ -286,7 +286,7 @@ jobs:
       # Kept running, and kept SEPARATE, so the day it stops dying is visible.
       # It goes back to gating when the topic-layer fix lands -- not when a
       # runner happens to be quiet.
-      - name: multi_scheduler_matrix (advisory — known SIGBUS, see #140)
+      - name: "multi_scheduler_matrix (advisory — known SIGBUS, see #140)"
         continue-on-error: true
         timeout-minutes: 15
         run: |
