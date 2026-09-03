@@ -341,7 +341,7 @@ mod tests {
             Topic::<Image>::with_capacity("test.comm_h2.keepalive.drain", CAP, None).expect("rx");
 
         for i in 0..SENT {
-            let mut img = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc");
+            let img = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc");
             img.data_mut()[0] = i as u8;
             tx.send(img);
         }

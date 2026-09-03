@@ -2650,8 +2650,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Slots this ring can hold. Used to size the producer's keep-alive queue.
+    ///
+    /// Prefers the capacity `sync_local` validated against this handle's mapping
+    /// over a fresh read of the shared header, exactly as `init_shm_backend`
+    /// does and for the same reason: this number bounds how many pool slots the
+    /// producer pins, and a header rewritten to `u32::MAX` would have it hold a
+    /// reference to every frame it ever sent until the pool ran dry. Before this
+    /// handle has synced (cached capacity 0) there is nothing validated to use,
+    /// so fall back to the header.
+    ///
+    /// Meant to be read per publish, not cached by the caller: `sync_local`
+    /// adopts a new capacity across a grow, and the keep-alive depth has to grow
+    /// with it.
     pub(crate) fn ring_capacity(&self) -> u32 {
-        self.header().capacity
+        match self.local().cached_capacity as u32 {
+            0 => self.header().capacity,
+            cached => cached,
+        }
     }
 
     /// Record messages this handle lost for a reason the ring itself cannot see.
@@ -2663,7 +2678,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// `stats()`, which is the difference between a lossy transport and an
     /// unaccountable one.
     pub(crate) fn note_missed(&self, n: u64) {
-        self.local().missed = self.local().missed.wrapping_add(n);
+        // One binding, read and written through: `local()` hands out a fresh
+        // `&mut LocalState` derived from the `UnsafeCell` on every call, and two
+        // of them in one statement is a question about evaluation order nobody
+        // should have to answer while reading a counter update.
+        let local = self.local();
+        local.missed = local.missed.wrapping_add(n);
     }
 
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
@@ -3647,17 +3667,15 @@ pub struct Topic<T: TopicMessage> {
     /// How many times `resolve_owner` has looked for a node context and not
     /// found one. Bounds the per-send cost for a topic that has no owner.
     owner_attempts: std::cell::Cell<u16>,
-    /// Keep-alive reference(s) to the last pool-backed message sent, released on
-    /// the next send (or on Drop) so the producer's transport reference does not
-    /// leak. `(pool, primary, secondary)` — the exact pool the retain was taken
-    /// on (so release always matches, even for the auto-pool Tensor path);
-    /// `secondary` is `Some` only for the dual-tensor `CostMap`. Always `None`
-    /// for non-pool-backed message types.
-    /// Bounded to the ring's capacity, resolved on first publish.
+    /// Keep-alive reference(s) to the pool-backed messages this handle has sent
+    /// that the ring can still reach. Oldest first; an entry is released once
+    /// the ring's capacity has lapped past it (or on Drop), so the producer's
+    /// transport reference does not leak. `(pool, primary, secondary)` — the
+    /// exact pool the retain was taken on (so release always matches, even for
+    /// the auto-pool Tensor path); `secondary` is `Some` only for the
+    /// dual-tensor `CostMap`. Stays empty for non-pool-backed message types.
     sent_keepalives:
         std::cell::RefCell<std::collections::VecDeque<(Arc<TensorPool>, Tensor, Option<Tensor>)>>,
-    /// Ring capacity, cached on first publish. 0 = not yet resolved.
-    keepalive_depth: std::cell::Cell<u32>,
 }
 
 // SAFETY (Send): an owned `Topic` carries its `RingTopic` (itself `Send`) plus
@@ -3854,11 +3872,11 @@ impl<T: TopicMessage> Topic<T> {
             .unwrap_or_else(pool_registry::global_pool)
     }
 
-    /// Publish a new pool-backed keep-alive (on `self.pool`) and release the
-    /// previous one, which has now been superseded (drop-oldest). Subscribers
-    /// each hold their own `try_from_wire` reference, so releasing the transport
-    /// reference here can only ever drop the producer's ref — never a live
-    /// reader's.
+    /// Record a new pool-backed keep-alive (on `self.pool`) and release the ones
+    /// the ring can no longer reach — one reference per ring slot, oldest
+    /// evicted first. Subscribers each hold their own `try_from_wire` reference,
+    /// so releasing the transport reference here can only ever drop the
+    /// producer's ref — never a live reader's.
     #[inline]
     fn publish_keepalive(&self, primary: Tensor, secondary: Option<Tensor>) {
         let pool = self.keepalive_pool();
@@ -3894,14 +3912,13 @@ impl<T: TopicMessage> Topic<T> {
         // The bound is the ring's own capacity because that is exactly how many
         // descriptors can be outstanding. Fewer re-creates the bug for the
         // difference; more pins pool slots the ring can no longer reach.
-        let depth = self.keepalive_depth.get();
-        let depth = if depth == 0 {
-            let c = self.ring.ring_capacity().max(1);
-            self.keepalive_depth.set(c);
-            c
-        } else {
-            depth
-        } as usize;
+        //
+        // Read on every publish rather than resolved once: `sync_local` adopts a
+        // larger capacity across a grow, and a depth frozen at the pre-grow
+        // value would free frames the enlarged ring can still hand out — this
+        // same bug, in the window after a migration. `ring_capacity` reads local
+        // state this handle already caches, not the shared header.
+        let depth = self.ring.ring_capacity().max(1) as usize;
 
         let mut q = self.sent_keepalives.borrow_mut();
         q.push_back((pool, primary, secondary));
@@ -4151,7 +4168,6 @@ where
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
             sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
-            keepalive_depth: std::cell::Cell::new(0),
         })
     }
 
@@ -4214,7 +4230,6 @@ where
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
             sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
-            keepalive_depth: std::cell::Cell::new(0),
         })
     }
 
@@ -4245,7 +4260,6 @@ where
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
             sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
-            keepalive_depth: std::cell::Cell::new(0),
         })
     }
 }
@@ -4340,9 +4354,9 @@ where
             owner_node: self.owner_node.clone(),
             owner_attempts: self.owner_attempts.clone(),
             // A fresh clone has sent nothing yet; each handle tracks and releases
-            // only its own last-sent keep-alive, so clones never double-release.
+            // only the keep-alives it published itself, so clones never
+            // double-release.
             sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
-            keepalive_depth: std::cell::Cell::new(0),
         }
     }
 }
@@ -4355,8 +4369,8 @@ impl Topic<Image> {
     /// Send an image (zero-copy).
     ///
     /// Accepts both owned and borrowed images: `topic.send(img)` or `topic.send(&img)`.
-    /// Retains the tensor so it stays alive for receivers, then sends the
-    /// descriptor through the ring buffer.
+    /// Sends the descriptor through the ring buffer, then retains the tensor so
+    /// it stays alive for receivers until the ring has lapped past the frame.
     pub fn send(&self, img: impl Borrow<Image>) {
         self.register_pub("Image");
         let wire = img.borrow().to_wire(&self.pool);
