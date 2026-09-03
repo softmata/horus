@@ -26,6 +26,7 @@ use horus_robotics::messages::sensor::Imu;
 use horus_robotics::CmdVel;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Publish on a topic, have a peer attempt an incompatible attach, keep publishing.
 ///
@@ -55,19 +56,37 @@ fn a_refused_attach_must_not_kill_the_publisher() {
     // this is harmless -- the send that faults is one already in flight against
     // a mapping the refused attach disturbed, so the two have to overlap.
     let stop = Arc::new(AtomicBool::new(false));
+    let attaching = Arc::new(AtomicBool::new(false));
     let s2 = stop.clone();
+    let a2 = attaching.clone();
     let n2 = name.clone();
     let attacher = std::thread::spawn(move || {
         let mut refused = 0u32;
-        while !s2.load(Ordering::Relaxed) {
+        loop {
             // Every one of these SHOULD be refused: Imu is a 304-byte POD
             // needing 312-byte slots, the region declares 64.
             if Topic::<Imu>::new(&n2).is_err() {
                 refused += 1;
             }
+            // Published after the first attempt, so the burst below is known to
+            // start with the attach loop already running.
+            a2.store(true, Ordering::Release);
+            if s2.load(Ordering::Relaxed) {
+                break;
+            }
         }
         refused
     });
+
+    // Don't start the burst against a thread that has not been scheduled yet:
+    // on a loaded host the spawn can lag far enough that the sends finish
+    // first, and this test only means something while the two overlap. Bounded,
+    // so an attacher that never gets going fails the `refused > 0` assertion
+    // below with a message instead of hanging the run.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !attaching.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
 
     for i in 0..200_000 {
         pubv.send(CmdVel::new(i as f32, 1.0));
