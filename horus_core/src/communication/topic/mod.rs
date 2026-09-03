@@ -4187,6 +4187,8 @@ where
             None
         };
 
+        // Read before `ring` moves into the struct below.
+        let keepalive_cap = ring.ring_capacity().max(1) as usize + 1;
         Ok(Self {
             ring,
             pool,
@@ -4194,7 +4196,20 @@ where
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
-            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
+            // Sized here, not grown on the publish path. The deque is bounded
+            // by the ring depth, so once it holds that many slots it never
+            // reallocates -- but starting empty means the FIRST send allocates,
+            // and that send is often the one inside an RT context.
+            // `rt_alloc_guard_installed::tensor_backed_publish_does_not_allocate`
+            // catches exactly that: one violation, on a path whose whole point
+            // is that the payload comes from a pool rather than the heap.
+            //
+            // A later `sync_local` can adopt a larger capacity across a grow and
+            // push past this reservation once. That is inherent to growing and
+            // is not the steady state this guard is about.
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::with_capacity(
+                keepalive_cap,
+            )),
         })
     }
 
@@ -4249,6 +4264,8 @@ where
             None
         };
 
+        // Read before `ring` moves into the struct below.
+        let keepalive_cap = ring.ring_capacity().max(1) as usize + 1;
         Ok(Self {
             ring,
             pool,
@@ -4256,7 +4273,20 @@ where
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
-            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
+            // Sized here, not grown on the publish path. The deque is bounded
+            // by the ring depth, so once it holds that many slots it never
+            // reallocates -- but starting empty means the FIRST send allocates,
+            // and that send is often the one inside an RT context.
+            // `rt_alloc_guard_installed::tensor_backed_publish_does_not_allocate`
+            // catches exactly that: one violation, on a path whose whole point
+            // is that the payload comes from a pool rather than the heap.
+            //
+            // A later `sync_local` can adopt a larger capacity across a grow and
+            // push past this reservation once. That is inherent to growing and
+            // is not the steady state this guard is about.
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::with_capacity(
+                keepalive_cap,
+            )),
         })
     }
 
@@ -4279,6 +4309,8 @@ where
         } else {
             None
         };
+        // Read before `ring` moves into the struct below.
+        let keepalive_cap = ring.ring_capacity().max(1) as usize + 1;
         Ok(Self {
             ring,
             pool,
@@ -4286,7 +4318,20 @@ where
             registered_sub: std::cell::Cell::new(false),
             owner_node: owner,
             owner_attempts: std::cell::Cell::new(0),
-            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
+            // Sized here, not grown on the publish path. The deque is bounded
+            // by the ring depth, so once it holds that many slots it never
+            // reallocates -- but starting empty means the FIRST send allocates,
+            // and that send is often the one inside an RT context.
+            // `rt_alloc_guard_installed::tensor_backed_publish_does_not_allocate`
+            // catches exactly that: one violation, on a path whose whole point
+            // is that the payload comes from a pool rather than the heap.
+            //
+            // A later `sync_local` can adopt a larger capacity across a grow and
+            // push past this reservation once. That is inherent to growing and
+            // is not the steady state this guard is about.
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::with_capacity(
+                keepalive_cap,
+            )),
         })
     }
 }
@@ -4373,6 +4418,8 @@ where
     T: TopicMessage<Wire = T> + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
     fn clone(&self) -> Self {
+        // A clone starts empty but will hold the same depth; size it now.
+        let keepalive_cap = self.ring.ring_capacity().max(1) as usize + 1;
         Self {
             ring: self.ring.clone(),
             pool: self.pool.clone(),
@@ -4383,7 +4430,20 @@ where
             // A fresh clone has sent nothing yet; each handle tracks and releases
             // only the keep-alives it published itself, so clones never
             // double-release.
-            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::new()),
+            // Sized here, not grown on the publish path. The deque is bounded
+            // by the ring depth, so once it holds that many slots it never
+            // reallocates -- but starting empty means the FIRST send allocates,
+            // and that send is often the one inside an RT context.
+            // `rt_alloc_guard_installed::tensor_backed_publish_does_not_allocate`
+            // catches exactly that: one violation, on a path whose whole point
+            // is that the payload comes from a pool rather than the heap.
+            //
+            // A later `sync_local` can adopt a larger capacity across a grow and
+            // push past this reservation once. That is inherent to growing and
+            // is not the steady state this guard is about.
+            sent_keepalives: std::cell::RefCell::new(std::collections::VecDeque::with_capacity(
+                keepalive_cap,
+            )),
         }
     }
 }
