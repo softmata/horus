@@ -73,27 +73,29 @@ pub struct PyTensorPool {
 
 #[pymethods]
 impl PyTensorPool {
+    // Why this docstring is worded the way it is (maintainer note, kept out of
+    // the pydoc below because `help(horus.TensorPool)` is not the place for it):
+    //
+    // It used to promise that the pool "automatically selects the optimal memory
+    // backend based on detected GPU hardware", listing cudaMallocManaged for
+    // Jetson and cudaMallocHost for discrete GPUs. `pool_allocator()` in this
+    // file returns `PoolAllocator::Mmap` unconditionally, and `PoolAllocator`
+    // has exactly one variant, so no such selection existed or could occur. The
+    // claim mattered: someone sizing an inference pipeline would have believed
+    // their host->device copies were already pinned and DMA-capable, and planned
+    // around a property they did not have.
+    //
+    // `horus_core::memory::backend` defines an open `PoolBackend` trait whose
+    // `BackendAllocation` already carries a `device_ptr`, and correctly labels
+    // the CUDA backends as future and feature-gated. That is where a real device
+    // path would go, and where this note should be re-read before the docstring
+    // grows a hardware claim again.
     /// Create or open a tensor pool
     ///
-    /// Pool memory is host memory, allocated with mmap. It is shared between
-    /// processes without a copy and reaches NumPy without a copy, but it is not
-    /// device memory: moving a tensor to a GPU is an explicit host->device copy
-    /// that the caller makes.
-    ///
-    /// This docstring used to promise that the pool "automatically selects the
-    /// optimal memory backend based on detected GPU hardware", listing
-    /// cudaMallocManaged for Jetson and cudaMallocHost for discrete GPUs.
-    /// `pool_allocator()` in this file returns `PoolAllocator::Mmap`
-    /// unconditionally, and `PoolAllocator` has exactly one variant, so no such
-    /// selection existed or could occur. The claim mattered: someone sizing an
-    /// inference pipeline would have believed their host->device copies were
-    /// already pinned and DMA-capable, and planned around a property they did
-    /// not have.
-    ///
-    /// `horus_core::memory::backend` defines an open `PoolBackend` trait whose
-    /// `BackendAllocation` already carries a `device_ptr`, and correctly labels
-    /// the CUDA backends as future and feature-gated. That is where a real
-    /// device path would go.
+    /// Pool memory is host memory, allocated with mmap: shared between processes
+    /// without a copy, and readable from NumPy without a copy. It is not device
+    /// memory — moving a tensor to a GPU is an explicit host->device copy that
+    /// the caller makes.
     ///
     /// Args:
     ///     pool_id: Unique identifier for the pool (default: 1)

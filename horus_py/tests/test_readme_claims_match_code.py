@@ -35,22 +35,40 @@ def test_readme_exists_where_we_think_it_does():
     assert README.exists(), f"expected the README at {README}"
 
 
+# Types a README DLPack claim could be about. The comparison-table row was
+# generic ("DLPack zero-copy (PyTorch/JAX native)") and the example passed a
+# received frame, which is an Image — so the protocol landing on either type
+# makes the claim true, and requiring it on one of them would fail a correct
+# implementation of the other.
+DLPACK_CARRIERS = ("Image", "Tensor")
+
+
 def test_dlpack_is_claimed_only_if_implemented():
     """
     `torch.from_dlpack(x)` requires `x.__dlpack__`. If the README names DLPack
-    as a capability, the protocol has to be on the object users would pass.
+    as a capability, the protocol has to be on an object users would pass.
     """
-    text = readme_text().lower()
-    claims_dlpack = "dlpack" in text
+    mentions = [
+        f"README.md:{lineno}: {line.strip()}"
+        for lineno, line in enumerate(readme_text().splitlines(), 1)
+        if "dlpack" in line.lower()
+    ]
+    if not mentions:
+        return
 
-    tensor_has_dlpack = hasattr(horus.Tensor, "__dlpack__")
+    if any(
+        hasattr(getattr(horus, name, None), "__dlpack__") for name in DLPACK_CARRIERS
+    ):
+        return
 
-    if claims_dlpack and not tensor_has_dlpack:
-        pytest.fail(
-            "README mentions DLPack but horus.Tensor has no __dlpack__, so "
-            "torch.from_dlpack() cannot work. Either implement the protocol "
-            "(__dlpack__ and __dlpack_device__) or drop the claim."
-        )
+    pytest.fail(
+        "README mentions DLPack but neither "
+        + " nor ".join(f"horus.{name}" for name in DLPACK_CARRIERS)
+        + " has __dlpack__, so torch.from_dlpack() cannot work on either. "
+        "Implement the protocol (__dlpack__ and __dlpack_device__) on the type "
+        "the text is about, or drop the claim. Lines that mention it:\n  "
+        + "\n  ".join(mentions)
+    )
 
 
 def test_gpu_memory_is_claimed_only_if_a_device_allocator_exists():
@@ -58,23 +76,25 @@ def test_gpu_memory_is_claimed_only_if_a_device_allocator_exists():
     The tensor pool is mmap-backed host memory. If the README starts promising
     device-resident tensors again, something has to be able to allocate them.
 
-    `PoolAllocator` has exactly one variant (Mmap) and `auto_allocator()` was
-    hardcoded to it while the Python docstring advertised cudaMallocManaged and
-    cudaMallocHost by name.
+    `PoolAllocator` has exactly one variant (Mmap) and `pool_allocator()` in
+    horus_py/src/tensor.rs is hardcoded to it, while the Python docstring used
+    to advertise cudaMallocManaged and cudaMallocHost by name.
     """
     text = readme_text()
-    promises_device_alloc = any(
-        marker in text
+    named = [
+        marker
         for marker in ("cudaMallocManaged", "cudaMallocHost", "cudaMalloc(")
-    )
-    if not promises_device_alloc:
+        if marker in text
+    ]
+    if not named:
         return
 
-    pool = horus.TensorPool(pool_id=9931, size_mb=1, max_slots=4)
-    t = pool.alloc([2, 2], "float32")
-    assert t is not None
+    # No allocation here on purpose: a pool proves nothing about device memory
+    # (it is mmap either way), and building one to throw away leaves a registry
+    # entry and a shared-memory file behind for a test that has already decided.
     pytest.fail(
-        "README names a CUDA allocator, but the pool allocator is mmap. "
+        f"README names a CUDA allocator ({', '.join(named)}), but pools are "
+        "built with PoolAllocator::Mmap and that enum has exactly one variant. "
         "Either add a device-backed PoolBackend or drop the claim."
     )
 
