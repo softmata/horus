@@ -3476,10 +3476,27 @@ fn telemetry_export_failures_reach_the_log() {
             "telemetry_probe"
         }
         fn tick(&mut self) {
+            // Sample the write index BEFORE the scan and advance `since` to it
+            // afterwards, so each tick deserialises only what arrived since the
+            // previous one instead of re-walking the whole window every 10 ms.
+            // GLOBAL_LOG_BUFFER is a cross-process ring shared with every other
+            // horus process on the machine, so under a parallel `cargo test`
+            // the un-advanced window reaches the ring's full capacity (5000
+            // slots by default) and each tick re-deserialises thousands of
+            // other processes' entries — each one a bincode decode under the
+            // buffer's mutex, with a 5 ms spin available per slot that is
+            // mid-write.
+            //
+            // Sampled before, not after: an index read after the scan would
+            // advance past entries written *during* it, and `get_since` never
+            // returns those again. Read first, and the worst case is that the
+            // next tick re-scans a handful of entries.
+            let upto = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
             let reported = crate::core::log_buffer::GLOBAL_LOG_BUFFER
                 .get_since(self.since)
                 .into_iter()
                 .any(|entry| entry.message.contains("[TELEMETRY] Export failed"));
+            self.since = upto;
             if reported {
                 self.running.store(false, Ordering::SeqCst);
             }
@@ -3490,12 +3507,18 @@ fn telemetry_export_failures_reach_the_log() {
         .tick_rate(100_u64.hz())
         .telemetry(&endpoint);
     let running = scheduler.running_flag();
+    // `.unwrap()`, not a discarded `Result`: `unused_must_use` is allowed
+    // workspace-wide, so a `build()` that ever starts failing validation here
+    // would drop the node silently. The run would then fall through to the
+    // 5 s timeout below and still pass, hiding the loss of the very thing that
+    // makes this test prompt.
     scheduler
         .add(StopOnExportFailure {
             since: first_unread,
             running,
         })
-        .build();
+        .build()
+        .unwrap();
 
     // Upper bound, not the expected duration. The export interval starts when
     // `finalize_config` builds the manager, just before the run clock does, so
