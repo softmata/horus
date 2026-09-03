@@ -1,0 +1,15 @@
+--- horus_core/src/communication/topic/mod.rs
++++ horus_core/src/communication/topic/mod.rs
+@@ -2034,8 +2034,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
+             };
+             let fanout_name = format!("{}_fanout", self.name);
+             // `required_file_size` is `None` for a geometry this layout cannot
+-            // carry — a POD `T` larger than the fanout slot cap. Taking the
+-            // SpscShm fallback below is what keeps `try_send_pod`'s unbounded
++            // carry — a POD `T` larger than the fanout slot cap, or a capacity
++            // whose rounded slot count does not fit `meta.channel_capacity` or
++            // whose matrix does not fit a `usize` (32-bit controllers). Taking
++            // the SpscShm fallback below is what keeps `try_send_pod`'s unbounded
+             // memcpy inside its slot; the ring used to be built anyway with the
+             // slot silently clamped.
+             let fanout_storage =

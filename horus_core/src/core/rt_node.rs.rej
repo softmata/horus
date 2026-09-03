@@ -1,0 +1,19 @@
+--- horus_core/src/core/rt_node.rs
++++ horus_core/src/core/rt_node.rs
+@@ -181,12 +181,10 @@
+ 
+     /// Update statistics with new execution time
+     pub fn record_execution(&mut self, duration: Duration) {
+-        // Fractional microseconds. `as_micros()` truncates, and RT tick bodies
+-        // here measure p50 37ns / p99 46ns — so every sample floored to 0 and
+-        // the telemetry read "idle" rather than "below the resolution I
+-        // report in". Measured: 900ns x100 gave avg 0 and jitter 0; 1500ns
+-        // gave 1 (33% under); 3900ns gave 3 (23% under).
+-        let duration_us = duration.as_secs_f64() * 1_000_000.0;
++        // Fractional microseconds — `as_micros()` floors a sub-microsecond tick
++        // to 0. `duration_to_us_f64` carries the measurements and is the one
++        // copy of this conversion.
++        let duration_us = crate::core::duration_ext::duration_to_us_f64(duration);
+ 
+         // Update worst case
+         if duration > self.worst_execution {

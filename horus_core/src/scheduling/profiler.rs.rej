@@ -1,0 +1,18 @@
+--- horus_core/src/scheduling/profiler.rs
++++ horus_core/src/scheduling/profiler.rs
+@@ -110,12 +110,9 @@
+             return;
+         }
+ 
+-        // Fractional microseconds. `as_micros()` truncates, and RT tick bodies
+-        // here measure p50 37ns / p99 46ns — so every sample floored to 0 and
+-        // the telemetry read "idle" rather than "below the resolution I
+-        // report in". Measured: 900ns x100 gave avg 0 and jitter 0; 1500ns
+-        // gave 1 (33% under); 3900ns gave 3 (23% under).
+-        let duration_us = duration.as_secs_f64() * 1_000_000.0;
++        // Fractional microseconds — `as_micros()` floors a sub-microsecond tick
++        // to 0. See `duration_to_us_f64`.
++        let duration_us = crate::core::duration_ext::duration_to_us_f64(duration);
+ 
+         // `entry()` takes an owned key, so it allocates on EVERY call --
+         // including the hit path, where the key already exists and the String is

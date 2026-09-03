@@ -4620,44 +4620,77 @@ mod tests {
     /// runner fails a loop that was on time. `local` is per-waiter, so it
     /// measures only this loop; that the numbers reach the published counters
     /// at all is asserted separately below.
+    ///
+    /// The statistic is the MEDIAN per-slot lateness, and the period is 2 ms.
+    /// Both choices are about the false-positive side, and both were measured
+    /// rather than guessed — a replica of this loop, 12 cores, ~200 runnable
+    /// threads (load average ~150, far past anything CI does), 240 runs each:
+    ///
+    /// ```text
+    ///                        p95 of bound   worst run   runs over bound
+    ///   1 ms, mean               1.119        2.184        15 / 240
+    ///   1 ms, median             0.068        2.900         8 / 240
+    ///   2 ms, median             0.028        0.034         0 / 240
+    /// ```
+    ///
+    /// The mean at 1 ms is genuinely flaky, and the reason is not that the
+    /// bound is tight — it is that a mean over 200 slots is a tail statistic in
+    /// disguise. One descheduling stall (71 ms observed) puts 355 us into the
+    /// mean by itself, so a single bad wake spends a third of the budget. The
+    /// median cannot be moved by any number of outliers below half the slots,
+    /// and it loses NOTHING as a gate here: the defect this test exists to
+    /// catch is a CONSTANT per-wake offset, which shifts the median by exactly
+    /// as much as the mean. Injecting one confirms it — every constant offset
+    /// from 0.5 ms up was caught 120/120 under that same load, while the
+    /// healthy loop sat at 2-3 % of the bound.
+    ///
+    /// Widening the bound to a multiple of the period would have bought the
+    /// same headroom by making the gate proportionally blinder. This buys it by
+    /// using an estimator that is not sensitive to the thing CI actually does
+    /// to it.
     #[test]
     fn wake_lateness_is_bounded_not_merely_recorded() {
-        const PERIOD: Duration = Duration::from_millis(1);
-        const SLOTS: u64 = 200;
+        const PERIOD: Duration = Duration::from_millis(2);
+        const SLOTS: usize = 200;
 
         let before = rt_wait_stats();
         let mut w = CyclicWaiter::new(PERIOD, false, false);
 
-        let mut slots = 0_u64;
-        let mut late_total_ns = 0_u64;
+        let mut late_ns_per_slot = Vec::with_capacity(SLOTS);
         let mut prev = w.local;
         for _ in 0..SLOTS {
             w.wait();
             let cur = w.local;
-            // `wait()` flushes `local` to the globals once a second and zeroes
-            // it. A slot count that went DOWN is that reset; the single slot it
-            // straddles is dropped rather than differenced against a dead epoch.
-            if cur.slots >= prev.slots {
-                slots += cur.slots - prev.slots;
-                late_total_ns += cur.wake_late_total_ns - prev.wake_late_total_ns;
+            // `wait()` adds exactly one slot, then flushes `local` to the
+            // globals and zeroes it once a second. Requiring the slot count to
+            // have advanced by exactly one therefore both extracts this slot's
+            // own lateness and drops the single slot that straddles a flush,
+            // rather than differencing it against a dead epoch.
+            if cur.slots == prev.slots + 1 {
+                late_ns_per_slot.push(cur.wake_late_total_ns - prev.wake_late_total_ns);
             }
             prev = cur;
         }
         w.finish(false);
 
-        assert!(slots > 0, "no slots recorded");
-        let mean_late_ns = late_total_ns / slots;
+        assert!(!late_ns_per_slot.is_empty(), "no slots recorded");
+        late_ns_per_slot.sort_unstable();
+        let slots = late_ns_per_slot.len();
+        let median_late_ns = late_ns_per_slot[slots / 2];
+        let mean_late_ns = late_ns_per_slot.iter().sum::<u64>() / slots as u64;
 
         // `CyclicWaiter::new` narrows the period with the same `as u64`, so this
         // is exactly the grid spacing the loop under test scheduled against.
         let period_ns = PERIOD.as_nanos() as u64;
         assert!(
-            mean_late_ns <= period_ns,
-            "mean wake lateness {mean_late_ns} ns over {slots} slots exceeds the \
-             {period_ns} ns period. A periodic loop that is on average more than \
-             a whole period late is not keeping its schedule, and no \
-             interval-based jitter metric can see this — a constant offset \
-             cancels out of |interval - mean_interval|."
+            median_late_ns <= period_ns,
+            "median wake lateness {median_late_ns} ns over {slots} slots exceeds \
+             the {period_ns} ns period (mean {mean_late_ns} ns, worst slot {} ns). \
+             A periodic loop whose TYPICAL wake is more than a whole period late \
+             is not keeping its schedule, and no interval-based jitter metric can \
+             see this — a constant offset cancels out of \
+             |interval - mean_interval|.",
+            late_ns_per_slot[slots - 1]
         );
 
         // The bound is only worth anything if these numbers reach the counters
@@ -4666,7 +4699,7 @@ mod tests {
         // direction.
         let after = rt_wait_stats();
         assert!(
-            after.slots.saturating_sub(before.slots) >= slots,
+            after.slots.saturating_sub(before.slots) >= slots as u64,
             "{slots} measured slots never reached the published counters ({} -> {})",
             before.slots,
             after.slots

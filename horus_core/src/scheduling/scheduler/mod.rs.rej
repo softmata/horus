@@ -1,0 +1,15 @@
+--- horus_core/src/scheduling/scheduler/mod.rs
++++ horus_core/src/scheduling/scheduler/mod.rs
+@@ -4846,8 +4846,10 @@
+             // `malloc`/`free` pair per node per tick.
+             match profiler.node_stats.get_mut(node_name) {
+                 // Fractional microseconds — `as_micros()` floors a sub-microsecond
+-                // tick to 0. See RtStats::record_execution.
+-                Some(stats) => stats.update(tick_duration.as_secs_f64() * 1_000_000.0),
++                // tick to 0. See `duration_to_us_f64`.
++                Some(stats) => {
++                    stats.update(crate::core::duration_ext::duration_to_us_f64(tick_duration))
++                }
+                 None => profiler.record(node_name, tick_duration),
+             }
+         }
