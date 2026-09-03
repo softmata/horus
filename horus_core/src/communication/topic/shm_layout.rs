@@ -181,10 +181,11 @@ pub const LAYOUT_COLO: u8 = 1;
 
 /// `layout_kind: AtomicU8` — which of the two geometries this region uses.
 ///
-/// Carved out of `_pad1a`, so every offset above it is unchanged — which is
-/// the point: it displaces nothing. (`messages_total` itself sits at 136; byte
-/// 56 is `_pad1b`.) Every offset
-/// above is unchanged.
+/// Carved out of `_pad1a`, so it displaces nothing and every offset in this
+/// module is unchanged. (Byte 56 — where an older comment placed
+/// `messages_total` — is `_pad1b`; the counter itself is at
+/// [`OFF_MESSAGES_TOTAL`].) Atomic because a reader in another process loads
+/// it while attaching.
 pub const OFF_LAYOUT_KIND: usize = 49;
 
 /// A cache line. Colo slots are padded to a multiple of this so that no two

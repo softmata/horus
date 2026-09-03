@@ -94,9 +94,12 @@ pub(super) fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryI
         .collect();
 
     // Batch rate measurement: sample messages_total counters, wait 500ms, sample again.
-    // Uses messages_total (offset 136) instead of sequence_or_head (offset 64) because
-    // messages_total is atomically incremented on EVERY send() regardless of backend,
-    // while sequence_or_head is lazily flushed and can appear stagnant.
+    // Uses messages_total instead of sequence_or_head because messages_total is
+    // atomically incremented on EVERY send() regardless of backend, while
+    // sequence_or_head is lazily flushed and can appear stagnant. No byte
+    // offsets quoted here on purpose — the reader is
+    // `read_topic_messages_total`, which derives them from `offset_of!`; the
+    // numbers this comment used to carry had gone stale.
     // Single wait for ALL topics — O(1) time, not O(N).
     {
         use horus_core::communication::read_topic_messages_total;
