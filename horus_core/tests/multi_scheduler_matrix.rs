@@ -83,6 +83,44 @@ impl Node for ImuSubNode {
     }
 }
 
+/// A subscriber for the CmdVel topic the deterministic scheduler publishes.
+///
+/// `deterministic_alongside_normal_scheduler` used `ImuSubNode` here, on the
+/// same topic name a `DetCmdVelPubNode` was publishing to. One topic name, two
+/// message types: `Imu` is a 304-byte POD needing 312-byte slots, `CmdVel`
+/// declares 64, so the open was refused --
+///
+///   shared header declares slot_size 64 for a 304-byte POD message under the
+///   co-located layout, which needs at least 312 -- each write would run past
+///   its slot
+///
+/// -- and the subscriber never initialised. Nothing caught it, because the test
+/// prints the receive count and never asserts it, so "Normal sched received: 0
+/// msgs" read as normal output for a run that had no subscriber at all.
+struct CmdVelSubNode {
+    topic_name: String,
+    node_name: String,
+    topic: Option<Topic<CmdVel>>,
+    received: Arc<AtomicU64>,
+}
+
+impl Node for CmdVelSubNode {
+    fn name(&self) -> &str {
+        &self.node_name
+    }
+    fn init(&mut self) -> horus_core::error::HorusResult<()> {
+        self.topic = Some(Topic::new(&self.topic_name)?);
+        Ok(())
+    }
+    fn tick(&mut self) {
+        if let Some(ref t) = self.topic {
+            while t.recv().is_some() {
+                self.received.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // TEST 1: 3 schedulers at 1kHz/100Hz/10Hz sharing IMU topic
 // ════════════════════════════════════════════════════════════════════════
@@ -619,12 +657,11 @@ fn deterministic_alongside_normal_scheduler() {
         let h_normal = std::thread::spawn(move || {
             let mut sched = Scheduler::new().tick_rate(50_u64.hz()).name("normal_sched");
             let _ = sched
-                .add(ImuSubNode {
+                .add(CmdVelSubNode {
                     topic_name: t2,
                     node_name: "normal_sub".into(),
                     topic: None,
                     received: nr,
-                    corrupted: Arc::new(AtomicU64::new(0)),
                 })
                 .rate(50_u64.hz())
                 .order(0)
@@ -701,10 +738,14 @@ fn deterministic_alongside_normal_scheduler() {
         "║  Identical: {}                                          ║",
         v1 == v2
     );
-    println!(
-        "║  Normal sched received: {} msgs (from det sched)        ║",
-        nr_count
-    );
+    // Usually 0, and that is not a failure. The deterministic scheduler runs
+    // its 500 ticks back-to-back with no sleep -- the whole run is ~20 ms --
+    // while the normal scheduler sleeps 18 ms between ticks, so the publisher
+    // is generally done before the subscriber's first tick. What this test
+    // asserts is that the deterministic output is IDENTICAL whether or not a
+    // normal scheduler is running alongside; the count is context, not a
+    // contract, and is labelled so nobody reads 0 as a delivery bug.
+    println!("║  Normal sched received: {nr_count} msgs (timing-dependent, 0 is normal) ║");
     println!("╚══════════════════════════════════════════════════════════╝");
 
     assert_eq!(v1.len(), 500, "Det run 1 should produce 500 msgs");
