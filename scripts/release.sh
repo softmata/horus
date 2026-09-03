@@ -301,7 +301,7 @@ echo -e "${CYAN}[9/10] Updating test files...${NC}"
 
 # Python test files
 find . -path "*/tests/*.py" -not -path "*/target/*" -not -path "*/.horus/*" -type f | while read -r file; do
-    if grep -q "version = \"$CURRENT_VERSION\"" "$file" 2>/dev/null; then
+    if grep -q "version = \"$CURRENT_RE\"" "$file" 2>/dev/null; then
         sed -i "s/version = \"$CURRENT_RE\"/version = \"$NEW_VERSION\"/g" "$file"
         echo -e "  ${GREEN}+${NC} $file"
     fi
