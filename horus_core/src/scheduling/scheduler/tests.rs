@@ -5890,7 +5890,7 @@ fn rt_nodes_joined_by_a_topic_are_reported_as_unordered() {
             "rt_producer"
         }
         fn tick(&mut self) {
-            let _ = self.out.send(1u64);
+            self.out.send(1u64);
         }
     }
     struct Consumer {
