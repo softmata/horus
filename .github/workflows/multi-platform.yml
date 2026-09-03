@@ -152,11 +152,18 @@ jobs:
       - name: Test (horus_sys + horus_core)
         run: |
           cargo test --no-default-features -p horus_sys --lib -- --test-threads=1
-          # Apply the same exclusion set ci.yml/coverage.yml/safety.yml use. This
-          # job was the only one running these cross-thread topic tests, and it
-          # does so on the slowest runner: topic_cross_thread_* assert throughput
-          # thresholds ("expected at least 50 messages, got 44") that are a
-          # property of the runner, not of the code.
+          # topic_cross_thread_*: the throughput floor this used to cite
+          # ("expected at least 50 messages, got 44") no longer exists. All
+          # three tests deleted theirs -- the comments at their asserts in
+          # communication/topic/tests.rs record it -- and ci.yml runs them again
+          # on Linux rather than every job repeating a reason that expired.
+          #
+          # They stay skipped HERE because they have never run on Windows since
+          # the floors went, and this job already carries two open, undiagnosed
+          # Windows defects in the same fan-out subsystem (both below). Three
+          # more lossy fan-out tests going red would most likely re-report those
+          # rather than say anything new. Worth a branch: un-skip them together
+          # with mp_send_no_overshoot_corruption.
           #
           # multithread_nonpod_subscribers_each_get_full_stream is skipped for a
           # DIFFERENT and more serious reason: its subscribers never observe the
