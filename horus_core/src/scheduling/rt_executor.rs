@@ -4593,4 +4593,49 @@ mod tests {
              giving up the busy-wait"
         );
     }
+
+    /// Wake lateness must be BOUNDED, not merely recorded.
+    ///
+    /// `test_rt_wait_stats_are_published` above asserts `> 0` and nothing else,
+    /// so a regression that added 50 us to every wake passed it. So did every
+    /// other RT gate: the jitter metric in `stress_rt_contention.rs` is
+    /// `|interval - mean_interval|`, which subtracts out any CONSTANT per-wake
+    /// delay — a fixed lateness is not jitter, it is phase error, and no
+    /// interval-based statistic can see it. That is exactly the shape of a
+    /// timer-slack regression.
+    ///
+    /// The bound here is deliberately loose (one full period) because this runs
+    /// on shared CI runners. It is not trying to measure quality; it is trying
+    /// to make a gross phase regression impossible to land silently, which is
+    /// what nothing was doing.
+    #[test]
+    fn wake_lateness_is_bounded_not_merely_recorded() {
+        const PERIOD: Duration = Duration::from_millis(1);
+        const SLOTS: u64 = 200;
+
+        let before = rt_wait_stats();
+        let mut w = CyclicWaiter::new(PERIOD, false, false);
+        for _ in 0..SLOTS {
+            w.wait();
+        }
+        w.finish(false);
+        let after = rt_wait_stats();
+
+        let slots = after.slots.saturating_sub(before.slots);
+        assert!(slots > 0, "no slots recorded");
+        let mean_late_ns = after
+            .wake_late_total_ns
+            .saturating_sub(before.wake_late_total_ns)
+            / slots;
+
+        let period_ns = PERIOD.as_nanos() as u64;
+        assert!(
+            mean_late_ns < period_ns,
+            "mean wake lateness {mean_late_ns} ns over {slots} slots exceeds the \
+             {period_ns} ns period. A periodic loop that is on average more than \
+             a whole period late is not keeping its schedule, and no
+             interval-based jitter metric can see this — a constant offset \
+             cancels out of |interval - mean_interval|."
+        );
+    }
 }
