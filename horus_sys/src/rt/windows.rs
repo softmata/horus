@@ -10,9 +10,12 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         .unwrap_or(1);
 
     RtCapabilities {
-        // No special privilege is required here (see can_set_rt_priority),
-        // unlike Linux where it needs CAP_SYS_NICE or an rtprio limit.
-        rt_priority_permitted: true,
+        // Derived from the one function that owns this policy rather than
+        // restated here, so the two cannot drift if the Windows probe ever
+        // learns to check SeIncreaseBasePriorityPrivilege.
+        // (`super::can_set_rt_priority` does not dispatch back into this
+        // module, so there is no recursion.)
+        rt_priority_permitted: super::can_set_rt_priority(),
         preempt_rt: false,
         max_priority: 31, // Windows thread priorities range 0-31
         min_priority: 1,

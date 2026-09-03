@@ -119,16 +119,26 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
             caps.max_priority
         );
     } else {
+        // "REFUSED" is what the probe established; the cause is not.
+        // `can_set_rt_priority()` returns false for a missing CAP_SYS_NICE,
+        // for RLIMIT_RTPRIO=0, for a seccomp filter that rejects
+        // sched_setscheduler, and for an unreadable thread policy — so the
+        // line offers the fixes without asserting which one is needed.
         println!(
             "  {} SCHED_FIFO: {} (kernel offers {}-{}; this process may not use it)",
             "✗".red(),
-            "REFUSED — no CAP_SYS_NICE, RLIMIT_RTPRIO=0".red(),
+            "REFUSED — not permitted to set an RT policy".red(),
             caps.min_priority,
             caps.max_priority
         );
+        // Not "run `horus setup-rt`" — this *is* setup-rt, and in `--check`
+        // mode nothing is written. Name the two mechanisms instead, and the
+        // file a full run writes for the second.
         println!(
-            "      {} sudo setcap cap_sys_nice+ep $(which horus)",
-            "fix:".bold()
+            "      {} sudo setcap cap_sys_nice+ep $(which horus), or an rtprio limit \
+             for this user (a full `setup-rt` run writes {})",
+            "fix:".bold(),
+            LIMITS_PATH
         );
     }
 

@@ -800,10 +800,17 @@ fn check_rt() -> CheckResult {
             caps.min_priority, caps.max_priority
         ));
     } else {
+        // States the observation, not a cause. `rt_priority_permitted` is a
+        // single bool: `can_set_rt_priority()` answers false for a missing
+        // CAP_SYS_NICE, for RLIMIT_RTPRIO=0, for a seccomp filter that rejects
+        // sched_setscheduler (common in containers, where `setcap` would not
+        // help), and for a thread whose own policy could not be read back.
+        // Naming one of those as *the* cause would be wrong in the other
+        // three, and `doctor` exists to be believed.
         details.push(format!(
-            "SCHED_FIFO REFUSED for this process (kernel offers {}-{}, but \
-             RLIMIT_RTPRIO is 0 and CAP_SYS_NICE is not held). Tail jitter will \
-             be an order of magnitude worse than this host can do.",
+            "SCHED_FIFO REFUSED for this process (the kernel offers {}-{}, but \
+             this process may not set an RT policy). Tail jitter will be an \
+             order of magnitude worse than this host can do.",
             caps.min_priority, caps.max_priority
         ));
         details.push(
