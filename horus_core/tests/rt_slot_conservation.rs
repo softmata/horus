@@ -62,6 +62,14 @@ fn serial() -> MutexGuard<'static, ()> {
 /// absolute deadline stays at ~100%.
 const WORK_PER_TICK: Duration = Duration::from_micros(300);
 
+/// `NodeBuilder::build` validates the registration and returns a `HorusResult`;
+/// on failure the node is never added. Every test below early-returns when the
+/// cyclic waiter reports zero slots, so a discarded `build()` error would turn
+/// each of these gates into a vacuous pass over a scheduler that never ran the
+/// probe. Registration failure is a test bug, and it must be loud.
+const PROBE_MUST_REGISTER: &str =
+    "probe node failed to register; without it this gate asserts nothing";
+
 struct TickNode {
     ticks: Arc<AtomicU64>,
 }
@@ -95,12 +103,13 @@ fn tick_grid_accounts_for_every_elapsed_period() {
     const RUN: Duration = Duration::from_secs(3);
 
     let mut scheduler = Scheduler::new().tick_rate(RATE_HZ.hz()).verbose(false);
-    let _ = scheduler
+    scheduler
         .add(TickNode {
             ticks: ticks.clone(),
         })
         .rate(RATE_HZ.hz())
-        .build();
+        .build()
+        .expect(PROBE_MUST_REGISTER);
 
     let started = Instant::now();
     scheduler.run_for(RUN).expect("scheduler run");
@@ -161,12 +170,13 @@ fn overruns_and_skipped_slots_agree() {
     let ticks = Arc::new(AtomicU64::new(0));
 
     let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
-    let _ = scheduler
+    scheduler
         .add(TickNode {
             ticks: ticks.clone(),
         })
         .rate(1000_u64.hz())
-        .build();
+        .build()
+        .expect(PROBE_MUST_REGISTER);
     scheduler
         .run_for(Duration::from_secs(2))
         .expect("scheduler run");
@@ -200,25 +210,37 @@ fn overruns_and_skipped_slots_agree() {
     );
 }
 
-/// The wake path must not be *systematically* late by a whole period.
+/// The wake path must not be late by an order of magnitude beyond a period.
 ///
-/// This is deliberately a very loose absolute bound. Its job is to catch a
-/// catastrophic regression (a blocking call or an unbounded wait entering the
-/// wake path), not to certify jitter -- certifying jitter requires the target
-/// hardware, PREEMPT_RT and CAP_SYS_NICE, none of which a CI runner has.
+/// The bound is ten periods of MEAN lateness, and the name says ten because
+/// that is what is enforced. A one-period bound would be a wall-clock jitter
+/// gate, which is the thing this file exists to avoid: on a contended runner a
+/// neighbour can push mean lateness past a single period while the grid's own
+/// accounting -- the property the other two tests assert -- stays intact.
+///
+/// So this bound's job is only to catch a catastrophic regression (a blocking
+/// call or an unbounded wait entering the wake path), not to certify jitter;
+/// certifying jitter requires the target hardware, PREEMPT_RT and
+/// CAP_SYS_NICE, none of which a CI runner has.
 #[test]
-fn mean_wake_lateness_stays_within_a_period() {
+fn mean_wake_lateness_stays_within_ten_periods() {
     let _serial = serial();
     let before = rt_wait_stats();
     let ticks = Arc::new(AtomicU64::new(0));
 
-    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
-    let _ = scheduler
+    const RATE_HZ: u64 = 1000;
+    // Kept as a period count, not a hardcoded nanosecond figure, so the bound
+    // and the name it is documented under cannot drift apart again.
+    const LATENESS_BUDGET_PERIODS: f64 = 10.0;
+
+    let mut scheduler = Scheduler::new().tick_rate(RATE_HZ.hz()).verbose(false);
+    scheduler
         .add(TickNode {
             ticks: ticks.clone(),
         })
-        .rate(1000_u64.hz())
-        .build();
+        .rate(RATE_HZ.hz())
+        .build()
+        .expect(PROBE_MUST_REGISTER);
     scheduler
         .run_for(Duration::from_secs(2))
         .expect("scheduler run");
@@ -241,15 +263,20 @@ fn mean_wake_lateness_stays_within_a_period() {
         after.wake_late_max_ns / 1000
     );
 
-    // One full period of MEAN lateness means the grid is a period behind on
-    // average -- it is not keeping the rate at all. Ten periods of margin makes
-    // this immune to runner contention while still catching a wake path that
-    // has become structurally blocking.
+    // One full period of MEAN lateness already means the grid is a period behind
+    // on average, but a loaded shared runner reaches that without any HORUS
+    // defect. Ten periods of margin keeps this immune to runner contention
+    // while still catching a wake path that has become structurally blocking.
+    let period_ns = 1_000_000_000f64 / RATE_HZ as f64;
+    let budget_ns = period_ns * LATENESS_BUDGET_PERIODS;
     assert!(
-        mean_late_ns < 10_000_000.0,
-        "mean wake lateness {:.1} ms over {} slots: the wake path is \
-         structurally late, not merely preempted",
+        mean_late_ns < budget_ns,
+        "mean wake lateness {:.1} ms over {} slots exceeds the {:.0}-period \
+         budget ({:.1} ms): the wake path is structurally late, not merely \
+         preempted",
         mean_late_ns / 1_000_000.0,
-        slots
+        slots,
+        LATENESS_BUDGET_PERIODS,
+        budget_ns / 1_000_000.0
     );
 }
