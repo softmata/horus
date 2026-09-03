@@ -1378,7 +1378,9 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     let index = (seq & local.cached_capacity_mask) as usize;
     let new_seq = seq.wrapping_add(1);
     // Co-located geometry: the stamp shares a cache line with its payload, so
-    // publishing dirties one line instead of the three the split layout does
+    // publishing dirties two lines (the slot, and the header publish word that
+    // `recv_shm_pod_broadcast` still gates on unconditionally) instead of the
+    // three the split layout does
     // (data slot, sequence-array entry, and the header's publish word). The
     // stride is a cached register, constant for the life of the mapping, so
     // this branch predicts perfectly.

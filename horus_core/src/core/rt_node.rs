@@ -181,7 +181,12 @@ impl RtStats {
 
     /// Update statistics with new execution time
     pub fn record_execution(&mut self, duration: Duration) {
-        let duration_us = duration.as_micros() as f64;
+        // Fractional microseconds. `as_micros()` truncates, and RT tick bodies
+        // here measure p50 37ns / p99 46ns — so every sample floored to 0 and
+        // the telemetry read "idle" rather than "below the resolution I
+        // report in". Measured: 900ns x100 gave avg 0 and jitter 0; 1500ns
+        // gave 1 (33% under); 3900ns gave 3 (23% under).
+        let duration_us = duration.as_secs_f64() * 1_000_000.0;
 
         // Update worst case
         if duration > self.worst_execution {
@@ -461,5 +466,53 @@ mod tests {
     #[test]
     fn miss_default_is_warn() {
         assert_eq!(Miss::default(), Miss::Warn);
+    }
+}
+
+#[cfg(test)]
+mod sub_microsecond_telemetry_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A sub-microsecond tick must not report as zero.
+    ///
+    /// `as_micros()` truncates. RT tick bodies here measure p50 37 ns / p99
+    /// 46 ns, so every sample floored to 0 — and a zero reads as "this node did
+    /// no work", not as "this is below the resolution I report in". Worse, it
+    /// is indistinguishable from a genuinely idle node in the same field.
+    #[test]
+    fn a_900ns_tick_is_not_recorded_as_zero() {
+        let mut stats = RtStats::default();
+        for _ in 0..100 {
+            stats.record_execution(Duration::from_nanos(900));
+        }
+        assert!(
+            stats.avg_execution_us > 0.0,
+            "100 samples of 900ns each recorded avg_execution_us = {}. \
+             Truncating to whole microseconds makes a fast node indistinguishable \
+             from an idle one.",
+            stats.avg_execution_us
+        );
+        assert!(
+            (stats.avg_execution_us - 0.9).abs() < 0.05,
+            "expected ~0.9us, got {}",
+            stats.avg_execution_us
+        );
+    }
+
+    /// The under-reporting was not confined to sub-microsecond samples: any
+    /// fractional part was discarded, so 1.5us read as 1 (33% under).
+    #[test]
+    fn fractional_microseconds_are_not_discarded() {
+        let mut stats = RtStats::default();
+        for _ in 0..100 {
+            stats.record_execution(Duration::from_nanos(1500));
+        }
+        assert!(
+            (stats.avg_execution_us - 1.5).abs() < 0.05,
+            "1500ns samples must average ~1.5us, not {} — truncation reported \
+             1.0 here, a 33% under-report",
+            stats.avg_execution_us
+        );
     }
 }
