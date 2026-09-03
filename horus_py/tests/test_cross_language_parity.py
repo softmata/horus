@@ -9,6 +9,8 @@ Tests that every Python message type:
 These tests verify the full interop pipeline added by the Python-Rust Message Parity roadmap.
 """
 
+import math
+
 import pytest
 import horus
 
@@ -622,6 +624,68 @@ class TestCrossLanguageRustSendsPythonReceives:
     def test_imu_full_fields(self):
         msg = horus.Imu(accel_x=0.01, accel_y=-0.02, accel_z=9.81, gyro_x=0.001, gyro_y=-0.002, gyro_z=0.003)
         roundtrip(horus.Imu, msg, {"accel_x": 0.01, "accel_y": -0.02, "accel_z": 9.81, "gyro_x": 0.001})
+
+    def test_imu_orientation_readable_after_roundtrip(self):
+        """A quaternion written with the only writer Python had must be readable back."""
+        msg = horus.Imu(accel_x=0.0, accel_y=0.0, accel_z=9.81, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0)
+        msg.set_orientation_from_euler(0.0, 0.0, math.pi / 2)
+        roundtrip(horus.Imu, msg, {"qz": math.sin(math.pi / 4), "qw": math.cos(math.pi / 4)})
+
+    def test_imu_orientation_and_covariance_readable_by_subscriber(self):
+        """Orientation and the three covariances survive SHM *and* are readable.
+
+        They were always transported — all six fields are in the 304-byte POD
+        (horus_cpp/src/layout_contract.rs) — but Python had no getter for any of
+        them, so a subscriber received the 32 orientation bytes with no way to
+        look at them, and `has_orientation()` answered False for every IMU a
+        Python program could build: it reads orientation_covariance[0], which
+        Imu::new() seeds to -1.0 and no Python setter could move off it.
+        """
+        msg = horus.Imu(accel_x=0.0, accel_y=0.0, accel_z=9.81, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0)
+        msg.set_orientation_from_euler(0.0, 0.0, math.pi / 2)
+        msg.orientation_covariance = [0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.03]
+        msg.angular_velocity_covariance = [1e-4] * 9
+        msg.linear_acceleration_covariance = [2e-4] * 9
+
+        received = []
+
+        def pub_fn(node):
+            if node.info.tick_count() == 0:
+                node.send("Imu", msg)
+            elif node.info.tick_count() > 2:
+                node.request_stop()
+
+        def sub_fn(node):
+            m = node.recv("Imu")
+            if m is not None:
+                received.append(m)
+                node.request_stop()
+            elif node.info.tick_count() > 10:
+                node.request_stop()
+
+        horus.run(
+            horus.Node(name="p", pubs="Imu", tick=pub_fn),
+            horus.Node(name="s", subs="Imu", tick=sub_fn),
+            duration=1.0,
+        )
+
+        assert len(received) >= 1
+        got = received[0]
+
+        # A yaw of pi/2 is the quaternion (0, 0, sin(pi/4), cos(pi/4)), w last.
+        assert abs(got.qx) < 1e-9
+        assert abs(got.qy) < 1e-9
+        assert abs(got.qz - math.sin(math.pi / 4)) < 1e-9
+        assert abs(got.qw - math.cos(math.pi / 4)) < 1e-9
+
+        q = got.orientation_quat()
+        assert abs(q.z - math.sin(math.pi / 4)) < 1e-9
+        assert abs(q.w - math.cos(math.pi / 4)) < 1e-9
+
+        assert got.orientation_covariance == [0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.03]
+        assert got.angular_velocity_covariance == [1e-4] * 9
+        assert got.linear_acceleration_covariance == [2e-4] * 9
+        assert got.has_orientation()
 
     def test_laser_scan_roundtrip(self):
         msg = horus.LaserScan(angle_min=-1.5, angle_max=1.5, range_min=0.125, range_max=30.0)
