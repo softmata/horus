@@ -170,11 +170,21 @@ pub enum Metric {
     TailRatioP99,
     /// `p99.9 / median` — dimensionless tail shape.
     TailRatioP999,
+    /// Nanoseconds per message: the RECIPROCAL of throughput.
+    ///
+    /// Throughput is higher-is-better and every comparison in this gate is
+    /// lower-is-better (`current > band` is a regression). Rather than teach
+    /// the comparator a direction — one more branch on every metric, and a
+    /// second meaning for "improved" — throughput enters as its reciprocal.
+    /// That keeps one direction in the gate and, as a bonus, puts throughput in
+    /// the same unit as every latency metric, so the thresholds below are
+    /// comparable to the ones above them.
+    ThroughputNsPerMsg,
 }
 
 impl Metric {
     /// Every metric the gate knows about, in report order.
-    pub const ALL: [Metric; 9] = [
+    pub const ALL: [Metric; 10] = [
         Metric::Median,
         Metric::P95,
         Metric::P99,
@@ -184,6 +194,7 @@ impl Metric {
         Metric::MaxJitter,
         Metric::TailRatioP99,
         Metric::TailRatioP999,
+        Metric::ThroughputNsPerMsg,
     ];
 
     /// Short label used in tables.
@@ -198,6 +209,7 @@ impl Metric {
             Metric::MaxJitter => "max_jitter",
             Metric::TailRatioP99 => "p99/median",
             Metric::TailRatioP999 => "p99.9/median",
+            Metric::ThroughputNsPerMsg => "ns/msg",
         }
     }
 
@@ -234,6 +246,10 @@ impl Metric {
             // `max` and `max_jitter` are single samples at any n; the floor
             // here only asserts the run was long enough to have seen anything.
             Metric::Max | Metric::MaxJitter => 1_000,
+            // A whole-run aggregate, not an order statistic: it needs enough
+            // messages for the rate to be meaningful, not enough to resolve a
+            // percentile.
+            Metric::ThroughputNsPerMsg => 100,
         }
     }
 
@@ -256,6 +272,16 @@ impl Metric {
             Metric::MaxJitter => Some(entry.max_jitter_ns as f64),
             Metric::TailRatioP99 => ratio(entry.p99 as f64),
             Metric::TailRatioP999 => ratio(entry.p999 as f64),
+            // 0 or non-finite means the producing binary did not measure
+            // throughput for this benchmark. `None` makes the gate skip it
+            // rather than compare against a fabricated zero.
+            Metric::ThroughputNsPerMsg => {
+                if entry.ns_per_msg.is_finite() && entry.ns_per_msg > 0.0 {
+                    Some(entry.ns_per_msg)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -476,6 +502,23 @@ impl Default for RegressionPolicy {
                     abs_floor: 1.0,
                     gross_multiplier: 6.0,
                 },
+                // Throughput, as ns/msg so it shares the lower-is-better
+                // comparison. Report-only to begin with: unlike the latency
+                // metrics there is no window of history for it yet, so its
+                // real spread on this runner class is unmeasured, and the
+                // honest thing is to watch it before letting it fail a build.
+                // The gross multiplier still applies, so a throughput COLLAPSE
+                // (2x the ns/msg, i.e. half the rate) is caught immediately.
+                // Promote to Blocking once BENCH_WINDOW runs have described
+                // its spread — the same path Median took.
+                MetricPolicy {
+                    metric: Metric::ThroughputNsPerMsg,
+                    enforcement: Enforcement::ReportOnly,
+                    rel_threshold: 0.20,
+                    noise_sigmas: 4.0,
+                    abs_floor: 50.0,
+                    gross_multiplier: 2.0,
+                },
             ],
             min_baseline_runs: 5,
             no_noise_fallback_rel: 1.0,
@@ -531,6 +574,16 @@ pub struct BaselineEntry {
     /// so it is never gated.
     #[serde(deserialize_with = "crate::stats::nan_from_null")]
     pub cv: f64,
+    /// Nanoseconds per message — the reciprocal of `throughput.messages_per_sec`.
+    ///
+    /// `#[serde(default)]` because the rolling baseline in the Actions cache
+    /// predates this field. Older runs deserialize to 0.0, which
+    /// `Metric::value` maps to `None`, so the gate reports "no baseline run
+    /// recorded this benchmark" for throughput until the window refills with
+    /// runs that have it. That is the correct rollout: no false regression on
+    /// the first build after this lands.
+    #[serde(default)]
+    pub ns_per_msg: f64,
 }
 
 impl BaselineEntry {
@@ -548,6 +601,14 @@ impl BaselineEntry {
             max: result.statistics.max,
             max_jitter_ns: result.determinism.max_jitter_ns,
             cv: result.determinism.cv,
+            ns_per_msg: {
+                let mps = result.throughput.messages_per_sec;
+                if mps.is_finite() && mps > 0.0 {
+                    1e9 / mps
+                } else {
+                    0.0
+                }
+            },
         }
     }
 
@@ -629,6 +690,7 @@ impl BaselineRun {
                 max: med_u(reps.iter().map(|e| e.max).collect()),
                 max_jitter_ns: med_u(reps.iter().map(|e| e.max_jitter_ns).collect()),
                 cv: med_f(reps.iter().map(|e| e.cv).collect()),
+                ns_per_msg: med_f(reps.iter().map(|e| e.ns_per_msg).collect()),
             })
             .collect();
 
@@ -1812,6 +1874,11 @@ fn remedy_for(metric: Metric) -> &'static str {
              contended cache line on the hot path — something that is cheap most of the time \
              and expensive sometimes."
         }
+        Metric::ThroughputNsPerMsg => {
+            "sustained throughput dropped (this is ns per message, so higher is worse). \
+             Look for added per-message work on the send path, a copy that used to be \
+             elided, or a batch that stopped batching."
+        }
         Metric::Max | Metric::MaxJitter | Metric::P9999 => {
             "a worst-case excursion grew far past anything the runner explains. Check for an \
              unbounded loop, a blocking wait, or a fault path newly reachable from the hot path."
@@ -1954,7 +2021,7 @@ mod tests {
 
     /// Shape of one benchmark result, parameterised on the numbers the gate
     /// actually reads.
-    struct Shape {
+    pub(super) struct Shape {
         median: f64,
         p95: u64,
         p99: u64,
@@ -1967,7 +2034,7 @@ mod tests {
     impl Shape {
         /// A plausible healthy SHM topic: ~100 ns median with a tail an order
         /// of magnitude out, measured over enough samples for p99.9.
-        fn healthy(median: f64) -> Self {
+        pub(super) fn healthy(median: f64) -> Self {
             Self {
                 median,
                 p95: (median * 1.8) as u64,
@@ -1980,7 +2047,7 @@ mod tests {
         }
     }
 
-    fn make_result(name: &str, shape: &Shape) -> BenchmarkResult {
+    pub(super) fn make_result(name: &str, shape: &Shape) -> BenchmarkResult {
         BenchmarkResult {
             provenance: Provenance::Measured,
             name: name.to_string(),
@@ -2301,5 +2368,95 @@ mod tests {
         assert_eq!(format_throughput(500.0), "500.0 msg/s");
         assert_eq!(format_throughput(50_000.0), "50.00 K msg/s");
         assert_eq!(format_throughput(5_000_000.0), "5.00 M msg/s");
+    }
+}
+
+#[cfg(test)]
+mod throughput_metric_tests {
+    use super::tests::{make_result, Shape};
+    use super::*;
+
+    /// Throughput reaches the gate as its reciprocal, in the same unit as the
+    /// latency metrics and in the same (lower-is-better) direction.
+    #[test]
+    fn throughput_becomes_nanoseconds_per_message() {
+        let shape = Shape::healthy(400.0);
+        let result = make_result("topic_send", &shape);
+        let entry = BaselineEntry::from_result(&result);
+
+        // The fixture publishes 1e6 msg/s, i.e. 1000 ns per message.
+        assert!(
+            (entry.ns_per_msg - 1000.0).abs() < 1e-6,
+            "1e6 msg/s should be 1000 ns/msg, got {}",
+            entry.ns_per_msg
+        );
+        assert_eq!(
+            Metric::ThroughputNsPerMsg.value(&entry),
+            Some(entry.ns_per_msg)
+        );
+    }
+
+    /// A benchmark that did not measure throughput must be SKIPPED, not
+    /// compared against a fabricated zero. A zero would read as an infinitely
+    /// fast baseline and make every later run look like a regression.
+    #[test]
+    fn unmeasured_throughput_is_none_not_zero() {
+        let shape = Shape::healthy(400.0);
+        let mut result = make_result("topic_send", &shape);
+        result.throughput.messages_per_sec = 0.0;
+        let entry = BaselineEntry::from_result(&result);
+        assert_eq!(entry.ns_per_msg, 0.0);
+        assert_eq!(Metric::ThroughputNsPerMsg.value(&entry), None);
+
+        result.throughput.messages_per_sec = f64::NAN;
+        let entry = BaselineEntry::from_result(&result);
+        assert_eq!(Metric::ThroughputNsPerMsg.value(&entry), None);
+    }
+
+    /// The rolling baseline in the Actions cache predates this field. Older
+    /// entries must still deserialize, and must gate as "no baseline" rather
+    /// than as a regression, or the first build after this lands fails for
+    /// everyone on history it never recorded.
+    #[test]
+    fn baseline_entries_without_the_field_still_load() {
+        let legacy = r#"{
+            "name": "topic_send",
+            "message_size": 64,
+            "count": 100000,
+            "median": 400.0,
+            "p95": 500,
+            "p99": 600,
+            "p999": 900,
+            "p9999": 1500,
+            "max": 4000,
+            "max_jitter_ns": 3600,
+            "cv": 0.1
+        }"#;
+        let entry: BaselineEntry =
+            serde_json::from_str(legacy).expect("legacy baseline entry must still parse");
+        assert_eq!(entry.ns_per_msg, 0.0);
+        assert_eq!(
+            Metric::ThroughputNsPerMsg.value(&entry),
+            None,
+            "a legacy entry must be skipped by the throughput gate, not compared"
+        );
+        // The metrics that existed before must be unaffected.
+        assert_eq!(Metric::Median.value(&entry), Some(400.0));
+        assert_eq!(Metric::P99.value(&entry), Some(600.0));
+    }
+
+    /// Every metric the gate knows about must have a policy, or it is silently
+    /// tracked and never enforced — which is how `Max` and `MaxJitter` would
+    /// have looked if they had been missed.
+    #[test]
+    fn every_metric_has_a_policy() {
+        let policy = RegressionPolicy::default();
+        for m in Metric::ALL {
+            assert!(
+                policy.for_metric(m).is_some(),
+                "Metric::{:?} has no MetricPolicy, so it is tracked but never gated",
+                m
+            );
+        }
     }
 }

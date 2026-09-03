@@ -727,7 +727,14 @@ impl CyclicWaiter {
 
     /// Wait out the remainder of the current period and return at the next
     /// slot boundary.
-    fn wait(&mut self) {
+    /// Wait for the next slot; returns how late the wake was, in nanoseconds.
+    ///
+    /// The return value is the same `late_ns` this function already accumulated
+    /// into `wake_late_max_ns`. It was computed and thrown away, so nothing
+    /// downstream could act on it — in particular the deadline check, which
+    /// measured only how long a node's own code ran and so never saw the
+    /// lateness that dominates on a real machine.
+    fn wait(&mut self) -> u64 {
         let now = cyclic_now_ns();
         self.local.slots += 1;
 
@@ -800,6 +807,8 @@ impl CyclicWaiter {
             self.flush();
             self.last_flush_ns = t;
         }
+
+        late_ns
     }
 
     /// Publish the local counters to the process-wide totals and reset them.
@@ -1151,6 +1160,7 @@ impl RtExecutor {
         monitors: &SharedMonitors,
         running: &Arc<AtomicBool>,
         is_first_tick: bool,
+        release_late_ns: u64,
     ) {
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
@@ -1323,7 +1333,17 @@ impl RtExecutor {
 
         // Deadline check via TimingEnforcer
         if let Some(deadline) = node.deadline {
-            let miss = TimingEnforcer::check_deadline(tr.tick_start, deadline, node.miss_policy);
+            // Measured from the scheduled RELEASE, not from when tick() started.
+            // A node woken 3.5 ms late that executes in 10 us has missed a
+            // 900 us deadline by 2.6 ms; the old check compared 10 us against
+            // 900 us and called it healthy, so the whole degradation ladder was
+            // blind to the failure mode that actually dominates.
+            let miss = TimingEnforcer::check_deadline_from_release(
+                tr.tick_start,
+                Duration::from_nanos(release_late_ns),
+                deadline,
+                node.miss_policy,
+            );
             if miss.is_none() && node.in_safe_mode {
                 // Met the deadline again: clear the latch so a node that
                 // recovers can be safed once more if it degrades later.
@@ -1723,6 +1743,12 @@ impl RtExecutor {
         // affinity/governor/IRQ work that only happens once.
         let mut waiter = CyclicWaiter::new(tick_period, rt_policy_active, monitors.verbose);
 
+        // Lateness of the slot THIS iteration is serving. `waiter.wait()` at the
+        // bottom of the loop returns the lateness of the wake that releases the
+        // next iteration, so carrying it across the loop boundary is what makes
+        // it describe the right tick. Zero for the first iteration, which is
+        // released by the loop being entered rather than by a wait.
+        let mut release_late_ns: u64 = 0;
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
@@ -1785,7 +1811,7 @@ impl RtExecutor {
                 // continues ticking remaining nodes.
                 let is_first_tick = !warmed[idx];
                 let infra_result = catch_unwind(AssertUnwindSafe(|| {
-                    Self::tick_node(node, &monitors, &running, is_first_tick)
+                    Self::tick_node(node, &monitors, &running, is_first_tick, release_late_ns)
                 }));
                 warmed[idx] = true;
 
@@ -1816,7 +1842,7 @@ impl RtExecutor {
             // ~50 ms dequeue, on top of unbounded phase drift. See the
             // `CyclicWaiter` section at the top of this file for the full
             // reasoning and for the median-jitter cost this trade accepts.
-            waiter.wait();
+            release_late_ns = waiter.wait();
         }
 
         waiter.finish(monitors.verbose);
@@ -2063,7 +2089,13 @@ mod tests {
         node.health_state.store(NodeHealthState::Unhealthy);
 
         let monitors = test_monitors();
-        RtExecutor::tick_node(&mut node, &monitors, &Arc::new(AtomicBool::new(true)), true);
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &Arc::new(AtomicBool::new(true)),
+            true,
+            0,
+        );
 
         assert_eq!(
             count.load(AOrd::Relaxed),
