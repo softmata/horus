@@ -109,7 +109,9 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
         println!("  {} PREEMPT_RT: {}", "⚠".yellow(), "not detected".yellow());
     }
 
-    if caps.max_priority > 0 {
+    // Permission, not the kernel's priority range — see the note in
+    // doctor.rs. `max_priority` is non-zero even when the call is refused.
+    if caps.rt_priority_permitted {
         println!(
             "  {} SCHED_FIFO: available (priority {}-{})",
             "✓".green(),
@@ -117,7 +119,17 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
             caps.max_priority
         );
     } else {
-        println!("  {} SCHED_FIFO: {}", "✗".red(), "not available".red());
+        println!(
+            "  {} SCHED_FIFO: {} (kernel offers {}-{}; this process may not use it)",
+            "✗".red(),
+            "REFUSED — no CAP_SYS_NICE, RLIMIT_RTPRIO=0".red(),
+            caps.min_priority,
+            caps.max_priority
+        );
+        println!(
+            "      {} sudo setcap cap_sys_nice+ep $(which horus)",
+            "fix:".bold()
+        );
     }
 
     if caps.memory_locking {

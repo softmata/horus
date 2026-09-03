@@ -34,6 +34,9 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
     RtCapabilities {
         preempt_rt,
         max_priority,
+        // Probed, not inferred from `max_priority` — that is a kernel constant
+        // and is non-zero even where the call is refused with EPERM.
+        rt_priority_permitted: can_set_rt_priority(),
         min_priority,
         memory_locking,
         cpu_affinity: true,

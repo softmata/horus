@@ -79,7 +79,11 @@ impl RtReport {
             issues.push("PREEMPT_RT kernel not detected".into());
             recs.push("Install PREEMPT_RT kernel for <20μs jitter: https://wiki.linuxfoundation.org/realtime".into());
         }
-        if caps.max_priority == 0 {
+        // `max_priority` is a kernel constant and is never 0 on any supported
+        // platform, so this issue and its recommendation could never fire — and
+        // `horus doctor --rt` would report a p99 jitter figure while suppressing
+        // the single explanation for it.
+        if !caps.rt_priority_permitted {
             issues.push("SCHED_FIFO not available (no CAP_SYS_NICE)".into());
             recs.push("Run: sudo setcap cap_sys_nice+ep $(which horus)".into());
         }
