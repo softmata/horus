@@ -12330,10 +12330,19 @@ fn every_send_blocking_doc_states_the_error_contract_the_enum_actually_has() {
     for (at, _) in SRC.match_indices("pub fn send_blocking(") {
         let doc = doc_above(SRC, at);
         for variant in &variants {
-            if !doc.contains(variant) {
+            // The qualified path, not the bare variant name. `Timeout` is also an
+            // ordinary English word on a method whose argument is called
+            // `timeout`, so a doc block that had dropped the error contract
+            // entirely could still satisfy a bare `contains` on one capitalised
+            // mention in prose — a drift detector that its own subject can
+            // accidentally satisfy. Both blocks already write the path, linked or
+            // in a code span, so the stricter needle costs nothing to satisfy
+            // honestly and cannot be met by accident.
+            let named = format!("SendBlockingError::{variant}");
+            if !doc.contains(&named) {
                 drift.push(format!(
                     "the doc above the `send_blocking` at byte {at} never names \
-                     `SendBlockingError::{variant}`, which it can return"
+                     `{named}`, which it can return"
                 ));
             }
         }
