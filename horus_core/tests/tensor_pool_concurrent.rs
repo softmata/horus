@@ -10,12 +10,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 mod common;
-use common::cleanup_stale_shm;
+use common::{
+    cleanup_stale_shm, test_pool_id, POOL_BAND_END, POOL_BAND_START,
+    POOL_BASE_CONCURRENT_ALLOC_ALL, POOL_BASE_CONCURRENT_ALLOC_RELEASE, POOL_BASE_DATA_INTEGRITY,
+    POOL_BASE_SINGLE_SLOT, POOL_BASE_SLOT_REUSE, POOL_PID_SPREAD, TENSOR_POOL_BASES,
+};
 
-// Pool ids are `BASE + (pid % 100)`, so each test owns a 100-wide range and the
-// BASES MUST BE AT LEAST 100 APART. They used to be 10 apart -- 9700, 9710,
-// 9720, 9730, 9740 -- which made every range overlap the next nine, and
-// resource_exhaustion.rs sat at 9800 inside three of them.
+// Pool ids here are `BASE + (pid % POOL_PID_SPREAD)`, so each test owns a
+// range `POOL_PID_SPREAD` wide and the BASES MUST BE AT LEAST THAT FAR APART.
+// They used to be 10 apart -- 9700, 9710, 9720, 9730, 9740 -- which made every
+// range overlap the next nine, and resource_exhaustion.rs sat at 9800 inside
+// three of them.
 //
 // A pool is shared memory keyed by that id and it outlives the process that
 // made it, so an overlap is not a race between these tests: it is this run
@@ -25,11 +30,17 @@ use common::cleanup_stale_shm;
 //   Tensor pool 9811 exists but is only 65856 bytes, smaller than the
 //   16780864 bytes this process's configuration requires
 //
-// 9811 is 9720+91 here and 9800+11 in resource_exhaustion.rs, whose pool is
+// 9811 was 9720+91 here and 9800+11 in resource_exhaustion.rs, whose pool is
 // 64 KiB -- 65536 plus header, the 65856 in the message. It reproduces only
 // when the two pids land 80 apart mod 100, which is why it reads as a flake.
 //
-// `pool_id_ranges_cannot_overlap` below pins the spacing.
+// Spacing the bases is necessary but not sufficient: a FIXED id sitting inside
+// one of these ranges collides whenever `pid % POOL_PID_SPREAD` selects it, and
+// the 9500-10200 neighbourhood is full of them (tensor_pool.rs's unit tests,
+// regressions.rs, the benchmarks). So the whole family moved to its own band at
+// 20_000. The bases live in tests/common so this file and resource_exhaustion.rs
+// compile against the same values, and `pool_id_ranges_cannot_overlap` below
+// checks the constants themselves rather than a copy of them.
 
 fn small_pool_config() -> TensorPoolConfig {
     TensorPoolConfig {
@@ -48,7 +59,7 @@ fn small_pool_config() -> TensorPoolConfig {
 fn test_concurrent_alloc_release_no_panic() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 9700 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_CONCURRENT_ALLOC_RELEASE);
     let pool = Arc::new(TensorPool::new(pool_id, small_pool_config()).unwrap());
 
     let thread_count = 4;
@@ -105,7 +116,7 @@ fn test_concurrent_alloc_release_no_panic() {
 fn test_concurrent_alloc_all_threads_succeed() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 9800 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_CONCURRENT_ALLOC_ALL);
     let pool = Arc::new(TensorPool::new(pool_id, small_pool_config()).unwrap());
 
     let thread_count = 4;
@@ -160,7 +171,7 @@ fn test_concurrent_alloc_all_threads_succeed() {
 fn test_slot_reuse_after_release() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 9900 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_SLOT_REUSE);
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();
 
     // Alloc and release repeatedly — should reuse slots
@@ -182,7 +193,7 @@ fn test_slot_reuse_after_release() {
 fn test_single_slot_pool() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 10000 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_SINGLE_SLOT);
     let config = TensorPoolConfig {
         pool_size: 1024 * 1024, // 1MB
         max_slots: 1,           // only 1 slot
@@ -215,7 +226,7 @@ fn test_single_slot_pool() {
 fn test_data_integrity_after_write() {
     let _shm_guard = cleanup_stale_shm();
 
-    let pool_id = 10100 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_DATA_INTEGRITY);
     let pool = TensorPool::new(pool_id, small_pool_config()).unwrap();
 
     let tensor = pool.alloc(&[1, 4], TensorDtype::U8, Device::cpu()).unwrap();
@@ -245,34 +256,54 @@ fn test_data_integrity_after_write() {
 // Test: the pool id ranges these tests claim must stay disjoint
 // ============================================================================
 
-/// Every `BASE + (pid % 100)` range in the suite must be disjoint.
+/// Every `BASE + (pid % POOL_PID_SPREAD)` range in the family must be disjoint,
+/// and the family must stay inside the band reserved for it.
 ///
 /// This is a property of the constants, not of the runtime, so it is checked
 /// here rather than discovered on a runner whose pid happens to collide. The
 /// bug it replaces failed roughly one run in a hundred and blamed the tensor
 /// pool for what was an id-allocation mistake in the tests.
+///
+/// It reads [`TENSOR_POOL_BASES`], which is built from the same constants the
+/// `test_pool_id(..)` call sites use, so this cannot pass while disagreeing
+/// with the ids the tests actually allocate.
 #[test]
 fn pool_id_ranges_cannot_overlap() {
-    // Keep in sync with the `let pool_id = ...` lines above, and with
-    // resource_exhaustion.rs, which shares this id space.
-    let bases = [
-        ("concurrent_alloc_release", 9700u32),
-        ("concurrent_alloc_all", 9800),
-        ("slot_reuse", 9900),
-        ("single_slot", 10000),
-        ("data_integrity", 10100),
-        ("resource_exhaustion (other file)", 10200),
-    ];
-
-    for (i, (name_a, base_a)) in bases.iter().enumerate() {
-        for (name_b, base_b) in bases.iter().skip(i + 1) {
+    // Pairwise: no two ranges may touch.
+    for (i, (name_a, base_a)) in TENSOR_POOL_BASES.iter().enumerate() {
+        for (name_b, base_b) in TENSOR_POOL_BASES.iter().skip(i + 1) {
             let gap = base_b.abs_diff(*base_a);
             assert!(
-                gap >= 100,
+                gap >= POOL_PID_SPREAD,
                 "pool id ranges for {name_a} ({base_a}) and {name_b} ({base_b}) \
-                 are {gap} apart, but the offset is `pid % 100` -- they overlap, \
-                 so one run can find the other's pool at a different size"
+                 are {gap} apart, but the offset is `pid % {POOL_PID_SPREAD}` -- \
+                 they overlap, so one run can find the other's pool at a \
+                 different size"
             );
         }
     }
+
+    // Containment: the band is what makes "no fixed id collides with us" a
+    // claim about one range instead of about every literal in the workspace.
+    for (name, base) in TENSOR_POOL_BASES.iter() {
+        assert!(
+            *base >= POOL_BAND_START && base + POOL_PID_SPREAD <= POOL_BAND_END,
+            "pool id range for {name} ({base}..{}) escapes the reserved band \
+             {POOL_BAND_START}..{POOL_BAND_END}; ids outside it are not known \
+             to be free",
+            base + POOL_PID_SPREAD
+        );
+    }
+
+    // Exact fit: a base added without widening the band (or a band widened
+    // without a base) is a gap nobody owns, which is how the next fixed id
+    // gets parked inside this family. Fail on both.
+    assert_eq!(
+        TENSOR_POOL_BASES.len() as u32 * POOL_PID_SPREAD,
+        POOL_BAND_END - POOL_BAND_START,
+        "{} bases of width {POOL_PID_SPREAD} do not exactly fill the reserved \
+         band {POOL_BAND_START}..{POOL_BAND_END}; add the missing base or \
+         adjust POOL_BAND_END",
+        TENSOR_POOL_BASES.len()
+    );
 }

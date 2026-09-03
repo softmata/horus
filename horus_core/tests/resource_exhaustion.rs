@@ -6,7 +6,7 @@
 //! during peak load — the system must degrade gracefully, not corrupt data.
 
 mod common;
-use common::cleanup_stale_shm;
+use common::{cleanup_stale_shm, test_pool_id, POOL_BASE_RESOURCE_EXHAUSTION};
 
 use horus_core::communication::Topic;
 use horus_core::memory::{TensorPool, TensorPoolConfig};
@@ -35,7 +35,7 @@ fn test_tensor_pool_alloc_returns_error_when_full() {
         ..Default::default()
     };
 
-    let pool_id = 10200 + (std::process::id() % 100);
+    let pool_id = test_pool_id(POOL_BASE_RESOURCE_EXHAUSTION);
     let pool = TensorPool::new(pool_id, config).expect("create small pool");
 
     // Allocate all 4 slots
