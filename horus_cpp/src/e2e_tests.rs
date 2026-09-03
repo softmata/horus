@@ -233,7 +233,16 @@ mod tests {
     fn e2e_params_pipeline() {
         use crate::params_ffi::*;
 
-        let params = params_new().expect("no params.yaml in the test working directory");
+        // `None` only if a malformed or unreadable .horus/config/params.yaml
+        // exists under the directory cargo ran this test from; refusing there
+        // is the behaviour under test in tests/params_malformed_yaml.rs, which
+        // owns its own cwd. Chdir'ing here instead would be process-global and
+        // race the other tests in this binary, which libtest runs in parallel.
+        let params = params_new().expect(
+            "params_new refused: fix or remove the malformed \
+             .horus/config/params.yaml under the test working directory \
+             (reason on stderr above)",
+        );
 
         // Set various types
         params_set_f64(&params, "max_speed", 2.5).unwrap();

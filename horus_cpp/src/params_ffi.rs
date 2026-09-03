@@ -101,15 +101,40 @@ pub fn params_has(params: &FfiParams, key: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// No `.horus/config/params.yaml` under the test working directory, so
-    /// `params_new` cannot fail here.
+    /// These tests exercise the getters and setters, not the constructor, but
+    /// `params_new` is the only way to build an `FfiParams` from outside this
+    /// module: `RuntimeParams` has no path-taking constructor, and its
+    /// `Default` is `new().unwrap_or_else(..)`, which reads the same
+    /// cwd-relative file. So they inherit its dependency on the ambient
+    /// `.horus/config/params.yaml` being absent or well-formed.
+    ///
+    /// Deliberately NOT addressed by chdir'ing to a temp directory:
+    /// `set_current_dir` is process-global and libtest runs this binary's tests
+    /// on parallel threads, several of which do cwd-relative I/O — every
+    /// `params_set_*` below appends to `.horus/logs/param_changes.log`. A chdir
+    /// from one test thread would redirect the others' writes. The malformed
+    /// file is covered instead by `tests/params_malformed_yaml.rs`, a separate
+    /// binary that owns the process cwd.
     fn params() -> Box<FfiParams> {
-        params_new().expect("params_new failed with no params.yaml present")
+        params_new().unwrap_or_else(|| {
+            panic!(
+                "params_new returned None: a malformed or unreadable \
+                 .horus/config/params.yaml exists under the directory cargo ran \
+                 this test from (reason on stderr above). Fix or remove that \
+                 file — this test is about the accessors, not the config file."
+            )
+        })
     }
 
     #[test]
     fn create_params() {
-        assert!(params_new().is_some());
+        assert!(
+            params_new().is_some(),
+            "params_new refused to build a store: a malformed or unreadable \
+             .horus/config/params.yaml exists under the directory cargo ran this \
+             test from (reason on stderr above). The refusal itself is the \
+             intended behaviour and is covered by tests/params_malformed_yaml.rs."
+        );
     }
 
     #[test]
