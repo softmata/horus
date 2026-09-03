@@ -74,6 +74,14 @@ void              horus_node_builder_priority(HorusNodeBuilder* builder, int32_t
 void              horus_node_builder_watchdog(HorusNodeBuilder* builder, uint64_t timeout_us);
 int               horus_node_builder_build(HorusNodeBuilder* builder, HorusScheduler* sched);
 
+/* ── Topics ──────────────────────────────────────────────────────────────── */
+
+/* Why the last publisher/subscriber constructor on THIS thread returned null.
+   Writes at most buf_len-1 bytes plus a NUL, returns the bytes written, or -1
+   if buf is null or buf_len is 0. Only meaningful immediately after a
+   constructor returned null. */
+int              horus_topic_last_error(char* buf, size_t buf_len);
+
 /* ── CmdVel Topic ────────────────────────────────────────────────────────── */
 
 typedef struct {

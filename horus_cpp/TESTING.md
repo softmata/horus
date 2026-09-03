@@ -8,9 +8,9 @@ evidence lives, and what gaps remain.
 
 | Dimension                    | Status                | Evidence                                              |
 |-----------------------------|-----------------------|-------------------------------------------------------|
-| Rust unit tests (horus_cpp)  | 139                   | `cargo test -p horus_cpp`                             |
+| Rust unit tests (horus_cpp)  | 146                   | `cargo test -p horus_cpp`                             |
 | Rust unit tests (macros)     | 77                    | `cargo test -p horus_cpp_macros`                      |
-| C++ gtest count              | 61                    | `ctest --test-dir target/cpp_tests -N`                |
+| C++ gtest count              | 68                    | `ctest --test-dir target/cpp_tests -N`                |
 | Proptest properties          | 4 × 256 cases = 1024  | `tests/proptest_ffi.rs`                               |
 | Loom model tests             | 1                     | `loom_tests/tests/loom_scheduler.rs`                  |
 | libFuzzer targets            | 4                     | `fuzz/fuzz_targets/`                                  |
