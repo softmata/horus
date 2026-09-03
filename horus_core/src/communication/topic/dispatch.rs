@@ -620,52 +620,6 @@ const CLAIM_CAS_WARN_QUIET_MS: u64 = 60_000;
 /// Report a claim-loop exhaustion, rate-limited to once a minute per handle.
 ///
 /// The DROP itself is counted where every other lossy-publish drop is counted —
-/// Resume an in-order consumer that was lapped, instead of blocking forever.
-///
-/// A slot stamp that does not match `tail + 1` has two opposite causes, and
-/// collapsing them is what wedged this consumer:
-///
-///   * stamp BEHIND `tail + 1` — the producer claimed the slot and has not
-///     published yet. Ordinary; come back later. If the producer died in that
-///     window, `claimed_slot_escape` bounds the wait.
-///   * stamp AHEAD of `tail + 1` — the slot was reused at a LATER position
-///     while this consumer still had not read it. The consumer was lapped. The
-///     message it is waiting for no longer exists and never will.
-///
-/// `recv_shm_pod_broadcast` has always distinguished these. `recv_shm_mpsc_pod`
-/// and `recv_shm_mpsc_serde` did not: an exact-match gate sent BOTH into
-/// `claimed_slot_escape`, which advances exactly one slot per
-/// `CLAIM_STALL_MAX_LEASES` x lease (20 s by default) and logs the wrong
-/// diagnosis — "claimed by a producer that never published it", when the
-/// producer published it and then lapped past it.
-///
-/// Measured before this existed, on a 16-slot ring with a ~1 kHz producer and a
-/// registered, live subscriber that paused for one lease: 12371 sent, **0
-/// delivered**, and the consumer never recovered.
-///
-/// Returns true when a lap was detected and the caller should return `None`
-/// having already resumed.
-#[inline]
-fn resume_after_lap(local: &mut LocalState, header: &TopicHeader, tail: u64, stamp: u64) -> bool {
-    if stamp <= tail.wrapping_add(1) {
-        return false;
-    }
-    let head = header.sequence_or_head.load(Ordering::Acquire);
-    let cap = local.cached_capacity;
-    if head > cap {
-        // Half a lap back from the head, for the reason `recv_shm_pod_broadcast`
-        // records: landing exactly on `head - capacity` puts the consumer on the
-        // slot the producer overwrites next, so it re-laps immediately.
-        let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
-        if resume > local.local_tail {
-            local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
-            local.local_tail = resume;
-            local.local_head = head;
-        }
-    }
-    true
-}
-
 /// `metrics.send_failures`, incremented by `RingTopic::send_lossy_retry` once it
 /// gives up — so this deliberately does NOT touch that counter and double-count.
 /// What the counter cannot say is *why*, and "the ring was full" and "the claim
@@ -697,6 +651,71 @@ fn warn_claim_cas_exhausted(local: &mut LocalState, topic_name: &str) {
         topic_name,
         MAX_CLAIM_CAS_RETRIES,
     );
+}
+
+/// Resume an in-order consumer that was lapped, instead of blocking forever.
+///
+/// A slot stamp that does not match `tail + 1` has two opposite causes, and
+/// collapsing them is what wedged this consumer:
+///
+///   * stamp BEHIND `tail + 1` — the producer claimed the slot and has not
+///     published yet. Ordinary; come back later. If the producer died in that
+///     window, `claimed_slot_escape` bounds the wait.
+///   * stamp AHEAD of `tail + 1` — the slot was reused at a LATER position
+///     while this consumer still had not read it. The consumer was lapped. The
+///     message it is waiting for no longer exists and never will.
+///
+/// A stamp carrying `SLOT_WRITING` is neither on its own: it says a seqlock
+/// producer is mid-write, and the position under the marker is what decides
+/// which of the two cases above applies. The body masks it off before
+/// comparing.
+///
+/// `recv_shm_pod_broadcast` has always distinguished these. `recv_shm_mpsc_pod`
+/// and `recv_shm_mpsc_serde` did not: an exact-match gate sent BOTH into
+/// `claimed_slot_escape`, which advances exactly one slot per
+/// `CLAIM_STALL_MAX_LEASES` x lease (20 s by default) and logs the wrong
+/// diagnosis — "claimed by a producer that never published it", when the
+/// producer published it and then lapped past it.
+///
+/// Measured before this existed, on a 16-slot ring with a ~1 kHz producer and a
+/// registered, live subscriber that paused for one lease: 12371 sent, **0
+/// delivered**, and the consumer never recovered.
+///
+/// Returns true when a lap was detected and the caller should return `None`
+/// having already resumed.
+#[inline]
+fn resume_after_lap(local: &mut LocalState, header: &TopicHeader, tail: u64, stamp: u64) -> bool {
+    // Compare the POSITION the stamp carries, not the raw word. `SLOT_WRITING`
+    // is bit 63, so a slot a seqlock producer is mid-write on reads back as
+    // `2^63 | pos` — a value larger than any tail, which a raw compare would
+    // read as "lapped by ~2^63 messages". `send_shm_pod_broadcast` and the
+    // co-located `send_shm_sp_pod` both set that bit before touching the
+    // payload, and both rings are consumed through this path after a migration
+    // to MpscShm — which is exactly the case `send_shm_pod_broadcast` states
+    // the contract for: those readers "simply read 'not ready' for the duration
+    // of a write". Masking keeps it. Without it a producer that DIES mid-write
+    // leaves the bit set forever, and every later poll takes this branch and
+    // returns `None` without ever reaching `claimed_slot_escape` — the
+    // unbounded stall that escape exists to bound, reintroduced through the
+    // fix for the other one.
+    let position = stamp & !SLOT_WRITING;
+    if position <= tail.wrapping_add(1) {
+        return false;
+    }
+    let head = header.sequence_or_head.load(Ordering::Acquire);
+    let cap = local.cached_capacity;
+    if head > cap {
+        // Half a lap back from the head, for the reason `recv_shm_pod_broadcast`
+        // records: landing exactly on `head - capacity` puts the consumer on the
+        // slot the producer overwrites next, so it re-laps immediately.
+        let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+        if resume > local.local_tail {
+            local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
+            local.local_tail = resume;
+            local.local_head = head;
+        }
+    }
+    true
 }
 
 // ============================================================================
