@@ -1787,6 +1787,54 @@ fn fault_kill9_publisher_mid_stream() {
     );
 }
 
+/// The SHM backing files a killed child left behind for `topic` — and nothing
+/// else on this machine.
+///
+/// One topic occupies more than one file (`<name>`, plus the `<name>_fanout`
+/// region a FanoutShm handle allocates), so this matches by prefix. What it
+/// will not do is leave `shm_topics_dir()`, this binary's own `test_<hash>`
+/// namespace; the killed child is inside it too, because `shm_namespace()`
+/// publishes a test binary's namespace to its children through
+/// `HORUS_NAMESPACE` (horus_sys/src/shm/mod.rs).
+///
+/// The two corruption tests below used to enumerate `/dev/shm` itself and write
+/// into every `horus_*/topics/*` file on the box: `/dev/shm/horus_default`,
+/// where an installed `horus` or a `cargo run` binary keeps a live robot's
+/// regions, and every concurrent test run's `test_<hash>` namespace — exactly
+/// the isolation `cargo_test_namespace` exists to provide. Measured in an
+/// isolated tmpfs: one `cargo test --test production_fanout_battle` took a
+/// planted 65536-byte region in `horus_default` down to 8192 zero bytes (the
+/// recovery test's `fs::write` is O_TRUNC, so it truncates rather than zeroing
+/// a prefix), and both tests still reported "ok" — a process holding that
+/// region mapped takes SIGBUS past the new end of file.
+fn orphan_topic_files(topic: &str) -> Vec<std::path::PathBuf> {
+    let suffixed = format!("{topic}_");
+    let Ok(entries) = std::fs::read_dir(horus_sys::shm::shm_topics_dir()) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == topic || n.starts_with(&suffixed))
+        })
+        .collect()
+}
+
+/// Overwrite the first 8 bytes of an SHM region — where the magic lives — with
+/// garbage, leaving the length of the file and every other byte alone.
+fn corrupt_magic_bytes(path: &std::path::Path) -> bool {
+    let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) else {
+        return false;
+    };
+    use std::io::Write;
+    f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE])
+        .is_ok()
+}
+
 /// SHM corruption detection: corrupted magic bytes must not cause SIGSEGV.
 ///
 /// Production scenario: power failure corrupts the SHM backing file.
@@ -1829,29 +1877,13 @@ fn fault_shm_magic_corruption_rejected() {
     child.kill().expect("kill child");
     child.wait().expect("wait child");
 
-    // Scan ALL /dev/shm/horus_* dirs for topic files to corrupt
-    let shm_root = std::path::PathBuf::from("/dev/shm");
+    // Corrupt the orphans the killed child left for THIS topic (see
+    // `orphan_topic_files` — never another namespace's files).
     let mut corrupted_count = 0;
-    if let Ok(entries) = std::fs::read_dir(&shm_root) {
-        for entry in entries.flatten() {
-            let dir_name = entry.file_name().to_string_lossy().to_string();
-            if dir_name.starts_with("horus_") {
-                let topics_dir = entry.path().join("topics");
-                if let Ok(files) = std::fs::read_dir(&topics_dir) {
-                    for file in files.flatten() {
-                        let path = file.path();
-                        if path.is_file() {
-                            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&path) {
-                                use std::io::Write;
-                                let garbage = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
-                                let _ = f.write_all(&garbage);
-                                corrupted_count += 1;
-                                eprintln!("Corrupted: {}", path.display());
-                            }
-                        }
-                    }
-                }
-            }
+    for path in orphan_topic_files(&name) {
+        if corrupt_magic_bytes(&path) {
+            corrupted_count += 1;
+            eprintln!("Corrupted: {}", path.display());
         }
     }
 
@@ -1926,24 +1958,18 @@ fn fault_shm_recovery_after_corruption() {
     child.kill().expect("kill child");
     child.wait().expect("wait child");
 
-    // Corrupt ALL orphaned SHM files
-    let shm_root = std::path::PathBuf::from("/dev/shm");
-    if let Ok(entries) = std::fs::read_dir(&shm_root) {
-        for entry in entries.flatten() {
-            let dir_name = entry.file_name().to_string_lossy().to_string();
-            if dir_name.starts_with("horus_") {
-                let topics_dir = entry.path().join("topics");
-                if let Ok(files) = std::fs::read_dir(&topics_dir) {
-                    for file in files.flatten() {
-                        let path = file.path();
-                        if path.is_file() {
-                            if let Ok(metadata) = std::fs::metadata(&path) {
-                                let zeros = vec![0u8; metadata.len().min(8192) as usize];
-                                let _ = std::fs::write(&path, &zeros);
-                            }
-                        }
-                    }
-                }
+    // Zero the head of the orphans this test's own child left (see
+    // `orphan_topic_files` — never another namespace's files).
+    for path in orphan_topic_files(&name) {
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            let zeros = vec![0u8; metadata.len().min(8192) as usize];
+            // Deliberately not `fs::write`: that opens O_TRUNC, so it does not
+            // zero the first 8 KiB of the region, it cuts the region down to
+            // them — and a still-mapped region then takes SIGBUS past the new
+            // end of file, which is not the corruption this test recovers from.
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&path) {
+                use std::io::Write;
+                let _ = f.write_all(&zeros);
             }
         }
     }
@@ -1960,6 +1986,81 @@ fn fault_shm_recovery_after_corruption() {
     }
 
     eprintln!("Recovery successful: topic works after corruption + cleanup");
+}
+
+/// The two fault-injection tests above must corrupt only their own namespace.
+///
+/// They select their victims with `orphan_topic_files` and write them with
+/// `corrupt_magic_bytes`; this drives that pair against a region planted in a
+/// namespace that is *not* ours, named the way the ones the tests used to
+/// destroy are named — `/dev/shm/horus_default` is a live robot's, and every
+/// concurrent `cargo test` on the box owns a `/dev/shm/horus_test_<hash>`.
+/// Both live in sibling directories of ours and are indistinguishable from it
+/// to a walk that starts at the SHM root.
+#[test]
+fn shm_corruption_stays_inside_this_namespace() {
+    if !horus_sys::shm::regions_are_file_backed() {
+        eprintln!("Regions are not file-backed on this platform — nothing to scope");
+        return;
+    }
+
+    let _shm_guard = cleanup_stale_shm();
+    let name = unique("scope");
+
+    /// Removes the planted namespace however this test ends, panic included.
+    struct DecoyNamespace(std::path::PathBuf);
+    impl Drop for DecoyNamespace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let shm_root = horus_sys::shm::shm_base_dir()
+        .parent()
+        .expect("SHM base dir always has a parent")
+        .to_path_buf();
+    let decoy = DecoyNamespace(shm_root.join(format!("horus_{}", unique("decoy_ns"))));
+    let foreign_topics = decoy.0.join("topics");
+    std::fs::create_dir_all(&foreign_topics).expect("create decoy namespace");
+    // Same topic name in both namespaces: only the namespace separates them,
+    // so a name-based filter alone cannot pass this test.
+    let foreign = foreign_topics.join(&name);
+    let intact = vec![0xA5u8; 65536];
+    std::fs::write(&foreign, &intact).expect("plant foreign region");
+
+    // Ours is planted by hand rather than orphaned by a killed child: what is
+    // under test is which files get written, not topic semantics, and a region
+    // nothing has mapped cannot take SIGBUS if this ever regresses again.
+    let topics_dir = horus_sys::shm::shm_topics_dir();
+    horus_sys::shm::create_shm_dir_all(&topics_dir).expect("create our topics dir");
+    let ours = topics_dir.join(&name);
+    std::fs::write(&ours, &intact).expect("plant our region");
+
+    for path in orphan_topic_files(&name) {
+        corrupt_magic_bytes(&path);
+    }
+
+    // Compared with `assert!` rather than `assert_eq!`: these are 64 KiB
+    // vectors, and the pair `assert_eq!` prints on failure buries the message.
+    let foreign_after = std::fs::read(&foreign).expect("read foreign region");
+    assert!(
+        foreign_after == intact,
+        "corruption escaped this namespace into {} — now {} bytes, head {:02x?}. \
+         A robot's live regions and every other test run's sit in directories \
+         exactly like it.",
+        foreign.display(),
+        foreign_after.len(),
+        &foreign_after[..8.min(foreign_after.len())]
+    );
+    let ours_after = std::fs::read(&ours).expect("read our region");
+    assert!(
+        ours_after != intact,
+        "our own region at {} was not corrupted — the scoping is too tight and \
+         the corruption tests are asserting nothing",
+        ours.display()
+    );
+
+    let _ = std::fs::remove_file(&ours);
 }
 
 // ============================================================================
