@@ -1395,9 +1395,27 @@ pub fn session_alive(_sid: i32) -> bool {
 }
 
 /// Result of a stale namespace cleanup operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NamespaceCleanupResult {
+    /// Everything reclaimed, of both kinds: `namespaces_removed +
+    /// files_removed`.
+    ///
+    /// It used to be the first of those alone, because whole-directory removal
+    /// was the only thing `cleanup_stale_namespaces` could do — the in-namespace
+    /// reaper sat below a prefix filter that never matched. Now that it runs,
+    /// most of what a scan reclaims is individual regions inside namespaces that
+    /// stay, so this is a count of two different things and only answers "did
+    /// anything happen". Anything that names a kind — every log line here and in
+    /// `Scheduler` did — must read `namespaces_removed` or `files_removed`
+    /// instead, or it reports a file count as a namespace count.
     pub removed: usize,
+    /// Whole namespace directories removed: the session-keyed
+    /// `horus_sid{N}_uid{N}` shape, owned by us, whose session is dead.
+    /// Always 0 from [`reap_abandoned_files`], which removes no directories.
+    pub namespaces_removed: usize,
+    /// Individual abandoned regions unlinked inside namespaces that stay —
+    /// what [`reap_abandoned_files`] counts.
+    pub files_removed: usize,
     pub bytes_freed: u64,
     pub skipped: usize,
     pub errors: Vec<String>,
@@ -1445,12 +1463,7 @@ const REAP_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 /// Only the region subdirectories are walked — see `REGION_SUBDIRS`.
 #[cfg(unix)]
 pub fn reap_abandoned_files(namespace_path: &std::path::Path) -> NamespaceCleanupResult {
-    let mut result = NamespaceCleanupResult {
-        removed: 0,
-        bytes_freed: 0,
-        skipped: 0,
-        errors: Vec::new(),
-    };
+    let mut result = NamespaceCleanupResult::default();
     for subdir in REGION_SUBDIRS {
         reap_dir(&namespace_path.join(subdir), &mut result);
     }
@@ -1544,6 +1557,7 @@ fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 result.removed += 1;
+                result.files_removed += 1;
                 result.bytes_freed += size;
             }
             Err(e) => result
@@ -1557,22 +1571,21 @@ fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
 /// one and nothing is reclaimed.
 #[cfg(not(unix))]
 pub fn reap_abandoned_files(_namespace_path: &std::path::Path) -> NamespaceCleanupResult {
-    NamespaceCleanupResult {
-        removed: 0,
-        bytes_freed: 0,
-        skipped: 0,
-        errors: Vec::new(),
-    }
+    NamespaceCleanupResult::default()
 }
 
 /// Scan the SHM parent directory and reclaim what previous runs left behind.
 ///
 /// A `horus_sid{N}_uid{N}` directory — the session-keyed shape — is removed
-/// whole when the uid is ours and `session_alive(sid)` is false. Every other
+/// whole when we own it and `session_alive(sid)` is false. Every other
 /// `horus_*` directory we own, including our own namespace, keeps its directory
 /// and gets [`reap_abandoned_files`] instead: nothing in such a name says
 /// whether the process that made it is still running, so each region inside is
 /// judged on its own `flock`.
+///
+/// "We own it" is an `lstat` in every arm, never the uid a directory's name
+/// claims — the parent is mode 1777, so the name is written by whoever got
+/// there first.
 pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
     #[cfg(unix)]
     let current_uid = unsafe { libc::getuid() };
@@ -1607,6 +1620,7 @@ fn reap_owned_namespace(
     }
     let reaped = reap_abandoned_files(path);
     result.removed += reaped.removed;
+    result.files_removed += reaped.files_removed;
     result.bytes_freed += reaped.bytes_freed;
     result.errors.extend(reaped.errors);
 }
@@ -1621,12 +1635,7 @@ fn cleanup_stale_namespaces_in(
     current_ns: &str,
     current_uid: u32,
 ) -> NamespaceCleanupResult {
-    let mut result = NamespaceCleanupResult {
-        removed: 0,
-        bytes_freed: 0,
-        skipped: 0,
-        errors: Vec::new(),
-    };
+    let mut result = NamespaceCleanupResult::default();
 
     if !parent.exists() {
         return result;
@@ -1676,31 +1685,52 @@ fn cleanup_stale_namespaces_in(
             continue;
         }
 
-        let (uid, alive) = if let Some((sid, uid)) = parse_namespace_sid(&dir_name) {
-            (uid, session_alive(sid))
-        } else {
-            // A namespace with no session in its name — which is every
-            // namespace `generate_namespace` produces. There is nothing here to
-            // prove the owning process is gone, so the directory stays and only
-            // its unheld, hour-old regions go. Ownership is taken from the
-            // filesystem rather than the name, which for these directories
-            // carries no uid.
-            reap_owned_namespace(&entry.path(), current_uid, &mut result);
-            result.skipped += 1;
-            continue;
+        let sid = match parse_namespace_sid(&dir_name) {
+            // The name claims a session and a uid. The uid claim is only a
+            // pre-filter — see the `lstat` below.
+            Some((sid, uid)) if uid == current_uid => sid,
+            Some(_) => {
+                result.skipped += 1;
+                continue;
+            }
+            None => {
+                // A namespace with no session in its name — which is every
+                // namespace `generate_namespace` produces. There is nothing here
+                // to prove the owning process is gone, so the directory stays
+                // and only its unheld, hour-old regions go. Ownership is taken
+                // from the filesystem rather than the name, which for these
+                // directories carries no uid.
+                reap_owned_namespace(&entry.path(), current_uid, &mut result);
+                result.skipped += 1;
+                continue;
+            }
         };
 
-        if uid != current_uid {
-            result.skipped += 1;
-            continue;
-        }
-
-        if alive {
-            result.skipped += 1;
-            continue;
-        }
-
         let dir_path = entry.path();
+
+        // The uid in `horus_sid{N}_uid{M}` is the creating process's claim
+        // about itself, written into a name in a directory that is mode 1777.
+        // Anyone with a login on the box can `mkdir horus_sid1_uid{ours}` and
+        // satisfy every name-based gate here; the sticky bit stops them
+        // deleting our entries, not creating their own. This is the last arm
+        // that took the name as proof — the two above already `lstat` — and the
+        // two things it does next are both driven by that directory's contents:
+        // `dir_size_bytes` walks it recursively and follows symlinks with no
+        // depth or loop bound (a planted `link -> /` is an unbounded walk, a
+        // planted `link -> ..` is a stack overflow), and `remove_dir_all` then
+        // fails EPERM under the sticky bit and pushes an error that
+        // accumulates on every `Scheduler::new` for as long as the directory
+        // sits there. One `lstat` before either.
+        if dir_owner_uid(&dir_path) != Some(current_uid) {
+            result.skipped += 1;
+            continue;
+        }
+
+        if session_alive(sid) {
+            result.skipped += 1;
+            continue;
+        }
+
         let size = dir_size_bytes(&dir_path);
 
         match std::fs::remove_dir_all(&dir_path) {
@@ -1711,6 +1741,7 @@ fn cleanup_stale_namespaces_in(
                     format_bytes_compact(size)
                 );
                 result.removed += 1;
+                result.namespaces_removed += 1;
                 result.bytes_freed += size;
             }
             Err(e) => {
@@ -1723,8 +1754,9 @@ fn cleanup_stale_namespaces_in(
 
     if result.removed > 0 {
         log::info!(
-            "SHM cleanup: removed {} stale namespace(s), freed {}",
-            result.removed,
+            "SHM cleanup: removed {} stale namespace(s), reaped {} abandoned region(s), freed {}",
+            result.namespaces_removed,
+            result.files_removed,
             format_bytes_compact(result.bytes_freed)
         );
     }
@@ -2026,6 +2058,92 @@ mod tests {
         assert_eq!(
             result.removed, 3,
             "two reaped regions and one removed namespace: {result:?}"
+        );
+        // `removed` counts two different things now, so the log lines that name
+        // one of them read these instead. Before the split, "removed 3 stale
+        // namespace(s)" was printed for a scan that removed one.
+        assert_eq!(
+            (result.namespaces_removed, result.files_removed),
+            (1, 2),
+            "one whole namespace and two individual regions, told apart: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The uid in `horus_sid{N}_uid{M}` is a claim, not a credential.
+    ///
+    /// This was the one arm left that decided ownership from the directory's
+    /// *name*: `parse_namespace_sid` pulled `M` out of it and compared that to
+    /// our uid, and on a match the directory was walked by `dir_size_bytes` and
+    /// handed to `remove_dir_all`. The parent is `/dev/shm`, mode 1777 — the
+    /// sticky bit stops another user deleting our entries, not creating their
+    /// own — so any local user can `mkdir horus_sid1_uid{ours}` and pass that
+    /// gate. What follows is the cost: `dir_size_bytes` recurses with
+    /// `path.is_dir()`, which follows symlinks and has no depth or loop bound,
+    /// and `remove_dir_all` then fails EPERM and pushes an error, on every
+    /// `Scheduler::new` for as long as the directory sits there.
+    ///
+    /// Driving the scan from the `current_uid` parameter is what makes this
+    /// testable without a second uid: the planted tree really belongs to the
+    /// test process, and the scan runs as somebody else.
+    #[test]
+    #[cfg(unix)]
+    fn a_session_namespace_naming_our_uid_is_not_reaped_unless_we_own_it() {
+        // SAFETY: getuid() cannot fail and touches no memory.
+        let real_uid = unsafe { libc::getuid() };
+        let scanning_uid = real_uid.wrapping_add(1);
+
+        let root =
+            std::env::temp_dir().join(format!("horus_sid_owner_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Every name-based gate satisfied: the `horus_` prefix, a real
+        // directory, a parseable sid, and a uid in the name that is the
+        // scanner's. `session_alive(99999999)` is false — that pid is past
+        // pid_max — so nothing but ownership stands between this and
+        // `remove_dir_all`.
+        let ns = root.join(format!("horus_sid99999999_uid{scanning_uid}"));
+        let region = ns.join("topics").join("abandoned_region");
+        std::fs::create_dir_all(region.parent().expect("region has a parent"))
+            .expect("create the planted namespace");
+        std::fs::write(&region, b"x").expect("plant region");
+
+        let result = cleanup_stale_namespaces_in(&root, "horus_default", scanning_uid);
+
+        assert!(
+            ns.is_dir() && region.exists(),
+            "the name claims our uid but the `lstat` says otherwise, so the directory is a              stranger's and neither its size nor its removal is our business: {result:?}"
+        );
+        assert_eq!(
+            (result.removed, result.namespaces_removed),
+            (0, 0),
+            "nothing may be removed: {result:?}"
+        );
+        assert!(
+            result.errors.is_empty(),
+            "and no error is queued either — the EPERM this used to collect on every scan              is exactly the noise the gate exists to stop: {result:?}"
+        );
+
+        // The same directory, once it really is ours, is still removed whole:
+        // the gate must not have turned the arm off altogether.
+        let result = cleanup_stale_namespaces_in(&root, "horus_default", real_uid);
+        assert!(
+            ns.exists(),
+            "the name says uid {scanning_uid}, so the name gate alone keeps it: {result:?}"
+        );
+
+        let ours = root.join(format!("horus_sid99999999_uid{real_uid}"));
+        std::fs::create_dir_all(ours.join("topics")).expect("create our own dead session");
+        let result = cleanup_stale_namespaces_in(&root, "horus_default", real_uid);
+        assert!(
+            !ours.exists(),
+            "a session-keyed namespace we do own, whose session is dead, is still removed \
+             whole: {result:?}"
+        );
+        assert_eq!(
+            result.namespaces_removed, 1,
+            "exactly the one we own: {result:?}"
         );
 
         let _ = std::fs::remove_dir_all(&root);

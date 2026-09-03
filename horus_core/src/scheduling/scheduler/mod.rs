@@ -536,8 +536,9 @@ impl Scheduler {
         let cleanup = crate::memory::platform::cleanup_stale_namespaces();
         if cleanup.removed > 0 {
             log::info!(
-                "Cleaned {} stale SHM namespace(s), freed {} bytes",
-                cleanup.removed,
+                "Cleaned {} stale SHM namespace(s) and {} abandoned region(s), freed {} bytes",
+                cleanup.namespaces_removed,
+                cleanup.files_removed,
                 cleanup.bytes_freed
             );
         }
@@ -4367,8 +4368,10 @@ impl Scheduler {
         let cleanup = crate::memory::platform::cleanup_stale_namespaces();
         if cleanup.removed > 0 {
             log::info!(
-                "Session cleanup: removed {} stale SHM namespace(s), freed {} bytes",
-                cleanup.removed,
+                "Session cleanup: removed {} stale SHM namespace(s) and {} abandoned region(s), \
+                 freed {} bytes",
+                cleanup.namespaces_removed,
+                cleanup.files_removed,
                 cleanup.bytes_freed
             );
         }
