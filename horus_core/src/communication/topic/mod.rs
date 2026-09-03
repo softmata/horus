@@ -2967,10 +2967,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             let head = header.sequence_or_head.load(Ordering::Acquire);
             // Free exactly one slot; the ring stays as full of recent
             // history as it can be.
-            header
+            let prev_tail = header
                 .tail
                 .fetch_max(head.saturating_sub(capacity - 1), Ordering::Release);
             let new_tail = header.tail.load(Ordering::Acquire);
+            // Count what the reclaim retired.
+            //
+            // `fetch_max` returns the tail we replaced, so `new - prev` is
+            // exactly the number of accepted-but-unread messages this producer
+            // just destroyed. Discarding that return value made keep-last-N the
+            // only path in the transport where HORUS itself throws away a
+            // message with no counter recording it -- `dropped_count()` moves
+            // only on an ABANDONED send, and this send is about to succeed.
+            //
+            // Folded into `send_failures` so `dropped_count()` stays the single
+            // publisher-side loss number a supervisor has to watch; a message
+            // retired to make room is lost to its subscriber either way.
+            let retired = new_tail.saturating_sub(prev_tail);
+            if retired > 0 {
+                self.metrics
+                    .send_failures
+                    .fetch_add(retired, Ordering::Relaxed);
+            }
             // We moved `tail` ourselves. Tell the stall detector so it does not
             // mistake the producer's own write for a consumer waking up and
             // restart its grace period on every single reclaim.

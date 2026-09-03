@@ -620,6 +620,52 @@ const CLAIM_CAS_WARN_QUIET_MS: u64 = 60_000;
 /// Report a claim-loop exhaustion, rate-limited to once a minute per handle.
 ///
 /// The DROP itself is counted where every other lossy-publish drop is counted —
+/// Resume an in-order consumer that was lapped, instead of blocking forever.
+///
+/// A slot stamp that does not match `tail + 1` has two opposite causes, and
+/// collapsing them is what wedged this consumer:
+///
+///   * stamp BEHIND `tail + 1` — the producer claimed the slot and has not
+///     published yet. Ordinary; come back later. If the producer died in that
+///     window, `claimed_slot_escape` bounds the wait.
+///   * stamp AHEAD of `tail + 1` — the slot was reused at a LATER position
+///     while this consumer still had not read it. The consumer was lapped. The
+///     message it is waiting for no longer exists and never will.
+///
+/// `recv_shm_pod_broadcast` has always distinguished these. `recv_shm_mpsc_pod`
+/// and `recv_shm_mpsc_serde` did not: an exact-match gate sent BOTH into
+/// `claimed_slot_escape`, which advances exactly one slot per
+/// `CLAIM_STALL_MAX_LEASES` x lease (20 s by default) and logs the wrong
+/// diagnosis — "claimed by a producer that never published it", when the
+/// producer published it and then lapped past it.
+///
+/// Measured before this existed, on a 16-slot ring with a ~1 kHz producer and a
+/// registered, live subscriber that paused for one lease: 12371 sent, **0
+/// delivered**, and the consumer never recovered.
+///
+/// Returns true when a lap was detected and the caller should return `None`
+/// having already resumed.
+#[inline]
+fn resume_after_lap(local: &mut LocalState, header: &TopicHeader, tail: u64, stamp: u64) -> bool {
+    if stamp <= tail.wrapping_add(1) {
+        return false;
+    }
+    let head = header.sequence_or_head.load(Ordering::Acquire);
+    let cap = local.cached_capacity;
+    if head > cap {
+        // Half a lap back from the head, for the reason `recv_shm_pod_broadcast`
+        // records: landing exactly on `head - capacity` puts the consumer on the
+        // slot the producer overwrites next, so it re-laps immediately.
+        let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+        if resume > local.local_tail {
+            local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
+            local.local_tail = resume;
+            local.local_head = head;
+        }
+    }
+    true
+}
+
 /// `metrics.send_failures`, incremented by `RingTopic::send_lossy_retry` once it
 /// gives up — so this deliberately does NOT touch that counter and double-count.
 /// What the counter cannot say is *why*, and "the ring was full" and "the claim
@@ -1952,11 +1998,18 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let index = (tail & mask) as usize;
     // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
     // index*8 is within bounds (index < capacity, array has capacity entries).
-    let ready_ok = unsafe {
+    let stamp = unsafe {
         let (ready_ptr, _) = slot_ptrs::<T>(local, index);
-        (*ready_ptr).load(Ordering::Acquire) == tail.wrapping_add(1)
+        (*ready_ptr).load(Ordering::Acquire)
     };
-    if !ready_ok {
+    if stamp != tail.wrapping_add(1) {
+        // Lapped, not blocked: the slot carries a LATER position than the one
+        // being waited for, so the message is gone. Resume rather than sit on
+        // it — see `resume_after_lap`.
+        if resume_after_lap(local, header, tail, stamp) {
+            housekeep_epoch!(local, topic);
+            return None;
+        }
         // The producer has CLAIMED this slot but not published it. Ordinarily
         // that resolves in nanoseconds; if the producer died in that window it
         // never resolves at all, and an in-order consumer blocks on it forever.
@@ -2367,12 +2420,17 @@ pub(super) fn recv_shm_mpsc_serde<
 
     // SAFETY: slot_ptr points to a valid serde slot within SHM data region.
     // The first 8 bytes are the ready flag (AtomicU64).
-    let ready_ok = unsafe {
+    let stamp = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
-        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
+        ready_ptr.load(Ordering::Acquire)
     };
-    if !ready_ok {
+    if stamp != tail.wrapping_add(1) {
+        // Same lap check as `recv_shm_mpsc_pod`, for the same reason.
+        if resume_after_lap(local, header, tail, stamp) {
+            housekeep_epoch!(local, topic);
+            return None;
+        }
         // Same abandoned-claim escape as `recv_shm_mpsc_pod`; the serde slot
         // simply carries its ready flag in its own first 8 bytes rather than in
         // the separate seq array. See `claimed_slot_escape` for the trade.

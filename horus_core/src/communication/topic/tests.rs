@@ -12367,3 +12367,55 @@ fn neither_broadcast_backend_claims_backpressure() {
         );
     }
 }
+
+/// Keep-last-N retires unread messages; every one must be counted.
+///
+/// `send` is the lossy publish, so when nothing is draining a full ring it
+/// frees the oldest slot and takes it. That destroys a message the transport
+/// had already accepted.
+///
+/// `header.tail.fetch_max(..)` returns the tail it replaced, so `new - prev` is
+/// exactly how many messages were retired — and that return value was
+/// discarded. `dropped_count()` moves only on an ABANDONED send, and a send
+/// that reclaims is a send that then succeeds, so this was the one path in the
+/// transport where HORUS itself destroyed accepted messages with no counter
+/// recording it.
+#[test]
+fn keep_last_n_reclaim_counts_what_it_retires() {
+    const CAP: u32 = 16;
+    const BURST: u64 = 50;
+    let name = unique("reclaim_counted");
+
+    // No subscriber at all, which is the cheapest way to reach the reclaim:
+    // `nothing_is_draining` short-circuits on `sub_count() == 0` without
+    // waiting out a lease.
+    let tx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("tx");
+    tx.send(0);
+    if !matches!(
+        tx.force_migrate(BackendMode::MpscShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    ) {
+        eprintln!("MpscShm unavailable in this build; nothing to check");
+        return;
+    }
+    trigger_shm_dispatch(&name);
+
+    // Fill it, so every further send has to retire something to proceed.
+    for i in 0..CAP as u64 {
+        tx.send(i);
+    }
+
+    let before = tx.dropped_count();
+    for i in 0..BURST {
+        tx.send(1000 + i);
+    }
+    let retired = tx.dropped_count() - before;
+
+    assert_eq!(
+        retired, BURST,
+        "{BURST} sends each had to retire one unread message to make room, so \
+         {BURST} accepted messages were destroyed — but dropped_count moved by \
+         {retired}. Loss the publisher cannot report is loss a supervisor \
+         cannot act on."
+    );
+}
