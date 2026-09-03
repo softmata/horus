@@ -407,6 +407,51 @@ fn irq_affinity_mask(online: &[usize], rt_cpus: &[usize]) -> anyhow::Result<u64>
     Ok(mask)
 }
 
+/// The CPUs this process may actually run on, from `sched_getaffinity(2)`.
+///
+/// `available_parallelism()` cannot answer this question. It returns a *count*,
+/// and two different CPU sets of the same size compare equal: a process pinned
+/// to CPUs 2-7 of a machine whose online set is 0-5 counts six either way,
+/// while it cannot run on CPUs 0 or 1 at all. The count is also clamped by the
+/// cgroup CPU *quota*, which bounds how much CPU time this process gets rather
+/// than which CPUs exist, so a 2-CPU quota on an 8-CPU host reads as a
+/// confinement that is not there. Both errors matter here: one lets a confined
+/// process reroute the host, the other refuses a process that was entitled to.
+fn allowed_cpus() -> anyhow::Result<Vec<usize>> {
+    // SAFETY: an all-zero `cpu_set_t` is a valid empty set; `sched_getaffinity`
+    // is told the exact size of the object it fills, and pid 0 names the
+    // calling thread. `CPU_ISSET` then reads only bits below `CPU_SETSIZE`,
+    // which is that object's capacity.
+    let cpus = unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+            return Err(anyhow::Error::new(std::io::Error::last_os_error()).context(
+                "sched_getaffinity failed, so this process's own CPU set is \
+                 unknown; refusing to rewrite host IRQ affinity from a guess",
+            ));
+        }
+        (0..libc::CPU_SETSIZE as usize)
+            .filter(|&cpu| libc::CPU_ISSET(cpu, &set))
+            .collect::<Vec<usize>>()
+    };
+    Ok(cpus)
+}
+
+/// The online CPUs this process is *not* allowed to run on.
+///
+/// Empty means this process can reach every CPU the machine has, and so may
+/// speak for the whole machine. Containment is one-directional on purpose:
+/// `allowed` being a strict superset of `online` is the ordinary case, not a
+/// fault, because a task's `cpus_allowed` keeps naming CPUs that have since
+/// been offlined.
+fn online_cpus_outside(allowed: &[usize], online: &[usize]) -> Vec<usize> {
+    online
+        .iter()
+        .copied()
+        .filter(|cpu| !allowed.contains(cpu))
+        .collect()
+}
+
 /// Move hardware interrupts off the specified CPU cores.
 ///
 /// Rewrites `/proc/irq/*/smp_affinity` for every IRQ on the machine, so it is
@@ -443,8 +488,12 @@ fn irq_affinity_mask(online: &[usize], rt_cpus: &[usize]) -> anyhow::Result<u64>
 /// actual CPU set, and the function REFUSES to act when this process cannot see
 /// the whole machine. A process confined to a cpuset has no business rewriting
 /// the interrupt routing of cores outside it, and in a container that is the
-/// normal case, not an edge case. The mask arithmetic itself lives in
-/// [`irq_affinity_mask`], where it is unit-tested on synthetic CPU sets.
+/// normal case, not an edge case. "Cannot see" is decided by comparing the
+/// online set against [`allowed_cpus`] — the set from `sched_getaffinity(2)`,
+/// not a count — because the mistake this function exists to fix was reading a
+/// count as a set in the first place. The mask arithmetic itself lives in
+/// [`irq_affinity_mask`], and the containment test in [`online_cpus_outside`];
+/// both are unit-tested on synthetic CPU sets.
 pub(super) fn move_irqs_off_cpus(cpus: &[usize]) -> anyhow::Result<usize> {
     let irq_dir = std::path::Path::new("/proc/irq");
     if !irq_dir.exists() {
@@ -472,20 +521,27 @@ pub(super) fn move_irqs_off_cpus(cpus: &[usize]) -> anyhow::Result<usize> {
         );
     }
 
-    // If this process is confined, it is not entitled to reroute the host.
-    let visible = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(1);
-    if visible < online.len() {
+    // Computed before the confinement check below, and not only because it is
+    // free: it is what bounds every online index under 64, and therefore under
+    // `CPU_SETSIZE`, so the affinity set the check consults cannot be silently
+    // truncated out from under it on a very large machine.
+    let mask = irq_affinity_mask(&online, cpus)?;
+
+    // If this process is confined, it is not entitled to reroute the host. The
+    // question is not "how many CPUs do I have?" but "may I run on every CPU
+    // this machine has?", so ask for the set rather than a count.
+    let allowed = allowed_cpus()?;
+    let unseen = online_cpus_outside(&allowed, &online);
+    if !unseen.is_empty() {
         anyhow::bail!(
-            "this process sees {visible} of the machine's {} CPUs (cpuset or \
-             taskset), so it cannot compute a correct host-wide IRQ mask; \
-             refusing rather than rerouting interrupts for cores it cannot see",
+            "this process may not run on online CPU(s) {unseen:?} of the \
+             machine's {} (cpuset or taskset), so it is confined to part of the \
+             machine; refusing rather than rerouting interrupts for cores it \
+             cannot see",
             online.len()
         );
     }
 
-    let mask = irq_affinity_mask(&online, cpus)?;
     if mask == 0 {
         return Ok(0); // every CPU is an RT core; nothing left to move IRQs to
     }
@@ -626,26 +682,62 @@ mod irq_affinity_tests {
     ///
     /// The old code guarded with `if cpu < 64` and skipped anything higher, so
     /// on a large machine it wrote a mask while declining to clear the very
-    /// cores it was called for.
+    /// cores it was called for. Asserted on the helper, not through
+    /// `move_irqs_off_cpus`: routed through the real function the host's `/proc`
+    /// and `/sys` pick which refusal comes back, and a test that accepts any of
+    /// several outcomes asserts none of them.
     #[test]
     fn clearing_a_nonexistent_cpu_is_an_error_not_a_silent_skip() {
-        // 4096 is beyond any plausible online set here.
-        let r = move_irqs_off_cpus(&[4096]);
-        match r {
-            Err(e) => {
-                let m = e.to_string();
-                assert!(
-                    m.contains("online set") || m.contains("cannot name") || m.contains("refusing"),
-                    "expected a refusal naming the reason, got: {m}"
-                );
-            }
-            Ok(n) => {
-                // Only acceptable outcome without /proc/irq present.
-                assert_eq!(
-                    n, 0,
-                    "clearing a CPU that does not exist must not report IRQs moved"
-                );
-            }
-        }
+        let err = irq_affinity_mask(&[0, 1, 2, 3], &[4096])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("asked to clear CPU 4096"),
+            "expected a refusal naming the CPU, got: {err}"
+        );
+        assert!(
+            err.contains("not in the machine's online set"),
+            "expected a refusal naming the online set, got: {err}"
+        );
+    }
+
+    /// Confinement is a property of the CPU *set*, which a count cannot see.
+    ///
+    /// Four allowed and four online, so the old `available_parallelism() <
+    /// online.len()` check found nothing wrong — while this process may not run
+    /// on online CPUs 0 or 1 at all.
+    #[test]
+    fn an_equal_sized_but_different_cpu_set_is_still_confinement() {
+        assert_eq!(
+            online_cpus_outside(&[2, 3, 4, 5], &[0, 1, 2, 3]),
+            vec![0, 1]
+        );
+    }
+
+    /// Reaching every online CPU is not confinement, even with CPUs to spare.
+    #[test]
+    fn covering_the_online_set_is_not_confinement() {
+        // Exactly the online set.
+        assert!(online_cpus_outside(&[0, 1, 2, 3], &[0, 1, 2, 3]).is_empty());
+        // A strict superset, which is the ordinary reading once CPU 1 has been
+        // offlined: `cpus_allowed` still names it, `online` no longer does.
+        assert!(online_cpus_outside(&[0, 1, 2, 3], &[0, 2, 3]).is_empty());
+    }
+
+    /// This process's own affinity is a set, and it is one this machine has.
+    ///
+    /// The one host-dependent assertion kept, and it is deliberately weak: it
+    /// only pins down that `allowed_cpus` reads a plausible set rather than,
+    /// say, returning all 1024 `CPU_SETSIZE` bits. The behaviour that matters
+    /// is asserted on synthetic sets above.
+    #[test]
+    fn allowed_cpus_reads_a_set_this_machine_could_have() {
+        let allowed = allowed_cpus().expect("sched_getaffinity on self");
+        assert!(!allowed.is_empty(), "this process runs on some CPU");
+        assert!(
+            allowed.len() <= libc::CPU_SETSIZE as usize,
+            "got {} CPUs, more than a cpu_set_t can name",
+            allowed.len()
+        );
     }
 }
