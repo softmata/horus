@@ -193,7 +193,8 @@ jobs:
       # #126 enabled these as one blocking step on the strength of them passing
       # in ~5 min on a 12-core box. That was the wrong measurement: a hosted
       # runner has 2 vCPUs, and several of these spawn REAL child processes --
-      # chaos_cross_process runs five, xp_10_processes_chaos runs ten. At 2 vCPUs
+      # chaos_cross_process spawns five, and its own xp_10_processes_chaos test
+      # spawns ten. At 2 vCPUs
       # that is heavy oversubscription and their timing assumptions stop holding.
       # Pinned to two cores locally, chaos_cross_process failed 1 of 4 once and
       # production_validation exceeded 900s once, while both passed cleanly on a
@@ -215,7 +216,7 @@ jobs:
       # unrelated PRs at random. That is the same reasoning this file already
       # applies to stress_rt_* above -- "what such a number is evidence of is
       # neighbours, not a regression in HORUS".
-      - name: Run cross-process and chaos suites (#[ignore]d)
+      - name: Single-process #[ignore]d suites (gating)
         timeout-minutes: 25
         run: |
           for suite in ipc_torture chaos_monkey message_type_matrix \
@@ -240,18 +241,57 @@ jobs:
       # To promote one back to blocking: show it green across ~20 consecutive
       # 2-vCPU runs, or move it to dedicated hardware where its process count is
       # not oversubscribed.
-      - name: Heavy multi-process suites (advisory, not a gate)
+      - name: Oversubscribed multi-process suites (advisory, not a gate)
         continue-on-error: true
         timeout-minutes: 25
         run: |
+          # `|| status=1` per suite, not a bare invocation. Actions runs this
+          # with `bash -e`, so the FIRST failing suite would otherwise end the
+          # step and the rest would never run -- an advisory step that reports
+          # one failure and hides four is worse than no advisory step, because
+          # the silence reads as "the others passed".
+          status=0
           for suite in chaos_cross_process production_validation \
-                       chaos_xp_schedulers production_fanout_battle \
-                       multi_scheduler_matrix; do
+                       chaos_xp_schedulers production_fanout_battle; do
             echo "::group::$suite"
             cargo test -p horus_core --release --test "$suite" -- \
-              --ignored --test-threads=1 --nocapture
+              --ignored --test-threads=1 --nocapture || {
+                status=1
+                echo "::warning::$suite failed (advisory)"
+              }
             echo "::endgroup::"
           done
+          exit $status
+        env:
+          RUST_BACKTRACE: 1
+          PYTHONPATH: ${{ github.workspace }}/horus_py
+
+      # multi_scheduler_matrix is advisory for a DIFFERENT reason than the step
+      # above, and merging the two would bury it. The suites above are advisory
+      # because 2 vCPUs cannot schedule five or ten real child processes to
+      # their timing assumptions -- an environment limit. This one is advisory
+      # because it exposes a correctness fault:
+      #
+      #   deterministic_alongside_normal_scheduler
+      #   (signal: 7, SIGBUS: access to undefined memory)
+      #
+      # reproduced 2 runs in 5 on a 12-core box on main, so it is not a runner
+      # artifact. gdb puts it in `dispatch::send_shm_mp_pod::<CmdVel>` ->
+      # `Scheduler::tick_once`: the MPSC POD send dereferences
+      # `local.cached_header_ptr` and the page is mapped but no longer backed --
+      # the region was recreated or truncated under an in-flight send.
+      # `epoch_guard_send!` compares only `process_epoch`, so it does not cover
+      # a region swapped by another party.
+      #
+      # Kept running, and kept SEPARATE, so the day it stops dying is visible.
+      # It goes back to gating when the topic-layer fix lands -- not when a
+      # runner happens to be quiet.
+      - name: multi_scheduler_matrix (advisory — known SIGBUS, see #140)
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          cargo test -p horus_core --release --test multi_scheduler_matrix -- \
+            --ignored --test-threads=1 --nocapture
         env:
           RUST_BACKTRACE: 1
           PYTHONPATH: ${{ github.workspace }}/horus_py
