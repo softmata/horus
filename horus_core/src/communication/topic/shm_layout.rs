@@ -220,8 +220,15 @@ pub const COLO_MAX_PAYLOAD: usize = CACHE_LINE - COLO_PAYLOAD_OFF;
 /// on the first `send`, while debug builds emitted two 8-byte stores and
 /// passed.
 ///
-/// Such a type falls back to the split layout, whose data region starts at
-/// `640 + capacity * 8` — aligned for it at every capacity but 1.
+/// Such a type falls back to the split layout, which is not unconditionally
+/// aligned either. Its data region starts at `data_region_offset(capacity)` =
+/// `640 + capacity * 8`, so it satisfies `type_align` exactly when
+/// `data_region_offset(capacity) % type_align == 0` — for align 16 that is
+/// every capacity but 1; for align 32, every capacity but 1 and 2; for align
+/// 256 it is no capacity at all, since 640 is not a multiple of 256. The gate
+/// is therefore only half the fix: `simd_aware_write` and `simd_aware_read`
+/// copy bytes on every branch, so a slot that is misaligned for `T` is still
+/// written and read legally.
 #[inline]
 pub const fn colo_eligible(is_pod: bool, type_size: usize, type_align: usize) -> bool {
     is_pod
