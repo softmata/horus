@@ -1,0 +1,244 @@
+--- horus_core/src/communication/topic/tests.rs
++++ horus_core/src/communication/topic/tests.rs
+@@ -12391,13 +12391,26 @@ fn keep_last_n_reclaim_counts_what_it_retires() {
+     // waiting out a lease.
+     let tx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("tx");
+     tx.send(0);
+-    if !matches!(
+-        tx.force_migrate(BackendMode::MpscShm),
+-        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+-    ) {
+-        eprintln!("MpscShm unavailable in this build; nothing to check");
+-        return;
+-    }
++    let migrated = tx.force_migrate(BackendMode::MpscShm);
++    assert!(
++        matches!(
++            migrated,
++            MigrationResult::Success { .. } | MigrationResult::NotNeeded
++        ),
++        "MpscShm is not conditionally compiled — horus_core declares no `shm` \
++         feature and nothing cfg-gates the backend out — so a refused \
++         migration ({migrated:?}) means a runtime that cannot back a ring with \
++         shared memory, not a build without one. Skipping on it would make this \
++         gate go quiet in exactly the state it is most needed."
++    );
++    // A migration can report success without the SHM dispatch being what
++    // `send`/`recv` actually run; assert the backend that is under test is the
++    // one installed, as `shm_dispatch_mpsc_small_pod` does.
++    assert_eq!(
++        tx.mode(),
++        BackendMode::MpscShm,
++        "the migration reported success but the topic is not on MpscShm"
++    );
+     trigger_shm_dispatch(&name);
+ 
+     // Fill it, so every further send has to retire something to proceed.
+@@ -12456,13 +12469,26 @@ fn a_mid_write_marker_is_not_a_lap() {
+     let tx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("tx");
+     tx.send(u64::MAX);
+     let _ = rx.recv();
+-    if !matches!(
+-        tx.force_migrate(BackendMode::MpscShm),
+-        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+-    ) {
+-        eprintln!("MpscShm unavailable in this build; nothing to check");
+-        return;
+-    }
++    let migrated = tx.force_migrate(BackendMode::MpscShm);
++    assert!(
++        matches!(
++            migrated,
++            MigrationResult::Success { .. } | MigrationResult::NotNeeded
++        ),
++        "MpscShm is not conditionally compiled — horus_core declares no `shm` \
++         feature and nothing cfg-gates the backend out — so a refused \
++         migration ({migrated:?}) means a runtime that cannot back a ring with \
++         shared memory, not a build without one. Skipping on it would make this \
++         gate go quiet in exactly the state it is most needed."
++    );
++    // A migration can report success without the SHM dispatch being what
++    // `send`/`recv` actually run; assert the backend that is under test is the
++    // one installed, as `shm_dispatch_mpsc_small_pod` does.
++    assert_eq!(
++        tx.mode(),
++        BackendMode::MpscShm,
++        "the migration reported success but the topic is not on MpscShm"
++    );
+     trigger_shm_dispatch(&name);
+     // Anything still buffered from before the migration would break the
+     // in-order check below; it is not what this test is about.
+@@ -12556,3 +12582,173 @@ fn a_mid_write_marker_is_not_a_lap() {
+         "the reclaimed slot must be writable after the escape"
+     );
+ }
++
++/// A consumer the producer lapped must resume, not sit on the gap forever.
++///
++/// The in-order MpscShm readers gated on the slot stamp equalling `tail + 1`
++/// and sent every other value into `claimed_slot_escape`. Two opposite states
++/// reach that gate: a stamp BEHIND `tail + 1` (claimed, not yet published —
++/// wait, and the escape bounds the wait if the producer died) and a stamp
++/// AHEAD of it (the slot was reused at a later position while this consumer
++/// still had not read it — the message is gone and no amount of waiting brings
++/// it back). Treating the second as the first advances one slot per
++/// `CLAIM_STALL_MAX_LEASES` x lease, 20 s apiece by default, so a lapped
++/// subscriber is stopped for as long as anyone watches.
++///
++/// Reproducing that needs a real lap, and a real lap needs the producer to
++/// overwrite unread slots — which backpressure forbids until keep-last-N
++/// decides nothing is draining, and that decision takes a whole lease of
++/// unmoved `tail` on a full ring. Hence the two lease settings: 50 ms to buy
++/// the reclaim quickly, then back to the 5 s default before the consumer polls
++/// again, so that `claimed_slot_escape` (4 leases, 20 s) CANNOT be what
++/// unwedges it inside the deadline below. Whatever delivers a message in the
++/// next two seconds is the lap branch or nothing.
++#[test]
++fn a_lapped_consumer_resumes_within_a_poll() {
++    const CAP: u32 = 16;
++    // Comfortably more than one lap past the ring, so the slot `rx` is parked
++    // on is certain to have been rewritten at a later position.
++    const BURST: u64 = 200;
++    let _guard = TIMING_LOCK.lock().unwrap();
++    let name = unique("lapped_resumes");
++
++    // Two handles, as in `a_mid_write_marker_is_not_a_lap`: `rx` only ever
++    // receives, so it registers as a pure consumer and its `recv` goes through
++    // `recv_shm_mpsc_pod` rather than the role=Both POD fast path, which never
++    // looks at a stamp.
++    let rx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("rx");
++    let tx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("tx");
++    tx.send(u64::MAX);
++    let _ = rx.recv();
++    let migrated = tx.force_migrate(BackendMode::MpscShm);
++    assert!(
++        matches!(
++            migrated,
++            MigrationResult::Success { .. } | MigrationResult::NotNeeded
++        ),
++        "MpscShm is not conditionally compiled — horus_core declares no `shm` \
++         feature and nothing cfg-gates the backend out — so a refused \
++         migration ({migrated:?}) means a runtime that cannot back a ring with \
++         shared memory, not a build without one. Skipping on it would make this \
++         gate go quiet in exactly the state it is most needed."
++    );
++    assert_eq!(
++        tx.mode(),
++        BackendMode::MpscShm,
++        "the migration reported success but the topic is not on MpscShm"
++    );
++    trigger_shm_dispatch(&name);
++    while rx.try_recv().is_some() {}
++
++    let header = rx.ring.header();
++    assert!(
++        header.sub_count() >= 1,
++        "the lap only matters for a REGISTERED subscriber: with none, \
++         keep-last-N is free to retire slots and nothing is owed a message. \
++         sub_count is {}",
++        header.sub_count()
++    );
++
++    // Phase 1 — get the producer lapping. Fill the ring, then send once more
++    // to arm the stall detector (`drain_has_stalled` only ever runs from a
++    // failing send, and its first observation just records `tail` and the
++    // time), wait out the shortened lease, and burst.
++    header.set_lease_timeout_ms(50);
++    for i in 0..CAP as u64 {
++        tx.send(i);
++    }
++    tx.send(999);
++    thread::sleep(Duration::from_millis(120));
++    let missed_before = rx.missed_count();
++    for i in 0..BURST {
++        tx.send(1000 + i);
++    }
++
++    // Phase 2 — the consumer comes back. Restore the default lease first: at
++    // 50 ms the abandoned-claim escape fires every 200 ms and would crawl the
++    // consumer forward one slot at a time, which is the very behaviour this
++    // test exists to distinguish from a resume.
++    header.set_lease_timeout_ms(header::DEFAULT_LEASE_TIMEOUT_MS as u32);
++
++    let deadline = Instant::now() + Duration::from_secs(2);
++    let got = loop {
++        if let Some(v) = rx.try_recv() {
++            break v;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "the consumer delivered nothing for 2 s after being lapped by \
++             {BURST} sends. The escape bound is 4 x 5 s here, so nothing else \
++             was going to move it: this is the wedge — a subscriber that is \
++             registered, alive and polling, on a topic whose producer is \
++             publishing, receiving nothing at all."
++        );
++        thread::sleep(Duration::from_millis(1));
++    };
++
++    assert!(
++        got >= 1000,
++        "a resumed consumer lands near the head and reads RECENT data; it \
++         returned {got}, which predates the burst"
++    );
++    let missed = rx.missed_count() - missed_before;
++    assert!(
++        missed >= CAP as u64,
++        "the skip is a real hole in this subscriber's stream and has to be \
++         counted: {BURST} messages were published past it and missed_count \
++         moved by {missed}"
++    );
++
++    // And it keeps going — a resume that delivered one message and then
++    // re-wedged would satisfy everything above. First drain what the resume
++    // landed on: half a lap back from the head leaves about `CAP / 2` slots of
++    // still-valid history in front of it.
++    let mut drained = 1u64; // the one taken above
++    while let Some(v) = rx.try_recv() {
++        assert!(
++            v >= 1000,
++            "everything from the resume point on belongs to the burst; got {v}"
++        );
++        drained += 1;
++    }
++    assert!(
++        drained >= (CAP / 4) as u64,
++        "the resume point is half a lap back from the head, so the consumer \
++         should have had roughly {} messages of valid history in front of it; \
++         it delivered {drained} and then stopped",
++        CAP / 2
++    );
++
++    // Then messages published AFTER the resume have to reach it too. The
++    // producer can only take a free slot, so this also witnesses that the
++    // resumed consumer flushed `header.tail` and gave the ring back its room.
++    let mut sent = 0u64;
++    for i in 0..CAP as u64 {
++        if tx.try_send(50_000 + i).is_ok() {
++            sent += 1;
++        }
++    }
++    assert!(
++        sent > 0,
++        "the ring stayed full after the consumer resumed and drained it, so \
++         the producer is still frozen out"
++    );
++    let mut fresh = 0u64;
++    let deadline = Instant::now() + Duration::from_secs(2);
++    while fresh < sent {
++        match rx.try_recv() {
++            Some(v) => {
++                assert!(v >= 50_000, "stale value {v} after the resume");
++                fresh += 1;
++            }
++            None => {
++                assert!(
++                    Instant::now() < deadline,
++                    "the consumer took {fresh} of the {sent} messages published \
++                     after it resumed and then stopped again"
++                );
++                thread::sleep(Duration::from_millis(1));
++            }
++        }
++    }
++}

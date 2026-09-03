@@ -681,8 +681,10 @@ fn warn_claim_cas_exhausted(local: &mut LocalState, topic_name: &str) {
 /// registered, live subscriber that paused for one lease: 12371 sent, **0
 /// delivered**, and the consumer never recovered.
 ///
-/// Returns true when a lap was detected and the caller should return `None`
-/// having already resumed.
+/// Returns true only when this call actually moved the consumer on, so the
+/// caller may return `None` knowing the poll made progress. A stamp that is
+/// ahead but from which no forward resume point can be derived returns false
+/// and takes the abandoned-claim path instead — see the body.
 #[inline]
 fn resume_after_lap(local: &mut LocalState, header: &TopicHeader, tail: u64, stamp: u64) -> bool {
     // Compare the POSITION the stamp carries, not the raw word. `SLOT_WRITING`
@@ -704,17 +706,40 @@ fn resume_after_lap(local: &mut LocalState, header: &TopicHeader, tail: u64, sta
     }
     let head = header.sequence_or_head.load(Ordering::Acquire);
     let cap = local.cached_capacity;
-    if head > cap {
-        // Half a lap back from the head, for the reason `recv_shm_pod_broadcast`
-        // records: landing exactly on `head - capacity` puts the consumer on the
-        // slot the producer overwrites next, so it re-laps immediately.
-        let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
-        if resume > local.local_tail {
-            local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
-            local.local_tail = resume;
-            local.local_head = head;
-        }
+    // Claim the lap only if a resume point exists AND it moves this consumer
+    // forward. `true` is what makes the caller return before
+    // `claimed_slot_escape` runs, so returning it without advancing spends a
+    // poll on nothing — and since nothing about the ring changed, so does every
+    // poll after it. That is the unbounded stall the escape exists to bound,
+    // which is the same way the mid-write marker broke this branch.
+    //
+    // Neither guard can fire on a consistent ring. The slot at `tail & mask`
+    // carries `pos + 1` for some `pos` congruent to `tail` modulo the capacity,
+    // so `position > tail + 1` implies `pos >= tail + cap`, hence
+    // `head >= pos + 1 > cap` and `resume = head - cap + cap / 2 > tail`. They
+    // fire on the states where those premises do not hold: `cached_capacity`
+    // stale across a re-size — the case `recv_shm_pod_broadcast` documents at
+    // its own copy of this computation, "a capacity larger than the live one
+    // computes a resume point behind where this consumer already is" — or a
+    // stamp left in the segment by an earlier incarnation of the ring.
+    //
+    // Falling through then bounds the stall at `CLAIM_STALL_MAX_LEASES` leases
+    // and counts the skip, which is what this path did for such a stamp before
+    // this function existed. The diagnosis in that log is wrong for a lapped
+    // slot, but a wrong diagnosis with a bound beats a right one without.
+    if head <= cap {
+        return false;
     }
+    // Half a lap back from the head, for the reason `recv_shm_pod_broadcast`
+    // records: landing exactly on `head - capacity` puts the consumer on the
+    // slot the producer overwrites next, so it re-laps immediately.
+    let resume = head.wrapping_sub(cap).wrapping_add(cap / 2);
+    if resume <= local.local_tail {
+        return false;
+    }
+    local.missed = local.missed.wrapping_add(resume.wrapping_sub(tail));
+    local.local_tail = resume;
+    local.local_head = head;
     true
 }
 
