@@ -12124,32 +12124,173 @@ fn a_colo_topic_does_not_grow_its_region_on_an_epoch_change() {
 // ============================================================================
 
 /// `send_blocking` documents itself for "emergency stop, motor setpoints" and
-/// promises "delivery or an explicit timeout error". On the default POD
-/// broadcast backend it could keep neither promise: `send_shm_pod_broadcast` has
-/// a single exit, `Ok(())`, so phase 1's `try_send` always succeeded and the
-/// method returned Ok having guaranteed nothing — the slot may be overwritten
-/// before any subscriber reads it.
+/// promises "delivery or an explicit timeout error". On a POD broadcast backend
+/// it could keep neither promise: `send_shm_pod_broadcast` has a single exit,
+/// `Ok(())`, so phase 1's `try_send` always succeeded and the method returned Ok
+/// having guaranteed nothing — the slot may be overwritten before any subscriber
+/// reads it.
+///
+/// This test used to open one handle, call `t.send(0)` and skip unless the mode
+/// came back `PodShm`. It never did, so the test passed without asserting
+/// anything: `detect_optimal_backend` picks PodShm only at `sub_count >= 2`, one
+/// handle is 1P/1C (`SpscShm`), and participant slots are keyed by
+/// (pid, thread) — a second handle on the same thread shares the slot and does
+/// not raise the count. Observed before the repair:
+/// "skipping: expected PodShm, got SpscShm".
 ///
 /// GATE: remove the `provides_backpressure` guard in `send_blocking` and this
 /// fails, because the call returns Ok on a backend that cannot deliver.
 #[test]
 fn send_blocking_refuses_a_backend_that_cannot_apply_backpressure() {
     let name = unique("sb_no_backpressure");
-    let t: Topic<u64> = Topic::new(&name).expect("create");
-    // Drive it onto the POD broadcast backend, the default for POD types.
-    t.send(0);
-    let _ = t.recv();
+    let tx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("tx");
+    let rx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("rx");
+    assert!(rx.recv().is_none(), "nothing published yet");
+    tx.send(0);
+    let _ = rx.recv();
+    assert!(
+        tx.provides_backpressure(),
+        "1P/1C should select a backend with backpressure, got {}",
+        tx.backend_name()
+    );
 
-    if t.mode() != BackendMode::PodShm {
-        eprintln!("skipping: expected PodShm, got {:?}", t.mode());
-        return;
-    }
+    // Reach the broadcast backend the second subscriber would have selected.
+    // Deliberately NOT `force_migrate`: that syncs this handle's cached epoch,
+    // and the guard that re-resolves the cached mode would then never fire.
+    let migrated = matches!(
+        BackendMigrator::new(tx.ring.header()).try_migrate(BackendMode::PodShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    );
+    assert!(migrated, "could not reach PodShm to test it");
 
-    let r = t.send_blocking(1, 5_u64.ms());
+    // `send_blocking` reads the handle's CACHED mode before its first `try_send`,
+    // so the epoch change has to be observed first: an empty recv runs
+    // `migration_check!` unconditionally, and that publishes the new epoch to the
+    // other handles in this process, whose send guard then re-resolves the mode.
+    // Which is also the real sequence — a topic is already publishing when the
+    // subscriber that flips it attaches.
+    while rx.recv().is_some() {}
+    tx.send(1);
+    assert_eq!(
+        tx.mode(),
+        BackendMode::PodShm,
+        "the migration above must have taken effect for this test to mean anything"
+    );
+
+    let r = tx.send_blocking(2, 5_u64.ms());
     assert!(
         matches!(r, Err(SendBlockingError::NoBackpressure)),
         "send_blocking on a broadcast backend must refuse rather than report a \
          delivery it cannot guarantee; got {r:?}"
+    );
+}
+
+/// The public `send_blocking` doc is the only copy of the contract a caller reads.
+///
+/// `Topic::send_blocking` is the public entry point; `RingTopic::send_blocking`
+/// holds the implementation and `RingTopic` is `pub(crate)`, so its doc renders
+/// nowhere. The corrected contract landed only on the inner one. The public doc
+/// kept promising `Ok(())` or `SendBlockingError::Timeout` and recommending the
+/// call for "critical command topics (emergency stop, motor setpoints)", while
+/// the error a caller actually gets once a logger or a `horus topic echo`
+/// attaches — `NoBackpressure` — appeared nowhere in the rendered page
+/// (`cargo doc -p horus`: 0 occurrences on `struct.Topic.html`). The inner block
+/// meanwhile documented `SendBlockingError::Serialization`, a variant this enum
+/// has never had.
+///
+/// Source text is the observable on purpose: rustdoc output is not reachable
+/// from a unit test, and every part of this defect is in what the caller is told.
+#[test]
+fn every_send_blocking_doc_states_the_error_contract_the_enum_actually_has() {
+    const SRC: &str = include_str!("mod.rs");
+
+    // Variant names as declared, so the check cannot drift from the enum.
+    fn variants(src: &str) -> Vec<&str> {
+        let start = src
+            .find("pub enum SendBlockingError {")
+            .expect("SendBlockingError is no longer declared in this file");
+        let body = &src[start..];
+        let end = body.find("\n}").expect("unterminated enum");
+        body[..end]
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_suffix(','))
+            .filter(|name| {
+                let mut chars = name.chars();
+                chars.next().is_some_and(|first| first.is_ascii_uppercase())
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .collect()
+    }
+
+    // The `///` block directly above the item beginning at `idx`.
+    fn doc_above(src: &str, idx: usize) -> String {
+        let mut block: Vec<&str> = src[..idx]
+            .lines()
+            .rev()
+            .skip_while(|line| {
+                let t = line.trim();
+                t.is_empty() || t.starts_with('#')
+            })
+            .take_while(|line| line.trim_start().starts_with("///"))
+            .collect();
+        block.reverse();
+        block.join("\n")
+    }
+
+    let variants = variants(SRC);
+    assert!(
+        variants.contains(&"Timeout") && variants.contains(&"NoBackpressure"),
+        "parsed {variants:?} — the enum has both, so this parse is what broke"
+    );
+
+    // Collected rather than asserted one at a time: the two blocks drifted apart
+    // in different ways, and a run should name every way at once.
+    let mut drift: Vec<String> = Vec::new();
+
+    // A documented variant that does not exist is a promise about behaviour that
+    // cannot happen, and rustdoc cannot flag it on a `pub(crate)` item because it
+    // never renders one.
+    for (at, _) in SRC.match_indices("SendBlockingError::") {
+        let named: String = SRC[at + "SendBlockingError::".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !named.is_empty() && !variants.iter().any(|v| *v == named) {
+            drift.push(format!(
+                "`SendBlockingError::{named}` is referenced at byte {at}, but the \
+                 enum declares only {variants:?}"
+            ));
+        }
+    }
+
+    // Both definitions: the public one on `Topic` and the inner one on
+    // `RingTopic`. Only the first is ever rendered, which is exactly how the two
+    // drifted, so both are held to the same contract.
+    let mut checked = 0;
+    for (at, _) in SRC.match_indices("pub fn send_blocking(") {
+        let doc = doc_above(SRC, at);
+        for variant in &variants {
+            if !doc.contains(variant) {
+                drift.push(format!(
+                    "the doc above the `send_blocking` at byte {at} never names \
+                     `SendBlockingError::{variant}`, which it can return"
+                ));
+            }
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "expected the public `Topic::send_blocking` and the inner \
+         `RingTopic::send_blocking`; found {checked}"
+    );
+
+    assert!(
+        drift.is_empty(),
+        "send_blocking's documented error contract does not match \
+         `SendBlockingError`:\n- {}",
+        drift.join("\n- ")
     );
 }
 

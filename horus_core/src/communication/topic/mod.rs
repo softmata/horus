@@ -3078,8 +3078,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ///
     /// # Errors
     ///
+    /// - [`SendBlockingError::NoBackpressure`] — the backend overwrites unread
+    ///   messages and has no full condition to wait on; checked before the first
+    ///   `try_send`, so no time is spent waiting
     /// - [`SendBlockingError::Timeout`] — ring buffer stayed full for the entire `timeout`
-    /// - [`SendBlockingError::Serialization`] — non-POD message failed to serialize
     pub fn send_blocking(
         &self,
         msg: T,
@@ -3957,9 +3959,12 @@ impl<T: TopicMessage> Topic<T> {
 
     /// Whether a full ring can make this topic's `try_send` refuse a message.
     ///
-    /// See [`RingTopic::provides_backpressure`]. Returns `false` on the
-    /// broadcast backends, which is what a topic silently becomes once a second
-    /// subscriber attaches.
+    /// Returns `false` on the broadcast backends (`PodShm`, `FanoutShm`), which
+    /// is what a topic silently becomes once a second subscriber attaches, and
+    /// `false` on a backend this handle has not resolved yet — every topic is in
+    /// that state until its first send or recv, and an unresolved backend is not
+    /// a promise of backpressure. So check this AFTER the first send/recv; see
+    /// [`send_blocking()`](Self::send_blocking) for why a command topic should.
     pub fn provides_backpressure(&self) -> bool {
         self.ring.provides_backpressure()
     }
@@ -4244,12 +4249,56 @@ where
 
     /// Send a message, blocking until the ring has space or the timeout expires.
     ///
-    /// Use this for critical command topics (emergency stop, motor setpoints) where
-    /// message loss is unacceptable. For high-frequency sensor data where dropping
-    /// stale frames is acceptable, prefer [`send()`](Self::send).
+    /// Unlike [`send()`](Self::send), which drops the message after a brief
+    /// spin+yield retry, this reports a full ring instead of swallowing it --
+    /// **on the backends that have a full ring at all.** Strategy: spin briefly
+    /// (256 iters), yield briefly (8 iters), then sleep in 100μs increments
+    /// until the deadline.
     ///
-    /// Returns `Ok(())` if the message was sent, or `Err(SendBlockingError::Timeout)`
-    /// if the ring remained full for the entire timeout duration.
+    /// # This does NOT guarantee delivery on a broadcast topic
+    ///
+    /// Every phase of the wait is a retry of `try_send`, so this can only block
+    /// where `try_send` can fail. On the broadcast backends -- `PodShm` and
+    /// `FanoutShm` -- it cannot: they overwrite the oldest unread message rather
+    /// than refuse a new one, so there is no full ring to wait for.
+    ///
+    /// And you do not choose the backend -- participant count does. One
+    /// subscriber gives `SpscShm` and real backpressure; a second subscriber,
+    /// including a logger or a `horus topic echo`, silently switches the same
+    /// POD topic to `PodShm` broadcast. Once this handle has resolved that
+    /// change (the first send or recv after it does), this call reports
+    /// `SendBlockingError::NoBackpressure` instead of the `Ok(())` in
+    /// nanoseconds it would otherwise return for a delivery nobody guaranteed.
+    ///
+    /// This doc used to recommend the method for "critical command topics
+    /// (emergency stop, motor setpoints) where message loss is unacceptable".
+    /// On a topic with two subscribers that was exactly backwards, and it is the
+    /// reason [`provides_backpressure()`](Self::provides_backpressure) exists.
+    /// Assert that on any topic carrying commands -- but AFTER the first send or
+    /// recv, not before. A handle does not resolve its backend until it moves a
+    /// message, and an unresolved backend answers `false` (it is not a promise
+    /// of anything), so an assertion placed before the first send fires on every
+    /// topic including the ones that are fine:
+    ///
+    /// ```rust,ignore
+    /// estop.send(Stop); // resolves the backend
+    /// assert!(
+    ///     estop.provides_backpressure(),
+    ///     "e-stop settled on a lossy backend"
+    /// );
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - `SendBlockingError::NoBackpressure` — this topic's backend overwrites
+    ///   unread messages and never reports a full ring, so there is nothing to
+    ///   wait on. Refusing is deliberate: reporting success for a delivery
+    ///   nobody guaranteed is worse on an e-stop path than failing loudly. It
+    ///   does not clear on retry — it lasts as long as the topology that caused
+    ///   it, so the fix is to move the topic back to one subscriber or to accept
+    ///   the loss with `send()`/`try_send()`.
+    /// - `SendBlockingError::Timeout` — the ring stayed full for the entire
+    ///   `timeout`.
     pub fn send_blocking(
         &self,
         msg: T,
