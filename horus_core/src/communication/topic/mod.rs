@@ -4424,15 +4424,23 @@ impl Topic<Image> {
     /// Receive the next image.
     pub fn recv(&self) -> Option<Image> {
         self.register_sub("Image");
-        let wire = self.ring.recv()?;
-        // A frame whose backing was already released is lost. The ring dropped
-        // nothing and lapped nobody, so nothing inside it can count this —
-        // record it here or it is invisible to every counter.
-        match Image::try_from_wire(wire, &self.pool) {
-            Some(v) => Some(v),
-            None => {
-                self.ring.note_missed(1);
-                None
+        // Loop, do not return None on a released frame. A frame whose backing
+        // was already released is lost, and the ring dropped nothing and lapped
+        // nobody, so nothing inside it can count this — record it here or it is
+        // invisible to every counter.
+        //
+        // Returning None here would ALSO end the caller's drain: the idiomatic
+        // `while let Some(f) = topic.recv() {}` would stop at the first
+        // released frame and leave every valid frame behind it unread until
+        // some later call, which for a consumer draining once per tick means
+        // they are still there a tick later, behind a fresh one. Skip the dead
+        // entry and keep going; None then means the ring is genuinely empty,
+        // which is what the caller reads it as.
+        loop {
+            let wire = self.ring.recv()?;
+            match Image::try_from_wire(wire, &self.pool) {
+                Some(v) => return Some(v),
+                None => self.ring.note_missed(1),
             }
         }
     }
@@ -4472,15 +4480,23 @@ impl Topic<PointCloud> {
     /// Receive the next point cloud.
     pub fn recv(&self) -> Option<PointCloud> {
         self.register_sub("PointCloud");
-        let wire = self.ring.recv()?;
-        // A frame whose backing was already released is lost. The ring dropped
-        // nothing and lapped nobody, so nothing inside it can count this —
-        // record it here or it is invisible to every counter.
-        match PointCloud::try_from_wire(wire, &self.pool) {
-            Some(v) => Some(v),
-            None => {
-                self.ring.note_missed(1);
-                None
+        // Loop, do not return None on a released frame. A frame whose backing
+        // was already released is lost, and the ring dropped nothing and lapped
+        // nobody, so nothing inside it can count this — record it here or it is
+        // invisible to every counter.
+        //
+        // Returning None here would ALSO end the caller's drain: the idiomatic
+        // `while let Some(f) = topic.recv() {}` would stop at the first
+        // released frame and leave every valid frame behind it unread until
+        // some later call, which for a consumer draining once per tick means
+        // they are still there a tick later, behind a fresh one. Skip the dead
+        // entry and keep going; None then means the ring is genuinely empty,
+        // which is what the caller reads it as.
+        loop {
+            let wire = self.ring.recv()?;
+            match PointCloud::try_from_wire(wire, &self.pool) {
+                Some(v) => return Some(v),
+                None => self.ring.note_missed(1),
             }
         }
     }
@@ -4520,15 +4536,23 @@ impl Topic<DepthImage> {
     /// Receive the next depth image.
     pub fn recv(&self) -> Option<DepthImage> {
         self.register_sub("DepthImage");
-        let wire = self.ring.recv()?;
-        // A frame whose backing was already released is lost. The ring dropped
-        // nothing and lapped nobody, so nothing inside it can count this —
-        // record it here or it is invisible to every counter.
-        match DepthImage::try_from_wire(wire, &self.pool) {
-            Some(v) => Some(v),
-            None => {
-                self.ring.note_missed(1);
-                None
+        // Loop, do not return None on a released frame. A frame whose backing
+        // was already released is lost, and the ring dropped nothing and lapped
+        // nobody, so nothing inside it can count this — record it here or it is
+        // invisible to every counter.
+        //
+        // Returning None here would ALSO end the caller's drain: the idiomatic
+        // `while let Some(f) = topic.recv() {}` would stop at the first
+        // released frame and leave every valid frame behind it unread until
+        // some later call, which for a consumer draining once per tick means
+        // they are still there a tick later, behind a fresh one. Skip the dead
+        // entry and keep going; None then means the ring is genuinely empty,
+        // which is what the caller reads it as.
+        loop {
+            let wire = self.ring.recv()?;
+            match DepthImage::try_from_wire(wire, &self.pool) {
+                Some(v) => return Some(v),
+                None => self.ring.note_missed(1),
             }
         }
     }
