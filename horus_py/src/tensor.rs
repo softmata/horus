@@ -19,17 +19,20 @@ lazy_static::lazy_static! {
     static ref POOL_REGISTRY: RwLock<HashMap<u32, Arc<TensorPool>>> = RwLock::new(HashMap::new());
 }
 
-/// Auto-detect the optimal pool allocator based on GPU hardware.
+/// The pool allocator for a tensor pool.
 ///
-/// Returns the pool allocator — currently always mmap.
-fn auto_allocator() -> horus::memory::PoolAllocator {
+/// Named "auto-detect" when it detected nothing: `PoolAllocator` has exactly
+/// one variant. Kept as a single named place to change if a device-backed
+/// allocator is ever added, but it does not choose, and callers should not be
+/// told it does.
+fn pool_allocator() -> horus::memory::PoolAllocator {
     horus::memory::PoolAllocator::Mmap
 }
 
 /// Get or create a tensor pool by ID.
 ///
-/// When `config` is `None`, auto-detects the optimal allocator based on GPU
-/// hardware — users get the best backend without opt-in.
+/// When `config` is `None`, the pool uses the default mmap-backed host
+/// allocator. There is no hardware-dependent selection.
 fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResult<Arc<TensorPool>> {
     // Check if pool already exists
     {
@@ -39,9 +42,9 @@ fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResul
         }
     }
 
-    // Create new pool with auto-detected allocator when no config specified
+    // Create new pool with the default host allocator when no config specified
     let config = config.unwrap_or_else(|| TensorPoolConfig {
-        allocator: auto_allocator(),
+        allocator: pool_allocator(),
         ..TensorPoolConfig::default()
     });
     let pool = TensorPool::new(pool_id, config).map_err(|e| {
@@ -72,11 +75,25 @@ pub struct PyTensorPool {
 impl PyTensorPool {
     /// Create or open a tensor pool
     ///
-    /// The pool automatically selects the optimal memory backend based on
-    /// detected GPU hardware:
-    ///   - Jetson: cudaMallocManaged (unified CPU+GPU memory)
-    ///   - Discrete GPU: cudaMallocHost (pinned, fast DMA)
-    ///   - No GPU: mmap (standard shared memory)
+    /// Pool memory is host memory, allocated with mmap. It is shared between
+    /// processes without a copy and reaches NumPy without a copy, but it is not
+    /// device memory: moving a tensor to a GPU is an explicit host->device copy
+    /// that the caller makes.
+    ///
+    /// This docstring used to promise that the pool "automatically selects the
+    /// optimal memory backend based on detected GPU hardware", listing
+    /// cudaMallocManaged for Jetson and cudaMallocHost for discrete GPUs.
+    /// `pool_allocator()` in this file returns `PoolAllocator::Mmap`
+    /// unconditionally, and `PoolAllocator` has exactly one variant, so no such
+    /// selection existed or could occur. The claim mattered: someone sizing an
+    /// inference pipeline would have believed their host->device copies were
+    /// already pinned and DMA-capable, and planned around a property they did
+    /// not have.
+    ///
+    /// `horus_core::memory::backend` defines an open `PoolBackend` trait whose
+    /// `BackendAllocation` already carries a `device_ptr`, and correctly labels
+    /// the CUDA backends as future and feature-gated. That is where a real
+    /// device path would go.
     ///
     /// Args:
     ///     pool_id: Unique identifier for the pool (default: 1)
@@ -92,7 +109,7 @@ impl PyTensorPool {
             pool_size: size_mb * 1024 * 1024,
             max_slots,
             slot_alignment: 64,
-            allocator: auto_allocator(),
+            allocator: pool_allocator(),
         };
         let pool = get_or_create_pool(pool_id, Some(config))?;
         Ok(Self { pool })
@@ -1223,7 +1240,7 @@ mod fpy1_tests {
             pool_size: 4096,
             max_slots: 8,
             slot_alignment: 64,
-            allocator: auto_allocator(),
+            allocator: pool_allocator(),
         };
         let pool =
             Arc::new(TensorPool::new(60_000_000 + std::process::id(), config).expect("pool"));

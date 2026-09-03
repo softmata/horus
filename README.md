@@ -88,7 +88,7 @@ HORUS is a real-time distributed middleware that replaces DDS with shared-memory
 | RT support  | Built-in (budget, deadline, watchdog)         | Manual DDS QoS                              |
 | Safety      | Graduated watchdog, safe-state hook, BlackBox | Application-level                           |
 | AI + RT     | Same process — AsyncIo for GPU, RT for motors | Separate processes                          |
-| GPU tensors | DLPack zero-copy (PyTorch/JAX native)         | Serialize → deserialize                     |
+| Tensors     | Pool-backed, zero-copy to NumPy (host memory)  | Serialize → deserialize                     |
 | Languages   | **Rust + Python + C++** (same shared memory)  | C++ + Python (DDS serialization)            |
 | Config      | Single `horus.toml`                           | package.xml + CMakeLists.txt + launch files |
 | Setup       | `horus new && horus run`                      | colcon build + source install + launch      |
@@ -304,14 +304,14 @@ Isolating or stopping a node is the graduated watchdog's job, above.
 
 ### Zero-Copy AI Pipeline
 
-Run camera → YOLO → tracking → motor control in one process. 4K frames stay in shared memory; DLPack hands GPU tensors directly to PyTorch.
+Run camera → YOLO → tracking → motor control in one process. 4K frames stay in shared memory and reach NumPy without a copy. Tensor memory is host-side: the pool allocator is mmap, so moving a frame to a GPU is still an explicit host→device copy that you make.
 
 ```python
 def detector_tick(node):
     frame = node.recv("camera")
     if frame is not None:
-        tensor = torch.from_dlpack(frame)        # zero-copy GPU transfer
-        for det in model(tensor):
+        array = frame.to_numpy()                 # zero-copy view of shared memory
+        for det in model(array):
             node.send("detections", horus.Detection(
                 x=det.x, y=det.y, width=det.w, height=det.h,
                 confidence=det.conf, class_name=det.label
