@@ -159,6 +159,53 @@ pub fn lock_memory() -> anyhow::Result<()> {
     }
 }
 
+/// Set this thread's timer slack in nanoseconds (Linux only).
+///
+/// Linux defaults to 50 us of slack per thread, which the kernel may add to any
+/// timed wait. That is 5 % of a 1 kHz period, applied to every wake. Setting it
+/// to 1 ns is what RT applications do.
+///
+/// A SCHED_FIFO/RR thread already gets zero slack, so this matters precisely
+/// for the degraded path where `set_realtime_priority` was refused for lack of
+/// CAP_SYS_NICE and HORUS continued at normal priority.
+///
+/// `nanoseconds` is the slack itself, and 0 is not "no slack": Linux reads a
+/// non-positive argument as "restore this thread's inherited default" and hands
+/// back the 50 us. Pass 1 for the tightest setting. A value too wide for the
+/// target's `unsigned long` (32 bits on armv7) is refused with an error rather
+/// than wrapped into a smaller one.
+///
+/// Returns `Ok(())` and does nothing on platforms without the concept, so
+/// callers do not need to branch.
+pub fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_timer_slack(nanoseconds)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = nanoseconds;
+        Ok(())
+    }
+}
+
+/// This thread's current timer slack in nanoseconds, or `None` where the
+/// platform has no such setting.
+///
+/// Per-thread, like [`set_timer_slack`]: it reports the slack of whichever
+/// thread calls it, so call it from the thread you are asking about rather than
+/// from the one that configured it.
+pub fn timer_slack_ns() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::timer_slack_ns()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// Pin the current thread to a specific CPU core.
 ///
 /// Uses the `core_affinity` crate which is cross-platform.
