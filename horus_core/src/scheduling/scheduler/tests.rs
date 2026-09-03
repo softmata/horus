@@ -5990,7 +5990,14 @@ fn test_tick_once_error_contract_matches_behavior() {
     }
 
     let mut scheduler = Scheduler::new();
-    scheduler.add(FailingInitNode).order(0).build();
+    // `.build()` is unwrapped, not dropped: if registration failed, the scheduler
+    // below would be empty and `tick_once().is_ok()` would hold for the one reason
+    // this assertion must never accept — that no init() ran at all.
+    scheduler
+        .add(FailingInitNode)
+        .order(0)
+        .build()
+        .expect("the failing-init node must be registered for the assertion to mean anything");
     assert!(
         scheduler.tick_once().is_ok(),
         "an init() failure is reported by log line and node state, never by tick_once()"
@@ -6000,11 +6007,13 @@ fn test_tick_once_error_contract_matches_behavior() {
     scheduler
         .add(CounterNode::new("contract_dup"))
         .order(0)
-        .build();
+        .build()
+        .expect("the first node registers cleanly; the clash is recorded on the second");
     scheduler
         .add(CounterNode::new("contract_dup"))
         .order(1)
-        .build();
+        .build()
+        .expect("a duplicate name is recorded for tick_once(), not rejected by build()");
     let err = scheduler
         .tick_once()
         .expect_err("a duplicate node name must fail the tick");
@@ -6027,7 +6036,8 @@ fn test_tick_once_error_contract_matches_behavior() {
         ))
         .order(0)
         .failure_policy(FailurePolicy::Fatal)
-        .build();
+        .build()
+        .expect("the panicking node must be registered for the tick to have anything to fail on");
     let err = scheduler
         .tick_once()
         .expect_err("a fatal node failure must fail the tick");

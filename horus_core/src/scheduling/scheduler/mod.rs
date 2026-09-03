@@ -2302,8 +2302,11 @@ impl Scheduler {
     ///   policy escalated (message `"Fatal node failure during tick_once"`); and a safety
     ///   monitor latching during this tick — watchdog expiry, external e-stop (message
     ///   `"Emergency stop triggered during tick_once"`). Both mean the robot needs
-    ///   safing and neither is retryable, so branch on the variant, not on the text:
-    ///   `message` is diagnostic, not a stable discriminator.
+    ///   safing and neither is retryable, so the variant alone is the whole contract:
+    ///   treat every `Internal` out of `tick_once()` as fatal and stop the loop. Do
+    ///   **not** try to tell the two causes apart in code — they share one variant, and
+    ///   `message` is diagnostic text, not a stable discriminator. It is for the log
+    ///   line and the operator, not for a `match`.
     ///
     /// A failing `init()` is **not** in that list. The scheduler prints the error and
     /// leaves the node in its error state (at fatal severity it also stops the scheduler),
