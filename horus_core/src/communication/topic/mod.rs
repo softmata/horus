@@ -4456,14 +4456,20 @@ impl Topic<Image> {
     /// Send an image (zero-copy).
     ///
     /// Accepts both owned and borrowed images: `topic.send(img)` or `topic.send(&img)`.
-    /// Sends the descriptor through the ring buffer, then retains the tensor so
-    /// it stays alive for receivers until the ring has lapped past the frame.
+    /// The pool retain happens in `to_wire`, BEFORE the descriptor reaches the
+    /// ring, so a receiver can never observe a descriptor whose tensor is not
+    /// already retained. What happens after the send is the keep-alive
+    /// bookkeeping: `publish_keepalive` records this frame's slot and releases
+    /// the oldest once more than a ring's worth are outstanding.
     pub fn send(&self, img: impl Borrow<Image>) {
         self.register_pub("Image");
         let wire = img.borrow().to_wire(&self.pool);
-        // Ring first, then retain — `try_send` already does this. Retaining
-        // first meant a frame the ring immediately dropped still displaced the
-        // keep-alive of a previously published, still-unread frame.
+        // Ring first, then RECORD the keep-alive — not "then retain". The
+        // retain itself already happened inside `to_wire` above; what is
+        // ordered after the send is which slots this handle holds onto.
+        // Recording first meant a frame the ring immediately dropped still
+        // displaced the keep-alive of a previously published, still-unread
+        // frame.
         self.ring.send(wire);
         self.publish_keepalive(*wire.tensor(), None);
     }
@@ -4517,9 +4523,12 @@ impl Topic<PointCloud> {
     pub fn send(&self, pc: impl Borrow<PointCloud>) {
         self.register_pub("PointCloud");
         let wire = pc.borrow().to_wire(&self.pool);
-        // Ring first, then retain — `try_send` already does this. Retaining
-        // first meant a frame the ring immediately dropped still displaced the
-        // keep-alive of a previously published, still-unread frame.
+        // Ring first, then RECORD the keep-alive — not "then retain". The
+        // retain itself already happened inside `to_wire` above; what is
+        // ordered after the send is which slots this handle holds onto.
+        // Recording first meant a frame the ring immediately dropped still
+        // displaced the keep-alive of a previously published, still-unread
+        // frame.
         self.ring.send(wire);
         self.publish_keepalive(*wire.tensor(), None);
     }
@@ -4573,9 +4582,12 @@ impl Topic<DepthImage> {
     pub fn send(&self, depth: impl Borrow<DepthImage>) {
         self.register_pub("DepthImage");
         let wire = depth.borrow().to_wire(&self.pool);
-        // Ring first, then retain — `try_send` already does this. Retaining
-        // first meant a frame the ring immediately dropped still displaced the
-        // keep-alive of a previously published, still-unread frame.
+        // Ring first, then RECORD the keep-alive — not "then retain". The
+        // retain itself already happened inside `to_wire` above; what is
+        // ordered after the send is which slots this handle holds onto.
+        // Recording first meant a frame the ring immediately dropped still
+        // displaced the keep-alive of a previously published, still-unread
+        // frame.
         self.ring.send(wire);
         self.publish_keepalive(*wire.tensor(), None);
     }
