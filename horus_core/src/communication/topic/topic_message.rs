@@ -363,4 +363,70 @@ mod tests {
             tx.dropped_count()
         );
     }
+
+    /// `None` from `recv()` has to mean "the ring is empty", not "the frame at
+    /// the head is unreadable".
+    ///
+    /// The keep-alive fix removes the case that made every frame unreadable, but
+    /// not the case itself: a producer that exits and releases, or a descriptor
+    /// whose pool generation has moved on, still lands a dead frame in a ring
+    /// with live ones behind it. Answering `None` there ends
+    /// `while let Some(f) = rx.recv()` with those live frames unread — the same
+    /// failure as the bug this change fixes, with one bad frame in front instead
+    /// of a whole stream.
+    #[test]
+    fn image_recv_skips_a_dead_frame_and_keeps_draining() {
+        use crate::communication::topic::Topic;
+        const CAP: u32 = 8;
+
+        let tx =
+            Topic::<Image>::with_capacity("test.comm_h2.keepalive.skip", CAP, None).expect("tx");
+        let rx =
+            Topic::<Image>::with_capacity("test.comm_h2.keepalive.skip", CAP, None).expect("rx");
+
+        let a = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc a");
+        let pool = a.pool().clone();
+        let slot_a = *a.descriptor().tensor();
+        tx.send(a);
+
+        let b = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc b");
+        let slot_b = *b.descriptor().tensor();
+        tx.send(b);
+
+        // Kill A's backing and leave B's alone: what the depth-1 keep-alive did
+        // to every frame, reproduced for exactly one. `release` is generation-
+        // and underflow-guarded, so the producer's own release of this tuple on
+        // drop is a no-op.
+        while pool.refcount(&slot_a) > 0 {
+            pool.release(&slot_a);
+        }
+        assert!(
+            pool.refcount(&slot_b) >= 1,
+            "test setup: B must still be alive, only A was released"
+        );
+
+        let mut got = Vec::new();
+        while let Some(img) = rx.recv() {
+            got.push(*img.descriptor().tensor());
+        }
+
+        assert_eq!(
+            got.len(),
+            1,
+            "B was sent after A and is still readable, so recv() must skip past \
+             the dead frame and deliver it. Got {} frames — a `None` for A stops \
+             the drain loop on a non-empty ring.",
+            got.len()
+        );
+        assert_eq!(
+            got[0].slot_id, slot_b.slot_id,
+            "the delivered frame must be B"
+        );
+        assert_eq!(
+            rx.missed_count(),
+            1,
+            "the skipped frame is still a lost frame and must be counted, or it \
+             is invisible to every counter a supervisor can read"
+        );
+    }
 }

@@ -2655,16 +2655,31 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// over a fresh read of the shared header, exactly as `init_shm_backend`
     /// does and for the same reason: this number bounds how many pool slots the
     /// producer pins, and a header rewritten to `u32::MAX` would have it hold a
-    /// reference to every frame it ever sent until the pool ran dry. Before this
-    /// handle has synced (cached capacity 0) there is nothing validated to use,
-    /// so fall back to the header.
+    /// reference to every frame it ever sent until the pool ran dry.
+    ///
+    /// With nothing cached the header is the only source, but it is put through
+    /// the same test `sync_local` would have applied rather than trusted raw. A
+    /// cached capacity of 0 is not only the pre-sync state: `sync_local` also
+    /// leaves it at 0 when it REFUSES a geometry, so the raw fallback read the
+    /// hostile header on precisely the path that had just rejected it. A header
+    /// `geometry_is_addressable` will not accept falls back to a single
+    /// keep-alive instead — bounded, and self-correcting, since the depth is
+    /// re-read on the next publish and grows the moment a real geometry is
+    /// adopted.
     ///
     /// Meant to be read per publish, not cached by the caller: `sync_local`
     /// adopts a new capacity across a grow, and the keep-alive depth has to grow
     /// with it.
     pub(crate) fn ring_capacity(&self) -> u32 {
         match self.local().cached_capacity as u32 {
-            0 => self.header().capacity,
+            0 => {
+                let header = self.header();
+                if Self::geometry_is_addressable(header, self.storage.len()) {
+                    header.capacity
+                } else {
+                    1
+                }
+            }
             cached => cached,
         }
     }
@@ -3922,10 +3937,12 @@ impl<T: TopicMessage> Topic<T> {
 
         let mut q = self.sent_keepalives.borrow_mut();
         q.push_back((pool, primary, secondary));
-        while q.len() > depth {
-            if let Some(prev) = q.pop_front() {
-                release_keepalive_tuple(prev);
-            }
+        // Everything past the depth is a frame the ring can no longer hand out,
+        // released oldest first. Draining the overflow as a range says that in
+        // one line and leaves no unreachable `None` arm to reason about.
+        let overflow = q.len().saturating_sub(depth);
+        for prev in q.drain(..overflow) {
+            release_keepalive_tuple(prev);
         }
     }
 }
@@ -4395,17 +4412,30 @@ impl Topic<Image> {
     }
 
     /// Receive the next image.
+    ///
+    /// A frame whose backing was released before it could be read is skipped and
+    /// counted as missed, so `None` means the ring is empty and nothing else.
     pub fn recv(&self) -> Option<Image> {
         self.register_sub("Image");
-        let wire = self.ring.recv()?;
-        // A frame whose backing was already released is lost. The ring dropped
-        // nothing and lapped nobody, so nothing inside it can count this —
-        // record it here or it is invisible to every counter.
-        match Image::try_from_wire(wire, &self.pool) {
-            Some(v) => Some(v),
-            None => {
-                self.ring.note_missed(1);
-                None
+        loop {
+            let wire = self.ring.recv()?;
+            match Image::try_from_wire(wire, &self.pool) {
+                Some(img) => return Some(img),
+                None => {
+                    // The frame is lost: its backing went away before we read
+                    // it. The ring dropped nothing and lapped nobody, so nothing
+                    // inside it can count this — record it here or it is
+                    // invisible to every counter.
+                    //
+                    // Then keep reading rather than answering `None`. `None` is
+                    // also how an empty ring answers, so returning it for one
+                    // dead frame ends `while let Some(f) = t.recv()` with
+                    // readable frames still sitting in the ring — the same
+                    // failure this whole change is about, just with one bad
+                    // frame in front instead of a whole stream of them. The loop
+                    // is bounded by the ring: every turn consumes a slot.
+                    self.ring.note_missed(1);
+                }
             }
         }
     }
@@ -4443,17 +4473,17 @@ impl Topic<PointCloud> {
     }
 
     /// Receive the next point cloud.
+    ///
+    /// Skips and counts frames whose backing is gone, as `Topic<Image>::recv`
+    /// does and for the reason spelled out there: `None` has to mean an empty
+    /// ring, or a drain loop stops on the first dead frame.
     pub fn recv(&self) -> Option<PointCloud> {
         self.register_sub("PointCloud");
-        let wire = self.ring.recv()?;
-        // A frame whose backing was already released is lost. The ring dropped
-        // nothing and lapped nobody, so nothing inside it can count this —
-        // record it here or it is invisible to every counter.
-        match PointCloud::try_from_wire(wire, &self.pool) {
-            Some(v) => Some(v),
-            None => {
-                self.ring.note_missed(1);
-                None
+        loop {
+            let wire = self.ring.recv()?;
+            match PointCloud::try_from_wire(wire, &self.pool) {
+                Some(msg) => return Some(msg),
+                None => self.ring.note_missed(1),
             }
         }
     }
@@ -4491,17 +4521,17 @@ impl Topic<DepthImage> {
     }
 
     /// Receive the next depth image.
+    ///
+    /// Skips and counts frames whose backing is gone, as `Topic<Image>::recv`
+    /// does and for the reason spelled out there: `None` has to mean an empty
+    /// ring, or a drain loop stops on the first dead frame.
     pub fn recv(&self) -> Option<DepthImage> {
         self.register_sub("DepthImage");
-        let wire = self.ring.recv()?;
-        // A frame whose backing was already released is lost. The ring dropped
-        // nothing and lapped nobody, so nothing inside it can count this —
-        // record it here or it is invisible to every counter.
-        match DepthImage::try_from_wire(wire, &self.pool) {
-            Some(v) => Some(v),
-            None => {
-                self.ring.note_missed(1);
-                None
+        loop {
+            let wire = self.ring.recv()?;
+            match DepthImage::try_from_wire(wire, &self.pool) {
+                Some(msg) => return Some(msg),
+                None => self.ring.note_missed(1),
             }
         }
     }
@@ -4810,6 +4840,57 @@ mod untrusted_ring_geometry_tests {
             return;
         }
         assert!(RingTopic::<u64>::new(&name).is_err());
+        cleanup(&name);
+    }
+
+    /// `ring_capacity` sizes the producer's keep-alive queue, i.e. how many pool
+    /// slots a publisher pins. A handle that has not yet validated a geometry has
+    /// only the header to go on, and the header is shared memory: this is the
+    /// one number in that fallback path, so it gets the same test `sync_local`
+    /// applies before it is believed.
+    #[test]
+    fn an_unvalidated_capacity_does_not_size_the_keepalive_queue() {
+        let name = format!("untrusted_geom_keepalive_{}", std::process::id());
+        let Ok(topic) = RingTopic::<u64>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        // SAFETY: single-threaded test, sole handle on this region. The header is
+        // rewritten the way a hostile peer would after attach — a geometry that
+        // looks internally consistent (power of two, matching mask) but is far
+        // larger than this mapping, which is precisely what `sync_local` refuses
+        // and therefore what leaves the cached capacity at 0.
+        let header_ptr = topic.header() as *const TopicHeader as *mut TopicHeader;
+        let (real_capacity, real_mask) =
+            unsafe { ((*header_ptr).capacity, (*header_ptr).capacity_mask) };
+        unsafe {
+            (*header_ptr).capacity = 1 << 20;
+            (*header_ptr).capacity_mask = (1 << 20) - 1;
+        }
+
+        let depth = topic.ring_capacity();
+        unsafe {
+            (*header_ptr).capacity = real_capacity;
+            (*header_ptr).capacity_mask = real_mask;
+        }
+
+        assert_eq!(
+            depth,
+            1,
+            "a capacity this mapping cannot hold must not become a keep-alive \
+             depth: at {} the publisher would pin a pool reference to every frame \
+             it ever sent until the pool ran dry",
+            1u32 << 20
+        );
+        assert_eq!(
+            topic.ring_capacity(),
+            real_capacity,
+            "and a header that IS addressable is still usable pre-sync — the \
+             guard must not cost the first publish its real depth"
+        );
+
+        drop(topic);
         cleanup(&name);
     }
 
