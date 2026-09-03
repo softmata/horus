@@ -560,6 +560,91 @@ mod tests {
         assert!(count.load(Ordering::Relaxed) > 0);
     }
 
+    /// Regression: a panic in `on_error()` must not take the async I/O thread
+    /// with it.
+    ///
+    /// `process_node_result` runs in phase 2 of the drain loop, inside
+    /// `block_on` on the `horus-async-io` thread — the only `catch_unwind` on
+    /// this path is `NodeRunner::run_tick` inside `spawn_blocking`, and it
+    /// covers the tick only. So a bare `on_error()` panic unwound straight out
+    /// of `block_on`, killing the thread and with it every healthy node it
+    /// owns, while `stop()`'s `join_with_timeout` saw `Err` from `join` and
+    /// returned `None` → `unwrap_or_default()` → zero nodes reclaimed.
+    #[test]
+    fn on_error_panic_does_not_kill_the_async_thread() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        struct DoubleBoom {
+            on_error_calls: Arc<AtomicU64>,
+        }
+        impl Node for DoubleBoom {
+            fn name(&self) -> &str {
+                "double_boom"
+            }
+            fn tick(&mut self) {
+                panic!("tick boom");
+            }
+            fn on_error(&mut self, _msg: &str) {
+                // Count BEFORE panicking: this is the test's evidence that the
+                // executor actually entered the guarded callback, so the wait
+                // below cannot pass by simply never getting there.
+                self.on_error_calls.fetch_add(1, Relaxed);
+                panic!("on_error boom");
+            }
+        }
+
+        // Wait on an observed count, never on a fixed sleep. The deadline is an
+        // upper bound on "this will never happen", not the thing being
+        // measured, so a loaded machine makes this test slower rather than
+        // flaky; the failure it reports is a real stall of the I/O thread.
+        fn wait_for(what: &str, cond: impl Fn() -> bool) {
+            let deadline = Instant::now() + 5_u64.secs();
+            while Instant::now() < deadline {
+                if cond() {
+                    return;
+                }
+                std::thread::sleep(1_u64.ms());
+            }
+            panic!("timed out after 5s waiting for {what}");
+        }
+
+        let ticks = Arc::new(AtomicU64::new(0));
+        let on_error_calls = Arc::new(AtomicU64::new(0));
+        let mut boom = make_async_node("double_boom", ticks.clone());
+        // Only the healthy node ever increments `ticks` — DoubleBoom replaces
+        // the CounterNode that the handle was made for.
+        boom.node = super::super::types::NodeKind::new(Box::new(DoubleBoom {
+            on_error_calls: on_error_calls.clone(),
+        }));
+        let nodes = vec![boom, make_async_node("healthy", ticks.clone())];
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = AsyncExecutor::start(nodes, running.clone(), 1_u64.ms(), test_monitors());
+
+        // 1. The I/O thread has run the panicking on_error at least once.
+        wait_for("the first on_error() panic", || {
+            on_error_calls.load(Relaxed) > 0
+        });
+        // 2. The healthy node ticks AFTER that panic. Pre-fix the I/O thread
+        //    has already unwound by this point and this never advances.
+        let before = ticks.load(Relaxed);
+        wait_for(
+            "the healthy node to tick again after its neighbour panicked in on_error()",
+            || ticks.load(Relaxed) > before,
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        // The deterministic half: a panicked thread's nodes cannot be
+        // reclaimed, so pre-fix this is 0 of 2 regardless of timing.
+        assert_eq!(
+            returned.len(),
+            2,
+            "the async I/O thread died in on_error() — its nodes were never reclaimed"
+        );
+    }
+
     #[test]
     fn test_async_executor_concurrent_io() {
         // Two slow I/O nodes (each sleeps 30ms). If run sequentially, total would
