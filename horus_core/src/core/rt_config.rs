@@ -251,15 +251,13 @@ impl RtConfig {
 
         // Apply scheduler and priority via horus_sys.
         //
-        // The policy test is the OUTER branch on purpose. It used to be nested
-        // inside `if let Some(priority)`, so a config built as
-        // `.scheduler(Fifo)` with no `.priority()` fell through both arms:
-        // set_realtime_priority is the only call here that issues
-        // sched_setscheduler, so no syscall was attempted at all (straced: zero
-        // sched_setscheduler for that config, versus one for the same config
-        // with a priority) and apply() still answered FullSuccess on a
-        // PREEMPT_RT box. The caller believed its control loop was on
-        // SCHED_FIFO while the thread stayed on SCHED_OTHER.
+        // Invariant: never report a policy as applied unless sched_setscheduler
+        // was attempted. set_realtime_priority is the only call here that
+        // issues it and it needs a priority, so the policy test has to stay the
+        // OUTER branch — nested inside `if let Some(priority)` it made
+        // `.scheduler(Fifo)` with no priority a silent no-op that still
+        // returned FullSuccess. Missing priority => SchedulerDegraded; see
+        // test_rt_scheduler_without_priority_is_reported_degraded.
         if self.scheduler != RtScheduler::Normal {
             match self.priority {
                 Some(priority) => {
@@ -276,10 +274,7 @@ impl RtConfig {
                         }
                         Err(e) => {
                             let msg = format!("Scheduler setup failed: {}", e);
-                            degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
-                            if self.warn_on_degradation {
-                                crate::terminal::print_line(&format!("Warning: {}", msg));
-                            }
+                            degradations.push(self.scheduler_degraded(msg));
                         }
                     }
                 }
@@ -288,14 +283,12 @@ impl RtConfig {
                 // chose. Report the policy as not applied instead.
                 None => {
                     let msg = format!(
-                        "{:?} scheduler requested without a priority; thread left on \
-                         the normal scheduler (add .priority({}..={}))",
+                        "{:?} scheduler requested without a priority; no sched_setscheduler \
+                         was issued, so the thread's scheduling policy is unchanged \
+                         (add .priority({}..={}))",
                         self.scheduler, kernel_info.min_rt_priority, kernel_info.max_rt_priority
                     );
-                    degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
-                    if self.warn_on_degradation {
-                        crate::terminal::print_line(&format!("Warning: {}", msg));
-                    }
+                    degradations.push(self.scheduler_degraded(msg));
                 }
             }
         }
@@ -316,6 +309,18 @@ impl RtConfig {
         } else {
             Ok(RtApplyResult::Degraded(degradations))
         }
+    }
+
+    /// Warn about a scheduler degradation (when enabled) and return it to push.
+    ///
+    /// Returning the variant instead of pushing it keeps the message owned by a
+    /// single place, so neither caller has to clone the `String` just to print
+    /// it first.
+    fn scheduler_degraded(&self, msg: String) -> RtDegradation {
+        if self.warn_on_degradation {
+            crate::terminal::print_line(&format!("Warning: {}", msg));
+        }
+        RtDegradation::SchedulerDegraded(msg)
     }
 }
 
@@ -713,7 +718,8 @@ mod tests {
                 degradations
             );
 
-            // The report matches the thread: still on the normal scheduler.
+            // And no policy change was attempted: this freshly spawned thread
+            // inherited SCHED_OTHER and is still on it.
             let (policy, _) = RtConfig::get_current_scheduler().unwrap();
             assert_eq!(
                 policy,
