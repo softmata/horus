@@ -62,64 +62,178 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// comment above it describes `send_shm_pod_broadcast`, not itself. If a reader
 /// is ever wired onto that stamp, delete this entry and fence the site — do not
 /// widen the exemption.
-const EXEMPT_FNS: &[&str] = &["send_shm_sp_pod"];
-
-/// The line with `//` comments dropped and string/char literals blanked, so the
-/// scanning below sees punctuation that is code and nothing else.
 ///
-/// Without this, a trailing comment or a literal that happens to contain `;`,
-/// a bracket, or the word `fence` steers the delimiter counting and the fence
-/// match. Both directions of that are bad: a spurious CI failure, or a real
-/// unfenced site skipped.
-fn code_only(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out = String::with_capacity(line.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '/' && chars.get(i + 1) == Some(&'/') {
-            break;
-        }
-        if c == '"' {
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == '\\' {
-                    i += 2;
-                    continue;
+/// Keyed on the file as well as the function name. An exemption is the one hole
+/// in this guard, and an unqualified name would silently cover a second
+/// `send_shm_sp_pod` defined in some other module. Moving the function is
+/// expected to fail this test until the path below is updated: that is the
+/// fail-closed direction to err in.
+const EXEMPT_SITES: &[(&str, &str)] = &[("src/communication/topic/dispatch.rs", "send_shm_sp_pod")];
+
+/// Lexer state, carried across line boundaries by `sanitize`.
+#[derive(Clone, Copy)]
+enum Scan {
+    Code,
+    /// Inside `/* */`, which Rust allows to nest.
+    Block(u32),
+    /// Inside `"..."`.
+    Str,
+    /// Inside a raw string, holding its hash count: `r##"` closes on `"##`.
+    Raw(usize),
+}
+
+/// If a raw string opens at `i`, how many chars its opener spans and how many
+/// hashes it carries.
+///
+/// `r"`, `r#"` and `br##"` open one; the `r` of `for`, and the raw identifier
+/// `r#type`, do not.
+fn raw_string_open(chars: &[char], i: usize) -> Option<(usize, usize)> {
+    // Nothing may run into the `b`/`r`, or it is the tail of an identifier.
+    if i.checked_sub(1)
+        .and_then(|p| chars.get(p))
+        .is_some_and(|c| c.is_alphanumeric() || *c == '_')
+    {
+        return None;
+    }
+    let mut j = i;
+    if chars.get(j) == Some(&'b') {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'r') {
+        return None;
+    }
+    j += 1;
+    let hashes = chars[j.min(chars.len())..]
+        .iter()
+        .take_while(|c| **c == '#')
+        .count();
+    if chars.get(j + hashes) == Some(&'"') {
+        Some((j + hashes + 1 - i, hashes))
+    } else {
+        None
+    }
+}
+
+/// Whether the `hashes` chars at `from` are all `#`, closing a raw string.
+fn closes_raw(chars: &[char], from: usize, hashes: usize) -> bool {
+    (0..hashes).all(|k| chars.get(from + k) == Some(&'#'))
+}
+
+/// The file's lines with comments dropped and literals blanked, so the scanning
+/// below sees punctuation that is code and nothing else. Numbering is
+/// preserved: output line `i` is input line `i`.
+///
+/// Without this, a comment or a literal that happens to contain `;`, a bracket,
+/// or the word `fence` steers the delimiter counting and the fence match. Both
+/// directions of that are bad, and both were reachable when this ran per line
+/// with no cross-line state:
+///
+/// * a `/* */` comment that merely *mentions* the constant was reported as an
+///   unrecognised publication, failing CI on a comment;
+/// * a payload written as `*ptr = msg;` was taken for the continuation line of
+///   a block comment and skipped, so `marker; *ptr = msg; fence(Release)` — the
+///   payload store left unordered with respect to the marker, exactly the bug
+///   this file exists to reject — passed the guard.
+///
+/// The state is per file rather than per line because every construct that
+/// matters here can span lines: block comments, ordinary strings continued with
+/// a trailing `\`, and raw strings.
+fn sanitize(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut state = Scan::Code;
+    for line in src.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        let mut buf = String::with_capacity(line.len());
+        let mut i = 0;
+        while i < chars.len() {
+            match state {
+                Scan::Block(depth) => {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        state = Scan::Block(depth + 1);
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        state = if depth <= 1 {
+                            Scan::Code
+                        } else {
+                            Scan::Block(depth - 1)
+                        };
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
                 }
-                if chars[i] == '"' {
-                    break;
+                Scan::Str => match chars[i] {
+                    // A trailing `\` continues the string onto the next line;
+                    // `i` running past the end simply carries `Str` over.
+                    '\\' => i += 2,
+                    '"' => {
+                        state = Scan::Code;
+                        buf.push('_');
+                        i += 1;
+                    }
+                    _ => i += 1,
+                },
+                Scan::Raw(hashes) => {
+                    if chars[i] == '"' && closes_raw(&chars, i + 1, hashes) {
+                        state = Scan::Code;
+                        buf.push('_');
+                        i += 1 + hashes;
+                    } else {
+                        i += 1;
+                    }
                 }
-                i += 1;
-            }
-            i += 1;
-            out.push('_');
-            continue;
-        }
-        // `'` is a char literal only in `'x'` / `'\n'` shape; otherwise it opens
-        // a lifetime and must be left alone.
-        if c == '\'' {
-            let escaped = chars.get(i + 1) == Some(&'\\');
-            let simple = chars.get(i + 2) == Some(&'\'');
-            if escaped || simple {
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\\' {
+                Scan::Code => {
+                    let c = chars[i];
+                    if c == '/' && chars.get(i + 1) == Some(&'/') {
+                        break;
+                    }
+                    if c == '/' && chars.get(i + 1) == Some(&'*') {
+                        state = Scan::Block(1);
                         i += 2;
                         continue;
                     }
-                    if chars[i] == '\'' {
-                        break;
+                    // Raw strings first: `\` is not an escape inside one, so
+                    // scanning `r"C:\dir\"` as an ordinary string runs the
+                    // closing quote past the end and blanks the rest of the
+                    // file — a guard that checks nothing.
+                    if let Some((skip, hashes)) = raw_string_open(&chars, i) {
+                        state = Scan::Raw(hashes);
+                        i += skip;
+                        continue;
                     }
+                    if c == '"' {
+                        state = Scan::Str;
+                        i += 1;
+                        continue;
+                    }
+                    // `'` is a char literal only in `'x'` / `'\n'` shape;
+                    // otherwise it opens a lifetime and must be left alone.
+                    if c == '\'' {
+                        let escaped = chars.get(i + 1) == Some(&'\\');
+                        let simple = chars.get(i + 2) == Some(&'\'');
+                        if escaped || simple {
+                            i += 1;
+                            while i < chars.len() {
+                                if chars[i] == '\\' {
+                                    i += 2;
+                                    continue;
+                                }
+                                if chars[i] == '\'' {
+                                    break;
+                                }
+                                i += 1;
+                            }
+                            i += 1;
+                            buf.push('_');
+                            continue;
+                        }
+                    }
+                    buf.push(c);
                     i += 1;
                 }
-                i += 1;
-                out.push('_');
-                continue;
             }
         }
-        out.push(c);
-        i += 1;
+        out.push(buf);
     }
     out
 }
@@ -127,7 +241,10 @@ fn code_only(line: &str) -> String {
 /// Name of the `fn` a line sits inside, searching upward. Returns `None` rather
 /// than guessing, which makes an unrecognised site fail the test instead of
 /// silently matching an exemption.
-fn enclosing_fn(lines: &[&str], line_idx: usize) -> Option<String> {
+///
+/// Runs on sanitized lines, so a `fn` written inside a comment cannot be
+/// mistaken for the enclosing definition.
+fn enclosing_fn(lines: &[String], line_idx: usize) -> Option<String> {
     for line in lines[..=line_idx].iter().rev() {
         let mut rest = line.trim_start();
         // Skip the modifiers a definition can carry before `fn`.
@@ -139,7 +256,10 @@ fn enclosing_fn(lines: &[&str], line_idx: usize) -> Option<String> {
                 .or_else(|| rest.strip_prefix("const "))
                 .or_else(|| rest.strip_prefix("async "))
                 .or_else(|| rest.strip_prefix("unsafe "))
-                .or_else(|| rest.strip_prefix("extern \"C\" "));
+                // `sanitize` blanks the ABI string, so `extern "C" fn` reaches
+                // this as `extern _ fn`.
+                .or_else(|| rest.strip_prefix("extern _ "))
+                .or_else(|| rest.strip_prefix("extern "));
             match next {
                 Some(r) => rest = r,
                 None => break,
@@ -167,10 +287,10 @@ fn enclosing_fn(lines: &[&str], line_idx: usize) -> Option<String> {
 /// — `store({ let v = f(); v }, Ordering::Release)` — would otherwise be cut
 /// short, and the fence check would then run against a line from the middle of
 /// the store and report a violation that is not there.
-fn statement_end(lines: &[&str], start: usize) -> Option<usize> {
+fn statement_end(lines: &[String], start: usize) -> Option<usize> {
     let mut depth: i32 = 0;
     for (offset, line) in lines[start..].iter().enumerate() {
-        for c in code_only(line).chars() {
+        for c in line.chars() {
             match c {
                 '(' | '[' | '{' => depth += 1,
                 ')' | ']' | '}' => depth -= 1,
@@ -235,15 +355,14 @@ fn reads_marker(code: &str) -> bool {
     before.ends_with('&')
 }
 
-/// Blank lines, `//` comments and the body of a `/* */` block — none of them is
-/// the statement that follows the marker.
-fn is_code_line(line: &str) -> bool {
-    let t = line.trim();
-    !t.is_empty()
-        && !t.starts_with("//")
-        && !t.starts_with("/*")
-        && !t.starts_with('*')
-        && !t.starts_with("*/")
+/// Whether a sanitized line carries any code at all.
+///
+/// Comment bodies and blank lines sanitize to whitespace, so this does not have
+/// to guess at comment shapes from punctuation — guessing is what let a
+/// `*ptr = payload;` deref write be mistaken for the `*` continuation line of a
+/// `/* */` block and skipped over on the way to finding the fence.
+fn has_code(line: &str) -> bool {
+    !line.trim().is_empty()
 }
 
 #[test]
@@ -257,22 +376,22 @@ fn every_writing_marker_is_followed_by_a_release_fence() {
 
     for file in &files {
         let src = std::fs::read_to_string(file).expect("read source");
-        let lines: Vec<&str> = src.lines().collect();
+        let lines = sanitize(&src);
         let rel = file
             .strip_prefix(crate_root())
             .unwrap_or(file)
             .display()
-            .to_string();
+            .to_string()
+            .replace('\\', "/");
 
-        for (i, line) in lines.iter().enumerate() {
-            let code = code_only(line);
+        for (i, code) in lines.iter().enumerate() {
             if !code.contains("SLOT_WRITING") {
                 continue;
             }
             let site = format!("{rel}:{}", i + 1);
             let trimmed = code.trim();
 
-            if !publishes_marker(&code) {
+            if !publishes_marker(code) {
                 // Every other shape the crate uses is inert: the constant's own
                 // definition, a `use` of it, and reads of the bit. Anything
                 // else is a shape this guard was not written for — most
@@ -282,7 +401,7 @@ fn every_writing_marker_is_followed_by_a_release_fence() {
                     || trimmed.starts_with("const ")
                     || trimmed.starts_with("pub const ")
                     || trimmed.starts_with("pub(crate) const ")
-                    || reads_marker(&code);
+                    || reads_marker(code);
                 if !inert {
                     violations.push(format!(
                         "{site}: `SLOT_WRITING` appears in a shape this guard does \
@@ -296,7 +415,7 @@ fn every_writing_marker_is_followed_by_a_release_fence() {
             }
 
             match enclosing_fn(&lines, i) {
-                Some(name) if EXEMPT_FNS.contains(&name.as_str()) => continue,
+                Some(name) if EXEMPT_SITES.iter().any(|(f, n)| *f == rel && *n == name) => continue,
                 Some(_) => {}
                 None => {
                     violations.push(format!(
@@ -316,8 +435,7 @@ fn every_writing_marker_is_followed_by_a_release_fence() {
             };
             let next = lines[end + 1..]
                 .iter()
-                .copied()
-                .position(is_code_line)
+                .position(|l| has_code(l))
                 .map(|off| end + 1 + off);
 
             checked += 1;
@@ -329,11 +447,7 @@ fn every_writing_marker_is_followed_by_a_release_fence() {
                 continue;
             };
             let next_end = statement_end(&lines, next).unwrap_or(next);
-            let next_stmt: String = lines[next..=next_end]
-                .iter()
-                .map(|l| code_only(l))
-                .collect::<Vec<_>>()
-                .join(" ");
+            let next_stmt = lines[next..=next_end].join(" ");
 
             if !is_release_fence(&next_stmt) {
                 violations.push(format!(
