@@ -276,6 +276,28 @@ impl std::fmt::Debug for DepthImage {
     }
 }
 
+impl DepthImage {
+    /// Instant the sensor SAMPLED this frame, nanoseconds since the UNIX epoch.
+    ///
+    /// `0` means unknown. Distinct from [`timestamp_ns`](Self::timestamp_ns),
+    /// which is stamped at publish; for a camera the two differ by exposure plus
+    /// transfer plus driver latency, routinely 10-30 ms.
+    #[inline]
+    pub fn capture_ns(&self) -> u64 {
+        self.descriptor.capture_ns()
+    }
+
+    /// Record the instant the sensor sampled this frame.
+    ///
+    /// Drivers call this. HORUS never sets it, because only the driver knows
+    /// its own pipeline latency.
+    #[inline]
+    pub fn set_capture_ns(&mut self, ts: u64) -> &mut Self {
+        self.descriptor.set_capture_ns(ts);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -61,6 +61,39 @@ macro_rules! impl_timestamp_field {
     };
 }
 
+/// Generate `capture_ns()` / `set_capture_ns()` for descriptor types carrying a
+/// `capture_ns: u64` field.
+///
+/// Separate from [`impl_timestamp_field`] because the two mean different things
+/// and only sensor descriptors can answer the second. `timestamp_ns` is stamped
+/// when the descriptor is built — publish time. `capture_ns` is when the sensor
+/// actually sampled. For a camera those differ by exposure plus transfer plus
+/// driver latency, routinely 10-30 ms, and fusing on publish time aligns
+/// samples on arrival rather than on measurement.
+#[macro_export]
+macro_rules! impl_capture_ns_field {
+    () => {
+        /// Instant the sensor SAMPLED this frame, nanoseconds since the UNIX
+        /// epoch. `0` means unknown.
+        ///
+        /// Treat `0` as "fall back to `timestamp_ns` and accept the skew",
+        /// never as "sampled at the epoch".
+        #[inline]
+        pub fn capture_ns(&self) -> u64 {
+            self.capture_ns
+        }
+
+        /// Record the instant the sensor sampled this frame.
+        ///
+        /// Set by the driver — the only component that knows its own exposure
+        /// and transfer latency. HORUS never fills it in.
+        #[inline]
+        pub fn set_capture_ns(&mut self, ts: u64) {
+            self.capture_ns = ts;
+        }
+    };
+}
+
 /// Generate shared tensor accessor methods for descriptor types with an
 /// `inner: Tensor` field.
 #[macro_export]
