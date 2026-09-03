@@ -16,8 +16,11 @@
 //!    → MpscShm) completes before threads start transferring data. Creating
 //!    topics inside `thread::spawn` closures can race with migration.
 //!
-//! 3. **Use unique pool IDs** for `TensorPool` tests (e.g., 9600–9699) to
-//!    avoid SHM collisions with other test pools.
+//! 3. **Use unique pool IDs** for `TensorPool` tests. Do NOT pick 9600–9699:
+//!    that range is taken by `horus_core/src/memory/tensor_pool.rs`'s own unit
+//!    tests, which is what this note used to recommend. For a pool that needs
+//!    to be isolated from other *processes*, use a `POOL_BASE_*` constant with
+//!    [`test_pool_id`] — see the "Tensor pool id space" section below.
 //!
 //! 4. **Call `cleanup_stale_shm()`** at the start of integration tests that
 //!    create SHM files, to remove leftover state from previous runs.
@@ -212,3 +215,103 @@ impl ShmCleanupGuard {
 }
 // No custom Drop: the held `ShmTestGuard` releases the lock on drop, and the
 // next test's `cleanup_stale_shm()` scrubs SHM under the lock.
+
+// ============================================================================
+// Tensor pool id space
+// ============================================================================
+//
+// A `TensorPool` is shared memory keyed by a numeric id, and its `Drop`
+// deliberately does NOT unlink the backing file (`cleanup_stale_shm` only
+// clears topics/ and nodes/). So an id is not just a within-run handle: it
+// names a file that outlives the process, and a later run asking for the same
+// id gets whatever geometry an earlier run left there. `TensorPool::new`
+// refuses to attach when the existing file is smaller than the mapping the
+// caller's config needs, which surfaces as
+//
+//     Tensor pool 9811 exists but is only 65856 bytes, smaller than the
+//     16780864 bytes this process's configuration requires
+//
+// Tests that want isolation between concurrently running processes derive the
+// id as `BASE + (std::process::id() % POOL_PID_SPREAD)`, so each base owns the
+// half-open range `[BASE, BASE + POOL_PID_SPREAD)`. Two consequences:
+//
+//   * Bases must be at least `POOL_PID_SPREAD` apart, or the ranges overlap and
+//     two tests with different pool geometries can land on one id.
+//   * The whole family must live where no FIXED id is used, because a fixed id
+//     inside a range collides whenever `pid % POOL_PID_SPREAD` selects it.
+//
+// The second point is why this band is 20_000 and not somewhere in the 9500s:
+// 9500-10200 is densely occupied by fixed ids that are easy to miss --
+// `horus_core/src/memory/tensor_pool.rs` unit tests (9600-9614, 9782-9796,
+// 9900-9902, 9974-9998, 10100-10105), `tests/regressions.rs` (9800, 9801) and
+// `benchmarks/benches/tensor_pool.rs` (9500-9639). Keeping the pid-spread
+// family in its own band means "is this id free?" is answered by the band, not
+// by re-auditing every literal in the workspace.
+//
+// `tensor_pool_concurrent::pool_id_ranges_cannot_overlap` enforces all of it.
+
+/// Width of the pid-derived offset added to each `POOL_BASE_*` below.
+#[allow(dead_code)]
+pub const POOL_PID_SPREAD: u32 = 100;
+
+/// First id of the band reserved for the `POOL_BASE_*` family.
+#[allow(dead_code)]
+pub const POOL_BAND_START: u32 = 20_000;
+
+/// One past the last id of that band. Every base's full spread fits inside it,
+/// and nothing else in the workspace allocates a tensor pool here.
+#[allow(dead_code)]
+pub const POOL_BAND_END: u32 = 20_600;
+
+/// `tensor_pool_concurrent::test_concurrent_alloc_release_no_panic`
+#[allow(dead_code)]
+pub const POOL_BASE_CONCURRENT_ALLOC_RELEASE: u32 = 20_000;
+
+/// `tensor_pool_concurrent::test_concurrent_alloc_all_threads_succeed`
+#[allow(dead_code)]
+pub const POOL_BASE_CONCURRENT_ALLOC_ALL: u32 = 20_100;
+
+/// `tensor_pool_concurrent::test_slot_reuse_after_release`
+#[allow(dead_code)]
+pub const POOL_BASE_SLOT_REUSE: u32 = 20_200;
+
+/// `tensor_pool_concurrent::test_single_slot_pool`
+#[allow(dead_code)]
+pub const POOL_BASE_SINGLE_SLOT: u32 = 20_300;
+
+/// `tensor_pool_concurrent::test_data_integrity_after_write`
+#[allow(dead_code)]
+pub const POOL_BASE_DATA_INTEGRITY: u32 = 20_400;
+
+/// `resource_exhaustion::test_tensor_pool_alloc_returns_error_when_full`
+#[allow(dead_code)]
+pub const POOL_BASE_RESOURCE_EXHAUSTION: u32 = 20_500;
+
+/// Every base in the family, for the invariant test.
+///
+/// This is built FROM the constants above rather than repeating their values,
+/// so the checked list cannot drift from what the call sites actually use.
+/// Adding a base means adding it here and widening [`POOL_BAND_END`] --
+/// `pool_id_ranges_cannot_overlap` asserts the band is exactly consumed, so
+/// forgetting either half fails the test.
+#[allow(dead_code)]
+pub const TENSOR_POOL_BASES: [(&str, u32); 6] = [
+    (
+        "concurrent_alloc_release",
+        POOL_BASE_CONCURRENT_ALLOC_RELEASE,
+    ),
+    ("concurrent_alloc_all", POOL_BASE_CONCURRENT_ALLOC_ALL),
+    ("slot_reuse", POOL_BASE_SLOT_REUSE),
+    ("single_slot", POOL_BASE_SINGLE_SLOT),
+    ("data_integrity", POOL_BASE_DATA_INTEGRITY),
+    (
+        "resource_exhaustion (other file)",
+        POOL_BASE_RESOURCE_EXHAUSTION,
+    ),
+];
+
+/// Pool id for this process: a base plus this process's spread slot.
+#[allow(dead_code)]
+pub fn test_pool_id(base: u32) -> u32 {
+    base + (std::process::id() % POOL_PID_SPREAD)
+}
