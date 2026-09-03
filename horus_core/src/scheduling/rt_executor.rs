@@ -586,8 +586,18 @@ enum WaitMode {
 /// gap ever observed between a tick's scheduled slot and the instant the loop
 /// actually resumed, and `overruns` / `slots_skipped` count the periods the
 /// executor could not keep up with at all.
+/// Cyclic-wait accounting for the RT tick grid.
+///
+/// These are the runtime's own deadline numbers, measured against the slot it
+/// *scheduled*, not against a mean interval inferred afterwards from wall-clock
+/// samples. That distinction is what makes them gateable in CI: an interval
+/// histogram on a shared runner mostly measures the neighbours, whereas
+/// `overruns` answers "did the tick grid keep its own appointment", which is
+/// the property a control loop actually depends on. Preemption still inflates
+/// them -- nothing measured on a contended host is noise-free -- but the
+/// question they answer is the right one.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RtWaitSnapshot {
+pub struct RtWaitSnapshot {
     /// Completed cyclic waits (i.e. tick slots serviced).
     pub slots: u64,
     /// Waits that found their own slot already in the past.
@@ -612,7 +622,12 @@ static WAIT_LATE_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
 static WAIT_SPIN_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Process-wide cyclic-wait statistics, safe to poll from any thread.
-pub(crate) fn rt_wait_stats() -> RtWaitSnapshot {
+///
+/// Relaxed loads of six independent atomics: the snapshot is not a consistent
+/// cut, and `slots` may already have advanced past the one `wake_late_max_ns`
+/// came from. That is fine for the reporting and gating this exists for; the
+/// alternative -- a lock -- would put a lock on the tick path.
+pub fn rt_wait_stats() -> RtWaitSnapshot {
     RtWaitSnapshot {
         slots: WAIT_SLOTS.load(Ordering::Relaxed),
         overruns: WAIT_OVERRUNS.load(Ordering::Relaxed),
