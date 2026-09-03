@@ -425,8 +425,14 @@ impl Replicator {
             // told apart only by the bit-7 discriminator. Datagrams the peer
             // filter rejected are deliberately absent — they have no peer to
             // attribute to, and `filtered_count` already counts them.
-            self.metrics
-                .record_recv(peer_id_hash(&ann.peer_id), buf.len());
+            //
+            // Gated on the peer table's answer for the same reason the
+            // heartbeat registration below is: an announcement the (capped)
+            // table refused must not create per-peer state elsewhere, or that
+            // cap bounds nothing. `update_peer` returns true for a peer it
+            // already knows as well as one it just admitted, so a real peer's
+            // repeat announcements keep counting.
+            //
             // Only register a heartbeat emitter for a peer the table actually
             // accepted. This used to be unconditional, so every announcement
             // the (capped) peer table refused still created an uncapped
@@ -436,6 +442,8 @@ impl Replicator {
             // One forged datagram bought permanent outbound traffic aimed
             // wherever the sender liked.
             if self.peers.update_peer(&ann) {
+                self.metrics
+                    .record_recv(peer_id_hash(&ann.peer_id), buf.len());
                 self.heartbeat.add_peer(ann.peer_id, ann.source_addr);
             }
             // Record peer discovery to blackbox
@@ -456,6 +464,15 @@ impl Replicator {
         };
         // The sender of every non-announcement kind; see the announcement
         // branch above for why this is not done in the recv loop.
+        //
+        // Deliberately before the routing below, so this counts what the link
+        // actually delivered from that peer — a heartbeat, an ACK, a fragment
+        // that never completes, a message for an unimported topic and a
+        // type-hash mismatch all arrived and all cost bandwidth. Unlike the
+        // announcement branch there is no acceptance decision to gate on:
+        // nothing on this path authenticates a sender (see
+        // `process_incoming_message`'s doc comment). `NetMetrics::peer_entry`
+        // caps the table so a forged-`sender_id_hash` flood cannot grow it.
         self.metrics.record_recv(header.sender_id_hash, buf.len());
 
         // 2. Heartbeat packet
@@ -905,8 +922,17 @@ impl Replicator {
                             // spells out — and discarding the `Err` made a
                             // datagram that never left this machine
                             // indistinguishable from a delivered one.
+                            //
+                            // Count the bytes the socket reports taking, not
+                            // the bytes we offered. For a datagram socket
+                            // those are always equal — sendto(2) on SOCK_DGRAM
+                            // is all-or-nothing, EMSGSIZE rather than a short
+                            // write — but `Transport::send_to` is a trait
+                            // returning io::Result<usize>, so reading the
+                            // count keeps the invariant local instead of
+                            // resting on the reader knowing UDP semantics.
                             match self.transport.send_to(&self.send_buf[..len], *addr) {
-                                Ok(_) => self.metrics.record_send(*sub_id_hash, len),
+                                Ok(sent) => self.metrics.record_send(*sub_id_hash, sent),
                                 Err(_) => self.metrics.record_send_error(*sub_id_hash),
                             }
                         }
@@ -1933,31 +1959,28 @@ mod tests {
         tx.send_to(&buf[..len], dest).unwrap();
 
         // The replicator's socket is nonblocking, so drain until both loopback
-        // datagrams have landed rather than assuming they already have.
-        let mut keys: Vec<u16> = Vec::new();
+        // datagrams have landed rather than assuming they already have. One
+        // snapshot serves every assertion below, so the keys and the per-row
+        // counters are guaranteed to describe the same observation.
+        let mut snap = rep.metrics.snapshot();
         for _ in 0..50 {
             rep.handle_incoming();
-            keys = rep
-                .metrics
-                .snapshot()
-                .peers
-                .iter()
-                .map(|p| p.peer_hash)
-                .collect();
-            if keys.len() >= 2 {
+            snap = rep.metrics.snapshot();
+            if snap.peers.len() >= 2 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        keys.sort_unstable();
 
+        let mut keys: Vec<u16> = snap.peers.iter().map(|p| p.peer_hash).collect();
+        keys.sort_unstable();
         let mut expected = vec![SENDER, crate::discovery::peer_id_hash(&announcer)];
         expected.sort_unstable();
         assert_eq!(
             keys, expected,
             "two senders must produce two rows, neither of them ours"
         );
-        for p in &rep.metrics.snapshot().peers {
+        for p in &snap.peers {
             assert_eq!(p.packets_received, 1);
             assert!(p.bytes_received > 0);
         }
@@ -2005,10 +2028,23 @@ mod tests {
 
     #[test]
     fn a_send_the_socket_refused_is_not_counted_as_delivered() {
-        // Port 0 is not a valid UDP destination: `sendto` fails with EINVAL
-        // before anything is queued. It is the only send failure reproducible
-        // on demand — a peer that is merely gone still returns Ok (measured
-        // here, 20000/20000; see `PeerMetrics::send_errors`).
+        // Port 0 is not a valid UDP destination: `sendto` fails before anything
+        // is queued (EINVAL on Linux; other stacks report their own errno, and
+        // the assertions below deliberately check only that the send failed).
+        // It is the only send failure reproducible on demand — a peer that is
+        // merely gone still returns Ok (measured here, 20000/20000; see
+        // `PeerMetrics::send_errors`).
+        //
+        // PLATFORM ASSUMPTION: that a destination port of 0 is refused
+        // locally. `horus_net`'s tests are Linux-only in practice — the crate
+        // has no Windows event loop and CI excludes it from every Windows job
+        // (.github/workflows/multi-platform.yml), and no macOS job runs
+        // `-p horus_net` at all. Forcing the error through the transport layer
+        // instead would mean making `Replicator::transport` a `dyn Transport`
+        // rather than the concrete `UdpTransport` it is today — dynamic
+        // dispatch on the per-datagram send path, which is a change this fix
+        // should not smuggle in. A stack that accepts port 0 fails this test
+        // loudly rather than silently passing a broken counter.
         let refused: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
         let name = export_test_topic("refused");
