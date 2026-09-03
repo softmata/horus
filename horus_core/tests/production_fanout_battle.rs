@@ -23,6 +23,7 @@ mod common;
 use common::cleanup_stale_shm;
 use horus_core::communication::Topic;
 use horus_core::core::{DurationExt, Node};
+use horus_core::error::{CommunicationError, HorusError};
 use horus_core::scheduling::Scheduler;
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
@@ -1887,7 +1888,7 @@ fn fault_shm_magic_corruption_rejected() {
              that looks healthy",
             orphan.display()
         ),
-        Err(e) => e.to_string(),
+        Err(e) => e,
     };
 
     // Pin the rejection to the mechanism, not just to `is_err()`. Anything that
@@ -1897,18 +1898,32 @@ fn fault_shm_magic_corruption_rejected() {
     // `is_err()` on a run where the joiner path never executed and the
     // corruption was therefore never judged. The one error this test is about
     // is the joiner waiting out the header-init deadline for an owner that is
-    // dead and will never stamp the magic. That string is the observable end of
-    // the branch at horus_core/src/communication/topic/mod.rs:1126-1146; if
-    // that branch is ever reworked to refuse an unrecognised header without
-    // waiting — a fine change — this expectation is what tells you to update
-    // the test rather than letting it quietly stop testing anything.
-    assert!(
-        err.contains("Timeout waiting for topic header initialization"),
-        "Topic::new on {} was refused, but not by the joiner header-init timeout \
-         that magic rejection goes through — so nothing here exercised the \
-         corruption path and this run proves nothing. Got: {err}",
-        orphan.display()
-    );
+    // dead and will never stamp the magic, which is the observable end of the
+    // joiner branch in `Topic::negotiate_shm_header`
+    // (horus_core/src/communication/topic/mod.rs).
+    //
+    // Matched as a variant rather than by message text: the wording is free to
+    // change, but a rework that refuses an unrecognised header some other way —
+    // a fine change — retires `HeaderInitTimeout` and fails this match, which is
+    // what tells you to update the test rather than letting it quietly stop
+    // testing anything.
+    match &err {
+        HorusError::Communication(CommunicationError::HeaderInitTimeout { topic, .. }) => {
+            assert_eq!(
+                topic,
+                &name,
+                "header-init timeout names the wrong topic — {} is the region this \
+                 test corrupted",
+                orphan.display()
+            );
+        }
+        other => panic!(
+            "Topic::new on {} was refused, but not by the joiner header-init timeout \
+             that magic rejection goes through — so nothing here exercised the \
+             corruption path and this run proves nothing. Got: {other}",
+            orphan.display()
+        ),
+    }
 
     // Cleanup for other tests
     let _shm_guard = cleanup_stale_shm();

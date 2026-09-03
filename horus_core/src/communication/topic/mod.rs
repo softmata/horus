@@ -1127,7 +1127,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // Use exponential backoff (1ms→50ms) with a 2s deadline.
             // The generous deadline prevents spurious timeouts under heavy
             // thread contention (e.g., 100+ topics starting simultaneously).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let started = std::time::Instant::now();
+            let deadline = started + std::time::Duration::from_secs(2);
             let mut backoff_ms = 1u64;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
@@ -1136,10 +1137,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     break;
                 }
                 if std::time::Instant::now() >= deadline {
+                    // Structured, for the same reason as the type-mismatch arm
+                    // below: wrapped in a bare String this rendered through the
+                    // `From<String>` impl as "Communication serialization
+                    // failed:", reporting a timeout as a serialization fault.
+                    // Callers that want to tell "the owner is still starting"
+                    // from "the region is stale or corrupt" now have a variant
+                    // to match instead of a message to substring-search.
                     return Err(HorusError::Communication(
-                        "Timeout waiting for topic header initialization"
-                            .to_string()
-                            .into(),
+                        crate::error::CommunicationError::HeaderInitTimeout {
+                            topic: name.to_string(),
+                            waited: started.elapsed(),
+                        },
                     ));
                 }
                 backoff_ms = (backoff_ms * 2).min(50);
