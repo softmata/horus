@@ -36,6 +36,33 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
+### Breaking
+
+- **core** — `Topic::<Tensor>::pool()` (`#[doc(hidden)]`, but `pub`) returns
+  `HorusResult<Arc<TensorPool>>` where it returned `Arc<TensorPool>`. A pool
+  file left behind by a build with a different `POOL_VERSION` or geometry can
+  be neither opened nor recreated, and the infallible signature had only one
+  way to say so: a panic, on the per-frame allocation path, out of constructors
+  that already return `HorusResult`. There is no compatible spelling of the old
+  signature that does not keep that panic. Callers add `?`; the neighbouring
+  methods a caller is more likely to hold — `alloc_tensor`, `send_handle`,
+  `recv_handle` — are unchanged, and no caller of `pool()` exists outside
+  `horus_core` in this workspace. Pre-1.0, so it rides in the minor slot, as
+  0.4.0's break did.
+
+### Fixed
+
+- **core** — a tensor pool file this build disagrees with is now an error
+  rather than a panic. `TensorPool::drop` never unlinks and the filename
+  carries no version, so an in-place upgrade across a `POOL_VERSION` bump
+  leaves a file the next run can neither open nor recreate; the registry
+  `.expect()`ed on that, so `Topic::new`, `Image::new`, `PointCloud::new`,
+  `DepthImage::new`, `CostMap::new`, `OccupancyGrid::new` and
+  `TensorHandle::from_shape` panicked instead of returning the `HorusResult`
+  they advertise. Inside a scheduler tick the panic was swallowed by
+  `catch_unwind` — the node entered ticks, completed none, and the process
+  still exited 0.
+
 ## [0.4.0] — 2026-08-22
 
 The first release since 0.2.2 (2026-07-19). **0.3.0 was tagged and never

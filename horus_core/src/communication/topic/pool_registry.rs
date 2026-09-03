@@ -11,7 +11,7 @@ use std::sync::Arc;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 
-use crate::error::HorusResult;
+use crate::error::{HorusContext, HorusResult};
 use crate::memory::{TensorPool, TensorPoolConfig};
 
 lazy_static! {
@@ -57,8 +57,14 @@ fn auto_pool_config() -> TensorPoolConfig {
 ///
 /// # Errors
 ///
-/// Returns the error from `TensorPool::new` when neither opening nor creating
-/// the pool works. Both fail together whenever the file on disk disagrees with
+/// Returns an error when neither opening nor creating the pool works, carrying
+/// *both* halves: the `TensorPool::open` failure as context and the
+/// `TensorPool::new` failure as its cause. The two say different things — the
+/// first names why the file on disk was rejected (header magic, `POOL_VERSION`),
+/// the second only what the recreate attempt tripped over (geometry, size) —
+/// and it is usually the first that identifies the stale file.
+///
+/// Both fail together whenever the file on disk disagrees with
 /// this process: a `POOL_VERSION` mismatch, a geometry mismatch, or a file
 /// shorter than this process's geometry. That disagreement is not exotic —
 /// `TensorPool::drop` never unlinks and the filename carries no version, so an
@@ -82,7 +88,18 @@ pub(crate) fn get_or_create_pool(topic_name: &str) -> HorusResult<Arc<TensorPool
 
     let pool = Arc::new(match TensorPool::open(pid) {
         Ok(p) => p,
-        Err(_) => TensorPool::new(pid, auto_pool_config())?,
+        // Keep the `open` error. When both halves fail on the same stale file
+        // they fail for different reasons, and `open`'s is the one that names
+        // the file as stale — dropping it left the caller with only the
+        // recreate error ("exists but is only N bytes"), which reads like a
+        // race with a concurrent creator rather than a leftover from an older
+        // build. `horus_context_with` only allocates on the error path.
+        Err(open_err) => TensorPool::new(pid, auto_pool_config()).horus_context_with(|| {
+            format!(
+                "tensor pool for topic '{topic_name}' (pool_id {pid}): the existing pool \
+                 file could not be opened ({open_err}), and creating it failed too"
+            )
+        })?,
     });
 
     pools.insert(topic_name.to_string(), Arc::clone(&pool));
@@ -171,12 +188,32 @@ mod tests {
     fn a_pool_file_this_build_disagrees_with_errors_instead_of_panicking() {
         use std::io::{Read, Seek, SeekFrom, Write};
 
-        let topic = "__horus_test_pool_registry_version_mismatch__";
+        /// Unlinks the planted file however this test leaves — including the
+        /// panic it exists to rule out, which is the one exit that would
+        /// otherwise leave a poisoned pool file in the namespace.
+        struct Planted(std::path::PathBuf);
+        impl Drop for Planted {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        // Per-process name. A test binary's SHM namespace is keyed on the cargo
+        // *target directory* (`shm::cargo_test_namespace`), not on the process,
+        // so two runs out of one target dir share it — and this test plants,
+        // corrupts and unlinks a fixed path. The pid keeps concurrent runs off
+        // each other's file.
+        let topic = format!(
+            "__horus_test_pool_registry_version_mismatch_{}__",
+            std::process::id()
+        );
+        let topic = topic.as_str();
         let pid = pool_id_from_name(topic);
         let path = crate::memory::platform::shm_base_dir()
             .join("tensors")
             .join(format!("tensor_pool_{}", pid));
         let _ = std::fs::remove_file(&path);
+        let _planted = Planted(path.clone());
 
         // Plant a real, fully initialized pool whose geometry is NOT
         // `auto_pool_config()`'s, then let it drop — the file stays.
@@ -208,11 +245,26 @@ mod tests {
         }
 
         let result = get_or_create_pool(topic);
-        let _ = std::fs::remove_file(&path);
 
         let err = result
             .err()
             .expect("a pool file from another POOL_VERSION must fail, not open");
+
+        // Both halves of the failure reach the caller. `open`'s is the one that
+        // identifies the file as stale ("version mismatch: expected 4, got 3");
+        // `new`'s only reports the geometry the second attempt tripped over,
+        // which on its own reads like a race with a concurrent creator.
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("version mismatch"),
+            "the `open` failure names the file as stale and must survive into \
+             the error the caller sees: {rendered}"
+        );
+        assert!(
+            rendered.contains("Caused by:"),
+            "the `new` failure must survive too, as the cause: {rendered}"
+        );
+
         // Nothing was cached, so the next caller gets the same error rather
         // than a half-built pool.
         assert!(
