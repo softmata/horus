@@ -53,6 +53,7 @@ def roundtrip(msg_type, msg, field_checks, duration=1.0):
             assert abs(actual - expected) < 1e-5, f"{field}: {actual} != {expected}"
         else:
             assert actual == expected, f"{field}: {actual} != {expected}"
+    return m
 
 
 # =============================================================================
@@ -647,45 +648,48 @@ class TestCrossLanguageRustSendsPythonReceives:
         msg.angular_velocity_covariance = [1e-4] * 9
         msg.linear_acceleration_covariance = [2e-4] * 9
 
-        received = []
-
-        def pub_fn(node):
-            if node.info.tick_count() == 0:
-                node.send("Imu", msg)
-            elif node.info.tick_count() > 2:
-                node.request_stop()
-
-        def sub_fn(node):
-            m = node.recv("Imu")
-            if m is not None:
-                received.append(m)
-                node.request_stop()
-            elif node.info.tick_count() > 10:
-                node.request_stop()
-
-        horus.run(
-            horus.Node(name="p", pubs="Imu", tick=pub_fn),
-            horus.Node(name="s", subs="Imu", tick=sub_fn),
-            duration=1.0,
+        # A yaw of pi/2 is the quaternion (0, 0, sin(pi/4), cos(pi/4)), w last.
+        # The covariances are checked with `==`: they are f64 in the POD and are
+        # memcpy'd through shared memory with no arithmetic on either side.
+        got = roundtrip(
+            horus.Imu,
+            msg,
+            {
+                "qx": 0.0,
+                "qy": 0.0,
+                "qz": math.sin(math.pi / 4),
+                "qw": math.cos(math.pi / 4),
+                "orientation_covariance": [0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.03],
+                "angular_velocity_covariance": [1e-4] * 9,
+                "linear_acceleration_covariance": [2e-4] * 9,
+            },
         )
 
-        assert len(received) >= 1
-        got = received[0]
-
-        # A yaw of pi/2 is the quaternion (0, 0, sin(pi/4), cos(pi/4)), w last.
-        assert abs(got.qx) < 1e-9
-        assert abs(got.qy) < 1e-9
-        assert abs(got.qz - math.sin(math.pi / 4)) < 1e-9
-        assert abs(got.qw - math.cos(math.pi / 4)) < 1e-9
-
+        # orientation_quat() reads the same four f64s as the flat getters, so it
+        # must agree with them exactly, not approximately.
         q = got.orientation_quat()
-        assert abs(q.z - math.sin(math.pi / 4)) < 1e-9
-        assert abs(q.w - math.cos(math.pi / 4)) < 1e-9
+        assert (q.x, q.y, q.z, q.w) == (got.qx, got.qy, got.qz, got.qw)
 
-        assert got.orientation_covariance == [0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.03]
-        assert got.angular_velocity_covariance == [1e-4] * 9
-        assert got.linear_acceleration_covariance == [2e-4] * 9
         assert got.has_orientation()
+
+    def test_imu_covariance_setter_rejects_wrong_length(self):
+        """A short or long list is a mistake, not a partial write.
+
+        Copying only the prefix would leave the tail of the matrix at whatever
+        was there before — for orientation_covariance the -1.0 "no data"
+        sentinel — while has_orientation(), which reads element 0 alone, would
+        report True for it.
+        """
+        msg = horus.Imu(accel_x=0.0, accel_y=0.0, accel_z=9.81, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0)
+        fields = ("orientation_covariance", "angular_velocity_covariance", "linear_acceleration_covariance")
+        for field in fields:
+            for bad in ([], [0.01], [0.0] * 8, [0.0] * 10):
+                with pytest.raises(ValueError):
+                    setattr(msg, field, bad)
+
+        # Nothing was half-written: orientation_covariance is still all sentinel.
+        assert msg.orientation_covariance == [-1.0] * 9
+        assert not msg.has_orientation()
 
     def test_laser_scan_roundtrip(self):
         msg = horus.LaserScan(angle_min=-1.5, angle_max=1.5, range_min=0.125, range_max=30.0)

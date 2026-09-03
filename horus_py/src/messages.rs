@@ -248,15 +248,31 @@ impl PyPose2D {
 // Imu — 304 bytes POD
 // ============================================================================
 
+/// A 3x3 covariance matrix reaches Python as a flat list of 9 floats. Require
+/// all nine: writing only the prefix a caller happened to pass leaves the rest
+/// of the matrix at whatever was there before, which for `orientation_covariance`
+/// is the `-1.0` "no data" sentinel `Imu::new()` seeds — a matrix with negative
+/// variances on its diagonal that `has_orientation()` still reports as True,
+/// because that method only looks at element 0.
+fn covariance_3x3(cov: &[f64], field: &str) -> PyResult<[f64; 9]> {
+    <[f64; 9]>::try_from(cov).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{field} must have exactly 9 elements (3x3 row-major), got {}",
+            cov.len()
+        ))
+    })
+}
+
 /// IMU (Inertial Measurement Unit) sensor message
 ///
 /// Attributes:
 ///     accel_x, accel_y, accel_z: Linear acceleration in m/s²
 ///     gyro_x, gyro_y, gyro_z: Angular velocity in rad/s
 ///     qx, qy, qz, qw: Orientation as quaternion (w-last convention)
-///     orientation_covariance: 3x3 row-major list of 9 floats (-1 = no data)
-///     angular_velocity_covariance: 3x3 row-major list of 9 floats
-///     linear_acceleration_covariance: 3x3 row-major list of 9 floats
+///     orientation_covariance: 3x3 row-major list of exactly 9 floats (-1 = no data)
+///     angular_velocity_covariance: 3x3 row-major list of exactly 9 floats
+///     linear_acceleration_covariance: 3x3 row-major list of exactly 9 floats
+///         Assigning a list of any other length to a covariance raises ValueError.
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
@@ -394,30 +410,35 @@ impl PyImu {
     fn orientation_covariance(&self) -> Vec<f64> {
         self.inner.orientation_covariance.to_vec()
     }
+    /// Raises `ValueError` unless exactly 9 values are given.
     #[setter]
-    fn set_orientation_covariance(&mut self, cov: Vec<f64>) {
-        let len = cov.len().min(9);
-        self.inner.orientation_covariance[..len].copy_from_slice(&cov[..len]);
+    fn set_orientation_covariance(&mut self, cov: Vec<f64>) -> PyResult<()> {
+        self.inner.orientation_covariance = covariance_3x3(&cov, "orientation_covariance")?;
+        Ok(())
     }
 
     #[getter]
     fn angular_velocity_covariance(&self) -> Vec<f64> {
         self.inner.angular_velocity_covariance.to_vec()
     }
+    /// Raises `ValueError` unless exactly 9 values are given.
     #[setter]
-    fn set_angular_velocity_covariance(&mut self, cov: Vec<f64>) {
-        let len = cov.len().min(9);
-        self.inner.angular_velocity_covariance[..len].copy_from_slice(&cov[..len]);
+    fn set_angular_velocity_covariance(&mut self, cov: Vec<f64>) -> PyResult<()> {
+        self.inner.angular_velocity_covariance =
+            covariance_3x3(&cov, "angular_velocity_covariance")?;
+        Ok(())
     }
 
     #[getter]
     fn linear_acceleration_covariance(&self) -> Vec<f64> {
         self.inner.linear_acceleration_covariance.to_vec()
     }
+    /// Raises `ValueError` unless exactly 9 values are given.
     #[setter]
-    fn set_linear_acceleration_covariance(&mut self, cov: Vec<f64>) {
-        let len = cov.len().min(9);
-        self.inner.linear_acceleration_covariance[..len].copy_from_slice(&cov[..len]);
+    fn set_linear_acceleration_covariance(&mut self, cov: Vec<f64>) -> PyResult<()> {
+        self.inner.linear_acceleration_covariance =
+            covariance_3x3(&cov, "linear_acceleration_covariance")?;
+        Ok(())
     }
 
     #[getter]
