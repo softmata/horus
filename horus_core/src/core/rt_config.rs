@@ -700,6 +700,16 @@ mod tests {
         // Own thread: apply() mutates the caller's scheduling class, and on a
         // privileged box the rest of the suite must not inherit it.
         std::thread::spawn(|| {
+            // Capture the inherited state instead of assuming SCHED_OTHER: a
+            // spawned thread inherits the creating thread's policy and priority
+            // (pthread_create defaults to PTHREAD_INHERIT_SCHED), so a suite
+            // launched under `chrt -f` — which scripts/setup-realtime.sh grants
+            // this user — starts here on SCHED_FIFO. The invariant under test is
+            // "apply() left the scheduling state alone", not "the state is
+            // Normal", and hard-coding the latter fails the test on exactly the
+            // RT-capable box the feature exists for.
+            let before = RtConfig::get_current_scheduler().unwrap();
+
             let config = RtConfig::builder().scheduler(RtScheduler::Fifo).build();
             let result = config.apply().expect("apply() has no error path today");
 
@@ -718,13 +728,16 @@ mod tests {
                 degradations
             );
 
-            // And no policy change was attempted: this freshly spawned thread
-            // inherited SCHED_OTHER and is still on it.
-            let (policy, _) = RtConfig::get_current_scheduler().unwrap();
+            // And no policy change was attempted: both the policy and the RT
+            // priority are exactly what this thread inherited. Comparing the
+            // whole tuple is safe because nothing else in apply() issues
+            // sched_setscheduler/sched_setparam.
+            let after = RtConfig::get_current_scheduler().unwrap();
             assert_eq!(
-                policy,
-                RtScheduler::Normal,
-                "thread should still be SCHED_OTHER after a no-op RT config"
+                after, before,
+                "apply() changed the thread's scheduling state ({:?} -> {:?}) \
+                 for a config it reported as never applied",
+                before, after
             );
         })
         .join()
