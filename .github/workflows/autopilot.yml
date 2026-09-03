@@ -206,7 +206,14 @@ jobs:
           # help land changes to what executes inside CI with nobody reading
           # them. Excluding bot authors keeps this job out of that loop entirely;
           # dependabot's own workflow is unaffected either way.
-          # ONE PR per run, the oldest.
+          # A failed `gh pr list` prints nothing and exits non-zero, which
+          # without this reads as "the queue is empty": the job logs exactly
+          # that and reports success. Silent no-op is the worst failure mode for
+          # an unattended job — an auth expiry would be indistinguishable from a
+          # healthy queue while every PR starved.
+          set -euo pipefail
+
+          # ONE PR per run, the lowest-numbered.
           #
           # Updating every behind branch at once looks faster and is not: main
           # takes one merge at a time, and that merge puts every other branch
@@ -234,6 +241,22 @@ jobs:
 
           gh pr update-branch "$front" --repo "$GITHUB_REPOSITORY" \
             || echo "::warning::could not update #$front"
+
+          # Re-arm auto-merge. Updating a branch CLEARS it, and this job selects
+          # candidates BY auto-merge being enabled — so without this line every
+          # PR the convoy helps drops out of the convoy's own queue permanently
+          # and is never looked at again. That is the starvation this job exists
+          # to prevent, caused by the job.
+          #
+          # Measured on the live repo: `gh pr update-branch 124` left it
+          # `autoMergeRequest=null`, and seven PRs updated or pushed to earlier
+          # were all sitting disarmed (#98 #96 #107 #109 #121 #122 #123).
+          #
+          # Re-arming only restores the state the PR was selected for. It cannot
+          # arm a PR that did not already have auto-merge on, so the
+          # human-intent guard in the selection filter is unchanged.
+          gh pr merge "$front" --repo "$GITHUB_REPOSITORY" --auto --squash \
+            || echo "::warning::could not re-arm auto-merge on #$front"
 
           if [ "$total" -gt 1 ]; then
             # paste joins with a single separator and no trailing one; `tr`
