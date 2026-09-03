@@ -5922,6 +5922,25 @@ fn rt_nodes_joined_by_a_topic_are_reported_as_unordered() {
 
     // Roles are normally learned from real send/recv during ticks. Declare them
     // directly so the graph has edges without running the scheduler.
+    //
+    // `topic_node_registry()` is a process-wide singleton, so these two entries
+    // outlive the test unless something takes them out again — and a panicking
+    // assertion below must not be what leaves them behind, since the harness
+    // keeps running the other tests in this binary afterwards. Hence a guard
+    // that unregisters on drop rather than two calls at the end.
+    struct RegistryEntries {
+        topic: String,
+        nodes: [&'static str; 2],
+    }
+    impl Drop for RegistryEntries {
+        fn drop(&mut self) {
+            let tnr = crate::communication::topic_node_registry();
+            for node in self.nodes {
+                tnr.unregister(&self.topic, node);
+            }
+        }
+    }
+
     let tnr = crate::communication::topic_node_registry();
     tnr.register_with_type(
         &topic,
@@ -5935,6 +5954,10 @@ fn rt_nodes_joined_by_a_topic_are_reported_as_unordered() {
         crate::communication::topic::NodeTopicRole::Subscriber,
         "u64",
     );
+    let _registry_entries = RegistryEntries {
+        topic: topic.clone(),
+        nodes: ["rt_producer", "rt_consumer"],
+    };
 
     scheduler.build_dependency_graph();
 
