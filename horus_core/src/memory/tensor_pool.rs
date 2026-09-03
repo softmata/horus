@@ -492,6 +492,12 @@ impl TensorPool {
         }
 
         let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+        // The one path into a pool that took no lock. `new()` locks on both of
+        // its arms, so a pool with a live creator was protected and one whose
+        // creator had exited but whose consumers were still reading was not —
+        // and `reap_abandoned_files` reclaims exactly the unlocked files, so a
+        // 1 GB pool under active use could be unlinked out from under it.
+        hold_shared_lock(&file);
 
         let metadata = file.metadata()?;
         let total_size = metadata.len() as usize;
@@ -2893,6 +2899,49 @@ mod tests {
             .expect("allocate from the reclaimed pool");
         let _ = t;
         drop(pool);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A pool that a consumer has open is not abandoned.
+    ///
+    /// `open()` was the one way into a pool that took no `flock`; both arms of
+    /// `new()` take one. So a pool whose creator had exited while its consumers
+    /// were still reading looked exactly like a leaked file to
+    /// `is_shm_file_stale` — and `reap_abandoned_files` unlinks precisely the
+    /// files that test answers true for, which here is a gigabyte of live camera
+    /// or lidar data pulled out from under a running reader.
+    #[cfg(unix)]
+    #[test]
+    fn a_pool_a_consumer_has_open_is_not_reported_abandoned() {
+        let pool_id = 10106;
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+
+        let path = shm_base_dir()
+            .join("tensors")
+            .join(format!("tensor_pool_{}", pool_id));
+        let _ = std::fs::remove_file(&path);
+
+        // Create the pool, then let the creator go — the file outlives it,
+        // because `TensorPool::drop` deliberately unlinks nothing.
+        drop(TensorPool::new(pool_id, config).expect("create pool"));
+        assert!(
+            crate::memory::is_shm_file_stale(&path),
+            "precondition: with the creator gone and nobody else in, the file is unheld"
+        );
+
+        let consumer = TensorPool::open(pool_id).expect("open the existing pool");
+        assert!(
+            !crate::memory::is_shm_file_stale(&path),
+            "a pool this process has mapped through open() must read as held: the reaper \
+             deletes every unheld file older than an hour"
+        );
+
+        drop(consumer);
         let _ = std::fs::remove_file(&path);
     }
 

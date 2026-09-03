@@ -1347,6 +1347,21 @@ pub fn parse_namespace_sid(dir_name: &str) -> Option<(i32, u32)> {
     Some((sid, uid))
 }
 
+/// The uid that owns a directory, without following a symlink.
+///
+/// `None` when it cannot be answered — an unreadable entry, or a platform with
+/// no uids — and callers treat that as "not ours".
+#[cfg(unix)]
+fn dir_owner_uid(path: &std::path::Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|m| m.uid())
+}
+
+#[cfg(not(unix))]
+fn dir_owner_uid(_path: &std::path::Path) -> Option<u32> {
+    None
+}
+
 /// Check whether a session (by session leader PID) is still alive.
 ///
 /// Uses the same definition of "alive" as [`crate::process::ProcessHandle`]:
@@ -1426,6 +1441,8 @@ const REAP_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 /// A file is reclaimed only when BOTH hold: nobody has it open (the non-blocking
 /// `LOCK_EX` test in [`is_shm_file_stale`], the same last-one-out test
 /// `ShmRegion::drop` uses), and it is older than `REAP_MIN_AGE` (one hour).
+///
+/// Only the region subdirectories are walked — see `REGION_SUBDIRS`.
 #[cfg(unix)]
 pub fn reap_abandoned_files(namespace_path: &std::path::Path) -> NamespaceCleanupResult {
     let mut result = NamespaceCleanupResult {
@@ -1434,9 +1451,31 @@ pub fn reap_abandoned_files(namespace_path: &std::path::Path) -> NamespaceCleanu
         skipped: 0,
         errors: Vec::new(),
     };
-    reap_dir(namespace_path, &mut result);
+    for subdir in REGION_SUBDIRS {
+        reap_dir(&namespace_path.join(subdir), &mut result);
+    }
     result
 }
+
+/// The subdirectories of a namespace whose files carry an `flock` for as long as
+/// a live process is using them — the only places where "nobody holds a lock"
+/// may be read as "abandoned".
+///
+/// `ShmRegion::new`/`open` (topics) and `TensorPool` (tensors) take `LOCK_SH`
+/// for the life of the handle. Nothing else under a namespace does: the
+/// `logs`/`error_logs`/`remote_logs` buffers and the `scheduler/<name>`
+/// registries are plain `mmap`s with no lock at all, `nodes/<node>.json`
+/// presence files and `topics/<name>.meta` sidecars are plain writes, and every
+/// one of them belongs to a process that may have been running for days.
+/// Reaping the whole namespace tree on "unlocked" would delete a live robot's
+/// log buffer, its scheduler registry and the presence file of every node up
+/// longer than `REAP_MIN_AGE` — `horus list` and `horus logs` would go blank on
+/// a healthy machine. Those files are a few hundred bytes each and have their
+/// own PID-based reclamation; the gigabytes are all in `topics/` and `tensors/`
+/// (measured: 1.0 GB per tensor pool, 7.8 GB resident across 52 abandoned
+/// namespaces on a 31 GB tmpfs).
+#[cfg(unix)]
+const REGION_SUBDIRS: [&str; 2] = ["topics", "tensors"];
 
 #[cfg(unix)]
 fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
@@ -1452,6 +1491,14 @@ fn reap_dir(dir: &std::path::Path, result: &mut NamespaceCleanupResult) {
             continue;
         }
         if !path.is_file() {
+            continue;
+        }
+        // A topic's `.meta` sidecar sits beside the region it describes and is
+        // never held open by anyone, so the `flock` test below reports "nobody
+        // has it" about a live topic's metadata. `remove_topic_meta` clears
+        // these; only the region itself carries the lock this decision rests on.
+        if path.extension().is_some_and(|e| e == "meta") {
+            result.skipped += 1;
             continue;
         }
         let meta = match entry.metadata() {
@@ -1500,14 +1547,37 @@ pub fn reap_abandoned_files(_namespace_path: &std::path::Path) -> NamespaceClean
     }
 }
 
-/// Scan the SHM parent directory and remove stale HORUS namespace directories.
+/// Scan the SHM parent directory and reclaim what previous runs left behind.
 ///
-/// A namespace is considered stale when:
-/// 1. Name matches `horus_sid{N}_uid{N}` (auto-generated, not custom)
-/// 2. UID matches the current user
-/// 3. Session is no longer alive
-/// 4. It's not the current process's namespace
+/// A `horus_sid{N}_uid{N}` directory — the session-keyed shape — is removed
+/// whole when the uid is ours and `session_alive(sid)` is false. Every other
+/// `horus_*` directory we own, including our own namespace, keeps its directory
+/// and gets [`reap_abandoned_files`] instead: nothing in such a name says
+/// whether the process that made it is still running, so each region inside is
+/// judged on its own `flock`.
 pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
+    #[cfg(unix)]
+    let current_uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let current_uid = crate::process::user_id() as u32;
+
+    cleanup_stale_namespaces_in(
+        &shm_parent_dir(),
+        &format!("horus_{}", shm_namespace()),
+        current_uid,
+    )
+}
+
+/// The scan itself, against an explicit parent directory.
+///
+/// Split out so it is testable: the real parent is `/dev/shm`, shared with
+/// every other HORUS process on the machine, so a test that planted victims
+/// there would be racing them.
+fn cleanup_stale_namespaces_in(
+    parent: &std::path::Path,
+    current_ns: &str,
+    current_uid: u32,
+) -> NamespaceCleanupResult {
     let mut result = NamespaceCleanupResult {
         removed: 0,
         bytes_freed: 0,
@@ -1515,19 +1585,11 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
         errors: Vec::new(),
     };
 
-    let parent = shm_parent_dir();
     if !parent.exists() {
         return result;
     }
 
-    let current_ns = format!("horus_{}", shm_namespace());
-
-    #[cfg(unix)]
-    let current_uid = unsafe { libc::getuid() };
-    #[cfg(not(unix))]
-    let current_uid = crate::process::user_id() as u32;
-
-    let entries = match std::fs::read_dir(&parent) {
+    let entries = match std::fs::read_dir(parent) {
         Ok(e) => e,
         Err(e) => {
             result
@@ -1540,7 +1602,23 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
     for entry in entries.flatten() {
         let dir_name = entry.file_name().to_string_lossy().to_string();
 
-        if !dir_name.starts_with("horus_sid") {
+        // `horus_`, not `horus_sid`. `generate_namespace` produces `default`,
+        // `test_<hash>` or a sanitized `HORUS_NAMESPACE`, never the
+        // `sid{N}_uid{N}` shape `process::namespace_id()` makes — that function
+        // has had no non-test caller since the flat-namespace model. So every
+        // real namespace hit this `continue`, and with it the
+        // `dir_name == current_ns` arm below: the reaper never ran once, on any
+        // machine, and abandoned regions accumulated until the tmpfs filled
+        // (measured 7.8 GB across 52 namespaces on a 31 GB /dev/shm).
+        if !dir_name.starts_with("horus_") {
+            continue;
+        }
+
+        // `file_type` comes from the `readdir` entry, so this is an lstat and a
+        // symlink is rejected rather than followed. /dev/shm is mode 1777: any
+        // local user can plant `horus_x -> /home/us/anything` and have us reap
+        // through it.
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
 
@@ -1558,6 +1636,18 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
         let (uid, alive) = if let Some((sid, uid)) = parse_namespace_sid(&dir_name) {
             (uid, session_alive(sid))
         } else {
+            // A namespace with no session in its name — which is every
+            // namespace `generate_namespace` produces. There is nothing here to
+            // prove the owning process is gone, so the directory stays and only
+            // its unheld, hour-old regions go. Ownership is taken from the
+            // filesystem rather than the name, which for these directories
+            // carries no uid.
+            if dir_owner_uid(&entry.path()) == Some(current_uid) {
+                let reaped = reap_abandoned_files(&entry.path());
+                result.removed += reaped.removed;
+                result.bytes_freed += reaped.bytes_freed;
+                result.errors.extend(reaped.errors);
+            }
             result.skipped += 1;
             continue;
         };
@@ -1731,6 +1821,10 @@ mod tests {
     /// `flock` alone would race the window between `open(O_CREAT)` and `flock` in
     /// `ShmRegion::new`, where a brand-new region looks unlocked; age alone would
     /// delete a region that has simply been idle for an hour.
+    ///
+    /// The two survivors outside `topics/` are the third guard: they are old and
+    /// unlocked too, and are written by processes that never lock them, so the
+    /// `flock` test says nothing about them — see `REGION_SUBDIRS`.
     #[test]
     #[cfg(unix)]
     fn reap_takes_only_old_and_unheld_files() {
@@ -1738,18 +1832,30 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("horus_reap_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create test namespace dir");
+        let topics = dir.join("topics");
+        std::fs::create_dir_all(&topics).expect("create test namespace dir");
+        std::fs::create_dir_all(dir.join("nodes")).expect("create nodes dir");
 
-        let old_free = dir.join("old_and_free");
-        let fresh_free = dir.join("fresh_and_free");
-        let old_held = dir.join("old_but_held");
-        for p in [&old_free, &fresh_free, &old_held] {
+        let old_free = topics.join("old_and_free");
+        let fresh_free = topics.join("fresh_and_free");
+        let old_held = topics.join("old_but_held");
+        let old_meta = topics.join("old_and_free.meta");
+        let old_presence = dir.join("nodes").join("live_node.json");
+        let old_logs = dir.join("logs");
+        for p in [
+            &old_free,
+            &fresh_free,
+            &old_held,
+            &old_meta,
+            &old_presence,
+            &old_logs,
+        ] {
             std::fs::write(p, b"x").expect("plant file");
         }
 
-        // Backdate the two "old" files two hours.
+        // Backdate everything but the one file whose youth is the point.
         let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-        for p in [&old_free, &old_held] {
+        for p in [&old_free, &old_held, &old_meta, &old_presence, &old_logs] {
             let f = std::fs::File::options()
                 .write(true)
                 .open(p)
@@ -1781,6 +1887,19 @@ mod tests {
             old_held.exists(),
             "a region a process still holds LOCK_SH on must survive at any age"
         );
+        assert!(
+            old_meta.exists(),
+            "a topic's .meta sidecar is never locked by anyone — unlocked does not mean abandoned"
+        );
+        assert!(
+            old_presence.exists(),
+            "a node presence file is a plain write with no lock; reaping it would empty \
+             `horus list` for a node that has simply been up for an hour"
+        );
+        assert!(
+            old_logs.exists(),
+            "the log buffer is an unlocked mmap its writer holds for the life of the process"
+        );
         assert_eq!(
             result.removed, 1,
             "exactly one file should have been reaped"
@@ -1788,6 +1907,90 @@ mod tests {
 
         drop(holder);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The scan must fire for the namespace shapes `generate_namespace` really
+    /// produces.
+    ///
+    /// It filtered on a `horus_sid` prefix — the shape `process::namespace_id()`
+    /// makes, which no code path has fed to `shm_base_dir` since the
+    /// flat-namespace model — so `horus_default` and `horus_test_<hash>` both hit
+    /// the `continue`, taking the in-namespace reaper below it with them. Nothing
+    /// was ever reclaimed on any machine; measured 7.8 GB resident across 52
+    /// abandoned namespaces on a 31 GB tmpfs.
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_reaps_the_namespace_shapes_generate_namespace_produces() {
+        // SAFETY: getuid() cannot fail and touches no memory.
+        let current_uid = unsafe { libc::getuid() };
+
+        let root = std::env::temp_dir().join(format!("horus_scan_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        let plant = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().expect("planted file has a parent"))
+                .expect("create planted dir");
+            std::fs::write(&path, b"x").expect("plant file");
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open to set time");
+            f.set_modified(two_hours_ago).expect("backdate");
+            path
+        };
+
+        // The two shapes `generate_namespace` returns: the fixed `default` and a
+        // test binary's `test_<hash>`. Neither carries a session id.
+        let in_ours = plant("horus_default/topics/abandoned_region");
+        let in_another = plant("horus_test_0123456789abcdef/topics/abandoned_region");
+        // Live-but-unlocked metadata in our own namespace.
+        let presence = plant("horus_default/nodes/live_node.json");
+        // A dead session, which is removed whole rather than reaped.
+        let sid_ns = root.join(format!("horus_sid99999999_uid{current_uid}"));
+        plant(&format!(
+            "horus_sid99999999_uid{current_uid}/topics/abandoned_region"
+        ));
+        // Not a HORUS namespace at all.
+        let outsider = plant("iox2_something/topics/abandoned_region");
+
+        let result = cleanup_stale_namespaces_in(&root, "horus_default", current_uid);
+
+        assert!(
+            !in_ours.exists(),
+            "an abandoned region in our own namespace must be reaped: this is the case the \
+             `horus_sid` filter silently disabled, and `horus_default`/`horus_test_*` are \
+             the only namespaces that exist"
+        );
+        assert!(
+            !in_another.exists(),
+            "an abandoned region in another build's namespace must be reaped too"
+        );
+        assert!(
+            root.join("horus_default").is_dir()
+                && root.join("horus_test_0123456789abcdef").is_dir(),
+            "a namespace with no session in its name says nothing about whether its owner is \
+             alive, so only its regions go — never the directory"
+        );
+        assert!(
+            presence.exists(),
+            "a presence file is unlocked whether or not its node is running"
+        );
+        assert!(
+            !sid_ns.exists(),
+            "a session-keyed namespace whose session is dead is still removed whole"
+        );
+        assert!(
+            outsider.exists(),
+            "a non-HORUS directory must not be touched"
+        );
+        assert_eq!(
+            result.removed, 3,
+            "two reaped regions and one removed namespace: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     use super::*;
