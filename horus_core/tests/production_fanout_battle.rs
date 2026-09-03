@@ -1880,11 +1880,33 @@ fn fault_shm_magic_corruption_rejected() {
     //
     // A SIGSEGV — the regression this test was first written for — kills the
     // process before this line, so that contract is still covered too.
+    let err = match Topic::<u64>::new(&name) {
+        Ok(_) => panic!(
+            "Topic::new adopted {}, whose magic is 0xDEADBEEFCAFEBABE; a joiner must \
+             refuse a header it does not recognise, not reinitialize it into one \
+             that looks healthy",
+            orphan.display()
+        ),
+        Err(e) => e.to_string(),
+    };
+
+    // Pin the rejection to the mechanism, not just to `is_err()`. Anything that
+    // makes the region unopenable — a mode or ownership change on the file, an
+    // mmap or flock failure, ENOSPC inside `ShmRegion::new` — errors out before
+    // `negotiate_shm_header` is ever reached, and would satisfy a bare
+    // `is_err()` on a run where the joiner path never executed and the
+    // corruption was therefore never judged. The one error this test is about
+    // is the joiner waiting out the header-init deadline for an owner that is
+    // dead and will never stamp the magic. That string is the observable end of
+    // the branch at horus_core/src/communication/topic/mod.rs:1126-1146; if
+    // that branch is ever reworked to refuse an unrecognised header without
+    // waiting — a fine change — this expectation is what tells you to update
+    // the test rather than letting it quietly stop testing anything.
     assert!(
-        Topic::<u64>::new(&name).is_err(),
-        "Topic::new adopted {}, whose magic is 0xDEADBEEFCAFEBABE; a joiner must \
-         refuse a header it does not recognise, not reinitialize it into one \
-         that looks healthy",
+        err.contains("Timeout waiting for topic header initialization"),
+        "Topic::new on {} was refused, but not by the joiner header-init timeout \
+         that magic rejection goes through — so nothing here exercised the \
+         corruption path and this run proves nothing. Got: {err}",
         orphan.display()
     );
 
