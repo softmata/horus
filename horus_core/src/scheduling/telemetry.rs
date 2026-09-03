@@ -273,15 +273,21 @@ impl TelemetryManager {
     }
 
     /// Export to local file
+    ///
+    /// Every error names the path it was writing. The scheduler reports this
+    /// string and nothing else in that line says where the export was going —
+    /// "Permission denied (os error 13)" on its own is not something an
+    /// operator can act on.
     fn export_to_file(&self, path: &PathBuf, snapshot: &TelemetrySnapshot) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {}", parent.display(), e))?;
         }
 
         let json = serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string())?;
 
-        let mut file = File::create(path).map_err(|e| e.to_string())?;
-        file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+        let mut file = File::create(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("{}: {}", path.display(), e))?;
 
         Ok(())
     }
@@ -293,11 +299,17 @@ impl TelemetryManager {
 
             socket
                 .send_to(json.as_bytes(), addr)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("{}: {}", addr, e))?;
 
             Ok(())
         } else {
-            Err("UDP socket not initialized".to_string())
+            // `new()` computes `enabled` before it binds, so a bind that failed
+            // (EMFILE under fd exhaustion is the realistic one) leaves an
+            // endpoint that reports itself as live and fails every export.
+            Err(format!(
+                "UDP socket not initialized at startup, cannot send to {}",
+                addr
+            ))
         }
     }
 

@@ -3434,6 +3434,59 @@ fn test_telemetry_builder() {
     );
 }
 
+/// A telemetry endpoint the process cannot write must say so — on both the
+/// periodic path and the final export.
+///
+/// Both callers used to be `let _ = tm.export()`, and `export()` advances
+/// `last_export` whether or not the snapshot landed, so a `file://` endpoint
+/// pointing somewhere unwritable failed on every interval for the life of the
+/// process with no diagnostic on any surface — under the
+/// "[SCHEDULER] Telemetry enabled (endpoint: ...)" line printed at startup.
+#[test]
+fn telemetry_export_failures_reach_the_log() {
+    let _guard = lock_scheduler();
+
+    // A regular file where the exporter needs a directory: `create_dir_all`
+    // then fails on every export with "File exists (os error 17)". That is
+    // deterministic, and it does not depend on the test user's permissions the
+    // way an unwritable directory would (a suite running as root can write
+    // through mode 0o555).
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let blocker = temp_dir.path().join("not-a-directory");
+    std::fs::write(&blocker, b"").unwrap();
+    let endpoint = format!("file://{}/metrics.json", blocker.display());
+
+    let first_unread = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .telemetry(&endpoint);
+    scheduler.add(CounterNode::new("telemetry_probe")).build();
+
+    // Longer than the 1000 ms export interval, so the periodic export runs at
+    // least once before `finalize_run` performs the final one.
+    scheduler.run_for(1400_u64.ms()).unwrap();
+
+    let reported: Vec<String> = crate::core::log_buffer::GLOBAL_LOG_BUFFER
+        .get_since(first_unread)
+        .into_iter()
+        .map(|entry| entry.message)
+        .filter(|message| message.contains("[TELEMETRY]"))
+        .collect();
+
+    assert!(
+        reported
+            .iter()
+            .any(|m| m.contains("Export failed") && m.contains("not-a-directory")),
+        "the periodic export must report the failure and name the path it could \
+         not write; telemetry lines seen: {reported:?}"
+    );
+    assert!(
+        reported.iter().any(|m| m.contains("Final export failed")),
+        "the shutdown export must report its failure too; telemetry lines seen: {reported:?}"
+    );
+}
+
 // ============================================================================
 // Error path and negative tests
 // ============================================================================

@@ -3756,7 +3756,33 @@ impl Scheduler {
                 }
                 drop(profiler);
 
-                let _ = tm.export();
+                // This was `let _ = tm.export()`. Every failure mode returns a
+                // precise string — an unwritable `file://` path, a UDP socket
+                // that never bound, an HTTP export thread that has exited — and
+                // discarding it left no surface anywhere saying the metrics
+                // were not arriving. `TelemetryManager::export` advances
+                // `last_export` whether or not the snapshot landed, so a broken
+                // endpoint quietly reschedules itself for the life of the
+                // process, under the "[SCHEDULER] Telemetry enabled (endpoint:
+                // ...)" line printed at startup that nothing ever corrected.
+                //
+                // Reported through `hlog!` rather than the `log::` facade the
+                // HTTP export thread uses: `log::` reaches an operator only if
+                // something installed a logger, and only the CLI does
+                // (`try_init_log_bridge` in horus_manager). A robot binary
+                // running its own `Scheduler` — what `horus run` executes as a
+                // subprocess — has no logger, so `log::warn!` there is a no-op.
+                // `hlog!` writes to the shared log buffer (`horus log`,
+                // `horus monitor`) and the console unconditionally.
+                //
+                // Not throttled: `should_export()` already gates this to one
+                // call per export interval (1000 ms wherever a manager is
+                // constructed), so a permanently broken endpoint costs one line
+                // per second — the rate an RT deadline miss is already allowed
+                // (`DiagThrottle::WINDOW_NS`).
+                if let Err(e) = tm.export() {
+                    crate::hlog!(warn, "[TELEMETRY] Export failed: {}", e);
+                }
             }
         }
     }
@@ -4079,7 +4105,13 @@ impl Scheduler {
         if let Some(ref mut tm) = self.monitor.telemetry {
             tm.counter("scheduler_ticks", total_ticks);
             tm.gauge("scheduler_shutdown", 1.0);
-            let _ = tm.export();
+            // Reported for the same reason as the periodic export (see
+            // `periodic_monitoring`), and for the same reason the blackbox save
+            // nine lines above reports its failure: this is the run's last
+            // chance to say the metrics never landed.
+            if let Err(e) = tm.export() {
+                crate::hlog!(warn, "[TELEMETRY] Final export failed: {}", e);
+            }
         }
 
         // Print timing report if profiling enabled and ticks were executed
