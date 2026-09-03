@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use crate::types::{OccupancyGridDescriptor, TensorDtype};
 
+use super::grid_transform;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -204,17 +205,18 @@ impl OccupancyGrid {
         // range and looked entirely plausible, which for a costmap means a
         // planner confidently avoids the wrong places.
         //
-        // theta == 0 short-circuits to the original arithmetic, so unrotated
-        // maps -- the overwhelmingly common case, and every existing test --
-        // are bit-identical and pay nothing.
-        let (dx, dy) = (x - self.origin_x(), y - self.origin_y());
-        let theta = self.origin_theta();
-        let (rx, ry) = if theta == 0.0 {
-            (dx, dy)
-        } else {
-            let (sin_t, cos_t) = theta.sin_cos();
-            (dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
-        };
+        // `grid_transform` holds the one copy of this arithmetic shared with
+        // the other grid type, short-circuits theta == 0 to the original
+        // translation (so unrotated maps are bit-identical and pay nothing),
+        // and returns None rather than a NaN that `as i32` would saturate
+        // into a plausible cell (0, 0).
+        let (rx, ry) = grid_transform::world_to_map(
+            self.origin_x(),
+            self.origin_y(),
+            self.origin_theta(),
+            x,
+            y,
+        )?;
         let grid_x = (rx / res + EPSILON).floor() as i32;
         let grid_y = (ry / res + EPSILON).floor() as i32;
 
@@ -234,17 +236,18 @@ impl OccupancyGrid {
         if grid_x < self.width() && grid_y < self.height() {
             // Cell centre in the map frame, rotated INTO the world frame by
             // `origin_theta` and then translated. Exact inverse of
-            // `world_to_grid`, including the theta == 0 short-circuit.
+            // `world_to_grid` -- they share one implementation so they cannot
+            // drift apart -- including the theta == 0 short-circuit and the
+            // refusal of a non-finite origin.
             let mx = (grid_x as f64 + 0.5) * self.resolution() as f64;
             let my = (grid_y as f64 + 0.5) * self.resolution() as f64;
-            let theta = self.origin_theta();
-            let (ox, oy) = if theta == 0.0 {
-                (mx, my)
-            } else {
-                let (sin_t, cos_t) = theta.sin_cos();
-                (mx * cos_t - my * sin_t, mx * sin_t + my * cos_t)
-            };
-            Some((self.origin_x() + ox, self.origin_y() + oy))
+            grid_transform::map_to_world(
+                self.origin_x(),
+                self.origin_y(),
+                self.origin_theta(),
+                mx,
+                my,
+            )
         } else {
             None
         }
@@ -509,5 +512,30 @@ mod origin_theta_tests {
         assert!((wx - 6.5 * res).abs() < 1e-12, "x drifted: {wx}");
         assert!((wy - 2.5 * res).abs() < 1e-12, "y drifted: {wy}");
         assert_eq!(m.world_to_grid(wx, wy), Some((6, 2)));
+    }
+
+    /// A non-finite `origin_theta` must refuse the lookup, not answer it.
+    ///
+    /// `origin_theta` arrives in a Pod descriptor that travels through shared
+    /// memory, so any f64 bit pattern is reachable. `sin_cos()` on NaN is NaN,
+    /// and `(NaN.floor() as i32)` saturates to 0 -- so before the guard this
+    /// returned `Some((0, 0))`: in range, plausible, and wrong for every query
+    /// point on the map.
+    #[test]
+    fn non_finite_origin_theta_refuses_the_lookup() {
+        for theta in [f64::NAN, f64::INFINITY] {
+            let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+            m.set_origin(1.0, -2.0, theta);
+            assert_eq!(
+                m.world_to_grid(1.0, -2.0),
+                None,
+                "theta {theta} must not yield a cell"
+            );
+            assert_eq!(
+                m.grid_to_world(4, 4),
+                None,
+                "theta {theta} must not yield a world point"
+            );
+        }
     }
 }
