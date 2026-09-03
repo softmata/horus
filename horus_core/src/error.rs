@@ -259,7 +259,13 @@ pub enum NodeError {
     #[error("Node '{node}' init failed: {reason}")]
     InitFailed { node: String, reason: String },
 
-    /// Node `tick()` returned an error.
+    /// A node's per-tick work failed.
+    ///
+    /// The scheduler never produces this: [`Node::tick`](crate::core::Node::tick) returns
+    /// `()`, so a tick body has no error channel, and a panic inside one is caught and
+    /// surfaces as [`HorusError::Internal`] out of `Scheduler::tick_once()`. The variant
+    /// is for code that drives a fallible per-tick step of its own — a bridge, a driver
+    /// poll — and wants the failure attributed to a named node.
     #[error("Node '{node}' tick failed: {reason}")]
     TickFailed { node: String, reason: String },
 
@@ -1123,7 +1129,7 @@ impl HorusError {
             Self::Node(NodeError::InitFailed { .. }) =>
                 Some("Node initialization returned an error. Check node logs for details. Run: horus log -n <node_name>"),
             Self::Node(NodeError::TickFailed { .. }) =>
-                Some("Node tick() returned an error. Check node logs for details. Run: horus log -n <node_name>"),
+                Some("A node's per-tick work reported a failure. Check node logs for details. Run: horus log -n <node_name>"),
 
             // === NotFound ===
             Self::NotFound(NotFoundError::Frame { .. } | NotFoundError::ParentFrame { .. }) =>

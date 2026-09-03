@@ -2285,9 +2285,22 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// - [`NodeError::InitPanic`] — a node panicked during first-call `init()`
-    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
-    /// - [`NodeError::TickFailed`] — a node's `tick()` returned an error
+    /// - [`ValidationError::InvalidValue`](crate::error::ValidationError::InvalidValue) —
+    ///   two nodes were added under the same name. Recorded by `build()`, reported here.
+    /// - [`ResourceError::Unsupported`](crate::error::ResourceError::Unsupported) —
+    ///   `require_rt()` was set and real-time could not be fully acquired.
+    /// - [`HorusError::Internal`](crate::error::HorusError::Internal) `"Fatal node failure during
+    ///   tick_once"` — a node's `tick()` panicked and its failure policy said stop, or an
+    ///   RT budget/deadline policy escalated to an emergency stop.
+    /// - [`HorusError::Internal`](crate::error::HorusError::Internal) `"Emergency stop triggered
+    ///   during tick_once"` — a safety monitor latched during this tick (watchdog expiry,
+    ///   external e-stop). The robot needs safing; this is not a retryable tick error.
+    ///
+    /// A failing `init()` is **not** in that list. The scheduler prints the error and
+    /// leaves the node in its error state (at fatal severity it also stops the scheduler),
+    /// so `Ok(())` here does not mean every node initialized. Nor can a node's tick body
+    /// report an error: [`Node::tick`](crate::core::Node::tick) returns `()`, and a panic
+    /// inside it is caught and routed through the node's failure policy above.
     ///
     /// # Example
     /// ```rust,ignore
@@ -2503,10 +2516,19 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// - [`NodeError::InitPanic`] — a node panicked during `init()`
-    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
-    /// - [`ResourceError::Unsupported`] — `require_rt()` was set but RT is unavailable
-    /// - [`ConfigError`] — invalid scheduler configuration detected during finalization
+    /// - [`ValidationError::InvalidValue`](crate::error::ValidationError::InvalidValue) —
+    ///   two nodes were added under the same name. Recorded by `build()`, reported here.
+    /// - [`ResourceError::Unsupported`](crate::error::ResourceError::Unsupported) —
+    ///   `require_rt()` was set and real-time could not be fully acquired.
+    /// - [`HorusError::Contextual`](crate::error::HorusError::Contextual) — the scheduler's tokio
+    ///   runtime could not be created.
+    ///
+    /// Everything else the loop meets is handled in-place, so `Ok(())` is the return for
+    /// an ordinary shutdown *and* for an abnormal one: a failing `init()` is printed and
+    /// the node left in its error state, and an emergency stop (watchdog expiry, external
+    /// e-stop, Ctrl+C) breaks the loop and shuts down cleanly rather than erroring. Drive
+    /// the loop with [`tick_once()`](Self::tick_once) instead if the caller needs an
+    /// emergency stop reported as an `Err`.
     pub fn run(&mut self) -> HorusResult<()> {
         self.run_with_filter(None, None)
     }

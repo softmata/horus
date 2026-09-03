@@ -5860,3 +5860,172 @@ fn a_zero_copy_publisher_is_attributed_under_a_real_scheduler() {
          (none)\""
     );
 }
+
+// ============================================================================
+// Error-contract Tests
+// ============================================================================
+
+/// The `# Errors` section of the doc comment attached to `signature`, taken from
+/// the scheduler source itself.
+///
+/// Panics if the text between the `# Errors` heading and the signature contains
+/// anything but doc lines and attributes — that would mean the heading belongs
+/// to an earlier item and the caller is asserting against the wrong function.
+fn errors_section(signature: &str) -> &'static str {
+    const SOURCE: &str = include_str!("mod.rs");
+    assert_eq!(
+        SOURCE.matches(signature).count(),
+        1,
+        "`{signature}` must occur exactly once in scheduler/mod.rs for this test to \
+         know which doc block it is reading"
+    );
+    let sig_at = SOURCE.find(signature).expect("signature counted above");
+    let errors_at = SOURCE[..sig_at]
+        .rfind("/// # Errors")
+        .unwrap_or_else(|| panic!("`{signature}` has no `# Errors` section"));
+    let section = &SOURCE[errors_at..sig_at];
+    for line in section.lines() {
+        let trimmed = line.trim_start();
+        assert!(
+            trimmed.is_empty() || trimmed.starts_with("///") || trimmed.starts_with("#["),
+            "the `# Errors` heading nearest `{signature}` is not part of its doc block \
+             (stray line: {line:?})"
+        );
+    }
+    section
+}
+
+/// `tick_once()`'s `# Errors` list is public API — `Scheduler` is in
+/// `horus::prelude` and a caller writes their `match` arms from it. It used to
+/// name `InitPanic`, `InitFailed` and `TickFailed`, none of which the function
+/// can return: `initialize_filtered_nodes()` prints every init error and returns
+/// `()`, and `Node::tick` is `fn tick(&mut self);`, so `TickFailed` has no
+/// producer anywhere in the crate. The errors it does return — including the one
+/// that means the emergency stop fired — were undocumented, so following that
+/// list gave you three dead arms and a silent fallthrough on the e-stop.
+///
+/// Prose has no compiler, so this is the check.
+#[test]
+fn test_tick_once_errors_doc_lists_only_reachable_errors() {
+    let section = errors_section("pub fn tick_once(&mut self)");
+
+    for unreachable in ["InitPanic", "InitFailed", "TickFailed"] {
+        assert!(
+            !section.contains(unreachable),
+            "`tick_once()` documents `{unreachable}`, which it cannot return.\n{section}"
+        );
+    }
+
+    for real in [
+        "ValidationError::InvalidValue",
+        "ResourceError::Unsupported",
+        "Fatal node failure",
+        "Emergency stop triggered",
+    ] {
+        assert!(
+            section.contains(real),
+            "`tick_once()` returns `{real}` and does not document it.\n{section}"
+        );
+    }
+}
+
+/// Same defect in `run()`'s list: two unreachable init variants plus a
+/// `ConfigError` that nothing on the `run()` path constructs, while the
+/// duplicate-node-name error it really returns (pinned by
+/// `test_duplicate_node_names_are_refused`) was missing.
+#[test]
+fn test_run_errors_doc_lists_only_reachable_errors() {
+    let section = errors_section("pub fn run(&mut self)");
+
+    for unreachable in ["InitPanic", "InitFailed", "ConfigError"] {
+        assert!(
+            !section.contains(unreachable),
+            "`run()` documents `{unreachable}`, which it cannot return.\n{section}"
+        );
+    }
+
+    for real in [
+        "ValidationError::InvalidValue",
+        "ResourceError::Unsupported",
+    ] {
+        assert!(
+            section.contains(real),
+            "`run()` returns `{real}` and does not document it.\n{section}"
+        );
+    }
+}
+
+/// The behaviour the doc above now claims, asserted against the real scheduler so
+/// the two cannot drift apart: a failed `init()` does not reach the caller, and a
+/// duplicate node name reaches it as `InvalidValue { field: "node name" }`.
+#[test]
+fn test_tick_once_error_contract_matches_behavior() {
+    let _guard = lock_scheduler();
+
+    struct FailingInitNode;
+    impl Node for FailingInitNode {
+        fn name(&self) -> &str {
+            "contract_bad_init"
+        }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            Err(crate::HorusError::Node(
+                crate::error::NodeError::InitFailed {
+                    node: "contract_bad_init".to_string(),
+                    reason: "deliberate".to_string(),
+                },
+            ))
+        }
+        fn tick(&mut self) {}
+    }
+
+    let mut scheduler = Scheduler::new();
+    scheduler.add(FailingInitNode).order(0).build();
+    assert!(
+        scheduler.tick_once().is_ok(),
+        "an init() failure is reported by log line and node state, never by tick_once()"
+    );
+
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(CounterNode::new("contract_dup"))
+        .order(0)
+        .build();
+    scheduler
+        .add(CounterNode::new("contract_dup"))
+        .order(1)
+        .build();
+    let err = scheduler
+        .tick_once()
+        .expect_err("a duplicate node name must fail the tick");
+    assert!(
+        matches!(
+            err,
+            crate::error::HorusError::InvalidInput(
+                crate::error::ValidationError::InvalidValue { ref field, .. }
+            ) if field == "node name"
+        ),
+        "expected the documented InvalidValue {{ field: \"node name\" }}, got: {err:?}"
+    );
+
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(PanickingNode::new(
+            "contract_fatal",
+            0,
+            Arc::new(AtomicUsize::new(0)),
+        ))
+        .order(0)
+        .failure_policy(FailurePolicy::Fatal)
+        .build();
+    let err = scheduler
+        .tick_once()
+        .expect_err("a fatal node failure must fail the tick");
+    assert!(
+        matches!(
+            err,
+            crate::error::HorusError::Internal { ref message, .. }
+                if message.contains("Fatal node failure")
+        ),
+        "expected the documented Internal(\"Fatal node failure during tick_once\"), got: {err:?}"
+    );
+}
