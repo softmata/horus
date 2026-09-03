@@ -970,6 +970,38 @@ fn stall_line(silent: Duration, zero_reading: &str, cause: StallCause) -> String
     }
 }
 
+/// A stall line placed on top of the frozen in-place figure, for a tty.
+///
+/// `\r` returns to the start of the row the live readout was updating in
+/// place, and `\x1b[K` erases the rest of that row before the newline commits
+/// it. Trailing spaces cannot do that job: the line being overwritten has no
+/// bounded width — `--window` is an unbounded `usize` and the rate/bandwidth
+/// figure grows with the traffic — and `topic bw`'s in-place row is wider than
+/// any stall line to begin with:
+///
+/// ```text
+///   Bandwidth: 3.75 KB/s (97.8 msgs/s, avg 38 B/msg, window: 100)     67 columns
+///   ! 0.00 B/s (no new messages for 2.0s)                             43 columns
+/// ```
+///
+/// Padded to 43 columns, that stall line left the last 24 columns of the dead
+/// publisher's figures standing on the same row, and the newline then committed
+/// the hybrid to the scrollback:
+///
+/// ```text
+///   ! 0.00 B/s (no new messages for 2.0s)     B/msg, window: 100)
+/// ```
+///
+/// (Captured off a real pty: publisher at 100 Hz under `topic bw`, SIGKILLed.)
+/// A dead publisher's figures still on screen beside the stall report is the
+/// defect this whole change exists to remove.
+fn tty_stall_row(icon: impl std::fmt::Display, line: &str) -> String {
+    // `impl Display`, not `&str`: `ColoredString` derefs to the *uncoloured*
+    // inner text, so taking `&str` here would silently strip the yellow off
+    // the warning icon.
+    format!("\r  {icon} {line}\x1b[K")
+}
+
 /// Measure topic publish rate
 pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     use horus_core::communication::read_topic_messages_total;
@@ -1097,10 +1129,7 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
             };
             let line = stall_line(silent, "0.00 Hz", cause);
             if is_tty {
-                // The leading \r and the trailing padding overwrite the
-                // in-place rate line this replaces; it is longer than that
-                // line, so none of the stale figure survives.
-                println!("\r  {} {}    ", cli_output::ICON_WARN.yellow(), line);
+                println!("{}", tty_stall_row(cli_output::ICON_WARN.yellow(), &line));
             } else {
                 println!("  {} {}", cli_output::ICON_WARN, line);
             }
@@ -1272,7 +1301,7 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
             // the way `hz` can.
             let line = stall_line(silent, "0.00 B/s", StallCause::NoMessages);
             if is_tty {
-                println!("\r  {} {}    ", cli_output::ICON_WARN.yellow(), line);
+                println!("{}", tty_stall_row(cli_output::ICON_WARN.yellow(), &line));
             } else {
                 println!("  {} {}", cli_output::ICON_WARN, line);
             }
@@ -1929,6 +1958,88 @@ mod stall_watch_tests {
                 StallCause::CounterUnreadable
             ),
             "0.00 Hz (topic counter unreadable for 5.0s)"
+        );
+    }
+
+    /// The terminal behaviour `tty_stall_row` depends on: `\r` homes the
+    /// cursor, printable text overwrites column by column, `\x1b[K` clears from
+    /// the cursor to the end of the line, and a colour sequence occupies no
+    /// column at all.
+    ///
+    /// `existing` is what the row already shows — the terminal's cells, so
+    /// visible characters only — and the return value is the same.
+    fn render_over(existing: &str, row: &str) -> String {
+        let mut screen: Vec<char> = existing.chars().collect();
+        let mut col = 0usize;
+        let mut chars = row.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => col = 0,
+                '\u{1b}' => {
+                    let mut seq = String::new();
+                    for c in chars.by_ref() {
+                        seq.push(c);
+                        if c.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                    if seq == "[K" {
+                        screen.truncate(col);
+                    }
+                }
+                _ => {
+                    if col == screen.len() {
+                        screen.push(c);
+                    } else {
+                        screen[col] = c;
+                    }
+                    col += 1;
+                }
+            }
+        }
+        screen.into_iter().collect()
+    }
+
+    /// A stall line has to erase the row it lands on, not try to out-pad it.
+    ///
+    /// `topic bw` updates a 66-column row in place and the stall line is 43, so
+    /// `\r` plus four trailing spaces left `B/msg, window: 98)` from the dead
+    /// publisher standing beside "no new messages" — and the newline then
+    /// committed that hybrid to the scrollback. Leaving a dead publisher's
+    /// figures on screen is the defect this whole change exists to remove.
+    #[test]
+    fn the_tty_stall_row_erases_the_wider_line_it_lands_on() {
+        let frozen_bw = "  Bandwidth: 780.29 B/s (96.5 msgs/s, avg 8 B/msg, window: 98)    ";
+        let row = tty_stall_row("!", "0.00 B/s (no new messages for 2.0s)");
+        assert_eq!(row, "\r  ! 0.00 B/s (no new messages for 2.0s)\u{1b}[K");
+        assert_eq!(
+            render_over(frozen_bw, &row),
+            "  ! 0.00 B/s (no new messages for 2.0s)",
+            "the dead publisher's bandwidth figures survived the stall line"
+        );
+
+        // The icon reaches this function already coloured, and a colour
+        // sequence costs no column — so it must not be counted as width that
+        // covers the stale line. Same visible result as the uncoloured row.
+        let frozen_hz = "  Rate: 95.18 Hz (window: 10)    ";
+        let coloured = tty_stall_row("\u{1b}[33m!\u{1b}[0m", "0.00 Hz (no new messages for 2.0s)");
+        assert_eq!(
+            render_over(frozen_hz, &coloured),
+            "  ! 0.00 Hz (no new messages for 2.0s)",
+            "the frozen rate survived the stall line"
+        );
+    }
+
+    /// `--window` is an unbounded `usize` and the rate grows with the traffic,
+    /// so no fixed amount of padding is wide enough for every in-place line.
+    #[test]
+    fn the_tty_stall_row_covers_an_arbitrarily_wide_frozen_line() {
+        let frozen = format!("  Rate: 1234567.89 Hz (window: {})    ", usize::MAX);
+        let row = tty_stall_row("!", "0.00 Hz (no new messages for 2.0s)");
+        assert_eq!(
+            render_over(&frozen, &row),
+            "  ! 0.00 Hz (no new messages for 2.0s)",
+            "a wide --window left the stale rate on screen"
         );
     }
 }

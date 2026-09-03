@@ -567,11 +567,20 @@ fn topic_hz_reports_a_publisher_that_dies_mid_measurement() {
     let _ = hz.wait();
     let _ = reader.join();
 
+    // Not a skip. If this fires, the stall line below would be satisfied by a
+    // `topic hz` that never measured anything — the watch reports silence from
+    // the moment it starts, so a publisher that never published produces the
+    // same output as one that died. This assertion is the only thing standing
+    // between that and a green run, so it has to fail rather than return: a
+    // regression that stops `topic hz` printing rates at all must not be able
+    // to turn this test green.
     assert!(
         measured,
-        "SKIP-WORTHY: `topic hz` never printed a rate at all, so the publisher \
-         was never measured on this machine and the stall behaviour could not \
-         be evaluated:\n{out}"
+        "`topic hz` printed no rate in 30s for a publisher `topic list` had \
+         already shown, so the live half of this test never happened. Either \
+         rate measurement itself regressed, or this box is loaded past the \
+         point where the 30s budget means anything — check the load average \
+         and /dev/shm before reading it as either:\n{out}"
     );
     assert!(
         reported,
