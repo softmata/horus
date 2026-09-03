@@ -4608,6 +4608,18 @@ mod tests {
     /// on shared CI runners. It is not trying to measure quality; it is trying
     /// to make a gross phase regression impossible to land silently, which is
     /// what nothing was doing.
+    ///
+    /// The mean is computed from THIS waiter's own `local` counters, not from a
+    /// before/after delta on `rt_wait_stats()`. Those counters are process-wide
+    /// and cargo runs this binary's tests in parallel: 41 call sites in this
+    /// file start an `RtExecutor`, whose own `CyclicWaiter` flushes into the
+    /// same atomics. A delta over the globals would therefore average other
+    /// loops together with this one, in both directions — a second of somebody
+    /// else's on-time 1 kHz executor dilutes 200 late slots back under the
+    /// bound, and one 10 ms-period executor having a bad wake on a loaded
+    /// runner fails a loop that was on time. `local` is per-waiter, so it
+    /// measures only this loop; that the numbers reach the published counters
+    /// at all is asserted separately below.
     #[test]
     fn wake_lateness_is_bounded_not_merely_recorded() {
         const PERIOD: Duration = Duration::from_millis(1);
@@ -4615,27 +4627,49 @@ mod tests {
 
         let before = rt_wait_stats();
         let mut w = CyclicWaiter::new(PERIOD, false, false);
+
+        let mut slots = 0_u64;
+        let mut late_total_ns = 0_u64;
+        let mut prev = w.local;
         for _ in 0..SLOTS {
             w.wait();
+            let cur = w.local;
+            // `wait()` flushes `local` to the globals once a second and zeroes
+            // it. A slot count that went DOWN is that reset; the single slot it
+            // straddles is dropped rather than differenced against a dead epoch.
+            if cur.slots >= prev.slots {
+                slots += cur.slots - prev.slots;
+                late_total_ns += cur.wake_late_total_ns - prev.wake_late_total_ns;
+            }
+            prev = cur;
         }
         w.finish(false);
-        let after = rt_wait_stats();
 
-        let slots = after.slots.saturating_sub(before.slots);
         assert!(slots > 0, "no slots recorded");
-        let mean_late_ns = after
-            .wake_late_total_ns
-            .saturating_sub(before.wake_late_total_ns)
-            / slots;
+        let mean_late_ns = late_total_ns / slots;
 
+        // `CyclicWaiter::new` narrows the period with the same `as u64`, so this
+        // is exactly the grid spacing the loop under test scheduled against.
         let period_ns = PERIOD.as_nanos() as u64;
         assert!(
-            mean_late_ns < period_ns,
+            mean_late_ns <= period_ns,
             "mean wake lateness {mean_late_ns} ns over {slots} slots exceeds the \
              {period_ns} ns period. A periodic loop that is on average more than \
-             a whole period late is not keeping its schedule, and no
+             a whole period late is not keeping its schedule, and no \
              interval-based jitter metric can see this — a constant offset \
              cancels out of |interval - mean_interval|."
+        );
+
+        // The bound is only worth anything if these numbers reach the counters
+        // an operator actually reads. The globals are monotonic, so concurrent
+        // waiters can only make this delta bigger — never flaky in this
+        // direction.
+        let after = rt_wait_stats();
+        assert!(
+            after.slots.saturating_sub(before.slots) >= slots,
+            "{slots} measured slots never reached the published counters ({} -> {})",
+            before.slots,
+            after.slots
         );
     }
 }
