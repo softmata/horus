@@ -132,25 +132,18 @@ pub(super) unsafe fn seqlock_consume<R>(
             let resume = h.wrapping_sub(capacity);
             *skipped = skipped.wrapping_add(resume.wrapping_sub(next));
             next = resume;
-            // Commit the fast-forward HERE, not only on the success path below.
-            // The skip is already banked in the caller's counter, but `tail` used
-            // to move only after a successful read — so every attempt-exhausted
-            // `None` left `tail` at its pre-lap value and the next call re-derived
-            // the same gap from it and counted it AGAIN. That is not a rare path:
-            // capacity is a power of two and `resume = h - capacity`, so
-            // `resume & mask == h & mask` — the fast-forward lands on exactly the
-            // slot the producer overwrites next, and against a saturated producer
-            // the version check below fails far more often than it passes.
-            // Measured on this function directly (16-slot ring, 4 KiB payloads,
-            // 1 s of a saturated producer against one polling consumer):
-            // 681,629 sends billed 7,500,196,765 skips — 11,003x more loss than
-            // messages ever existed. `recv_fanout_shm` banks `skipped` into
-            // `local.missed` whatever this returns and `Topic::missed_count()`
-            // reports that unclamped, so that is the number a user reads. With
-            // this store the same run reports 592,092 sends / 591,811 skipped,
-            // i.e. `received + skipped == sends` bar what is still in the ring.
-            // `tail` is consumer-owned, so the store is uncontended, and the
-            // success-path store below supersedes it.
+            // Commit the fast-forward HERE, not only on the success path below:
+            // the gap is billed to `skipped` above, so the cursor has to move
+            // with it, or an attempt-exhausted `None` leaves `tail` at its
+            // pre-lap value and the next call re-derives and re-bills the same
+            // gap. That give-up is the common path, not a corner — capacity is a
+            // power of two and `resume = h - capacity`, so
+            // `resume & mask == h & mask`: the fast-forward lands on exactly the
+            // slot the producer overwrites next, and the version check below
+            // loses to a saturated producer far more often than it wins.
+            // Nothing extra is dropped (`resume` is the oldest position still in
+            // the ring), `tail` is consumer-owned so the store is uncontended,
+            // and the success-path store below supersedes it.
             tail.store(next, Ordering::Release);
         }
         let idx = (next & mask) as usize;
@@ -246,14 +239,14 @@ mod tests {
     /// a power of two, so `resume & mask == h & mask` — the fast-forward lands on
     /// exactly the slot the producer is about to overwrite. Against a saturated
     /// producer that read loses far more often than it wins, and each loss used
-    /// to re-bank the whole gap: 1 s of a saturated producer on a 16-slot ring
-    /// reported 7,500,196,765 missed against 681,629 sends (11,003x).
+    /// to re-bank the whole gap, so the reported loss ran orders of magnitude
+    /// above the number of messages ever sent.
     #[test]
     fn a_lapped_consumer_that_gives_up_does_not_re_count_the_gap() {
         const CAP: u64 = 16;
         let ring = Ring::new(CAP);
 
-        // 20 sent into 16 slots: positions 0..4 are gone, the consumer is at 0.
+        // 20 sent into 16 slots: positions 0-3 are gone, the consumer is at 0.
         for _ in 0..20 {
             ring.publish();
         }
@@ -268,7 +261,7 @@ mod tests {
             None,
             "the slot the producer is writing must not be delivered"
         );
-        assert_eq!(missed, 4, "20 into a 16-slot ring skips positions 0..4");
+        assert_eq!(missed, 4, "20 into a 16-slot ring skips 4 positions (0-3)");
         assert_eq!(ring.consume(&mut missed), None, "still mid-write");
         assert_eq!(
             missed, 4,
