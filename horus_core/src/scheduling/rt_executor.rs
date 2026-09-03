@@ -1550,8 +1550,21 @@ impl RtExecutor {
                     }
                 }
 
-                // Call on_error handler
-                node.node.on_error(&error_msg);
+                // Call on_error handler, panic-guarded like every other
+                // fault-path callback. Bare, a panic here unwound out of
+                // `tick_node` into the outer catch_unwind in the RT loop, whose
+                // only action is `is_stopped = true` — so the failure policy
+                // below was skipped entirely and a `Fatal` node neither entered
+                // its safe state nor stopped the scheduler. The callback is
+                // advisory, so a panic in it is logged and dropped rather than
+                // escalated (unlike enter_safe_state/shutdown, which safe
+                // hardware).
+                if super::primitives::guard_fault_callback(|| node.node.on_error(&error_msg)) {
+                    rt_diag(format_args!(
+                        " Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                        node.name
+                    ));
+                }
 
                 // Enforce the failure policy. Fatal → safe the faulted node and
                 // stop the whole scheduler via the shared `running` flag (the
@@ -1911,6 +1924,67 @@ mod tests {
         safed.store(false, std::sync::atomic::Ordering::SeqCst);
         super::super::primitives::honor_safe_state_request(&mut registered, &monitors);
         assert!(!safed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Regression: a panic in `on_error()` must not cost the node its failure
+    /// policy.
+    ///
+    /// The call was bare, so the unwind escaped `tick_node` BEFORE
+    /// `apply_failure_policy_after_panic()` and landed in the RT loop's outer
+    /// `catch_unwind`, whose only action is `is_stopped = true`. A `Fatal` node
+    /// that also panicked in `on_error` therefore never entered its safe state
+    /// and never stopped the scheduler — the two things `Fatal` exists to do —
+    /// and the run reported success.
+    #[test]
+    fn on_error_panic_still_applies_the_failure_policy() {
+        use super::super::fault_tolerance::{FailureHandler, FailurePolicy};
+
+        struct DoubleBoom {
+            safed: Arc<AtomicBool>,
+        }
+        impl Node for DoubleBoom {
+            fn name(&self) -> &str {
+                "double_boom"
+            }
+            fn tick(&mut self) {
+                panic!("tick boom");
+            }
+            fn on_error(&mut self, _msg: &str) {
+                panic!("on_error boom");
+            }
+            fn enter_safe_state(&mut self) {
+                self.safed.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let safed = Arc::new(AtomicBool::new(false));
+        let mut node = make_rt_registered("double_boom", Arc::new(AtomicU64::new(0)));
+        node.node = super::super::types::NodeKind::new(Box::new(DoubleBoom {
+            safed: Arc::clone(&safed),
+        }));
+        node.failure_handler = Some(FailureHandler::new(FailurePolicy::Fatal));
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("double_boom");
+        let running = Arc::new(AtomicBool::new(true));
+
+        // The RT loop wraps `tick_node` exactly like this.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            RtExecutor::tick_node(&mut node, &monitors, &running, true)
+        }));
+
+        assert!(
+            outcome.is_ok(),
+            "on_error() panicked and unwound out of tick_node"
+        );
+        assert!(
+            safed.load(Ordering::SeqCst),
+            "Fatal policy was skipped — the node never reached its safe state"
+        );
+        assert!(
+            !running.load(Ordering::SeqCst),
+            "Fatal policy was skipped — the scheduler was never stopped"
+        );
     }
 
     /// The degradation ladder must actually be APPLIED on the executor, not

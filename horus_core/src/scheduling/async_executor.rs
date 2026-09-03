@@ -375,7 +375,19 @@ impl AsyncExecutor {
                 // stdout), and a third time via the old `Node::on_error` default. With a
                 // Python node's traceback attached that is three multi-line blocks for one
                 // failure.
-                node.node.on_error(&error_msg);
+                //
+                // Panic-guarded: `process_node_result` runs inside `block_on`
+                // on the async I/O thread outside any catch_unwind (the tick
+                // itself is isolated by `spawn_blocking`), so a bare panic in
+                // this advisory callback killed the executor thread — and with
+                // it every healthy node it owns — while `run_for` still
+                // returned Ok and `stop()` reclaimed nothing.
+                if super::primitives::guard_fault_callback(|| node.node.on_error(&error_msg)) {
+                    print_line(&format!(
+                        "[AsyncIO] Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                        node.name
+                    ));
+                }
 
                 // Enforce the failure policy (Fatal → safe + stop via shared
                 // `running`; Restart → re-init; Skip/Ignore → gated next tick).

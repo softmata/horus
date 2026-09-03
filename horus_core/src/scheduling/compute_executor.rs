@@ -856,7 +856,19 @@ impl ComputeExecutor {
                 // stdout), and a third time via the old `Node::on_error` default. With a
                 // Python node's traceback attached that is three multi-line blocks for one
                 // failure.
-                node.node.on_error(&error_msg);
+                //
+                // Panic-guarded: `process_node_result` runs on the compute
+                // coordinator thread outside any catch_unwind (the one in
+                // `run_job` wraps the tick only), so a bare panic in this
+                // advisory callback killed the whole executor thread — and with
+                // it every healthy node it owns — while `run_for` still
+                // returned Ok and `stop()` reclaimed nothing.
+                if super::primitives::guard_fault_callback(|| node.node.on_error(&error_msg)) {
+                    print_line(&format!(
+                        "[Compute] Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                        node.name
+                    ));
+                }
 
                 // Enforce the failure policy (Fatal → safe node + stop scheduler
                 // via shared `running`; Restart → re-init; Skip/Ignore → gated).
@@ -972,6 +984,52 @@ mod tests {
 
         assert_eq!(returned.len(), 1);
         assert!(count.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    }
+
+    /// Regression: a panic in `on_error()` must not take the compute thread
+    /// with it.
+    ///
+    /// `process_node_result` runs on the coordinator thread outside any
+    /// `catch_unwind` — the guard in `run_job` covers the tick only — so a bare
+    /// `on_error()` panic unwound the coordinator, stopping every healthy node
+    /// it owns, and `stop()` came back empty because a panicked thread's nodes
+    /// cannot be reclaimed. One misbehaving node's advisory callback must not
+    /// be able to do that.
+    #[test]
+    fn on_error_panic_does_not_kill_the_compute_thread() {
+        struct DoubleBoom;
+        impl Node for DoubleBoom {
+            fn name(&self) -> &str {
+                "double_boom"
+            }
+            fn tick(&mut self) {
+                panic!("tick boom");
+            }
+            fn on_error(&mut self, _msg: &str) {
+                panic!("on_error boom");
+            }
+        }
+
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut boom = make_compute_node("double_boom", count.clone());
+        boom.node = super::super::types::NodeKind::new(Box::new(DoubleBoom));
+        let nodes = vec![boom, make_compute_node("healthy", count.clone())];
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = ComputeExecutor::start(nodes, running.clone(), 1_u64.ms(), test_monitors());
+        std::thread::sleep(50_u64.ms());
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        assert_eq!(
+            returned.len(),
+            2,
+            "the compute thread died in on_error() — its nodes were never reclaimed"
+        );
+        assert!(
+            count.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "the healthy node stopped ticking when its neighbour panicked in on_error()"
+        );
     }
 
     #[test]
