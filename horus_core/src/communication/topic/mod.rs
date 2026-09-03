@@ -2769,7 +2769,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         // published just below — that asymmetry is why this
                         // path could previously skip stamping entirely.
                         let seq = head.wrapping_add(1);
-                        (*stamp).store(seq | layout::SLOT_WRITING, Ordering::Release);
+                        // Boehm seqlock write phase, and the fence is the whole
+                        // protocol — not decoration. A Release *store* on the
+                        // marker orders only the accesses BEFORE it; it says
+                        // nothing about the payload store that follows, so the
+                        // payload may become visible while the stamp still reads
+                        // the previous lap's value. `recv_shm_pod_broadcast`
+                        // (dispatch.rs) accepts on `v1 == tail + 1` and re-checks
+                        // the same stamp after copying, so it would see two
+                        // matching stale stamps around new bytes and return a
+                        // mixture of two messages. aarch64 -O makes the gap
+                        // visible: the marker compiles to `stlr` and the payload
+                        // to a plain `str`, with nothing between them; with the
+                        // fence it is `str` + `dmb ish` + `str`. Free on x86,
+                        // where the fence emits no instruction at all.
+                        //
+                        // This is the same pairing as dispatch.rs's
+                        // `send_shm_pod_broadcast`, `seqlock::seqlock_publish`
+                        // and `communication/mod.rs`'s raw publisher; the naive
+                        // all-Release form is the one tests/loom_fanout.rs and
+                        // tests/loom_pod_broadcast.rs show failing under loom.
+                        (*stamp).store(seq | layout::SLOT_WRITING, Ordering::Relaxed);
+                        std::sync::atomic::fence(Ordering::Release);
                         std::ptr::write(data, msg);
                         (*stamp).store(seq, Ordering::Release);
                     } else {
