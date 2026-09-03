@@ -502,11 +502,12 @@ impl ShmFanoutRing {
         channel_capacity: u32,
     ) -> Option<Self> {
         let slot_size = Self::compute_slot_size(type_size, is_pod)?;
-        let cap = (channel_capacity as usize).next_power_of_two().max(16) as u32;
+        let cap = Self::compute_capacity(channel_capacity as usize)?;
         let max_pubs = MAX_FANOUT_ENDPOINTS as u32;
         let max_subs = MAX_FANOUT_ENDPOINTS as u32;
-        let channel_stride =
-            (CHANNEL_HEADER_SIZE + cap as usize * slot_size + cap as usize * 8) as u64;
+        // Same helper `required_file_size` uses, so the stride written into the
+        // meta block and the stride the region was sized for cannot disagree.
+        let channel_stride = Self::channel_stride(cap, slot_size)? as u64;
         let total_size = Self::required_file_size(type_size, is_pod, cap as usize)?;
 
         // Write FanoutShmMeta
@@ -1162,20 +1163,69 @@ impl ShmFanoutRing {
         }
     }
 
+    /// Round a requested capacity up to the power-of-two slot count the layout
+    /// uses, or `None` when the result cannot be named exactly.
+    ///
+    /// `meta.channel_capacity` is a `u32`, so a capacity that does not fit one
+    /// has to be refused rather than cast. `init_owner` used to write
+    /// `(channel_capacity as usize).next_power_of_two().max(16) as u32`: on a
+    /// 64-bit host any capacity above 2^31 rounds to 2^32 and that cast lands on
+    /// `cap == 0`, from which `meta.capacity_mask = cap - 1` hands every channel
+    /// a mask of `u32::MAX`. [`Self::build_views`] derives every slot pointer
+    /// from those two numbers with no further bound — its safety contract is
+    /// that the owner wrote a matrix that fits — so the only thing between that
+    /// geometry and a live ring was `ShmRegion::new` happening to refuse the
+    /// petabyte-scale mapping first.
+    fn compute_capacity(channel_capacity: usize) -> Option<u32> {
+        let cap = channel_capacity.checked_next_power_of_two()?.max(16);
+        u32::try_from(cap).ok()
+    }
+
+    /// Per-channel stride: head/tail cache lines + `cap` data slots + `cap`
+    /// version stamps. `None` when that does not fit a `usize`.
+    ///
+    /// This is the owner-side twin of the reconstruction in
+    /// [`Self::validate_meta`], and it is checked for the same reason that one
+    /// is. `capacity` is caller-supplied and unbounded (`Topic::with_capacity`
+    /// rejects only 0), the release profile this ships with has no
+    /// `overflow-checks`, and `usize` is 32 bits on the
+    /// `armv7-unknown-linux-gnueabihf` controllers `horus deploy --arch armv7`
+    /// targets. There, capacity 524288 over an 8192-byte serde slot wraps
+    /// `cap * slot_size` to 0: the owner asks for a 1 GiB region instead of the
+    /// honest 1025 GiB — which would simply have failed to allocate and fallen
+    /// back — and then writes `channel_capacity = 524288, slot_size = 8192,
+    /// channel_stride = 4194432` into the meta block. Slot 512 onward is already
+    /// outside its channel and the ring's tail is ~4 GiB past the end of the
+    /// mapping. `validate_meta` refuses exactly that meta block on the attach
+    /// side, so the wrap put the owner and attach paths back out of agreement —
+    /// the same disagreement the POD slot cap closes, reached through the other
+    /// input.
+    fn channel_stride(cap: u32, slot_size: usize) -> Option<usize> {
+        let cap = cap as usize;
+        let data_bytes = cap.checked_mul(slot_size)?;
+        let seq_bytes = cap.checked_mul(8)?;
+        data_bytes
+            .checked_add(seq_bytes)?
+            .checked_add(CHANNEL_HEADER_SIZE)
+    }
+
     /// Calculate the total SHM file size needed for a fanout layout, or `None`
-    /// when [`Self::compute_slot_size`] refuses the type.
+    /// when [`Self::compute_slot_size`] refuses the type,
+    /// [`Self::compute_capacity`] refuses the capacity, or the matrix does not
+    /// fit a `usize`.
     pub(crate) fn required_file_size(
         type_size: usize,
         is_pod: bool,
         channel_capacity: usize,
     ) -> Option<usize> {
         let slot_size = Self::compute_slot_size(type_size, is_pod)?;
-        let cap = channel_capacity.next_power_of_two().max(16);
-        // stride = head/tail cache lines + data slots + per-slot version array.
-        let channel_stride = CHANNEL_HEADER_SIZE + cap * slot_size + cap * 8;
+        let cap = Self::compute_capacity(channel_capacity)?;
+        let channel_stride = Self::channel_stride(cap, slot_size)?;
         let num_channels = MAX_FANOUT_ENDPOINTS * MAX_FANOUT_ENDPOINTS;
 
-        Some(FANOUT_CHANNELS_BASE + num_channels * channel_stride)
+        num_channels
+            .checked_mul(channel_stride)?
+            .checked_add(FANOUT_CHANNELS_BASE)
     }
 
     /// Total pending messages across all channels for a subscriber.
@@ -1643,6 +1693,57 @@ mod tests {
              a geometry its own attach refuses, and one that every try_send_pod \
              writes past the end of",
             refused_slot.unwrap_or_default()
+        );
+    }
+
+    /// The same owner/attach agreement, reached through the capacity input
+    /// instead of the type input.
+    ///
+    /// Gated to 64-bit because `1usize << 31` overflows the stride on a 32-bit
+    /// `usize` — which is the *other* half of this bug and is unreachable from a
+    /// test runner this repo has (no 32-bit CI target).
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_capacity_the_meta_block_cannot_name_is_refused_not_truncated() {
+        // `meta.channel_capacity` is a `u32`. Any capacity above 2^31 rounds up
+        // to 2^32, which used to reach the meta block through `as u32` — landing
+        // on `cap == 0`, from which `meta.capacity_mask = cap - 1` hands every
+        // channel a mask of `u32::MAX` while the region is sized for 16 slots.
+        assert!(
+            ShmFanoutRing::required_file_size(8, true, (1usize << 31) + 1).is_none(),
+            "a capacity that rounds to 2^32 cannot be named by a u32 meta field \
+             and must be refused, not truncated"
+        );
+        // The largest capacity the field *can* name is still accepted, so this
+        // refuses only what it has to.
+        assert!(ShmFanoutRing::required_file_size(8, true, 1usize << 31).is_some());
+
+        // The owner half is the one that matters: it writes the meta block that
+        // `build_views` then trusts without a further bound.
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        let built_cap = {
+            // SAFETY: `ptr` is a live, page-aligned allocation of
+            // `layout.size()` bytes. `init_owner` settles the capacity before it
+            // dereferences the region, so a refusal never touches `ptr`.
+            match unsafe { ShmFanoutRing::init_owner(ptr, 8, true, u32::MAX) } {
+                None => None,
+                Some(owner) => {
+                    // SAFETY: `init_owner` returned `Some`, so the meta block at
+                    // `FANOUT_META_OFFSET` is initialised.
+                    let cap = unsafe {
+                        (*(ptr.add(FANOUT_META_OFFSET) as *const FanoutShmMeta)).channel_capacity
+                    };
+                    drop(owner);
+                    Some(cap)
+                }
+            }
+        };
+        unsafe { std::alloc::dealloc(ptr, layout) };
+        assert_eq!(
+            built_cap,
+            None,
+            "init_owner wrote channel_capacity = {} into a region sized for 16 slots",
+            built_cap.unwrap_or_default()
         );
     }
 
