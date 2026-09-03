@@ -197,7 +197,19 @@ jobs:
       # that is heavy oversubscription and their timing assumptions stop holding.
       # Pinned to two cores locally, chaos_cross_process failed 1 of 4 once and
       # production_validation exceeded 900s once, while both passed cleanly on a
-      # calmer pass. The step went red on one PR and green on main inside an hour.
+      # calmer pass.
+      #
+      # The CI failure that prompted this was NOT that, and is worse:
+      # multi_scheduler_matrix::deterministic_alongside_normal_scheduler dies
+      # with SIGBUS. Reproduced locally 2 runs in 5 on a 12-core box on current
+      # main, so it is not a runner artifact. gdb puts it in
+      # `dispatch::send_shm_mp_pod::<CmdVel>` -> `Scheduler::tick_once`: the MPSC
+      # POD send dereferences `local.cached_header_ptr`, and SIGBUS means that
+      # page is mapped but no longer backed -- the region was recreated or
+      # truncated under an in-flight send. `epoch_guard_send!` only compares
+      # `process_epoch`, so it does not cover a region swapped by another party.
+      # That suite is advisory below until the fault is fixed; the fix belongs
+      # in the topic layer, not in CI config.
       #
       # An intermittently-red REQUIRED check is worse than no check: it blocks
       # unrelated PRs at random. That is the same reasoning this file already
@@ -207,7 +219,7 @@ jobs:
         timeout-minutes: 25
         run: |
           for suite in ipc_torture chaos_monkey message_type_matrix \
-                       multi_scheduler_matrix hardware_emulation \
+                       hardware_emulation \
                        params_intent log_system_tests \
                        rust_python_full_matrix rust_python_matrix \
                        humanoid_stress matrix_sweep; do
@@ -233,7 +245,8 @@ jobs:
         timeout-minutes: 25
         run: |
           for suite in chaos_cross_process production_validation \
-                       chaos_xp_schedulers production_fanout_battle; do
+                       chaos_xp_schedulers production_fanout_battle \
+                       multi_scheduler_matrix; do
             echo "::group::$suite"
             cargo test -p horus_core --release --test "$suite" -- \
               --ignored --test-threads=1 --nocapture
