@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use horus_core::core::{RtConfig, RtScheduler};
+//! use horus_core::core::{RtApplyResult, RtConfig, RtScheduler};
 //!
 //! // Create RT configuration for a critical control loop
 //! let config = RtConfig::builder()
@@ -18,8 +18,13 @@
 //!     .cpu_affinity(&[2, 3])
 //!     .build();
 //!
-//! // Apply to current thread
-//! config.apply().expect("Failed to apply RT config");
+//! // Apply to current thread. A feature that could not be applied comes back
+//! // inside the Ok value, not as an Err, so the result has to be inspected —
+//! // `.expect()` alone will not tell you the thread missed SCHED_FIFO.
+//! match config.apply().expect("Failed to apply RT config") {
+//!     RtApplyResult::FullSuccess => {}
+//!     RtApplyResult::Degraded(reasons) => eprintln!("RT degraded: {:?}", reasons),
+//! }
 //! ```
 //!
 //! # Zero-Cost Abstraction
@@ -143,7 +148,12 @@ impl RtConfigBuilder {
     ///
     /// - [`RtScheduler::Normal`]: Standard Linux scheduler (SCHED_OTHER)
     /// - [`RtScheduler::Fifo`]: Real-time FIFO (SCHED_FIFO)
-    /// - [`RtScheduler::RoundRobin`]: Real-time round-robin (SCHED_RR)
+    ///
+    /// [`RtScheduler::Fifo`] must be paired with [`priority()`](Self::priority):
+    /// `sched_setscheduler` takes the RT priority in the same call, so a policy
+    /// with no priority cannot be applied and
+    /// [`apply()`](RtConfig::apply) reports it as
+    /// [`RtDegradation::SchedulerDegraded`].
     pub fn scheduler(mut self, scheduler: RtScheduler) -> Self {
         self.scheduler = scheduler;
         self
@@ -239,26 +249,52 @@ impl RtConfig {
             }
         }
 
-        // Apply scheduler and priority via horus_sys
-        if let Some(priority) = self.priority {
-            if self.scheduler != RtScheduler::Normal {
-                let actual =
-                    priority.clamp(kernel_info.min_rt_priority, kernel_info.max_rt_priority);
-                match horus_sys::rt::set_realtime_priority(actual) {
-                    Ok(()) => {
-                        if actual != priority {
-                            degradations.push(RtDegradation::PriorityClamped {
-                                requested: priority,
-                                actual,
-                            });
+        // Apply scheduler and priority via horus_sys.
+        //
+        // The policy test is the OUTER branch on purpose. It used to be nested
+        // inside `if let Some(priority)`, so a config built as
+        // `.scheduler(Fifo)` with no `.priority()` fell through both arms:
+        // set_realtime_priority is the only call here that issues
+        // sched_setscheduler, so no syscall was attempted at all (straced: zero
+        // sched_setscheduler for that config, versus one for the same config
+        // with a priority) and apply() still answered FullSuccess on a
+        // PREEMPT_RT box. The caller believed its control loop was on
+        // SCHED_FIFO while the thread stayed on SCHED_OTHER.
+        if self.scheduler != RtScheduler::Normal {
+            match self.priority {
+                Some(priority) => {
+                    let actual =
+                        priority.clamp(kernel_info.min_rt_priority, kernel_info.max_rt_priority);
+                    match horus_sys::rt::set_realtime_priority(actual) {
+                        Ok(()) => {
+                            if actual != priority {
+                                degradations.push(RtDegradation::PriorityClamped {
+                                    requested: priority,
+                                    actual,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("Scheduler setup failed: {}", e);
+                            degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
+                            if self.warn_on_degradation {
+                                crate::terminal::print_line(&format!("Warning: {}", msg));
+                            }
                         }
                     }
-                    Err(e) => {
-                        let msg = format!("Scheduler setup failed: {}", e);
-                        degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
-                        if self.warn_on_degradation {
-                            crate::terminal::print_line(&format!("Warning: {}", msg));
-                        }
+                }
+                // No priority to hand sched_setscheduler, and inventing one
+                // would put a robot thread on an RT class the operator never
+                // chose. Report the policy as not applied instead.
+                None => {
+                    let msg = format!(
+                        "{:?} scheduler requested without a priority; thread left on \
+                         the normal scheduler (add .priority({}..={}))",
+                        self.scheduler, kernel_info.min_rt_priority, kernel_info.max_rt_priority
+                    );
+                    degradations.push(RtDegradation::SchedulerDegraded(msg.clone()));
+                    if self.warn_on_degradation {
+                        crate::terminal::print_line(&format!("Warning: {}", msg));
                     }
                 }
             }
@@ -641,6 +677,52 @@ mod tests {
         let result = config.apply();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), RtApplyResult::FullSuccess);
+    }
+
+    /// `apply()` must never claim a scheduling policy it did not set.
+    ///
+    /// `set_realtime_priority` is the only call in `apply()` that issues
+    /// sched_setscheduler, and it needs a priority, so `.scheduler(Fifo)` with
+    /// no `.priority()` cannot change the thread's policy. The scheduler branch
+    /// used to sit inside the priority branch, so that config was a silent
+    /// no-op that still returned `FullSuccess` on a PREEMPT_RT kernel.
+    ///
+    /// Asserting on `SchedulerDegraded` specifically keeps the test meaningful
+    /// off PREEMPT_RT too, where the old code returned `Degraded([NoPreemptRt])`
+    /// — degraded for a reason that says nothing about the missing policy.
+    #[test]
+    fn test_rt_scheduler_without_priority_is_reported_degraded() {
+        // Own thread: apply() mutates the caller's scheduling class, and on a
+        // privileged box the rest of the suite must not inherit it.
+        std::thread::spawn(|| {
+            let config = RtConfig::builder().scheduler(RtScheduler::Fifo).build();
+            let result = config.apply().expect("apply() has no error path today");
+
+            let degradations = match result {
+                RtApplyResult::Degraded(d) => d,
+                RtApplyResult::FullSuccess => panic!(
+                    "scheduler(Fifo) with no priority reported FullSuccess, \
+                     but no sched_setscheduler was issued"
+                ),
+            };
+            assert!(
+                degradations
+                    .iter()
+                    .any(|d| matches!(d, RtDegradation::SchedulerDegraded(_))),
+                "expected SchedulerDegraded for a policy that was never applied, got {:?}",
+                degradations
+            );
+
+            // The report matches the thread: still on the normal scheduler.
+            let (policy, _) = RtConfig::get_current_scheduler().unwrap();
+            assert_eq!(
+                policy,
+                RtScheduler::Normal,
+                "thread should still be SCHED_OTHER after a no-op RT config"
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
