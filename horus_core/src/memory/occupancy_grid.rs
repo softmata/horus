@@ -195,8 +195,28 @@ impl OccupancyGrid {
     pub fn world_to_grid(&self, x: f64, y: f64) -> Option<(u32, u32)> {
         const EPSILON: f64 = 1e-6;
         let res = (self.resolution() as f64).max(1e-9);
-        let grid_x = ((x - self.origin_x()) / res + EPSILON).floor() as i32;
-        let grid_y = ((y - self.origin_y()) / res + EPSILON).floor() as i32;
+
+        // Translate into the map frame, then UNDO the map's rotation before
+        // dividing by resolution. `origin_theta` is documented as "map origin
+        // orientation (radians)" and was stored, exposed by a getter, and read
+        // by neither transform -- so every lookup on a rotated map silently
+        // returned the wrong cell. Wrong, not absent: the indices stayed in
+        // range and looked entirely plausible, which for a costmap means a
+        // planner confidently avoids the wrong places.
+        //
+        // theta == 0 short-circuits to the original arithmetic, so unrotated
+        // maps -- the overwhelmingly common case, and every existing test --
+        // are bit-identical and pay nothing.
+        let (dx, dy) = (x - self.origin_x(), y - self.origin_y());
+        let theta = self.origin_theta();
+        let (rx, ry) = if theta == 0.0 {
+            (dx, dy)
+        } else {
+            let (sin_t, cos_t) = theta.sin_cos();
+            (dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
+        };
+        let grid_x = (rx / res + EPSILON).floor() as i32;
+        let grid_y = (ry / res + EPSILON).floor() as i32;
 
         if grid_x >= 0
             && grid_x < self.width() as i32
@@ -212,9 +232,19 @@ impl OccupancyGrid {
     /// Convert grid indices to world coordinates (cell center).
     pub fn grid_to_world(&self, grid_x: u32, grid_y: u32) -> Option<(f64, f64)> {
         if grid_x < self.width() && grid_y < self.height() {
-            let x = self.origin_x() + (grid_x as f64 + 0.5) * self.resolution() as f64;
-            let y = self.origin_y() + (grid_y as f64 + 0.5) * self.resolution() as f64;
-            Some((x, y))
+            // Cell centre in the map frame, rotated INTO the world frame by
+            // `origin_theta` and then translated. Exact inverse of
+            // `world_to_grid`, including the theta == 0 short-circuit.
+            let mx = (grid_x as f64 + 0.5) * self.resolution() as f64;
+            let my = (grid_y as f64 + 0.5) * self.resolution() as f64;
+            let theta = self.origin_theta();
+            let (ox, oy) = if theta == 0.0 {
+                (mx, my)
+            } else {
+                let (sin_t, cos_t) = theta.sin_cos();
+                (mx * cos_t - my * sin_t, mx * sin_t + my * cos_t)
+            };
+            Some((self.origin_x() + ox, self.origin_y() + oy))
         } else {
             None
         }
@@ -418,5 +448,66 @@ mod tests {
         assert!(dbg.contains("OccupancyGrid"));
         assert!(dbg.contains("100"));
         assert!(dbg.contains("200"));
+    }
+}
+
+#[cfg(test)]
+mod origin_theta_tests {
+    use super::*;
+
+    const RES: f32 = 0.05;
+
+    /// A rotated map must round-trip: grid -> world -> grid returns the cell.
+    ///
+    /// `origin_theta` is documented as the map origin's orientation and was
+    /// read by neither transform. On a map rotated 90 degrees this returned a
+    /// cell that was in range and plausible and simply wrong, so a planner
+    /// avoided the wrong places with no error anywhere.
+    #[test]
+    fn rotated_map_round_trips_grid_to_world_to_grid() {
+        let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+        m.set_origin(1.0, -2.0, std::f64::consts::FRAC_PI_2);
+        for &(gx, gy) in &[(0u32, 0u32), (3, 7), (19, 11)] {
+            let (wx, wy) = m.grid_to_world(gx, gy).expect("in range");
+            let back = m.world_to_grid(wx, wy);
+            assert_eq!(
+                back,
+                Some((gx, gy)),
+                "cell ({gx},{gy}) -> world ({wx:.4},{wy:.4}) -> {back:?} on a \
+                 map rotated by origin_theta"
+            );
+        }
+    }
+
+    /// The rotation must actually be applied, not merely round-trip with
+    /// itself. A 90-degree map sends +x in the map frame to +y in the world.
+    #[test]
+    fn ninety_degrees_maps_map_x_onto_world_y() {
+        let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+        m.set_origin(1.0, -2.0, std::f64::consts::FRAC_PI_2);
+        let (wx, wy) = m.grid_to_world(4, 0).expect("in range");
+        // Cell (4,0) centre is (4.5*res, 0.5*res) in the map frame. Rotated by
+        // +90 degrees that is (-0.5*res, 4.5*res), then translated by the
+        // origin (1.0, -2.0).
+        let res = RES as f64;
+        let (ex, ey) = (1.0 + -0.5 * res, -2.0 + 4.5 * res);
+        assert!(
+            (wx - ex).abs() < 1e-6 && (wy - ey).abs() < 1e-6,
+            "expected map +x to become world +y: wanted ({ex:.6}, {ey:.6}), \
+             got ({wx:.6}, {wy:.6})"
+        );
+    }
+
+    /// theta == 0 must be bit-identical to the original translation-only
+    /// arithmetic, so unrotated maps -- every existing caller -- are untouched.
+    #[test]
+    fn unrotated_map_is_unchanged() {
+        let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+        m.set_origin(0.0, 0.0, 0.0);
+        let (wx, wy) = m.grid_to_world(6, 2).expect("in range");
+        let res = RES as f64;
+        assert!((wx - 6.5 * res).abs() < 1e-12, "x drifted: {wx}");
+        assert!((wy - 2.5 * res).abs() < 1e-12, "y drifted: {wy}");
+        assert_eq!(m.world_to_grid(wx, wy), Some((6, 2)));
     }
 }
