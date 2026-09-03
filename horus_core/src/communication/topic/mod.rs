@@ -4251,9 +4251,10 @@ where
     ///
     /// Unlike [`send()`](Self::send), which drops the message after a brief
     /// spin+yield retry, this reports a full ring instead of swallowing it --
-    /// **on the backends that have a full ring at all.** Strategy: spin briefly
-    /// (256 iters), yield briefly (8 iters), then sleep in 100μs increments
-    /// until the deadline.
+    /// **on the backends that have a full ring at all.** It backs off in stages
+    /// -- spin, then yield, then sleep -- and re-checks the deadline before
+    /// every wait after the spin, so a short or zero `timeout` returns near it
+    /// rather than overshooting by a scheduling quantum.
     ///
     /// # This does NOT guarantee delivery on a broadcast topic
     ///

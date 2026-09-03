@@ -12169,7 +12169,22 @@ fn send_blocking_refuses_a_backend_that_cannot_apply_backpressure() {
     // other handles in this process, whose send guard then re-resolves the mode.
     // Which is also the real sequence — a topic is already publishing when the
     // subscriber that flips it attaches.
-    while rx.recv().is_some() {}
+    //
+    // Bounded, not `while rx.recv().is_some() {}`: nothing publishes to this
+    // topic except the test thread itself, which stopped at `tx.send(0)`, so the
+    // drain ends after at most the 16 slots this ring has. An unbounded loop
+    // whose exit depends on that staying true has one failure mode — a CI
+    // timeout with no output — so the cap is set far above the ring and says
+    // what it means when it trips.
+    let mut drained = 0;
+    while rx.recv().is_some() {
+        drained += 1;
+        assert!(
+            drained <= 1024,
+            "rx.recv() has yielded {drained} messages and is still not empty; \
+             something is publishing to this topic that the test did not"
+        );
+    }
     tx.send(1);
     assert_eq!(
         tx.mode(),
@@ -12205,22 +12220,66 @@ fn every_send_blocking_doc_states_the_error_contract_the_enum_actually_has() {
     const SRC: &str = include_str!("mod.rs");
 
     // Variant names as declared, so the check cannot drift from the enum.
+    //
+    // Line-based rather than a brace-depth scan of the raw text: the `#[error]`
+    // attributes here are thiserror format strings, so `{}` and `{0}` appear
+    // inside string literals and a depth counter would close the enum in the
+    // wrong place. There is no Rust parser in dev-dependencies to do it properly
+    // (criterion, tempfile, trybuild, loom, proptest), and pulling `syn` in for
+    // one test is not worth it. What this leans on instead is rustfmt, which CI
+    // enforces: a top-level enum closes at column 0 and every variant sits at
+    // exactly one indent, which is what the two filters below read.
+    //
+    // Every variant form is matched by its leading identifier, not by a trailing
+    // comma — `Timeout,`, `Elapsed(Duration)`, `Rejected { .. }` and `A = 1` all
+    // start the same way. The comma-suffix version of this parser silently
+    // dropped every non-unit variant, which would have quietly narrowed the
+    // contract check below to whatever variants happened to be unit ones: a
+    // drift detector that stops detecting drift is worse than none.
     fn variants(src: &str) -> Vec<&str> {
         let start = src
             .find("pub enum SendBlockingError {")
             .expect("SendBlockingError is no longer declared in this file");
         let body = &src[start..];
         let end = body.find("\n}").expect("unterminated enum");
-        body[..end]
+        let body = &body[..end];
+        let names: Vec<&str> = body
             .lines()
-            .map(str::trim)
-            .filter_map(|line| line.strip_suffix(','))
-            .filter(|name| {
-                let mut chars = name.chars();
-                chars.next().is_some_and(|first| first.is_ascii_uppercase())
-                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            // One indent exactly: variant lines. Deeper lines are struct-variant
+            // fields or the continuation lines of a multi-line attribute string.
+            .filter_map(|line| line.strip_prefix("    "))
+            .filter(|line| !line.starts_with(' '))
+            .filter_map(|line| {
+                let name_len = line
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(line.len());
+                let (name, rest) = line.split_at(name_len);
+                let starts_upper = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+                // What follows the identifier is what makes it a declaration:
+                // unit, tuple, struct or discriminant. Prose inside an attribute
+                // string does not survive this.
+                let declares = matches!(
+                    rest.trim_start().chars().next(),
+                    Some(',' | '(' | '{' | '=')
+                );
+                (starts_upper && declares).then_some(name)
             })
-            .collect()
+            .collect();
+
+        // Self-check on the parse itself. thiserror needs a display attribute on
+        // every variant of this enum, so the counts agree unless the scan missed
+        // a variant — whether because of a shape it does not know or because the
+        // `\n}` above ended the body early. Either way the drift check below
+        // would go on passing while covering less than it claims to, so it fails
+        // here instead.
+        let attrs = body.matches("#[error").count();
+        assert_eq!(
+            names.len(),
+            attrs,
+            "parsed {names:?} out of `SendBlockingError`, but its body carries \
+             {attrs} `#[error]` attributes — this parser missed a variant"
+        );
+        names
     }
 
     // The `///` block directly above the item beginning at `idx`.
