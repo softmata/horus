@@ -29,7 +29,7 @@ use crate::types::{
     PointCloudDescriptor, Tensor,
 };
 
-use super::pool_registry::{fallback_pool, global_pool};
+use super::pool_registry::{fallback_pool, global_pool_or_report};
 
 /// Defines how a type is transported through Topic's ring buffer.
 ///
@@ -127,7 +127,7 @@ macro_rules! impl_pool_backed_topic_message {
                     // `needs_pool()` type — `pool` is always `Some` here.
                     let p = match pool.as_ref().cloned() {
                         Some(p) => p,
-                        None => global_pool().ok()?,
+                        None => global_pool_or_report()?,
                     };
                     // Generation-guarded retain so each subscriber owns its own
                     // reference. `Err` => the slot was freed/reallocated since the
@@ -182,7 +182,7 @@ impl TopicMessage for CostMap {
     fn try_from_wire(wire: CostMapDescriptor, pool: &Option<Arc<TensorPool>>) -> Option<Self> {
         let p = match pool.as_ref().cloned() {
             Some(p) => p,
-            None => global_pool().ok()?,
+            None => global_pool_or_report()?,
         };
         // Dual-tensor: retain BOTH. If the second is already stale, unwind the
         // first so we don't leak it, and report the message as missed.
@@ -225,7 +225,7 @@ impl TopicMessage for TensorHandle {
     fn try_from_wire(wire: Tensor, pool: &Option<Arc<TensorPool>>) -> Option<Self> {
         let p = match pool.as_ref().cloned() {
             Some(p) => p,
-            None => global_pool().ok()?,
+            None => global_pool_or_report()?,
         };
         if p.try_retain(&wire).is_err() {
             return None;

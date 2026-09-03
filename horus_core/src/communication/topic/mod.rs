@@ -2371,7 +2371,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if let Some(pool) = pool_ref {
             return Some(Arc::clone(pool));
         }
-        let pool = pool_registry::get_or_create_pool(&self.name).ok()?;
+        let pool = pool_registry::pool_or_report(&self.name)?;
         *pool_ref = Some(Arc::clone(&pool));
         Some(pool)
     }
@@ -4449,8 +4449,10 @@ impl Topic<Tensor> {
         self.register_sub("Tensor");
         let tensor = self.ring.recv()?;
         // An unusable pool reads as "nothing to receive" — `recv_handle` already
-        // returns `None` for a superseded slot, and the caller polls again.
-        let pool = self.pool().ok()?;
+        // returns `None` for a superseded slot, and the caller polls again. It
+        // is not the same fault, though, so it is not left silent: the caller
+        // polling a faulted topic forever gets a throttled line naming it.
+        let pool = pool_registry::pool_or_report(self.ring.name())?;
         // Take a generation-guarded reference so each subscriber owns its own: a
         // co-subscriber dropping its handle cannot free the slot out from under
         // us. `Err` => the slot was superseded (drop-oldest) before we read it

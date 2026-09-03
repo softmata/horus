@@ -36,7 +36,7 @@
 use std::sync::Arc;
 
 #[cfg(test)]
-use super::pool_registry::get_or_create_pool;
+use super::pool_registry::{get_or_create_pool, pool_or_report};
 #[cfg(test)]
 use super::RingTopic;
 #[cfg(test)]
@@ -91,7 +91,9 @@ impl RingTopic<Tensor> {
     /// is available.
     pub fn recv_handle(&self) -> Option<TensorHandle> {
         let tensor = self.recv()?;
-        let pool = self.pool().ok()?;
+        // `None` here means "no usable pool", not "no message" — reported,
+        // throttled per topic, rather than dropped in silence.
+        let pool = pool_or_report(self.name())?;
         // from_owned: the sender already incremented the refcount for us.
         // Validates pool_id match; returns None if descriptor belongs to a
         // different pool (prevents refcount corruption).

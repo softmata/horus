@@ -61,7 +61,12 @@ and `Unreleased` is left empty rather than deleted.
   `TensorHandle::from_shape` panicked instead of returning the `HorusResult`
   they advertise. Inside a scheduler tick the panic was swallowed by
   `catch_unwind` — the node entered ticks, completed none, and the process
-  still exited 0.
+  still exited 0. The paths with no error channel to propagate into
+  (`Topic::<Tensor>::recv_handle`, the spill read/write paths,
+  `TopicMessage::try_from_wire`) answer `None` instead, and say why: one
+  throttled `warn` per faulted topic per second, carrying the number of
+  occurrences it suppressed, so a faulted topic is not delivered to an
+  operator as an idle one.
 
 ## [0.4.0] — 2026-08-22
 

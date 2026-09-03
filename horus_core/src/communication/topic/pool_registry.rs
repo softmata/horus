@@ -11,7 +11,7 @@ use std::sync::Arc;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 
-use crate::error::{HorusContext, HorusResult};
+use crate::error::{HorusContext, HorusError, HorusResult};
 use crate::memory::{TensorPool, TensorPoolConfig};
 
 lazy_static! {
@@ -119,6 +119,125 @@ pub(crate) fn global_pool() -> HorusResult<Arc<TensorPool>> {
     get_or_create_pool(GLOBAL_POOL_NAME)
 }
 
+/// [`global_pool`] for a caller with no error channel. See [`pool_or_report`].
+pub(crate) fn global_pool_or_report() -> Option<Arc<TensorPool>> {
+    pool_or_report(GLOBAL_POOL_NAME)
+}
+
+/// [`get_or_create_pool`] for the callers that have no error channel to
+/// propagate into: `recv_handle`, the spill paths, `try_from_wire`. They answer
+/// `None`, which at the call site means "no message" — so an unusable pool,
+/// which is a permanent configuration fault, arrives looking exactly like an
+/// idle topic, and the caller polls forever with nothing to go on.
+///
+/// That is the same invisibility the panic this replaced had (swallowed by
+/// `run_tick`'s `catch_unwind`, node completing no ticks, process exiting 0),
+/// and this module's neighbours already refuse it: a dropped message on the
+/// abandoned-claim path is counted *and* "said out loud, because 'my control
+/// topic has a hole in it' is not something an operator should have to go
+/// looking for a counter to discover". So say it.
+///
+/// Nothing is cached on the failure path, so the failure recurs on every call —
+/// at tick rate. Hence the throttle in [`report_unusable_pool`].
+pub(crate) fn pool_or_report(topic_name: &str) -> Option<Arc<TensorPool>> {
+    match get_or_create_pool(topic_name) {
+        Ok(pool) => Some(pool),
+        Err(err) => {
+            report_unusable_pool(topic_name, &err);
+            None
+        }
+    }
+}
+
+/// One line per topic per window. Fast enough that an operator watching a
+/// terminal sees the fault immediately, slow enough that a 1 kHz subscriber
+/// cannot outrun the log.
+const REPORT_WINDOW_MS: u64 = 1_000;
+
+/// Throttle state for [`report_unusable_pool`], keyed by topic name.
+///
+/// Per topic, not per call site. `hlog_every!` keeps its timestamp in a
+/// `static` at the expansion point, and every caller here funnels through one
+/// helper — so a call-site gate would let the first broken topic silence every
+/// other broken topic, which is worse than no throttle at all, because the one
+/// that got through looks like the only one in trouble. `DiagThrottle` exists
+/// in the scheduler for exactly this reason.
+///
+/// Only ever touched on the failure path.
+struct PoolReport {
+    /// Wall clock of the last line emitted for this topic, ms since the epoch.
+    /// `0` is "never reported" and always emits, so a fault is never delayed.
+    last_ms: u64,
+    /// Failures swallowed since that line.
+    suppressed: u64,
+}
+
+lazy_static! {
+    static ref POOL_REPORTS: Mutex<HashMap<String, PoolReport>> = Mutex::new(HashMap::new());
+}
+
+/// `Some(suppressed_since_the_last_line)` when this failure should be emitted.
+///
+/// Takes `now_ms` rather than reading the clock so the test is deterministic.
+fn allow_report(topic_name: &str, now_ms: u64) -> Option<u64> {
+    let mut reports = POOL_REPORTS.lock();
+    let entry = reports.entry(topic_name.to_string()).or_insert(PoolReport {
+        last_ms: 0,
+        suppressed: 0,
+    });
+    if entry.last_ms != 0 && now_ms.saturating_sub(entry.last_ms) < REPORT_WINDOW_MS {
+        entry.suppressed = entry.suppressed.saturating_add(1);
+        return None;
+    }
+    entry.last_ms = now_ms;
+    Some(std::mem::take(&mut entry.suppressed))
+}
+
+/// What the operator reads. Split out from the `log::warn!` so a test can hold
+/// it to its claims without installing a logger.
+///
+/// Carries the suppressed count for the same reason `DiagThrottle` does:
+/// throttling may hide the volume of the output, never the volume of the fault.
+fn unusable_pool_message(
+    topic_name: &str,
+    pool_id: u32,
+    suppressed: u64,
+    err: &HorusError,
+) -> String {
+    let also = if suppressed == 0 {
+        String::new()
+    } else {
+        format!(" ({suppressed} further failures suppressed since the last line)")
+    };
+    format!(
+        "Topic '{topic_name}': its tensor pool (pool_id {pool_id}) can be neither \
+         opened nor created, so every message that needs it is being \
+         DROPPED{also} — the topic is faulted, not idle. This does not clear \
+         by itself: {err}"
+    )
+}
+
+/// Say an unusable pool out loud, at most once per [`REPORT_WINDOW_MS`] per
+/// topic.
+///
+/// Cold by construction — reached only when the pool file on disk disagrees
+/// with this build — so the clock read, the map lookup and the formatting are
+/// paid by a robot that is already producing nothing.
+#[cold]
+#[inline(never)]
+fn report_unusable_pool(topic_name: &str, err: &HorusError) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    if let Some(suppressed) = allow_report(topic_name, now_ms) {
+        log::warn!(
+            "{}",
+            unusable_pool_message(topic_name, pool_id_from_name(topic_name), suppressed, err)
+        );
+    }
+}
+
 /// The pool a pool-backed handle falls back to when it carries none.
 ///
 /// Unreachable for the types that call it: `Topic::<T>::new` builds the pool
@@ -129,10 +248,12 @@ pub(crate) fn global_pool() -> HorusResult<Arc<TensorPool>> {
 /// rather than the file.
 ///
 /// It exists only because `TopicMessage::from_wire` returns `Self`: it has no
-/// error channel to propagate into, and giving it one would change a trait
-/// every message type implements. Every caller that *does* have a channel —
-/// `try_from_wire`, the constructors, the spill paths — takes the fallible
-/// [`global_pool`] instead.
+/// error channel to propagate into at all, not even an `Option`, and giving it
+/// one would change a trait every message type implements. Every other caller
+/// has somewhere to put the failure — the constructors take the fallible
+/// [`global_pool`]; `try_from_wire` and the spill paths take
+/// [`global_pool_or_report`] / [`pool_or_report`], which answer `None` and say
+/// why.
 pub(crate) fn fallback_pool() -> Arc<TensorPool> {
     global_pool().expect(
         "a pool-backed handle always carries its pool (Topic::new builds it), so the \
@@ -186,6 +307,7 @@ mod tests {
     /// inside `get_or_create_pool`, which is the defect itself.
     #[test]
     fn a_pool_file_this_build_disagrees_with_errors_instead_of_panicking() {
+        use crate::memory::tensor_pool::HEADER_VERSION_OFFSET as VERSION_OFFSET;
         use std::io::{Read, Seek, SeekFrom, Write};
 
         /// Unlinks the planted file however this test leaves — including the
@@ -226,8 +348,10 @@ mod tests {
             TensorPool::new(pid, config).expect("planting the stale pool file");
         }
 
-        // Age it by one `POOL_VERSION`. `PoolHeader` is `repr(C)` with
-        // `magic: u64` first, so `version: u32` sits at offset 8.
+        // Age it by one `POOL_VERSION`. The offset comes from the struct
+        // (`offset_of!`), not from a literal, so a header field added ahead of
+        // `version` moves the write instead of leaving this corrupting a
+        // neighbouring field and failing on the assertions below.
         {
             let mut f = std::fs::OpenOptions::new()
                 .read(true)
@@ -235,10 +359,12 @@ mod tests {
                 .open(&path)
                 .expect("reopening the planted pool file");
             let mut version = [0u8; 4];
-            f.seek(SeekFrom::Start(8)).expect("seek to header version");
+            f.seek(SeekFrom::Start(VERSION_OFFSET))
+                .expect("seek to header version");
             f.read_exact(&mut version).expect("read header version");
             let older = u32::from_le_bytes(version).wrapping_sub(1);
-            f.seek(SeekFrom::Start(8)).expect("seek to header version");
+            f.seek(SeekFrom::Start(VERSION_OFFSET))
+                .expect("seek to header version");
             f.write_all(&older.to_le_bytes())
                 .expect("write header version");
             f.flush().expect("flush header version");
@@ -271,6 +397,96 @@ mod tests {
             !TOPIC_POOLS.lock().contains_key(topic),
             "a pool that could not be opened must not be registered: {}",
             err
+        );
+
+        // And the wrapper the no-error-channel callers use (`recv_handle`, the
+        // spill paths) answers `None` on the same file rather than panicking or
+        // handing back a pool it could not open.
+        assert!(
+            pool_or_report(topic).is_none(),
+            "pool_or_report must refuse a pool file this build disagrees with"
+        );
+    }
+
+    /// The throttle that keeps the report above from following a 1 kHz
+    /// subscriber into the log.
+    ///
+    /// Failures are not cached — `get_or_create_pool` returns before
+    /// `pools.insert` — so a faulted topic fails on *every* call, which is what
+    /// makes the throttle load-bearing rather than decorative.
+    #[test]
+    fn an_unusable_pool_is_reported_once_per_window_and_carries_what_it_hid() {
+        let topic = format!("__horus_test_pool_report_window_{}__", std::process::id());
+        let t = topic.as_str();
+
+        // The first occurrence always speaks: a fault is never delayed by up to
+        // a window the first time it happens.
+        assert_eq!(allow_report(t, 10_000), Some(0));
+        for i in 1..REPORT_WINDOW_MS {
+            assert_eq!(allow_report(t, 10_000 + i), None);
+        }
+        // The next line through carries the count, so the throttle hides the
+        // volume of the output and never the volume of the fault.
+        assert_eq!(
+            allow_report(t, 10_000 + REPORT_WINDOW_MS),
+            Some(REPORT_WINDOW_MS - 1)
+        );
+        // ...and the count resets once reported.
+        assert_eq!(allow_report(t, 10_000 + 2 * REPORT_WINDOW_MS), Some(0));
+    }
+
+    /// Per topic, not per call site.
+    ///
+    /// Every caller funnels through one helper, so a call-site gate
+    /// (`hlog_every!`) would let the first broken topic silence the rest — and
+    /// the survivor would read as the only topic in trouble. Same reason the
+    /// scheduler has `DiagThrottle` instead.
+    #[test]
+    fn one_faulted_topic_does_not_silence_another() {
+        let pid = std::process::id();
+        let a = format!("__horus_test_pool_report_a_{pid}__");
+        let b = format!("__horus_test_pool_report_b_{pid}__");
+
+        assert_eq!(allow_report(&a, 20_000), Some(0));
+        assert_eq!(allow_report(&a, 20_001), None);
+        assert_eq!(
+            allow_report(&b, 20_001),
+            Some(0),
+            "a second faulted topic must still be able to report itself"
+        );
+    }
+
+    /// The line an operator actually reads has to distinguish the fault from
+    /// the "no message" it is delivered as, and carry the cause.
+    #[test]
+    fn the_report_names_the_topic_the_fault_and_the_cause() {
+        let err = HorusError::Config(crate::error::ConfigError::Other(
+            "Tensor pool version mismatch: expected 4, got 3".to_string(),
+        ));
+
+        let quiet = unusable_pool_message("camera.rgb", 4242, 0, &err);
+        assert!(quiet.contains("camera.rgb"), "{quiet}");
+        assert!(
+            quiet.contains("4242"),
+            "the pool_id names the file: {quiet}"
+        );
+        assert!(
+            quiet.contains("DROPPED") && quiet.contains("not idle"),
+            "the whole point is that this is not an empty topic: {quiet}"
+        );
+        assert!(
+            quiet.contains("version mismatch: expected 4, got 3"),
+            "the cause must survive into the line: {quiet}"
+        );
+        assert!(
+            !quiet.contains("suppressed"),
+            "nothing was suppressed, so nothing to report: {quiet}"
+        );
+
+        let throttled = unusable_pool_message("camera.rgb", 4242, 999, &err);
+        assert!(
+            throttled.contains("999") && throttled.contains("suppressed"),
+            "a throttled line must still report the volume of the fault: {throttled}"
         );
     }
 }

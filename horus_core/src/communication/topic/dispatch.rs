@@ -1027,9 +1027,11 @@ fn deserialize_spill_slot<T: DeserializeOwned>(
 /// for the SP/MP backends; FanoutShm uses `read_spilled_retained` instead.
 fn read_spilled_once<T: DeserializeOwned>(spill: SpillDescriptor, topic_name: &str) -> Option<T> {
     let tensor = spill.to_tensor();
-    // No usable pool => the payload is unreachable => a counted miss, the same
-    // answer this returns for a superseded slot. It used to be a panic.
-    let pool = super::pool_registry::get_or_create_pool(topic_name).ok()?;
+    // No usable pool => the payload is unreachable => a miss, the same answer
+    // this returns for a superseded slot. It used to be a panic. Unlike a
+    // superseded slot it is a permanent fault, so it is reported (throttled per
+    // topic) rather than left to look like an idle topic.
+    let pool = super::pool_registry::pool_or_report(topic_name)?;
     // Pin the slot across the read, exactly as `read_spilled_retained` does.
     //
     // "There is exactly one reader" was true and still is; what it did not cover
@@ -1070,8 +1072,9 @@ fn read_spilled_retained<T: DeserializeOwned>(
     topic_name: &str,
 ) -> Option<T> {
     let tensor = spill.to_tensor();
-    // No usable pool => the payload is unreachable => a counted miss.
-    let pool = super::pool_registry::get_or_create_pool(topic_name).ok()?;
+    // No usable pool => the payload is unreachable => a miss, reported for the
+    // same reason as in `read_spilled_once`.
+    let pool = super::pool_registry::pool_or_report(topic_name)?;
     // Pin the slot for the read. Err => superseded + freed => clean miss.
     if pool.try_retain(&tensor).is_err() {
         return None;
