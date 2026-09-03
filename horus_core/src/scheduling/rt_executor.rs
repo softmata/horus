@@ -1561,7 +1561,7 @@ impl RtExecutor {
                 // hardware).
                 if super::primitives::guard_fault_callback(|| node.node.on_error(&error_msg)) {
                     rt_diag(format_args!(
-                        " Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                        "[RT-thread] Node '{}' also panicked in on_error() — ignoring (advisory callback)",
                         node.name
                     ));
                 }

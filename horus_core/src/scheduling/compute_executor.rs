@@ -997,7 +997,12 @@ mod tests {
     /// be able to do that.
     #[test]
     fn on_error_panic_does_not_kill_the_compute_thread() {
-        struct DoubleBoom;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::Ordering::Relaxed;
+
+        struct DoubleBoom {
+            on_error_calls: Arc<AtomicU64>,
+        }
         impl Node for DoubleBoom {
             fn name(&self) -> &str {
                 "double_boom"
@@ -1006,29 +1011,63 @@ mod tests {
                 panic!("tick boom");
             }
             fn on_error(&mut self, _msg: &str) {
+                // Count BEFORE panicking: this is the test's evidence that the
+                // coordinator actually entered the guarded callback, so the
+                // wait below cannot pass by simply never getting there.
+                self.on_error_calls.fetch_add(1, Relaxed);
                 panic!("on_error boom");
             }
         }
 
-        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let mut boom = make_compute_node("double_boom", count.clone());
-        boom.node = super::super::types::NodeKind::new(Box::new(DoubleBoom));
-        let nodes = vec![boom, make_compute_node("healthy", count.clone())];
+        // Wait on an observed count, never on a fixed sleep. The deadline is an
+        // upper bound on "this will never happen", not the thing being
+        // measured, so a loaded machine makes this test slower rather than
+        // flaky; the failure it reports is a real stall of the coordinator.
+        fn wait_for(what: &str, cond: impl Fn() -> bool) {
+            let deadline = Instant::now() + 5_u64.secs();
+            while Instant::now() < deadline {
+                if cond() {
+                    return;
+                }
+                std::thread::sleep(1_u64.ms());
+            }
+            panic!("timed out after 5s waiting for {what}");
+        }
+
+        let ticks = Arc::new(AtomicU64::new(0));
+        let on_error_calls = Arc::new(AtomicU64::new(0));
+        let mut boom = make_compute_node("double_boom", ticks.clone());
+        // Only the healthy node ever increments `ticks` — DoubleBoom replaces
+        // the CounterNode that the handle was made for.
+        boom.node = super::super::types::NodeKind::new(Box::new(DoubleBoom {
+            on_error_calls: on_error_calls.clone(),
+        }));
+        let nodes = vec![boom, make_compute_node("healthy", ticks.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
         let executor = ComputeExecutor::start(nodes, running.clone(), 1_u64.ms(), test_monitors());
-        std::thread::sleep(50_u64.ms());
+
+        // 1. The coordinator has run the panicking on_error at least once.
+        wait_for("the first on_error() panic", || {
+            on_error_calls.load(Relaxed) > 0
+        });
+        // 2. The healthy node ticks AFTER that panic. Pre-fix the coordinator
+        //    has already unwound by this point and this never advances.
+        let before = ticks.load(Relaxed);
+        wait_for(
+            "the healthy node to tick again after its neighbour panicked in on_error()",
+            || ticks.load(Relaxed) > before,
+        );
+
         running.store(false, Ordering::SeqCst);
         let returned = executor.stop();
 
+        // The deterministic half: a panicked thread's nodes cannot be
+        // reclaimed, so pre-fix this is 0 of 2 regardless of timing.
         assert_eq!(
             returned.len(),
             2,
             "the compute thread died in on_error() — its nodes were never reclaimed"
-        );
-        assert!(
-            count.load(std::sync::atomic::Ordering::Relaxed) > 1,
-            "the healthy node stopped ticking when its neighbour panicked in on_error()"
         );
     }
 
