@@ -3004,10 +3004,37 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             let head = header.sequence_or_head.load(Ordering::Acquire);
             // Free exactly one slot; the ring stays as full of recent
             // history as it can be.
-            header
-                .tail
-                .fetch_max(head.saturating_sub(capacity - 1), Ordering::Release);
+            let want_tail = head.saturating_sub(capacity - 1);
+            let prev_tail = header.tail.fetch_max(want_tail, Ordering::Release);
             let new_tail = header.tail.load(Ordering::Acquire);
+            // Count what the reclaim retired.
+            //
+            // `fetch_max` returns the tail we replaced, so `want - prev` is
+            // exactly the number of accepted-but-unread messages this producer
+            // just destroyed. Discarding that return value made keep-last-N the
+            // only path in the transport where HORUS itself throws away a
+            // message with no counter recording it -- `dropped_count()` moves
+            // only on an ABANDONED send, and this send is about to succeed.
+            //
+            // Both operands come from this one RMW: `want_tail` is the value it
+            // published and `prev_tail` the value it replaced, so the difference
+            // is what THIS call retired. Re-loading `tail` instead would fold in
+            // whatever moved it afterwards -- a consumer's batched
+            // `header.tail.store` flush, or a second producer reclaiming on the
+            // same ring -- and charge this publisher for messages that were
+            // delivered, or count one reclaim on both producers.
+            // `saturating_sub` also does the "did we actually advance it" test:
+            // a `fetch_max` that lost to a larger tail retired nothing.
+            //
+            // Folded into `send_failures` so `dropped_count()` stays the single
+            // publisher-side loss number a supervisor has to watch; a message
+            // retired to make room is lost to its subscriber either way.
+            let retired = want_tail.saturating_sub(prev_tail);
+            if retired > 0 {
+                self.metrics
+                    .send_failures
+                    .fetch_add(retired, Ordering::Relaxed);
+            }
             // We moved `tail` ourselves. Tell the stall detector so it does not
             // mistake the producer's own write for a consumer waking up and
             // restart its grace period on every single reclaim.
