@@ -341,7 +341,8 @@ impl Replicator {
         for _ in 0..MAX_DATAGRAMS_PER_WAKEUP {
             match self.transport.recv_from(buf.as_mut_slice()) {
                 Ok((n, from)) => {
-                    self.metrics.record_recv(self.peer_id_hash, n);
+                    // Per-peer receive accounting lives in `process_packet`,
+                    // which is the first point that knows who sent this.
                     self.process_packet(&buf[..n], from);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -412,6 +413,26 @@ impl Replicator {
             {
                 return;
             }
+            // Per-peer receive accounting starts here rather than in the recv
+            // loop, because this is the first point at which the SENDER is
+            // known. It used to run one frame up keyed on `self.peer_id_hash`
+            // — our OWN id — so every byte every peer sent us was filed under
+            // this node and `snapshot().peers` could never hold a second row,
+            // whatever `metrics::tests::multiple_peers` asserts is possible.
+            // There is no single decode further up that could have done it:
+            // an announcement carries a 16-byte `peer_id` at byte 6 where a
+            // data packet carries a 2-byte `sender_id_hash`, and the two are
+            // told apart only by the bit-7 discriminator. Datagrams the peer
+            // filter rejected are deliberately absent — they have no peer to
+            // attribute to, and `filtered_count` already counts them.
+            //
+            // Gated on the peer table's answer for the same reason the
+            // heartbeat registration below is: an announcement the (capped)
+            // table refused must not create per-peer state elsewhere, or that
+            // cap bounds nothing. `update_peer` returns true for a peer it
+            // already knows as well as one it just admitted, so a real peer's
+            // repeat announcements keep counting.
+            //
             // Only register a heartbeat emitter for a peer the table actually
             // accepted. This used to be unconditional, so every announcement
             // the (capped) peer table refused still created an uncapped
@@ -421,6 +442,8 @@ impl Replicator {
             // One forged datagram bought permanent outbound traffic aimed
             // wherever the sender liked.
             if self.peers.update_peer(&ann) {
+                self.metrics
+                    .record_recv(peer_id_hash(&ann.peer_id), buf.len());
                 self.heartbeat.add_peer(ann.peer_id, ann.source_addr);
             }
             // Record peer discovery to blackbox
@@ -439,6 +462,18 @@ impl Replicator {
             Some(h) => h,
             None => return,
         };
+        // The sender of every non-announcement kind; see the announcement
+        // branch above for why this is not done in the recv loop.
+        //
+        // Deliberately before the routing below, so this counts what the link
+        // actually delivered from that peer — a heartbeat, an ACK, a fragment
+        // that never completes, a message for an unimported topic and a
+        // type-hash mismatch all arrived and all cost bandwidth. Unlike the
+        // announcement branch there is no acceptance decision to gate on:
+        // nothing on this path authenticates a sender (see
+        // `process_incoming_message`'s doc comment). `NetMetrics::peer_entry`
+        // caps the table so a forged-`sender_id_hash` flood cannot grow it.
+        self.metrics.record_recv(header.sender_id_hash, buf.len());
 
         // 2. Heartbeat packet
         if header.flags.heartbeat() {
@@ -880,8 +915,26 @@ impl Replicator {
                             || msg.priority == Priority::RealTime
                             || self.flow_control.should_send(*sub_id_hash, msg.topic_hash)
                         {
-                            let _ = self.transport.send_to(&self.send_buf[..len], *addr);
-                            self.metrics.record_send(self.peer_id_hash, len);
+                            // Attribute to the DESTINATION, and only count
+                            // what the socket took. Both halves were wrong:
+                            // the row was keyed on `self.peer_id_hash`, our
+                            // own id — the mistake `should_send` one line up
+                            // spells out — and discarding the `Err` made a
+                            // datagram that never left this machine
+                            // indistinguishable from a delivered one.
+                            //
+                            // Count the bytes the socket reports taking, not
+                            // the bytes we offered. For a datagram socket
+                            // those are always equal — sendto(2) on SOCK_DGRAM
+                            // is all-or-nothing, EMSGSIZE rather than a short
+                            // write — but `Transport::send_to` is a trait
+                            // returning io::Result<usize>, so reading the
+                            // count keeps the invariant local instead of
+                            // resting on the reader knowing UDP semantics.
+                            match self.transport.send_to(&self.send_buf[..len], *addr) {
+                                Ok(sent) => self.metrics.record_send(*sub_id_hash, sent),
+                                Err(_) => self.metrics.record_send_error(*sub_id_hash),
+                            }
                         }
                     }
                 }
@@ -1676,6 +1729,14 @@ mod tests {
     // stream reached the fleet at 20 Hz and looked from there exactly like a
     // 20 Hz odometry stream.
 
+    /// The subscriber `exporting_replicator` announces. Its `peer_id_hash` is
+    /// 0x4799 — non-zero, so a metrics row keyed on it cannot be mistaken for
+    /// a default-initialised one.
+    const SUB_PEER_ID: [u8; 16] = [
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0xC3,
+        0x1D,
+    ];
+
     /// A replicator that exports `topic` to a peer listening on `sub_addr`.
     fn exporting_replicator(topic: &str, sub_addr: SocketAddr, stream: bool) -> Replicator {
         let type_hash = wire::topic_hash(topic);
@@ -1697,7 +1758,7 @@ mod tests {
         // A peer that subscribes to the topic, announced from the socket the
         // test is listening on.
         let announcement = crate::discovery::PeerAnnouncement {
-            peer_id: [0x5A; 16],
+            peer_id: SUB_PEER_ID,
             data_port: sub_addr.port(),
             secret_hash: [0u8; 4],
             has_secret: false,
@@ -1852,5 +1913,158 @@ mod tests {
              somewhere, or a 25x downsample is indistinguishable from a slow \
              publisher"
         );
+    }
+
+    // ─── Per-peer metrics: which peer the bytes belong to ─────────────────
+    //
+    // `record_send` and `record_recv` are the only two inserters into
+    // `NetMetrics::peers`, and both used to pass `self.peer_id_hash`. One
+    // constant key means one row, describing this node, no matter how many
+    // peers are talking — and a send the socket refused was folded into
+    // `packets_sent` alongside the ones that left.
+
+    #[test]
+    fn received_bytes_are_attributed_to_the_sender_not_to_us() {
+        let mut rep = test_replicator();
+        // Pin our own id so a row keyed on us is unmistakable.
+        rep.peer_id_hash = 0xBEEF;
+        let dest: SocketAddr = format!("127.0.0.1:{}", rep.transport.local_addr().unwrap().port())
+            .parse()
+            .unwrap();
+        let tx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+
+        // An announcement names its sender with a 16-byte peer_id...
+        let mut announcer = [0x11u8; 16];
+        announcer[15] = 0x22;
+        let mut abuf = [0u8; 1024];
+        let alen =
+            crate::discovery::encode_announcement(&announcer, 9100, &[0u8; 4], &[], &mut abuf);
+        tx.send_to(&abuf[..alen], dest).unwrap();
+
+        // ...every other packet kind with a 2-byte sender_id_hash.
+        const SENDER: u16 = 0x0A0B;
+        let header = PacketHeader::new(PacketFlags::empty(), SENDER, 1);
+        let msg = wire::OutMessage {
+            topic_name: "not_imported_here".into(),
+            topic_hash: wire::topic_hash("not_imported_here"),
+            payload: vec![0u8; 8],
+            timestamp_ns: 0,
+            sequence: 1,
+            priority: Priority::Normal,
+            reliability: Reliability::None,
+            encoding: Encoding::Bincode,
+        };
+        let mut buf = [0u8; 1024];
+        let len = wire::encode_single(&header, &msg, &mut buf);
+        tx.send_to(&buf[..len], dest).unwrap();
+
+        // The replicator's socket is nonblocking, so drain until both loopback
+        // datagrams have landed rather than assuming they already have. One
+        // snapshot serves every assertion below, so the keys and the per-row
+        // counters are guaranteed to describe the same observation.
+        let mut snap = rep.metrics.snapshot();
+        for _ in 0..50 {
+            rep.handle_incoming();
+            snap = rep.metrics.snapshot();
+            if snap.peers.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let mut keys: Vec<u16> = snap.peers.iter().map(|p| p.peer_hash).collect();
+        keys.sort_unstable();
+        let mut expected = vec![SENDER, crate::discovery::peer_id_hash(&announcer)];
+        expected.sort_unstable();
+        assert_eq!(
+            keys, expected,
+            "two senders must produce two rows, neither of them ours"
+        );
+        for p in &snap.peers {
+            assert_eq!(p.packets_received, 1);
+            assert!(p.bytes_received > 0);
+        }
+    }
+
+    #[test]
+    fn exported_bytes_are_attributed_to_the_subscriber_not_to_us() {
+        let sub = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sub.set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        let sub_addr = sub.local_addr().unwrap();
+
+        let name = export_test_topic("attrib");
+        let _topic: horus_core::communication::Topic<horus_robotics::CmdVel> =
+            horus_core::communication::Topic::new(&name).expect("create topic");
+        let path = horus_sys::shm::topic_shm_path(&name);
+
+        let mut rep = exporting_replicator(&name, sub_addr, true);
+        // Pin our own id. `generate_peer_id` is effectively random and these
+        // assertions are precisely about telling it apart from the peer's, so
+        // leaving it random would leave a 1-in-65536 collision in the test.
+        rep.peer_id_hash = 0xBEEF;
+
+        publish_shm(&path, 1.0);
+        rep.handle_export();
+        assert_eq!(drain_exported(&sub), vec![1.0]);
+
+        let snap = rep.metrics.snapshot();
+        assert_eq!(snap.peers.len(), 1, "one subscriber, one row");
+        let peer = &snap.peers[0];
+        assert_eq!(
+            peer.peer_hash,
+            crate::discovery::peer_id_hash(&SUB_PEER_ID),
+            "the row has to describe the peer we sent to"
+        );
+        assert_ne!(
+            peer.peer_hash, rep.peer_id_hash,
+            "per-peer traffic keyed on our own id collapses the whole fleet \
+             into one row"
+        );
+        assert_eq!(peer.packets_sent, 1);
+        assert!(peer.bytes_sent > 0);
+        assert_eq!(peer.send_errors, 0);
+    }
+
+    #[test]
+    fn a_send_the_socket_refused_is_not_counted_as_delivered() {
+        // Port 0 is not a valid UDP destination: `sendto` fails before anything
+        // is queued (EINVAL on Linux; other stacks report their own errno, and
+        // the assertions below deliberately check only that the send failed).
+        // It is the only send failure reproducible on demand — a peer that is
+        // merely gone still returns Ok (measured here, 20000/20000; see
+        // `PeerMetrics::send_errors`).
+        //
+        // PLATFORM ASSUMPTION: that a destination port of 0 is refused
+        // locally. `horus_net`'s tests are Linux-only in practice — the crate
+        // has no Windows event loop and CI excludes it from every Windows job
+        // (.github/workflows/multi-platform.yml), and no macOS job runs
+        // `-p horus_net` at all. Forcing the error through the transport layer
+        // instead would mean making `Replicator::transport` a `dyn Transport`
+        // rather than the concrete `UdpTransport` it is today — dynamic
+        // dispatch on the per-datagram send path, which is a change this fix
+        // should not smuggle in. A stack that accepts port 0 fails this test
+        // loudly rather than silently passing a broken counter.
+        let refused: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+        let name = export_test_topic("refused");
+        let _topic: horus_core::communication::Topic<horus_robotics::CmdVel> =
+            horus_core::communication::Topic::new(&name).expect("create topic");
+        let path = horus_sys::shm::topic_shm_path(&name);
+
+        let mut rep = exporting_replicator(&name, refused, true);
+
+        publish_shm(&path, 1.0);
+        rep.handle_export();
+
+        let snap = rep.metrics.snapshot();
+        assert_eq!(snap.peers.len(), 1);
+        let peer = &snap.peers[0];
+        assert_eq!(
+            peer.packets_sent, 0,
+            "nothing left this machine, so nothing may count as sent"
+        );
+        assert_eq!(peer.bytes_sent, 0);
+        assert_eq!(peer.send_errors, 1);
     }
 }

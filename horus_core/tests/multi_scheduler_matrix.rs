@@ -656,7 +656,10 @@ fn deterministic_alongside_normal_scheduler() {
         let t2 = topic.clone();
         let h_normal = std::thread::spawn(move || {
             let mut sched = Scheduler::new().tick_rate(50_u64.hz()).name("normal_sched");
-            let _ = sched
+            // Not `let _ =`: a dropped registration leaves a scheduler with no
+            // subscriber in it, which is indistinguishable from the silent
+            // no-subscriber run this node was added to rule out.
+            sched
                 .add(CmdVelSubNode {
                     topic_name: t2,
                     node_name: "normal_sub".into(),
@@ -665,7 +668,8 @@ fn deterministic_alongside_normal_scheduler() {
                 })
                 .rate(50_u64.hz())
                 .order(0)
-                .build();
+                .build()
+                .expect("register normal_sub");
             while r2.load(Ordering::Relaxed) {
                 let _ = sched.tick_once();
                 std::thread::sleep(Duration::from_millis(18));
@@ -751,7 +755,8 @@ fn deterministic_alongside_normal_scheduler() {
     assert_eq!(v1.len(), 500, "Det run 1 should produce 500 msgs");
     assert_eq!(v2.len(), 500, "Det run 2 should produce 500 msgs");
     assert_eq!(v1, v2, "Deterministic outputs differ between runs!");
-    // Normal scheduler may or may not receive (CmdVel vs Imu type mismatch in this test)
-    // The key assertion is determinism
+    // Both ends are `Topic<CmdVel>` now, so there is no type mismatch left to
+    // explain a zero count -- it is purely the tick-timing note above. The key
+    // assertion is determinism.
     println!("✓ [4/20] deterministic_alongside_normal_scheduler — PASSED");
 }

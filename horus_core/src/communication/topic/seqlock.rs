@@ -132,6 +132,19 @@ pub(super) unsafe fn seqlock_consume<R>(
             let resume = h.wrapping_sub(capacity);
             *skipped = skipped.wrapping_add(resume.wrapping_sub(next));
             next = resume;
+            // Commit the fast-forward HERE, not only on the success path below:
+            // the gap is billed to `skipped` above, so the cursor has to move
+            // with it, or an attempt-exhausted `None` leaves `tail` at its
+            // pre-lap value and the next call re-derives and re-bills the same
+            // gap. That give-up is the common path, not a corner — capacity is a
+            // power of two and `resume = h - capacity`, so
+            // `resume & mask == h & mask`: the fast-forward lands on exactly the
+            // slot the producer overwrites next, and the version check below
+            // loses to a saturated producer far more often than it wins.
+            // Nothing extra is dropped (`resume` is the oldest position still in
+            // the ring), `tail` is consumer-owned so the store is uncontended,
+            // and the success-path store below supersedes it.
+            tail.store(next, Ordering::Release);
         }
         let idx = (next & mask) as usize;
         let expected = next << 1;
@@ -155,4 +168,121 @@ pub(super) unsafe fn seqlock_consume<R>(
         return Some(val);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A capacity-`CAP` ring on the heap: the same version array, `head` and
+    /// `tail` the SHM channel hands to `seqlock_publish`/`seqlock_consume`,
+    /// without the SHM plumbing. Single-threaded, so the data slots are `Cell`s.
+    struct Ring {
+        versions: Vec<AtomicU64>,
+        data: Vec<Cell<u64>>,
+        head: AtomicU64,
+        tail: AtomicU64,
+        capacity: u64,
+    }
+
+    impl Ring {
+        fn new(capacity: u64) -> Self {
+            assert!(capacity.is_power_of_two());
+            Self {
+                versions: (0..capacity).map(|_| AtomicU64::new(0)).collect(),
+                data: (0..capacity).map(|_| Cell::new(0)).collect(),
+                head: AtomicU64::new(0),
+                tail: AtomicU64::new(0),
+                capacity,
+            }
+        }
+
+        /// Publish the next position, storing the position itself as the payload
+        /// so a delivered value identifies the position it came from.
+        fn publish(&self) {
+            let pos = self.head.load(Ordering::Relaxed);
+            // SAFETY: `versions` has `capacity == mask + 1` entries and this test
+            // is the only producer.
+            unsafe {
+                seqlock_publish(
+                    self.versions.as_ptr(),
+                    self.capacity - 1,
+                    &self.head,
+                    pos,
+                    |idx| self.data[idx].set(pos),
+                );
+            }
+        }
+
+        fn consume(&self, skipped: &mut u64) -> Option<u64> {
+            // SAFETY: same array bounds, and this test is the only consumer.
+            unsafe {
+                seqlock_consume(
+                    self.versions.as_ptr(),
+                    self.capacity - 1,
+                    self.capacity,
+                    &self.head,
+                    &self.tail,
+                    |idx| self.data[idx].get(),
+                    drop,
+                    skipped,
+                )
+            }
+        }
+    }
+
+    /// A lapped consumer that gives up (every attempt lost the version check)
+    /// must not bill the caller for the same lap again on its next call.
+    ///
+    /// The give-up is not a corner case: `resume = h - capacity` and capacity is
+    /// a power of two, so `resume & mask == h & mask` — the fast-forward lands on
+    /// exactly the slot the producer is about to overwrite. Against a saturated
+    /// producer that read loses far more often than it wins, and each loss used
+    /// to re-bank the whole gap, so the reported loss ran orders of magnitude
+    /// above the number of messages ever sent.
+    #[test]
+    fn a_lapped_consumer_that_gives_up_does_not_re_count_the_gap() {
+        const CAP: u64 = 16;
+        let ring = Ring::new(CAP);
+
+        // 20 sent into 16 slots: positions 0-3 are gone, the consumer is at 0.
+        for _ in 0..20 {
+            ring.publish();
+        }
+        // The producer is now mid-write of position 20 — the state the
+        // fast-forward lands in, since it targets slot `head & mask`. Stamped
+        // odd, data not written yet, `head` not advanced yet (`seqlock_publish`).
+        ring.versions[(20 & (CAP - 1)) as usize].store((20 << 1) | 1, Ordering::Release);
+
+        let mut missed = 0u64;
+        assert_eq!(
+            ring.consume(&mut missed),
+            None,
+            "the slot the producer is writing must not be delivered"
+        );
+        assert_eq!(missed, 4, "20 into a 16-slot ring skips 4 positions (0-3)");
+        assert_eq!(ring.consume(&mut missed), None, "still mid-write");
+        assert_eq!(
+            missed, 4,
+            "the second give-up re-counted a lap that was already banked: the \
+             fast-forward must commit `tail`, not leave it for the success path"
+        );
+
+        // The producer finishes position 20; the consumer drains what is left.
+        ring.data[(20 & (CAP - 1)) as usize].set(20);
+        ring.versions[(20 & (CAP - 1)) as usize].store(20 << 1, Ordering::Release);
+        ring.head.store(21, Ordering::Release);
+
+        let mut got = Vec::new();
+        while let Some(v) = ring.consume(&mut missed) {
+            got.push(v);
+        }
+        assert_eq!(
+            got.len() as u64 + missed,
+            21,
+            "received + missed must account for every send and nothing more \
+             (got {got:?}, missed {missed})"
+        );
+    }
 }

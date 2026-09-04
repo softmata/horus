@@ -536,8 +536,9 @@ impl Scheduler {
         let cleanup = crate::memory::platform::cleanup_stale_namespaces();
         if cleanup.removed > 0 {
             log::info!(
-                "Cleaned {} stale SHM namespace(s), freed {} bytes",
-                cleanup.removed,
+                "Cleaned {} stale SHM namespace(s) and {} abandoned region(s), freed {} bytes",
+                cleanup.namespaces_removed,
+                cleanup.files_removed,
                 cleanup.bytes_freed
             );
         }
@@ -2399,9 +2400,34 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// - [`NodeError::InitPanic`] — a node panicked during first-call `init()`
-    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
-    /// - [`NodeError::TickFailed`] — a node's `tick()` returned an error
+    /// A caller receives the umbrella [`HorusError`](crate::error::HorusError), so the
+    /// arms below are the shapes to match; the wrapped sub-error is the discriminator.
+    ///
+    /// - [`HorusError::InvalidInput`](crate::error::HorusError::InvalidInput) wrapping
+    ///   [`ValidationError::InvalidValue`](crate::error::ValidationError::InvalidValue)
+    ///   with `field == "node name"` — two nodes were added under the same name.
+    ///   Recorded by `build()`, reported here.
+    /// - [`HorusError::Resource`](crate::error::HorusError::Resource) wrapping
+    ///   [`ResourceError::Unsupported`](crate::error::ResourceError::Unsupported) with
+    ///   `feature == "Real-time scheduling"` — `require_rt()` was set and real-time could
+    ///   not be fully acquired.
+    /// - [`HorusError::Internal`](crate::error::HorusError::Internal) — the tick did not
+    ///   complete and the loop must not continue. Two conditions reach it: a node's
+    ///   `tick()` panicked and its failure policy said stop, or an RT budget/deadline
+    ///   policy escalated (message `"Fatal node failure during tick_once"`); and a safety
+    ///   monitor latching during this tick — watchdog expiry, external e-stop (message
+    ///   `"Emergency stop triggered during tick_once"`). Both mean the robot needs
+    ///   safing and neither is retryable, so the variant alone is the whole contract:
+    ///   treat every `Internal` out of `tick_once()` as fatal and stop the loop. Do
+    ///   **not** try to tell the two causes apart in code — they share one variant, and
+    ///   `message` is diagnostic text, not a stable discriminator. It is for the log
+    ///   line and the operator, not for a `match`.
+    ///
+    /// A failing `init()` is **not** in that list. The scheduler prints the error and
+    /// leaves the node in its error state (at fatal severity it also stops the scheduler),
+    /// so `Ok(())` here does not mean every node initialized. Nor can a node's tick body
+    /// report an error: [`Node::tick`](crate::core::Node::tick) returns `()`, and a panic
+    /// inside it is caught and routed through the node's failure policy above.
     ///
     /// # Example
     /// ```rust,ignore
@@ -2617,10 +2643,31 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// - [`NodeError::InitPanic`] — a node panicked during `init()`
-    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
-    /// - [`ResourceError::Unsupported`] — `require_rt()` was set but RT is unavailable
-    /// - [`ConfigError`] — invalid scheduler configuration detected during finalization
+    /// A caller receives the umbrella [`HorusError`](crate::error::HorusError), so the
+    /// arms below are the shapes to match; the wrapped sub-error is the discriminator.
+    ///
+    /// - [`HorusError::InvalidInput`](crate::error::HorusError::InvalidInput) wrapping
+    ///   [`ValidationError::InvalidValue`](crate::error::ValidationError::InvalidValue)
+    ///   with `field == "node name"` — two nodes were added under the same name.
+    ///   Recorded by `build()`, reported here.
+    /// - [`HorusError::Resource`](crate::error::HorusError::Resource) wrapping
+    ///   [`ResourceError::Unsupported`](crate::error::ResourceError::Unsupported) with
+    ///   `feature == "Real-time scheduling"` — `require_rt()` was set and real-time could
+    ///   not be fully acquired.
+    /// - [`HorusError::Contextual`](crate::error::HorusError::Contextual) — startup failed
+    ///   before the tick loop ever ran, with `source` carrying the cause. Two sites
+    ///   produce it: the scheduler's tokio runtime could not be created (message
+    ///   `"creating scheduler tokio runtime"`), and the RT executor refused to start
+    ///   (message `"starting RT executor thread pool"`) — two RT chains pinned to the
+    ///   same CPU, which `check_core_collisions()` rejects rather than start chains that
+    ///   cannot both meet their deadlines. No node has ticked when either is returned.
+    ///
+    /// Everything else the loop meets is handled in-place, so `Ok(())` is the return for
+    /// an ordinary shutdown *and* for an abnormal one: a failing `init()` is printed and
+    /// the node left in its error state, and an emergency stop (watchdog expiry, external
+    /// e-stop, Ctrl+C) breaks the loop and shuts down cleanly rather than erroring. Drive
+    /// the loop with [`tick_once()`](Self::tick_once) instead if the caller needs an
+    /// emergency stop reported as an `Err`.
     pub fn run(&mut self) -> HorusResult<()> {
         self.run_with_filter(None, None)
     }
@@ -3850,6 +3897,31 @@ impl Scheduler {
     }
 
     /// Periodic registry snapshot, failure logging, blackbox tick, and telemetry export.
+    ///
+    /// # Why the telemetry export reports, and how
+    ///
+    /// This export and the final one in `finalize_run` were both
+    /// `let _ = tm.export()`. Every failure mode returns a precise string — an
+    /// unwritable `file://` path, a UDP socket that never bound, an HTTP export
+    /// thread that has exited — and discarding it left no surface anywhere
+    /// saying the metrics were not arriving. `TelemetryManager::export` advances
+    /// `last_export` whether or not the snapshot landed, so a broken endpoint
+    /// quietly reschedules itself for the life of the process, under the
+    /// `[SCHEDULER] Telemetry enabled (endpoint: ...)` line printed at startup
+    /// that nothing ever corrected.
+    ///
+    /// Reported through `hlog!` rather than the `log::` facade the HTTP export
+    /// thread uses: `log::` reaches an operator only if something installed a
+    /// logger, and only the CLI does (`try_init_log_bridge` in `horus_manager`).
+    /// A robot binary running its own `Scheduler` — what `horus run` executes as
+    /// a subprocess — has no logger, so `log::warn!` there is a no-op. `hlog!`
+    /// writes to the shared log buffer (`horus log`, `horus monitor`) and the
+    /// console unconditionally.
+    ///
+    /// Not throttled: `should_export()` already gates this to one call per
+    /// export interval (1000 ms wherever a manager is constructed), so a
+    /// permanently broken endpoint costs one line per second — the rate an RT
+    /// deadline miss is already allowed (`DiagThrottle::WINDOW_NS`).
     fn periodic_monitoring(&mut self, start_time: Instant) {
         // Registry snapshot every 5 seconds
         if self.monitor.last_snapshot.elapsed() >= 5_u64.secs() {
@@ -3906,7 +3978,13 @@ impl Scheduler {
                 }
                 drop(profiler);
 
-                let _ = tm.export();
+                // Was `let _ = tm.export()`, which left a misconfigured
+                // endpoint silent for the life of the process. Why the report
+                // goes through `hlog!` and is not throttled: doc comment on
+                // this function.
+                if let Err(e) = tm.export() {
+                    crate::hlog!(warn, "[TELEMETRY] Export failed: {}", e);
+                }
             }
         }
     }
@@ -4229,7 +4307,13 @@ impl Scheduler {
         if let Some(ref mut tm) = self.monitor.telemetry {
             tm.counter("scheduler_ticks", total_ticks);
             tm.gauge("scheduler_shutdown", 1.0);
-            let _ = tm.export();
+            // Reported for the same reason as the periodic export (rationale
+            // on `periodic_monitoring`), and for the same reason the blackbox
+            // save nine lines above reports its failure: this is the run's last
+            // chance to say the metrics never landed.
+            if let Err(e) = tm.export() {
+                crate::hlog!(warn, "[TELEMETRY] Final export failed: {}", e);
+            }
         }
 
         // Print timing report if profiling enabled and ticks were executed
@@ -4517,8 +4601,10 @@ impl Scheduler {
         let cleanup = crate::memory::platform::cleanup_stale_namespaces();
         if cleanup.removed > 0 {
             log::info!(
-                "Session cleanup: removed {} stale SHM namespace(s), freed {} bytes",
-                cleanup.removed,
+                "Session cleanup: removed {} stale SHM namespace(s) and {} abandoned region(s), \
+                 freed {} bytes",
+                cleanup.namespaces_removed,
+                cleanup.files_removed,
                 cleanup.bytes_freed
             );
         }
@@ -5494,9 +5580,13 @@ impl Scheduler {
     /// (`on_error`/`enter_safe_state`/`shutdown`) are invoked exactly when a node
     /// is already failing, so leaving them bare meant one node's recovery panic
     /// killed the control loop of every healthy node.
+    ///
+    /// One implementation, in `primitives`, so the executors — which reach
+    /// their nodes through `RegisteredNode`, not through `self.nodes[i]` —
+    /// guard the same callbacks the same way.
     #[inline]
     fn guard_fault_callback(f: impl FnOnce()) -> bool {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+        super::primitives::guard_fault_callback(f)
     }
 
     /// A node's safing callback (`enter_safe_state`/`shutdown`) panicked, so the

@@ -80,6 +80,11 @@ impl<const CAP: usize> SeqRing<CAP> {
             }
             if avail > CAP as u64 {
                 next = h.wrapping_sub(CAP as u64);
+                // Mirrors the fast-forward commit in `seqlock_consume`: the skip
+                // is banked into the caller's counter before the read, so `tail`
+                // has to move with it or an attempt-exhausted `None` re-counts
+                // the same gap on the next call.
+                self.tail.store(next, Ordering::Release);
             }
             let idx = (next & Self::MASK) as usize;
             let expected = next << 1;

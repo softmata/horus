@@ -101,3 +101,8 @@ rustc-ice-*
 # does not match these, and a stray one committed 3006 build files (including
 # 150MB rlibs) that GitHub rejects outright.
 target-*/
+
+# Patch reject/backup artifacts — `git apply --reject` and `patch` leave these
+# beside the file they failed on, and one reached PR #152 as a committed file.
+*.rej
+*.orig

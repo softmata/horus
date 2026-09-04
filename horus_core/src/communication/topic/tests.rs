@@ -12124,32 +12124,241 @@ fn a_colo_topic_does_not_grow_its_region_on_an_epoch_change() {
 // ============================================================================
 
 /// `send_blocking` documents itself for "emergency stop, motor setpoints" and
-/// promises "delivery or an explicit timeout error". On the default POD
-/// broadcast backend it could keep neither promise: `send_shm_pod_broadcast` has
-/// a single exit, `Ok(())`, so phase 1's `try_send` always succeeded and the
-/// method returned Ok having guaranteed nothing — the slot may be overwritten
-/// before any subscriber reads it.
+/// promises "delivery or an explicit timeout error". On a POD broadcast backend
+/// it could keep neither promise: `send_shm_pod_broadcast` has a single exit,
+/// `Ok(())`, so phase 1's `try_send` always succeeded and the method returned Ok
+/// having guaranteed nothing — the slot may be overwritten before any subscriber
+/// reads it.
+///
+/// This test used to open one handle, call `t.send(0)` and skip unless the mode
+/// came back `PodShm`. It never did, so the test passed without asserting
+/// anything: `detect_optimal_backend` picks PodShm only at `sub_count >= 2`, one
+/// handle is 1P/1C (`SpscShm`), and participant slots are keyed by
+/// (pid, thread) — a second handle on the same thread shares the slot and does
+/// not raise the count. Observed before the repair:
+/// "skipping: expected PodShm, got SpscShm".
 ///
 /// GATE: remove the `provides_backpressure` guard in `send_blocking` and this
 /// fails, because the call returns Ok on a backend that cannot deliver.
 #[test]
 fn send_blocking_refuses_a_backend_that_cannot_apply_backpressure() {
     let name = unique("sb_no_backpressure");
-    let t: Topic<u64> = Topic::new(&name).expect("create");
-    // Drive it onto the POD broadcast backend, the default for POD types.
-    t.send(0);
-    let _ = t.recv();
+    let tx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("tx");
+    let rx: Topic<u64> = Topic::with_capacity(&name, 16, None).expect("rx");
+    assert!(rx.recv().is_none(), "nothing published yet");
+    tx.send(0);
+    let _ = rx.recv();
+    assert!(
+        tx.provides_backpressure(),
+        "1P/1C should select a backend with backpressure, got {}",
+        tx.backend_name()
+    );
 
-    if t.mode() != BackendMode::PodShm {
-        eprintln!("skipping: expected PodShm, got {:?}", t.mode());
-        return;
+    // Reach the broadcast backend the second subscriber would have selected.
+    // Deliberately NOT `force_migrate`: that syncs this handle's cached epoch,
+    // and the guard that re-resolves the cached mode would then never fire.
+    let migrated = matches!(
+        BackendMigrator::new(tx.ring.header()).try_migrate(BackendMode::PodShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    );
+    assert!(migrated, "could not reach PodShm to test it");
+
+    // `send_blocking` reads the handle's CACHED mode before its first `try_send`,
+    // so the epoch change has to be observed first: an empty recv runs
+    // `migration_check!` unconditionally, and that publishes the new epoch to the
+    // other handles in this process, whose send guard then re-resolves the mode.
+    // Which is also the real sequence — a topic is already publishing when the
+    // subscriber that flips it attaches.
+    //
+    // Bounded, not `while rx.recv().is_some() {}`: nothing publishes to this
+    // topic except the test thread itself, which stopped at `tx.send(0)`, so the
+    // drain ends after at most the 16 slots this ring has. An unbounded loop
+    // whose exit depends on that staying true has one failure mode — a CI
+    // timeout with no output — so the cap is set far above the ring and says
+    // what it means when it trips.
+    let mut drained = 0;
+    while rx.recv().is_some() {
+        drained += 1;
+        assert!(
+            drained <= 1024,
+            "rx.recv() has yielded {drained} messages and is still not empty; \
+             something is publishing to this topic that the test did not"
+        );
     }
+    tx.send(1);
+    assert_eq!(
+        tx.mode(),
+        BackendMode::PodShm,
+        "the migration above must have taken effect for this test to mean anything"
+    );
 
-    let r = t.send_blocking(1, 5_u64.ms());
+    let r = tx.send_blocking(2, 5_u64.ms());
     assert!(
         matches!(r, Err(SendBlockingError::NoBackpressure)),
         "send_blocking on a broadcast backend must refuse rather than report a \
          delivery it cannot guarantee; got {r:?}"
+    );
+}
+
+/// The public `send_blocking` doc is the only copy of the contract a caller reads.
+///
+/// `Topic::send_blocking` is the public entry point; `RingTopic::send_blocking`
+/// holds the implementation and `RingTopic` is `pub(crate)`, so its doc renders
+/// nowhere. The corrected contract landed only on the inner one. The public doc
+/// kept promising `Ok(())` or `SendBlockingError::Timeout` and recommending the
+/// call for "critical command topics (emergency stop, motor setpoints)", while
+/// the error a caller actually gets once a logger or a `horus topic echo`
+/// attaches — `NoBackpressure` — appeared nowhere in the rendered page
+/// (`cargo doc -p horus`: 0 occurrences on `struct.Topic.html`). The inner block
+/// meanwhile documented `SendBlockingError::Serialization`, a variant this enum
+/// has never had.
+///
+/// Source text is the observable on purpose: rustdoc output is not reachable
+/// from a unit test, and every part of this defect is in what the caller is told.
+#[test]
+fn every_send_blocking_doc_states_the_error_contract_the_enum_actually_has() {
+    const SRC: &str = include_str!("mod.rs");
+
+    // Variant names as declared, so the check cannot drift from the enum.
+    //
+    // Line-based rather than a brace-depth scan of the raw text: the `#[error]`
+    // attributes here are thiserror format strings, so `{}` and `{0}` appear
+    // inside string literals and a depth counter would close the enum in the
+    // wrong place. There is no Rust parser in dev-dependencies to do it properly
+    // (criterion, tempfile, trybuild, loom, proptest), and pulling `syn` in for
+    // one test is not worth it. What this leans on instead is rustfmt, which CI
+    // enforces: a top-level enum closes at column 0 and every variant sits at
+    // exactly one indent, which is what the two filters below read.
+    //
+    // Every variant form is matched by its leading identifier, not by a trailing
+    // comma — `Timeout,`, `Elapsed(Duration)`, `Rejected { .. }` and `A = 1` all
+    // start the same way. The comma-suffix version of this parser silently
+    // dropped every non-unit variant, which would have quietly narrowed the
+    // contract check below to whatever variants happened to be unit ones: a
+    // drift detector that stops detecting drift is worse than none.
+    fn variants(src: &str) -> Vec<&str> {
+        let start = src
+            .find("pub enum SendBlockingError {")
+            .expect("SendBlockingError is no longer declared in this file");
+        let body = &src[start..];
+        let end = body.find("\n}").expect("unterminated enum");
+        let body = &body[..end];
+        let names: Vec<&str> = body
+            .lines()
+            // One indent exactly: variant lines. Deeper lines are struct-variant
+            // fields or the continuation lines of a multi-line attribute string.
+            .filter_map(|line| line.strip_prefix("    "))
+            .filter(|line| !line.starts_with(' '))
+            .filter_map(|line| {
+                let name_len = line
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(line.len());
+                let (name, rest) = line.split_at(name_len);
+                let starts_upper = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+                // What follows the identifier is what makes it a declaration:
+                // unit, tuple, struct or discriminant. Prose inside an attribute
+                // string does not survive this.
+                let declares = matches!(
+                    rest.trim_start().chars().next(),
+                    Some(',' | '(' | '{' | '=')
+                );
+                (starts_upper && declares).then_some(name)
+            })
+            .collect();
+
+        // Self-check on the parse itself. thiserror needs a display attribute on
+        // every variant of this enum, so the counts agree unless the scan missed
+        // a variant — whether because of a shape it does not know or because the
+        // `\n}` above ended the body early. Either way the drift check below
+        // would go on passing while covering less than it claims to, so it fails
+        // here instead.
+        let attrs = body.matches("#[error").count();
+        assert_eq!(
+            names.len(),
+            attrs,
+            "parsed {names:?} out of `SendBlockingError`, but its body carries \
+             {attrs} `#[error]` attributes — this parser missed a variant"
+        );
+        names
+    }
+
+    // The `///` block directly above the item beginning at `idx`.
+    fn doc_above(src: &str, idx: usize) -> String {
+        let mut block: Vec<&str> = src[..idx]
+            .lines()
+            .rev()
+            .skip_while(|line| {
+                let t = line.trim();
+                t.is_empty() || t.starts_with('#')
+            })
+            .take_while(|line| line.trim_start().starts_with("///"))
+            .collect();
+        block.reverse();
+        block.join("\n")
+    }
+
+    let variants = variants(SRC);
+    assert!(
+        variants.contains(&"Timeout") && variants.contains(&"NoBackpressure"),
+        "parsed {variants:?} — the enum has both, so this parse is what broke"
+    );
+
+    // Collected rather than asserted one at a time: the two blocks drifted apart
+    // in different ways, and a run should name every way at once.
+    let mut drift: Vec<String> = Vec::new();
+
+    // A documented variant that does not exist is a promise about behaviour that
+    // cannot happen, and rustdoc cannot flag it on a `pub(crate)` item because it
+    // never renders one.
+    for (at, _) in SRC.match_indices("SendBlockingError::") {
+        let named: String = SRC[at + "SendBlockingError::".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !named.is_empty() && !variants.iter().any(|v| *v == named) {
+            drift.push(format!(
+                "`SendBlockingError::{named}` is referenced at byte {at}, but the \
+                 enum declares only {variants:?}"
+            ));
+        }
+    }
+
+    // Both definitions: the public one on `Topic` and the inner one on
+    // `RingTopic`. Only the first is ever rendered, which is exactly how the two
+    // drifted, so both are held to the same contract.
+    let mut checked = 0;
+    for (at, _) in SRC.match_indices("pub fn send_blocking(") {
+        let doc = doc_above(SRC, at);
+        for variant in &variants {
+            // The qualified path, not the bare variant name. `Timeout` is also an
+            // ordinary English word on a method whose argument is called
+            // `timeout`, so a doc block that had dropped the error contract
+            // entirely could still satisfy a bare `contains` on one capitalised
+            // mention in prose — a drift detector that its own subject can
+            // accidentally satisfy. Both blocks already write the path, linked or
+            // in a code span, so the stricter needle costs nothing to satisfy
+            // honestly and cannot be met by accident.
+            let named = format!("SendBlockingError::{variant}");
+            if !doc.contains(&named) {
+                drift.push(format!(
+                    "the doc above the `send_blocking` at byte {at} never names \
+                     `{named}`, which it can return"
+                ));
+            }
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "expected the public `Topic::send_blocking` and the inner \
+         `RingTopic::send_blocking`; found {checked}"
+    );
+
+    assert!(
+        drift.is_empty(),
+        "send_blocking's documented error contract does not match \
+         `SendBlockingError`:\n- {}",
+        drift.join("\n- ")
     );
 }
 

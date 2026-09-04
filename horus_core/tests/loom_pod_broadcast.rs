@@ -29,6 +29,11 @@
 //! loom; it is kept (ignored) so the model is demonstrably able to catch the bug
 //! it was written for, rather than passing vacuously.
 //!
+//! A second ignored arm covers the near-miss form — marker stamped first, but
+//! with a Release *store* instead of the fence — which is what `Topic::send`'s
+//! colo fast path shipped. It tears too, and it is the one that looks correct at
+//! a glance. `tests/seqlock_write_phase.rs` keeps the real code off both forms.
+//!
 //! Run with: `cargo test --test loom_pod_broadcast -- --nocapture`
 
 use loom::sync::atomic::{fence, AtomicU64, Ordering};
@@ -78,6 +83,24 @@ impl<const CAP: usize> BroadcastRing<CAP> {
 
         self.ready[idx].store(stamp | SLOT_WRITING, Ordering::Relaxed);
         fence(Ordering::Release);
+        self.data[idx].store(value_for(seq), Ordering::Relaxed);
+        self.ready[idx].store(stamp, Ordering::Release);
+    }
+
+    /// Producer, colo fast path as `Topic::send` wrote it before the fix: the
+    /// marker IS stamped first, but with a Release *store* and no fence.
+    ///
+    /// This is the subtler of the two broken forms, and the reason it needs its
+    /// own arm: it looks like the fixed protocol. A Release store orders the
+    /// accesses BEFORE it, so it does nothing to keep the payload store below
+    /// from being observed ahead of the marker — the consumer can see the new
+    /// bytes under two matching stale stamps and accept the mixture.
+    fn publish_colo_release_marker(&self) {
+        let seq = self.head.fetch_add(1, Ordering::Relaxed);
+        let idx = (seq & Self::MASK) as usize;
+        let stamp = seq.wrapping_add(1);
+
+        self.ready[idx].store(stamp | SLOT_WRITING, Ordering::Release);
         self.data[idx].store(value_for(seq), Ordering::Relaxed);
         self.ready[idx].store(stamp, Ordering::Release);
     }
@@ -256,6 +279,60 @@ fn naive_protocol_tears_proving_the_model_can_detect_it() {
                 val,
                 value_for(pos),
                 "torn read under the OLD protocol (expected — this is the bug)"
+            );
+        }
+    });
+}
+
+/// The colo fast path's write phase, against the REAL consumer.
+///
+/// `Topic::send`'s role=Both POD fast path publishes into this same ring
+/// (`mod.rs`, the `cached_colo_stride != 0` branch), and sibling handles on the
+/// topic drain it through `recv_shm_pod_broadcast` — modelled here by `consume`,
+/// unchanged. That path stamped the marker with `store(Release)` and no fence,
+/// which is what this arm runs. It is expected to FAIL, and is `#[ignore]`d for
+/// the same reason as the arm above: a model that cannot fail proves nothing,
+/// and this failure is what makes the fence in `Topic::send` load-bearing rather
+/// than ornamental.
+///
+///   cargo test --test loom_pod_broadcast -- --ignored colo
+#[test]
+#[ignore = "demonstrates the pre-fix colo write phase failing; run by hand to validate the model"]
+fn colo_release_marker_tears_proving_the_fence_is_load_bearing() {
+    loom::model(|| {
+        let ring = Arc::new(BroadcastRing::<2>::new());
+
+        let producer = {
+            let ring = ring.clone();
+            loom::thread::spawn(move || {
+                for _ in 0..3 {
+                    ring.publish_colo_release_marker();
+                }
+            })
+        };
+
+        let consumer = {
+            let ring = ring.clone();
+            loom::thread::spawn(move || {
+                let mut accepted = Vec::new();
+                for _ in 0..2 {
+                    if let Some(r) = ring.consume() {
+                        accepted.push(r);
+                    }
+                }
+                accepted
+            })
+        };
+
+        producer.join().unwrap();
+        let accepted = consumer.join().unwrap();
+
+        for (val, pos) in accepted {
+            assert_eq!(
+                val,
+                value_for(pos),
+                "torn read: the Release-store marker does not order the payload \
+                 write that follows it (expected — this is the bug)"
             );
         }
     });

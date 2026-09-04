@@ -25,80 +25,42 @@ Option B: Automatic registration
 - The first release will automatically register the name
 - The package is published as "horus-robotics" on PyPI
 
-### 3. Generate PyPI API Token
+### 3. Configure Trusted Publishing
 
-1. Log in to https://pypi.org
-2. Go to Account Settings → API tokens
-3. Click "Add API token"
-4. Configure:
-   - Token name: `GitHub Actions - HORUS`
-   - Scope: Select "Entire account" (or "Project: horus-robotics" after first release)
-5. Click "Create token"
-6. **IMPORTANT:** Copy the token immediately (starts with `pypi-`)
-   - You won't be able to see it again!
+**There is no token to create.** `build-wheels.yml` publishes with PyPI's
+trusted publishing (OIDC): the `release` job declares `environment: pypi` and
+`id-token: write`, and `pypa/gh-action-pypi-publish` exchanges that for a
+short-lived credential at upload time. Nothing is stored in GitHub Secrets,
+so there is nothing to leak or rotate.
 
-### 4. Add Token to GitHub Secrets
+This is not optional or an "alternative" — the workflow reads no token, so a
+`PYPI_TOKEN` secret would sit unread. That mismatch is what broke v0.4.0: the
+job was already configured for trusted publishing and then authenticated the
+old way with `maturin upload`, which read `MATURIN_PYPI_TOKEN` from a secret
+that was never set, and every upload returned
 
-1. Go to your GitHub repository
-2. Navigate to: Settings → Secrets and variables → Actions
-3. Click "New repository secret"
-4. Configure:
-   - Name: `PYPI_TOKEN`
-   - Value: Paste the token from step 3 (pypi-...)
-5. Click "Add secret"
-
-### 5. Optional: Set Up TestPyPI (Recommended)
-
-TestPyPI allows you to test releases before publishing to production PyPI.
-
-1. Go to https://test.pypi.org/account/register/
-2. Create an account (separate from PyPI)
-3. Generate an API token (same process as above)
-4. Add to GitHub secrets as `TEST_PYPI_TOKEN`
-
-To publish to TestPyPI, modify the workflow or create a separate test workflow.
-
-## Release Process
-
-Once set up, releasing is automatic:
-
-```bash
-# 1. Update version numbers
-vim horus_py/Cargo.toml      # version = "0.2.0"
-vim horus_py/pyproject.toml  # version = "0.2.0"
-
-# 2. Commit changes
-git add horus_py/Cargo.toml horus_py/pyproject.toml
-git commit -m "Bump version to 0.2.0"
-
-# 3. Create and push tag
-git tag v0.2.0
-git push origin main --tags
-
-# 4. Wait ~10-15 minutes
-# GitHub Actions will:
-# - Build wheels for all platforms
-# - Test installation
-# - Publish to PyPI automatically
+```
+⛔ 403 Invalid or non-existent authentication information.
 ```
 
-## Monitoring Releases
+so 0.2.x, 0.3.0 and 0.4.0 were built, tested on twelve platform/Python
+combinations, and never published. PyPI stayed on 0.1.9.
 
-### Check GitHub Actions
-1. Go to: Actions → Build Python Wheels
-2. Watch the build progress
-3. Each platform should show green checkmarks
+**One-time setup**, at
+https://pypi.org/manage/project/horus-robotics/settings/publishing/ — the
+project already exists, so this is the project's own publishing settings, not
+the "pending publisher" form for unclaimed names:
 
-### Verify on PyPI
-1. Go to: https://pypi.org/project/horus-robotics/
-2. New version should appear within minutes
-3. Check that all platforms are available
+| Field | Value |
+| --- | --- |
+| Owner | `softmata` |
+| Repository | `horus` |
+| Workflow name | `build-wheels.yml` |
+| Environment name | `pypi` |
 
-### Test Installation
-```bash
-pip install horus-robotics==0.2.0
-python -c "import horus; print(horus.__version__)"
-```
+All four must match exactly. The environment name is the one on the `release`
+job in `build-wheels.yml`; changing either without the other silently breaks
+publishing again, and the failure only shows up on a tag.
 
 ## Troubleshooting
 
@@ -110,9 +72,13 @@ python -c "import horus; print(horus.__version__)"
   - Version conflicts (check version numbers match)
 
 ### Upload Fails
-- Check that `PYPI_TOKEN` is set correctly in GitHub secrets
-- Verify token has correct permissions
-- Ensure version number hasn't been used before (PyPI versions are immutable)
+- `403 Invalid or non-existent authentication information` means the trusted
+  publisher does not match. Check all four fields above — owner, repository,
+  workflow filename, environment — against the `release` job.
+- A version already on PyPI means the tag did not bump
+  `horus_py/pyproject.toml`. The job deliberately sets no `skip-existing`, so
+  this is a red run rather than a quiet pass. PyPI versions are immutable;
+  bump and cut a new tag.
 
 ### Wheel Not Found for Platform
 - Check the build matrix in `.github/workflows/build-wheels.yml`
@@ -126,21 +92,6 @@ python -c "import horus; print(horus.__version__)"
 - ✅ Use GitHub Secrets for storage
 - ✅ Regenerate tokens if exposed
 - ✅ Use project-scoped tokens when possible
-
-### Trusted Publishing (Alternative)
-
-For enhanced security, you can use PyPI's trusted publishing instead of tokens:
-
-1. Go to PyPI → Your project → Settings → Publishing
-2. Add a trusted publisher:
-   - Owner: your-github-username
-   - Repository: horus
-   - Workflow: build-wheels.yml
-   - Environment: pypi
-3. Update workflow to use `id-token: write` (already configured)
-4. Remove `PYPI_TOKEN` secret
-
-This is more secure as it doesn't require long-lived tokens.
 
 ## Version Management
 
