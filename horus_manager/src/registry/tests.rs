@@ -738,18 +738,40 @@ fn test_package_metadata_serde() {
 // ============================================================================
 
 #[test]
-fn test_registry_client_default() {
-    let client = RegistryClient::default();
-    // Should have a non-empty base_url
-    assert!(!client.base_url().is_empty());
+fn test_registry_client_with_explicit_base_url() {
+    // Pinned rather than ambient: `RegistryClient::new()` now depends on
+    // whether a registry is configured at all, which is a property of the
+    // environment, not of the client.
+    let client = RegistryClient::with_base_url("https://registry.example".to_string());
+    assert_eq!(client.base_url(), "https://registry.example");
+    let _ = client.http_client();
 }
 
 #[test]
-fn test_registry_client_new() {
-    let client = RegistryClient::new();
-    assert!(!client.base_url().is_empty());
-    // http_client should be available
-    let _ = client.http_client();
+fn new_reports_that_no_registry_is_configured() {
+    // The point of the fallible constructor: when nothing is configured the
+    // caller gets an explanation it can show, not a client aimed at a dead URL.
+    if crate::config::registry_url().is_none() {
+        let err = RegistryClient::new()
+            .err()
+            .expect("no registry configured, so new() must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("HORUS_REGISTRY_URL"),
+            "error must name the escape hatch: {msg}"
+        );
+    }
+}
+
+#[test]
+fn is_configured_agrees_with_new() {
+    assert_eq!(
+        RegistryClient::is_configured(),
+        RegistryClient::new().is_ok(),
+        "is_configured() is the non-allocating form of `new().is_ok()`; they \
+         must not disagree, or callers branching on it will take a path that \
+         then fails to construct a client"
+    );
 }
 
 // ============================================================================

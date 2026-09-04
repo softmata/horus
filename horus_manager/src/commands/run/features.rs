@@ -198,7 +198,14 @@ pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
     use crate::registry::RegistryClient;
 
     let mut features = Vec::new();
-    let client = RegistryClient::new();
+    // Driver metadata lives in the registry. With no registry configured there
+    // is nothing to look up, and this function has no channel to report an
+    // error on -- so it returns the features it could determine locally rather
+    // than querying a URL that is not there.
+    let client = match RegistryClient::new() {
+        Ok(client) => client,
+        Err(_) => return features,
+    };
 
     for driver in &config.drivers {
         let backend = config.backends.get(driver).map(|s| s.as_str());

@@ -58,7 +58,7 @@ fn load_auth_config() -> HorusResult<AuthConfig> {
 /// Starts a local callback server, opens the browser for GitHub OAuth,
 /// and automatically saves the API key after authentication completes.
 pub fn login() -> HorusResult<()> {
-    let registry_url = get_registry_url();
+    let registry_url = require_registry_url()?;
 
     // Start local callback server on a random port
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| {
@@ -410,7 +410,7 @@ fn save_auth_config(api_key: &str, registry_url: &str, username: Option<&str>) -
 pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusResult<()> {
     println!("Generating API key...");
 
-    let registry_url = get_registry_url();
+    let registry_url = require_registry_url()?;
     let key_name = name.unwrap_or_else(|| {
         // Generate default name based on hostname
         let hostname = hostname::get()
@@ -587,20 +587,38 @@ pub fn whoami() -> HorusResult<()> {
     Ok(())
 }
 
-/// Get the registry URL
-pub fn get_registry_url() -> String {
+/// Get the registry URL to authenticate against, if there is one.
+///
+/// `None` means there is nothing to log in to. A saved config from a previous
+/// session still counts -- that URL was reachable once and may be again -- so
+/// this only comes back empty when the user has never configured a registry and
+/// no public default is compiled in (#173).
+pub fn get_registry_url() -> Option<String> {
     // First check environment variable
     if let Ok(url) = std::env::var("HORUS_REGISTRY_URL") {
-        return url;
+        if !url.trim().is_empty() {
+            return Some(url.trim().to_string());
+        }
     }
 
     // Then check config file
     if let Ok(config) = load_auth_config() {
-        return config.registry_url;
+        if !config.registry_url.trim().is_empty() {
+            return Some(config.registry_url);
+        }
     }
 
     // Default
     crate::config::registry_url()
+}
+
+/// `get_registry_url`, as an error when nothing is configured.
+fn require_registry_url() -> HorusResult<String> {
+    get_registry_url().ok_or_else(|| {
+        HorusError::Config(ConfigError::Other(
+            crate::config::NO_REGISTRY_CONFIGURED.to_string(),
+        ))
+    })
 }
 
 /// List API keys
@@ -1113,7 +1131,7 @@ mod tests {
     fn auth_config_pretty_print_roundtrip() {
         let config = AuthConfig {
             api_key: "horus_key_test".to_string(),
-            registry_url: "https://plugins.horusrobotics.dev".to_string(),
+            registry_url: "https://registry.example".to_string(),
             github_username: Some("dev".to_string()),
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -1375,7 +1393,7 @@ mod tests {
 
         std::env::set_var("HORUS_REGISTRY_URL", "https://custom-registry.test");
         let url = get_registry_url();
-        assert_eq!(url, "https://custom-registry.test");
+        assert_eq!(url.as_deref(), Some("https://custom-registry.test"));
 
         // Restore
         match original {
@@ -1394,7 +1412,7 @@ mod tests {
         save_auth_config("horus_key_test", "https://from-config.test", None).unwrap();
 
         let url = get_registry_url();
-        assert_eq!(url, "https://from-config.test");
+        assert_eq!(url.as_deref(), Some("https://from-config.test"));
 
         // Restore
         match original_registry {
@@ -1787,7 +1805,7 @@ mod tests {
         for key in &valid_keys {
             let config = AuthConfig {
                 api_key: key.to_string(),
-                registry_url: "https://api.horusrobotics.dev".to_string(),
+                registry_url: "https://registry.example".to_string(),
                 github_username: Some("testuser".to_string()),
             };
             let json = serde_json::to_string_pretty(&config).unwrap();
@@ -1838,7 +1856,7 @@ mod tests {
         assert!(validate_token(valid_token));
         let config = AuthConfig {
             api_key: valid_token.to_string(),
-            registry_url: "https://api.horusrobotics.dev".to_string(),
+            registry_url: "https://registry.example".to_string(),
             github_username: None,
         };
         let json = serde_json::to_string(&config).unwrap();

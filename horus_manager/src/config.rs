@@ -3,13 +3,42 @@
 //! All infrastructure URLs and defaults live here. Each can be overridden
 //! by environment variables, enabling self-hosted registry and offline use.
 
-/// Default HORUS registry API URL.
-/// Override with `HORUS_REGISTRY_URL` environment variable.
-pub const DEFAULT_REGISTRY_URL: &str = "https://api.horusrobotics.dev";
+/// Default HORUS registry API URL, or `None` when no public registry is running.
+///
+/// This is `None` today. The hosted registry at `api.horusrobotics.dev` is
+/// suspended and answers every request with HTTP 503, and
+/// `plugins.horusrobotics.dev` has no DNS record at all. Shipping those URLs as
+/// compiled-in defaults did not degrade gracefully — it made an outage
+/// indistinguishable from an empty ecosystem, because a failed search was
+/// discarded and reported as "no results" with exit code 0. Absent is honest;
+/// a dead URL is not.
+///
+/// Self-hosted registries are unaffected: set `HORUS_REGISTRY_URL` and every
+/// registry command works exactly as before. Restoring a public registry is a
+/// one-line change here — put the URL back in the `Some(..)` and nothing else
+/// needs to move.
+///
+/// Tracked in <https://github.com/softmata/horus/issues/173>.
+pub const DEFAULT_REGISTRY_URL: Option<&str> = None;
 
-/// Default plugin registry URL.
-/// Override with `HORUS_PLUGIN_REGISTRY_URL` environment variable.
-pub const DEFAULT_PLUGIN_REGISTRY_URL: &str = "https://plugins.horusrobotics.dev/api/v1";
+/// Default plugin registry URL, or `None` when no public registry is running.
+///
+/// `None` for the same reason as [`DEFAULT_REGISTRY_URL`]; override with
+/// `HORUS_PLUGIN_REGISTRY_URL`.
+pub const DEFAULT_PLUGIN_REGISTRY_URL: Option<&str> = None;
+
+/// What every registry-backed command prints when no registry is configured.
+///
+/// One string so the CLI cannot drift into saying different things in different
+/// places about the same condition.
+pub const NO_REGISTRY_CONFIGURED: &str = "\
+no package registry is configured.
+  The public HORUS registry is not running yet (tracking:
+  https://github.com/softmata/horus/issues/173).
+
+  Packages still work without it:
+    - `path` and `git` dependencies in horus.toml are unaffected
+    - set HORUS_REGISTRY_URL=<url> to use a self-hosted registry";
 
 /// PyPI JSON API base URL.
 pub const PYPI_API_URL: &str = "https://pypi.org/pypi";
@@ -17,15 +46,26 @@ pub const PYPI_API_URL: &str = "https://pypi.org/pypi";
 /// Crates.io API base URL.
 pub const CRATES_IO_API_URL: &str = "https://crates.io/api/v1/crates";
 
-/// Get the registry URL from env var or default.
-pub fn registry_url() -> String {
-    std::env::var("HORUS_REGISTRY_URL").unwrap_or_else(|_| DEFAULT_REGISTRY_URL.to_string())
+/// The registry URL from the environment, else the compiled-in default.
+///
+/// `None` means no registry is configured and registry-backed commands must say
+/// so rather than guess. An env var set to whitespace counts as unset: an empty
+/// base URL would otherwise build request paths like `/api/packages/search` and
+/// fail as a confusing relative-URL parse error rather than as "not configured".
+pub fn registry_url() -> Option<String> {
+    resolve_registry_url("HORUS_REGISTRY_URL", DEFAULT_REGISTRY_URL)
 }
 
-/// Get the plugin registry URL from env var or default.
-pub fn plugin_registry_url() -> String {
-    std::env::var("HORUS_PLUGIN_REGISTRY_URL")
-        .unwrap_or_else(|_| DEFAULT_PLUGIN_REGISTRY_URL.to_string())
+/// The plugin registry URL from the environment, else the compiled-in default.
+pub fn plugin_registry_url() -> Option<String> {
+    resolve_registry_url("HORUS_PLUGIN_REGISTRY_URL", DEFAULT_PLUGIN_REGISTRY_URL)
+}
+
+fn resolve_registry_url(var: &str, fallback: Option<&str>) -> Option<String> {
+    match std::env::var(var) {
+        Ok(url) if !url.trim().is_empty() => Some(url.trim().to_string()),
+        _ => fallback.map(str::to_string),
+    }
 }
 
 // === Security Constants ===
@@ -97,19 +137,123 @@ mod tests {
 
     // ── Constants validation ─────────────────────────────────────────
 
+    // Both defaults are `None` while the public registry is down (#173). These
+    // stay as conditionals rather than being deleted, so that whoever restores
+    // a URL still cannot land a plaintext one.
+
     #[test]
-    fn default_registry_url_is_https() {
-        assert!(
-            DEFAULT_REGISTRY_URL.starts_with("https://"),
-            "Registry URL must use HTTPS"
+    fn default_registry_url_is_https_if_set() {
+        if let Some(url) = DEFAULT_REGISTRY_URL {
+            assert!(
+                url.starts_with("https://"),
+                "Registry URL must use HTTPS, got {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_plugin_registry_url_is_https_if_set() {
+        if let Some(url) = DEFAULT_PLUGIN_REGISTRY_URL {
+            assert!(
+                url.starts_with("https://"),
+                "Plugin registry URL must use HTTPS, got {url}"
+            );
+        }
+    }
+
+    // ── Registry resolution (#173) ───────────────────────────────────
+    //
+    // These drive `resolve_registry_url` directly rather than
+    // `registry_url()`. The public wrappers read fixed env var names, and
+    // libtest runs the module's tests in one process on many threads, so two
+    // tests touching HORUS_REGISTRY_URL race each other. Passing a unique var
+    // name per test removes the shared state instead of trying to lock it.
+
+    #[test]
+    fn the_public_registry_default_is_absent() {
+        // Deliberate, not an oversight: `api.horusrobotics.dev` is suspended and
+        // answers 503, and `plugins.horusrobotics.dev` has no DNS record. A
+        // default pointing at either one turns an outage into a silent "no
+        // results". Restoring one is the intended way to close #173 -- this test
+        // is what makes that a conscious edit rather than a drive-by.
+        assert_eq!(DEFAULT_REGISTRY_URL, None);
+        assert_eq!(DEFAULT_PLUGIN_REGISTRY_URL, None);
+    }
+
+    #[test]
+    fn resolve_returns_none_when_unset_and_no_default() {
+        std::env::remove_var("HORUS_TEST_REG_UNSET");
+        assert_eq!(resolve_registry_url("HORUS_TEST_REG_UNSET", None), None);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_the_compiled_default() {
+        std::env::remove_var("HORUS_TEST_REG_FALLBACK");
+        assert_eq!(
+            resolve_registry_url("HORUS_TEST_REG_FALLBACK", Some("https://d.example")),
+            Some("https://d.example".to_string())
         );
     }
 
     #[test]
-    fn default_plugin_registry_url_is_https() {
+    fn env_override_wins_over_the_compiled_default() {
+        std::env::set_var("HORUS_TEST_REG_OVERRIDE", "https://mine.example");
+        assert_eq!(
+            resolve_registry_url("HORUS_TEST_REG_OVERRIDE", Some("https://d.example")),
+            Some("https://mine.example".to_string())
+        );
+    }
+
+    #[test]
+    fn a_blank_env_override_is_treated_as_unset() {
+        // An empty base URL is the dangerous case: it does not fail loudly, it
+        // builds request paths like "/api/packages/search" that fail later as an
+        // opaque relative-URL parse error. Blank means "not configured".
+        for blank in ["", "   ", "\t", "\n"] {
+            std::env::set_var("HORUS_TEST_REG_BLANK", blank);
+            assert_eq!(
+                resolve_registry_url("HORUS_TEST_REG_BLANK", None),
+                None,
+                "{blank:?} should count as unset"
+            );
+            assert_eq!(
+                resolve_registry_url("HORUS_TEST_REG_BLANK", Some("https://d.example")),
+                Some("https://d.example".to_string()),
+                "{blank:?} should fall through to the default"
+            );
+        }
+        std::env::remove_var("HORUS_TEST_REG_BLANK");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed_from_an_override() {
+        // A trailing newline is what a `HORUS_REGISTRY_URL=$(cat url.txt)` gives
+        // you, and it would otherwise be pasted straight into the request URL.
+        std::env::set_var("HORUS_TEST_REG_TRIM", "  https://mine.example\n");
+        assert_eq!(
+            resolve_registry_url("HORUS_TEST_REG_TRIM", None),
+            Some("https://mine.example".to_string())
+        );
+        std::env::remove_var("HORUS_TEST_REG_TRIM");
+    }
+
+    #[test]
+    fn the_no_registry_message_stays_actionable() {
+        // The whole point of this message is that a user who hits it knows what
+        // to do next and where to look. If someone trims it down to "registry
+        // unavailable", this fails.
+        let msg = NO_REGISTRY_CONFIGURED;
         assert!(
-            DEFAULT_PLUGIN_REGISTRY_URL.starts_with("https://"),
-            "Plugin registry URL must use HTTPS"
+            msg.contains("HORUS_REGISTRY_URL"),
+            "must name the escape hatch: {msg}"
+        );
+        assert!(
+            msg.contains("issues/173"),
+            "must link the tracking issue: {msg}"
+        );
+        assert!(
+            msg.contains("path") && msg.contains("git"),
+            "must say what still works without a registry: {msg}"
         );
     }
 
@@ -210,7 +354,7 @@ mod tests {
         std::env::remove_var("HORUS_REGISTRY_URL");
 
         let url = registry_url();
-        assert_eq!(url, DEFAULT_REGISTRY_URL);
+        assert_eq!(url.as_deref(), DEFAULT_REGISTRY_URL);
 
         // Restore if was set
         if let Some(val) = original {
@@ -224,7 +368,7 @@ mod tests {
         std::env::remove_var("HORUS_PLUGIN_REGISTRY_URL");
 
         let url = plugin_registry_url();
-        assert_eq!(url, DEFAULT_PLUGIN_REGISTRY_URL);
+        assert_eq!(url.as_deref(), DEFAULT_PLUGIN_REGISTRY_URL);
 
         if let Some(val) = original {
             std::env::set_var("HORUS_PLUGIN_REGISTRY_URL", val);
@@ -247,24 +391,21 @@ mod tests {
 
     #[test]
     fn test_config_default_values() {
-        // Registry URL has a sensible HTTPS default
-        let url = DEFAULT_REGISTRY_URL;
-        assert!(
-            url.starts_with("https://"),
-            "Default registry URL should use HTTPS"
-        );
-        assert!(!url.is_empty(), "Default registry URL should not be empty");
-
-        // Plugin registry URL has a sensible HTTPS default
-        let plugin_url = DEFAULT_PLUGIN_REGISTRY_URL;
-        assert!(
-            plugin_url.starts_with("https://"),
-            "Default plugin registry URL should use HTTPS"
-        );
-        assert!(
-            !plugin_url.is_empty(),
-            "Default plugin registry URL should not be empty"
-        );
+        // A configured default must be HTTPS and non-empty. `None` -- the
+        // current state while the public registry is down -- is also valid;
+        // what is NOT valid is a default that is present but unusable.
+        for (label, url) in [
+            ("registry", DEFAULT_REGISTRY_URL),
+            ("plugin registry", DEFAULT_PLUGIN_REGISTRY_URL),
+        ] {
+            if let Some(url) = url {
+                assert!(
+                    url.starts_with("https://"),
+                    "default {label} URL should use HTTPS"
+                );
+                assert!(!url.is_empty(), "default {label} URL should not be empty");
+            }
+        }
 
         // Security defaults are reasonable
         assert!(
@@ -307,7 +448,11 @@ mod tests {
         std::env::set_var("HORUS_REGISTRY_URL", test_url);
 
         let url = registry_url();
-        assert_eq!(url, test_url, "registry_url() should return env override");
+        assert_eq!(
+            url.as_deref(),
+            Some(test_url),
+            "registry_url() should return env override"
+        );
 
         // Set plugin registry URL via env var, then read it back
         let original_plugin = std::env::var("HORUS_PLUGIN_REGISTRY_URL").ok();
@@ -316,7 +461,8 @@ mod tests {
 
         let plugin_url = plugin_registry_url();
         assert_eq!(
-            plugin_url, test_plugin_url,
+            plugin_url.as_deref(),
+            Some(test_plugin_url),
             "plugin_registry_url() should return env override"
         );
 
@@ -377,8 +523,8 @@ mod tests {
         // "Save" the current config values as TOML
         let contents = format!(
             "[urls]\nregistry = \"{}\"\nplugin_registry = \"{}\"\npypi = \"{}\"\ncrates_io = \"{}\"\n\n[security]\nmax_attempts = {}\nmin_password_length = {}\nrate_limit_window_secs = {}\nsession_timeout_secs = {}\nsession_absolute_timeout_secs = {}\n",
-            DEFAULT_REGISTRY_URL,
-            DEFAULT_PLUGIN_REGISTRY_URL,
+            DEFAULT_REGISTRY_URL.unwrap_or(""),
+            DEFAULT_PLUGIN_REGISTRY_URL.unwrap_or(""),
             PYPI_API_URL,
             CRATES_IO_API_URL,
             AUTH_MAX_ATTEMPTS,
@@ -399,11 +545,11 @@ mod tests {
         let urls = parsed.get("urls").unwrap();
         assert_eq!(
             urls.get("registry").unwrap().as_str().unwrap(),
-            DEFAULT_REGISTRY_URL
+            DEFAULT_REGISTRY_URL.unwrap_or("")
         );
         assert_eq!(
             urls.get("plugin_registry").unwrap().as_str().unwrap(),
-            DEFAULT_PLUGIN_REGISTRY_URL
+            DEFAULT_PLUGIN_REGISTRY_URL.unwrap_or("")
         );
         assert_eq!(urls.get("pypi").unwrap().as_str().unwrap(), PYPI_API_URL);
         assert_eq!(

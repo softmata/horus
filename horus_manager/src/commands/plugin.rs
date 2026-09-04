@@ -20,6 +20,10 @@ pub fn run_search_with_category(
     let all = discovery
         .discover_all()
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    // Captured before filtering: whether the registry was consulted is a fact
+    // about the search itself, and the user needs it most in exactly the case
+    // where the filtered result is empty.
+    let registry_status = discovery.registry_status().clone();
 
     let query_lower = query.to_lowercase();
     let category_filter = category.as_ref().and_then(|c| parse_category(c));
@@ -52,9 +56,23 @@ pub fn run_search_with_category(
                 })
             })
             .collect();
+        // `registry` is reported so a script can tell "nothing matched" from
+        // "nothing was searched". Without it, both are `"results": []`.
         let output = serde_json::json!({
             "query": query,
             "category": category,
+            "registry": match &registry_status {
+                crate::plugins::RegistryStatus::Queried => serde_json::json!({"consulted": true}),
+                crate::plugins::RegistryStatus::NotConfigured => serde_json::json!({
+                    "consulted": false,
+                    "reason": "not_configured",
+                }),
+                crate::plugins::RegistryStatus::Failed(why) => serde_json::json!({
+                    "consulted": false,
+                    "reason": "unreachable",
+                    "error": why,
+                }),
+            },
             "results": items,
         });
         println!(
@@ -65,6 +83,10 @@ pub fn run_search_with_category(
     }
 
     print_search_results(&results, &query, category.as_deref());
+    if let Some(note) = registry_status.note() {
+        println!();
+        println!("{}", note.dimmed());
+    }
     Ok(())
 }
 
@@ -260,9 +282,11 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
         return run_info(name);
     }
 
-    // Fall back to registry search for installed packages
-    let client = registry::RegistryClient::new();
-    match client.search(&name, None, None) {
+    // Fall back to registry search for installed packages. A missing registry
+    // is not fatal here -- local packages are checked below -- but it is
+    // reported at the end so "not found" cannot mean "never looked".
+    let mut registry_note: Option<String> = None;
+    match registry::RegistryClient::new().and_then(|c| c.search(&name, None, None)) {
         Ok(results) => {
             // Look for exact match
             if let Some(pkg) = results.iter().find(|p| p.name == name) {
@@ -294,8 +318,8 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
                 return Ok(());
             }
         }
-        Err(_) => {
-            // Registry unreachable, skip
+        Err(e) => {
+            registry_note = Some(e.to_string());
         }
     }
 
@@ -379,12 +403,18 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
         }
     }
 
-    // Nothing found
+    // Nothing found. If the registry half of the lookup never ran, say so:
+    // "not found" and "not searched for" are different answers, and reporting
+    // the first when the second is true is what sends users away believing a
+    // package does not exist.
     if json {
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "name": name,
             "found": false,
         });
+        if let Some(note) = &registry_note {
+            output["registry_error"] = serde_json::Value::String(note.clone());
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&output).unwrap_or_default()
@@ -394,9 +424,13 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
             name
         ))));
     }
+    let suffix = match &registry_note {
+        Some(note) => format!("\n  The registry was not searched: {note}"),
+        None => String::new(),
+    };
     Err(HorusError::Config(ConfigError::Other(format!(
-        "'{}' not found. Use 'horus search <query>' to find available packages and plugins",
-        name
+        "'{}' not found. Use 'horus search <query>' to find available packages and plugins{}",
+        name, suffix
     ))))
 }
 
@@ -439,8 +473,11 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
         target
     };
 
-    // Install via the existing package install flow
-    let client = registry::RegistryClient::new();
+    // Install via the existing package install flow. Without a registry there
+    // is nothing to install FROM, so this is the error the user gets -- not a
+    // transport failure against a placeholder URL.
+    let client = registry::RegistryClient::new()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     let installed_version = client
         .install_to_target(&plugin, ver.as_deref(), install_target.clone())
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;

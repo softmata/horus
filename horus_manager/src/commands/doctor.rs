@@ -1837,13 +1837,21 @@ fn check_network() -> CheckResult {
     // has been answering 503 "service suspended" while `horus search` printed
     // an empty list and exited 0. Offline is a normal state, not a fault, so
     // this is short, single-shot and never fatal.
-    let registry_url = crate::config::registry_url();
-    if no_net {
-        details.push(format!(
+    match crate::config::registry_url() {
+        // No registry configured is the shipped default while the public one is
+        // down (#173). Reported as information, not a fault: nothing is broken
+        // on this machine, and `horus doctor` warning about it on every run
+        // would train users to ignore the Network section.
+        None => details.push(
+            "Registry: none configured — `horus search` returns local results only, \
+             and `horus add`/`publish` are unavailable. Set HORUS_REGISTRY_URL to \
+             use a self-hosted registry."
+                .to_string(),
+        ),
+        Some(registry_url) if no_net => details.push(format!(
             "Registry: {registry_url} not probed (HORUS_NO_NETWORK=1)"
-        ));
-    } else {
-        match probe_registry(&registry_url) {
+        )),
+        Some(registry_url) => match probe_registry(&registry_url) {
             RegistryProbe::Status(code) if (200..300).contains(&code) => {
                 details.push(format!("Registry: {registry_url} answered {code}"));
             }
@@ -1859,7 +1867,7 @@ fn check_network() -> CheckResult {
                     "Registry: {registry_url} unreachable ({error}) — expected when offline"
                 ));
             }
-        }
+        },
     }
 
     let summary = if remote_count > 0 {

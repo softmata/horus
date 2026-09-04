@@ -1204,6 +1204,19 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
             println!("  - {}", pkg.yellow());
         }
 
+        // Build the client BEFORE prompting. These packages are required --
+        // declining below is a hard error -- so if there is nowhere to install
+        // from, the honest move is to fail with that reason rather than ask a
+        // question whose "yes" cannot be honoured.
+        use crate::registry::RegistryClient;
+        let client = RegistryClient::new().map_err(|e| {
+            anyhow!(
+                "missing required package(s) {} and {}",
+                missing_packages.join(", "),
+                e
+            )
+        })?;
+
         print!(
             "\n{} Install missing packages from registry? [Y/n]: ",
             "?".cyan()
@@ -1217,10 +1230,6 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
         if input.is_empty() || input == "y" || input == "yes" {
             // User wants to install
             println!("\n{} Installing packages...", cli_output::ICON_INFO.cyan());
-
-            // Import registry client
-            use crate::registry::RegistryClient;
-            let client = RegistryClient::new();
 
             // Install missing packages from the HORUS registry.
             for package in &missing_packages {

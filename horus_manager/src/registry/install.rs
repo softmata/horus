@@ -2755,7 +2755,7 @@ mod system_reference_tests {
     /// before anything is created.
     #[test]
     fn system_reference_rejects_path_shaped_names() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::with_base_url("https://registry.example".to_string());
         let tmp = tempfile::tempdir().unwrap();
         let target = crate::workspace::InstallTarget::Local(tmp.path().to_path_buf());
 

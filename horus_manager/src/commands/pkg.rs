@@ -1274,7 +1274,7 @@ pub fn run_add_dep(
                 .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
         };
 
-        let client = registry::RegistryClient::new();
+        let client = registry_client()?;
         let installed_version = client
             .install_to_target(&package, ver.as_deref(), install_target.clone())
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -1383,7 +1383,7 @@ pub fn run_install_standalone(
         workspace::InstallTarget::Global
     };
 
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     let installed_version = client
         .install_to_target(package, ver, install_target.clone())
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -1725,8 +1725,6 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
     if json {
         return run_list_json(query, global, all);
     }
-    let client = registry::RegistryClient::new();
-
     if let Some(q) = query {
         // Search registry marketplace
         println!(
@@ -1734,6 +1732,9 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
             cli_output::ICON_INFO.cyan(),
             q
         );
+        // Constructed here, not at the top of the function: listing installed
+        // packages is a local operation and must not need a registry.
+        let client = registry_client()?;
         let results = client
             .search(&q, None, None)
             .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2022,9 +2023,21 @@ fn print_package_info(packages_dir: &Path, name: &str, entry_path: &Path) -> boo
     false
 }
 
+/// A registry client, or the "no registry configured" explanation as a
+/// `HorusError`.
+///
+/// Every caller below is a registry operation -- publish, yank, transfer an
+/// owner -- so "there is no registry" is a complete and final answer for all of
+/// them. Going through one helper is what keeps them from drifting into saying
+/// it seventeen slightly different ways.
+fn registry_client() -> HorusResult<registry::RegistryClient> {
+    registry::RegistryClient::new()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))
+}
+
 /// Publish a package to the registry
 pub fn run_publish(dry_run: bool) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .publish(None, dry_run, None)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2034,7 +2047,7 @@ pub fn run_publish(dry_run: bool) -> HorusResult<()> {
 
 /// Update packages
 pub fn run_update(package: Option<String>, global: bool, dry_run: bool) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .update_packages(package.as_deref(), global, dry_run)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2089,7 +2102,7 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
     }
 
     // Call unpublish API
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .unpublish(&package, &version)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2113,7 +2126,7 @@ pub fn run_yank(package: String, version: String, reason: Option<String>) -> Hor
         package.yellow(),
         version.yellow()
     );
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .yank(&package, &version, reason.as_deref())
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2135,7 +2148,7 @@ pub fn run_unyank(package: String, version: String) -> HorusResult<()> {
         package.yellow(),
         version.yellow()
     );
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .unyank(&package, &version)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2153,7 +2166,7 @@ pub fn run_deprecate(package: String, message: Option<String>) -> HorusResult<()
         cli_output::ICON_INFO.cyan(),
         package.yellow(),
     );
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .deprecate(&package, message.as_deref())
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2165,7 +2178,7 @@ pub fn run_deprecate(package: String, message: Option<String>) -> HorusResult<()
 }
 
 pub fn run_undeprecate(package: String) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .undeprecate(&package)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2174,7 +2187,7 @@ pub fn run_undeprecate(package: String) -> HorusResult<()> {
 }
 
 pub fn run_owner_list(package: String) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     let owners = client
         .list_owners(&package)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2203,7 +2216,7 @@ pub fn run_owner_list(package: String) -> HorusResult<()> {
 }
 
 pub fn run_owner_add(package: String, user: String) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .add_owner(&package, &user)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2212,7 +2225,7 @@ pub fn run_owner_add(package: String, user: String) -> HorusResult<()> {
 }
 
 pub fn run_owner_remove(package: String, user: String) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .remove_owner(&package, &user)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2225,7 +2238,7 @@ pub fn run_owner_remove(package: String, user: String) -> HorusResult<()> {
 }
 
 pub fn run_owner_transfer(package: String, target: String, org: bool) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     if org {
         client
             .transfer_to_org(&package, &target)
@@ -2253,7 +2266,7 @@ pub fn run_owner_transfer(package: String, target: String, org: bool) -> HorusRe
 }
 
 pub fn run_owner_pending() -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     let transfers = client
         .pending_transfers()
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2285,7 +2298,7 @@ pub fn run_owner_pending() -> HorusResult<()> {
 }
 
 pub fn run_owner_accept(id: String) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .accept_transfer(&id)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
@@ -2294,7 +2307,7 @@ pub fn run_owner_accept(id: String) -> HorusResult<()> {
 }
 
 pub fn run_owner_reject(id: String) -> HorusResult<()> {
-    let client = registry::RegistryClient::new();
+    let client = registry_client()?;
     client
         .reject_transfer(&id)
         .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
