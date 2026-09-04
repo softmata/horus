@@ -63,6 +63,10 @@ env:
 
 permissions:
   contents: read
+  # Read the previous trunk run's artifact to recover the rolling baseline.
+  # The baseline cannot live in the Actions cache; see "Restore rolling
+  # baseline" below. Read-only: nothing here writes to the repository.
+  actions: read
   pull-requests: write  # benchmark job posts/updates a PR comment via github-script
 
 jobs:
@@ -131,21 +135,97 @@ jobs:
         key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Restore rolling baseline
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: benchmarks/${{ env.BENCH_HISTORY }}
-        # The primary key is deliberately unique per run so it never hits: the
-        # restore always falls through to the prefix below, which returns the
-        # most recently *created* matching cache — i.e. the newest baseline.
+      # The baseline is restored from the previous trunk run's ARTIFACT, not
+      # from the Actions cache.
+      #
+      # It used to come from the cache, and the cache could not hold it. On
+      # 2026-09-04 the gate's own output on the newest green trunk run read:
+      #
+      #     baseline  : none — rolling window of 0 run(s)
+      #
+      # with `N/A (no baseline)` against every metric of every benchmark. The
+      # window had gone 3 -> 1 -> 1 -> 1 over four trunk runs, and the repo held
+      # zero `benchmark-history-*` caches. The save was not failing — the log
+      # says `Cache saved with key: benchmark-history-main-33808800880` — the
+      # entry was being evicted before the next run could read it.
+      #
+      # Why: Actions caches share a 10 GB per-repository quota and are evicted
+      # least-recently-used. This repo sits at ~9.84 GB across ~20 cargo caches
+      # of 300 MB-1 GB, each touched by some workflow on nearly every push. The
+      # baseline is 4 KB and is read by one job on one branch. It is always the
+      # LRU victim. Six seconds after saving it, this very job saves a ~500 MB
+      # `Linux-cargo-bench-*` entry, so the benchmark job helps evict its own
+      # baseline.
+      #
+      # Artifacts are not subject to that quota or that eviction: every
+      # `benchmark-results` artifact from the same period was still downloadable
+      # when the caches were gone. So the window is carried in the artifact this
+      # job already uploads, and no new storage is introduced.
+      #
+      # Best-effort by construction. A missing artifact (first run ever,
+      # retention expiry, a run that failed before upload) leaves the file
+      # absent, and `BaselineHistory::load` degrades to an empty window with a
+      # warning — the documented behaviour. It must never fail the build: a gate
+      # people cannot get past is a gate people delete.
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+        mkdir -p benchmarks
+
+        # Trunk runs, newest first, taking the first that yields a usable
+        # history. Deliberately NOT filtered to successful runs: a trunk run
+        # that FAILS the gate has still recorded the regression that failed it,
+        # and the next run has to inherit that. The cache-based version got this
+        # right for the same reason ("a regression that lands on main is a
+        # regression the baseline has to know about; otherwise every subsequent
+        # build fails for the same reason and the gate gets disabled"), and it
+        # would be easy to lose here by asking only for green runs.
         #
-        # This is the bug that made the old baseline useless. The key was
-        # `benchmark-baseline-${{ github.base_ref || 'main' }}`, a constant. A
-        # cache entry can never be overwritten under a key that already exists,
-        # so after the very first save the baseline would have frozen at that
-        # first run forever — if anything had ever saved it, which nothing did.
-        key: benchmark-history-main-${{ github.run_id }}
-        restore-keys: |
-          benchmark-history-main-
+        # The current run id is excluded: re-running a run would otherwise
+        # restore that run's own uploaded artifact and freeze the window at
+        # whatever it already held.
+        #
+        # Walking rather than taking the newest matters because a run can
+        # complete without a usable history — it may have failed before the
+        # benchmarks produced one — and that must fall through to an older run
+        # rather than silently emptying the window.
+        CANDIDATES=$(gh run list \
+                       --repo "$GITHUB_REPOSITORY" \
+                       --workflow "${{ github.workflow }}" \
+                       --branch main \
+                       --event push \
+                       --limit 30 \
+                       --json databaseId,conclusion \
+                       --jq "[.[] | select(.databaseId != ${{ github.run_id }})
+                                  | select(.conclusion == \"success\" or .conclusion == \"failure\")]
+                             | .[].databaseId" \
+                     2>/dev/null || true)
+
+        if [ -z "${CANDIDATES:-}" ]; then
+          echo "No previous trunk run found; starting an empty window."
+          exit 0
+        fi
+
+        for PREV in $CANDIDATES; do
+          rm -rf /tmp/prev-bench
+          if gh run download "$PREV" \
+               --repo "$GITHUB_REPOSITORY" \
+               -n benchmark-results \
+               -D /tmp/prev-bench 2>/dev/null \
+             && [ -f "/tmp/prev-bench/$BENCH_HISTORY" ]; then
+            RUNS=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['runs']))" \
+                     "/tmp/prev-bench/$BENCH_HISTORY" 2>/dev/null || echo 0)
+            if [ "$RUNS" != "0" ] && [ "$RUNS" != "?" ]; then
+              cp "/tmp/prev-bench/$BENCH_HISTORY" "benchmarks/$BENCH_HISTORY"
+              echo "Recovered a window of $RUNS run(s) from run $PREV."
+              exit 0
+            fi
+            echo "Run $PREV carried an empty window; trying the one before it."
+          fi
+        done
+
+        echo "No trunk run in the last 30 carried a usable $BENCH_HISTORY; starting an empty window."
 
     - name: Setup Shared Memory
       run: |
@@ -234,9 +314,23 @@ jobs:
         # deliberately off for pull requests: a PR author is not responsible for
         # drift that landed on main before their branch, and a gate that fails
         # people for someone else's commit gets switched off within a week.
+        #
+        # --require-baseline exits non-zero when the window is empty. The gate
+        # has always had this flag -- its help text calls it "the wiring check"
+        # -- and nothing ever passed it, which is why four trunk runs gated
+        # nothing without going red.
+        #
+        # Trunk only, deliberately. On main an empty window is a broken pipeline
+        # and the people who can fix it are the ones watching main. On a pull
+        # request it would fail the contributor for an infrastructure problem
+        # they did not cause and cannot fix, and "a gate that fails people for
+        # someone else's commit gets switched off within a week" is the
+        # reasoning already applied to the escalation two lines below. Pull
+        # requests still get the annotation raised by "Report the baseline
+        # window".
         TRUNK=""
         if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
-          TRUNK="--trunk --record"
+          TRUNK="--trunk --record --require-baseline"
         fi
 
         "$GITHUB_WORKSPACE/target/release/regression_gate" \
@@ -261,16 +355,40 @@ jobs:
         fi
         exit "$GATE_STATUS"
 
-    - name: Save rolling baseline
-      # Runs even when the gate failed. A regression that lands on main is a
-      # regression the baseline has to know about; otherwise every subsequent
-      # build fails for the same reason and the gate gets disabled.
-      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-      continue-on-error: true
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: benchmarks/${{ env.BENCH_HISTORY }}
-        key: benchmark-history-main-${{ github.run_id }}
+    - name: Report the baseline window
+      # A gate with no baseline PASSES. That is the property that let this go
+      # unnoticed for four trunk runs: `rolling window of 0 run(s)`, `N/A (no
+      # baseline)` on every metric, and a green check. The size of the window is
+      # the one number that says whether the gate did any work, so it is raised
+      # to an annotation and the job summary rather than left on line 4 of a log
+      # nobody opens on a green run.
+      if: always()
+      run: |
+        set -uo pipefail
+        WINDOW=$(sed -n 's/.*rolling window of \([0-9]*\) run(s).*/\1/p' \
+                   benchmarks/gate-output.txt 2>/dev/null | head -1)
+        WINDOW=${WINDOW:-unknown}
+
+        {
+          echo "## Performance gate baseline"
+          echo
+          echo "Rolling window: **${WINDOW} run(s)**"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # One line each: an annotation is a single line, and a backslash
+        # continuation would carry this file's indentation into the message.
+        if [ "$WINDOW" = "0" ]; then
+          echo "::warning::Performance gate ran with an EMPTY baseline — every metric reported N/A and nothing was compared. A green check here does not mean performance held. Expected only on the first trunk run, or after artifact retention lapses."
+        elif [ "$WINDOW" != "unknown" ] && [ "$WINDOW" -lt 5 ] 2>/dev/null; then
+          echo "::notice::Baseline window is ${WINDOW} run(s). The gate needs 5 before it trusts a measured spread; until then only gross regressions can fail it."
+        fi
+
+    # The rolling baseline is no longer saved to the Actions cache. It is
+    # carried forward by the `benchmark-results` artifact uploaded below, which
+    # already contains `${{ env.BENCH_HISTORY }}` and is what the next trunk run
+    # restores from. Saving to the cache as well would write an entry that is
+    # evicted before it is ever read, and whose presence made the window look
+    # maintained while the gate compared nothing.
 
     - name: Upload benchmark results
       if: always()

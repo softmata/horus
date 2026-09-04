@@ -1667,6 +1667,19 @@ impl ComparisonReport {
                     .map(|c| c.advisory_regressions().len())
                     .sum::<usize>()
             );
+        } else if self.baseline_runs == 0 {
+            // Distinct from the short-window case below, and much worse. With no
+            // baseline at all, `compare_one` leaves every metric at the
+            // `robust_center` guard and `continue`s before `change_percent` is
+            // computed -- so the gross-multiplier check is not reached either.
+            // NOTHING can fail the job. Saying "only gross regressions can fail"
+            // here, as this branch used to, states a floor that does not exist.
+            println!(
+                "PASS (VACUOUS): the baseline window is empty, so every metric reported\n\
+                 N/A and nothing was compared. This is not a statement about performance:\n\
+                 no input to this run could have failed it, gross regressions included.\n\
+                 Pass --require-baseline to make this state a non-zero exit."
+            );
         } else if self.baseline_runs < self.policy.min_baseline_runs {
             println!(
                 "PASS (inconclusive): the baseline window holds {} run(s); {} are needed before\n\
@@ -1795,6 +1808,24 @@ impl ComparisonReport {
             out.push('\n');
         } else if self.has_regressions() {
             out.push_str("### Result: PASS (with tail advisories)\n\n");
+        } else if self.baseline_runs == 0 {
+            // print_summary degrades honestly and this did not, so the console
+            // said "PASS (inconclusive)" while the pull-request comment -- the
+            // only one of the two a reviewer reads -- said "PASS".
+            out.push_str("### Result: PASS (VACUOUS — nothing was compared)\n\n");
+            out.push_str(
+                "The baseline window is empty, so every metric reported N/A. **This is not a \
+                 statement about performance**: no input to this run could have failed it, \
+                 gross regressions included.\n\n",
+            );
+        } else if self.baseline_runs < self.policy.min_baseline_runs {
+            out.push_str("### Result: PASS (inconclusive)\n\n");
+            out.push_str(&format!(
+                "The baseline window holds only {} run(s); {} are needed before its spread can \
+                 be estimated. Until then the declared blocking metrics are advisory and only \
+                 a gross regression can fail the job.\n\n",
+                self.baseline_runs, self.policy.min_baseline_runs
+            ));
         } else {
             out.push_str("### Result: PASS\n\n");
         }
@@ -2111,6 +2142,93 @@ mod tests {
             history.push(&report_with(&Shape::healthy(median)));
         }
         history
+    }
+
+    // ── What the gate says when it cannot gate ──────────────────────────
+    //
+    // On 2026-09-04 the required "Run Benchmarks" check was green on trunk
+    // while its own output read `rolling window of 0 run(s)` with
+    // `N/A (no baseline)` against every metric. The console degraded to
+    // "PASS (inconclusive) ... only gross regressions can fail", and the
+    // pull-request comment -- the surface a reviewer actually reads -- said
+    // "Result: PASS" with no qualification at all.
+    //
+    // Both were wrong, in opposite directions. The comment did not disclose the
+    // degradation; the console disclosed it but overstated the floor, because at
+    // zero runs not even a gross regression can fail.
+
+    #[test]
+    fn an_empty_window_cannot_fail_on_any_input() {
+        // 100x worse than anything the healthy shape produces. If a floor
+        // existed at all, this would hit it.
+        let history = window(0, &[100.0]);
+        let current = report_with(&Shape::healthy(10_000.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        assert_eq!(report.baseline_runs, 0);
+        assert!(
+            !report.has_blocking_regressions(),
+            "documents the defect rather than the fix: with no baseline, \
+             compare_one leaves every metric at the robust_center guard and \
+             continues before change_percent is computed, so the gross \
+             multiplier is never reached. A 100x regression passes."
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn the_pr_comment_discloses_a_vacuous_pass() {
+        let history = window(0, &[100.0]);
+        let current = report_with(&Shape::healthy(10_000.0));
+        let md = history
+            .compare(&[&current], &RegressionPolicy::default())
+            .to_markdown();
+
+        assert!(
+            md.contains("VACUOUS"),
+            "the PR comment must say nothing was compared; it used to render a \
+             bare `Result: PASS` here. Got:\n{md}"
+        );
+        assert!(
+            !md.contains("### Result: PASS\n"),
+            "an unqualified PASS heading must not appear for an empty window. \
+             Got:\n{md}"
+        );
+        assert!(
+            md.contains("not a statement about performance"),
+            "the comment has to say what the green result does and does not \
+             mean. Got:\n{md}"
+        );
+    }
+
+    #[test]
+    fn the_pr_comment_discloses_a_short_window() {
+        let history = window(2, &[100.0, 104.0]);
+        let current = report_with(&Shape::healthy(102.0));
+        let md = history
+            .compare(&[&current], &RegressionPolicy::default())
+            .to_markdown();
+
+        assert!(
+            md.contains("inconclusive"),
+            "a window below min_baseline_runs leaves the declared blocking \
+             metrics advisory -- the comment must say so. Got:\n{md}"
+        );
+    }
+
+    #[test]
+    fn a_healthy_full_window_still_renders_an_unqualified_pass() {
+        // Without this, "always print the disclaimer" would satisfy the three
+        // tests above while making the report useless.
+        let history = window(10, &[95.0, 105.0, 99.0, 110.0, 92.0]);
+        let current = report_with(&Shape::healthy(101.0));
+        let md = history
+            .compare(&[&current], &RegressionPolicy::default())
+            .to_markdown();
+
+        assert!(md.contains("### Result: PASS"), "got:\n{md}");
+        assert!(!md.contains("VACUOUS"), "got:\n{md}");
+        assert!(!md.contains("inconclusive"), "got:\n{md}");
     }
 
     #[test]
