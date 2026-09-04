@@ -347,8 +347,14 @@ pub struct MetricPolicy {
     /// 2026-09-04: median 90→80ns, p95 110→100, p99 150→140, p99.9 170→160,
     /// max 230ns→8.47µs. A real regression moves the median.
     ///
-    /// These metrics are still measured, still printed, and still count toward
-    /// the trunk streak rule. They just cannot fail a job on their own.
+    /// These metrics are still measured and still printed. What they cannot do
+    /// is fail a job on ONE run.
+    ///
+    /// They can still fail a **trunk** run by the streak rule: gross on
+    /// `consecutive_to_block` trunk runs in a row is sustained, because a
+    /// descheduled sample does not repeat on schedule. That path needs
+    /// `min_baseline_runs` of prior history at each step, so it cannot fire on
+    /// a thin window.
     pub single_sample: bool,
 }
 
@@ -1057,6 +1063,28 @@ impl BaselineHistory {
                         mp.gross_multiplier
                     )
                 });
+                // One preemption is noise; the same metric gross on N
+                // consecutive TRUNK runs is not. This is the streak rule the
+                // `over` branch below applies, extended to the single-sample
+                // metrics that skip that branch — without it a genuine tail
+                // regression that never moves the median could never fail
+                // anything, which would be the opposite mistake to the one
+                // this commit fixes.
+                //
+                // `above_band_streak` requires `min_baseline_runs` of prior
+                // history at each step, so a thin window yields 0 and this
+                // cannot fire on the very baseline that caused the trouble.
+                if mp.single_sample && is_trunk_run && policy.consecutive_to_block > 0 {
+                    cmp.streak = 1 + self.above_band_streak(key, metric, applicable, mp, policy);
+                    if cmp.streak >= policy.consecutive_to_block {
+                        cmp.blocking = !cpu_model_mismatch;
+                        cmp.note = Some(format!(
+                            "{:.1}x the baseline center on {} consecutive trunk runs; one                              descheduled sample does not repeat, so this is sustained",
+                            current / center,
+                            cmp.streak
+                        ));
+                    }
+                }
             } else if over {
                 cmp.verdict = Verdict::Regressed;
                 cmp.blocking = mp.enforcement == Enforcement::Blocking
@@ -2289,6 +2317,71 @@ mod tests {
     }
 
     #[test]
+    fn a_sustained_gross_max_blocks_on_trunk() {
+        // The other side of making max advisory. One preemption is noise; the
+        // same excursion on run after run of TRUNK is not, because a
+        // descheduled sample does not repeat on schedule. Without this a real
+        // tail regression that never moves the median could never fail
+        // anything.
+        let mut history = window(8, &[100.0]);
+        for _ in 0..4 {
+            history.push(&report_with(&one_preempted_sample(100.0)));
+        }
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.evaluate(&ComparisonInput {
+            current: &[&current],
+            policy: &RegressionPolicy::default(),
+            is_trunk_run: true,
+        });
+
+        assert!(
+            report.has_blocking_regressions(),
+            "a gross max sustained across consecutive trunk runs is drift, not \
+             a draw, and must block"
+        );
+    }
+
+    #[test]
+    fn a_sustained_gross_max_does_not_block_a_pull_request() {
+        // Same input, `is_trunk_run: false`. A PR author is not responsible
+        // for drift that landed on trunk before their branch — the same
+        // reasoning the streak rule already applies to every other metric.
+        let mut history = window(8, &[100.0]);
+        for _ in 0..4 {
+            history.push(&report_with(&one_preempted_sample(100.0)));
+        }
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.evaluate(&ComparisonInput {
+            current: &[&current],
+            policy: &RegressionPolicy::default(),
+            is_trunk_run: false,
+        });
+
+        assert!(
+            !report.has_blocking_regressions(),
+            "the consecutive-runs escalation must not apply to pull requests"
+        );
+    }
+
+    #[test]
+    fn a_single_gross_max_does_not_block_even_on_trunk() {
+        // One bad run against a clean history: the streak is 1, below the
+        // threshold, so this stays advisory on trunk too.
+        let history = window(8, &[100.0]);
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.evaluate(&ComparisonInput {
+            current: &[&current],
+            policy: &RegressionPolicy::default(),
+            is_trunk_run: true,
+        });
+
+        assert!(
+            !report.has_blocking_regressions(),
+            "one preempted sample on trunk is still one preempted sample"
+        );
+    }
+
+    #[test]
     fn only_max_and_max_jitter_are_treated_as_single_samples() {
         // Pins the classification, so a future metric added to the policy
         // table has to make this choice deliberately rather than inherit it.
@@ -2419,6 +2512,13 @@ mod tests {
         let history = window(10, &[100.0, 98.0, 103.0, 101.0, 99.0]);
         let mut shape = Shape::healthy(100.0);
         // Median and p99 shape held constant on purpose: only the far tail moves.
+        //
+        // `p9999` is what makes this block, and it has to be: it is ReportOnly
+        // but it is an order statistic over 100k samples, not one observation,
+        // so the gross multiplier still applies to it. `max` is set too but no
+        // longer blocks on its own — see `MetricPolicy::single_sample`. Do not
+        // "simplify" this by dropping the p9999 line; the test would keep its
+        // name and stop testing anything.
         shape.p9999 = 4_000_000;
         shape.max = 8_000_000;
         let current = report_with(&shape);
