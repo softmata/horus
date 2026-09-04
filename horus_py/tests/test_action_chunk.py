@@ -395,6 +395,46 @@ def test_sample_into_refuses_an_object_that_merely_fakes_array_interface():
         c.sample_into(T0_NS + DT_NS, FakeArray())
 
 
+def test_sample_into_refuses_an_ndarray_subclass_that_overrides_the_interface():
+    """An `isinstance` check would have let this through.
+
+    Attribute lookup respects subclasses, so a subclass of ndarray can override
+    `__array_interface__` with a property and hand back an arbitrary data
+    pointer while still passing `isinstance(x, np.ndarray)`. Only exact type
+    identity proves the attribute came from numpy's own implementation.
+
+    The pointer here is NULL rather than wild for the same reason as above: a
+    regression fails cleanly instead of taking the process down.
+    """
+
+    class Sneaky(np.ndarray):
+        @property
+        def __array_interface__(self):
+            return {
+                "typestr": "<f4",
+                "shape": [ACTION_DIM],
+                "strides": None,
+                "data": (0, False),
+                "version": 3,
+            }
+
+    victim = np.zeros(ACTION_DIM, dtype=np.float32).view(Sneaky)
+    assert isinstance(victim, np.ndarray), "the premise: it passes isinstance"
+
+    c = make()
+    with pytest.raises(TypeError, match="exactly a numpy.ndarray"):
+        c.sample_into(T0_NS + DT_NS, victim)
+
+
+def test_sample_into_accepts_a_plain_ndarray():
+    # The other half: the guard must not have made the normal case fail.
+    c = make()
+    out = np.zeros(ACTION_DIM, dtype=np.float32)
+    at = c.sample_into(T0_NS + DT_NS, out)
+    assert isinstance(at, horus.ActionAt.Inside)
+    assert np.array_equal(out, ramp()[1])
+
+
 def test_sample_into_refuses_a_non_contiguous_view():
     # A strided view's base pointer does not address the elements the caller
     # means, so writing through it would scatter values into the wrong slots.

@@ -489,22 +489,38 @@ impl PyActionChunk {
     ) -> PyResult<PyActionAt> {
         require_f32(&self.inner, "sample_into")?;
 
-        // `out` must BE a numpy.ndarray, not merely something that exposes
-        // `__array_interface__`.
+        // `out` must be EXACTLY numpy.ndarray — not a subclass, and not
+        // merely something that exposes `__array_interface__`.
         //
         // That attribute is an ordinary Python attribute: any object can
-        // define it and report an arbitrary integer as its data pointer. This
-        // function then builds a `&mut [f32]` from that integer and writes
-        // through it. Trusting the protocol alone turns a wrong argument into
-        // memory corruption in the host process, so the type is checked first
-        // and everything below only ever reads from a real ndarray.
+        // define it and report an arbitrary integer as its data pointer, which
+        // this function then builds a `&mut [f32]` from and writes through.
+        // Trusting it turns a wrong argument into memory corruption in the
+        // host process.
+        //
+        // An `isinstance` check is not enough either, and that is the subtle
+        // part: attribute lookup respects subclasses, so a subclass of
+        // ndarray can override `__array_interface__` with a property and spoof
+        // the pointer while passing `isinstance`. Exact type identity is what
+        // closes that, because it is the only way to know the attribute comes
+        // from numpy's own implementation.
+        //
+        // The buffer protocol would be the better tool — it goes through the
+        // C-API, which no Python-level attribute can fake — but `pyo3::buffer`
+        // is compiled out here: `PyObject_GetBuffer` is not part of the limited
+        // API this crate targets (`abi3-py39`).
+        //
+        // The cost is that a legitimate ndarray subclass (a masked array, say)
+        // is refused. `np.asarray(x)` converts one, and the message says so.
         let np = py.import("numpy")?;
         let ndarray = np.getattr("ndarray")?;
-        if !out.is_instance(&ndarray)? {
+        if !out.get_type().is(&ndarray) {
             return Err(PyTypeError::new_err(format!(
-                "sample_into(out=) requires a numpy.ndarray, got {}. The raw \
-                 data pointer is read from this object and written through, so \
-                 an arbitrary __array_interface__ provider is not accepted.",
+                "sample_into(out=) requires exactly a numpy.ndarray, got {}. The \
+                 raw data pointer is read from this object and written through, \
+                 so neither an arbitrary __array_interface__ provider nor an \
+                 ndarray subclass that can override it is accepted. Pass \
+                 numpy.asarray(out) if you have a subclass.",
                 out.get_type().name()?
             )));
         }
