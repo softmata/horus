@@ -259,7 +259,7 @@ fn a_chunk_and_a_handle_from_different_pools_are_refused() {
 #[test]
 fn a_non_f32_chunk_refuses_the_f32_paths_instead_of_reinterpreting_bytes() {
     let _shm = cleanup_stale_shm();
-    let topic: Topic<ActionChunk> = Topic::new(&unique("ac.dtype")).unwrap();
+    let topic: Topic<ActionChunk> = Topic::new(unique("ac.dtype")).unwrap();
 
     let h = topic
         .alloc_chunk(
