@@ -96,6 +96,25 @@ pub enum CommunicationError {
     #[error("Failed to create topic '{topic}': {reason}")]
     TopicCreationFailed { topic: String, reason: String },
 
+    /// A joiner attached to an existing SHM region whose header was never
+    /// stamped with the topic magic, and waited out its deadline for the owner
+    /// to stamp it.
+    ///
+    /// Two causes reach this, and the error cannot tell them apart: the
+    /// creating process is still starting (a retry would succeed), or it died —
+    /// or the region was corrupted — before it initialized the header, and no
+    /// owner is ever coming (a retry never succeeds). Only an owner may
+    /// reinitialize a header it does not recognise, so a joiner reports this
+    /// rather than adopting the region and laundering a damaged topic into one
+    /// that looks healthy.
+    ///
+    /// Classified [`Severity::Permanent`] rather than `Transient` because the
+    /// unrecoverable cause is the one that must not be retried: an automatic
+    /// retry against a region no live owner will ever stamp burns the full
+    /// deadline again on every attempt.
+    #[error("Topic '{topic}': timed out after {waited:?} waiting for the creating process to initialize the topic header")]
+    HeaderInitTimeout { topic: String, waited: Duration },
+
     /// Network fault (peer unreachable, DNS failure, corrupt response).
     #[error("Network fault for '{peer}': {reason}")]
     NetworkFault { peer: String, reason: String },
@@ -1102,6 +1121,8 @@ impl HorusError {
                 Some("Create the topic before subscribing, or check for typos in the topic name. Run: horus topic list"),
             Self::Communication(CommunicationError::TopicCreationFailed { .. }) =>
                 Some("Check shared memory permissions and available space. Run: horus doctor"),
+            Self::Communication(CommunicationError::HeaderInitTimeout { .. }) =>
+                Some("The process that created this topic never initialized its header — it is still starting, or it died first. If no publisher is coming back, the region is stale: run horus doctor, or remove it from /dev/shm and retry."),
             Self::Communication(CommunicationError::NetworkFault { .. }) =>
                 Some("Check network connectivity to the peer. Verify the peer node is running. Run: horus node list"),
             Self::Communication(CommunicationError::ActionFailed { .. }) =>
