@@ -200,11 +200,28 @@ jobs:
           # Cross-process and long-running scenario binaries are covered by the
           # dedicated integration workflows. Keep this gate to deterministic
           # crate unit tests so one shared namespace cannot leak between bins.
+          #
+          # The three topic_cross_thread_* tests were skipped here too, and in
+          # coverage.yml, safety.yml, multi-platform.yml and
+          # integration-tests.yml -- every invocation in this repo that builds
+          # horus_core's lib target -- so no job on any platform ran them. The
+          # justification that travelled with the skip list was a throughput
+          # floor ("expected at least 50 messages, got 44") that measures the
+          # machine rather than the code; it expired when the floors were
+          # deleted from all three tests. What they assert now holds however the
+          # threads are scheduled: every value received was sent and decodes to
+          # a producer and an index that exist, and at least one message
+          # arrives. This job runs them; the others keep their own skips.
+          #
+          # MEASURED before un-skipping them, on the binary this job builds and
+          # with --test-threads=1: 20/20 green pinned to two cores, which is a
+          # GitHub runner's core count -- 10 runs on an otherwise quiet box and
+          # 10 with those two cores 3x oversubscribed by spinners. 10.1 s best,
+          # 40.2 s worst, against this job's 30-minute budget.
+          #
+          # ci_coverage_contract asserts they keep a runner.
           cargo test --workspace --exclude horus_py --lib --no-fail-fast -- \
             --test-threads=1 \
-            --skip topic_cross_thread_1p_multi_c_spmc \
-            --skip topic_cross_thread_mpmc_pre_initialized_99_percent \
-            --skip topic_cross_thread_multi_p_multi_c_mpmc \
             --skip test_robotics_autonomous_car_perception
         env:
           RUST_BACKTRACE: 1
