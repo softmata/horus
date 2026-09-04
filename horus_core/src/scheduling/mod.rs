@@ -33,6 +33,10 @@ pub(crate) mod primitives;
 // Dedicated RT thread executor
 pub(crate) mod rt_executor;
 
+/// Cyclic-wait accounting for the RT tick grid — the runtime's own deadline
+/// numbers, exported so tests and reports can assert on them.
+pub use rt_executor::{rt_wait_stats, RtWaitSnapshot};
+
 // RT readiness report — system audit + jitter benchmark
 pub mod rt_report;
 

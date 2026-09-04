@@ -16,6 +16,11 @@ pub struct RtReport {
     // System capabilities
     pub kernel: String,
     pub preempt_rt: bool,
+    /// Whether this process may actually obtain an RT policy.
+    ///
+    /// Not "the kernel defines RT priorities" — that is always true. Filling
+    /// this from `max_priority > 0` printed `SCHED_FIFO ✓` in the SYSTEM block
+    /// of the very report that listed "SCHED_FIFO refused" under ISSUES.
     pub sched_fifo: bool,
     pub memory_locking: bool,
     pub cpu_count: usize,
@@ -79,9 +84,24 @@ impl RtReport {
             issues.push("PREEMPT_RT kernel not detected".into());
             recs.push("Install PREEMPT_RT kernel for <20μs jitter: https://wiki.linuxfoundation.org/realtime".into());
         }
-        if caps.max_priority == 0 {
-            issues.push("SCHED_FIFO not available (no CAP_SYS_NICE)".into());
-            recs.push("Run: sudo setcap cap_sys_nice+ep $(which horus)".into());
+        // `max_priority` is a kernel constant and is never 0 on any supported
+        // platform, so this issue and its recommendation could never fire — and
+        // `horus doctor --rt` would report a p99 jitter figure while suppressing
+        // the single explanation for it.
+        if !caps.rt_priority_permitted {
+            // Say what was observed, not why. `rt_priority_permitted` is one
+            // bool: `can_set_rt_priority()` returns false for a missing
+            // CAP_SYS_NICE, for RLIMIT_RTPRIO=0, for a seccomp filter that
+            // rejects sched_setscheduler, and for a thread whose policy could
+            // not be read back — naming a single cause would be a guess in
+            // three of those four cases. The remedies below are listed as
+            // remedies, not as diagnoses.
+            issues.push("SCHED_FIFO refused — this process may not set an RT policy".into());
+            recs.push(
+                "Grant RT scheduling: sudo setcap cap_sys_nice+ep $(which horus), or run \
+                 `horus setup-rt`, which raises RLIMIT_RTPRIO"
+                    .into(),
+            );
         }
         if !caps.memory_locking {
             issues.push("Memory locking not permitted (page faults possible)".into());
@@ -109,20 +129,26 @@ impl RtReport {
             recs.push("Check for SMI interrupts: sudo rdmsr 0x34".into());
         }
 
-        let grade =
-            if caps.preempt_rt && caps.memory_locking && caps.max_priority > 0 && jitter.p99 < 50.0
-            {
-                RtGrade::Production
-            } else if caps.max_priority > 0 && jitter.p99 < 500.0 {
-                RtGrade::Standard
-            } else {
-                RtGrade::Development
-            };
+        // Both arms gate on permission, not on `caps.max_priority > 0` — that
+        // is a kernel constant and is non-zero everywhere, so the grade could
+        // not drop to `Development` for a missing SCHED_FIFO no matter how the
+        // host was configured.
+        let grade = if caps.preempt_rt
+            && caps.memory_locking
+            && caps.rt_priority_permitted
+            && jitter.p99 < 50.0
+        {
+            RtGrade::Production
+        } else if caps.rt_priority_permitted && jitter.p99 < 500.0 {
+            RtGrade::Standard
+        } else {
+            RtGrade::Development
+        };
 
         RtReport {
             kernel: caps.kernel_version,
             preempt_rt: caps.preempt_rt,
-            sched_fifo: caps.max_priority > 0,
+            sched_fifo: caps.rt_priority_permitted,
             memory_locking: caps.memory_locking,
             cpu_count: caps.cpu_count,
             isolated_cpus: isolated,

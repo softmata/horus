@@ -53,9 +53,13 @@ use common::cleanup_stale_shm;
 //   67110720 = 64 (PoolHeader) +  32 * 56 (SlotHeader) + 64 MiB  <- churn
 // and 9989 is reachable by both formulas only at `pid % 100 == 89`.
 //
-// Bases are 1000 apart and live in an id range no other test file uses
-// (tensor_pool_concurrent.rs holds 9700-9799, resource_exhaustion.rs and
-// regressions.rs hold 9800-9899, memory_coverage.rs holds 99990/99999).
+// Bases are 1000 apart and live in an id range no other test file uses. The
+// rest of the map, for anyone adding a pool: tensor_pool_concurrent.rs and
+// resource_exhaustion.rs share the pid-spread band 20_000-20_599 (bases in
+// tests/common, enforced by `pool_id_ranges_cannot_overlap`); regressions.rs
+// pins 9800 and 9801; memory_coverage.rs holds 99990/99999; and
+// horus_core/src/memory/tensor_pool.rs's unit tests take most fixed ids in
+// 9600-10105.
 
 /// Width of the pid-derived spread. Keeps concurrently running *processes* off
 /// each other's pools; `clear_stale_pool` covers the leftovers of dead ones.

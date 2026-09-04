@@ -284,30 +284,103 @@ mod tests {
     // superseded (unread) message is released on the next send, so a stream of
     // sends does not leak pool slots. Before the fix, `to_wire`'s retain was
     // never balanced for multi-subscriber topics and each send leaked a slot.
+    /// A topic name no other run, process or test shares.
+    ///
+    /// These two tests used fixed names. A SHM topic outlives the process that
+    /// created it, so a fixed name means a previous run's region — possibly
+    /// with an incompatible geometry — is what the next run attaches to. That
+    /// is not hypothetical in this repo: a topic name shared between two
+    /// message types is what produces `signal: 7, SIGBUS` in #144, and a
+    /// leftover region of the wrong shape produces the "shared header declares
+    /// slot_size N" refusal. Neither failure names the test that caused it.
+    fn unique_topic(suffix: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "test.comm_h2.keepalive.{suffix}.{}.{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
     #[test]
-    fn image_topic_releases_superseded_keepalive() {
+    fn image_topic_holds_keepalives_for_the_whole_ring_then_releases() {
         use crate::communication::topic::Topic;
-        let topic = Topic::<Image>::new("test.comm_h2.keepalive.release").expect("topic");
+        const CAP: u32 = 4;
+        let name = unique_topic("bound");
+        let topic = Topic::<Image>::with_capacity(&name, CAP, None).expect("topic");
 
         let a = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc a");
         let pool = a.pool().clone();
         let slot_a = *a.descriptor().tensor();
         topic.send(a);
-        // A's keep-alive is held until a later send supersedes it.
+
+        // The next send must NOT release A. A is still sitting unread in the
+        // ring, and freeing its backing is what made `recv()` return None on a
+        // non-empty ring: a subscriber polling slower than the publisher got
+        // one frame in five hundred, with every counter reading zero.
+        //
+        // This assertion used to be the opposite (`refcount == 0` right here),
+        // which encoded the depth-1 keep-alive as a requirement. The concern
+        // behind it — that the producer must not leak pool slots — is real and
+        // is what the rest of this test now covers.
+        topic.send(Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc b"));
         assert!(
             pool.refcount(&slot_a) >= 1,
-            "A's keep-alive should be held after send (refcount {})",
+            "A is still readable in the ring, so its backing must stay alive \
+             (refcount {})",
             pool.refcount(&slot_a)
         );
 
-        // Sending B supersedes A. No subscriber ever read A, so releasing A's
-        // keep-alive returns its slot to the pool (refcount 0) — no leak.
-        let b = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc b");
-        topic.send(b);
+        // Past the ring's depth A can no longer be reached, so holding it would
+        // be a leak. Retention is bounded by capacity, not unbounded.
+        for _ in 0..CAP {
+            topic.send(Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc filler"));
+        }
         assert_eq!(
             pool.refcount(&slot_a),
             0,
-            "A's keep-alive must be released once superseded (else every send leaks a slot)"
+            "once the ring has lapped past A the producer must release it, or \
+             every send leaks a slot"
+        );
+    }
+
+    /// The bug this file's keep-alive machinery caused: frames sent while the
+    /// subscriber was not draining became unreadable, and `recv()` returned
+    /// None on a non-empty ring.
+    #[test]
+    fn image_frames_survive_until_the_subscriber_drains_them() {
+        use crate::communication::topic::Topic;
+        const CAP: u32 = 8;
+        const SENT: usize = 5;
+
+        // ONE name for both handles -- they must meet on the same topic -- but a
+        // name no other run shares.
+        let name = unique_topic("drain");
+        let tx = Topic::<Image>::with_capacity(&name, CAP, None).expect("tx");
+        let rx = Topic::<Image>::with_capacity(&name, CAP, None).expect("rx");
+
+        for i in 0..SENT {
+            let img = Image::new(8, 8, ImageEncoding::Rgb8).expect("alloc");
+            img.data_mut()[0] = i as u8;
+            tx.send(img);
+        }
+
+        let mut got = 0;
+        while rx.recv().is_some() {
+            got += 1;
+        }
+
+        assert_eq!(
+            got,
+            SENT,
+            "{SENT} frames were sent into a {CAP}-slot ring and never lapped, so \
+             all {SENT} must be readable. Got {got}, missed={}, dropped={}. A \
+             depth-1 keep-alive freed each frame's backing on the next send, so \
+             recv() returned None while the ring was non-empty — and because \
+             the ring dropped nothing and lapped nobody, no counter could see it.",
+            rx.missed_count(),
+            tx.dropped_count()
         );
     }
 }

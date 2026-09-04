@@ -11,7 +11,7 @@
 //! | what | `horus_core` | the `horus_net` copy |
 //! |---|---|---|
 //! | data region start | `640 + capacity*8` | `640` — the seq array was omitted |
-//! | `messages_total` | offset 56 | offset 48 — which is `topic_kind` |
+//! | `messages_total` | offset 136 (was 56 before v4) | offset 48 — which is `topic_kind` |
 //! | serde slot length | `slot + 8` | `slot + 0` — which is the ready word |
 //! | per-slot ready flag | published every send | never written |
 //!
@@ -181,8 +181,11 @@ pub const LAYOUT_COLO: u8 = 1;
 
 /// `layout_kind: AtomicU8` — which of the two geometries this region uses.
 ///
-/// Carved out of `_pad1a`, so `messages_total` stays at 56 and every offset
-/// above is unchanged.
+/// Carved out of `_pad1a`, so it displaces nothing and every offset in this
+/// module is unchanged. (Byte 56 — where an older comment placed
+/// `messages_total` — is `_pad1b`; the counter itself is at
+/// [`OFF_MESSAGES_TOTAL`].) Atomic because a reader in another process loads
+/// it while attaching.
 pub const OFF_LAYOUT_KIND: usize = 49;
 
 /// A cache line. Colo slots are padded to a multiple of this so that no two

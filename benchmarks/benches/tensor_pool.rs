@@ -1,3 +1,23 @@
+//! Pool ids here live in 21_000..21_500, disjoint from every other band.
+//!
+//! An id is `BASE + (pid % 100)`, so each base owns a 100-wide range and bases
+//! must be at least 100 apart. These were 9500, 9510, 9520, 9530, 9540 -- ten
+//! apart -- so every range overlapped the next nine, and their union
+//! 9500..9640 also covered the fixed ids the horus_core unit tests use at
+//! 9600..9615. A collision is not a clean failure: the second opener finds a
+//! pool of the wrong size and reports
+//!
+//!   Tensor pool NNNN exists but is only N bytes, smaller than the N bytes
+//!   this process's configuration requires
+//!
+//! naming neither the benchmark nor the test that took the id.
+//!
+//! horus_core's tests hold 20_000..20_600 (see horus_core/tests/common/mod.rs,
+//! POOL_BAND_START/POOL_BAND_END, which a guard test pins). This crate cannot
+//! import that module, so the two bands are kept disjoint by hand: anything
+//! added here belongs in 21_000..21_500, and widening either band means
+//! checking the other.
+
 //! TensorPool Benchmarks
 //!
 //! Measures allocation, release, and data access performance for the
@@ -48,7 +68,7 @@ fn bench_alloc_release(c: &mut Criterion) {
     for (name, shape, dtype) in sizes {
         group.bench_function(BenchmarkId::new("alloc_release", name), |b| {
             cleanup_tensor_shm();
-            let pool_id = 9500 + (std::process::id() % 100);
+            let pool_id = 21_000 + (std::process::id() % 100);
             let pool = make_pool(pool_id, 512, 1024);
 
             b.iter(|| {
@@ -74,7 +94,7 @@ fn bench_alloc_only(c: &mut Criterion) {
 
     group.bench_function("1KB_f32", |b| {
         cleanup_tensor_shm();
-        let pool_id = 9510 + (std::process::id() % 100);
+        let pool_id = 21_100 + (std::process::id() % 100);
         // Large pool: each 1KB alloc consumes 1KB permanently,
         // need enough for all benchmark iterations
         let pool = make_pool(pool_id, 512, 65536);
@@ -102,7 +122,7 @@ fn bench_data_access(c: &mut Criterion) {
     group.measurement_time(3_u64.secs());
 
     cleanup_tensor_shm();
-    let pool_id = 9520 + (std::process::id() % 100);
+    let pool_id = 21_200 + (std::process::id() % 100);
     let pool = make_pool(pool_id, 128, 64);
 
     // Pre-allocate tensors of various sizes
@@ -147,7 +167,7 @@ fn bench_concurrent_alloc(c: &mut Criterion) {
 
     group.bench_function("4_thread_alloc_release", |b| {
         cleanup_tensor_shm();
-        let pool_id = 9530 + (std::process::id() % 100);
+        let pool_id = 21_300 + (std::process::id() % 100);
         let pool = std::sync::Arc::new(make_pool(pool_id, 512, 4096));
 
         b.iter(|| {
@@ -178,7 +198,7 @@ fn bench_pool_stats(c: &mut Criterion) {
     let mut group = c.benchmark_group("tensor_stats");
 
     cleanup_tensor_shm();
-    let pool_id = 9540 + (std::process::id() % 100);
+    let pool_id = 21_400 + (std::process::id() % 100);
     let pool = make_pool(pool_id, 64, 256);
 
     // Pre-allocate some tensors so stats has work to do

@@ -110,7 +110,12 @@ impl RuntimeProfiler {
             return;
         }
 
-        let duration_us = duration.as_micros() as f64;
+        // Fractional microseconds. `as_micros()` truncates, and RT tick bodies
+        // here measure p50 37ns / p99 46ns — so every sample floored to 0 and
+        // the telemetry read "idle" rather than "below the resolution I
+        // report in". Measured: 900ns x100 gave avg 0 and jitter 0; 1500ns
+        // gave 1 (33% under); 3900ns gave 3 (23% under).
+        let duration_us = duration.as_secs_f64() * 1_000_000.0;
 
         // `entry()` takes an owned key, so it allocates on EVERY call --
         // including the hit path, where the key already exists and the String is

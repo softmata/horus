@@ -109,7 +109,9 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
         println!("  {} PREEMPT_RT: {}", "⚠".yellow(), "not detected".yellow());
     }
 
-    if caps.max_priority > 0 {
+    // Permission, not the kernel's priority range — see the note in
+    // doctor.rs. `max_priority` is non-zero even when the call is refused.
+    if caps.rt_priority_permitted {
         println!(
             "  {} SCHED_FIFO: available (priority {}-{})",
             "✓".green(),
@@ -117,7 +119,27 @@ fn print_rt_status(caps: &horus_sys::rt::RtCapabilities) {
             caps.max_priority
         );
     } else {
-        println!("  {} SCHED_FIFO: {}", "✗".red(), "not available".red());
+        // "REFUSED" is what the probe established; the cause is not.
+        // `can_set_rt_priority()` returns false for a missing CAP_SYS_NICE,
+        // for RLIMIT_RTPRIO=0, for a seccomp filter that rejects
+        // sched_setscheduler, and for an unreadable thread policy — so the
+        // line offers the fixes without asserting which one is needed.
+        println!(
+            "  {} SCHED_FIFO: {} (kernel offers {}-{}; this process may not use it)",
+            "✗".red(),
+            "REFUSED — not permitted to set an RT policy".red(),
+            caps.min_priority,
+            caps.max_priority
+        );
+        // Not "run `horus setup-rt`" — this *is* setup-rt, and in `--check`
+        // mode nothing is written. Name the two mechanisms instead, and the
+        // file a full run writes for the second.
+        println!(
+            "      {} sudo setcap cap_sys_nice+ep $(which horus), or an rtprio limit \
+             for this user (a full `setup-rt` run writes {})",
+            "fix:".bold(),
+            LIMITS_PATH
+        );
     }
 
     if caps.memory_locking {

@@ -12367,3 +12367,192 @@ fn neither_broadcast_backend_claims_backpressure() {
         );
     }
 }
+
+/// Keep-last-N retires unread messages; every one must be counted.
+///
+/// `send` is the lossy publish, so when nothing is draining a full ring it
+/// frees the oldest slot and takes it. That destroys a message the transport
+/// had already accepted.
+///
+/// `header.tail.fetch_max(..)` returns the tail it replaced, so `new - prev` is
+/// exactly how many messages were retired — and that return value was
+/// discarded. `dropped_count()` moves only on an ABANDONED send, and a send
+/// that reclaims is a send that then succeeds, so this was the one path in the
+/// transport where HORUS itself destroyed accepted messages with no counter
+/// recording it.
+#[test]
+fn keep_last_n_reclaim_counts_what_it_retires() {
+    const CAP: u32 = 16;
+    const BURST: u64 = 50;
+    let name = unique("reclaim_counted");
+
+    // No subscriber at all, which is the cheapest way to reach the reclaim:
+    // `nothing_is_draining` short-circuits on `sub_count() == 0` without
+    // waiting out a lease.
+    let tx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("tx");
+    tx.send(0);
+    if !matches!(
+        tx.force_migrate(BackendMode::MpscShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    ) {
+        eprintln!("MpscShm unavailable in this build; nothing to check");
+        return;
+    }
+    trigger_shm_dispatch(&name);
+
+    // Fill it, so every further send has to retire something to proceed.
+    for i in 0..CAP as u64 {
+        tx.send(i);
+    }
+
+    let before = tx.dropped_count();
+    for i in 0..BURST {
+        tx.send(1000 + i);
+    }
+    let retired = tx.dropped_count() - before;
+
+    assert_eq!(
+        retired, BURST,
+        "{BURST} sends each had to retire one unread message to make room, so \
+         {BURST} accepted messages were destroyed — but dropped_count moved by \
+         {retired}. Loss the publisher cannot report is loss a supervisor \
+         cannot act on."
+    );
+}
+
+/// A slot a producer is mid-write on is not a lapped slot.
+///
+/// `SLOT_WRITING` is bit 63 of a slot's ready stamp. `send_shm_pod_broadcast`
+/// and the co-located `send_shm_sp_pod` set it before touching the payload and
+/// clear it after, and the readers that share that stamp array — this one
+/// included, after a migration — are documented to read a marked slot as "not
+/// ready" for the duration of the write.
+///
+/// A marked slot therefore reads back as `2^63 | pos`, which is ahead of any
+/// tail. Comparing the raw stamp against `tail + 1` calls that a lap, so the
+/// consumer takes the resume-after-lap branch and returns before
+/// `claimed_slot_escape` is ever consulted — and when the producer DIED
+/// mid-write, the marker never clears, so every later poll takes it again. The
+/// consumer returns `None` forever and the escape that exists to bound exactly
+/// this stall is unreachable: an unbounded stall reintroduced by the fix for
+/// the other one.
+///
+/// The marker is set by hand here because that is precisely the state a
+/// producer killed between its marker store and its stamp clear leaves behind,
+/// and there is no way to hold a live producer inside a window that contains no
+/// blocking operation.
+#[test]
+fn a_mid_write_marker_is_not_a_lap() {
+    const CAP: u32 = 16;
+    // Past one full lap, so `head > capacity` and the lap branch would compute
+    // a resume point rather than bail out on its own guard.
+    const ROUNDS: u64 = 24;
+    let name = unique("midwrite_not_lap");
+
+    // Two handles: `rx` only ever receives, so it registers as a pure consumer
+    // and its `recv` goes through `recv_shm_mpsc_pod` instead of the role=Both
+    // POD fast path, which never looks at a stamp.
+    let rx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("rx");
+    let tx: Topic<u64> = Topic::with_capacity(&name, CAP, None).expect("tx");
+    tx.send(u64::MAX);
+    let _ = rx.recv();
+    if !matches!(
+        tx.force_migrate(BackendMode::MpscShm),
+        MigrationResult::Success { .. } | MigrationResult::NotNeeded
+    ) {
+        eprintln!("MpscShm unavailable in this build; nothing to check");
+        return;
+    }
+    trigger_shm_dispatch(&name);
+    // Anything still buffered from before the migration would break the
+    // in-order check below; it is not what this test is about.
+    while rx.try_recv().is_some() {}
+
+    let mut got = 0u64;
+    for i in 0..ROUNDS {
+        assert!(tx.try_send(i).is_ok(), "the ring must have room for {i}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while got <= i {
+            match rx.try_recv() {
+                Some(v) => {
+                    assert_eq!(v, got, "in-order delivery before any marker is set");
+                    got += 1;
+                }
+                None => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the consumer stalled at {got} of {ROUNDS} with no marker set yet"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+
+    let (tail, mask) = {
+        let local = rx.ring.local();
+        (local.local_tail, local.cached_capacity_mask)
+    };
+    assert!(
+        tail > CAP as u64,
+        "the ring must have wrapped at least once, so that a stamp ahead of \
+         `tail + 1` is the shape a real lap has; tail is {tail}"
+    );
+
+    // One more message: the producer stamps `tail + 1` into the very slot the
+    // consumer is about to read.
+    assert!(
+        tx.try_send(4242).is_ok(),
+        "one free slot after a full drain"
+    );
+
+    // Now make that slot look mid-write, which is all a killed producer leaves.
+    let idx = (tail & mask) as usize;
+    // SAFETY: `idx` is masked in-bounds and `rx` has received through the SHM
+    // path above, so its cached region pointers are live.
+    unsafe {
+        let (stamp_ptr, _) = dispatch::slot_ptrs::<u64>(rx.ring.local(), idx);
+        let stamp = &*stamp_ptr;
+        assert_eq!(
+            stamp.load(Ordering::Acquire),
+            tail + 1,
+            "the send above must have stamped the slot the consumer waits on; \
+             if it did not, this test is marking the wrong slot"
+        );
+        stamp.store(
+            super::shm_layout::SLOT_WRITING | (tail + 1),
+            Ordering::Release,
+        );
+    }
+
+    // The escape fires at `CLAIM_STALL_MAX_LEASES` (4) x lease. Shorten the
+    // lease so this costs ~200 ms rather than the default 20 s.
+    rx.ring.header().set_lease_timeout_ms(50);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(v) = rx.try_recv() {
+            panic!(
+                "delivered {v} out of a slot flagged as still being written: a \
+                 marked stamp means the payload is not yet whole"
+            );
+        }
+        if rx.missed_count() > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the consumer never escaped a slot left marked mid-write by a dead \
+             producer: missed_count is still 0 after 10 s, against a bound of 4 \
+             leases (200 ms here). Reading the marker bit as a lap returns \
+             before `claimed_slot_escape` runs, so nothing ever bounds this."
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    // The escape advanced past the marked slot, so the ring is usable again.
+    assert!(
+        tx.try_send(7).is_ok(),
+        "the reclaimed slot must be writable after the escape"
+    );
+}

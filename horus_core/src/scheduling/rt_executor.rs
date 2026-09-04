@@ -586,8 +586,18 @@ enum WaitMode {
 /// gap ever observed between a tick's scheduled slot and the instant the loop
 /// actually resumed, and `overruns` / `slots_skipped` count the periods the
 /// executor could not keep up with at all.
+/// Cyclic-wait accounting for the RT tick grid.
+///
+/// These are the runtime's own deadline numbers, measured against the slot it
+/// *scheduled*, not against a mean interval inferred afterwards from wall-clock
+/// samples. That distinction is what makes them gateable in CI: an interval
+/// histogram on a shared runner mostly measures the neighbours, whereas
+/// `overruns` answers "did the tick grid keep its own appointment", which is
+/// the property a control loop actually depends on. Preemption still inflates
+/// them -- nothing measured on a contended host is noise-free -- but the
+/// question they answer is the right one.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RtWaitSnapshot {
+pub struct RtWaitSnapshot {
     /// Completed cyclic waits (i.e. tick slots serviced).
     pub slots: u64,
     /// Waits that found their own slot already in the past.
@@ -612,7 +622,12 @@ static WAIT_LATE_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
 static WAIT_SPIN_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Process-wide cyclic-wait statistics, safe to poll from any thread.
-pub(crate) fn rt_wait_stats() -> RtWaitSnapshot {
+///
+/// Relaxed loads of six independent atomics: the snapshot is not a consistent
+/// cut, and `slots` may already have advanced past the one `wake_late_max_ns`
+/// came from. That is fine for the reporting and gating this exists for; the
+/// alternative -- a lock -- would put a lock on the tick path.
+pub fn rt_wait_stats() -> RtWaitSnapshot {
     RtWaitSnapshot {
         slots: WAIT_SLOTS.load(Ordering::Relaxed),
         overruns: WAIT_OVERRUNS.load(Ordering::Relaxed),
@@ -727,7 +742,14 @@ impl CyclicWaiter {
 
     /// Wait out the remainder of the current period and return at the next
     /// slot boundary.
-    fn wait(&mut self) {
+    /// Wait for the next slot; returns how late the wake was, in nanoseconds.
+    ///
+    /// The return value is the same `late_ns` this function already accumulated
+    /// into `wake_late_max_ns`. It was computed and thrown away, so nothing
+    /// downstream could act on it — in particular the deadline check, which
+    /// measured only how long a node's own code ran and so never saw the
+    /// lateness that dominates on a real machine.
+    fn wait(&mut self) -> u64 {
         let now = cyclic_now_ns();
         self.local.slots += 1;
 
@@ -800,6 +822,8 @@ impl CyclicWaiter {
             self.flush();
             self.last_flush_ns = t;
         }
+
+        late_ns
     }
 
     /// Publish the local counters to the process-wide totals and reset them.
@@ -1151,6 +1175,7 @@ impl RtExecutor {
         monitors: &SharedMonitors,
         running: &Arc<AtomicBool>,
         is_first_tick: bool,
+        release_late_ns: u64,
     ) {
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
@@ -1323,7 +1348,17 @@ impl RtExecutor {
 
         // Deadline check via TimingEnforcer
         if let Some(deadline) = node.deadline {
-            let miss = TimingEnforcer::check_deadline(tr.tick_start, deadline, node.miss_policy);
+            // Measured from the scheduled RELEASE, not from when tick() started.
+            // A node woken 3.5 ms late that executes in 10 us has missed a
+            // 900 us deadline by 2.6 ms; the old check compared 10 us against
+            // 900 us and called it healthy, so the whole degradation ladder was
+            // blind to the failure mode that actually dominates.
+            let miss = TimingEnforcer::check_deadline_from_release(
+                tr.tick_start,
+                Duration::from_nanos(release_late_ns),
+                deadline,
+                node.miss_policy,
+            );
             if miss.is_none() && node.in_safe_mode {
                 // Met the deadline again: clear the latch so a node that
                 // recovers can be safed once more if it degrades later.
@@ -1645,6 +1680,33 @@ impl RtExecutor {
             }
         }
 
+        // Drop timer slack, and do it HERE rather than wherever the process
+        // configured itself, because PR_SET_TIMERSLACK is PER-THREAD. Setting
+        // it on the thread that built the scheduler does nothing for this one.
+        //
+        // Linux hands every thread 50 us of slack by default and may delay any
+        // timed wait by up to that much. `CyclicWaiter` below sleeps to an
+        // absolute deadline and then guard-spins the last stretch of the
+        // period; the guard is a fraction of the period (20 us at 1 kHz), so
+        // 50 us of slack overshoots the point the spin was meant to take over
+        // and the spin cannot recover time already gone.
+        //
+        // The kernel gives SCHED_FIFO/RR threads zero slack, so when
+        // `rt_policy_active` is true this changes nothing. It is for the branch
+        // directly above, where the priority request was refused for want of
+        // CAP_SYS_NICE and the thread stayed SCHED_OTHER -- a plain
+        // `cargo test`, an unprivileged container, most developer machines.
+        if !rt_policy_active {
+            if let Err(e) = horus_sys::rt::set_timer_slack(1) {
+                if monitors.verbose {
+                    print_line(&format!(
+                        "[RT-thread] Could not reduce timer slack: {e} (timed waits \
+                         may be delayed by the kernel default, typically 50us)"
+                    ));
+                }
+            }
+        }
+
         // `rt_cpus` arrives already resolved: `start_pool` applied the `.core(n)`
         // override and the round-robin assignment together, because only it can
         // see every chain at once and therefore only it can detect two chains
@@ -1723,6 +1785,12 @@ impl RtExecutor {
         // affinity/governor/IRQ work that only happens once.
         let mut waiter = CyclicWaiter::new(tick_period, rt_policy_active, monitors.verbose);
 
+        // Lateness of the slot THIS iteration is serving. `waiter.wait()` at the
+        // bottom of the loop returns the lateness of the wake that releases the
+        // next iteration, so carrying it across the loop boundary is what makes
+        // it describe the right tick. Zero for the first iteration, which is
+        // released by the loop being entered rather than by a wait.
+        let mut release_late_ns: u64 = 0;
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
@@ -1785,7 +1853,7 @@ impl RtExecutor {
                 // continues ticking remaining nodes.
                 let is_first_tick = !warmed[idx];
                 let infra_result = catch_unwind(AssertUnwindSafe(|| {
-                    Self::tick_node(node, &monitors, &running, is_first_tick)
+                    Self::tick_node(node, &monitors, &running, is_first_tick, release_late_ns)
                 }));
                 warmed[idx] = true;
 
@@ -1816,7 +1884,7 @@ impl RtExecutor {
             // ~50 ms dequeue, on top of unbounded phase drift. See the
             // `CyclicWaiter` section at the top of this file for the full
             // reasoning and for the median-jitter cost this trade accepts.
-            waiter.wait();
+            release_late_ns = waiter.wait();
         }
 
         waiter.finish(monitors.verbose);
@@ -2063,7 +2131,13 @@ mod tests {
         node.health_state.store(NodeHealthState::Unhealthy);
 
         let monitors = test_monitors();
-        RtExecutor::tick_node(&mut node, &monitors, &Arc::new(AtomicBool::new(true)), true);
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &Arc::new(AtomicBool::new(true)),
+            true,
+            0,
+        );
 
         assert_eq!(
             count.load(AOrd::Relaxed),
@@ -4591,6 +4665,85 @@ mod tests {
             after.wake_late_total_ns > 0,
             "wake lateness must be recorded — it is the measured cost of \
              giving up the busy-wait"
+        );
+    }
+
+    /// Wake lateness must be BOUNDED, not merely recorded.
+    ///
+    /// `test_rt_wait_stats_are_published` above asserts `> 0` and nothing else,
+    /// so a regression that added 50 us to every wake passed it. So did every
+    /// other RT gate: the jitter metric in `stress_rt_contention.rs` is
+    /// `|interval - mean_interval|`, which subtracts out any CONSTANT per-wake
+    /// delay — a fixed lateness is not jitter, it is phase error, and no
+    /// interval-based statistic can see it. That is exactly the shape of a
+    /// timer-slack regression.
+    ///
+    /// The bound here is deliberately loose (one full period) because this runs
+    /// on shared CI runners. It is not trying to measure quality; it is trying
+    /// to make a gross phase regression impossible to land silently, which is
+    /// what nothing was doing.
+    ///
+    /// The mean is computed from THIS waiter's own `local` counters, not from a
+    /// before/after delta on `rt_wait_stats()`. Those counters are process-wide
+    /// and cargo runs this binary's tests in parallel: 41 call sites in this
+    /// file start an `RtExecutor`, whose own `CyclicWaiter` flushes into the
+    /// same atomics. A delta over the globals would therefore average other
+    /// loops together with this one, in both directions — a second of somebody
+    /// else's on-time 1 kHz executor dilutes 200 late slots back under the
+    /// bound, and one 10 ms-period executor having a bad wake on a loaded
+    /// runner fails a loop that was on time. `local` is per-waiter, so it
+    /// measures only this loop; that the numbers reach the published counters
+    /// at all is asserted separately below.
+    #[test]
+    fn wake_lateness_is_bounded_not_merely_recorded() {
+        const PERIOD: Duration = Duration::from_millis(1);
+        const SLOTS: u64 = 200;
+
+        let before = rt_wait_stats();
+        let mut w = CyclicWaiter::new(PERIOD, false, false);
+
+        let mut slots = 0_u64;
+        let mut late_total_ns = 0_u64;
+        let mut prev = w.local;
+        for _ in 0..SLOTS {
+            w.wait();
+            let cur = w.local;
+            // `wait()` flushes `local` to the globals once a second and zeroes
+            // it. A slot count that went DOWN is that reset; the single slot it
+            // straddles is dropped rather than differenced against a dead epoch.
+            if cur.slots >= prev.slots {
+                slots += cur.slots - prev.slots;
+                late_total_ns += cur.wake_late_total_ns - prev.wake_late_total_ns;
+            }
+            prev = cur;
+        }
+        w.finish(false);
+
+        assert!(slots > 0, "no slots recorded");
+        let mean_late_ns = late_total_ns / slots;
+
+        // `CyclicWaiter::new` narrows the period with the same `as u64`, so this
+        // is exactly the grid spacing the loop under test scheduled against.
+        let period_ns = PERIOD.as_nanos() as u64;
+        assert!(
+            mean_late_ns <= period_ns,
+            "mean wake lateness {mean_late_ns} ns over {slots} slots exceeds the \
+             {period_ns} ns period. A periodic loop that is on average more than \
+             a whole period late is not keeping its schedule, and no \
+             interval-based jitter metric can see this — a constant offset \
+             cancels out of |interval - mean_interval|."
+        );
+
+        // The bound is only worth anything if these numbers reach the counters
+        // an operator actually reads. The globals are monotonic, so concurrent
+        // waiters can only make this delta bigger — never flaky in this
+        // direction.
+        let after = rt_wait_stats();
+        assert!(
+            after.slots.saturating_sub(before.slots) >= slots,
+            "{slots} measured slots never reached the published counters ({} -> {})",
+            before.slots,
+            after.slots
         );
     }
 }

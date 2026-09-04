@@ -262,7 +262,7 @@ pub(crate) struct TopicHeader {
     /// Which slot geometry the data region uses: `LAYOUT_SPLIT` or
     /// `LAYOUT_COLO` (see `shm_layout`).
     ///
-    /// Carved out of `_pad1a`, so `messages_total` keeps offset 56 and every
+    /// Carved out of `_pad1a`, so it displaces nothing and every
     /// constant in `shm_layout` is unchanged. Atomic because a reader in
     /// another process loads it while attaching.
     pub(crate) layout_kind: AtomicU8,
@@ -1749,7 +1749,10 @@ pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
     if magic != TOPIC_MAGIC {
         return None;
     }
-    // SAFETY: offset 64 is within the validated header (sequence_or_head field).
+    // SAFETY: `offset_of!` yields a byte offset inside `TopicHeader`, and
+    // `map_topic_region` already refused any file shorter than
+    // `TOPIC_HEADER_SIZE`, so the 8-byte read is in bounds. `read_unaligned`
+    // covers alignment.
     let seq = unsafe {
         std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, sequence_or_head)) as *const u64)
     };
@@ -1758,10 +1761,17 @@ pub fn read_topic_sequence(path: &std::path::Path) -> Option<u64> {
 
 /// Read the messages_total counter from a raw topic SHM file.
 ///
-/// Unlike `read_topic_sequence` (which reads `sequence_or_head` at offset 64,
-/// flushed lazily for some backends), this reads the `messages_total` counter
-/// (offset 56) which is atomically incremented on **every** send() regardless
-/// of backend type. Use this for accurate rate measurement.
+/// Unlike `read_topic_sequence` (which reads `sequence_or_head`, flushed
+/// lazily for some backends), this reads the `messages_total` counter, which is
+/// atomically incremented on **every** send() regardless of backend type. Use
+/// this for accurate rate measurement.
+///
+/// Both reads take their offset from `offset_of!`, not from a literal, and this
+/// comment deliberately quotes no byte numbers: the ones it used to quote went
+/// stale the moment `messages_total` moved off cache line 1 into `_pad1b`'s
+/// former neighbourhood. `shm_layout::OFF_MESSAGES_TOTAL` and
+/// `OFF_SEQUENCE_OR_HEAD` are the authoritative values, and `shm_layout`
+/// `const`-asserts each against its field, so they cannot rot the same way.
 pub fn read_topic_messages_total(path: &std::path::Path) -> Option<u64> {
     let mmap = map_topic_region(path)?;
     let base: *const u8 = mmap.as_ptr();
@@ -1770,7 +1780,10 @@ pub fn read_topic_messages_total(path: &std::path::Path) -> Option<u64> {
     if magic != TOPIC_MAGIC {
         return None;
     }
-    // SAFETY: offset 56 is within the validated header (messages_total field).
+    // SAFETY: `offset_of!` yields a byte offset inside `TopicHeader`, and
+    // `map_topic_region` already refused any file shorter than
+    // `TOPIC_HEADER_SIZE`, so the 8-byte read is in bounds. `read_unaligned`
+    // covers alignment.
     let total = unsafe {
         std::ptr::read_unaligned(base.add(offset_of!(TopicHeader, messages_total)) as *const u64)
     };

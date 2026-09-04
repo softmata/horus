@@ -700,8 +700,15 @@ impl ComputeExecutor {
             let nodes_ptr = nodes.as_mut_ptr();
             pool.run_cycle(nodes_ptr, &ready_indices, &monitors, &mut cycle_results);
 
-            // Process results sequentially, in node order.
+            // Process results sequentially, in node order. Note the slowest
+            // node on the way past: `run_cycle` is a barrier, so the cycle costs
+            // whatever the slowest node cost, and when that overruns the period
+            // the only actionable fact is which node it was.
+            let mut slowest: Option<(usize, std::time::Duration)> = None;
             for pr in cycle_results.drain(..) {
+                if slowest.is_none_or(|(_, d)| pr.duration > d) {
+                    slowest = Some((pr.index, pr.duration));
+                }
                 let tr = super::primitives::TickResult {
                     tick_start: pr.tick_start,
                     duration: pr.duration,
@@ -720,10 +727,29 @@ impl ComputeExecutor {
                         .iter()
                         .filter(|n| n.priority >= SHED_THRESHOLD)
                         .count();
+
+                    // `run_cycle` is a barrier: every compute node in this cycle
+                    // now runs at the slowest one's rate, whether or not anything
+                    // is sheddable. This message used to be inside
+                    // `if shed_count > 0`, so a pool with no background nodes --
+                    // every node below SHED_THRESHOLD, which is the normal shape
+                    // for perception plus a learned policy -- overran its period
+                    // in complete silence. A 100 ms policy node quietly pulls a
+                    // 30 Hz vision node down to 10 Hz and nothing says so.
+                    let culprit = slowest
+                        .map(|(i, d)| format!(" — slowest was '{}' at {:?}", nodes[i].name, d))
+                        .unwrap_or_default();
                     if shed_count > 0 {
                         print_line(&format!(
-                            "[Compute] Overload detected (cycle took {:?} > {:?}), shedding {} background nodes (order >= {})",
-                            elapsed, tick_period, shed_count, SHED_THRESHOLD
+                            "[Compute] Overload detected (cycle took {:?} > {:?}), shedding {} background nodes (order >= {}){}",
+                            elapsed, tick_period, shed_count, SHED_THRESHOLD, culprit
+                        ));
+                    } else {
+                        print_line(&format!(
+                            "[Compute] Overload: cycle took {:?} > {:?}, and no node is \
+                             sheddable (all below order {}). Every compute node is now \
+                             running at this cycle's rate{}",
+                            elapsed, tick_period, SHED_THRESHOLD, culprit
                         ));
                     }
                     shedding_active = true;
