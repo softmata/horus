@@ -40,6 +40,11 @@ pub use rt_executor::{rt_wait_stats, RtWaitSnapshot};
 // RT readiness report — system audit + jitter benchmark
 pub mod rt_report;
 
+// What the RT tick threads actually got from the kernel, as opposed to what
+// was asked for. `rt_report` above audits the *system*; this reports the
+// *running scheduler's own threads*.
+pub mod rt_status;
+
 // Parallel compute thread pool executor
 pub(crate) mod compute_executor;
 

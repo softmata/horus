@@ -486,6 +486,98 @@ class PointCloud:
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
 
+class ActionAt:
+    """Where a query time falls relative to a chunk.
+
+    One Python type per variant, so Stale cannot be confused with Inside by a
+    typo in a string or by truthiness. Deliberately has no __bool__ and no
+    numeric conversion: either would be a way to read a stale result as a
+    usable number.
+    """
+
+    class Before:
+        by_ns: int
+
+    class Inside:
+        lo: int
+        hi: int
+        alpha: float
+
+    class Stale:
+        by_ns: int
+
+    class Malformed: ...
+
+class ActionChunk:
+    def __init__(
+        self,
+        horizon: int,
+        action_dim: int,
+        t0_ns: int,
+        dt_ns: int,
+        dtype: str = "float32",
+        device: str = "cpu",
+    ) -> None: ...
+    @staticmethod
+    def from_numpy(
+        actions: Any,
+        t0_ns: int,
+        dt_ns: int,
+        frame_id: str | None = None,
+        seq: int = 0,
+    ) -> ActionChunk: ...
+    @property
+    def horizon(self) -> int: ...
+    @property
+    def action_dim(self) -> int: ...
+    @property
+    def shape(self) -> tuple[int, int]: ...
+    @property
+    def t0_ns(self) -> int: ...
+    @t0_ns.setter
+    def t0_ns(self, value: int) -> None: ...
+    @property
+    def dt_ns(self) -> int: ...
+    @property
+    def seq(self) -> int: ...
+    @seq.setter
+    def seq(self, value: int) -> None: ...
+    @property
+    def frame_id(self) -> str: ...
+    @frame_id.setter
+    def frame_id(self, value: str) -> None: ...
+    @property
+    def end_ns(self) -> int | None: ...
+    @property
+    def dtype(self) -> str: ...
+    @property
+    def device(self) -> str: ...
+    @property
+    def nbytes(self) -> int: ...
+    @property
+    def pool_id(self) -> int: ...
+    @property
+    def refcount(self) -> int: ...
+    def to_numpy(self) -> Any: ...
+    def row(self, index: int) -> Any: ...
+    def as_tensor(self) -> Tensor: ...
+    def locate(self, query_ns: int) -> ActionAt: ...
+    def sample(self, query_ns: int) -> Any | None:
+        """The interpolated action, or None.
+
+        Returns an array if and only if the query falls inside the chunk.
+        Before, Stale and Malformed all return None, so a caller who never
+        inspects the status still cannot drive a servo from a policy that has
+        stopped publishing.
+        """
+        ...
+    def sample_into(self, query_ns: int, out: Any) -> ActionAt:
+        """Sample into a caller-provided float32 array, returning the status.
+
+        `out` is written if and only if Inside is returned.
+        """
+        ...
+
 class DepthImage:
     def __init__(self, height: int, width: int, dtype: str = "float32") -> None: ...
     @staticmethod

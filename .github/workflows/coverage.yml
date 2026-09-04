@@ -109,13 +109,29 @@ jobs:
           # rather than the scheduler -- this job saw 1 tick against a threshold
           # of 10. Both keep their teeth: integration-tests.yml runs the whole
           # `--test '*'` set in RELEASE, uninstrumented, and skips neither.
+          #
+          # an_allocating_no_alloc_node_is_caught_by_the_rt_executor and
+          # a_node_that_only_panics_does_not_keep_its_watchdog_fed join the list
+          # for the same reason. Both assert a DISPATCH COUNT over a fixed
+          # wall-clock window (>5 ticks in 200ms at 500Hz; >5 dispatches in
+          # 900ms at 100Hz) as a proxy for "the node kept running". The second
+          # is the worse case: its node panics on EVERY tick and this job sets
+          # RUST_BACKTRACE=1, so every dispatch captures and prints a full
+          # backtrace. It saw 3 dispatches against a threshold of 5.
+          #
+          # What those tests are for -- the allocation guard firing, and the
+          # watchdog not being fed by dispatch alone -- is asserted separately
+          # in each and does not depend on timing. Only the trailing "and it
+          # kept going" count is what instrumentation breaks, so skipping here
+          # costs no teeth: integration-tests.yml runs both in release and
+          # skips neither.
           cargo llvm-cov --workspace \
             --exclude horus_benchmarks \
             --exclude horus \
             --exclude horus_library \
             --exclude horus_py \
             --lcov --output-path lcov.info \
-            -- --test-threads=1 --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us --skip dual_write_overhead_acceptable --skip shm_fanout_latency_percentiles_cross_thread --skip stress_rt_1khz_under_cpu_contention --skip stress_rt_1khz_baseline_no_contention --skip stress_rt_multi_rate_under_contention --skip stress_rt_isolation_from_compute_nodes --skip test_high_performance_config --skip test_auto_derive_tick_rate_from_fastest_node --skip xproc_
+            -- --test-threads=1 --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config --skip test_robotics_autonomous_car_perception --skip topic_cross_thread_1p_multi_c_spmc --skip topic_cross_thread_mpmc_pre_initialized_99_percent --skip topic_cross_thread_multi_p_multi_c_mpmc --skip multithread_nonpod_subscribers_each_get_full_stream --skip hlog_latency_under_contention_4_threads --skip hlog_latency_p99_under_50us --skip dual_write_overhead_acceptable --skip shm_fanout_latency_percentiles_cross_thread --skip stress_rt_1khz_under_cpu_contention --skip stress_rt_1khz_baseline_no_contention --skip stress_rt_multi_rate_under_contention --skip stress_rt_isolation_from_compute_nodes --skip test_high_performance_config --skip test_auto_derive_tick_rate_from_fastest_node --skip an_allocating_no_alloc_node_is_caught_by_the_rt_executor --skip a_node_that_only_panics_does_not_keep_its_watchdog_fed --skip xproc_
         env:
           RUST_BACKTRACE: 1
 

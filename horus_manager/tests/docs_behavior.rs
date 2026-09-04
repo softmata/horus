@@ -268,8 +268,25 @@ fn event_node_ticks_are_observable_and_bounded() {
         })
         .build()
         .expect("node builds");
+    // 500ms, not 80ms.
+    //
+    // `run_for` bounds WALL CLOCK, and scheduler startup is inside that bound:
+    // registry setup, shm attach, executor spawn. At the default 100 Hz an
+    // 80ms budget leaves room for about eight ticks, so a startup that ran
+    // long enough on a cold, loaded, 2-vCPU runner consumed the whole window
+    // and the node ticked zero times. That is what this assertion then
+    // reported -- as "a node never ticked", which reads as a scheduler defect
+    // and is not one.
+    //
+    // Observed once on CI (docs-contract, 2026-09-04) and green on the
+    // immediate re-run; it did not reproduce in 50 local runs, including 25
+    // pinned to two cores under 4x CPU oversubscription. The contract being
+    // pinned here is "tick() is called", not "called within 80ms", so the
+    // window is widened rather than the assertion weakened. `run_for` keeping
+    // to its bound is a separate claim, and `run_for_returns_within_its_bound`
+    // below is what tests it.
     sched
-        .run_for(Duration::from_millis(80))
+        .run_for(Duration::from_millis(500))
         .expect("scheduler runs");
 
     let n = ticks.load(Ordering::Relaxed);

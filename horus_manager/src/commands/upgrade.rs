@@ -201,6 +201,21 @@ fn github_message(body: &str) -> Option<String> {
 
 /// One HTTP GET, returning the status alongside the body so a non-2xx can be
 /// reported with its reason instead of being collapsed into "no update".
+/// A GitHub token from the environment, if one is set and non-empty.
+///
+/// `GITHUB_TOKEN` is what Actions injects; `GH_TOKEN` is what the `gh` CLI
+/// uses, so a developer who has authenticated `gh` usually has it too. Blank
+/// values are treated as absent -- an empty `Authorization: Bearer` header is
+/// rejected by GitHub with a 401, which would turn "no token" into a hard
+/// failure rather than the anonymous request it should be.
+fn github_token() -> Option<String> {
+    ["GITHUB_TOKEN", "GH_TOKEN"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
+}
+
 fn http_get(url: &str, timeout: Duration) -> Result<(u16, Vec<u8>)> {
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
@@ -213,9 +228,28 @@ fn http_get(url: &str, timeout: Duration) -> Result<(u16, Vec<u8>)> {
         .build()
         .context("building the HTTP client")?;
 
-    let resp = client
+    let mut req = client
         .get(url)
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", "application/vnd.github+json");
+
+    // Authenticate when a token is available.
+    //
+    // GitHub's unauthenticated API quota is per source IP, and on a shared CI
+    // runner that address belongs to hundreds of unrelated jobs. The check then
+    // fails with a 403 that has nothing to do with this repository or this
+    // machine -- distribution.yml's macOS job failed exactly that way while
+    // holding a usable GITHUB_TOKEN it never passed on. The same quota is what
+    // a developer behind a corporate NAT hits.
+    //
+    // Authenticated requests get a far higher limit, which the 403 body already
+    // tells the user; this is that advice taken. No token, no header, and the
+    // anonymous path behaves as before -- a token is an optimisation here, never
+    // a requirement, because reading public releases needs no credentials.
+    if let Some(token) = github_token() {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let resp = req
         .send()
         .map_err(|e| anyhow!("could not reach {url}: {}", error_chain(&e)))?;
     let status = resp.status().as_u16();
@@ -1822,4 +1856,100 @@ mod tests {
     // release and overwrite the developer's installed horus. `run_upgrade(true)`
     // is still safe — it only reads — and every decision it makes is covered
     // above without a network.
+}
+
+#[cfg(test)]
+mod github_token_tests {
+    use super::github_token;
+
+    /// The env vars this reads are process-global and libtest runs tests as
+    /// threads of one process, so these run under one lock and restore what
+    /// they found. Without that, a sibling test observing GITHUB_TOKEN sees
+    /// whatever this set.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let saved = ["GITHUB_TOKEN", "GH_TOKEN"]
+                .iter()
+                .map(|k| (*k, std::env::var(k).ok()))
+                .collect();
+            for k in ["GITHUB_TOKEN", "GH_TOKEN"] {
+                std::env::remove_var(k);
+            }
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_token_in_the_environment_means_an_anonymous_request() {
+        let _g = EnvGuard::new();
+        assert_eq!(
+            github_token(),
+            None,
+            "reading public releases needs no credentials; absent must stay absent"
+        );
+    }
+
+    #[test]
+    fn github_token_is_used_when_set() {
+        let _g = EnvGuard::new();
+        std::env::set_var("GITHUB_TOKEN", "ghp_example");
+        assert_eq!(github_token().as_deref(), Some("ghp_example"));
+    }
+
+    #[test]
+    fn gh_token_is_the_fallback_the_gh_cli_sets() {
+        let _g = EnvGuard::new();
+        std::env::set_var("GH_TOKEN", "gho_example");
+        assert_eq!(github_token().as_deref(), Some("gho_example"));
+    }
+
+    #[test]
+    fn github_token_wins_over_gh_token() {
+        let _g = EnvGuard::new();
+        std::env::set_var("GITHUB_TOKEN", "first");
+        std::env::set_var("GH_TOKEN", "second");
+        assert_eq!(github_token().as_deref(), Some("first"));
+    }
+
+    /// An empty or whitespace-only value must read as absent.
+    ///
+    /// Actions sets `GITHUB_TOKEN` to the empty string in some configurations,
+    /// and sending `Authorization: Bearer ` gets a 401 from GitHub — turning
+    /// "no token" into a hard failure instead of the anonymous request that
+    /// would have worked.
+    #[test]
+    fn a_blank_token_is_treated_as_absent() {
+        let _g = EnvGuard::new();
+        std::env::set_var("GITHUB_TOKEN", "");
+        assert_eq!(github_token(), None);
+        std::env::set_var("GITHUB_TOKEN", "   ");
+        assert_eq!(github_token(), None);
+    }
+
+    #[test]
+    fn a_blank_github_token_falls_through_to_gh_token() {
+        let _g = EnvGuard::new();
+        std::env::set_var("GITHUB_TOKEN", "");
+        std::env::set_var("GH_TOKEN", "real");
+        assert_eq!(github_token().as_deref(), Some("real"));
+    }
 }

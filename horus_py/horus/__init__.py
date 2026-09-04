@@ -18,7 +18,7 @@ Quick start::
     received = topic.recv()
     arr = received.to_numpy()   # zero-copy NumPy array
 
-Domain types: ``Image``, ``PointCloud``, ``DepthImage``
+Domain types: ``Image``, ``PointCloud``, ``DepthImage``, ``ActionChunk``
 Communication: ``Topic``, ``Node``, ``Scheduler``
 
 Common Mistakes:
@@ -114,6 +114,11 @@ try:
         Image,
         PointCloud,
         DepthImage,
+        # Action chunks — the policy-to-servo seam. ActionAt is exported
+        # alongside because a chunk query is unusable without being able to
+        # tell Inside from Stale.
+        ActionChunk,
+        ActionAt,
         # Tensor system — general-purpose zero-copy shared memory tensor
         Tensor,
         TensorPool,
@@ -260,6 +265,12 @@ except ImportError:
         pass
 
     class DepthImage:
+        pass
+
+    class ActionChunk:
+        pass
+
+    class ActionAt:
         pass
 
     class HorusNotFoundError(Exception):
@@ -1972,6 +1983,9 @@ __all__ = [
     "Image",
     "PointCloud",
     "DepthImage",
+    # Action chunks
+    "ActionChunk",
+    "ActionAt",
     # Coordinate transforms
     "TransformFrame",
     "Transform",

@@ -10,7 +10,7 @@ repository = "https://github.com/softmata/horus"
 homepage = "https://horusrobotics.dev"
 documentation = "https://docs.horusrobotics.dev"
 keywords = ["robotics", "ros", "ipc", "real-time", "framework"]
-categories = ["science::robotics", "embedded", "network-programming"]
+categories = ["science::robotics", "concurrency", "network-programming"]
 
 [dependencies]
 # Core HORUS components
