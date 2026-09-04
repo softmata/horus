@@ -131,10 +131,12 @@ jobs:
       # network error must not be laundered into silence.
       - name: horus self update --check
         env:
-          # Set in case upgrade.rs learns to use it. Unauthenticated
-          # api.github.com is 60 requests/hour per IP and Actions runners share
-          # theirs, so a --check that must treat a 403 as an error (rather than
-          # laundering it into "up to date") needs a token to be reliable here.
+          # upgrade.rs now uses this. Unauthenticated api.github.com is 60
+          # requests/hour per IP and Actions runners share theirs, so a --check
+          # that must treat a 403 as an error (rather than laundering it into
+          # "up to date") needs a token to be reliable here. This job failed
+          # exactly that way -- 403, rate limit, shared macOS runner address --
+          # while holding a usable token it never passed on.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
