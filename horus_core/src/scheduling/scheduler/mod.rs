@@ -825,7 +825,17 @@ impl Scheduler {
 
     /// Set the maximum number of deadline misses before emergency stop.
     ///
-    /// Default: 100. Only meaningful when nodes have `.rate()` set.
+    /// Default: 100. Per node and consecutive: a tick that meets its deadline
+    /// clears the run, so a node that misses intermittently and recovers never
+    /// reaches the ceiling.
+    ///
+    /// The graduated degradation ladder (warn at 3 consecutive misses, half
+    /// rate at 5, isolate at 10) runs below this. Its terminal rung — killing
+    /// the node outright, normally at 20 — is moved above `n` when `n` is
+    /// higher, so this ceiling is always reachable; killing the node is
+    /// permanent, and a killed node cannot go on to miss anything.
+    ///
+    /// Only meaningful when nodes have `.rate()` set.
     ///
     /// # Example
     /// ```rust,ignore

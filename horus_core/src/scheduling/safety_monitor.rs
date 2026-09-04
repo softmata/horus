@@ -571,7 +571,9 @@ pub(crate) struct DegradationPolicy {
     pub(crate) reduce_after: u64,
     /// Consecutive misses before isolating node (default: 10)
     pub(crate) isolate_after: u64,
-    /// Consecutive misses before killing node — permanently removing from execution (default: 20)
+    /// Consecutive misses before killing node — permanently removing from
+    /// execution (default: 20, raised to `max_deadline_misses` when that
+    /// ceiling is higher, so the ceiling stays reachable — see `reaching`)
     pub(crate) kill_after: u64,
     /// Successful ticks at reduced rate before restoring original (default: 100)
     pub(crate) recovery_ticks: u64,
@@ -585,6 +587,32 @@ impl Default for DegradationPolicy {
             isolate_after: 10,
             kill_after: 20,
             recovery_ticks: 100,
+        }
+    }
+}
+
+impl DegradationPolicy {
+    /// The default ladder, with its terminal rung moved out of the way of a
+    /// configured `max_deadline_misses` ceiling.
+    ///
+    /// `Kill` is permanent — it sets `is_stopped`, and a stopped node is
+    /// skipped forever — so a node killed at 20 consecutive misses can never
+    /// tick again, and its consecutive count can never climb any higher. With
+    /// `kill_after` fixed at 20 and `max_deadline_misses` defaulting to 100,
+    /// the documented emergency stop was unreachable in every shipped
+    /// configuration: the ladder always retired the node first. Nothing warned,
+    /// because the only setter for the ladder is `#[cfg(test)]`, so no user
+    /// build could raise the rung either.
+    ///
+    /// A hardcoded constant must not silently cap a documented safety
+    /// threshold, so the rung moves instead. Where the two now coincide the
+    /// e-stop wins, because both dispatch paths record the miss — which
+    /// evaluates the ceiling — before evaluating the ladder.
+    fn reaching(max_deadline_misses: u64) -> Self {
+        let base = Self::default();
+        Self {
+            kill_after: base.kill_after.max(max_deadline_misses),
+            ..base
         }
     }
 }
@@ -876,7 +904,7 @@ impl SafetyMonitor {
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
             degrade_activations: AtomicU64::new(0),
-            degradation_policy: DegradationPolicy::default(),
+            degradation_policy: DegradationPolicy::reaching(max_deadline_misses),
             degradation_states: Mutex::new(HashMap::new()),
             external_safe_state_pending: AtomicBool::new(false),
         }
@@ -2690,6 +2718,81 @@ mod tests {
     /// there eventually whatever its health. That is a timer wearing a safety
     /// threshold's name.
     ///
+    /// The configured `max_deadline_misses` ceiling must be reachable.
+    ///
+    /// `DegradationAction::Kill` sets `is_stopped`, and a stopped node is
+    /// skipped forever on both dispatch paths — so a node the ladder kills at
+    /// 20 consecutive misses can never tick again, and its consecutive count
+    /// can never climb any higher. With `kill_after` hardcoded at 20 and the
+    /// ceiling defaulting to 100, the emergency stop this knob names could not
+    /// fire in ANY shipped configuration, and the ladder's only setter is
+    /// `#[cfg(test)]`, so no user build could raise the rung either.
+    ///
+    /// The assertion is on the ORDER of the two terminal events, not on the
+    /// counter: at this level nothing removes the node, so the count keeps
+    /// climbing and the e-stop would fire on its own. What made the ceiling
+    /// dead is the `Kill` that lands first.
+    #[test]
+    fn the_ladder_does_not_retire_a_node_before_its_configured_ceiling() {
+        let _estop_serial = super::estop_queue_guard();
+        // Above the ladder's default terminal rung of 20 — as the shipped
+        // default of 100 also is.
+        let ceiling = 25u64;
+        let monitor = SafetyMonitor::new(ceiling);
+
+        for i in 1..=ceiling {
+            monitor.record_deadline_miss("arm_controller");
+            let consecutive = monitor.consecutive_misses("arm_controller");
+            let action = monitor.evaluate_degradation("arm_controller", consecutive, Some(100.0));
+
+            if !monitor.is_emergency_stop() {
+                assert!(
+                    !matches!(action, DegradationAction::Kill(_)),
+                    "the ladder killed the node at {} consecutive misses. It can \
+                     never tick again, so it can never reach the configured \
+                     ceiling of {} and the emergency stop that number names is \
+                     unreachable",
+                    i,
+                    ceiling
+                );
+            }
+        }
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "{} consecutive misses is the configured ceiling — the emergency \
+             stop must fire",
+            ceiling
+        );
+    }
+
+    /// The same thing at the value users actually ship: the documented default.
+    #[test]
+    fn the_default_ceiling_is_reachable() {
+        let _estop_serial = super::estop_queue_guard();
+        let default_ceiling = super::super::config::SchedulerConfig::default()
+            .realtime
+            .max_deadline_misses;
+        let monitor = SafetyMonitor::new(default_ceiling);
+
+        for i in 1..=default_ceiling {
+            monitor.record_deadline_miss("arm_controller");
+            let consecutive = monitor.consecutive_misses("arm_controller");
+            let action = monitor.evaluate_degradation("arm_controller", consecutive, Some(100.0));
+            if !monitor.is_emergency_stop() {
+                assert!(
+                    !matches!(action, DegradationAction::Kill(_)),
+                    "the default ladder retired the node at {} of the default \
+                     ceiling's {} consecutive misses",
+                    i,
+                    default_ceiling
+                );
+            }
+        }
+
+        assert!(monitor.is_emergency_stop());
+    }
+
     /// Here one node misses ten times the ceiling, recovering between each. It
     /// must not stop the robot.
     #[test]
