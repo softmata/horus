@@ -3,7 +3,6 @@
 ///
 /// Usage: ./estop_trigger
 use horus::prelude::*;
-use horus_types::EmergencyStop;
 
 fn main() -> Result<()> {
     let topic = Topic::<EmergencyStop>::new("_horus.estop")?;

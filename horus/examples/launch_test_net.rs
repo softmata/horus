@@ -49,7 +49,7 @@ impl Node for NetTestNode {
 }
 
 fn main() -> Result<()> {
-    let params = horus_core::params::RuntimeParams::new()?;
+    let params = RuntimeParams::new()?;
     let role: String = params.get("role").unwrap_or_else(|| "pub".to_string());
     println!("NET_TEST: role={}", role);
 
