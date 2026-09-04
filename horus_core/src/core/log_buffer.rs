@@ -639,6 +639,26 @@ pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
         .ok()
 }
 
+/// The process-wide log-file drain, started at most once.
+static LOG_FILE_DRAIN: std::sync::OnceLock<Option<std::thread::JoinHandle<()>>> =
+    std::sync::OnceLock::new();
+
+/// Start the log-file drain once per process, if `HORUS_LOG_FILE` asks for it.
+///
+/// `Scheduler::new` calls this unconditionally: `start_log_file_drain` reads
+/// the variable itself and returns `None` when it is unset, so a process that
+/// has not opted in pays one env lookup and spawns nothing.
+///
+/// Once, because a process may build several `Scheduler`s (tests do, and so
+/// does any program that runs one scheduler after another). Each drain thread
+/// tracks its own `last_idx` into the same global ring, so N of them would
+/// write every entry N times into the same file.
+///
+/// Returns whether a drain thread is running.
+pub fn start_log_file_drain_once() -> bool {
+    LOG_FILE_DRAIN.get_or_init(start_log_file_drain).is_some()
+}
+
 fn log_drain_loop(log_dir: &str, max_size: u64, max_files: usize) {
     use std::io::Write;
 

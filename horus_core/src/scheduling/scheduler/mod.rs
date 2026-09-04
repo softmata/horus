@@ -1,4 +1,5 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
+use crate::core::log_buffer::start_log_file_drain_once;
 use crate::core::tick_context::{clear_tick_context, set_tick_context};
 use crate::core::{DurationExt, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
@@ -620,6 +621,21 @@ impl Scheduler {
         {
             s = s.with_recording();
         }
+
+        // Drain the log ring buffer to disk if HORUS_LOG_FILE is set.
+        //
+        // `start_log_file_drain` reads the variable itself and returns `None`
+        // when it is unset, so this call is unconditional and users who do not
+        // opt in pay nothing. That guard lives INSIDE the function precisely so
+        // a call site could be unconditional — but there was no call site. The
+        // symbol appeared four times in the tree: the definition, its
+        // re-export, and two lines of one integration test that invoked it by
+        // hand. So `HORUS_LOG_FILE=1 horus run` wrote no `.horus/logs/horus.log`
+        // and `HORUS_LOG_DIR`/`_MAX_SIZE`/`_MAX_FILES` were dead with it, while
+        // the test that proves the drain works kept it green. An operator who
+        // sets a documented variable to get a post-incident log and finds an
+        // empty disk is the exact failure that variable exists to prevent.
+        start_log_file_drain_once();
 
         s
     }
