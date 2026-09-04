@@ -133,7 +133,7 @@ impl TensorHandle {
                 "TensorHandle::from_shape: every dimension must be greater than zero".to_string(),
             )));
         }
-        let pool = crate::communication::topic::pool_registry::global_pool();
+        let pool = crate::communication::topic::pool_registry::global_pool()?;
         let device = pool.backend_device();
         Self::alloc(pool, shape, dtype, device)
     }

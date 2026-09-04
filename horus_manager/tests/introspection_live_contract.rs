@@ -496,3 +496,96 @@ fn topic_echo_streams_every_message_in_order() {
         values.len()
     );
 }
+
+/// A watch that stops updating must say so.
+///
+/// `topic hz` printed only on the polls where the message counter had moved, so
+/// SIGKILLing the publisher under it left the last rate standing: the region
+/// stays mapped after a SIGKILL, so every subsequent read still succeeds and
+/// returns the same frozen number, and the loop then spun silently forever. On
+/// a tty that leaves `Rate: 20.19 Hz (window: 10)` on screen with no trailing
+/// newline — indistinguishable from a live readout — and off a tty it is total
+/// silence. `examples/camera_perception/README.md` tells operators to run
+/// `horus topic hz camera.image` to verify a camera is producing frames, which
+/// is exactly the question that silence answered wrongly.
+#[test]
+fn topic_hz_reports_a_publisher_that_dies_mid_measurement() {
+    let _serial = serialize();
+    let mut node = LiveNode::spawn("live_hz_stall", true);
+    node.wait_for(&["topic", "list"], |o| o.contains(&node.topic))
+        .unwrap_or_else(|| panic!("topic never appeared:\n{}", node.cli(&["topic", "list"])));
+
+    let mut hz = Command::new(horus())
+        .args(["topic", "hz", &node.topic, "--window", "10"])
+        .env("HORUS_NAMESPACE", &node.namespace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("horus must run");
+
+    // Drain into a buffer the test can read while the child still runs. Both
+    // phases below are driven off what `hz` has actually printed rather than
+    // off fixed sleeps: on a box running the rest of this suite the publisher
+    // can take seconds to reach its first send, and a sleep long enough to
+    // cover that is a sleep that makes the test slow for everyone else.
+    let seen = std::sync::Arc::new(Mutex::new(String::new()));
+    let sink = seen.clone();
+    let mut pipe = hz.stdout.take().expect("stdout was piped");
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut chunk = [0u8; 512];
+        while let Ok(n) = pipe.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            sink.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str(&String::from_utf8_lossy(&chunk[..n]));
+        }
+    });
+    let text = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let wait_until = |needle: &str, budget: Duration| {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if text().contains(needle) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+
+    // The non-tty path prints one rate line a second, so this is the watch
+    // measuring a live publisher.
+    let measured = wait_until("average rate:", Duration::from_secs(30));
+    let _ = node.child.kill();
+    let _ = node.child.wait();
+    // The 2 s stall timeout plus the 1 s line cadence, and slack.
+    let reported = wait_until("no new messages for", Duration::from_secs(15));
+    let out = text();
+    let _ = hz.kill();
+    let _ = hz.wait();
+    let _ = reader.join();
+
+    // Not a skip. If this fires, the stall line below would be satisfied by a
+    // `topic hz` that never measured anything — the watch reports silence from
+    // the moment it starts, so a publisher that never published produces the
+    // same output as one that died. This assertion is the only thing standing
+    // between that and a green run, so it has to fail rather than return: a
+    // regression that stops `topic hz` printing rates at all must not be able
+    // to turn this test green.
+    assert!(
+        measured,
+        "`topic hz` printed no rate in 30s for a publisher `topic list` had \
+         already shown, so the live half of this test never happened. Either \
+         rate measurement itself regressed, or this box is loaded past the \
+         point where the 30s budget means anything — check the load average \
+         and /dev/shm before reading it as either:\n{out}"
+    );
+    assert!(
+        reported,
+        "the publisher was killed fifteen seconds ago and `topic hz` never said \
+         so — the last rate it printed is still the last thing an operator \
+         sees:\n{out}"
+    );
+}

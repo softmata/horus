@@ -18,6 +18,24 @@
 
 namespace horus {
 
+namespace detail {
+
+/// Reason the topic constructor that just returned null failed.
+///
+/// Must be called immediately after that constructor — the C API parks the
+/// reason in a per-thread slot the next topic constructor on this thread
+/// clears, whether that one goes on to succeed or fail.
+/// 512 bytes covers every reason horus_core produces: the longest quotes the
+/// rejected topic name, and names over 255 chars are rejected by length before
+/// the quoting path is reached.
+inline std::string topic_open_error() {
+    char buf[512];
+    int n = horus_topic_last_error(buf, sizeof(buf));
+    return n > 0 ? std::string(buf, static_cast<size_t>(n)) : std::string();
+}
+
+} // namespace detail
+
 // ─── Macro: Generate Publisher<T> + Subscriber<T> specialization ────────────
 //
 // For any Pod message type where C struct == Rust struct (identical #[repr(C)]).
@@ -31,11 +49,12 @@ public: \
         std::string s(topic_name); \
         inner_ = horus_publisher_##c_snake##_new(s.c_str()); \
         name_ = std::string(topic_name); \
+        if (!inner_) error_ = detail::topic_open_error(); \
     } \
     ~Publisher() { if (inner_) horus_publisher_##c_snake##_destroy(inner_); } \
-    Publisher(Publisher&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)) { o.inner_ = nullptr; } \
+    Publisher(Publisher&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)), error_(std::move(o.error_)), dropped_(o.dropped_) { o.inner_ = nullptr; o.dropped_ = 0; } \
     Publisher& operator=(Publisher&& o) noexcept { \
-        if (this != &o) { if (inner_) horus_publisher_##c_snake##_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); o.inner_ = nullptr; } \
+        if (this != &o) { if (inner_) horus_publisher_##c_snake##_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); error_ = std::move(o.error_); dropped_ = o.dropped_; o.inner_ = nullptr; o.dropped_ = 0; } \
         return *this; \
     } \
     Publisher(const Publisher&) = delete; \
@@ -43,18 +62,28 @@ public: \
     [[nodiscard]] LoanedSample<CppType> loan() { return LoanedSample<CppType>(); } \
     void publish(LoanedSample<CppType>&& sample) { send(*sample); } \
     void send(const CppType& msg) { \
-        if (inner_) horus_publisher_##c_snake##_send(inner_, &msg); \
+        if (inner_) { horus_publisher_##c_snake##_send(inner_, &msg); } else { ++dropped_; } \
     } \
     /* Messages this publisher gave up on rather than blocking. \
+       A handle that never opened has no ring to report on, so it counts the \
+       sends it threw away instead. Reporting 0 there inverted the signal a \
+       monitor watches: a congested-but-working publisher measured 4745 while \
+       a 100% dead one measured 0. \
        noexcept: a null check plus a call into the C ABI, which cannot throw. */ \
     [[nodiscard]] uint64_t dropped_count() const noexcept { \
-        return inner_ ? horus_publisher_##c_snake##_dropped_count(inner_) : 0; \
+        return inner_ ? horus_publisher_##c_snake##_dropped_count(inner_) : dropped_; \
     } \
+    /* Why the topic failed to open — empty while is_valid(). Rust returns this \
+       as HorusResult and Python raises it as RuntimeError; C++ hands back a \
+       handle, so the reason has to live somewhere. */ \
+    const std::string& error() const noexcept { return error_; } \
     const std::string& name() const { return name_; } \
     bool is_valid() const { return inner_ != nullptr; } \
 private: \
     HorusPublisher* inner_ = nullptr; \
     std::string name_; \
+    std::string error_; \
+    uint64_t dropped_ = 0; \
 }; \
 \
 template<> \
@@ -64,17 +93,18 @@ public: \
         std::string s(topic_name); \
         inner_ = horus_subscriber_##c_snake##_new(s.c_str()); \
         name_ = std::string(topic_name); \
+        if (!inner_) error_ = detail::topic_open_error(); \
     } \
     ~Subscriber() { if (inner_) horus_subscriber_##c_snake##_destroy(inner_); } \
-    Subscriber(Subscriber&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)) { o.inner_ = nullptr; } \
+    Subscriber(Subscriber&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)), error_(std::move(o.error_)), missed_(o.missed_) { o.inner_ = nullptr; o.missed_ = 0; } \
     Subscriber& operator=(Subscriber&& o) noexcept { \
-        if (this != &o) { if (inner_) horus_subscriber_##c_snake##_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); o.inner_ = nullptr; } \
+        if (this != &o) { if (inner_) horus_subscriber_##c_snake##_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); error_ = std::move(o.error_); missed_ = o.missed_; o.inner_ = nullptr; o.missed_ = 0; } \
         return *this; \
     } \
     Subscriber(const Subscriber&) = delete; \
     Subscriber& operator=(const Subscriber&) = delete; \
     std::optional<BorrowedSample<CppType>> recv() { \
-        if (!inner_) return std::nullopt; \
+        if (!inner_) { ++missed_; return std::nullopt; } \
         CppType msg; \
         std::memset(&msg, 0, sizeof(msg)); \
         if (horus_subscriber_##c_snake##_recv(inner_, &msg)) { \
@@ -84,18 +114,25 @@ public: \
     } \
     /* Messages this subscriber was lapped past. Topics are lossy by design: a \
        full ring overwrites the oldest unconsumed slot rather than blocking the \
-       publisher, so a rising value means frames are being dropped. */ \
+       publisher, so a rising value means frames are being dropped. \
+       A handle that never opened has no ring to report on, so it counts the \
+       receives it could not serve — a dead link must not read 0 here while a \
+       merely congested one reads in the thousands. */ \
     [[nodiscard]] uint64_t missed_count() const noexcept { \
-        return inner_ ? horus_subscriber_##c_snake##_missed_count(inner_) : 0; \
+        return inner_ ? horus_subscriber_##c_snake##_missed_count(inner_) : missed_; \
     } \
     bool has_msg() const { \
         return inner_ ? horus_subscriber_##c_snake##_has_msg(inner_) : false; \
     } \
+    /* Why the topic failed to open — empty while is_valid(). */ \
+    const std::string& error() const noexcept { return error_; } \
     const std::string& name() const { return name_; } \
     bool is_valid() const { return inner_ != nullptr; } \
 private: \
     HorusSubscriber* inner_ = nullptr; \
     std::string name_; \
+    std::string error_; \
+    uint64_t missed_ = 0; \
 };
 
 // ─── All 11 Message Type Specializations ────────────────────────────────────
@@ -108,11 +145,12 @@ public:
         std::string s(topic_name);
         inner_ = horus_publisher_cmd_vel_new(s.c_str());
         name_ = std::string(topic_name);
+        if (!inner_) error_ = detail::topic_open_error();
     }
     ~Publisher() { if (inner_) horus_publisher_cmd_vel_destroy(inner_); }
-    Publisher(Publisher&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)) { o.inner_ = nullptr; }
+    Publisher(Publisher&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)), error_(std::move(o.error_)), dropped_(o.dropped_) { o.inner_ = nullptr; o.dropped_ = 0; }
     Publisher& operator=(Publisher&& o) noexcept {
-        if (this != &o) { if (inner_) horus_publisher_cmd_vel_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); o.inner_ = nullptr; }
+        if (this != &o) { if (inner_) horus_publisher_cmd_vel_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); error_ = std::move(o.error_); dropped_ = o.dropped_; o.inner_ = nullptr; o.dropped_ = 0; }
         return *this;
     }
     Publisher(const Publisher&) = delete;
@@ -120,7 +158,7 @@ public:
     [[nodiscard]] LoanedSample<msg::CmdVel> loan() { return LoanedSample<msg::CmdVel>(); }
     void publish(LoanedSample<msg::CmdVel>&& sample) { send(*sample); }
     void send(const msg::CmdVel& msg) {
-        if (!inner_) return;
+        if (!inner_) { ++dropped_; return; }
         HorusCmdVel c_msg;
         c_msg.timestamp_ns = msg.timestamp_ns;
         c_msg.linear = msg.linear;
@@ -129,14 +167,27 @@ public:
     }
 
     /// Messages this publisher gave up on rather than blocking.
+    ///
+    /// A handle that never opened has no ring to report on, so it counts the
+    /// sends it threw away instead. Reporting 0 there inverted the signal a
+    /// monitor watches: a congested-but-working publisher measured 4745 while
+    /// a 100% dead one measured 0.
     [[nodiscard]] uint64_t dropped_count() const noexcept {
-        return inner_ ? horus_publisher_cmd_vel_dropped_count(inner_) : 0;
+        return inner_ ? horus_publisher_cmd_vel_dropped_count(inner_) : dropped_;
     }
+
+    /// Why the topic failed to open — empty while is_valid().
+    ///
+    /// Rust returns this as HorusResult and Python raises it as RuntimeError;
+    /// C++ hands back a handle, so the reason has to live somewhere.
+    const std::string& error() const noexcept { return error_; }
     const std::string& name() const { return name_; }
     bool is_valid() const { return inner_ != nullptr; }
 private:
     HorusPublisher* inner_ = nullptr;
     std::string name_;
+    std::string error_;
+    uint64_t dropped_ = 0;
 };
 
 template<>
@@ -146,17 +197,18 @@ public:
         std::string s(topic_name);
         inner_ = horus_subscriber_cmd_vel_new(s.c_str());
         name_ = std::string(topic_name);
+        if (!inner_) error_ = detail::topic_open_error();
     }
     ~Subscriber() { if (inner_) horus_subscriber_cmd_vel_destroy(inner_); }
-    Subscriber(Subscriber&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)) { o.inner_ = nullptr; }
+    Subscriber(Subscriber&& o) noexcept : inner_(o.inner_), name_(std::move(o.name_)), error_(std::move(o.error_)), missed_(o.missed_) { o.inner_ = nullptr; o.missed_ = 0; }
     Subscriber& operator=(Subscriber&& o) noexcept {
-        if (this != &o) { if (inner_) horus_subscriber_cmd_vel_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); o.inner_ = nullptr; }
+        if (this != &o) { if (inner_) horus_subscriber_cmd_vel_destroy(inner_); inner_ = o.inner_; name_ = std::move(o.name_); error_ = std::move(o.error_); missed_ = o.missed_; o.inner_ = nullptr; o.missed_ = 0; }
         return *this;
     }
     Subscriber(const Subscriber&) = delete;
     Subscriber& operator=(const Subscriber&) = delete;
     std::optional<BorrowedSample<msg::CmdVel>> recv() {
-        if (!inner_) return std::nullopt;
+        if (!inner_) { ++missed_; return std::nullopt; }
         HorusCmdVel c_msg;
         if (horus_subscriber_cmd_vel_recv(inner_, &c_msg)) {
             msg::CmdVel msg;
@@ -170,14 +222,23 @@ public:
     bool has_msg() const { return inner_ ? horus_subscriber_cmd_vel_has_msg(inner_) : false; }
 
     /// Messages this subscriber was lapped past and never delivered.
+    ///
+    /// A handle that never opened has no ring to report on, so it counts the
+    /// receives it could not serve — a dead link must not read 0 here while a
+    /// merely congested one reads in the thousands.
     [[nodiscard]] uint64_t missed_count() const noexcept {
-        return inner_ ? horus_subscriber_cmd_vel_missed_count(inner_) : 0;
+        return inner_ ? horus_subscriber_cmd_vel_missed_count(inner_) : missed_;
     }
+
+    /// Why the topic failed to open — empty while is_valid().
+    const std::string& error() const noexcept { return error_; }
     const std::string& name() const { return name_; }
     bool is_valid() const { return inner_ != nullptr; }
 private:
     HorusSubscriber* inner_ = nullptr;
     std::string name_;
+    std::string error_;
+    uint64_t missed_ = 0;
 };
 
 // ─── All Pod Message Types ──────────────────────────────────────────────────

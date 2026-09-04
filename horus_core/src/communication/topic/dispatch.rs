@@ -113,9 +113,16 @@
 //!    write and read of each slot. CAS operations use `AcqRel` for read-modify-
 //!    write consistency.
 //!
-//! 6. **SIMD operations**: `simd_aware_read`/`simd_aware_write` require aligned,
-//!    non-overlapping source/dest within the data region. The SHM layout ensures
-//!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
+//! 6. **SIMD operations**: `simd_aware_read`/`simd_aware_write` require
+//!    non-overlapping source/dest within the data region. They do NOT require
+//!    alignment, and must not: no `slot_size` rounding to `mem::align_of::<T>()`
+//!    exists anywhere in the layout — this invariant claimed one for years and
+//!    there was none. A split slot sits at `640 + capacity * 8 + i *
+//!    size_of::<T>()` and a colo payload at `640 + i * stride + 8`, so a
+//!    16-aligned message is 8 mod 16 in a colo region and in a capacity-1 split
+//!    one. Both helpers therefore copy bytes; a typed `ptr::read`/`ptr::write`
+//!    on a slot is UB and, for the shapes LLVM vectorises, a `movaps` fault in
+//!    release that debug builds do not reproduce.
 
 use std::sync::atomic::{fence, Ordering};
 
@@ -276,7 +283,7 @@ fn spill_to_pool<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static
 ) -> Option<SpillDescriptor> {
     use crate::types::{Device, TensorDtype};
 
-    let pool = topic.get_or_create_spill_pool();
+    let pool = topic.get_or_create_spill_pool()?;
     let tensor = pool
         .alloc(&[bytes.len() as u64], TensorDtype::U8, Device::cpu())
         .ok()?;
@@ -1092,7 +1099,11 @@ fn deserialize_spill_slot<T: DeserializeOwned>(
 /// for the SP/MP backends; FanoutShm uses `read_spilled_retained` instead.
 fn read_spilled_once<T: DeserializeOwned>(spill: SpillDescriptor, topic_name: &str) -> Option<T> {
     let tensor = spill.to_tensor();
-    let pool = super::pool_registry::get_or_create_pool(topic_name);
+    // No usable pool => the payload is unreachable => a miss, the same answer
+    // this returns for a superseded slot. It used to be a panic. Unlike a
+    // superseded slot it is a permanent fault, so it is reported (throttled per
+    // topic) rather than left to look like an idle topic.
+    let pool = super::pool_registry::pool_or_report(topic_name)?;
     // Pin the slot across the read, exactly as `read_spilled_retained` does.
     //
     // "There is exactly one reader" was true and still is; what it did not cover
@@ -1133,7 +1144,9 @@ fn read_spilled_retained<T: DeserializeOwned>(
     topic_name: &str,
 ) -> Option<T> {
     let tensor = spill.to_tensor();
-    let pool = super::pool_registry::get_or_create_pool(topic_name);
+    // No usable pool => the payload is unreachable => a miss, reported for the
+    // same reason as in `read_spilled_once`.
+    let pool = super::pool_registry::pool_or_report(topic_name)?;
     // Pin the slot for the read. Err => superseded + freed => clean miss.
     if pool.try_retain(&tensor).is_err() {
         return None;
@@ -1228,11 +1241,15 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 // `try_retain` around their read (`read_spilled_retained`), so a
                 // release here can never tear an in-progress read. Evict BEFORE the
                 // alloc so the pool always has a free slot for the new spill.
-                let pool = topic.get_or_create_spill_pool();
-                let window = (local.cached_capacity as usize).max(1);
-                while local.spill_keepalive.len() >= window {
-                    if let Some(old) = local.spill_keepalive.pop_front() {
-                        pool.release(&old);
+                // No pool => nothing was ever spilled on this handle, so there
+                // is nothing to evict; `spill_to_pool` below returns `None` for
+                // the same reason and the `None` arm sends inline.
+                if let Some(pool) = topic.get_or_create_spill_pool() {
+                    let window = (local.cached_capacity as usize).max(1);
+                    while local.spill_keepalive.len() >= window {
+                        if let Some(old) = local.spill_keepalive.pop_front() {
+                            pool.release(&old);
+                        }
                     }
                 }
                 // Hoisted out of the `match` scrutinee so the shared borrow of
@@ -1408,8 +1425,8 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // cached_seq_ptr points to the per-slot ready-flag array (set unconditionally
-    // in ensure_role). index*8 is within bounds. simd_aware_write handles alignment
-    // (slot_size is rounded to align_of::<T>()).
+    // in ensure_role). index*8 is within bounds. simd_aware_write copies bytes, so
+    // the slot needs no alignment — nothing rounds slot_size to align_of::<T>().
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
@@ -1950,7 +1967,8 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
     // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
     // The producer's Release store on sequence_or_head was observed via our Acquire load.
-    // simd_aware_read handles alignment (slot_size rounded to align_of::<T>()).
+    // simd_aware_read copies bytes, so the slot needs no alignment — nothing
+    // rounds slot_size to align_of::<T>().
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         simd_aware_read(base.add((tail & mask) as usize))

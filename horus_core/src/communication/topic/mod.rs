@@ -604,8 +604,25 @@ impl From<SendBlockingError> for crate::error::HorusError {
 
 /// Write a message to a ring buffer slot, using SIMD streaming stores for large POD types.
 ///
+/// Byte copy, never `ptr::write::<T>`, for the same reason
+/// `simd_aware_read_uninit` reads bytes rather than a `T`: a slot is untyped
+/// shared memory at an address the *layout* picked, not memory the compiler
+/// aligned for `T`. `colo_eligible` now keeps types stricter than
+/// `COLO_PAYLOAD_OFF` off the colo geometry, but the split geometry is not
+/// aligned either — its data region starts at `640 + capacity * 8`, which is
+/// 8 mod 16 for `capacity == 1` — and rounding that up would move an offset
+/// `horus_net`'s `ShmRingWriter` and `header::read_slot_inner` each compute
+/// independently. A typed store is what turned that into a fault: LLVM
+/// vectorised `ptr::write` of a 16-byte `#[repr(align(16))]` message into
+/// `movaps %xmm0,(%rax)` and the first `send` took SIGSEGV in release while
+/// passing in debug.
+///
+/// `mem::forget` drops nothing that needed dropping: every caller is a
+/// `dispatch::send_shm_*_pod` path, and `is_pod` implies `!needs_drop::<T>()`.
+///
 /// # Safety
-/// `dst` must be valid for writes of `size_of::<T>()` bytes and properly aligned.
+/// `dst` must be valid for writes of `size_of::<T>()` bytes. Alignment is NOT
+/// required.
 #[inline(always)]
 unsafe fn simd_aware_write<T>(dst: *mut T, msg: T) {
     if mem::size_of::<T>() >= SIMD_COPY_THRESHOLD {
@@ -614,16 +631,21 @@ unsafe fn simd_aware_write<T>(dst: *mut T, msg: T) {
             dst as *mut u8,
             mem::size_of::<T>(),
         );
-        mem::forget(msg);
     } else {
-        std::ptr::write(dst, msg);
+        std::ptr::copy_nonoverlapping(
+            &msg as *const T as *const u8,
+            dst as *mut u8,
+            mem::size_of::<T>(),
+        );
     }
+    mem::forget(msg);
 }
 
 /// Read a message from a ring buffer slot, using SIMD prefetched reads for large POD types.
 ///
 /// # Safety
-/// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
+/// `src` must be valid for reads of `size_of::<T>()` bytes, and must hold a
+/// valid `T`. Alignment is not required — the copy underneath is byte-wise.
 #[inline(always)]
 unsafe fn simd_aware_read<T>(src: *const T) -> T {
     simd_aware_read_uninit(src).assume_init()
@@ -642,9 +664,10 @@ unsafe fn simd_aware_read<T>(src: *const T) -> T {
 /// bytes are dropped as raw memory and never become a `T`.
 ///
 /// # Safety
-/// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
-/// The caller must only `assume_init()` the result once it has established that
-/// the bytes are a valid, fully-written `T`.
+/// `src` must be valid for reads of `size_of::<T>()` bytes. Alignment is not
+/// required — the copy is byte-wise. The caller must only `assume_init()` the
+/// result once it has established that the bytes are a valid, fully-written
+/// `T`.
 #[inline(always)]
 unsafe fn simd_aware_read_uninit<T>(src: *const T) -> mem::MaybeUninit<T> {
     let mut msg = mem::MaybeUninit::<T>::uninit();
@@ -1006,7 +1029,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // horus_py contains no slot-size computation at all (nor does
         // horus_cpp) — both are FFI wrappers over this same Rust code, so
         // there is only one side.
-        let colo = layout::colo_eligible(is_pod, type_size as usize);
+        let colo = layout::colo_eligible(is_pod, type_size as usize, type_align as usize);
         let actual_slot_size = if is_pod {
             let ts = type_size as usize;
             if colo {
@@ -1127,7 +1150,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // Use exponential backoff (1ms→50ms) with a 2s deadline.
             // The generous deadline prevents spurious timeouts under heavy
             // thread contention (e.g., 100+ topics starting simultaneously).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let started = std::time::Instant::now();
+            let deadline = started + std::time::Duration::from_secs(2);
             let mut backoff_ms = 1u64;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
@@ -1136,10 +1160,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     break;
                 }
                 if std::time::Instant::now() >= deadline {
+                    // Structured, for the same reason as the type-mismatch arm
+                    // below: wrapped in a bare String this rendered through the
+                    // `From<String>` impl as "Communication serialization
+                    // failed:", reporting a timeout as a serialization fault.
+                    // Callers that want to tell "the owner is still starting"
+                    // from "the region is stale or corrupt" now have a variant
+                    // to match instead of a message to substring-search.
                     return Err(HorusError::Communication(
-                        "Timeout waiting for topic header initialization"
-                            .to_string()
-                            .into(),
+                        crate::error::CommunicationError::HeaderInitTimeout {
+                            topic: name.to_string(),
+                            waited: started.elapsed(),
+                        },
                     ));
                 }
                 backoff_ms = (backoff_ms * 2).min(50);
@@ -2032,19 +2064,26 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 0 => self.header().capacity,
                 cached => cached,
             };
-            let total_size =
-                shm_fanout::ShmFanoutRing::required_file_size(type_size, is_pod, capacity as usize);
             let fanout_name = format!("{}_fanout", self.name);
-            if let Ok(fanout_storage) =
-                crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size)
-            {
+            // `required_file_size` is `None` for a geometry this layout cannot
+            // carry — a POD `T` larger than the fanout slot cap. Taking the
+            // SpscShm fallback below is what keeps `try_send_pod`'s unbounded
+            // memcpy inside its slot; the ring used to be built anyway with the
+            // slot silently clamped.
+            let fanout_storage =
+                shm_fanout::ShmFanoutRing::required_file_size(type_size, is_pod, capacity as usize)
+                    .and_then(|total_size| {
+                        crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size).ok()
+                    });
+            if let Some(fanout_storage) = fanout_storage {
                 let is_owner = fanout_storage.is_owner();
                 let shm_base = fanout_storage.as_ptr() as *mut u8;
                 let ring = unsafe {
                     if is_owner {
-                        Some(shm_fanout::ShmFanoutRing::init_owner(
-                            shm_base, type_size, is_pod, capacity,
-                        ))
+                        // `init_owner` refuses the same geometry `attach` refuses
+                        // (POD slots too small for the message) rather than
+                        // writing a region no peer would accept.
+                        shm_fanout::ShmFanoutRing::init_owner(shm_base, type_size, is_pod, capacity)
                     } else {
                         // COMM-H1: `attach` returns None when the region carries an
                         // older/incompatible layout version (the v3 meta bump) —
@@ -2356,19 +2395,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// seed (FNV-1a hash), so publisher and subscriber processes converge on
     /// the same shared memory file.
     ///
+    /// `None` when the pool cannot be opened or created — a pool file left by a
+    /// different `POOL_VERSION` or geometry. Spilling is an optimisation for
+    /// messages larger than a ring slot, so the caller falls back to the inline
+    /// send it already has for a full pool, rather than panicking mid-tick.
+    ///
     /// # Safety
     /// Must be called from the owning thread (Topic is !Sync for mutation).
     /// Uses UnsafeCell — same single-thread guarantee as all other dispatch code.
-    pub(crate) fn get_or_create_spill_pool(&self) -> Arc<TensorPool> {
+    pub(crate) fn get_or_create_spill_pool(&self) -> Option<Arc<TensorPool>> {
         // SAFETY: single-thread ownership — Topic<T> is !Send+!Sync for mutation.
         // UnsafeCell access is safe because dispatch functions run on the owning thread.
         let pool_ref = unsafe { &mut *self.spill_pool.get() };
         if let Some(pool) = pool_ref {
-            return Arc::clone(pool);
+            return Some(Arc::clone(pool));
         }
-        let pool = pool_registry::get_or_create_pool(&self.name);
+        let pool = pool_registry::pool_or_report(&self.name)?;
         *pool_ref = Some(Arc::clone(&pool));
-        pool
+        Some(pool)
     }
 
     /// Migration check — reads `migration_epoch` from the SHM header and calls
@@ -2796,6 +2840,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
                 // masked to ring capacity, so it is always in bounds. The capacity check above
                 // ensures the slot is not occupied (no unconsumed data will be overwritten).
+                // `simd_aware_write` rather than `ptr::write`, on both branches,
+                // for the reason given at its definition: a slot address is
+                // whatever the layout put it at, and a typed store to one that
+                // is not `align_of::<T>()`-aligned is UB — a `movaps` fault in
+                // release for the shapes LLVM vectorises.
                 unsafe {
                     let idx = (head & local.cached_capacity_mask) as usize;
                     let (stamp, data) = dispatch::slot_ptrs::<T>(local, idx);
@@ -2806,11 +2855,32 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         // published just below — that asymmetry is why this
                         // path could previously skip stamping entirely.
                         let seq = head.wrapping_add(1);
-                        (*stamp).store(seq | layout::SLOT_WRITING, Ordering::Release);
-                        std::ptr::write(data, msg);
+                        // Boehm seqlock write phase, and the fence is the whole
+                        // protocol — not decoration. A Release *store* on the
+                        // marker orders only the accesses BEFORE it; it says
+                        // nothing about the payload store that follows, so the
+                        // payload may become visible while the stamp still reads
+                        // the previous lap's value. `recv_shm_pod_broadcast`
+                        // (dispatch.rs) accepts on `v1 == tail + 1` and re-checks
+                        // the same stamp after copying, so it would see two
+                        // matching stale stamps around new bytes and return a
+                        // mixture of two messages. aarch64 -O makes the gap
+                        // visible: the marker compiles to `stlr` and the payload
+                        // to a plain `str`, with nothing between them; with the
+                        // fence it is `str` + `dmb ish` + `str`. Free on x86,
+                        // where the fence emits no instruction at all.
+                        //
+                        // This is the same pairing as dispatch.rs's
+                        // `send_shm_pod_broadcast`, `seqlock::seqlock_publish`
+                        // and `communication/mod.rs`'s raw publisher; the naive
+                        // all-Release form is the one tests/loom_fanout.rs and
+                        // tests/loom_pod_broadcast.rs show failing under loom.
+                        (*stamp).store(seq | layout::SLOT_WRITING, Ordering::Relaxed);
+                        std::sync::atomic::fence(Ordering::Release);
+                        simd_aware_write(data, msg);
                         (*stamp).store(seq, Ordering::Release);
                     } else {
-                        std::ptr::write(data, msg);
+                        simd_aware_write(data, msg);
                     }
                 }
                 local.local_head = head.wrapping_add(1);
@@ -3142,8 +3212,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ///
     /// # Errors
     ///
+    /// - [`SendBlockingError::NoBackpressure`] — the backend overwrites unread
+    ///   messages and has no full condition to wait on; checked before the first
+    ///   `try_send`, so no time is spent waiting
     /// - [`SendBlockingError::Timeout`] — ring buffer stayed full for the entire `timeout`
-    /// - [`SendBlockingError::Serialization`] — non-POD message failed to serialize
     pub fn send_blocking(
         &self,
         msg: T,
@@ -3240,12 +3312,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // SAFETY: cached_data_ptr points into the topic's SHM ring data region; the index is
                 // masked to ring capacity, so it is always in bounds. The head-tail check above
                 // ensures the slot contains a valid, initialized message written by send().
+                // `simd_aware_read` and not `ptr::read`, mirroring the write
+                // side: the slot carries no alignment guarantee for `T`, and a
+                // typed load from one is UB.
                 let msg = unsafe {
                     let (_, data) = dispatch::slot_ptrs::<T>(
                         local,
                         (tail & local.cached_capacity_mask) as usize,
                     );
-                    std::ptr::read(data as *const T)
+                    simd_aware_read(data as *const T)
                 };
                 local.local_tail = tail.wrapping_add(1);
                 local.msg_counter = local.msg_counter.wrapping_add(1);
@@ -3896,7 +3971,7 @@ impl<T: TopicMessage> Topic<T> {
         self.pool
             .as_ref()
             .cloned()
-            .unwrap_or_else(pool_registry::global_pool)
+            .unwrap_or_else(pool_registry::fallback_pool)
     }
 
     /// Record a new pool-backed keep-alive (on `self.pool`) and release the ones
@@ -4053,9 +4128,12 @@ impl<T: TopicMessage> Topic<T> {
 
     /// Whether a full ring can make this topic's `try_send` refuse a message.
     ///
-    /// See [`RingTopic::provides_backpressure`]. Returns `false` on the
-    /// broadcast backends, which is what a topic silently becomes once a second
-    /// subscriber attaches.
+    /// Returns `false` on the broadcast backends (`PodShm`, `FanoutShm`), which
+    /// is what a topic silently becomes once a second subscriber attaches, and
+    /// `false` on a backend this handle has not resolved yet — every topic is in
+    /// that state until its first send or recv, and an unresolved backend is not
+    /// a promise of backpressure. So check this AFTER the first send/recv; see
+    /// [`send_blocking()`](Self::send_blocking) for why a command topic should.
     pub fn provides_backpressure(&self) -> bool {
         self.ring.provides_backpressure()
     }
@@ -4173,7 +4251,7 @@ where
         let name_str: String = name.into();
         let ring = RingTopic::new(name_str)?;
         let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
+            Some(pool_registry::global_pool()?)
         } else {
             None
         };
@@ -4252,7 +4330,7 @@ where
         let name_str: String = name.into();
         let ring = RingTopic::new_with_kind(name_str, topic_kind)?;
         let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
+            Some(pool_registry::global_pool()?)
         } else {
             None
         };
@@ -4299,7 +4377,7 @@ where
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         let ring = RingTopic::with_capacity(name, capacity, slot_size)?;
         let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
+            Some(pool_registry::global_pool()?)
         } else {
             None
         };
@@ -4385,12 +4463,57 @@ where
 
     /// Send a message, blocking until the ring has space or the timeout expires.
     ///
-    /// Use this for critical command topics (emergency stop, motor setpoints) where
-    /// message loss is unacceptable. For high-frequency sensor data where dropping
-    /// stale frames is acceptable, prefer [`send()`](Self::send).
+    /// Unlike [`send()`](Self::send), which drops the message after a brief
+    /// spin+yield retry, this reports a full ring instead of swallowing it --
+    /// **on the backends that have a full ring at all.** It backs off in stages
+    /// -- spin, then yield, then sleep -- and re-checks the deadline before
+    /// every wait after the spin, so a short or zero `timeout` returns near it
+    /// rather than overshooting by a scheduling quantum.
     ///
-    /// Returns `Ok(())` if the message was sent, or `Err(SendBlockingError::Timeout)`
-    /// if the ring remained full for the entire timeout duration.
+    /// # This does NOT guarantee delivery on a broadcast topic
+    ///
+    /// Every phase of the wait is a retry of `try_send`, so this can only block
+    /// where `try_send` can fail. On the broadcast backends -- `PodShm` and
+    /// `FanoutShm` -- it cannot: they overwrite the oldest unread message rather
+    /// than refuse a new one, so there is no full ring to wait for.
+    ///
+    /// And you do not choose the backend -- participant count does. One
+    /// subscriber gives `SpscShm` and real backpressure; a second subscriber,
+    /// including a logger or a `horus topic echo`, silently switches the same
+    /// POD topic to `PodShm` broadcast. Once this handle has resolved that
+    /// change (the first send or recv after it does), this call reports
+    /// `SendBlockingError::NoBackpressure` instead of the `Ok(())` in
+    /// nanoseconds it would otherwise return for a delivery nobody guaranteed.
+    ///
+    /// This doc used to recommend the method for "critical command topics
+    /// (emergency stop, motor setpoints) where message loss is unacceptable".
+    /// On a topic with two subscribers that was exactly backwards, and it is the
+    /// reason [`provides_backpressure()`](Self::provides_backpressure) exists.
+    /// Assert that on any topic carrying commands -- but AFTER the first send or
+    /// recv, not before. A handle does not resolve its backend until it moves a
+    /// message, and an unresolved backend answers `false` (it is not a promise
+    /// of anything), so an assertion placed before the first send fires on every
+    /// topic including the ones that are fine:
+    ///
+    /// ```rust,ignore
+    /// estop.send(Stop); // resolves the backend
+    /// assert!(
+    ///     estop.provides_backpressure(),
+    ///     "e-stop settled on a lossy backend"
+    /// );
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - `SendBlockingError::NoBackpressure` — this topic's backend overwrites
+    ///   unread messages and never reports a full ring, so there is nothing to
+    ///   wait on. Refusing is deliberate: reporting success for a delivery
+    ///   nobody guaranteed is worse on an e-stop path than failing loudly. It
+    ///   does not clear on retry — it lasts as long as the topology that caused
+    ///   it, so the fix is to move the topic back to one subscriber or to accept
+    ///   the loss with `send()`/`try_send()`.
+    /// - `SendBlockingError::Timeout` — the ring stayed full for the entire
+    ///   `timeout`.
     pub fn send_blocking(
         &self,
         msg: T,
@@ -4636,8 +4759,13 @@ impl Topic<DepthImage> {
 
 impl Topic<Tensor> {
     /// Get or create the auto-managed tensor pool for this topic.
+    ///
+    /// Fallible for the same reason [`Topic::new`] is: a pool file left behind
+    /// by a build with a different `POOL_VERSION` or geometry cannot be opened
+    /// *or* recreated, and this used to turn that into a panic on the
+    /// per-frame allocation path.
     #[doc(hidden)]
-    pub fn pool(&self) -> Arc<TensorPool> {
+    pub fn pool(&self) -> HorusResult<Arc<TensorPool>> {
         pool_registry::get_or_create_pool(self.ring.name())
     }
 
@@ -4649,7 +4777,7 @@ impl Topic<Tensor> {
         dtype: crate::types::TensorDtype,
         device: crate::types::Device,
     ) -> HorusResult<crate::memory::TensorHandle> {
-        let pool = self.pool();
+        let pool = self.pool()?;
         crate::memory::TensorHandle::alloc(pool, shape, dtype, device)
     }
 
@@ -4667,7 +4795,11 @@ impl Topic<Tensor> {
     pub fn recv_handle(&self) -> Option<crate::memory::TensorHandle> {
         self.register_sub("Tensor");
         let tensor = self.ring.recv()?;
-        let pool = self.pool();
+        // An unusable pool reads as "nothing to receive" — `recv_handle` already
+        // returns `None` for a superseded slot, and the caller polls again. It
+        // is not the same fault, though, so it is not left silent: the caller
+        // polling a faulted topic forever gets a throttled line naming it.
+        let pool = pool_registry::pool_or_report(self.ring.name())?;
         // Take a generation-guarded reference so each subscriber owns its own: a
         // co-subscriber dropping its handle cannot free the slot out from under
         // us. `Err` => the slot was superseded (drop-oldest) before we read it

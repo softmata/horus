@@ -9,6 +9,8 @@ Tests that every Python message type:
 These tests verify the full interop pipeline added by the Python-Rust Message Parity roadmap.
 """
 
+import math
+
 import pytest
 import horus
 
@@ -51,6 +53,7 @@ def roundtrip(msg_type, msg, field_checks, duration=1.0):
             assert abs(actual - expected) < 1e-5, f"{field}: {actual} != {expected}"
         else:
             assert actual == expected, f"{field}: {actual} != {expected}"
+    return m
 
 
 # =============================================================================
@@ -622,6 +625,71 @@ class TestCrossLanguageRustSendsPythonReceives:
     def test_imu_full_fields(self):
         msg = horus.Imu(accel_x=0.01, accel_y=-0.02, accel_z=9.81, gyro_x=0.001, gyro_y=-0.002, gyro_z=0.003)
         roundtrip(horus.Imu, msg, {"accel_x": 0.01, "accel_y": -0.02, "accel_z": 9.81, "gyro_x": 0.001})
+
+    def test_imu_orientation_readable_after_roundtrip(self):
+        """A quaternion written with the only writer Python had must be readable back."""
+        msg = horus.Imu(accel_x=0.0, accel_y=0.0, accel_z=9.81, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0)
+        msg.set_orientation_from_euler(0.0, 0.0, math.pi / 2)
+        roundtrip(horus.Imu, msg, {"qz": math.sin(math.pi / 4), "qw": math.cos(math.pi / 4)})
+
+    def test_imu_orientation_and_covariance_readable_by_subscriber(self):
+        """Orientation and the three covariances survive SHM *and* are readable.
+
+        They were always transported — all six fields are in the 304-byte POD
+        (horus_cpp/src/layout_contract.rs) — but Python had no getter for any of
+        them, so a subscriber received the 32 orientation bytes with no way to
+        look at them, and `has_orientation()` answered False for every IMU a
+        Python program could build: it reads orientation_covariance[0], which
+        Imu::new() seeds to -1.0 and no Python setter could move off it.
+        """
+        msg = horus.Imu(accel_x=0.0, accel_y=0.0, accel_z=9.81, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0)
+        msg.set_orientation_from_euler(0.0, 0.0, math.pi / 2)
+        msg.orientation_covariance = [0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.03]
+        msg.angular_velocity_covariance = [1e-4] * 9
+        msg.linear_acceleration_covariance = [2e-4] * 9
+
+        # A yaw of pi/2 is the quaternion (0, 0, sin(pi/4), cos(pi/4)), w last.
+        # The covariances are checked with `==`: they are f64 in the POD and are
+        # memcpy'd through shared memory with no arithmetic on either side.
+        got = roundtrip(
+            horus.Imu,
+            msg,
+            {
+                "qx": 0.0,
+                "qy": 0.0,
+                "qz": math.sin(math.pi / 4),
+                "qw": math.cos(math.pi / 4),
+                "orientation_covariance": [0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.03],
+                "angular_velocity_covariance": [1e-4] * 9,
+                "linear_acceleration_covariance": [2e-4] * 9,
+            },
+        )
+
+        # orientation_quat() reads the same four f64s as the flat getters, so it
+        # must agree with them exactly, not approximately.
+        q = got.orientation_quat()
+        assert (q.x, q.y, q.z, q.w) == (got.qx, got.qy, got.qz, got.qw)
+
+        assert got.has_orientation()
+
+    def test_imu_covariance_setter_rejects_wrong_length(self):
+        """A short or long list is a mistake, not a partial write.
+
+        Copying only the prefix would leave the tail of the matrix at whatever
+        was there before — for orientation_covariance the -1.0 "no data"
+        sentinel — while has_orientation(), which reads element 0 alone, would
+        report True for it.
+        """
+        msg = horus.Imu(accel_x=0.0, accel_y=0.0, accel_z=9.81, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0)
+        fields = ("orientation_covariance", "angular_velocity_covariance", "linear_acceleration_covariance")
+        for field in fields:
+            for bad in ([], [0.01], [0.0] * 8, [0.0] * 10):
+                with pytest.raises(ValueError):
+                    setattr(msg, field, bad)
+
+        # Nothing was half-written: orientation_covariance is still all sentinel.
+        assert msg.orientation_covariance == [-1.0] * 9
+        assert not msg.has_orientation()
 
     def test_laser_scan_roundtrip(self):
         msg = horus.LaserScan(angle_min=-1.5, angle_max=1.5, range_min=0.125, range_max=30.0)

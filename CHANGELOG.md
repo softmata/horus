@@ -2,8 +2,25 @@
 
 All notable changes to HORUS are recorded here.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
-this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## How versions are numbered
+
+**The patch number increments once per release. The version string does not
+encode the size of the change.**
+
+0.4.0 -> 0.4.1 -> 0.4.2, regardless of whether a release carries a typo fix or
+a shared-memory ABI break. This is deliberate and it is NOT
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) — entries before
+0.4.1 were numbered that way and reason about "minor rather than patch", which
+no longer applies.
+
+The consequence worth stating plainly: **you cannot tell from the version
+whether an upgrade is safe in place.** Read the Compatibility section of the
+release you are moving to. Where there is a shared-memory ABI change, it says
+so at the top and in bold; `TOPIC_VERSION` also refuses a mismatched segment at
+runtime and names both versions, so a mixed namespace fails loudly at startup
+rather than corrupting liveness quietly.
 
 ## How this file was produced
 
@@ -35,6 +52,247 @@ Every entry from `Unreleased` moves under the new version heading at cut time,
 and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
+
+## [0.4.1] — 2026-09-03
+
+201 commits since 0.4.0 (2026-08-22), against a cadence rule that says cut at
+50. Most of them arrived through two merge stacks rather than one PR at a
+time: `main` requires six contexts with `strict: true`, so every merge
+invalidates every other open PR and the queue drains at one PR per full CI
+cycle.
+
+Version numbers move 0.4.0 -> 0.4.1 across `horus`, `horus_core`,
+`horus_manager`, `horus_types`, `horus_py`, `horus_macros` and `benchmarks`.
+`horus_sys` moves 0.2.0 -> 0.2.1; it gained public API (`PiMutex`,
+`PiMutexGuard`, `ResidencyPolicy`) and its layout is unchanged. `horus_net`,
+`horus_cpp` and `horus_cpp_macros` stay at 0.1.0.
+
+**Read the compatibility section before upgrading.** This is a patch number and
+it is not a drop-in upgrade: the shared-memory ABI changed, and three
+behaviours changed with it. Releases here are numbered by increment rather than
+by the size of the change, so the version string is not the signal — this
+section is.
+
+### Breaking
+
+- **core** — `Topic::<Tensor>::pool()` (`#[doc(hidden)]`, but `pub`) returns
+  `HorusResult<Arc<TensorPool>>` where it returned `Arc<TensorPool>`. A pool
+  file left behind by a build with a different `POOL_VERSION` or geometry can
+  be neither opened nor recreated, and the infallible signature had only one
+  way to say so: a panic, on the per-frame allocation path, out of constructors
+  that already return `HorusResult`. There is no compatible spelling of the old
+  signature that does not keep that panic. Callers add `?`; the neighbouring
+  methods a caller is more likely to hold — `alloc_tensor`, `send_handle`,
+  `recv_handle` — are unchanged, and no caller of `pool()` exists outside
+  `horus_core` in this workspace. Pre-1.0, so it rides in the minor slot, as
+  0.4.0's break did.
+
+### Compatibility
+
+- **Do not mix 0.4.0 and 0.4.1 processes on one machine's shared memory.**
+  `TOPIC_VERSION` moves 3 -> 4. Every millisecond timestamp in the topic
+  header — participant leases, `last_topology_change_ms`, `stall_since_ms` —
+  moved from `CLOCK_REALTIME` to `CLOCK_MONOTONIC`. The fields did not change
+  layout, size or alignment; they changed MEANING. A v3 process stamps a lease
+  at ~1.75e12 (ms since 1970) and a v4 process stamps the same field at ~1e7
+  (ms since boot), and nothing in the segment says which epoch a number came
+  from. Mixed, they mis-judge liveness in both directions at once: the v3
+  writer's leases look permanently expired to a v4 reader, whose slot is then
+  reclaimed underneath a live process, and the v4 writer's leases look ~55
+  years in the future to a v3 reader, which never reaps a crashed one. There is
+  no in-band discriminator that could make this safe, so `Topic`'s open path
+  refuses a mismatched segment outright and names both versions. Restart every
+  node in a namespace together.
+
+- **`send_blocking` now refuses on `FanoutShm`.** It already refused on
+  `PodShm`. `FanoutShm` was classified as backpressured because
+  `send_fanout_shm` has two `Err` returns, but neither is a full ring — one is
+  endpoint-slot exhaustion and one is an oversized message — and the ring
+  itself is drop-oldest (`send_pod` is documented "Never fails"). So
+  `send_blocking` was returning `Ok` for a delivery nothing guaranteed, on the
+  emergency-stop and motor-setpoint path its own documentation points at. The
+  `NoBackpressure` error also used to recommend migrating TO `FanoutShm` to get
+  backpressure, which moved the caller between two lossy backends and changed
+  nothing.
+
+- **`Topic.missed_count()` and `.dropped_count()` raise in Python.** They
+  returned `0` when the topic lock was poisoned, so `0` meant both "no loss"
+  and "could not read" — in the two methods whose entire purpose is telling
+  those apart. Both return `PyResult<u64>` and raise `RuntimeError`. Callers
+  that treated the return as infallible need a `try`.
+
+### Added
+
+- Loss counters on the Python and C++ bindings: `missed_count()` on the
+  subscriber, `dropped_count()` on the publisher, both in `stats()`. A topic is
+  lossy by design, and until now only Rust could see it.
+- A priority-inheritance mutex (`PiMutex`) the 1 kHz thread can wait on without
+  unbounded inversion.
+- Action chunks, and a consumer that reports when one has expired rather than
+  acting on it.
+- `horus lock --check` for pin drift, and `--print-service` for the systemd
+  unit `horus deploy` installs.
+- `distribution.yml`: CI now executes `install.sh`, `install.ps1`,
+  `uninstall.sh` and `uninstall.ps1` on Ubuntu, macOS, Windows, Git Bash and
+  `debian:11`, and checks that the binary and the source come from one tag.
+  None of these scripts had ever been run by CI on any platform.
+
+- Camera frames carry a capture timestamp distinct from publish time.
+  `timestamp_ns` is stamped when the descriptor is built, which for a camera is
+  exposure + transfer + driver latency after the shutter — routinely 10-30 ms.
+  Fusing a camera against an IMU on publish stamps aligns them on when frames
+  *arrived*, not when they were *measured*.
+- Python can read `Imu` orientation and its covariances. All six fields already
+  crossed shared memory intact in the 304-byte POD, but `PyImu` exposed getters
+  only for accel, gyro and `timestamp_ns` — `qz` did not exist, so the
+  quaternion was write-only and the three covariance matrices unreadable.
+- A failed C++ topic says why and counts its losses. `horus_publisher_*_new`
+  answers failure with a null pointer, and the C++ `Publisher`/`Subscriber`
+  turned that into a handle that looked constructed and discarded everything
+  sent through it, with the reason horus_core had named thrown away.
+
+### Fixed
+
+- `install.sh` resolves ONE tag and uses it for both the binary and the source
+  tree. They could previously come from different refs — a released binary
+  against `main` source — with both reporting the same version.
+- Windows: `horus build` emitted `C:\Users\...` into generated TOML, where
+  `\U` is an invalid escape, so it failed for every Windows user; the CLI now
+  runs on a 16 MB thread instead of the 1 MB main-thread stack it was
+  overflowing; `install.ps1` is a native PowerShell installer.
+- `uninstall.ps1` exited 1 after a completely successful uninstall — the last
+  external command on the ordinary path is a `pip show` PROBE, which returns 1
+  when the package is absent — and deleted a TOML-escaped path that never
+  existed while leaving the real binary behind.
+- RT grades were unreachable: `rt_report` measured jitter as the raw interval,
+  so `RtGrade::Production` (p99 < 50us) and `Standard` (p99 < 500us) could not
+  be met at any rate and `is_production_ready()` returned false on every
+  machine, including a correctly configured PREEMPT_RT one.
+- Replay at a speed other than 1.0 anchored the cadence grid on the unscaled
+  period, so the first tick was the wrong length.
+- Network topics were silently decimated to the export tick rate.
+- An epoch flush could drag the `SpmcShm` cursor backward.
+- `msggen` emitted `[float; 3]` verbatim (not a Rust type), `[String::new(); 2]`
+  (which needs `Copy`), and accepted unknown array element types silently.
+- Shared memory: abandoned regions are reclaimed inside a namespace still in
+  use; a tensor pool whose creator died before writing its header is reclaimed;
+  a lost `FanoutShm` attach no longer strands a subscriber; a region sibling
+  `Topic` clones still point into is no longer unmapped.
+
+- **core** — a tensor pool file this build disagrees with is now an error
+  rather than a panic. `TensorPool::drop` never unlinks and the filename
+  carries no version, so an in-place upgrade across a `POOL_VERSION` bump
+  leaves a file the next run can neither open nor recreate; the registry
+  `.expect()`ed on that, so `Topic::new`, `Image::new`, `PointCloud::new`,
+  `DepthImage::new`, `CostMap::new`, `OccupancyGrid::new` and
+  `TensorHandle::from_shape` panicked instead of returning the `HorusResult`
+  they advertise. Inside a scheduler tick the panic was swallowed by
+  `catch_unwind` — the node entered ticks, completed none, and the process
+  still exited 0. The paths with no error channel to propagate into
+  (`Topic::<Tensor>::recv_handle`, the spill read/write paths,
+  `TopicMessage::try_from_wire`) answer `None` instead, and say why: one
+  throttled `warn` per faulted topic per second, carrying the number of
+  occurrences it suppressed, so a faulted topic is not delivered to an
+  operator as an idle one.
+
+- **cpp** — a malformed `.horus/config/params.yaml` no longer downgrades a C++
+  node to the built-in safety limits. `horus::Params` was the only one of the
+  three bindings that started anyway: Rust's `RuntimeParams::new()` returns
+  `Err` and Python's `Params()` raises, but the C++ constructor took
+  `unwrap_or_default()` and served `max_speed = 1.0` and
+  `emergency_stop_distance = 0.3` under the operator's name, with no channel to
+  tell the caller. `horus_params_new` now returns `NULL` on that path and the
+  `horus::Params` constructor throws `horus::Error`.
+
+- Over-aligned POD messages are no longer published through a misaligned typed
+  store. `colo_eligible` picked the co-located geometry on `type_size` alone,
+  but a colo payload starts 8 bytes into a cache-line-aligned slot and nothing
+  rounded the slot up to `align_of::<T>()`. A 16-byte, 16-aligned message was
+  therefore colo-eligible and stored at an address 8 mod 16 — UB, and a
+  `movaps` fault in release for the shapes LLVM vectorises.
+- The fanout owner refuses to build a POD slot smaller than the message.
+  `compute_slot_size` clamped with `.min(4096)` instead of refusing, `init_owner`
+  wrote that geometry into the meta block unchecked, and `try_send_pod` memcpys
+  `size_of::<T>()` bytes with no length check anywhere on the path — so every
+  send of a POD larger than the cap ran off the end of its slot.
+- The colo fast path fences its seqlock write phase. The WRITING marker was
+  stamped with `store(Release)` and the payload written with nothing in
+  between; a release store orders only what precedes it, so a reader could
+  observe the payload first and return a mixture of two messages.
+- The seqlock fast-forward is committed before the read attempt.
+  `seqlock_consume` billed the lap gap to `skipped` as soon as it
+  fast-forwarded but stored `tail` only on success, so an exhausted attempt
+  loop left the skip counted and the cursor stale — and the next call
+  re-derived and re-billed the same gap.
+- A participant slot is only freed once its thread has ended. `register_role`
+  took any lease-expired slot belonging to this process and decremented the
+  role counter under it, but an expired lease is not evidence the owner is
+  gone: housekeeping refreshes every 64 polls, so a subscriber polling at 1 Hz
+  sits expired for roughly 92% of every cycle.
+- The `/dev/shm` reaper runs. `cleanup_stale_namespaces()` opened its scan with
+  `if !dir_name.starts_with("horus_sid") { continue; }`, and nothing has
+  produced a `horus_sid*` directory since the flat-namespace model — so every
+  real namespace was skipped and the reaper freed nothing.
+- `Node::on_error()` is guarded on all four executor paths. It was called bare
+  in the RT, compute, async and event executors, each time on the line before
+  `apply_failure_policy_after_panic()`; a panic inside a user's `on_error`
+  unwound out of the executor instead of reaching the failure policy. The
+  main-thread scheduler already ran the identical call inside a guard.
+- Telemetry export failures are reported. Both production callers were
+  `let _ = tm.export();` and nothing inside `export()` logs, so an unwritable
+  `file://` path, an unbound UDP socket or a dead HTTP export thread was
+  silently discarded for the life of the run.
+- `RtConfig::apply()` no longer reports SCHED_FIFO applied when no priority was
+  given. The scheduler-policy test was nested inside the priority test, so a
+  config that set only `.scheduler(RtScheduler::Fifo)` issued no
+  `sched_setscheduler` at all and still answered `Ok(FullSuccess)`.
+- `horus_net` keys per-peer metrics on the peer. `record_send` and `record_recv`
+  both passed this node's own id, so `snapshot().peers` could only ever
+  describe us and no genuine peer ever got a row; refused sends are no longer
+  counted as sent.
+- `horus topic hz` and `horus topic bw` say when a topic stalls instead of
+  freezing the last figure. Every print was gated on "the counter moved", so a
+  publisher that died mid-measurement left `Rate: 20.19 Hz` on screen with the
+  cursor parked on it — indistinguishable from a live readout.
+- `world_to_grid` and `grid_to_world` honour `origin_theta`. It is stored on
+  both `OccupancyGridDescriptor` and `CostMapDescriptor`, documented as "map
+  origin orientation (radians)" and exposed by a getter on both wrappers, and
+  neither conversion ever read it — both did translation only, so every
+  rotated map silently mapped to the wrong cell.
+
+### Documentation
+
+- `Topic::send_blocking`'s real error contract is on the method users read.
+  The corrected prose about broadcast backends had landed only on
+  `RingTopic::send_blocking`, which is `pub(crate)` and renders nowhere; the
+  public method still promised delivery it does not make on those backends.
+- `Scheduler::tick_once` and `run` list the errors they really return. The
+  `# Errors` sections named three `NodeError` variants none of which can come
+  out of either — init errors are swallowed before a caller sees them, and
+  `Node::tick` cannot fail.
+- The README asks for issues and PRs rather than running a hardware survey.
+  The old section asked readers to write in with their platform, control rate
+  and what broke, routed to Issues, Discord or email.
+
+### Testing
+
+- The Python suite runs in CI for the first time: 413 test functions, 442 cases.
+  Nothing had ever invoked pytest, and `--exclude horus_py` appears in every
+  other Rust gate, so the binding layer had no coverage at all.
+- 55 `horus_core` tests that were compiled but never executed now run — the
+  cross-process chaos suites, `ipc_torture`, and the kill-9 reconnect test.
+- A deterministic reproducer for the topic-attach SIGBUS (#144): a publisher on
+  a `CmdVel` topic sending in a loop while a second thread repeatedly attempts
+  `Topic::<Imu>::new` on the same name. ~40 lines and 6 failures out of 6,
+  against the original's 2 in 5 across two schedulers and 500 ticks.
+- The SHM magic-corruption test asserts the rejection it only named. It
+  corrupted a region, attached, and printed one of three outcomes with a
+  comment saying all three were acceptable; it now pins the refusal to the
+  joiner's `HeaderInitTimeout` rather than to a bare `is_err()`.
+- Three cross-thread topic tests now run. `topic_cross_thread_1p_multi_c_spmc`,
+  `..._multi_p_multi_c_mpmc` and `..._mpmc_pre_initialized_99_percent` were
+  `--skip`'d by six of the eight CI invocations that build the target, and the
+  other two filter by name for something else.
 
 ## [0.4.0] — 2026-08-22
 

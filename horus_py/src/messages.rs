@@ -248,11 +248,31 @@ impl PyPose2D {
 // Imu — 304 bytes POD
 // ============================================================================
 
+/// A 3x3 covariance matrix reaches Python as a flat list of 9 floats. Require
+/// all nine: writing only the prefix a caller happened to pass leaves the rest
+/// of the matrix at whatever was there before, which for `orientation_covariance`
+/// is the `-1.0` "no data" sentinel `Imu::new()` seeds — a matrix with negative
+/// variances on its diagonal that `has_orientation()` still reports as True,
+/// because that method only looks at element 0.
+fn covariance_3x3(cov: &[f64], field: &str) -> PyResult<[f64; 9]> {
+    <[f64; 9]>::try_from(cov).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{field} must have exactly 9 elements (3x3 row-major), got {}",
+            cov.len()
+        ))
+    })
+}
+
 /// IMU (Inertial Measurement Unit) sensor message
 ///
 /// Attributes:
 ///     accel_x, accel_y, accel_z: Linear acceleration in m/s²
 ///     gyro_x, gyro_y, gyro_z: Angular velocity in rad/s
+///     qx, qy, qz, qw: Orientation as quaternion (w-last convention)
+///     orientation_covariance: 3x3 row-major list of exactly 9 floats (-1 = no data)
+///     angular_velocity_covariance: 3x3 row-major list of exactly 9 floats
+///     linear_acceleration_covariance: 3x3 row-major list of exactly 9 floats
+///         Assigning a list of any other length to a covariance raises ValueError.
 ///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
@@ -339,6 +359,88 @@ impl PyImu {
         self.inner.angular_velocity[2] = v;
     }
 
+    // The quaternion and the three covariance matrices are carried in the 304-byte
+    // POD and cross shared memory intact, but until these accessors existed nothing
+    // on the Python side could read them: `set_orientation_from_euler` wrote the
+    // quaternion and no getter read it back, so a Python subscriber received the
+    // 32 orientation bytes and had no way to see them. The covariances were worse
+    // than unreadable — they were also unwritable, and since `Imu::new()` seeds
+    // `orientation_covariance` to [-1.0; 9] while `set_orientation_from_euler`
+    // leaves it alone, `has_orientation()` returned False for every IMU a Python
+    // program could construct. Quaternions are flattened to qx/qy/qz/qw here to
+    // match Pose3D and PoseWithCovariance; `orientation_quat()` below returns the
+    // structured form, as `angular_velocity_vec()` does for the gyro triple.
+    #[getter]
+    fn qx(&self) -> f64 {
+        self.inner.orientation[0]
+    }
+    #[setter]
+    fn set_qx(&mut self, v: f64) {
+        self.inner.orientation[0] = v;
+    }
+
+    #[getter]
+    fn qy(&self) -> f64 {
+        self.inner.orientation[1]
+    }
+    #[setter]
+    fn set_qy(&mut self, v: f64) {
+        self.inner.orientation[1] = v;
+    }
+
+    #[getter]
+    fn qz(&self) -> f64 {
+        self.inner.orientation[2]
+    }
+    #[setter]
+    fn set_qz(&mut self, v: f64) {
+        self.inner.orientation[2] = v;
+    }
+
+    #[getter]
+    fn qw(&self) -> f64 {
+        self.inner.orientation[3]
+    }
+    #[setter]
+    fn set_qw(&mut self, v: f64) {
+        self.inner.orientation[3] = v;
+    }
+
+    #[getter]
+    fn orientation_covariance(&self) -> Vec<f64> {
+        self.inner.orientation_covariance.to_vec()
+    }
+    /// Raises `ValueError` unless exactly 9 values are given.
+    #[setter]
+    fn set_orientation_covariance(&mut self, cov: Vec<f64>) -> PyResult<()> {
+        self.inner.orientation_covariance = covariance_3x3(&cov, "orientation_covariance")?;
+        Ok(())
+    }
+
+    #[getter]
+    fn angular_velocity_covariance(&self) -> Vec<f64> {
+        self.inner.angular_velocity_covariance.to_vec()
+    }
+    /// Raises `ValueError` unless exactly 9 values are given.
+    #[setter]
+    fn set_angular_velocity_covariance(&mut self, cov: Vec<f64>) -> PyResult<()> {
+        self.inner.angular_velocity_covariance =
+            covariance_3x3(&cov, "angular_velocity_covariance")?;
+        Ok(())
+    }
+
+    #[getter]
+    fn linear_acceleration_covariance(&self) -> Vec<f64> {
+        self.inner.linear_acceleration_covariance.to_vec()
+    }
+    /// Raises `ValueError` unless exactly 9 values are given.
+    #[setter]
+    fn set_linear_acceleration_covariance(&mut self, cov: Vec<f64>) -> PyResult<()> {
+        self.inner.linear_acceleration_covariance =
+            covariance_3x3(&cov, "linear_acceleration_covariance")?;
+        Ok(())
+    }
+
     #[getter]
     fn timestamp_ns(&self) -> u64 {
         self.inner.timestamp_ns
@@ -379,6 +481,18 @@ impl PyImu {
     fn linear_acceleration_vec(&self) -> PyVector3 {
         PyVector3 {
             inner: self.inner.linear_acceleration_vec(),
+        }
+    }
+
+    /// Get orientation as a Quaternion.
+    fn orientation_quat(&self) -> PyQuaternion {
+        PyQuaternion {
+            inner: Quaternion::new(
+                self.inner.orientation[0],
+                self.inner.orientation[1],
+                self.inner.orientation[2],
+                self.inner.orientation[3],
+            ),
         }
     }
 

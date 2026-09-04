@@ -27,7 +27,7 @@ use super::tensor::Tensor;
 /// encoding_raw: u8           (1 byte, ImageEncoding discriminant)
 /// _pad:         [u8; 3]      (3 bytes)
 /// frame_id:     [u8; 32]     (32 bytes)
-/// _reserved:    [u8; 8]      (8 bytes)
+/// capture_ns:   u64          (8 bytes)
 /// Total:                      224 bytes
 /// ```
 #[repr(C)]
@@ -55,8 +55,17 @@ pub struct ImageDescriptor {
     _pad: [u8; 3],
     /// Frame ID (camera identifier, null-terminated)
     frame_id: [u8; 32],
-    #[serde(skip)]
-    _reserved: [u8; 8],
+    /// Instant the sensor SAMPLED this frame, nanoseconds since the UNIX epoch.
+    /// `0` means unknown. See [`impl_capture_ns_field`] for why this is not
+    /// `timestamp_ns`.
+    ///
+    /// Occupies what were 8 reserved bytes, so the wire layout is unchanged and
+    /// a peer built before this reads them as the zeroed reserved bytes it
+    /// already ignored. The topic type hash is derived from the type NAME
+    /// (`fnv1a_type_hash(type_name::<T>())`), not the field layout, so old and
+    /// new peers still bind. `serde(default)` keeps older recordings loadable.
+    #[serde(default)]
+    capture_ns: u64,
 }
 
 /// Serde bridge for the raw encoding byte.
@@ -93,7 +102,7 @@ impl Default for ImageDescriptor {
             encoding_raw: ImageEncoding::Rgb8 as u8,
             _pad: [0; 3],
             frame_id: [0; 32],
-            _reserved: [0; 8],
+            capture_ns: 0,
         }
     }
 }
@@ -143,7 +152,7 @@ impl ImageDescriptor {
             encoding_raw: encoding as u8,
             _pad: [0; 3],
             frame_id: [0; 32],
-            _reserved: [0; 8],
+            capture_ns: 0,
         }
     }
 
@@ -204,6 +213,7 @@ impl ImageDescriptor {
 
     crate::impl_tensor_accessors!();
     crate::impl_timestamp_field!();
+    crate::impl_capture_ns_field!();
     crate::impl_frame_id_field!();
 }
 
@@ -353,5 +363,83 @@ mod tests {
         assert_eq!(recovered.encoding(), ImageEncoding::Rgb8);
         assert_eq!(recovered.frame_id(), "cam0");
         assert_eq!(recovered.timestamp_ns(), 123456789);
+    }
+}
+
+#[cfg(test)]
+mod capture_ns_tests {
+    use super::*;
+
+    /// The whole compatibility argument rests on the size not moving.
+    ///
+    /// `capture_ns` occupies what were 8 reserved bytes. If that ever stops
+    /// being true, a peer built before the change and one built after disagree
+    /// about the descriptor's length while still binding — the type hash is
+    /// derived from the type NAME, not the layout, so nothing else would catch
+    /// it. This is the thing that catches it.
+    #[test]
+    fn descriptor_is_still_224_bytes() {
+        assert_eq!(
+            std::mem::size_of::<ImageDescriptor>(),
+            224,
+            "ImageDescriptor changed size; capture_ns was supposed to reuse the \
+             8 reserved bytes, and peers built either side of this change bind \
+             on type name alone"
+        );
+    }
+
+    /// Unset means unknown, and unknown must be zero — the value an older peer
+    /// leaves in the bytes it treated as reserved.
+    #[test]
+    fn capture_ns_defaults_to_zero_meaning_unknown() {
+        let d = ImageDescriptor::default();
+        assert_eq!(d.capture_ns(), 0);
+    }
+
+    /// capture and publish are independent: setting one must not move the other.
+    /// They are different instants and the entire point of the field is that a
+    /// consumer can tell them apart.
+    #[test]
+    fn capture_and_publish_timestamps_are_independent() {
+        let mut d = ImageDescriptor::default();
+        d.set_timestamp_ns(1_000_000_000);
+        d.set_capture_ns(970_000_000); // sampled 30 ms before publish
+        assert_eq!(d.timestamp_ns(), 1_000_000_000);
+        assert_eq!(d.capture_ns(), 970_000_000);
+
+        d.set_timestamp_ns(2_000_000_000);
+        assert_eq!(
+            d.capture_ns(),
+            970_000_000,
+            "re-stamping publish time must not disturb the capture instant"
+        );
+    }
+
+    /// A recording written before this field existed has no `capture_ns` key.
+    /// It must still load, as unknown, rather than failing to deserialize.
+    #[test]
+    fn recordings_without_the_field_still_load() {
+        let mut d = ImageDescriptor::default();
+        d.set_timestamp_ns(42);
+        d.set_capture_ns(7);
+        let json = serde_json::to_string(&d).expect("serialize");
+        assert!(
+            json.contains("capture_ns"),
+            "new recordings carry the field"
+        );
+
+        // Strip it, as an older writer would have produced.
+        let mut v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        v.as_object_mut().expect("object").remove("capture_ns");
+        let legacy = serde_json::to_string(&v).expect("reserialize");
+
+        let back: ImageDescriptor =
+            serde_json::from_str(&legacy).expect("a legacy recording must still load");
+        assert_eq!(back.timestamp_ns(), 42);
+        assert_eq!(
+            back.capture_ns(),
+            0,
+            "a recording that predates the field reports unknown, not garbage"
+        );
     }
 }

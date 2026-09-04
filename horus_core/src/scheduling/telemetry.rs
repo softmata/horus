@@ -273,31 +273,71 @@ impl TelemetryManager {
     }
 
     /// Export to local file
+    ///
+    /// Every error names both the destination file and the operation that
+    /// failed, because the caller prints this string on its own:
+    /// `[TELEMETRY] Export failed: <this>`.
+    ///
+    /// The destination, because nothing else in that line says where the export
+    /// was going — "Permission denied (os error 13)" by itself is not something
+    /// an operator can act on. The `create_dir_all` arm names the parent it
+    /// could not create as well, since that path differs from the destination
+    /// and is the one to go fix.
+    ///
+    /// The operation, because the four failures here have four different fixes
+    /// and the errno does not separate them: `EACCES` from `create_dir_all` is
+    /// a permission on the parent directory, the same `EACCES` from
+    /// `File::create` is a permission on the file itself, and `EIO` or `ENOSPC`
+    /// can surface from either the create or the write.
     fn export_to_file(&self, path: &PathBuf, snapshot: &TelemetrySnapshot) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "{}: creating parent directory {}: {}",
+                    path.display(),
+                    parent.display(),
+                    e
+                )
+            })?;
         }
 
-        let json = serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(snapshot)
+            .map_err(|e| format!("{}: serializing snapshot: {}", path.display(), e))?;
 
-        let mut file = File::create(path).map_err(|e| e.to_string())?;
-        file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+        let mut file =
+            File::create(path).map_err(|e| format!("{}: creating file: {}", path.display(), e))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("{}: writing file: {}", path.display(), e))?;
 
         Ok(())
     }
 
     /// Export to UDP endpoint
+    ///
+    /// Every arm names the destination and the operation, for the reason given
+    /// on `export_to_file`: the caller prints this string on its own. Here the
+    /// operation is what separates "the datagram did not leave this host"
+    /// (`send_to`) from "the snapshot never became bytes" (serialisation) —
+    /// one is a network or route problem, the other is a bug in this process,
+    /// and both would otherwise read as a bare address followed by an errno.
     fn export_to_udp(&self, addr: &str, snapshot: &TelemetrySnapshot) -> Result<(), String> {
         if let Some(ref socket) = self.udp_socket {
-            let json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
+            let json = serde_json::to_string(snapshot)
+                .map_err(|e| format!("{}: serializing snapshot: {}", addr, e))?;
 
             socket
                 .send_to(json.as_bytes(), addr)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("{}: sending over udp: {}", addr, e))?;
 
             Ok(())
         } else {
-            Err("UDP socket not initialized".to_string())
+            // `new()` computes `enabled` before it binds, so a bind that failed
+            // (EMFILE under fd exhaustion is the realistic one) leaves an
+            // endpoint that reports itself as live and fails every export.
+            Err(format!(
+                "UDP socket not initialized at startup, cannot send to {}",
+                addr
+            ))
         }
     }
 

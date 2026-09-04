@@ -42,6 +42,26 @@ pub(crate) struct TickResult {
     pub result: std::thread::Result<()>,
 }
 
+/// Run a fault-path node callback under `catch_unwind`. Returns `true` if the
+/// callback panicked.
+///
+/// The executor-side home of the guard the main-thread scheduler applies via
+/// `Scheduler::guard_fault_callback`, which delegates here so both halves of
+/// the framework isolate recovery callbacks identically. A node's recovery
+/// callbacks (`on_error`/`enter_safe_state`/`shutdown`) are invoked exactly
+/// when that node is already failing, and an unwind out of one of them is NOT
+/// contained the way a `tick()` panic is: on the RT path it escapes past
+/// `apply_failure_policy_after_panic`, so a `Fatal` node neither safes nor
+/// stops the scheduler; on the compute/async/event paths nothing catches it at
+/// all and the executor thread dies, taking every healthy node it owns with it.
+///
+/// Any future `&mut dyn Node` callback reached from an executor belongs behind
+/// this guard.
+#[inline]
+pub(crate) fn guard_fault_callback(f: impl FnOnce()) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+}
+
 /// Honour a pending safe-state request raised by the main thread's watchdog
 /// ladder, if this node has one.
 ///
