@@ -276,7 +276,7 @@ section is.
 
 ### Testing
 
-- The Python suite runs in CI for the first time: 413 test functions, 442 cases.
+- The Python suite runs in CI for the first time: 421 test functions, 450 cases.
   Nothing had ever invoked pytest, and `--exclude horus_py` appears in every
   other Rust gate, so the binding layer had no coverage at all.
 - 55 `horus_core` tests that were compiled but never executed now run — the
