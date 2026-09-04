@@ -202,6 +202,17 @@ struct PoolHeader {
     _padding: [u8; 16],
 }
 
+/// Byte offset of `PoolHeader::version` inside the mapping.
+///
+/// Exists so a test that ages a pool file by one `POOL_VERSION` does not
+/// hard-code the offset. `8` was correct only for as long as `magic: u64` stays
+/// the single field ahead of `version`; a field added in front of it would have
+/// left that test corrupting some *other* header field and then failing on an
+/// assertion about `open()`'s message, which is a long way from the cause.
+/// Derived from the struct, so a reordering moves it automatically.
+#[cfg(test)]
+pub(crate) const HEADER_VERSION_OFFSET: u64 = std::mem::offset_of!(PoolHeader, version) as u64;
+
 /// Slot metadata stored in shared memory
 ///
 /// Layout (56 bytes, repr(C)):

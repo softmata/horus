@@ -63,7 +63,7 @@ impl Image {
     /// assert_eq!(img.height(), 480);
     /// ```
     pub fn new(width: u32, height: u32, encoding: ImageEncoding) -> HorusResult<Self> {
-        Self::new_on(width, height, encoding, global_pool())
+        Self::new_on(width, height, encoding, global_pool()?)
     }
 
     /// Create a new image backed by a specific pool.

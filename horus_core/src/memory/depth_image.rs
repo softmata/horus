@@ -69,7 +69,7 @@ impl DepthImage {
     /// Prefer `meters()` or `millimeters()` for common formats.
     #[doc(hidden)]
     pub fn new(width: u32, height: u32, dtype: TensorDtype) -> HorusResult<Self> {
-        Self::new_on(width, height, dtype, global_pool())
+        Self::new_on(width, height, dtype, global_pool()?)
     }
 
     /// Create a depth image backed by a specific pool.
