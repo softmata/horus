@@ -478,3 +478,78 @@ TEST(UserApi, LambdaNode) {
     EXPECT_GE(lambda_ticks, 5);
     EXPECT_GE(lambda_recvs, 1);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 14. A topic that fails to open
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// advertise/subscribe hand back a handle either way — they do not throw the
+// way Rust returns HorusResult and Python raises RuntimeError. The handle must
+// therefore carry the diagnosis, and it must not report a healthy loss count,
+// or a 100%-dead link looks quieter than a merely congested one.
+
+TEST(UserApi, FailedPublisherCarriesTheReason) {
+    // A space is not in the allowed set (alphanumeric, _, /, -, .), so the
+    // topic is rejected by name validation before any SHM is touched.
+    horus::Publisher<horus::msg::CmdVel> pub("user_api.bad name");
+    ASSERT_FALSE(pub.is_valid());
+
+    EXPECT_NE(pub.error().find("user_api.bad name"), std::string::npos)
+        << "reason should quote the rejected name, got: " << pub.error();
+    EXPECT_NE(pub.error().find("invalid characters"), std::string::npos)
+        << "reason should be the validator's, got: " << pub.error();
+}
+
+TEST(UserApi, FailedSubscriberCarriesTheReason) {
+    horus::Subscriber<horus::msg::Imu> sub("user_api.bad name");
+    ASSERT_FALSE(sub.is_valid());
+
+    EXPECT_NE(sub.error().find("invalid characters"), std::string::npos)
+        << "reason should be the validator's, got: " << sub.error();
+}
+
+TEST(UserApi, ValidTopicHasNoError) {
+    horus::Publisher<horus::msg::CmdVel> pub("user_api.error_clean");
+    ASSERT_TRUE(pub.is_valid());
+    EXPECT_EQ(pub.error(), "");
+
+    horus::Subscriber<horus::msg::CmdVel> sub("user_api.error_clean");
+    ASSERT_TRUE(sub.is_valid());
+    EXPECT_EQ(sub.error(), "");
+}
+
+TEST(UserApi, DeadHandlesDoNotReportZeroLoss) {
+    horus::Publisher<horus::msg::CmdVel> pub("user_api.bad name");
+    horus::Subscriber<horus::msg::CmdVel> sub("user_api.bad name");
+    ASSERT_FALSE(pub.is_valid());
+    ASSERT_FALSE(sub.is_valid());
+
+    EXPECT_EQ(pub.dropped_count(), 0u) << "nothing sent yet";
+    EXPECT_EQ(sub.missed_count(), 0u) << "nothing received yet";
+
+    for (int i = 0; i < 1000; i++) {
+        horus::msg::CmdVel m{};
+        m.timestamp_ns = static_cast<uint64_t>(i);
+        pub.send(m);
+        EXPECT_FALSE(sub.recv().has_value());
+    }
+
+    // The point of the counters: a monitor that alarms on loss > 0 has to fire
+    // here. Reporting 0 made total failure indistinguishable from an idle link.
+    EXPECT_EQ(pub.dropped_count(), 1000u);
+    EXPECT_EQ(sub.missed_count(), 1000u);
+}
+
+TEST(UserApi, MovedFromPublisherCountsWhatItDiscards) {
+    horus::Publisher<horus::msg::CmdVel> pub1("user_api.moved_drop");
+    ASSERT_TRUE(pub1.is_valid());
+    auto pub2 = std::move(pub1);
+    ASSERT_FALSE(pub1.is_valid());
+
+    for (int i = 0; i < 10; i++) {
+        horus::msg::CmdVel m{};
+        pub1.send(m);
+    }
+    EXPECT_EQ(pub1.dropped_count(), 10u) << "a moved-from handle sends nowhere";
+    EXPECT_EQ(pub2.dropped_count(), 0u) << "the live handle dropped nothing";
+}

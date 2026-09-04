@@ -431,16 +431,106 @@ pub struct HorusCmdVel {
     pub angular: f32,
 }
 
-/// Create CmdVel publisher. Returns null on error.
+// ─── Why a topic failed to open ──────────────────────────────────────────
+//
+// A `*_new` reports failure as a null pointer, which carries no reason.
+// horus_core knows exactly what went wrong — "Topic name 'cmd vel' contains
+// invalid characters", ShmCreateFailed, the message-type mismatch that
+// `negotiate_shm_header` exists to diagnose — and C++ was the only binding
+// that threw it away: Rust returns HorusResult, Python raises RuntimeError
+// carrying the text. Park it per-thread so the C++ handle can pick it up on
+// the line after the constructor that returned null.
+//
+// The slot is cleared on entry to every topic constructor, so it answers for
+// the call that just returned rather than for whichever call last failed. That
+// makes "no reason" mean "the constructor succeeded" instead of "someone forgot
+// to set one" — a null return that skips `set_topic_error` now reads as empty,
+// which is honest, rather than as a stale reason naming a different topic.
+
+thread_local! {
+    static TOPIC_ERROR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+fn set_topic_error(reason: String) {
+    TOPIC_ERROR.with(|e| *e.borrow_mut() = reason);
+}
+
+fn clear_topic_error() {
+    TOPIC_ERROR.with(|e| e.borrow_mut().clear());
+}
+
+/// Borrow a topic name out of C, or record why it is unusable and give back
+/// `None`.
+///
+/// Every topic constructor starts here, which is what keeps the two invariants
+/// the last-error channel rests on: the slot is cleared before the attempt, and
+/// a null `name` is refused instead of being handed to `CStr::from_ptr`, whose
+/// contract requires a valid NUL-terminated pointer and is undefined behaviour
+/// on null. `horus_publisher_*_new(NULL)` is reachable from any C caller — the
+/// C++ headers always pass `std::string::c_str()`, but horus_c.h is a public
+/// ABI and a null there used to be a segfault at best.
+///
+/// # Safety
+/// `name` must be null or a pointer to a NUL-terminated string that stays
+/// valid and unwritten for the duration of the call. The returned reference
+/// borrows from it and must not outlive it.
+unsafe fn topic_name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
+    clear_topic_error();
+    if name.is_null() {
+        set_topic_error("Topic name is null".to_string());
+        return None;
+    }
+    match CStr::from_ptr(name).to_str() {
+        Ok(n) => Some(n),
+        Err(e) => {
+            set_topic_error(format!("Topic name is not valid UTF-8: {e}"));
+            None
+        }
+    }
+}
+
+/// Why the last publisher/subscriber constructor on THIS thread returned null.
+///
+/// Writes at most `buf_len - 1` bytes plus a NUL and returns the bytes written,
+/// or -1 if `buf` is null or `buf_len` is 0 — the same convention as
+/// `horus_scheduler_node_name_at`. Every topic constructor on this thread
+/// clears the slot before it tries, so this is empty (return 0) after one that
+/// succeeded and holds that call's own reason after one that returned null.
+#[no_mangle]
+pub unsafe extern "C" fn horus_topic_last_error(buf: *mut u8, buf_len: usize) -> i32 {
+    if buf.is_null() || buf_len == 0 {
+        return -1;
+    }
+    TOPIC_ERROR.with(|e| {
+        let reason = e.borrow();
+        let bytes = reason.as_bytes();
+        let mut copy_len = bytes.len().min(buf_len - 1);
+        // Back off to a char boundary: the reason quotes the rejected topic
+        // name, which is arbitrary user bytes, and half a UTF-8 sequence is
+        // not something to hand a caller that may re-encode it.
+        while copy_len > 0 && copy_len < bytes.len() && (bytes[copy_len] & 0xC0) == 0x80 {
+            copy_len -= 1;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, copy_len);
+        *buf.add(copy_len) = 0;
+        copy_len as i32
+    })
+}
+
+/// Create CmdVel publisher. Returns null on error; `horus_topic_last_error`
+/// then holds the reason.
 #[no_mangle]
 pub unsafe extern "C" fn horus_publisher_cmd_vel_new(name: *const c_char) -> *mut HorusPublisher {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match topic_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     match topic_ffi::publisher_cmd_vel_new(name) {
         Ok(pub_) => Box::into_raw(pub_) as *mut HorusPublisher,
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_topic_error(e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -475,16 +565,20 @@ pub unsafe extern "C" fn horus_publisher_cmd_vel_send(
     );
 }
 
-/// Create CmdVel subscriber. Returns null on error.
+/// Create CmdVel subscriber. Returns null on error; `horus_topic_last_error`
+/// then holds the reason.
 #[no_mangle]
 pub unsafe extern "C" fn horus_subscriber_cmd_vel_new(name: *const c_char) -> *mut HorusSubscriber {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match topic_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     match topic_ffi::subscriber_cmd_vel_new(name) {
         Ok(sub) => Box::into_raw(sub) as *mut HorusSubscriber,
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_topic_error(e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -576,13 +670,16 @@ macro_rules! impl_pod_topic_c_api {
             pub unsafe extern "C" fn [<horus_publisher_ $snake _new>](
                 name: *const c_char,
             ) -> *mut HorusPublisher {
-                let name = match CStr::from_ptr(name).to_str() {
-                    Ok(n) => n,
-                    Err(_) => return std::ptr::null_mut(),
+                let name = match topic_name_from_c(name) {
+                    Some(n) => n,
+                    None => return std::ptr::null_mut(),
                 };
                 match topic_ffi::[<publisher_ $snake _new>](name) {
                     Ok(pub_) => Box::into_raw(pub_) as *mut HorusPublisher,
-                    Err(_) => std::ptr::null_mut(),
+                    Err(e) => {
+                        set_topic_error(e);
+                        std::ptr::null_mut()
+                    }
                 }
             }
 
@@ -608,13 +705,16 @@ macro_rules! impl_pod_topic_c_api {
             pub unsafe extern "C" fn [<horus_subscriber_ $snake _new>](
                 name: *const c_char,
             ) -> *mut HorusSubscriber {
-                let name = match CStr::from_ptr(name).to_str() {
-                    Ok(n) => n,
-                    Err(_) => return std::ptr::null_mut(),
+                let name = match topic_name_from_c(name) {
+                    Some(n) => n,
+                    None => return std::ptr::null_mut(),
                 };
                 match topic_ffi::[<subscriber_ $snake _new>](name) {
                     Ok(sub) => Box::into_raw(sub) as *mut HorusSubscriber,
-                    Err(_) => std::ptr::null_mut(),
+                    Err(e) => {
+                        set_topic_error(e);
+                        std::ptr::null_mut()
+                    }
                 }
             }
 
@@ -2534,5 +2634,120 @@ mod tests {
                 std::ptr::null()
             ));
         }
+    }
+
+    // ── A null handle has to say why ─────────────────────────────────────
+    //
+    // `*_new` can only answer "no" across the C ABI. The reason horus_core
+    // produced used to stop here, leaving C++ the one binding that could not
+    // tell an invalid name from a full /dev/shm.
+
+    fn read_topic_error(buf_len: usize) -> (i32, String) {
+        let mut buf = vec![0u8; buf_len];
+        // SAFETY: buf is a live allocation of exactly buf_len bytes.
+        let n = unsafe { horus_topic_last_error(buf.as_mut_ptr(), buf_len) };
+        let text = if n > 0 {
+            String::from_utf8_lossy(&buf[..n as usize]).into_owned()
+        } else {
+            String::new()
+        };
+        (n, text)
+    }
+
+    #[test]
+    fn failed_publisher_leaves_the_reason_behind() {
+        let name = CString::new("c_api.bad name").unwrap();
+        // SAFETY: name is NUL-terminated and outlives the call.
+        let p = unsafe { horus_publisher_cmd_vel_new(name.as_ptr()) };
+        assert!(p.is_null(), "a space is not an allowed topic-name byte");
+
+        let (n, reason) = read_topic_error(512);
+        assert!(n > 0, "the constructor must leave a reason, got {n}");
+        assert!(
+            reason.contains("c_api.bad name") && reason.contains("invalid characters"),
+            "expected the validator's own diagnosis, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn failed_subscriber_leaves_the_reason_behind() {
+        let name = CString::new("").unwrap();
+        // SAFETY: name is NUL-terminated and outlives the call.
+        let s = unsafe { horus_subscriber_imu_new(name.as_ptr()) };
+        assert!(s.is_null(), "an empty topic name is rejected");
+
+        let (_, reason) = read_topic_error(512);
+        assert!(
+            reason.contains("cannot be empty"),
+            "expected the validator's own diagnosis, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn topic_error_truncates_without_overrunning_the_buffer() {
+        let name = CString::new("c_api.bad name").unwrap();
+        // SAFETY: name is NUL-terminated and outlives the call.
+        assert!(unsafe { horus_publisher_cmd_vel_new(name.as_ptr()) }.is_null());
+
+        let mut buf = [0xAAu8; 16];
+        // SAFETY: buf is 16 live bytes and the length matches.
+        let n = unsafe { horus_topic_last_error(buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(n, 15, "at most buf_len - 1 bytes, so the NUL always fits");
+        assert_eq!(buf[15], 0, "the terminator must be written");
+        assert!(
+            std::str::from_utf8(&buf[..15]).is_ok(),
+            "no split UTF-8 sequence"
+        );
+
+        // SAFETY: a null buffer is the documented -1 case.
+        assert_eq!(
+            unsafe { horus_topic_last_error(std::ptr::null_mut(), 64) },
+            -1
+        );
+        // SAFETY: buf is live; a zero length is the other documented -1 case.
+        assert_eq!(unsafe { horus_topic_last_error(buf.as_mut_ptr(), 0) }, -1);
+    }
+
+    #[test]
+    fn a_null_topic_name_is_refused_not_dereferenced() {
+        // `CStr::from_ptr` is undefined behaviour on null, and horus_c.h is a
+        // public C ABI — nothing stops a caller passing NULL. Both the
+        // hand-written cmd_vel pair and the impl_pod_topic_c_api! arms go
+        // through the same guard.
+        // SAFETY: null is exactly the case under test.
+        assert!(unsafe { horus_publisher_cmd_vel_new(std::ptr::null()) }.is_null());
+        let (n, reason) = read_topic_error(512);
+        assert!(n > 0, "a refused null must still leave a reason, got {n}");
+        assert!(
+            reason.contains("null"),
+            "expected a reason naming the null name, got: {reason}"
+        );
+
+        // SAFETY: null is exactly the case under test.
+        assert!(unsafe { horus_subscriber_imu_new(std::ptr::null()) }.is_null());
+        assert!(read_topic_error(512).1.contains("null"));
+    }
+
+    #[test]
+    fn a_success_clears_the_reason_the_last_failure_left() {
+        let bad = CString::new("c_api.bad name").unwrap();
+        // SAFETY: bad is NUL-terminated and outlives the call.
+        assert!(unsafe { horus_publisher_cmd_vel_new(bad.as_ptr()) }.is_null());
+        assert!(
+            !read_topic_error(512).1.is_empty(),
+            "the failure must arm the slot"
+        );
+
+        // A topic that opens must disarm it: a caller reading the slot after a
+        // success would otherwise be handed the previous topic's complaint.
+        let good = CString::new(format!("c_api.clears_{}", std::process::id())).unwrap();
+        // SAFETY: good is NUL-terminated and outlives the call.
+        let p = unsafe { horus_publisher_cmd_vel_new(good.as_ptr()) };
+        assert!(!p.is_null(), "a plain name should open");
+        let (n, reason) = read_topic_error(512);
+        assert_eq!(n, 0, "a success leaves nothing to report, got: {reason}");
+        assert!(reason.is_empty());
+        // SAFETY: p came from the matching constructor and is dropped once.
+        unsafe { horus_publisher_cmd_vel_destroy(p) };
     }
 }
