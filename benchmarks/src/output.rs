@@ -332,6 +332,24 @@ pub struct MetricPolicy {
     /// Multiple of the baseline center beyond which the excursion is blocking
     /// regardless of `enforcement` or of how little baseline history exists.
     pub gross_multiplier: f64,
+    /// Whether this metric is a SINGLE observation rather than a distribution.
+    ///
+    /// `max` and `max_jitter` are the worst one sample of the run. Comparing
+    /// them across runs compares two single observations, so a ratio between
+    /// them carries no information about the code — there is no spread to be
+    /// outside of, and one host preemption produces any multiple you like.
+    ///
+    /// This is why the gross multiplier does not apply to them. The multiplier
+    /// means "past this, no runner-side effect explains it", and for a
+    /// single-sample order statistic that claim is simply false: a 36x
+    /// excursion in `max` while every percentile through p99.9 got *faster* is
+    /// exactly what one descheduled sample in 10,000 looks like. Observed on
+    /// 2026-09-04: median 90→80ns, p95 110→100, p99 150→140, p99.9 170→160,
+    /// max 230ns→8.47µs. A real regression moves the median.
+    ///
+    /// These metrics are still measured, still printed, and still count toward
+    /// the trunk streak rule. They just cannot fail a job on their own.
+    pub single_sample: bool,
 }
 
 /// The gate's configuration, with the reasoning for every number.
@@ -417,6 +435,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 25.0,
                     gross_multiplier: 3.0,
+                    single_sample: false,
                 },
                 MetricPolicy {
                     metric: Metric::P95,
@@ -425,6 +444,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 50.0,
                     gross_multiplier: 4.0,
+                    single_sample: false,
                 },
                 // Report-only: spread unmeasured. Gross at 4x, because no
                 // plausible combination of P-state (base-vs-turbo is under ~2x)
@@ -439,6 +459,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 100.0,
                     gross_multiplier: 4.0,
+                    single_sample: false,
                 },
                 MetricPolicy {
                     metric: Metric::P999,
@@ -447,6 +468,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 5.0,
                     abs_floor: 250.0,
                     gross_multiplier: 6.0,
+                    single_sample: false,
                 },
                 // Order statistics thin enough that one host preemption moves
                 // them. Advisory at any threshold on a shared runner.
@@ -457,6 +479,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 6.0,
                     abs_floor: 1_000.0,
                     gross_multiplier: 10.0,
+                    single_sample: false,
                 },
                 MetricPolicy {
                     metric: Metric::Max,
@@ -465,6 +488,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 6.0,
                     abs_floor: 5_000.0,
                     gross_multiplier: 10.0,
+                    single_sample: true,
                 },
                 MetricPolicy {
                     metric: Metric::MaxJitter,
@@ -473,6 +497,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 6.0,
                     abs_floor: 5_000.0,
                     gross_multiplier: 10.0,
+                    single_sample: true,
                 },
                 // The blocking tail metric. Dimensionless, so the dominant
                 // characterized noise term -- every sample being
@@ -488,6 +513,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 0.5,
                     gross_multiplier: 4.0,
+                    single_sample: false,
                 },
                 // Same construction one percentile further out, where the
                 // numerator is the 100th-worst of 100k rather than the
@@ -501,6 +527,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 5.0,
                     abs_floor: 1.0,
                     gross_multiplier: 6.0,
+                    single_sample: false,
                 },
                 // Throughput, as ns/msg so it shares the lower-is-better
                 // comparison. Report-only to begin with: unlike the latency
@@ -518,6 +545,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 50.0,
                     gross_multiplier: 2.0,
+                    single_sample: false,
                 },
             ],
             min_baseline_runs: 5,
@@ -1009,12 +1037,26 @@ impl BaselineHistory {
 
             if gross {
                 cmp.verdict = Verdict::GrossRegression;
-                cmp.blocking = true;
-                cmp.note = Some(format!(
-                    "{:.1}x the baseline center; past {:.1}x no runner-side effect explains it",
-                    current / center,
-                    mp.gross_multiplier
-                ));
+                // A single-sample metric cannot block. See
+                // `MetricPolicy::single_sample`: `max` is the worst one
+                // observation of the run, so this ratio compares two single
+                // observations and no multiple of it rules out the runner.
+                cmp.blocking = !mp.single_sample;
+                cmp.note = Some(if mp.single_sample {
+                    format!(
+                        "{:.1}x the baseline center, but this metric is a single \
+                         observation — one descheduled sample produces any multiple, \
+                         so it is reported and not blocking. Check the median and \
+                         percentiles above: a real regression moves those too",
+                        current / center
+                    )
+                } else {
+                    format!(
+                        "{:.1}x the baseline center; past {:.1}x no runner-side effect explains it",
+                        current / center,
+                        mp.gross_multiplier
+                    )
+                });
             } else if over {
                 cmp.verdict = Verdict::Regressed;
                 cmp.blocking = mp.enforcement == Enforcement::Blocking
@@ -2174,6 +2216,95 @@ mod tests {
              multiplier is never reached. A 100x regression passes."
         );
         assert_eq!(report.exit_code(), 0);
+    }
+
+    // ── A single sample is not a distribution ───────────────────────────
+    //
+    // 2026-09-04, the required "Run Benchmarks" check, one baseline run:
+    //
+    //   median   90.0 ns    80.0 ns   -11.1%   INCONCLUSIVE
+    //   p95     110.0 ns   100.0 ns    -9.1%   INCONCLUSIVE
+    //   p99     150.0 ns   140.0 ns    -6.7%   INCONCLUSIVE
+    //   p99.9   170.0 ns   160.0 ns    -5.9%   INCONCLUSIVE
+    //   max     230.0 ns   8.47 µs  +3583.5%   GROSS REGRESSION  [BLOCKING]
+    //
+    // Every percentile through p99.9 got FASTER and the job failed anyway. The
+    // gross multiplier is documented as "past this, no runner-side effect
+    // explains it", which is true of a distribution and false of `max`: it is
+    // the worst one sample of ten thousand, so one descheduled sample produces
+    // any multiple at all. The same job passed five times and failed once on
+    // an unchanged branch, which is what a coin-flip gate looks like.
+
+    /// A shape whose distribution is unchanged but whose single worst sample
+    /// was preempted.
+    fn one_preempted_sample(median: f64) -> Shape {
+        let mut shape = Shape::healthy(median);
+        shape.max = (median * 9_000.0) as u64;
+        shape
+    }
+
+    #[test]
+    fn a_preempted_max_does_not_fail_a_run_whose_distribution_held() {
+        let history = window(1, &[100.0]);
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        assert!(
+            !report.has_blocking_regressions(),
+            "max is a single observation: one descheduled sample must not fail \
+             a run whose median and every percentile are unchanged"
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_preempted_max_is_still_reported() {
+        // Not blocking is not the same as not measured. The excursion must
+        // still be visible, or the next person cannot tell a noisy runner from
+        // a quiet one.
+        let history = window(1, &[100.0]);
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+        let md = report.to_markdown();
+
+        assert!(
+            md.contains("max"),
+            "the max excursion must still appear in the report. Got:\n{md}"
+        );
+    }
+
+    #[test]
+    fn a_distribution_wide_regression_still_blocks() {
+        // The other half of the claim: making max advisory must not make the
+        // gate toothless. A run that is 20x worse EVERYWHERE still fails.
+        let history = window(5, &[100.0, 105.0, 98.0, 102.0, 100.0]);
+        let current = report_with(&Shape::healthy(2_000.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        assert!(
+            report.has_blocking_regressions(),
+            "a 20x regression across the whole distribution must still block"
+        );
+        assert_ne!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn only_max_and_max_jitter_are_treated_as_single_samples() {
+        // Pins the classification, so a future metric added to the policy
+        // table has to make this choice deliberately rather than inherit it.
+        let policy = RegressionPolicy::default();
+        let single: Vec<Metric> = policy
+            .metrics
+            .iter()
+            .filter(|mp| mp.single_sample)
+            .map(|mp| mp.metric)
+            .collect();
+        assert_eq!(
+            single,
+            vec![Metric::Max, Metric::MaxJitter],
+            "max and max_jitter are the only metrics that are one observation \
+             rather than an order statistic over many"
+        );
     }
 
     #[test]
