@@ -5497,9 +5497,13 @@ impl Scheduler {
     /// (`on_error`/`enter_safe_state`/`shutdown`) are invoked exactly when a node
     /// is already failing, so leaving them bare meant one node's recovery panic
     /// killed the control loop of every healthy node.
+    ///
+    /// One implementation, in `primitives`, so the executors — which reach
+    /// their nodes through `RegisteredNode`, not through `self.nodes[i]` —
+    /// guard the same callbacks the same way.
     #[inline]
     fn guard_fault_callback(f: impl FnOnce()) -> bool {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+        super::primitives::guard_fault_callback(f)
     }
 
     /// A node's safing callback (`enter_safe_state`/`shutdown`) panicked, so the

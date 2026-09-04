@@ -882,7 +882,19 @@ impl ComputeExecutor {
                 // stdout), and a third time via the old `Node::on_error` default. With a
                 // Python node's traceback attached that is three multi-line blocks for one
                 // failure.
-                node.node.on_error(&error_msg);
+                //
+                // Panic-guarded: `process_node_result` runs on the compute
+                // coordinator thread outside any catch_unwind (the one in
+                // `run_job` wraps the tick only), so a bare panic in this
+                // advisory callback killed the whole executor thread — and with
+                // it every healthy node it owns — while `run_for` still
+                // returned Ok and `stop()` reclaimed nothing.
+                if super::primitives::guard_fault_callback(|| node.node.on_error(&error_msg)) {
+                    print_line(&format!(
+                        "[Compute] Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                        node.name
+                    ));
+                }
 
                 // Enforce the failure policy (Fatal → safe node + stop scheduler
                 // via shared `running`; Restart → re-init; Skip/Ignore → gated).
@@ -998,6 +1010,91 @@ mod tests {
 
         assert_eq!(returned.len(), 1);
         assert!(count.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    }
+
+    /// Regression: a panic in `on_error()` must not take the compute thread
+    /// with it.
+    ///
+    /// `process_node_result` runs on the coordinator thread outside any
+    /// `catch_unwind` — the guard in `run_job` covers the tick only — so a bare
+    /// `on_error()` panic unwound the coordinator, stopping every healthy node
+    /// it owns, and `stop()` came back empty because a panicked thread's nodes
+    /// cannot be reclaimed. One misbehaving node's advisory callback must not
+    /// be able to do that.
+    #[test]
+    fn on_error_panic_does_not_kill_the_compute_thread() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::Ordering::Relaxed;
+
+        struct DoubleBoom {
+            on_error_calls: Arc<AtomicU64>,
+        }
+        impl Node for DoubleBoom {
+            fn name(&self) -> &str {
+                "double_boom"
+            }
+            fn tick(&mut self) {
+                panic!("tick boom");
+            }
+            fn on_error(&mut self, _msg: &str) {
+                // Count BEFORE panicking: this is the test's evidence that the
+                // coordinator actually entered the guarded callback, so the
+                // wait below cannot pass by simply never getting there.
+                self.on_error_calls.fetch_add(1, Relaxed);
+                panic!("on_error boom");
+            }
+        }
+
+        // Wait on an observed count, never on a fixed sleep. The deadline is an
+        // upper bound on "this will never happen", not the thing being
+        // measured, so a loaded machine makes this test slower rather than
+        // flaky; the failure it reports is a real stall of the coordinator.
+        fn wait_for(what: &str, cond: impl Fn() -> bool) {
+            let deadline = Instant::now() + 5_u64.secs();
+            while Instant::now() < deadline {
+                if cond() {
+                    return;
+                }
+                std::thread::sleep(1_u64.ms());
+            }
+            panic!("timed out after 5s waiting for {what}");
+        }
+
+        let ticks = Arc::new(AtomicU64::new(0));
+        let on_error_calls = Arc::new(AtomicU64::new(0));
+        let mut boom = make_compute_node("double_boom", ticks.clone());
+        // Only the healthy node ever increments `ticks` — DoubleBoom replaces
+        // the CounterNode that the handle was made for.
+        boom.node = super::super::types::NodeKind::new(Box::new(DoubleBoom {
+            on_error_calls: on_error_calls.clone(),
+        }));
+        let nodes = vec![boom, make_compute_node("healthy", ticks.clone())];
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = ComputeExecutor::start(nodes, running.clone(), 1_u64.ms(), test_monitors());
+
+        // 1. The coordinator has run the panicking on_error at least once.
+        wait_for("the first on_error() panic", || {
+            on_error_calls.load(Relaxed) > 0
+        });
+        // 2. The healthy node ticks AFTER that panic. Pre-fix the coordinator
+        //    has already unwound by this point and this never advances.
+        let before = ticks.load(Relaxed);
+        wait_for(
+            "the healthy node to tick again after its neighbour panicked in on_error()",
+            || ticks.load(Relaxed) > before,
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let returned = executor.stop();
+
+        // The deterministic half: a panicked thread's nodes cannot be
+        // reclaimed, so pre-fix this is 0 of 2 regardless of timing.
+        assert_eq!(
+            returned.len(),
+            2,
+            "the compute thread died in on_error() — its nodes were never reclaimed"
+        );
     }
 
     #[test]
