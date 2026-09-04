@@ -175,7 +175,7 @@ impl NetMetrics {
     ///
     /// Call this only for a send the socket accepted; a refused one goes to
     /// [`Self::record_send_error`]. Silently a no-op once the table is full;
-    /// see [`Self::peer_entry`].
+    /// see `peer_entry`.
     pub fn record_send(&mut self, peer_hash: u16, bytes: usize) {
         let Some(pm) = self.peer_entry(peer_hash) else {
             return;
@@ -204,7 +204,7 @@ impl NetMetrics {
     /// type-hash mismatch and a duplicate all still arrived from that peer and
     /// still cost the link. Nothing on the receive path authenticates a sender
     /// (see `Replicator::process_incoming_message`), so "accepted" is not a
-    /// state this counter could wait for; [`Self::peer_entry`]'s cap is what
+    /// state this counter could wait for; `peer_entry`'s cap is what
     /// bounds a forged-id flood.
     pub fn record_recv(&mut self, peer_hash: u16, bytes: usize) {
         let Some(pm) = self.peer_entry(peer_hash) else {

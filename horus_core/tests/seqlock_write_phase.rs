@@ -68,7 +68,16 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// `send_shm_sp_pod` defined in some other module. Moving the function is
 /// expected to fail this test until the path below is updated: that is the
 /// fail-closed direction to err in.
-const EXEMPT_SITES: &[(&str, &str)] = &[("src/communication/topic/dispatch.rs", "send_shm_sp_pod")];
+const EXEMPT_SITES: &[(&str, &str)] = &[
+    ("src/communication/topic/dispatch.rs", "send_shm_sp_pod"),
+    // A fixture, not a write phase. It stamps a mid-write marker and stops, to
+    // prove a consumer does not read that marker as a lap; no payload store
+    // follows, so there is nothing for a fence to order.
+    (
+        "src/communication/topic/tests.rs",
+        "a_mid_write_marker_is_not_a_lap",
+    ),
+];
 
 /// Lexer state, carried across line boundaries by `sanitize`.
 #[derive(Clone, Copy)]
@@ -287,6 +296,32 @@ fn enclosing_fn(lines: &[String], line_idx: usize) -> Option<String> {
 /// — `store({ let v = f(); v }, Ordering::Release)` — would otherwise be cut
 /// short, and the fence check would then run against a line from the middle of
 /// the store and report a violation that is not there.
+/// The line that opens the wrapped publication whose argument list contains
+/// `at`, if there is one.
+///
+/// `publishes_marker` matches a single line, so it stops recognising a
+/// publication the moment the call wraps and `.store(` lands above its
+/// `SLOT_WRITING` argument — which is exactly what rustfmt does once the
+/// argument grows. The guard then reports the argument line as an unrecognised
+/// shape instead of checking the publication.
+///
+/// Only consulted for a line that is not itself a publication, and only the
+/// opening line of the call qualifies: it must carry the `.store(`/`publish(`,
+/// and its statement must still be open at `at`. A merely *enclosing* block
+/// does not match, or every publication inside one would be attributed to the
+/// block's first line and the fence check would run against the wrong text.
+fn wrapped_publication_start(lines: &[String], at: usize) -> Option<usize> {
+    let lo = at.saturating_sub(WRAP_LOOKBACK);
+    (lo..at).rev().find(|&j| {
+        (lines[j].contains(".store(") || lines[j].contains("publish("))
+            && statement_end(lines, j).is_some_and(|end| end >= at)
+    })
+}
+
+/// How far above a `SLOT_WRITING` line to look for the `.store(` that owns it.
+/// Generous: a wrapped publication spans a handful of lines, never dozens.
+const WRAP_LOOKBACK: usize = 12;
+
 fn statement_end(lines: &[String], start: usize) -> Option<usize> {
     let mut depth: i32 = 0;
     for (offset, line) in lines[start..].iter().enumerate() {
@@ -388,10 +423,27 @@ fn every_writing_marker_is_followed_by_a_release_fence() {
             if !code.contains("SLOT_WRITING") {
                 continue;
             }
+            // A wrapped publication is still a publication: when this line is
+            // only the argument list, evaluate from the line the call opened
+            // on, so the fence check below sees the whole statement.
+            let i = if publishes_marker(code) {
+                i
+            } else {
+                wrapped_publication_start(&lines, i).unwrap_or(i)
+            };
+            let code = &lines[i];
             let site = format!("{rel}:{}", i + 1);
             let trimmed = code.trim();
 
-            if !publishes_marker(code) {
+            // Recognition runs against the whole statement, not the line: a
+            // wrapped call carries `.store(` on its first line and
+            // `SLOT_WRITING` on a later one, and neither line alone matches.
+            let statement = match statement_end(&lines, i) {
+                Some(end) => lines[i..=end].join(" "),
+                None => code.to_string(),
+            };
+
+            if !publishes_marker(&statement) {
                 // Every other shape the crate uses is inert: the constant's own
                 // definition, a `use` of it, and reads of the bit. Anything
                 // else is a shape this guard was not written for — most
