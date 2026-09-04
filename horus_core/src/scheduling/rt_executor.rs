@@ -2038,7 +2038,7 @@ mod tests {
 
         // The RT loop wraps `tick_node` exactly like this.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            RtExecutor::tick_node(&mut node, &monitors, &running, true)
+            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0)
         }));
 
         assert!(
