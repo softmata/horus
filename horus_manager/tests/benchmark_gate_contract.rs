@@ -160,6 +160,41 @@ fn the_restore_inherits_from_failed_trunk_runs_too() {
     );
 }
 
+/// The gate ships a flag whose whole purpose is to catch the failure that
+/// happened, and CI never passed it.
+///
+/// `regression_gate --help` calls `--require-baseline` "the wiring check": it
+/// exits non-zero when the history file holds no runs. Four trunk runs gated
+/// nothing without going red because that switch was never armed.
+#[test]
+fn trunk_runs_require_a_non_empty_baseline() {
+    let wf = workflow();
+    assert!(
+        wf.contains("--require-baseline"),
+        "nothing passes --require-baseline, so an empty window stays green. \
+         That is the exact state four trunk runs shipped in."
+    );
+
+    // Trunk only: on a pull request this would fail a contributor for an
+    // infrastructure problem they did not cause.
+    //
+    // Matched on the assignment, not on any line mentioning the flag -- the
+    // comment above it names the flag too, and an earlier version of this test
+    // matched that comment and failed.
+    let assignment = wf
+        .lines()
+        .find(|l| l.contains("TRUNK=") && l.contains("--require-baseline"))
+        .expect(
+            "--require-baseline must be set on the TRUNK variable, which is \
+             what gates it to pushes on main",
+        );
+    assert!(
+        assignment.contains("--trunk"),
+        "--require-baseline belongs on the trunk invocation, alongside --trunk \
+         and --record, not on the pull-request path. Got: {assignment}"
+    );
+}
+
 #[test]
 fn reading_a_previous_artifact_needs_only_read_permissions() {
     let wf = workflow();

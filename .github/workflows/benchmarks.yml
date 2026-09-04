@@ -314,9 +314,23 @@ jobs:
         # deliberately off for pull requests: a PR author is not responsible for
         # drift that landed on main before their branch, and a gate that fails
         # people for someone else's commit gets switched off within a week.
+        #
+        # --require-baseline exits non-zero when the window is empty. The gate
+        # has always had this flag -- its help text calls it "the wiring check"
+        # -- and nothing ever passed it, which is why four trunk runs gated
+        # nothing without going red.
+        #
+        # Trunk only, deliberately. On main an empty window is a broken pipeline
+        # and the people who can fix it are the ones watching main. On a pull
+        # request it would fail the contributor for an infrastructure problem
+        # they did not cause and cannot fix, and "a gate that fails people for
+        # someone else's commit gets switched off within a week" is the
+        # reasoning already applied to the escalation two lines below. Pull
+        # requests still get the annotation raised by "Report the baseline
+        # window".
         TRUNK=""
         if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
-          TRUNK="--trunk --record"
+          TRUNK="--trunk --record --require-baseline"
         fi
 
         "$GITHUB_WORKSPACE/target/release/regression_gate" \
