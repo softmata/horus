@@ -200,7 +200,10 @@ fn every_blueprint_section_horus_net_cites_exists() {
     let mut cited: Vec<u32> = Vec::new();
     let mut stack = vec![src_dir];
     while let Some(d) = stack.pop() {
-        for e in fs::read_dir(&d).expect("horus_net/src is readable").flatten() {
+        for e in fs::read_dir(&d)
+            .expect("horus_net/src is readable")
+            .flatten()
+        {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
@@ -228,7 +231,10 @@ fn every_blueprint_section_horus_net_cites_exists() {
     );
 
     let doc = read("horus_net/docs/BLUEPRINT.md");
-    let headings: Vec<&str> = doc.lines().filter(|l| l.trim_start().starts_with('#')).collect();
+    let headings: Vec<&str> = doc
+        .lines()
+        .filter(|l| l.trim_start().starts_with('#'))
+        .collect();
     let missing: Vec<u32> = cited
         .iter()
         .copied()
@@ -236,9 +242,9 @@ fn every_blueprint_section_horus_net_cites_exists() {
             let a = format!(" {n}.");
             let b = format!("Section {n}");
             let c = format!(" {n} ");
-            !headings
-                .iter()
-                .any(|h| h.contains(&a) || h.contains(&b) || h.ends_with(&format!(" {n}")) || h.contains(&c))
+            !headings.iter().any(|h| {
+                h.contains(&a) || h.contains(&b) || h.ends_with(&format!(" {n}")) || h.contains(&c)
+            })
         })
         .collect();
     assert!(
@@ -262,7 +268,10 @@ fn the_docs_index_links_every_document() {
         .filter(|n| n.ends_with(".md") && n != "README.md")
         .collect();
     docs.sort();
-    assert!(!docs.is_empty(), "docs/ holds no documents — the walk is broken");
+    assert!(
+        !docs.is_empty(),
+        "docs/ holds no documents — the walk is broken"
+    );
 
     let index = read("docs/README.md");
     let missing: Vec<&String> = docs.iter().filter(|d| !index.contains(*d)).collect();
