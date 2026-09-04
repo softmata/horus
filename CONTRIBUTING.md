@@ -3,15 +3,15 @@
 This document describes what actually gates a merge here, so you can get a
 change in without discovering the rules one red run at a time.
 
-The current `CONTRIBUTING.md` tells contributors that `cargo fmt` is optional
-and that clippy warnings are acceptable — `CONTRIBUTING.md:121`, `:182` and
-`:232` all say so. Both claims are wrong, and wrong in the most expensive
-direction: `cargo fmt --all -- --check` runs on every pull request without
-condition (`.github/workflows/ci.yml:93`), and it feeds the required
-`CI Success` check. A contributor who follows that advice writes code, opens a
-PR, and loses a round trip to a formatting diff the document told them to skip.
-The gates below are transcribed from the workflows and from the
-branch-protection API, and each is cited so you can check it yourself.
+Formatting is not optional and clippy warnings are not tolerated:
+`cargo fmt --all -- --check` runs on every pull request without condition
+(`.github/workflows/ci.yml:93`), and clippy runs with `-D warnings` whenever the
+base branch is `main` (`:135-136`). Both feed the required `CI Success` check.
+
+Everything below is transcribed from the workflow files and from the
+branch-protection API, with a citation against each claim so you can check it
+yourself. Where the two disagree, or where a rule is asserted nowhere but in a
+maintainer's head, this document says so rather than inventing a tidy answer.
 
 ## Getting Started
 
