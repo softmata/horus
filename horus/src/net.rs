@@ -1,7 +1,8 @@
 //! Transparent LAN replication — zero config, same `Topic<T>` API.
 //!
-//! Network replication starts **automatically** when `scheduler.run()` is called.
-//! No manual wiring needed:
+//! Network replication starts **automatically** when `scheduler.run()` is called,
+//! provided you have not registered a startup hook of your own. No manual wiring
+//! needed:
 //!
 //! ```rust,ignore
 //! use horus::prelude::*;
@@ -11,6 +12,29 @@
 //! // ... add nodes ...
 //! scheduler.run()?;
 //! // Network replication starts automatically and stops on shutdown
+//! ```
+//!
+//! ## When auto-start does NOT happen
+//!
+//! The auto-wire runs only when the scheduler has **no** lifecycle start hooks
+//! registered (`scheduler/mod.rs`: `network_enabled && lifecycle_start_hooks
+//! .is_empty()`). `Scheduler::on_start()` pushes into that same list, so *any*
+//! startup hook — including one that has nothing to do with networking —
+//! suppresses it:
+//!
+//! ```rust,ignore
+//! scheduler.on_start(|| { start_my_logger(); None });
+//! scheduler.run()?;   // <-- no network replication, and no warning
+//! ```
+//!
+//! That is deliberate for [`wire_with_config()`], which registers a hook
+//! precisely so it can replace the default. It is a surprise for any other
+//! hook. If you register one and still want networking, wire it explicitly:
+//!
+//! ```rust,ignore
+//! scheduler.on_start(|| { start_my_logger(); None });
+//! horus::net::wire(&mut scheduler);   // <-- put the default back
+//! scheduler.run()?;
 //! ```
 //!
 //! ## Opting out
@@ -26,7 +50,9 @@
 //! ## Custom config
 //!
 //! For advanced networking configuration, use [`wire_with_config()`] to override
-//! the automatic default:
+//! the automatic default. It registers a lifecycle hook, which is what
+//! suppresses the auto-wire described above — replacing the default rather than
+//! adding to it:
 //!
 //! ```rust,ignore
 //! use horus::net::NetConfig;
