@@ -219,6 +219,15 @@ jobs:
           HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
         run: cargo test -p horus_manager --test docs_contract -- --include-ignored
 
+      # The README Quick Start, compiled against exactly the dependency set a
+      # `horus new -r` project gets. It carries `#[ignore]` with the reason "run
+      # in the docs-contract job" — and until now no job ran it: no workflow
+      # named readme_contract, and the `--include-ignored` above reaches only
+      # docs_contract. So the test written because the front-page Quick Start
+      # did not compile was itself never executed. ~25s.
+      - name: README Quick Start compiles
+        run: cargo test -p horus_manager --test readme_contract -- --include-ignored
+
       # Every `horus ...` invocation in the docs, resolved against the real clap
       # tree. Cheap: one `--help` per distinct command, not one per invocation.
       - name: CLI contract against live docs
