@@ -1359,6 +1359,15 @@ impl RtExecutor {
                 deadline,
                 node.miss_policy,
             );
+            if miss.is_none() {
+                // The tick met its deadline: end the consecutive-miss run.
+                // `check_tick_budget` above must not do this — it is measuring
+                // a different thing, and a node released late misses its
+                // deadline while sitting comfortably inside its budget.
+                if let Some(ref monitor) = monitors.safety {
+                    monitor.record_deadline_met(&node.name);
+                }
+            }
             if miss.is_none() && node.in_safe_mode {
                 // Met the deadline again: clear the latch so a node that
                 // recovers can be safed once more if it degrades later.
@@ -2218,6 +2227,53 @@ mod tests {
             1,
             "an Unhealthy RT node must keep being ticked — it is the tick that \
              feeds its watchdog, so suppressing it escalates straight to e-stop"
+        );
+    }
+
+    /// The RT executor's half of the consecutive-miss contract, on the failure
+    /// mode `check_deadline_from_release` exists to catch: a node woken late
+    /// that then executes in microseconds. Its deadline is blown from release;
+    /// its budget is untouched.
+    ///
+    /// `tick_node` calls `check_tick_budget` unconditionally, before the
+    /// deadline check. While the budget check owned the reset, that in-budget
+    /// tick cleared the run the deadline miss had just started, so the counter
+    /// was pinned at 1 no matter how long the node had been failing — neither
+    /// `warn_after: 3` nor the `max_deadline_misses` ceiling could ever fire
+    /// for it. A met deadline, and only that, ends the run.
+    #[test]
+    fn late_release_misses_accumulate_and_a_met_deadline_clears_them() {
+        use std::sync::atomic::AtomicU64;
+
+        let count = Arc::new(AtomicU64::new(0));
+        let mut node = make_rt_registered("arm_controller", count.clone());
+        node.deadline = Some(Duration::from_millis(1));
+        // A budget it comfortably meets — the tick itself is a counter bump.
+        node.tick_budget = Some(Duration::from_millis(1));
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+        let mut monitors = test_monitors();
+        monitors.safety = Some(monitor.clone());
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Released 5 ms late, five times over. Every tick is inside its budget
+        // and every tick has missed its 1 ms deadline before it even began.
+        for _ in 0..5 {
+            RtExecutor::tick_node(&mut node, &monitors, &running, false, 5_000_000);
+        }
+        assert_eq!(
+            monitor.consecutive_misses("arm_controller"),
+            5,
+            "five late releases in a row are five consecutive deadline misses; \
+             the node staying inside its BUDGET says nothing about its DEADLINE"
+        );
+
+        // Released on time: the deadline is met, and the run ends.
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        assert_eq!(
+            monitor.consecutive_misses("arm_controller"),
+            0,
+            "a tick that met its deadline must clear the run"
         );
     }
 

@@ -5414,6 +5414,15 @@ impl Scheduler {
             if let Some(deadline) = self.nodes[i].deadline {
                 let miss =
                     TimingEnforcer::check_deadline(tick_start, deadline, self.nodes[i].miss_policy);
+                if miss.is_none() {
+                    // The tick met its deadline: end the consecutive-miss run.
+                    // This is the only path that clears it, and it has to run
+                    // for every RT node with a deadline — including one with no
+                    // tick budget, which never reaches the budget block above.
+                    if let Some(ref monitor) = self.monitor.safety {
+                        monitor.record_deadline_met(&node_name);
+                    }
+                }
                 if miss.is_none() && self.nodes[i].in_safe_mode {
                     // See the RT executor: a latch that never clears turns
                     // Miss::SafeMode into a one-shot for the process lifetime.
