@@ -88,7 +88,7 @@ fn publish(topic: &Topic<ActionChunk>, t0: u64, value: f32, seq: u64) {
 #[test]
 fn a_servo_loop_samples_inside_while_the_policy_keeps_up() {
     let _shm = cleanup_stale_shm();
-    let topic: Topic<ActionChunk> = Topic::new(&unique("ac.seam.keepup")).unwrap();
+    let topic: Topic<ActionChunk> = Topic::new(unique("ac.seam.keepup")).unwrap();
     let outcomes = Outcomes::default();
 
     // 500 Hz servo against a 50 Hz policy: ten servo ticks per publish.
@@ -135,7 +135,7 @@ fn a_servo_loop_samples_inside_while_the_policy_keeps_up() {
 #[test]
 fn a_stopped_policy_goes_stale_and_never_extrapolates() {
     let _shm = cleanup_stale_shm();
-    let topic: Topic<ActionChunk> = Topic::new(&unique("ac.seam.stall")).unwrap();
+    let topic: Topic<ActionChunk> = Topic::new(unique("ac.seam.stall")).unwrap();
 
     let t0 = now_ns();
     publish(&topic, t0, 7.0, 0);
@@ -175,7 +175,7 @@ fn a_stopped_policy_goes_stale_and_never_extrapolates() {
 #[test]
 fn a_chunk_that_has_not_started_reports_before_and_writes_nothing() {
     let _shm = cleanup_stale_shm();
-    let topic: Topic<ActionChunk> = Topic::new(&unique("ac.seam.early")).unwrap();
+    let topic: Topic<ActionChunk> = Topic::new(unique("ac.seam.early")).unwrap();
 
     let t0 = now_ns() + 1_000_000_000;
     publish(&topic, t0, 3.0, 0);
