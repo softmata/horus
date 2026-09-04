@@ -3434,6 +3434,119 @@ fn test_telemetry_builder() {
     );
 }
 
+/// A telemetry endpoint the process cannot write must say so — on both the
+/// periodic path and the final export.
+///
+/// Both callers used to be `let _ = tm.export()`, and `export()` advances
+/// `last_export` whether or not the snapshot landed, so a `file://` endpoint
+/// pointing somewhere unwritable failed on every interval for the life of the
+/// process with no diagnostic on any surface — under the
+/// "[SCHEDULER] Telemetry enabled (endpoint: ...)" line printed at startup.
+#[test]
+fn telemetry_export_failures_reach_the_log() {
+    let _guard = lock_scheduler();
+
+    // A regular file where the exporter needs a directory: `create_dir_all`
+    // then fails on every export with "File exists (os error 17)". That is
+    // deterministic, and it does not depend on the test user's permissions the
+    // way an unwritable directory would (a suite running as root can write
+    // through mode 0o555).
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let blocker = temp_dir.path().join("not-a-directory");
+    std::fs::write(&blocker, b"").unwrap();
+    let endpoint = format!("file://{}/metrics.json", blocker.display());
+
+    let first_unread = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+
+    // Ends the run on an OBSERVED export failure rather than on a wall-clock
+    // guess about when the 1000 ms interval elapses inside a fixed `run_for`.
+    // The scheduler ticks this node, then runs `periodic_monitoring` in the same
+    // iteration, so the line is picked up one tick (10 ms) after it is written
+    // and `finalize_run` follows immediately with the final export. `run_for`
+    // below is therefore a timeout, not a schedule: a loaded machine that
+    // stalls the tick loop costs latency here instead of a failure, and the
+    // window in which the shared log ring could evict the line before the
+    // assertions read it shrinks from hundreds of milliseconds to one tick.
+    struct StopOnExportFailure {
+        since: u64,
+        running: Arc<AtomicBool>,
+    }
+    impl Node for StopOnExportFailure {
+        fn name(&self) -> &str {
+            "telemetry_probe"
+        }
+        fn tick(&mut self) {
+            // Sample the write index BEFORE the scan and advance `since` to it
+            // afterwards, so each tick deserialises only what arrived since the
+            // previous one instead of re-walking the whole window every 10 ms.
+            // GLOBAL_LOG_BUFFER is a cross-process ring shared with every other
+            // horus process on the machine, so under a parallel `cargo test`
+            // the un-advanced window reaches the ring's full capacity (5000
+            // slots by default) and each tick re-deserialises thousands of
+            // other processes' entries — each one a bincode decode under the
+            // buffer's mutex, with a 5 ms spin available per slot that is
+            // mid-write.
+            //
+            // Sampled before, not after: an index read after the scan would
+            // advance past entries written *during* it, and `get_since` never
+            // returns those again. Read first, and the worst case is that the
+            // next tick re-scans a handful of entries.
+            let upto = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+            let reported = crate::core::log_buffer::GLOBAL_LOG_BUFFER
+                .get_since(self.since)
+                .into_iter()
+                .any(|entry| entry.message.contains("[TELEMETRY] Export failed"));
+            self.since = upto;
+            if reported {
+                self.running.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .telemetry(&endpoint);
+    let running = scheduler.running_flag();
+    // `.unwrap()`, not a discarded `Result`: `unused_must_use` is allowed
+    // workspace-wide, so a `build()` that ever starts failing validation here
+    // would drop the node silently. The run would then fall through to the
+    // 5 s timeout below and still pass, hiding the loss of the very thing that
+    // makes this test prompt.
+    scheduler
+        .add(StopOnExportFailure {
+            since: first_unread,
+            running,
+        })
+        .build()
+        .unwrap();
+
+    // Upper bound, not the expected duration. The export interval starts when
+    // `finalize_config` builds the manager, just before the run clock does, so
+    // the periodic export normally reports ~1.0 s in and the node above ends
+    // the run right there. Five seconds leaves room for a four-second stall
+    // before the assertions below report what was actually logged.
+    scheduler.run_for(5000_u64.ms()).unwrap();
+
+    let reported: Vec<String> = crate::core::log_buffer::GLOBAL_LOG_BUFFER
+        .get_since(first_unread)
+        .into_iter()
+        .map(|entry| entry.message)
+        .filter(|message| message.contains("[TELEMETRY]"))
+        .collect();
+
+    assert!(
+        reported
+            .iter()
+            .any(|m| m.contains("Export failed") && m.contains("not-a-directory")),
+        "the periodic export must report the failure and name the path it could \
+         not write; telemetry lines seen: {reported:?}"
+    );
+    assert!(
+        reported.iter().any(|m| m.contains("Final export failed")),
+        "the shutdown export must report its failure too; telemetry lines seen: {reported:?}"
+    );
+}
+
 // ============================================================================
 // Error path and negative tests
 // ============================================================================
