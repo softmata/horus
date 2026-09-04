@@ -219,6 +219,15 @@ jobs:
           HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
         run: cargo test -p horus_manager --test docs_contract -- --include-ignored
 
+      # The README Quick Start, compiled against exactly the dependency set a
+      # `horus new -r` project gets. It carries `#[ignore]` with the reason "run
+      # in the docs-contract job" — and until now no job ran it: no workflow
+      # named readme_contract, and the `--include-ignored` above reaches only
+      # docs_contract. So the test written because the front-page Quick Start
+      # did not compile was itself never executed. ~25s.
+      - name: README Quick Start compiles
+        run: cargo test -p horus_manager --test readme_contract -- --include-ignored
+
       # Every `horus ...` invocation in the docs, resolved against the real clap
       # tree. Cheap: one `--help` per distinct command, not one per invocation.
       - name: CLI contract against live docs
@@ -248,6 +257,21 @@ jobs:
         env:
           HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
         run: cargo test -p horus_manager --test docs_manifest -- --ignored --nocapture
+
+      # docs_parity carries #[ignore = "... wired into the docs-contract
+      # workflow"] on all three of its tests — and was wired into nothing. No
+      # workflow named docs_parity, and while integration-tests.yml's
+      # `--test '*'` does select the target, an all-ignored binary exits 0
+      # reporting "0 passed; 3 ignored", which reads as coverage.
+      #
+      # What went unchecked: that every HORUS_* variable shipped code reads
+      # appears in the documentation, and that a documented `horus = "x.y"`
+      # resolves to the crate we ship rather than to the unrelated crate that
+      # holds that name on crates.io.
+      - name: Environment and version parity against live docs
+        env:
+          HORUS_DOCS_DIR: ${{ github.workspace }}/horus-docs
+        run: cargo test -p horus_manager --test docs_parity -- --ignored --nocapture
 
       # A snapshot that has drifted from the pinned docs means tier 1 is
       # checking a stale contract. Not fatal, but it should be visible.
