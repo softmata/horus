@@ -24,10 +24,14 @@ horus-robotics = { workspace = true }
 # on `horus` could reach TransformStamped but not the tree that produces it.
 horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58b99ee9c015ed5b0b3f20450b7c1e0c" }
 # Re-export commonly used dependencies
-serde = { workspace = true }
 rand = { workspace = true, features = ["small_rng"] }
 # Link-time hook registration (registers horus_net auto-wire into horus_core scheduler)
-ctor = "1.0"
+ctor = { version = "1.0", optional = true }
+
+[dev-dependencies]
+# The library itself does not link serde; the examples and tests do, through
+# the `message!` derive.
+serde = { workspace = true }
 
 [features]
 # ============================================================================
@@ -41,7 +45,7 @@ default = ["macros", "telemetry", "blackbox"]
 # LAN replication — transparent cross-machine topic sharing (opt-in).
 # When enabled, replication auto-starts on scheduler.run(); disable at
 # runtime with `.network(false)` or HORUS_NET_ENABLED=false.
-net = ["dep:horus_net"]
+net = ["dep:horus_net", "dep:ctor"]
 
 macros = ["dep:horus_macros"]
 
@@ -55,10 +59,6 @@ telemetry = ["horus_core/telemetry"]
 # Black box flight recorder for post-mortem crash analysis
 blackbox = ["horus_core/blackbox"]
 
-# ============================================================================
 [lints]
 workspace = true
 
-[lib]
-name = "horus"
-path = "src/lib.rs"

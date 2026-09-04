@@ -53,7 +53,7 @@ impl Node for ParamTestNode {
 
 fn main() -> Result<()> {
     // Read params from HORUS_PARAM_* env vars (set by launch system)
-    let params = horus_core::params::RuntimeParams::new()?;
+    let params = RuntimeParams::new()?;
     let max_speed: f64 = params.get("max_speed").unwrap_or(1.0);
     let robot_id: i64 = params.get("robot_id").unwrap_or(0);
     println!("PARAMS: max_speed={} robot_id={}", max_speed, robot_id);
