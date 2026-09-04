@@ -14,6 +14,41 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// What happened when a discovery run consulted the package registry.
+///
+/// Discovery used to fold all three of these into an empty vector, so a
+/// suspended registry, an unreachable network and a genuinely empty index all
+/// rendered identically -- as "no packages". Users read that as "HORUS has no
+/// ecosystem". Keeping them apart is the whole point of this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryStatus {
+    /// The registry answered. Any plugins it returned are in the result.
+    Queried,
+    /// No registry is configured. Expected while the public registry is down
+    /// (#173), and normal for anyone working purely from path/git dependencies.
+    NotConfigured,
+    /// A registry *is* configured but the query failed -- offline, DNS failure,
+    /// 503. Carries the reason so the CLI can show it instead of guessing.
+    Failed(String),
+}
+
+impl RegistryStatus {
+    /// A one-line explanation for the user, or `None` when the registry was
+    /// consulted normally and there is nothing to explain.
+    pub fn note(&self) -> Option<String> {
+        match self {
+            RegistryStatus::Queried => None,
+            RegistryStatus::NotConfigured => Some(format!(
+                "Registry: {}",
+                crate::config::NO_REGISTRY_CONFIGURED
+            )),
+            RegistryStatus::Failed(why) => Some(format!(
+                "Registry: configured but unreachable, so these results are local only.\n  {why}"
+            )),
+        }
+    }
+}
+
 /// Available plugin from discovery
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailablePlugin {
@@ -118,6 +153,8 @@ pub struct PluginDiscovery {
     cache: HashMap<String, AvailablePlugin>,
     /// Cache timestamp
     cache_time: Option<std::time::Instant>,
+    /// Outcome of the last registry consultation in `discover_all`.
+    registry_status: RegistryStatus,
 }
 
 impl Default for PluginDiscovery {
@@ -133,6 +170,7 @@ impl PluginDiscovery {
             workspace_paths: vec![],
             cache: HashMap::new(),
             cache_time: None,
+            registry_status: RegistryStatus::NotConfigured,
         }
     }
 
@@ -150,10 +188,20 @@ impl PluginDiscovery {
             plugins.extend(self.discover_local(path)?);
         }
 
-        // Discover from registry (if available)
-        if let Ok(registry_plugins) = self.discover_registry() {
-            plugins.extend(registry_plugins);
-        }
+        // Consult the registry, and REMEMBER what happened. The previous
+        // `if let Ok(..)` dropped the error on the floor, which is why a
+        // registry answering 503 was reported to users as an empty index.
+        self.registry_status = if !crate::registry::RegistryClient::is_configured() {
+            RegistryStatus::NotConfigured
+        } else {
+            match self.discover_registry() {
+                Ok(registry_plugins) => {
+                    plugins.extend(registry_plugins);
+                    RegistryStatus::Queried
+                }
+                Err(e) => RegistryStatus::Failed(e.to_string()),
+            }
+        };
 
         // Update cache
         for plugin in &plugins {
@@ -280,17 +328,20 @@ impl PluginDiscovery {
             .unwrap_or_default()
     }
 
-    /// Discover plugins from SOFTMATA registry.
+    /// Discover plugins from the configured package registry.
     ///
-    /// Queries the registry API for packages of type "plugin". Falls back to
-    /// an empty list if the registry is unreachable (offline development).
+    /// Returns an empty list when no registry is configured -- that is a
+    /// legitimate configuration, not a failure. A registry that IS configured
+    /// and then fails returns `Err`: callers need to be able to tell an outage
+    /// from an empty index, and this is the only place that knows the
+    /// difference.
     pub fn discover_registry(&self) -> Result<Vec<AvailablePlugin>> {
-        let client = crate::registry::RegistryClient::new();
-
-        let packages = match client.search("", Some("plugin"), None) {
-            Ok(pkgs) => pkgs,
-            Err(_) => return Ok(Vec::new()), // Network error — skip
+        let client = match crate::registry::RegistryClient::new() {
+            Ok(client) => client,
+            Err(_) => return Ok(Vec::new()),
         };
+
+        let packages = client.search("", Some("plugin"), None)?;
 
         let plugins = packages
             .into_iter()
@@ -313,6 +364,11 @@ impl PluginDiscovery {
             .collect();
 
         Ok(plugins)
+    }
+
+    /// What the last `discover_all` run found out about the registry.
+    pub fn registry_status(&self) -> &RegistryStatus {
+        &self.registry_status
     }
 
     /// Search for plugins matching a query

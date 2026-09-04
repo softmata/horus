@@ -1451,7 +1451,16 @@ fn auto_install_registry_deps(
         missing.len()
     );
 
-    let client = crate::registry::RegistryClient::new();
+    // Without a registry there is nothing to auto-install from. Say so once
+    // and return: cargo will report the missing dependency itself, and that
+    // error is clearer than a transport failure from here.
+    let client = match crate::registry::RegistryClient::new() {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("  {} {}", crate::cli_output::ICON_WARN.yellow(), e);
+            return Ok(());
+        }
+    };
     let target = crate::workspace::InstallTarget::Local(project_dir.to_path_buf());
 
     for (name, version) in &missing {

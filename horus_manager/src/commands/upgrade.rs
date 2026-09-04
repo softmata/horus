@@ -438,7 +438,7 @@ fn download_release_asset(tag: &str, asset: &str) -> Result<Option<(Vec<u8>, Str
     ensure!(
         (200..300).contains(&status) && !sums.is_empty(),
         "could not fetch {base}/SHA256SUMS (HTTP {status}) — refusing to install an unverified binary. \
-         Reinstall from source instead: HORUS_BUILD_FROM_SOURCE=1 curl -fsSL https://horusrobotics.dev/install | bash"
+         Reinstall from source instead: HORUS_BUILD_FROM_SOURCE=1 curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash"
     );
 
     Ok(Some((archive, String::from_utf8_lossy(&sums).into_owned())))
@@ -634,7 +634,7 @@ fn write_error(e: std::io::Error, dir: &Path) -> anyhow::Error {
              Retry as: sudo -E \"$(command -v horus)\" self update\n  \
              (-E keeps HOME and HORUS_PREFIX, so the state and source cache stay where the \
              install put them rather than under root's home)\n  \
-             Or reinstall into a directory you own: curl -fsSL https://horusrobotics.dev/install | bash",
+             Or reinstall into a directory you own: curl -fsSL https://github.com/softmata/horus/raw/main/install.sh | bash",
             dir.display()
         );
     }
@@ -890,14 +890,25 @@ fn tail(text: &str, n: usize) -> String {
 // ── Plugins ─────────────────────────────────────────────────────────────────
 
 /// Check the latest version of a plugin package from the registry API.
+///
+/// The URL used to be `horusrobotics.dev/api/packages/<n>/latest` on the apex
+/// domain, which 404s -- there is no API there and never was -- and every
+/// non-200 mapped to `None`, so this function could not report an upgrade for
+/// any plugin under any circumstances. It now asks the configured registry, and
+/// returns `None` when there is not one.
 fn check_plugin_version(name: &str) -> Option<String> {
+    let base_url = crate::config::registry_url()?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .ok()?;
 
     let encoded = name.replace('@', "%40").replace('/', "%2F");
-    let url = format!("https://horusrobotics.dev/api/packages/{}/latest", encoded);
+    let url = format!(
+        "{}/api/packages/{}/latest",
+        base_url.trim_end_matches('/'),
+        encoded
+    );
 
     let resp = client.get(&url).send().ok()?;
     if !resp.status().is_success() {
@@ -1050,7 +1061,7 @@ fn reinstall_plugin(package_name: &str, version: &str, global: bool) -> Result<(
         workspace::InstallTarget::Local(std::env::current_dir()?)
     };
 
-    let client = registry::RegistryClient::new();
+    let client = registry::RegistryClient::new()?;
     let installed_version =
         client.install_to_target(package_name, Some(version), install_target)?;
 

@@ -955,7 +955,10 @@ fn fetch_pypi_version(name: &str) -> Option<String> {
 
 /// Query the HORUS registry for latest version.
 fn fetch_registry_version(name: &str) -> Option<String> {
-    let base_url = crate::config::registry_url();
+    // No registry configured means no registry version to fetch. `?` here is
+    // the whole handling: this function already returns None for "could not
+    // determine", and "there is nowhere to ask" is that.
+    let base_url = crate::config::registry_url()?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .user_agent("horus-pkg-manager")

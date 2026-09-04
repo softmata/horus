@@ -38,7 +38,9 @@ mod resolver;
 pub mod sandbox;
 mod trust;
 
-pub use discovery::{AvailablePlugin, PluginCategory, PluginDiscovery, PluginSourceType};
+pub use discovery::{
+    AvailablePlugin, PluginCategory, PluginDiscovery, PluginSourceType, RegistryStatus,
+};
 pub use executor::{PluginExecutor, PluginInfo, PluginOrigin};
 pub use registry::{
     CommandInfo, Compatibility, DisabledPlugin, PluginEntry, PluginRegistry, PluginScope,

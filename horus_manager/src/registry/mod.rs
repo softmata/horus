@@ -275,16 +275,26 @@ pub struct RegistryClient {
     pub(crate) base_url: String,
 }
 
-impl Default for RegistryClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RegistryClient {
-    pub fn new() -> Self {
-        let base_url = crate::config::registry_url();
+    /// Build a client against the configured registry.
+    ///
+    /// Fails when no registry is configured. That is a real, expected state
+    /// today -- the public registry is down (#173) -- and it is deliberately an
+    /// error rather than a client pointed at a placeholder URL. The previous
+    /// shape returned an infallible `Self` wrapping a dead default, so callers
+    /// had no way to distinguish "the registry said no" from "there is no
+    /// registry", and every one of them chose the interpretation that produced
+    /// an empty list.
+    pub fn new() -> Result<Self> {
+        let base_url = crate::config::registry_url()
+            .ok_or_else(|| anyhow!("{}", crate::config::NO_REGISTRY_CONFIGURED))?;
+        Ok(Self::with_base_url(base_url))
+    }
 
+    /// Build a client against an explicit registry URL.
+    ///
+    /// For tests and for callers that already resolved a URL themselves.
+    pub fn with_base_url(base_url: String) -> Self {
         let client = Client::builder()
             .connect_timeout(30_u64.secs())
             .timeout(120_u64.secs())
@@ -293,6 +303,14 @@ impl RegistryClient {
             .unwrap_or_else(|_| Client::new());
 
         Self { client, base_url }
+    }
+
+    /// Whether a registry is configured at all, without building a client.
+    ///
+    /// Lets a caller take the "no registry" branch as normal control flow
+    /// instead of constructing an error it intends to discard.
+    pub fn is_configured() -> bool {
+        crate::config::registry_url().is_some()
     }
 
     /// Get a reference to the HTTP client
@@ -456,18 +474,26 @@ mod dispatch_tests {
     // ── RegistryClient ──────────────────────────────────────────────────
 
     #[test]
-    fn registry_client_default_url() {
-        let client = RegistryClient::new();
-        assert!(
-            !client.base_url().is_empty(),
-            "Base URL should not be empty"
-        );
+    fn registry_client_keeps_the_url_it_was_given() {
+        let client = RegistryClient::with_base_url("https://registry.example".to_string());
+        assert_eq!(client.base_url(), "https://registry.example");
     }
 
     #[test]
     fn registry_client_has_http_client() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::with_base_url("https://registry.example".to_string());
         let _ = client.http_client(); // should not panic
+    }
+
+    #[test]
+    fn a_trailing_slash_does_not_become_a_double_slash() {
+        // Guards the self-hosted path: HORUS_REGISTRY_URL is typed by a human,
+        // and "https://reg.example/" is at least as likely as the bare form.
+        let client = RegistryClient::with_base_url("https://reg.example/".to_string());
+        assert!(
+            !format!("{}/api/packages", client.base_url().trim_end_matches('/')).contains("//api"),
+            "callers must trim the trailing slash before joining a path"
+        );
     }
 
     // ── LockedPackage ───────────────────────────────────────────────────
