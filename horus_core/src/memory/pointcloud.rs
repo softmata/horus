@@ -130,7 +130,7 @@ impl PointCloud {
     /// Prefer `from_xyz()`, `from_xyzi()`, or `from_xyzrgb()` for common formats.
     #[doc(hidden)]
     pub fn new(num_points: u32, fields_per_point: u32, dtype: TensorDtype) -> HorusResult<Self> {
-        Self::new_on(num_points, fields_per_point, dtype, global_pool())
+        Self::new_on(num_points, fields_per_point, dtype, global_pool()?)
     }
 
     /// Create a point cloud backed by a specific pool.

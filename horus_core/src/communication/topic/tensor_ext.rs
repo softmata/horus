@@ -36,7 +36,7 @@
 use std::sync::Arc;
 
 #[cfg(test)]
-use super::pool_registry::get_or_create_pool;
+use super::pool_registry::{get_or_create_pool, pool_or_report};
 #[cfg(test)]
 use super::RingTopic;
 #[cfg(test)]
@@ -54,7 +54,7 @@ impl RingTopic<Tensor> {
     /// or creates a new one backed by shared memory. Subsequent calls return
     /// the cached pool. The pool is shared across all `Topic<Tensor>`
     /// instances with the same name within this process.
-    pub fn pool(&self) -> Arc<TensorPool> {
+    pub fn pool(&self) -> HorusResult<Arc<TensorPool>> {
         get_or_create_pool(self.name())
     }
 
@@ -68,7 +68,7 @@ impl RingTopic<Tensor> {
         dtype: TensorDtype,
         device: Device,
     ) -> HorusResult<TensorHandle> {
-        let pool = self.pool();
+        let pool = self.pool()?;
         TensorHandle::alloc(pool, shape, dtype, device)
     }
 
@@ -91,7 +91,9 @@ impl RingTopic<Tensor> {
     /// is available.
     pub fn recv_handle(&self) -> Option<TensorHandle> {
         let tensor = self.recv()?;
-        let pool = self.pool();
+        // `None` here means "no usable pool", not "no message" — reported,
+        // throttled per topic, rather than dropped in silence.
+        let pool = pool_or_report(self.name())?;
         // from_owned: the sender already incremented the refcount for us.
         // Validates pool_id match; returns None if descriptor belongs to a
         // different pool (prevents refcount corruption).
@@ -140,8 +142,8 @@ mod tests {
     fn test_pool_shared_across_calls() {
         let topic: RingTopic<Tensor> = RingTopic::new("test.tensor_ext_shared_pool").unwrap();
 
-        let pool1 = topic.pool();
-        let pool2 = topic.pool();
+        let pool1 = topic.pool().expect("first pool open");
+        let pool2 = topic.pool().expect("second pool open");
 
         // Same Arc (same pool_id)
         assert_eq!(pool1.pool_id(), pool2.pool_id());

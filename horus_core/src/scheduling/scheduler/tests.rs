@@ -3434,6 +3434,119 @@ fn test_telemetry_builder() {
     );
 }
 
+/// A telemetry endpoint the process cannot write must say so — on both the
+/// periodic path and the final export.
+///
+/// Both callers used to be `let _ = tm.export()`, and `export()` advances
+/// `last_export` whether or not the snapshot landed, so a `file://` endpoint
+/// pointing somewhere unwritable failed on every interval for the life of the
+/// process with no diagnostic on any surface — under the
+/// "[SCHEDULER] Telemetry enabled (endpoint: ...)" line printed at startup.
+#[test]
+fn telemetry_export_failures_reach_the_log() {
+    let _guard = lock_scheduler();
+
+    // A regular file where the exporter needs a directory: `create_dir_all`
+    // then fails on every export with "File exists (os error 17)". That is
+    // deterministic, and it does not depend on the test user's permissions the
+    // way an unwritable directory would (a suite running as root can write
+    // through mode 0o555).
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let blocker = temp_dir.path().join("not-a-directory");
+    std::fs::write(&blocker, b"").unwrap();
+    let endpoint = format!("file://{}/metrics.json", blocker.display());
+
+    let first_unread = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+
+    // Ends the run on an OBSERVED export failure rather than on a wall-clock
+    // guess about when the 1000 ms interval elapses inside a fixed `run_for`.
+    // The scheduler ticks this node, then runs `periodic_monitoring` in the same
+    // iteration, so the line is picked up one tick (10 ms) after it is written
+    // and `finalize_run` follows immediately with the final export. `run_for`
+    // below is therefore a timeout, not a schedule: a loaded machine that
+    // stalls the tick loop costs latency here instead of a failure, and the
+    // window in which the shared log ring could evict the line before the
+    // assertions read it shrinks from hundreds of milliseconds to one tick.
+    struct StopOnExportFailure {
+        since: u64,
+        running: Arc<AtomicBool>,
+    }
+    impl Node for StopOnExportFailure {
+        fn name(&self) -> &str {
+            "telemetry_probe"
+        }
+        fn tick(&mut self) {
+            // Sample the write index BEFORE the scan and advance `since` to it
+            // afterwards, so each tick deserialises only what arrived since the
+            // previous one instead of re-walking the whole window every 10 ms.
+            // GLOBAL_LOG_BUFFER is a cross-process ring shared with every other
+            // horus process on the machine, so under a parallel `cargo test`
+            // the un-advanced window reaches the ring's full capacity (5000
+            // slots by default) and each tick re-deserialises thousands of
+            // other processes' entries — each one a bincode decode under the
+            // buffer's mutex, with a 5 ms spin available per slot that is
+            // mid-write.
+            //
+            // Sampled before, not after: an index read after the scan would
+            // advance past entries written *during* it, and `get_since` never
+            // returns those again. Read first, and the worst case is that the
+            // next tick re-scans a handful of entries.
+            let upto = crate::core::log_buffer::GLOBAL_LOG_BUFFER.write_idx();
+            let reported = crate::core::log_buffer::GLOBAL_LOG_BUFFER
+                .get_since(self.since)
+                .into_iter()
+                .any(|entry| entry.message.contains("[TELEMETRY] Export failed"));
+            self.since = upto;
+            if reported {
+                self.running.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .telemetry(&endpoint);
+    let running = scheduler.running_flag();
+    // `.unwrap()`, not a discarded `Result`: `unused_must_use` is allowed
+    // workspace-wide, so a `build()` that ever starts failing validation here
+    // would drop the node silently. The run would then fall through to the
+    // 5 s timeout below and still pass, hiding the loss of the very thing that
+    // makes this test prompt.
+    scheduler
+        .add(StopOnExportFailure {
+            since: first_unread,
+            running,
+        })
+        .build()
+        .unwrap();
+
+    // Upper bound, not the expected duration. The export interval starts when
+    // `finalize_config` builds the manager, just before the run clock does, so
+    // the periodic export normally reports ~1.0 s in and the node above ends
+    // the run right there. Five seconds leaves room for a four-second stall
+    // before the assertions below report what was actually logged.
+    scheduler.run_for(5000_u64.ms()).unwrap();
+
+    let reported: Vec<String> = crate::core::log_buffer::GLOBAL_LOG_BUFFER
+        .get_since(first_unread)
+        .into_iter()
+        .map(|entry| entry.message)
+        .filter(|message| message.contains("[TELEMETRY]"))
+        .collect();
+
+    assert!(
+        reported
+            .iter()
+            .any(|m| m.contains("Export failed") && m.contains("not-a-directory")),
+        "the periodic export must report the failure and name the path it could \
+         not write; telemetry lines seen: {reported:?}"
+    );
+    assert!(
+        reported.iter().any(|m| m.contains("Final export failed")),
+        "the shutdown export must report its failure too; telemetry lines seen: {reported:?}"
+    );
+}
+
 // ============================================================================
 // Error path and negative tests
 // ============================================================================
@@ -6001,5 +6114,324 @@ fn a_lone_rt_node_reports_nothing() {
         edges.is_empty(),
         "a single RT node with no peers reported {:?}",
         edges
+    );
+}
+
+// ============================================================================
+// Error-contract Tests
+// ============================================================================
+
+/// The `# Errors` section of the doc comment attached to `anchor`, taken from
+/// the scheduler source itself.
+///
+/// `anchor` is the item's name plus its opening paren (`"pub fn run("`) and
+/// nothing more, so a receiver change, an added return type or `where` clause,
+/// or a signature wrapped across lines does not move it. Two assertions keep the
+/// lookup honest instead: the anchor must appear exactly once in the file, and
+/// the text between the `# Errors` heading and it must be doc lines and
+/// attributes only — anything else means the heading belongs to an earlier item
+/// and the caller would be asserting against the wrong function. Both failures
+/// are loud, so this cannot silently read the wrong doc block.
+fn errors_section(anchor: &str) -> &'static str {
+    const SOURCE: &str = include_str!("mod.rs");
+    assert_eq!(
+        SOURCE.matches(anchor).count(),
+        1,
+        "`{anchor}` must occur exactly once in scheduler/mod.rs for this test to \
+         know which doc block it is reading"
+    );
+    let sig_at = SOURCE.find(anchor).expect("anchor counted above");
+    let errors_at = SOURCE[..sig_at]
+        .rfind("/// # Errors")
+        .unwrap_or_else(|| panic!("`{anchor}` has no `# Errors` section"));
+    let section = &SOURCE[errors_at..sig_at];
+    for line in section.lines() {
+        let trimmed = line.trim_start();
+        assert!(
+            trimmed.is_empty() || trimmed.starts_with("///") || trimmed.starts_with("#["),
+            "the `# Errors` heading nearest `{anchor}` is not part of its doc block \
+             (stray line: {line:?})"
+        );
+    }
+    section
+}
+
+/// `tick_once()`'s `# Errors` list is public API — `Scheduler` is in
+/// `horus::prelude` and a caller writes their `match` arms from it. It used to
+/// name `InitPanic`, `InitFailed` and `TickFailed`, none of which the function
+/// can return: `initialize_filtered_nodes()` prints every init error and returns
+/// `()`, and `Node::tick` is `fn tick(&mut self);`, so `TickFailed` has no
+/// producer anywhere in the crate. The errors it does return — including the one
+/// that means the emergency stop fired — were undocumented, so following that
+/// list gave you three dead arms and a silent fallthrough on the e-stop.
+///
+/// Prose has no compiler, so this is the check.
+#[test]
+fn test_tick_once_errors_doc_lists_only_reachable_errors() {
+    let section = errors_section("pub fn tick_once(");
+
+    for unreachable in ["InitPanic", "InitFailed", "TickFailed"] {
+        assert!(
+            !section.contains(unreachable),
+            "`tick_once()` documents `{unreachable}`, which it cannot return.\n{section}"
+        );
+    }
+
+    for real in [
+        "HorusError::InvalidInput",
+        "ValidationError::InvalidValue",
+        "HorusError::Resource",
+        "ResourceError::Unsupported",
+        "Fatal node failure",
+        "Emergency stop triggered",
+    ] {
+        assert!(
+            section.contains(real),
+            "`tick_once()` returns `{real}` and does not document it.\n{section}"
+        );
+    }
+}
+
+/// Same defect in `run()`'s list: two unreachable init variants plus a
+/// `ConfigError` that nothing on the `run()` path constructs, while the
+/// duplicate-node-name error it really returns (pinned by
+/// `test_duplicate_node_names_are_refused`) was missing.
+#[test]
+fn test_run_errors_doc_lists_only_reachable_errors() {
+    let section = errors_section("pub fn run(");
+
+    for unreachable in ["InitPanic", "InitFailed", "ConfigError"] {
+        assert!(
+            !section.contains(unreachable),
+            "`run()` documents `{unreachable}`, which it cannot return.\n{section}"
+        );
+    }
+
+    for real in [
+        "HorusError::InvalidInput",
+        "ValidationError::InvalidValue",
+        "HorusError::Resource",
+        "ResourceError::Unsupported",
+        "HorusError::Contextual",
+        "starting RT executor thread pool",
+    ] {
+        assert!(
+            section.contains(real),
+            "`run()` returns `{real}` and does not document it.\n{section}"
+        );
+    }
+}
+
+/// The behaviour the doc above now claims, asserted against the real scheduler so
+/// the two cannot drift apart: a failed `init()` does not reach the caller, and a
+/// duplicate node name reaches it as `InvalidValue { field: "node name" }`.
+#[test]
+fn test_tick_once_error_contract_matches_behavior() {
+    let _guard = lock_scheduler();
+
+    struct FailingInitNode;
+    impl Node for FailingInitNode {
+        fn name(&self) -> &str {
+            "contract_bad_init"
+        }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            Err(crate::HorusError::Node(
+                crate::error::NodeError::InitFailed {
+                    node: "contract_bad_init".to_string(),
+                    reason: "deliberate".to_string(),
+                },
+            ))
+        }
+        fn tick(&mut self) {}
+    }
+
+    let mut scheduler = Scheduler::new();
+    // `.build()` is unwrapped, not dropped: if registration failed, the scheduler
+    // below would be empty and `tick_once().is_ok()` would hold for the one reason
+    // this assertion must never accept — that no init() ran at all.
+    scheduler
+        .add(FailingInitNode)
+        .order(0)
+        .build()
+        .expect("the failing-init node must be registered for the assertion to mean anything");
+    assert!(
+        scheduler.tick_once().is_ok(),
+        "an init() failure is reported by log line and node state, never by tick_once()"
+    );
+
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(CounterNode::new("contract_dup"))
+        .order(0)
+        .build()
+        .expect("the first node registers cleanly; the clash is recorded on the second");
+    scheduler
+        .add(CounterNode::new("contract_dup"))
+        .order(1)
+        .build()
+        .expect("a duplicate name is recorded for tick_once(), not rejected by build()");
+    let err = scheduler
+        .tick_once()
+        .expect_err("a duplicate node name must fail the tick");
+    assert!(
+        matches!(
+            err,
+            crate::error::HorusError::InvalidInput(
+                crate::error::ValidationError::InvalidValue { ref field, .. }
+            ) if field == "node name"
+        ),
+        "expected the documented InvalidValue {{ field: \"node name\" }}, got: {err:?}"
+    );
+
+    let mut scheduler = Scheduler::new();
+    scheduler
+        .add(PanickingNode::new(
+            "contract_fatal",
+            0,
+            Arc::new(AtomicUsize::new(0)),
+        ))
+        .order(0)
+        .failure_policy(FailurePolicy::Fatal)
+        .build()
+        .expect("the panicking node must be registered for the tick to have anything to fail on");
+    let err = scheduler
+        .tick_once()
+        .expect_err("a fatal node failure must fail the tick");
+    assert!(
+        matches!(
+            err,
+            crate::error::HorusError::Internal { ref message, .. }
+                if message.contains("Fatal node failure")
+        ),
+        "expected the documented Internal(\"Fatal node failure during tick_once\"), got: {err:?}"
+    );
+}
+
+/// `run()`'s doc promises the opposite return from `tick_once()`'s for the same
+/// event: an emergency stop breaks the loop and the call comes back `Ok(())`,
+/// where `tick_once()` reports it as `Internal("Emergency stop triggered …")`.
+/// That asymmetry is the whole reason a caller picks one entry point over the
+/// other, so it is asserted rather than described.
+///
+/// The stop is fired the way horus_net fires it on link loss —
+/// `trigger_external_emergency_stop`, through the global hook `finalize_config`
+/// installs. `finalize_and_init()` runs first so the hook is live before the
+/// trigger; it is guarded by `self.initialized`, so `run_for` below re-enters an
+/// already-finalized scheduler and the latch survives into the loop.
+///
+/// The elapsed-time assertion is what makes this non-vacuous: without it the
+/// test would also pass if the loop simply ran its duration out.
+#[test]
+fn test_run_reports_an_emergency_stop_as_ok() {
+    let _guard = lock_scheduler();
+
+    struct EstopNode;
+    impl Node for EstopNode {
+        fn name(&self) -> &str {
+            "contract_estop"
+        }
+        fn tick(&mut self) {}
+    }
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        .watchdog(500_u64.ms());
+    // A per-node watchdog registers the node as critical, which is what enables
+    // the safety monitor the external hook latches.
+    scheduler
+        .add(EstopNode)
+        .watchdog(100_u64.ms())
+        .build()
+        .unwrap();
+    scheduler.finalize_and_init();
+    assert!(
+        !scheduler
+            .monitor
+            .safety
+            .as_ref()
+            .expect("a per-node watchdog enables the safety monitor")
+            .is_emergency_stop(),
+        "no emergency stop before the trigger"
+    );
+
+    crate::scheduling::safety_monitor::trigger_external_emergency_stop(
+        "error-contract test: external e-stop".to_string(),
+    );
+    assert!(
+        scheduler
+            .monitor
+            .safety
+            .as_ref()
+            .unwrap()
+            .is_emergency_stop(),
+        "the external trigger must latch this scheduler's monitor"
+    );
+
+    let started = Instant::now();
+    let result = scheduler.run_for(5_u64.secs());
+    let elapsed = started.elapsed();
+
+    assert!(
+        result.is_ok(),
+        "run() reports an emergency stop as a clean shutdown, never as an Err: {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the e-stop must break the loop, not let it run the duration out (took {elapsed:?})"
+    );
+}
+
+/// The second `HorusError::Contextual` `run()` documents. The first — a tokio
+/// runtime that will not build — has no seam to force from a test; this one
+/// does, and it is the one a user actually meets: two RT chains pinned to the
+/// same CPU. `check_core_collisions()` refuses before a single RT thread is
+/// spawned, so the test needs no RT privileges and no CPU 0 affinity.
+///
+/// Without this the doc's claim about the RT-executor path would be prose only
+/// — which is the exact failure mode this PR exists to fix.
+#[test]
+fn test_run_reports_a_refused_rt_executor_as_contextual() {
+    if std::env::var("HORUS_RT_ALLOW_CORE_SHARING")
+        .is_ok_and(|v| !v.is_empty() && v != "0" && v != "false")
+    {
+        // The operator opted into shared RT cores; the refusal is by design off.
+        return;
+    }
+    let _guard = lock_scheduler();
+
+    struct RtNode(&'static str);
+    impl Node for RtNode {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn tick(&mut self) {}
+    }
+
+    // `.rate()` promotes each node to ExecutionClass::Rt, and each RT node is its
+    // own chain — so this is two chains explicitly naming CPU 0.
+    let mut scheduler = Scheduler::new().tick_rate(100_u64.hz());
+    scheduler
+        .add(RtNode("contract_rt_a"))
+        .rate(50_u64.hz())
+        .core(0)
+        .build()
+        .unwrap();
+    scheduler
+        .add(RtNode("contract_rt_b"))
+        .rate(50_u64.hz())
+        .core(0)
+        .build()
+        .unwrap();
+
+    let err = scheduler
+        .run_for(200_u64.ms())
+        .expect_err("two RT chains on one core must refuse to start");
+    assert!(
+        matches!(
+            err,
+            crate::error::HorusError::Contextual { ref message, .. }
+                if message == "starting RT executor thread pool"
+        ),
+        "expected the documented Contextual(\"starting RT executor thread pool\"), got: {err:?}"
     );
 }

@@ -88,11 +88,18 @@ public:
 
     /// Create a Publisher for the named topic.
     /// Usage: auto pub = sched.advertise<msg::CmdVel>("cmd_vel");
+    ///
+    /// Does not throw when the topic cannot be opened — check `is_valid()` and
+    /// read `error()` for the reason. A handle that failed to open discards
+    /// every message it is given.
     template<typename T>
     Publisher<T> advertise(std::string_view topic_name);
 
     /// Create a Subscriber for the named topic.
     /// Usage: auto sub = sched.subscribe<msg::LaserScan>("lidar.scan");
+    ///
+    /// Does not throw when the topic cannot be opened — check `is_valid()` and
+    /// read `error()` for the reason.
     template<typename T>
     Subscriber<T> subscribe(std::string_view topic_name);
 

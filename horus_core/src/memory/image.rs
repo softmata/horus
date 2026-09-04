@@ -63,7 +63,7 @@ impl Image {
     /// assert_eq!(img.height(), 480);
     /// ```
     pub fn new(width: u32, height: u32, encoding: ImageEncoding) -> HorusResult<Self> {
-        Self::new_on(width, height, encoding, global_pool())
+        Self::new_on(width, height, encoding, global_pool()?)
     }
 
     /// Create a new image backed by a specific pool.
@@ -247,6 +247,28 @@ impl std::fmt::Debug for Image {
             .field("height", &self.height())
             .field("encoding", &self.encoding())
             .finish()
+    }
+}
+
+impl Image {
+    /// Instant the sensor SAMPLED this frame, nanoseconds since the UNIX epoch.
+    ///
+    /// `0` means unknown. Distinct from [`timestamp_ns`](Self::timestamp_ns),
+    /// which is stamped at publish; for a camera the two differ by exposure plus
+    /// transfer plus driver latency, routinely 10-30 ms.
+    #[inline]
+    pub fn capture_ns(&self) -> u64 {
+        self.descriptor.capture_ns()
+    }
+
+    /// Record the instant the sensor sampled this frame.
+    ///
+    /// Drivers call this. HORUS never sets it, because only the driver knows
+    /// its own pipeline latency.
+    #[inline]
+    pub fn set_capture_ns(&mut self, ts: u64) -> &mut Self {
+        self.descriptor.set_capture_ns(ts);
+        self
     }
 }
 

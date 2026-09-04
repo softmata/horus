@@ -27,7 +27,7 @@ use super::tensor::Tensor;
 /// min_depth:    u16          (2 bytes)
 /// max_depth:    u16          (2 bytes)
 /// frame_id:     [u8; 32]     (32 bytes)
-/// _reserved:    [u8; 8]      (8 bytes)
+/// capture_ns:   u64          (8 bytes)
 /// Total:                      224 bytes
 /// ```
 #[repr(C)]
@@ -45,8 +45,17 @@ pub struct DepthImageDescriptor {
     max_depth: u16,
     /// Frame ID (camera identifier, null-terminated)
     frame_id: [u8; 32],
-    #[serde(skip)]
-    _reserved: [u8; 8],
+    /// Instant the sensor SAMPLED this frame, nanoseconds since the UNIX epoch.
+    /// `0` means unknown. See [`impl_capture_ns_field`] for why this is not
+    /// `timestamp_ns`.
+    ///
+    /// Occupies what were 8 reserved bytes, so the wire layout is unchanged and
+    /// a peer built before this reads them as the zeroed reserved bytes it
+    /// already ignored. The topic type hash is derived from the type NAME
+    /// (`fnv1a_type_hash(type_name::<T>())`), not the field layout, so old and
+    /// new peers still bind. `serde(default)` keeps older recordings loadable.
+    #[serde(default)]
+    capture_ns: u64,
 }
 
 // Safety: DepthImage is repr(C), all fields are Pod, no implicit padding.
@@ -63,7 +72,7 @@ impl Default for DepthImageDescriptor {
             min_depth: 200,   // 20cm
             max_depth: 10000, // 10m
             frame_id: [0; 32],
-            _reserved: [0; 8],
+            capture_ns: 0,
         }
     }
 }
@@ -140,6 +149,7 @@ impl DepthImageDescriptor {
 
     crate::impl_tensor_accessors!();
     crate::impl_timestamp_field!();
+    crate::impl_capture_ns_field!();
     crate::impl_frame_id_field!();
 }
 
