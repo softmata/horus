@@ -556,7 +556,22 @@ fn an_allocating_no_alloc_node_is_caught_by_the_rt_executor() {
         .build()
         .unwrap();
 
-    scheduler.run_for(200_u64.ms()).unwrap();
+    // 600ms, not 200ms.
+    //
+    // The `ticks > 5` assertion below is a WALL-CLOCK floor: ~100 ticks are
+    // expected at 500 Hz over 200ms, so five looked like enormous margin. It is
+    // not enough under `cargo llvm-cov`, where every instrumented counter makes
+    // the tick path far slower than the release or debug builds this was tuned
+    // against. The Code Coverage job failed here on 2026-09-04 while the same
+    // code passed the job twice on adjacent commits.
+    //
+    // The window is widened rather than the floor lowered. Five ticks is not an
+    // arbitrary number worth trading away — only ticks 2 and 3 allocate, so a
+    // floor above 3 is what proves the node outlived its own violations, and
+    // margin above that is what distinguishes "kept ticking" from "ticked once
+    // more by luck". Three times the window keeps that meaning on a build three
+    // times slower.
+    scheduler.run_for(600_u64.ms()).unwrap();
 
     let violations = rt_allocator::violation_count() - before;
     let ticks = OFFENDER_TICKS.load(Ordering::Relaxed);
