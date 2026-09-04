@@ -6435,3 +6435,108 @@ fn test_run_reports_a_refused_rt_executor_as_contextual() {
         "expected the documented Contextual(\"starting RT executor thread pool\"), got: {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A launch file's rate_hz must reach the tick period (#185)
+// ---------------------------------------------------------------------------
+
+/// `horus launch` exports `rate_hz` as `HORUS_NODE_RATE_HZ`
+/// (horus_manager/src/commands/launch.rs:1161) and, before this, nothing read
+/// it — the string appeared exactly once in the repository, at the export. A
+/// launch file saying `rate_hz: 20` ran at whatever the binary was compiled
+/// with, and nothing said so.
+///
+/// The parse is tested rather than the scheduler because the parse is where
+/// the decision lives; `finalize_config` does one division with the result.
+#[test]
+fn launch_rate_hz_is_parsed_from_the_env_key_launch_exports() {
+    use crate::scheduling::scheduler::launch_tick_rate_hz;
+
+    // The shape `horus launch` writes: `rate.to_string()` on an f64.
+    assert_eq!(launch_tick_rate_hz(Some("20")), Some(20.0));
+    assert_eq!(launch_tick_rate_hz(Some("1000")), Some(1000.0));
+    assert_eq!(launch_tick_rate_hz(Some("0.5")), Some(0.5));
+    assert_eq!(launch_tick_rate_hz(Some(" 250 ")), Some(250.0));
+
+    // "Leave the tick rate alone" — never a panic, never a zero period.
+    assert_eq!(launch_tick_rate_hz(None), None, "unset");
+    assert_eq!(launch_tick_rate_hz(Some("")), None, "empty");
+    assert_eq!(launch_tick_rate_hz(Some("   ")), None, "blank");
+    assert_eq!(launch_tick_rate_hz(Some("fast")), None, "unparseable");
+    assert_eq!(
+        launch_tick_rate_hz(Some("0")),
+        None,
+        "zero would divide to an infinite period"
+    );
+    assert_eq!(launch_tick_rate_hz(Some("-5")), None, "negative");
+    assert_eq!(launch_tick_rate_hz(Some("inf")), None, "non-finite");
+    assert_eq!(launch_tick_rate_hz(Some("NaN")), None, "NaN");
+    assert_eq!(
+        launch_tick_rate_hz(Some("1e9")),
+        None,
+        "above the range a tick period can represent"
+    );
+}
+
+/// The key the scheduler reads must be the key the launcher writes.
+///
+/// Both sides were internally consistent while disagreeing with each other for
+/// the life of the feature; a literal on one side and a literal on the other is
+/// exactly the pair that drifts. This pins the spelling.
+#[test]
+fn launch_rate_env_key_matches_the_launcher() {
+    let launcher = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("horus_manager/src/commands/launch.rs"),
+    );
+    // horus_core is published standalone, where horus_manager is not a sibling;
+    // skip rather than fail when the file is not there.
+    if let Ok(src) = launcher {
+        assert!(
+            src.contains("HORUS_NODE_RATE_HZ"),
+            "horus launch no longer exports HORUS_NODE_RATE_HZ — the reader in \
+             finalize_config is now dead code, not a feature"
+        );
+    }
+}
+
+/// The launch file's rate must actually reach `tick.period`, and must beat a
+/// compiled-in `tick_rate()` — overriding the binary is the reason the key is
+/// in the launch file at all.
+///
+/// This is the test that would have caught #185. The parse test above cannot:
+/// it exercises the function the fix introduced, so it would not have existed
+/// to fail. This one drives the real path and fails on unfixed code, where
+/// `finalize_config` never reads the environment.
+#[test]
+fn launch_rate_hz_overrides_the_compiled_in_tick_rate() {
+    let _guard = lock_scheduler();
+
+    // SAFETY: the scheduler lock is held, so no other test reads the
+    // environment concurrently; both branches below restore it.
+    unsafe { std::env::set_var("HORUS_NODE_RATE_HZ", "20") };
+
+    let mut scheduler = Scheduler::new().tick_rate(500_u64.hz());
+    scheduler.finalize_config();
+    let with_launch = scheduler.tick.period;
+
+    unsafe { std::env::remove_var("HORUS_NODE_RATE_HZ") };
+
+    let mut baseline = Scheduler::new().tick_rate(500_u64.hz());
+    baseline.finalize_config();
+
+    assert_eq!(
+        baseline.tick.period,
+        Duration::from_micros(2_000),
+        "without the launch key, the compiled-in 500 Hz stands"
+    );
+    assert_eq!(
+        with_launch,
+        Duration::from_micros(50_000),
+        "HORUS_NODE_RATE_HZ=20 must win over .tick_rate(500.hz()) — the launch \
+         file exists to override what the binary was built with. Before #185 \
+         this was 2000us: the key was exported, validated, and read by nothing"
+    );
+}
