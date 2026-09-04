@@ -2400,9 +2400,34 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// - [`NodeError::InitPanic`] — a node panicked during first-call `init()`
-    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
-    /// - [`NodeError::TickFailed`] — a node's `tick()` returned an error
+    /// A caller receives the umbrella [`HorusError`](crate::error::HorusError), so the
+    /// arms below are the shapes to match; the wrapped sub-error is the discriminator.
+    ///
+    /// - [`HorusError::InvalidInput`](crate::error::HorusError::InvalidInput) wrapping
+    ///   [`ValidationError::InvalidValue`](crate::error::ValidationError::InvalidValue)
+    ///   with `field == "node name"` — two nodes were added under the same name.
+    ///   Recorded by `build()`, reported here.
+    /// - [`HorusError::Resource`](crate::error::HorusError::Resource) wrapping
+    ///   [`ResourceError::Unsupported`](crate::error::ResourceError::Unsupported) with
+    ///   `feature == "Real-time scheduling"` — `require_rt()` was set and real-time could
+    ///   not be fully acquired.
+    /// - [`HorusError::Internal`](crate::error::HorusError::Internal) — the tick did not
+    ///   complete and the loop must not continue. Two conditions reach it: a node's
+    ///   `tick()` panicked and its failure policy said stop, or an RT budget/deadline
+    ///   policy escalated (message `"Fatal node failure during tick_once"`); and a safety
+    ///   monitor latching during this tick — watchdog expiry, external e-stop (message
+    ///   `"Emergency stop triggered during tick_once"`). Both mean the robot needs
+    ///   safing and neither is retryable, so the variant alone is the whole contract:
+    ///   treat every `Internal` out of `tick_once()` as fatal and stop the loop. Do
+    ///   **not** try to tell the two causes apart in code — they share one variant, and
+    ///   `message` is diagnostic text, not a stable discriminator. It is for the log
+    ///   line and the operator, not for a `match`.
+    ///
+    /// A failing `init()` is **not** in that list. The scheduler prints the error and
+    /// leaves the node in its error state (at fatal severity it also stops the scheduler),
+    /// so `Ok(())` here does not mean every node initialized. Nor can a node's tick body
+    /// report an error: [`Node::tick`](crate::core::Node::tick) returns `()`, and a panic
+    /// inside it is caught and routed through the node's failure policy above.
     ///
     /// # Example
     /// ```rust,ignore
@@ -2618,10 +2643,31 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// - [`NodeError::InitPanic`] — a node panicked during `init()`
-    /// - [`NodeError::InitFailed`] — a node's `init()` returned an error
-    /// - [`ResourceError::Unsupported`] — `require_rt()` was set but RT is unavailable
-    /// - [`ConfigError`] — invalid scheduler configuration detected during finalization
+    /// A caller receives the umbrella [`HorusError`](crate::error::HorusError), so the
+    /// arms below are the shapes to match; the wrapped sub-error is the discriminator.
+    ///
+    /// - [`HorusError::InvalidInput`](crate::error::HorusError::InvalidInput) wrapping
+    ///   [`ValidationError::InvalidValue`](crate::error::ValidationError::InvalidValue)
+    ///   with `field == "node name"` — two nodes were added under the same name.
+    ///   Recorded by `build()`, reported here.
+    /// - [`HorusError::Resource`](crate::error::HorusError::Resource) wrapping
+    ///   [`ResourceError::Unsupported`](crate::error::ResourceError::Unsupported) with
+    ///   `feature == "Real-time scheduling"` — `require_rt()` was set and real-time could
+    ///   not be fully acquired.
+    /// - [`HorusError::Contextual`](crate::error::HorusError::Contextual) — startup failed
+    ///   before the tick loop ever ran, with `source` carrying the cause. Two sites
+    ///   produce it: the scheduler's tokio runtime could not be created (message
+    ///   `"creating scheduler tokio runtime"`), and the RT executor refused to start
+    ///   (message `"starting RT executor thread pool"`) — two RT chains pinned to the
+    ///   same CPU, which `check_core_collisions()` rejects rather than start chains that
+    ///   cannot both meet their deadlines. No node has ticked when either is returned.
+    ///
+    /// Everything else the loop meets is handled in-place, so `Ok(())` is the return for
+    /// an ordinary shutdown *and* for an abnormal one: a failing `init()` is printed and
+    /// the node left in its error state, and an emergency stop (watchdog expiry, external
+    /// e-stop, Ctrl+C) breaks the loop and shuts down cleanly rather than erroring. Drive
+    /// the loop with [`tick_once()`](Self::tick_once) instead if the caller needs an
+    /// emergency stop reported as an `Err`.
     pub fn run(&mut self) -> HorusResult<()> {
         self.run_with_filter(None, None)
     }
