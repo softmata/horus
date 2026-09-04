@@ -271,8 +271,26 @@ pub(crate) fn set_node_tick_context(
         .rate_hz
         .map(|hz| Duration::from_secs_f64(1.0 / hz))
         .unwrap_or(tick_period);
+    // One clock reading, not two. All three `Clock` impls define `now()` and
+    // `elapsed()` as the same quantity (`WallClock` has both call
+    // `epoch.elapsed()`; `SimClock` has both load `self.nanos`; `ReplayClock`
+    // defines `elapsed()` via `now()`), so deriving one from the other is an
+    // exact substitution rather than an approximation.
+    //
+    // Worth ~30ns per node per tick on WallClock and nothing on SimClock —
+    // 0.27% of the measured 11.2us p50 jitter, so this will not move any
+    // latency figure and is not offered as an RT fix. What it does remove is a
+    // within-tick disagreement between `horus::now()` and `horus::elapsed()`.
+    //
+    // The `as u64` narrowing is exact, not a gamble. `ClockInstant` *is* a
+    // `u64` nanosecond count, so every constructor narrows; this is the same
+    // cast `WallClock::now()` performs internally on the line this replaces.
+    // For `SimClock` and `ReplayClock` the value provably fits: both build
+    // `elapsed()` out of `Duration::from_nanos(u64)`, so the round trip is
+    // lossless. For `WallClock` the source is `Instant::elapsed()` since
+    // process start, which needs 584 years of uptime to exceed `u64::MAX` ns.
     let sim_time = clock.elapsed();
-    let tick_start_ci = clock.now();
+    let tick_start_ci = crate::core::clock::ClockInstant::from_nanos(sim_time.as_nanos() as u64);
     crate::core::tick_context::set_tick_context(
         &node.name,
         tick_number,
@@ -412,7 +430,40 @@ impl TimingEnforcer {
         deadline: Duration,
         miss: Miss,
     ) -> Option<DeadlineMissResult> {
-        let elapsed = tick_start.elapsed();
+        Self::check_deadline_from_release(tick_start, Duration::ZERO, deadline, miss)
+    }
+
+    /// Deadline measured from the node's SCHEDULED RELEASE, not from the moment
+    /// its `tick()` happened to start.
+    ///
+    /// `check_deadline` measures `tick_start.elapsed()` — how long the node's
+    /// own code ran. So does `check_tick_budget`, against `tr.duration`. Two
+    /// knobs measuring the same quantity is the defect class this codebase
+    /// names elsewhere: "two named options that do the same thing means one of
+    /// them is a lie". The lie here is that `deadline` sounded like a deadline.
+    ///
+    /// What a control loop actually promises is that the command LEAVES by a
+    /// certain time after the period began. A node released 3.5 ms late that
+    /// then executes in 10 us has blown a 900 us deadline by 2.6 ms — the
+    /// actuator got its command three cycles late — while the old check saw
+    /// 10 us against 900 us and recorded a healthy tick. The deadline-miss
+    /// ladder, and every degradation and safe-state response hanging off it,
+    /// therefore never fired for the dominant real-world failure mode. It fired
+    /// only for the rarer one where the node's own code is slow, which
+    /// `budget` already covers.
+    ///
+    /// `release_late` is how late the tick was released relative to its
+    /// scheduled slot; the RT executor's cyclic waiter already computes it.
+    /// Passing `Duration::ZERO` reproduces the old execution-time-only
+    /// behaviour exactly, which is what the non-RT paths do — they have no
+    /// scheduled slot to be late against.
+    pub fn check_deadline_from_release(
+        tick_start: Instant,
+        release_late: Duration,
+        deadline: Duration,
+        miss: Miss,
+    ) -> Option<DeadlineMissResult> {
+        let elapsed = tick_start.elapsed() + release_late;
         if elapsed > deadline {
             let action = match miss {
                 Miss::Warn => DeadlineAction::Warn,
@@ -541,6 +592,83 @@ mod tests {
         assert!(dm.elapsed >= 50_u64.ms());
         assert_eq!(dm.deadline, 10_u64.ms());
         assert!(matches!(dm.action, DeadlineAction::EmergencyStop));
+    }
+
+    /// A tick released late misses its deadline even when its own code is fast.
+    ///
+    /// This is the case the old check could not see. On a 1 kHz loop with a
+    /// 900us deadline, a node woken 3.5ms late — the max lateness actually
+    /// measured on a stock kernel — and executing in microseconds has delivered
+    /// its command three cycles after it was due. Judged on execution time
+    /// alone it looked perfectly healthy, so the deadline-miss ladder, the
+    /// degradation ladder and the safe-state response all stayed silent.
+    #[test]
+    fn release_lateness_alone_misses_the_deadline() {
+        let tick_start = Instant::now(); // execution ~0
+        let result = TimingEnforcer::check_deadline_from_release(
+            tick_start,
+            3_500_u64.us(),
+            900_u64.us(),
+            Miss::SafeMode,
+        );
+        let dm = result.expect(
+            "a tick released 3.5ms late against a 900us deadline is a miss, \
+             however fast its own code ran",
+        );
+        assert!(dm.elapsed >= 3_500_u64.us());
+        assert_eq!(dm.deadline, 900_u64.us());
+        assert!(matches!(dm.action, DeadlineAction::SafeMode));
+
+        // And the old entry point, which cannot see the lateness, still says
+        // healthy — this is precisely the gap, pinned so it cannot come back.
+        assert!(
+            TimingEnforcer::check_deadline(tick_start, 900_u64.us(), Miss::SafeMode).is_none(),
+            "execution-time-only check should see nothing wrong; if this starts \
+             failing the two entry points have converged and one is redundant"
+        );
+    }
+
+    /// Zero lateness must reproduce the old behaviour exactly, since every
+    /// non-RT caller passes zero — they have no scheduled slot to be late against.
+    #[test]
+    fn zero_release_lateness_matches_the_execution_only_check() {
+        for (start_ago_ms, deadline_ms) in [(0_u64, 100_u64), (50, 10), (9, 10), (11, 10)] {
+            let tick_start = Instant::now() - start_ago_ms.ms();
+            let a = TimingEnforcer::check_deadline_from_release(
+                tick_start,
+                Duration::ZERO,
+                deadline_ms.ms(),
+                Miss::Warn,
+            );
+            let b = TimingEnforcer::check_deadline(tick_start, deadline_ms.ms(), Miss::Warn);
+            assert_eq!(
+                a.is_some(),
+                b.is_some(),
+                "zero lateness diverged from the old check at \
+                 {start_ago_ms}ms/{deadline_ms}ms"
+            );
+        }
+    }
+
+    /// Execution time and release lateness add: neither alone would miss here,
+    /// together they do. A budget check on execution alone cannot express this.
+    #[test]
+    fn release_lateness_and_execution_time_combine() {
+        let tick_start = Instant::now() - 600_u64.us();
+        let result = TimingEnforcer::check_deadline_from_release(
+            tick_start,
+            600_u64.us(),
+            900_u64.us(),
+            Miss::Warn,
+        );
+        assert!(
+            result.is_some(),
+            "600us late plus 600us of execution exceeds a 900us deadline"
+        );
+        assert!(
+            TimingEnforcer::check_deadline(tick_start, 900_u64.us(), Miss::Warn).is_none(),
+            "600us of execution alone is inside a 900us deadline"
+        );
     }
 
     #[test]

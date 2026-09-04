@@ -786,13 +786,38 @@ fn check_rt() -> CheckResult {
         details.push("For lower jitter, run: horus setup-rt".to_string());
     }
 
-    if caps.max_priority > 0 {
+    // `max_priority` is a kernel constant, not a permission: it is non-zero
+    // even where the call is refused with EPERM, so the old
+    // `if caps.max_priority > 0` reported SCHED_FIFO as available on every
+    // supported platform and its else-branch was unreachable. SCHED_FIFO is the
+    // tail-dominant lever -- measured on an unprivileged box, 1 kHz wake
+    // lateness p99 1276-2494 us on SCHED_OTHER against 16.5-114 us under
+    // `chrt -f 80` -- so saying "available" when it is refused hides a 20-100x
+    // improvement behind a one-line fix.
+    if caps.rt_priority_permitted {
         details.push(format!(
             "SCHED_FIFO available (priority {}-{})",
             caps.min_priority, caps.max_priority
         ));
     } else {
-        details.push("SCHED_FIFO not available".to_string());
+        // States the observation, not a cause. `rt_priority_permitted` is a
+        // single bool: `can_set_rt_priority()` answers false for a missing
+        // CAP_SYS_NICE, for RLIMIT_RTPRIO=0, for a seccomp filter that rejects
+        // sched_setscheduler (common in containers, where `setcap` would not
+        // help), and for a thread whose own policy could not be read back.
+        // Naming one of those as *the* cause would be wrong in the other
+        // three, and `doctor` exists to be believed.
+        details.push(format!(
+            "SCHED_FIFO REFUSED for this process (the kernel offers {}-{}, but \
+             this process may not set an RT policy). Tail jitter will be an \
+             order of magnitude worse than this host can do.",
+            caps.min_priority, caps.max_priority
+        ));
+        details.push(
+            "Grant it: sudo setcap cap_sys_nice+ep $(which horus)  — or run \
+             `horus setup-rt`, which writes the rtprio limit."
+                .to_string(),
+        );
     }
 
     if caps.memory_locking {

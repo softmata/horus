@@ -35,8 +35,25 @@ pub use pi_mutex::{priority_inheritance_available, PiMutex, PiMutexGuard};
 pub struct RtCapabilities {
     /// PREEMPT_RT kernel detected (Linux) or RT-capable scheduler
     pub preempt_rt: bool,
-    /// Maximum RT priority available (0 if none)
+    /// Maximum RT priority the KERNEL defines. Privilege-independent.
+    ///
+    /// This is a kernel constant, not a permission. `sched_get_priority_max`
+    /// answers the same on a host that will refuse the call, and Linux floors
+    /// the range with `.max(1)` while macOS and Windows hardcode 99 and 31 — so
+    /// `max_priority > 0` is a tautology on every supported platform and says
+    /// nothing about whether this process may actually use it. Use
+    /// [`Self::rt_priority_permitted`] for that.
     pub max_priority: i32,
+    /// Whether this process can actually obtain an RT policy.
+    ///
+    /// The distinction matters more than it looks: SCHED_FIFO is the
+    /// tail-dominant scheduling lever. Measured on one unprivileged 12-core
+    /// box, 1 kHz wake lateness over 5000 samples — SCHED_OTHER (with timer
+    /// slack already at 1 ns) p99 1276-2494 us / max 3.3-6.4 ms, versus
+    /// `chrt -f 80` p99 16.5-114 us / max 0.11-0.84 ms. Reporting it as
+    /// available when it is refused hides a 20-100x improvement behind a
+    /// one-line fix.
+    pub rt_priority_permitted: bool,
     /// Minimum RT priority
     pub min_priority: i32,
     /// Whether memory locking is permitted
@@ -56,6 +73,7 @@ impl Default for RtCapabilities {
         Self {
             preempt_rt: false,
             max_priority: 0,
+            rt_priority_permitted: false,
             min_priority: 0,
             memory_locking: false,
             cpu_affinity: true, // core_affinity crate is cross-platform
@@ -138,6 +156,53 @@ pub fn lock_memory() -> anyhow::Result<()> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         anyhow::bail!("Memory locking not supported on this platform")
+    }
+}
+
+/// Set this thread's timer slack in nanoseconds (Linux only).
+///
+/// Linux defaults to 50 us of slack per thread, which the kernel may add to any
+/// timed wait. That is 5 % of a 1 kHz period, applied to every wake. Setting it
+/// to 1 ns is what RT applications do.
+///
+/// A SCHED_FIFO/RR thread already gets zero slack, so this matters precisely
+/// for the degraded path where `set_realtime_priority` was refused for lack of
+/// CAP_SYS_NICE and HORUS continued at normal priority.
+///
+/// `nanoseconds` is the slack itself, and 0 is not "no slack": Linux reads a
+/// non-positive argument as "restore this thread's inherited default" and hands
+/// back the 50 us. Pass 1 for the tightest setting. A value too wide for the
+/// target's `unsigned long` (32 bits on armv7) is refused with an error rather
+/// than wrapped into a smaller one.
+///
+/// Returns `Ok(())` and does nothing on platforms without the concept, so
+/// callers do not need to branch.
+pub fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_timer_slack(nanoseconds)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = nanoseconds;
+        Ok(())
+    }
+}
+
+/// This thread's current timer slack in nanoseconds, or `None` where the
+/// platform has no such setting.
+///
+/// Per-thread, like [`set_timer_slack`]: it reports the slack of whichever
+/// thread calls it, so call it from the thread you are asking about rather than
+/// from the one that configured it.
+pub fn timer_slack_ns() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::timer_slack_ns()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 
@@ -580,5 +645,40 @@ mod tests {
         let gov = cpu_governor();
         // May be Some("performance") or None, but shouldn't panic
         let _ = gov;
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    /// `max_priority` must never be used as a stand-in for permission.
+    ///
+    /// It is a kernel constant: Linux floors the range with `.max(1)`, macOS
+    /// hardcodes 99 and Windows 31. So `max_priority > 0` is true on every
+    /// supported platform regardless of privilege, which made the three CLI
+    /// surfaces that branched on it report SCHED_FIFO as available on a host
+    /// that refuses it — and made their "not available" branches unreachable.
+    #[test]
+    fn max_priority_is_a_constant_not_a_permission() {
+        let caps = detect_capabilities();
+        assert!(
+            caps.max_priority > 0,
+            "every supported platform reports a non-zero max_priority, which is \
+             exactly why it cannot be used to decide availability (got {})",
+            caps.max_priority
+        );
+    }
+
+    /// The permission field must agree with the probe it is derived from.
+    #[test]
+    fn rt_priority_permitted_matches_the_probe() {
+        let caps = detect_capabilities();
+        assert_eq!(
+            caps.rt_priority_permitted,
+            can_set_rt_priority(),
+            "rt_priority_permitted must report what can_set_rt_priority() \
+             actually found, not a kernel constant"
+        );
     }
 }

@@ -34,6 +34,9 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
     RtCapabilities {
         preempt_rt,
         max_priority,
+        // Probed, not inferred from `max_priority` — that is a kernel constant
+        // and is non-zero even where the call is refused with EPERM.
+        rt_priority_permitted: can_set_rt_priority(),
         min_priority,
         memory_locking,
         cpu_affinity: true,
@@ -44,6 +47,90 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         } else {
             Duration::from_micros(100)
         },
+    }
+}
+
+/// Set this thread's timer slack, in nanoseconds.
+///
+/// A thread starts with 50 us of timer slack: 50000 ns is the value the kernel
+/// gives `init_task`, and every task inherits its parent's current slack as its
+/// own default across both fork and exec, so 50 us is what anything launched
+/// from an ordinary shell begins with. It is inherited rather than fixed, so a
+/// process started under something that had already lowered its own slack
+/// starts lower. The kernel is then free to delay any `nanosleep`,
+/// `clock_nanosleep`, `futex` timeout or poll wake by up to that much, so it can
+/// batch wakeups and save power. For a periodic control loop that is a 50 us
+/// error added to every single wake.
+///
+/// `nanoseconds` of 0 is not "no slack": the kernel reads a non-positive
+/// argument as "restore this thread's inherited default" and puts the 50 us
+/// back. That is why the callers in this workspace pass 1.
+///
+/// It applies to SCHED_OTHER threads. A SCHED_FIFO/RR thread already gets zero
+/// slack from the kernel, so this call is a no-op for a fully privileged RT
+/// deployment -- and exactly what is needed for the one that could not get
+/// SCHED_FIFO, which is the common case (it needs CAP_SYS_NICE, and a plain
+/// `cargo test` or an unprivileged container does not have it). HORUS
+/// deliberately continues at normal priority when that happens, and this is
+/// what makes that fallback behave.
+///
+/// Measured on an idle 12-core box, 3000 iterations of a 1 kHz
+/// `clock_nanosleep(TIMER_ABSTIME)` loop, wake lateness:
+///
+/// ```text
+///   50000 ns slack (default):  p50 55.8 us   p90 63.8 us   p99 101-271 us
+///       1 ns slack:            p50  4.3 us   p90 16.7 us   p99  25-116 us
+/// ```
+pub(super) fn set_timer_slack(nanoseconds: u64) -> anyhow::Result<()> {
+    // The prctl argument is an `unsigned long`, which is 32 bits on
+    // armv7-unknown-linux-gnueabihf -- a target multi-platform.yml checks on
+    // every PR. A bare `as` cast wraps there instead of failing, so a caller
+    // asking for 5_000_000_000 ns would silently arm 705 ms and still be told
+    // it succeeded. Reject what the target cannot represent.
+    let slack = libc::c_ulong::try_from(nanoseconds).map_err(|_| {
+        anyhow::anyhow!(
+            "timer slack {} ns does not fit this target's unsigned long (max {} ns)",
+            nanoseconds,
+            libc::c_ulong::MAX
+        )
+    })?;
+
+    // SAFETY: PR_SET_TIMERSLACK takes a single unsigned long argument and
+    // affects only the calling thread.
+    let result = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, slack) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+            .map_err(|e| anyhow::anyhow!("prctl(PR_SET_TIMERSLACK, {}) failed: {}", nanoseconds, e))
+    }
+}
+
+/// This thread's current timer slack in nanoseconds, if it can be read.
+///
+/// Asks `PR_GET_TIMERSLACK` rather than reading `/proc/self/timerslack_ns`,
+/// because slack is per-thread and that file is not:
+///
+/// - `/proc/self` is the thread-group leader's directory, so every thread but
+///   the leader would be reporting some other task's slack;
+/// - the kernel only lets a task read another task's `timerslack_ns` with
+///   CAP_SYS_NICE, so in practice the read does not even return the wrong
+///   number off the leader -- it fails with EPERM and this returns `None` for a
+///   thread whose slack is perfectly well set;
+/// - `timerslack_ns` exists only in the tgid directory, so there is no
+///   `/proc/self/task/<tid>/timerslack_ns` to read instead.
+///
+/// prctl returns the value through a C `int`, so a slack above `i32::MAX`
+/// (2.1 s, far past anything a timed wait would want) cannot come back through
+/// it and yields `None`.
+pub(super) fn timer_slack_ns() -> Option<u64> {
+    // SAFETY: PR_GET_TIMERSLACK takes no further arguments and reports the
+    // calling thread's slack as the return value.
+    let result = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK) };
+    if result < 0 {
+        None
+    } else {
+        Some(result as u64)
     }
 }
 
@@ -364,33 +451,132 @@ pub(super) fn set_cpu_governor(cpu_id: usize, governor: &str) -> anyhow::Result<
     })
 }
 
+/// Build the `smp_affinity` mask naming `online` with every CPU in `rt_cpus`
+/// cleared.
+///
+/// Split out of [`move_irqs_off_cpus`] so the arithmetic that decides where
+/// every host interrupt lands can be tested on synthetic CPU sets, rather than
+/// on whatever machine happens to be running the suite.
+fn irq_affinity_mask(online: &[usize], rt_cpus: &[usize]) -> anyhow::Result<u64> {
+    let Some(highest) = online.iter().copied().max() else {
+        anyhow::bail!("the machine's online CPU set is empty; no IRQ mask to build");
+    };
+
+    // Above 63 CPUs a single u64 cannot name the set, and `smp_affinity` wants
+    // comma-separated 32-bit groups anyway. Refuse rather than write a mask
+    // that silently confines every interrupt to the low 64 CPUs.
+    if highest >= 64 {
+        anyhow::bail!(
+            "machine has CPUs up to index {highest}; a 64-bit affinity mask \
+             cannot name them and writing one would confine every interrupt to \
+             CPUs 0-63. Refusing; set IRQ affinity out of band."
+        );
+    }
+
+    let mut mask: u64 = 0;
+    for &cpu in online {
+        mask |= 1u64 << cpu;
+    }
+    for &cpu in rt_cpus {
+        // Membership, not `cpu <= highest`: an online set has holes whenever a
+        // CPU is offlined (1 offline while 3 is online), and an upper bound
+        // would accept CPU 1 there while the error text claims the set was
+        // consulted. Every RT core is cleared or the call did not do what it
+        // says; the original `if cpu < 64` guard skipped high cores silently.
+        if !online.contains(&cpu) {
+            anyhow::bail!(
+                "asked to clear CPU {cpu}, which is not in the machine's online \
+                 set {online:?}"
+            );
+        }
+        mask &= !(1u64 << cpu);
+    }
+    Ok(mask)
+}
+
 /// Move hardware interrupts off the specified CPU cores.
 ///
-/// Iterates `/proc/irq/*/smp_affinity` and clears the bits for the given cores.
-/// Returns the number of IRQs whose affinity was successfully changed.
-/// Requires root or CAP_SYS_ADMIN.
+/// Rewrites `/proc/irq/*/smp_affinity` for every IRQ on the machine, so it is
+/// host-global and irreversible within this process. Requires root or
+/// CAP_SYS_ADMIN.
+///
+/// # What it returns
+///
+/// `Ok(n)` counts the IRQs whose affinity was actually rewritten. `n` is 0, not
+/// an error, in the three cases where there is nothing to do or nothing may be
+/// done: `/proc/irq` does not exist, every online CPU is an RT core so the mask
+/// would be empty, or the process lacks root/CAP_SYS_ADMIN and every write
+/// fails. Missing privilege is only that last one: the refusals below are
+/// `Err`, returned before a single byte is written.
+///
+/// # What it refuses to do
+///
+/// The mask used to be built from `available_parallelism()`, which reports the
+/// CPUs *this process* may run on, not the CPUs the machine has. A count is not
+/// a CPU set, and conflating them made the function reconfigure the whole host
+/// from a container's-eye view:
+///
+///   * under `taskset -c 0-3` with `rt_cpus = [2, 3]` it produced mask `3` and
+///     herded every host interrupt onto CPUs 0-1 — including the interrupts of
+///     cores it had never heard of;
+///   * under `taskset -c 8-11` it produced `f`, naming CPUs 0-3, which this
+///     process cannot even run on;
+///   * at 64 or more CPUs it produced `u64::MAX`, confining every IRQ to CPUs
+///     0-63, while its `cpu < 64` guard silently declined to clear the RT
+///     cores it was called for — failing its whole purpose and clobbering the
+///     machine anyway.
+///
+/// So the mask now comes from `/sys/devices/system/cpu/online`, the machine's
+/// actual CPU set, and the function REFUSES to act when this process cannot see
+/// the whole machine. A process confined to a cpuset has no business rewriting
+/// the interrupt routing of cores outside it, and in a container that is the
+/// normal case, not an edge case. The mask arithmetic itself lives in
+/// [`irq_affinity_mask`], where it is unit-tested on synthetic CPU sets.
 pub(super) fn move_irqs_off_cpus(cpus: &[usize]) -> anyhow::Result<usize> {
     let irq_dir = std::path::Path::new("/proc/irq");
     if !irq_dir.exists() {
         return Ok(0);
     }
-    let total_cpus = std::thread::available_parallelism()
+
+    // The machine's CPUs, not this process's share of them. A file that cannot
+    // be read and a file that parses to nothing are different diagnoses, so
+    // they get different errors and the read error is carried through:
+    // collapsing both into "cannot read" sends the operator chasing a file that
+    // was in fact read fine.
+    const ONLINE: &str = "/sys/devices/system/cpu/online";
+    let online_raw = std::fs::read_to_string(ONLINE).map_err(|e| {
+        anyhow::anyhow!(
+            "cannot read {ONLINE} ({e}), so the machine's CPU set is unknown; \
+             refusing to rewrite host IRQ affinity from a guess"
+        )
+    })?;
+    let online = super::parse_cpu_list(online_raw.trim());
+    if online.is_empty() {
+        anyhow::bail!(
+            "{ONLINE} holds {:?}, which names no CPUs, so the machine's CPU set \
+             is unknown; refusing to rewrite host IRQ affinity from a guess",
+            online_raw.trim()
+        );
+    }
+
+    // If this process is confined, it is not entitled to reroute the host.
+    let visible = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1);
-    // Build mask with RT cores cleared
-    let mut mask: u64 = if total_cpus >= 64 {
-        u64::MAX
-    } else {
-        (1u64 << total_cpus) - 1
-    };
-    for &cpu in cpus {
-        if cpu < 64 {
-            mask &= !(1u64 << cpu);
-        }
+    if visible < online.len() {
+        anyhow::bail!(
+            "this process sees {visible} of the machine's {} CPUs (cpuset or \
+             taskset), so it cannot compute a correct host-wide IRQ mask; \
+             refusing rather than rerouting interrupts for cores it cannot see",
+            online.len()
+        );
     }
+
+    let mask = irq_affinity_mask(&online, cpus)?;
     if mask == 0 {
-        return Ok(0); // can't clear all cores
+        return Ok(0); // every CPU is an RT core; nothing left to move IRQs to
     }
+
     let mask_str = format!("{:x}", mask);
     let mut moved = 0usize;
     for entry in std::fs::read_dir(irq_dir)?.flatten() {
@@ -471,6 +657,149 @@ fn check_mlockall_permitted() -> bool {
             rlim.rlim_cur == libc::RLIM_INFINITY || rlim.rlim_cur > 1024 * 1024 * 1024
         } else {
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property the whole pair exists for. `timer_slack_ns` used to read
+    /// `/proc/self/timerslack_ns`, which is the thread-group leader's file: the
+    /// spawned thread's read returned EPERM (`None`) instead of its own 7777,
+    /// because the kernel guards another task's `timerslack_ns` behind
+    /// CAP_SYS_NICE. The RT thread that `set_timer_slack` is called on is never
+    /// the leader, so that is the only thread anyone would ask about.
+    #[test]
+    fn timer_slack_is_per_thread() {
+        let original = timer_slack_ns().expect("read this thread's slack");
+        set_timer_slack(4321).expect("set slack on this thread");
+
+        let spawned = std::thread::spawn(|| {
+            set_timer_slack(7777).expect("set slack on the spawned thread");
+            timer_slack_ns()
+        })
+        .join()
+        .expect("spawned thread panicked");
+
+        assert_eq!(spawned, Some(7777), "spawned thread reported another task");
+        assert_eq!(
+            timer_slack_ns(),
+            Some(4321),
+            "this thread's slack changed when another thread set its own"
+        );
+
+        // Under `--test-threads=1` (how CI runs these) this is the harness
+        // thread every other test also runs on, so hand it back unchanged.
+        set_timer_slack(original).expect("restore slack");
+    }
+
+    /// 0 is the kernel's "restore the inherited default", not "no slack" --
+    /// the contract the doc comment promises and the reason callers pass 1.
+    #[test]
+    fn zero_restores_the_default_rather_than_setting_zero() {
+        std::thread::spawn(|| {
+            set_timer_slack(1).expect("set 1 ns");
+            assert_eq!(timer_slack_ns(), Some(1));
+
+            set_timer_slack(0).expect("set 0");
+            let restored = timer_slack_ns().expect("read slack back");
+            assert_ne!(restored, 0, "0 must not arm zero slack");
+            assert_ne!(restored, 1, "0 must not leave the previous value in place");
+        })
+        .join()
+        .expect("spawned thread panicked");
+    }
+
+    /// On armv7 (a required multi-platform.yml job) `c_ulong` is 32 bits and
+    /// the `as` cast this used to do would wrap a wider request into a small
+    /// one and still report success. The guard makes this a no-op on 64-bit
+    /// targets, where every `u64` fits and there is nothing to reject.
+    #[test]
+    fn a_value_too_wide_for_c_ulong_is_rejected_not_wrapped() {
+        if libc::c_ulong::try_from(u64::MAX).is_err() {
+            let err = set_timer_slack(u64::MAX).expect_err("should not have been accepted");
+            assert!(
+                err.to_string().contains("does not fit"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod irq_affinity_tests {
+    use super::*;
+
+    /// The mask names exactly the online CPUs, minus the RT cores.
+    ///
+    /// Synthetic sets, so this says the same thing on a 2-core CI runner as on
+    /// a 96-core host.
+    #[test]
+    fn mask_is_the_online_set_minus_the_rt_cores() {
+        // The ordinary case: four online, two handed to RT.
+        assert_eq!(irq_affinity_mask(&[0, 1, 2, 3], &[2, 3]).unwrap(), 0b0011);
+        // Holes stay holes. CPU 1 is offline, so it is absent from the mask
+        // even though nobody asked for it to be cleared.
+        assert_eq!(irq_affinity_mask(&[0, 2, 3], &[3]).unwrap(), 0b0101);
+        // Nothing to clear leaves the online set intact.
+        assert_eq!(irq_affinity_mask(&[0, 2, 3], &[]).unwrap(), 0b1101);
+        // Every online CPU is an RT core: empty mask, which the caller turns
+        // into Ok(0) rather than writing "0" to every IRQ.
+        assert_eq!(irq_affinity_mask(&[0, 1], &[0, 1]).unwrap(), 0);
+    }
+
+    /// An offline CPU inside the index range is still not a CPU to clear.
+    ///
+    /// The check is membership, not `cpu <= highest`: with 1 offline and 3
+    /// online, an upper bound accepts CPU 1 while the error text claims the
+    /// online set was consulted.
+    #[test]
+    fn an_offline_cpu_below_the_highest_index_is_refused() {
+        let err = irq_affinity_mask(&[0, 2, 3], &[1]).unwrap_err().to_string();
+        assert!(
+            err.contains("not in the machine's online set"),
+            "expected a refusal naming the online set, got: {err}"
+        );
+    }
+
+    /// Past index 63 a u64 cannot name the set, so refuse instead of truncating.
+    #[test]
+    fn cpu_indices_past_63_are_refused_not_truncated() {
+        let online: Vec<usize> = (0..80).collect();
+        let err = irq_affinity_mask(&online, &[70]).unwrap_err().to_string();
+        assert!(
+            err.contains("cannot name"),
+            "expected a refusal about the 64-bit mask, got: {err}"
+        );
+    }
+
+    /// Asking to clear a CPU the machine does not have is a caller error and
+    /// must be reported, not silently skipped.
+    ///
+    /// The old code guarded with `if cpu < 64` and skipped anything higher, so
+    /// on a large machine it wrote a mask while declining to clear the very
+    /// cores it was called for.
+    #[test]
+    fn clearing_a_nonexistent_cpu_is_an_error_not_a_silent_skip() {
+        // 4096 is beyond any plausible online set here.
+        let r = move_irqs_off_cpus(&[4096]);
+        match r {
+            Err(e) => {
+                let m = e.to_string();
+                assert!(
+                    m.contains("online set") || m.contains("cannot name") || m.contains("refusing"),
+                    "expected a refusal naming the reason, got: {m}"
+                );
+            }
+            Ok(n) => {
+                // Only acceptable outcome without /proc/irq present.
+                assert_eq!(
+                    n, 0,
+                    "clearing a CPU that does not exist must not report IRQs moved"
+                );
+            }
         }
     }
 }
