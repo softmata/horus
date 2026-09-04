@@ -107,6 +107,18 @@ pub(crate) const FANOUT_CHANNELS_BASE: usize = FANOUT_META_OFFSET + FANOUT_META_
 /// Minimum slot size (8 bytes) — ensures atomic-width alignment.
 const MIN_SLOT_SIZE: usize = 8;
 
+/// Largest POD slot the fanout matrix will carry.
+///
+/// The matrix is `MAX_FANOUT_ENDPOINTS²` = 256 channels, so every byte of slot
+/// costs `256 × capacity` bytes of mapping: at the 16-slot minimum capacity a
+/// 4096-byte slot is already a 16.8 MB region per topic, and doubling the slot
+/// doubles that. The cap is what stops a large message type from asking the
+/// kernel for gigabytes of `/dev/shm` per topic.
+///
+/// A POD type above it is REFUSED, not clamped — see
+/// [`ShmFanoutRing::compute_slot_size`].
+const MAX_POD_SLOT_SIZE: usize = 4096;
+
 /// Per-channel overhead: head cache line (64B) + tail cache line (64B) = 128B.
 const CHANNEL_HEADER_SIZE: usize = 128;
 
@@ -249,8 +261,18 @@ impl ShmSpscChannel {
     ///
     /// - Only one producer may call this concurrently (SPSC contract).
     /// - `T` must be POD (no Drop, no heap pointers).
+    /// - `size_of::<T>()` must fit `slot_size`. This memcpy is the one with no
+    ///   length check of its own, so the bound lives at both construction sites
+    ///   instead: `compute_slot_size` refuses a POD type above the slot cap, and
+    ///   `validate_meta` refuses an attached region whose slots are too small.
     #[inline(always)]
     pub(crate) unsafe fn try_send_pod<T>(&self, msg: &T) {
+        debug_assert!(
+            std::mem::size_of::<T>() <= self.slot_size,
+            "try_send_pod would write {} bytes into a {}-byte slot",
+            std::mem::size_of::<T>(),
+            self.slot_size
+        );
         let head = &*self.head_ptr;
         let pos = head.load(Ordering::Relaxed);
         seqlock_publish(self.ver_ptr, self.mask, head, pos, |index| {
@@ -463,23 +485,30 @@ impl ShmFanoutRing {
     /// The caller (SHM region owner) must have already written the TopicHeader.
     /// This writes the FanoutShmMeta and returns the ring view.
     ///
+    /// Returns `None` — before touching the region — when this layout cannot
+    /// carry the type (see [`Self::compute_slot_size`]), which is the same answer
+    /// `attach` gives for a region it refuses and which `init_shm_backend`
+    /// already handles by falling back to SpscShm. The owner path must not build
+    /// a geometry [`Self::validate_meta`] would reject on the attach side.
+    ///
     /// # Safety
     ///
     /// `shm_base` must point to a valid mmap'd region of at least
-    /// `Self::required_file_size(type_size, channel_capacity)` bytes.
+    /// `Self::required_file_size(type_size, is_pod, channel_capacity)` bytes.
     pub(crate) unsafe fn init_owner(
         shm_base: *mut u8,
         type_size: usize,
         is_pod: bool,
         channel_capacity: u32,
-    ) -> Self {
-        let slot_size = Self::compute_slot_size(type_size, is_pod);
-        let cap = (channel_capacity as usize).next_power_of_two().max(16) as u32;
+    ) -> Option<Self> {
+        let slot_size = Self::compute_slot_size(type_size, is_pod)?;
+        let cap = Self::compute_capacity(channel_capacity as usize)?;
         let max_pubs = MAX_FANOUT_ENDPOINTS as u32;
         let max_subs = MAX_FANOUT_ENDPOINTS as u32;
-        let channel_stride =
-            (CHANNEL_HEADER_SIZE + cap as usize * slot_size + cap as usize * 8) as u64;
-        let total_size = Self::required_file_size(type_size, is_pod, cap as usize);
+        // Same helper `required_file_size` uses, so the stride written into the
+        // meta block and the stride the region was sized for cannot disagree.
+        let channel_stride = Self::channel_stride(cap, slot_size)? as u64;
+        let total_size = Self::required_file_size(type_size, is_pod, cap as usize)?;
 
         // Write FanoutShmMeta
         let meta = &mut *(shm_base.add(FANOUT_META_OFFSET) as *mut FanoutShmMeta);
@@ -521,7 +550,7 @@ impl ShmFanoutRing {
         std::sync::atomic::fence(Ordering::Release);
         meta.magic = FANOUT_MAGIC;
 
-        Self::build_views(shm_base, is_pod, type_size)
+        Some(Self::build_views(shm_base, is_pod, type_size))
     }
 
     /// Attach to an existing SHM fanout region (non-owner process).
@@ -1108,30 +1137,95 @@ impl ShmFanoutRing {
     // Sizing helpers
     // ========================================================================
 
-    /// Compute slot size from type size.
-    fn compute_slot_size(type_size: usize, is_pod: bool) -> usize {
+    /// Compute slot size from type size, or `None` when this layout cannot carry
+    /// the type at all (a POD `T` above [`MAX_POD_SLOT_SIZE`]).
+    ///
+    /// Refusing is what keeps the owner and attach paths in agreement. This used
+    /// to `.min(MAX_POD_SLOT_SIZE)`, so `init_owner` happily wrote a POD geometry
+    /// whose slots were SMALLER than the message — the exact geometry
+    /// `validate_meta` refuses on the attach side (`is_pod && slot_size <
+    /// type_size`), because `try_send_pod` memcpys `size_of::<T>()` bytes into a
+    /// slot with no length check of its own. Every send through such a ring wrote
+    /// past its slot, over the neighbouring slots, the version stamps and — from
+    /// the last channel — the end of the mapping.
+    ///
+    /// `None` surfaces as a failed fanout init in `init_shm_backend`, which
+    /// already falls back to SpscShm the same way it does for a rejected `attach`.
+    fn compute_slot_size(type_size: usize, is_pod: bool) -> Option<usize> {
         if is_pod {
             // POD: raw T with minimum alignment
-            type_size.max(MIN_SLOT_SIZE).next_power_of_two().min(4096)
+            let slot = type_size.max(MIN_SLOT_SIZE).checked_next_power_of_two()?;
+            (slot <= MAX_POD_SLOT_SIZE).then_some(slot)
         } else {
             // Serde: [len: u32, data: [u8; ...]] — use 8KB default
-            8192
+            // (`try_send_serde` bounds each payload against the slot itself.)
+            Some(8192)
         }
     }
 
-    /// Calculate the total SHM file size needed for a fanout layout.
+    /// Round a requested capacity up to the power-of-two slot count the layout
+    /// uses, or `None` when the result cannot be named exactly.
+    ///
+    /// `meta.channel_capacity` is a `u32`, so a capacity that does not fit one
+    /// has to be refused rather than cast. `init_owner` used to write
+    /// `(channel_capacity as usize).next_power_of_two().max(16) as u32`: on a
+    /// 64-bit host any capacity above 2^31 rounds to 2^32 and that cast lands on
+    /// `cap == 0`, from which `meta.capacity_mask = cap - 1` hands every channel
+    /// a mask of `u32::MAX`. [`Self::build_views`] derives every slot pointer
+    /// from those two numbers with no further bound — its safety contract is
+    /// that the owner wrote a matrix that fits — so the only thing between that
+    /// geometry and a live ring was `ShmRegion::new` happening to refuse the
+    /// petabyte-scale mapping first.
+    fn compute_capacity(channel_capacity: usize) -> Option<u32> {
+        let cap = channel_capacity.checked_next_power_of_two()?.max(16);
+        u32::try_from(cap).ok()
+    }
+
+    /// Per-channel stride: head/tail cache lines + `cap` data slots + `cap`
+    /// version stamps. `None` when that does not fit a `usize`.
+    ///
+    /// This is the owner-side twin of the reconstruction in
+    /// [`Self::validate_meta`], and it is checked for the same reason that one
+    /// is. `capacity` is caller-supplied and unbounded (`Topic::with_capacity`
+    /// rejects only 0), the release profile this ships with has no
+    /// `overflow-checks`, and `usize` is 32 bits on the
+    /// `armv7-unknown-linux-gnueabihf` controllers `horus deploy --arch armv7`
+    /// targets. There, capacity 524288 over an 8192-byte serde slot wraps
+    /// `cap * slot_size` to 0: the owner asks for a 1 GiB region instead of the
+    /// honest 1025 GiB — which would simply have failed to allocate and fallen
+    /// back — and then writes `channel_capacity = 524288, slot_size = 8192,
+    /// channel_stride = 4194432` into the meta block. Slot 512 onward is already
+    /// outside its channel and the ring's tail is ~4 GiB past the end of the
+    /// mapping. `validate_meta` refuses exactly that meta block on the attach
+    /// side, so the wrap put the owner and attach paths back out of agreement —
+    /// the same disagreement the POD slot cap closes, reached through the other
+    /// input.
+    fn channel_stride(cap: u32, slot_size: usize) -> Option<usize> {
+        let cap = cap as usize;
+        let data_bytes = cap.checked_mul(slot_size)?;
+        let seq_bytes = cap.checked_mul(8)?;
+        data_bytes
+            .checked_add(seq_bytes)?
+            .checked_add(CHANNEL_HEADER_SIZE)
+    }
+
+    /// Calculate the total SHM file size needed for a fanout layout, or `None`
+    /// when [`Self::compute_slot_size`] refuses the type,
+    /// [`Self::compute_capacity`] refuses the capacity, or the matrix does not
+    /// fit a `usize`.
     pub(crate) fn required_file_size(
         type_size: usize,
         is_pod: bool,
         channel_capacity: usize,
-    ) -> usize {
-        let slot_size = Self::compute_slot_size(type_size, is_pod);
-        let cap = channel_capacity.next_power_of_two().max(16);
-        // stride = head/tail cache lines + data slots + per-slot version array.
-        let channel_stride = CHANNEL_HEADER_SIZE + cap * slot_size + cap * 8;
+    ) -> Option<usize> {
+        let slot_size = Self::compute_slot_size(type_size, is_pod)?;
+        let cap = Self::compute_capacity(channel_capacity)?;
+        let channel_stride = Self::channel_stride(cap, slot_size)?;
         let num_channels = MAX_FANOUT_ENDPOINTS * MAX_FANOUT_ENDPOINTS;
 
-        FANOUT_CHANNELS_BASE + num_channels * channel_stride
+        num_channels
+            .checked_mul(channel_stride)?
+            .checked_add(FANOUT_CHANNELS_BASE)
     }
 
     /// Total pending messages across all channels for a subscriber.
@@ -1167,11 +1261,29 @@ mod tests {
 
     /// Allocate a properly aligned buffer simulating an SHM region.
     fn alloc_shm_sim(type_size: usize, is_pod: bool, cap: usize) -> (*mut u8, Layout) {
-        let size = ShmFanoutRing::required_file_size(type_size, is_pod, cap);
+        let size = ShmFanoutRing::required_file_size(type_size, is_pod, cap)
+            .expect("test geometry must be buildable");
         let layout = Layout::from_size_align(size, 4096).unwrap();
         let ptr = unsafe { alloc_zeroed(layout) };
         assert!(!ptr.is_null());
         (ptr, layout)
+    }
+
+    /// `init_owner` for the buildable geometries these tests use — it only
+    /// returns `None` for a POD type above the slot cap, which
+    /// [`owner_refuses_the_pod_geometry_its_own_attach_would_reject`] covers.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`ShmFanoutRing::init_owner`].
+    unsafe fn init_owner_ok(
+        shm_base: *mut u8,
+        type_size: usize,
+        is_pod: bool,
+        channel_capacity: u32,
+    ) -> ShmFanoutRing {
+        ShmFanoutRing::init_owner(shm_base, type_size, is_pod, channel_capacity)
+            .expect("test geometry must be buildable")
     }
 
     /// A region whose owner died before stamping the magic must not hang the
@@ -1227,14 +1339,14 @@ mod tests {
         let size = ShmFanoutRing::required_file_size(8, true, 64);
         // 4224 base + 256 channels × (128 header + 64 slots × 8B data + 64 × 8B versions)
         let expected = FANOUT_CHANNELS_BASE + 256 * (128 + 64 * 8 + 64 * 8);
-        assert_eq!(size, expected);
+        assert_eq!(size, Some(expected));
     }
 
     #[test]
     fn init_owner_sets_magic() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let meta = &*(ptr.add(FANOUT_META_OFFSET) as *const FanoutShmMeta);
             assert_eq!(meta.magic, FANOUT_MAGIC);
             assert_eq!(meta.max_publishers, MAX_FANOUT_ENDPOINTS as u32);
@@ -1250,7 +1362,7 @@ mod tests {
     fn register_publisher_subscriber() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             assert_eq!(ring.register_publisher(), Some(0));
             assert_eq!(ring.register_publisher(), Some(1));
             assert_eq!(ring.register_subscriber(), Some(0));
@@ -1264,7 +1376,7 @@ mod tests {
     fn send_recv_pod_1p1s() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let pub_id = ring.register_publisher().unwrap();
             let sub_id = ring.register_subscriber().unwrap();
 
@@ -1286,7 +1398,7 @@ mod tests {
     fn send_recv_pod_2p2s() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let p0 = ring.register_publisher().unwrap();
             let p1 = ring.register_publisher().unwrap();
             let s0 = ring.register_subscriber().unwrap();
@@ -1320,7 +1432,7 @@ mod tests {
     fn send_recv_serde() {
         let (ptr, layout) = alloc_shm_sim(0, false, 32);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 0, false, 32);
+            let ring = init_owner_ok(ptr, 0, false, 32);
             let pub_id = ring.register_publisher().unwrap();
             let sub_id = ring.register_subscriber().unwrap();
 
@@ -1338,7 +1450,7 @@ mod tests {
     fn capacity_full_drops_oldest() {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
             let pub_id = ring.register_publisher().unwrap();
             let sub_id = ring.register_subscriber().unwrap();
 
@@ -1369,7 +1481,7 @@ mod tests {
         // counter in reach read zero.
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
             let pub_id = ring.register_publisher().unwrap();
             let sub_id = ring.register_subscriber().unwrap();
 
@@ -1403,7 +1515,7 @@ mod tests {
     fn round_robin_fairness() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let p0 = ring.register_publisher().unwrap();
             let p1 = ring.register_publisher().unwrap();
             let sub = ring.register_subscriber().unwrap();
@@ -1438,7 +1550,7 @@ mod tests {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
             // Owner initializes
-            let _owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let _owner = init_owner_ok(ptr, 8, true, 64);
 
             // Simulated second process attaches
             let joiner = ShmFanoutRing::attach(ptr, layout.size(), true, 8).unwrap();
@@ -1467,7 +1579,7 @@ mod tests {
         // a page and large enough for the geometry `init_owner` writes; nothing
         // else refers to it for the duration of this function.
         unsafe {
-            let owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let owner = init_owner_ok(ptr, 8, true, 64);
             let meta = &mut *(ptr.add(FANOUT_META_OFFSET) as *mut FanoutShmMeta);
             mutate(meta);
             let accepted = ShmFanoutRing::attach(ptr, layout.size(), true, 8).is_some();
@@ -1532,7 +1644,7 @@ mod tests {
         // memcpys `size_of::<T>()` bytes into each slot with no length check.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let owner = init_owner_ok(ptr, 8, true, 64);
             assert!(ShmFanoutRing::attach(ptr, layout.size(), true, 64).is_none());
             drop(owner);
             std::alloc::dealloc(ptr, layout);
@@ -1540,10 +1652,106 @@ mod tests {
     }
 
     #[test]
+    fn owner_refuses_the_pod_geometry_its_own_attach_would_reject() {
+        // The mirror image of the test above, on the side that WRITES the meta
+        // block. `compute_slot_size` used to clamp a POD slot to the cap instead
+        // of refusing, so a POD `T` larger than the cap produced a ring whose
+        // slots could not hold the message — and `try_send_pod` memcpys
+        // `size_of::<T>()` bytes into a slot with no bound of its own, so the
+        // first send walked over the neighbouring slots, the version stamps, and
+        // from the last channel the end of the mapping. `attach` refuses exactly
+        // that geometry (`is_pod && slot_size < type_size`), so the owner path
+        // and the attach path disagreed by construction.
+        const OVERSIZED: usize = MAX_POD_SLOT_SIZE * 2 + 8;
+
+        // Sized for a type AT the cap, which is precisely the region the clamped
+        // geometry used to write.
+        let (ptr, layout) = alloc_shm_sim(MAX_POD_SLOT_SIZE, true, 16);
+        // SAFETY: `ptr` is a live, page-aligned allocation of `layout.size()`
+        // bytes, large enough for every geometry `init_owner` can pick for a POD
+        // type; nothing else refers to it for the duration of this test.
+        let refused_slot = unsafe {
+            match ShmFanoutRing::init_owner(ptr, OVERSIZED, true, 16) {
+                // Refused before touching the region — the caller falls back.
+                None => None,
+                Some(owner) => {
+                    let slot_size =
+                        (*(ptr.add(FANOUT_META_OFFSET) as *const FanoutShmMeta)).slot_size;
+                    // Anything the owner does build must be something a peer
+                    // opening the same region with the same `T` accepts.
+                    let accepted =
+                        ShmFanoutRing::attach(ptr, layout.size(), true, OVERSIZED).is_some();
+                    drop(owner);
+                    (!accepted).then_some(slot_size)
+                }
+            }
+        };
+        unsafe { std::alloc::dealloc(ptr, layout) };
+        assert!(
+            refused_slot.is_none(),
+            "init_owner built a {}-byte POD slot for a {OVERSIZED}-byte message — \
+             a geometry its own attach refuses, and one that every try_send_pod \
+             writes past the end of",
+            refused_slot.unwrap_or_default()
+        );
+    }
+
+    /// The same owner/attach agreement, reached through the capacity input
+    /// instead of the type input.
+    ///
+    /// Gated to 64-bit because `1usize << 31` overflows the stride on a 32-bit
+    /// `usize` — which is the *other* half of this bug and is unreachable from a
+    /// test runner this repo has (no 32-bit CI target).
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_capacity_the_meta_block_cannot_name_is_refused_not_truncated() {
+        // `meta.channel_capacity` is a `u32`. Any capacity above 2^31 rounds up
+        // to 2^32, which used to reach the meta block through `as u32` — landing
+        // on `cap == 0`, from which `meta.capacity_mask = cap - 1` hands every
+        // channel a mask of `u32::MAX` while the region is sized for 16 slots.
+        assert!(
+            ShmFanoutRing::required_file_size(8, true, (1usize << 31) + 1).is_none(),
+            "a capacity that rounds to 2^32 cannot be named by a u32 meta field \
+             and must be refused, not truncated"
+        );
+        // The largest capacity the field *can* name is still accepted, so this
+        // refuses only what it has to.
+        assert!(ShmFanoutRing::required_file_size(8, true, 1usize << 31).is_some());
+
+        // The owner half is the one that matters: it writes the meta block that
+        // `build_views` then trusts without a further bound.
+        let (ptr, layout) = alloc_shm_sim(8, true, 16);
+        let built_cap = {
+            // SAFETY: `ptr` is a live, page-aligned allocation of
+            // `layout.size()` bytes. `init_owner` settles the capacity before it
+            // dereferences the region, so a refusal never touches `ptr`.
+            match unsafe { ShmFanoutRing::init_owner(ptr, 8, true, u32::MAX) } {
+                None => None,
+                Some(owner) => {
+                    // SAFETY: `init_owner` returned `Some`, so the meta block at
+                    // `FANOUT_META_OFFSET` is initialised.
+                    let cap = unsafe {
+                        (*(ptr.add(FANOUT_META_OFFSET) as *const FanoutShmMeta)).channel_capacity
+                    };
+                    drop(owner);
+                    Some(cap)
+                }
+            }
+        };
+        unsafe { std::alloc::dealloc(ptr, layout) };
+        assert_eq!(
+            built_cap,
+            None,
+            "init_owner wrote channel_capacity = {} into a region sized for 16 slots",
+            built_cap.unwrap_or_default()
+        );
+    }
+
+    #[test]
     fn attach_refuses_a_region_too_small_for_its_own_meta_block() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let owner = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let owner = init_owner_ok(ptr, 8, true, 64);
             // Forming the `&FanoutShmMeta` is itself out of bounds here, so the
             // length check has to come before the reference, not after it.
             assert!(ShmFanoutRing::attach(ptr, FANOUT_META_OFFSET, true, 8).is_none());
@@ -1556,7 +1764,7 @@ mod tests {
     fn pending_count() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let p0 = ring.register_publisher().unwrap();
             let sub = ring.register_subscriber().unwrap();
 
@@ -1584,7 +1792,7 @@ mod tests {
         // Force multiple wraps through a small-capacity ring
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
             let p = ring.register_publisher().unwrap();
             let s = ring.register_subscriber().unwrap();
 
@@ -1613,7 +1821,7 @@ mod tests {
     fn wrap_around_serde_correctness() {
         let (ptr, layout) = alloc_shm_sim(0, false, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 0, false, 16);
+            let ring = init_owner_ok(ptr, 0, false, 16);
             let p = ring.register_publisher().unwrap();
             let s = ring.register_subscriber().unwrap();
 
@@ -1643,7 +1851,7 @@ mod tests {
 
         let (ptr, layout) = alloc_shm_sim(128, true, 32);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 128, true, 32);
+            let ring = init_owner_ok(ptr, 128, true, 32);
             let p = ring.register_publisher().unwrap();
             let s = ring.register_subscriber().unwrap();
 
@@ -1664,12 +1872,12 @@ mod tests {
     #[ignore] // Stress test — too slow in debug mode (spin-loop on 8-slot ring). Run with --release --ignored.
     fn cross_thread_pod_stress() {
         // 2P/2S cross-thread with data integrity verification
-        let size = ShmFanoutRing::required_file_size(8, true, 256);
+        let size = ShmFanoutRing::required_file_size(8, true, 256).unwrap();
         let layout = std::alloc::Layout::from_size_align(size, 4096).unwrap();
         let ptr = unsafe { alloc_zeroed(layout) };
         assert!(!ptr.is_null());
 
-        let ring = unsafe { ShmFanoutRing::init_owner(ptr, 8, true, 256) };
+        let ring = unsafe { init_owner_ok(ptr, 8, true, 256) };
         // Box it so we can share across threads via raw pointer
         let ring = Box::into_raw(Box::new(ring));
 
@@ -1772,7 +1980,7 @@ mod tests {
     fn capacity_recovery_after_full() {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
             let p = ring.register_publisher().unwrap();
             let s = ring.register_subscriber().unwrap();
 
@@ -1798,7 +2006,7 @@ mod tests {
     fn max_endpoints_boundary() {
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
 
             // Register max publishers and subscribers
             let mut pubs = Vec::new();
@@ -1837,7 +2045,7 @@ mod tests {
     fn no_publishers_recv_none() {
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let s = ring.register_subscriber().unwrap();
             let got: Option<u64> = ring.recv_pod(s, &mut 0);
             assert_eq!(got, None);
@@ -1848,10 +2056,10 @@ mod tests {
     #[test]
     fn concurrent_registration() {
         // Multiple threads registering simultaneously
-        let size = ShmFanoutRing::required_file_size(8, true, 64);
+        let size = ShmFanoutRing::required_file_size(8, true, 64).unwrap();
         let layout = std::alloc::Layout::from_size_align(size, 4096).unwrap();
         let ptr = unsafe { alloc_zeroed(layout) };
-        let ring = unsafe { ShmFanoutRing::init_owner(ptr, 8, true, 64) };
+        let ring = unsafe { init_owner_ok(ptr, 8, true, 64) };
         let ring = Box::into_raw(Box::new(ring));
         let ring_addr = ring as usize;
 
@@ -1916,7 +2124,7 @@ mod tests {
         // (None), and a freed slot is reclaimed and still delivers.
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
             let subs: Vec<usize> = (0..MAX_FANOUT_ENDPOINTS)
                 .map(|_| ring.register_subscriber().expect("first 16 register"))
                 .collect();
@@ -1945,7 +2153,7 @@ mod tests {
         // those channels and skips the holes.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let p = ring.register_publisher().unwrap(); // slot 0
             let subs: Vec<usize> = (0..6)
                 .map(|_| ring.register_subscriber().unwrap())
@@ -1983,7 +2191,7 @@ mod tests {
         // over the active set without getting stuck on a hole.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let pubs: Vec<usize> = (0..6).map(|_| ring.register_publisher().unwrap()).collect();
             for &h in &[1usize, 3, 4] {
                 ring.deregister_publisher(pubs[h]);
@@ -2020,7 +2228,7 @@ mod tests {
         // guard would refuse a slot still marked ours, so clearing bit+PID matters.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let topic = test_topic("cleandrop");
             let (id, lock) = ring.register_publisher_locked(&topic).expect("claim");
             assert_eq!(id, 0);
@@ -2062,7 +2270,7 @@ mod tests {
         // simply not holding a flock on the slot's lock file.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let topic = test_topic("dead");
             let meta = &*ring.meta_ptr;
             let foreign = std::process::id().wrapping_add(1); // definitely not us
@@ -2090,7 +2298,7 @@ mod tests {
         // reset to head on claim, so the prior owner's unread backlog is skipped.
         let (ptr, layout) = alloc_shm_sim(8, true, 16);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 16);
+            let ring = init_owner_ok(ptr, 8, true, 16);
             let topic = test_topic("deadsub");
             let p = ring.register_publisher().unwrap(); // slot 0
             let meta = &*ring.meta_ptr;
@@ -2126,7 +2334,7 @@ mod tests {
         // slot 0 to a second owner would give two producers one SPSC channel = UB.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let topic = test_topic("guard");
             let meta = &*ring.meta_ptr;
             meta.pub_active.fetch_or(1 << 0, Ordering::Relaxed);
@@ -2161,7 +2369,7 @@ mod tests {
         // SPSC channel.
         let (ptr, layout) = alloc_shm_sim(8, true, 64);
         unsafe {
-            let ring = ShmFanoutRing::init_owner(ptr, 8, true, 64);
+            let ring = init_owner_ok(ptr, 8, true, 64);
             let topic = test_topic("two");
             let (a, _la) = ring.register_publisher_locked(&topic).expect("first");
             let (b, _lb) = ring.register_publisher_locked(&topic).expect("second");

@@ -37,7 +37,7 @@
 //!
 //! Run: `cargo test -p horus_core --test pod_ring_slot_geometry -- --test-threads=1`
 
-use std::mem::size_of;
+use std::mem::{align_of, size_of};
 
 use horus_core::communication::topic::shm_layout;
 use horus_core::communication::Topic;
@@ -69,6 +69,18 @@ horus_core::message! {
         g: u64,
         h: u64,
     }
+}
+
+// 16 bytes like GeomProbe, and 16-aligned. `#[repr(align(16))]`, a `u128`
+// field and an SSE vector all produce this shape, and `is_pod` classifies it
+// POD like any other `!needs_drop` type. Colo cannot hold it: the payload sits
+// `COLO_PAYLOAD_OFF` bytes into a cache-line-aligned slot, so its address is
+// 8 mod 16 in every slot of every colo region.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[repr(C, align(16))]
+struct OverAlignedProbe {
+    tag: u64,
+    echo: u64,
 }
 
 const CAPACITY: u32 = 8;
@@ -217,6 +229,66 @@ fn a_large_pod_type_stays_on_the_split_layout() {
     );
 }
 
+/// A POD type aligned more strictly than the colo payload offset keeps the
+/// split layout.
+///
+/// The second control, and the one that is about soundness rather than about
+/// the size of a cache line. Colo pins every payload at `HEADER_SIZE + i *
+/// slot_size + COLO_PAYLOAD_OFF` — 648, 712, 776 … — all of them 8 mod 16, and
+/// no rounding to `align_of::<T>()` happens anywhere in the geometry. The
+/// eligibility rule was written on `type_size` alone, so a 16-byte,
+/// 16-aligned message was colo-eligible and every publish stored it through a
+/// misaligned `*mut T`. Debug builds survived that; a release build vectorised
+/// the 16-byte store in `send_shm_mp_pod` into `movaps %xmm0,(%rax)` with
+/// `rax` ending in 0x288 — 648, slot 0's payload — and took SIGSEGV on the
+/// first send.
+#[test]
+fn an_over_aligned_pod_type_stays_on_the_split_layout() {
+    assert!(
+        size_of::<OverAlignedProbe>() <= shm_layout::COLO_MAX_PAYLOAD,
+        "this test only means anything for a type colo would otherwise take"
+    );
+    assert!(
+        align_of::<OverAlignedProbe>() > shm_layout::COLO_PAYLOAD_OFF,
+        "and only for one the colo payload offset cannot satisfy"
+    );
+
+    let name = unique("overaligned");
+    let tx: Topic<OverAlignedProbe> =
+        Topic::with_capacity(&name, CAPACITY, None).expect("create over-aligned POD topic");
+    tx.send(OverAlignedProbe {
+        tag: tag_of(0),
+        echo: !tag_of(0),
+    });
+    let region = read_region(&name);
+
+    assert_eq!(
+        region[shm_layout::OFF_LAYOUT_KIND],
+        shm_layout::LAYOUT_SPLIT,
+        "a {}-aligned payload cannot start {} bytes into a slot",
+        align_of::<OverAlignedProbe>(),
+        shm_layout::COLO_PAYLOAD_OFF
+    );
+
+    // And the layout it fell back to does hold the payload at an address the
+    // type is allowed to live at. The region is a fresh mmap, so its base is
+    // page-aligned and an offset divisible by `align_of::<T>()` is an address
+    // that is too.
+    let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
+    let type_size = u32_at(&region, shm_layout::OFF_TYPE_SIZE) as usize;
+    let payload_off = shm_layout::data_slot_offset(capacity, 0, type_size);
+    assert_eq!(
+        u64_at(&region, payload_off),
+        tag_of(0),
+        "split payload must live at the split offset"
+    );
+    assert_eq!(
+        payload_off % align_of::<OverAlignedProbe>(),
+        0,
+        "payload offset {payload_off} is not a multiple of the type's alignment"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The geometry the writer actually uses
 // ---------------------------------------------------------------------------
@@ -355,6 +427,53 @@ fn colo_has_no_sequence_array_and_no_over_allocation() {
 // ---------------------------------------------------------------------------
 // Reader and writer agree
 // ---------------------------------------------------------------------------
+
+/// Publishing works even where the geometry cannot give the type its natural
+/// alignment.
+///
+/// The split layout is not aligned either — it just misses more rarely. Its
+/// data region starts at `640 + capacity * 8`, which is 8 mod 16 for
+/// `capacity == 1` (the only power of two that is odd), so a 16-aligned
+/// message is stored misaligned there no matter which layout it gets. Rounding
+/// the data region up would move the offset `horus_net`'s `ShmRingWriter` and
+/// `header::read_slot_inner` compute independently, so the publish path copies
+/// bytes instead — `simd_aware_write` never forms a typed store, exactly as
+/// `simd_aware_read_uninit` never forms a typed load.
+///
+/// The teeth of this test are in `--release`: with a typed store back in
+/// place, this send is the `movaps` to an address ending in 0x288 that
+/// SIGSEGVs. In debug it is a regression guard for the bytes, not the fault.
+#[test]
+fn an_over_aligned_pod_type_publishes_at_a_misaligned_slot() {
+    let name = unique("overaligned_cap1");
+    let tx: Topic<OverAlignedProbe> =
+        Topic::with_capacity(&name, 1, None).expect("create capacity-1 topic");
+    tx.send(OverAlignedProbe {
+        tag: tag_of(0),
+        echo: !tag_of(0),
+    });
+    let region = read_region(&name);
+
+    let capacity = u32_at(&region, shm_layout::OFF_CAPACITY) as usize;
+    let payload_off = shm_layout::data_slot_offset(capacity, 0, size_of::<OverAlignedProbe>());
+    assert_eq!(capacity, 1, "capacity 1 is the case being covered");
+    assert_ne!(
+        payload_off % align_of::<OverAlignedProbe>(),
+        0,
+        "this test is only a test while offset {payload_off} is misaligned for \
+         the type — if the data region gained alignment rounding, delete it"
+    );
+    assert_eq!(
+        u64_at(&region, payload_off),
+        tag_of(0),
+        "the published payload must land at the slot whole and in the right place"
+    );
+    assert_eq!(
+        u64_at(&region, payload_off + size_of::<u64>()),
+        !tag_of(0),
+        "both halves of the message, not just the first word"
+    );
+}
 
 /// A consumer reads back exactly what the producer wrote, in order.
 #[test]

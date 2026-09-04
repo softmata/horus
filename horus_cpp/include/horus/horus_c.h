@@ -74,6 +74,15 @@ void              horus_node_builder_priority(HorusNodeBuilder* builder, int32_t
 void              horus_node_builder_watchdog(HorusNodeBuilder* builder, uint64_t timeout_us);
 int               horus_node_builder_build(HorusNodeBuilder* builder, HorusScheduler* sched);
 
+/* ── Topics ──────────────────────────────────────────────────────────────── */
+
+/* Why the last publisher/subscriber constructor on THIS thread returned null.
+   Writes at most buf_len-1 bytes plus a NUL, returns the bytes written, or -1
+   if buf is null or buf_len is 0. Every topic constructor clears the slot
+   before it tries, so this returns 0 after one that succeeded and that call's
+   own reason after one that returned null. */
+int              horus_topic_last_error(char* buf, size_t buf_len);
+
 /* ── CmdVel Topic ────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -526,6 +535,8 @@ void             horus_pointcloud_destroy(HorusPointCloud* pc);
 
 typedef struct HorusParams HorusParams;
 
+/* Returns NULL if .horus/config/params.yaml exists but is unreadable or
+   malformed; the reason is written to stderr. */
 HorusParams* horus_params_new(void);
 void         horus_params_destroy(HorusParams* params);
 int          horus_params_get_f64(const HorusParams* params, const char* key, double* out);

@@ -45,6 +45,25 @@ int main() {
 }
 ```
 
+## Topics that fail to open
+
+`advertise` / `subscribe` do not throw. A rejected name, a failed SHM mapping,
+or another node already holding the topic with a different message type all
+yield a handle that silently discards everything. Check it:
+
+```cpp
+auto cmd = sched.advertise<horus::msg::CmdVel>("cmd_vel");
+if (!cmd.is_valid()) {
+    // The diagnosis Rust returns as HorusResult and Python raises as RuntimeError.
+    std::cerr << "cmd_vel: " << cmd.error() << "\n";
+    return 1;
+}
+```
+
+An unchecked handle is not silent about the damage: `dropped_count()` and
+`missed_count()` count what it threw away, so a dead link never reads 0 while
+its node keeps publishing or polling.
+
 ## Build
 
 See the root [CLAUDE.md](../CLAUDE.md) for workspace-wide build commands.

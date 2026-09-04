@@ -502,7 +502,20 @@ impl EventExecutor {
                         // stdout), and a third time via the old `Node::on_error` default. With a
                         // Python node's traceback attached that is three multi-line blocks for one
                         // failure.
-                        node.node.on_error(&error_msg);
+                        //
+                        // Panic-guarded: this runs on the node's watcher thread
+                        // outside any catch_unwind (the tick itself is isolated
+                        // by `run_tick`), so a bare panic in this advisory
+                        // callback killed the watcher thread and `stop()` could
+                        // not reclaim the node.
+                        if super::primitives::guard_fault_callback(|| {
+                            node.node.on_error(&error_msg)
+                        }) {
+                            print_line(&format!(
+                                "[Event] Node '{}' also panicked in on_error() — ignoring (advisory callback)",
+                                node.name
+                            ));
+                        }
 
                         // Enforce the failure policy (Fatal → safe + stop via
                         // shared `running`; Restart → re-init; Skip → gated).

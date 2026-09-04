@@ -29,7 +29,7 @@ use crate::types::{
     PointCloudDescriptor, Tensor,
 };
 
-use super::pool_registry::global_pool;
+use super::pool_registry::{fallback_pool, global_pool_or_report};
 
 /// Defines how a type is transported through Topic's ring buffer.
 ///
@@ -116,13 +116,19 @@ macro_rules! impl_pool_backed_topic_message {
 
                 #[inline]
                 fn from_wire(wire: $Descriptor, pool: &Option<Arc<TensorPool>>) -> Self {
-                    let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+                    let p = pool.as_ref().cloned().unwrap_or_else(fallback_pool);
                     <$Type>::from_owned(wire, p)
                 }
 
                 #[inline]
                 fn try_from_wire(wire: $Descriptor, pool: &Option<Arc<TensorPool>>) -> Option<Self> {
-                    let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+                    // `Option<Self>` is an error channel, so use it: an unusable
+                    // global pool reads as a miss, not a panic. Unreachable for a
+                    // `needs_pool()` type — `pool` is always `Some` here.
+                    let p = match pool.as_ref().cloned() {
+                        Some(p) => p,
+                        None => global_pool_or_report()?,
+                    };
                     // Generation-guarded retain so each subscriber owns its own
                     // reference. `Err` => the slot was freed/reallocated since the
                     // message was published (superseded under drop-oldest) =>
@@ -168,13 +174,16 @@ impl TopicMessage for CostMap {
 
     #[inline]
     fn from_wire(wire: CostMapDescriptor, pool: &Option<Arc<TensorPool>>) -> Self {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+        let p = pool.as_ref().cloned().unwrap_or_else(fallback_pool);
         CostMap::from_owned(wire, p)
     }
 
     #[inline]
     fn try_from_wire(wire: CostMapDescriptor, pool: &Option<Arc<TensorPool>>) -> Option<Self> {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+        let p = match pool.as_ref().cloned() {
+            Some(p) => p,
+            None => global_pool_or_report()?,
+        };
         // Dual-tensor: retain BOTH. If the second is already stale, unwind the
         // first so we don't leak it, and report the message as missed.
         if p.try_retain(wire.grid_tensor()).is_err() {
@@ -208,13 +217,16 @@ impl TopicMessage for TensorHandle {
 
     #[inline]
     fn from_wire(wire: Tensor, pool: &Option<Arc<TensorPool>>) -> Self {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+        let p = pool.as_ref().cloned().unwrap_or_else(fallback_pool);
         TensorHandle::new(wire, p)
     }
 
     #[inline]
     fn try_from_wire(wire: Tensor, pool: &Option<Arc<TensorPool>>) -> Option<Self> {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+        let p = match pool.as_ref().cloned() {
+            Some(p) => p,
+            None => global_pool_or_report()?,
+        };
         if p.try_retain(&wire).is_err() {
             return None;
         }

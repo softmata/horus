@@ -235,6 +235,8 @@ macro_rules! impl_tensor_backed {
 // Domain-specific types (RAII wrappers with rich API for data access)
 pub mod costmap;
 pub mod depth_image;
+// Map-origin transforms shared by `costmap` and `occupancy_grid`.
+pub(crate) mod grid_transform;
 pub mod image;
 pub mod occupancy_grid;
 pub mod pointcloud;

@@ -205,13 +205,42 @@ pub const COLO_PAYLOAD_OFF: usize = 8;
 /// eligibility rule, not a soft preference.
 pub const COLO_MAX_PAYLOAD: usize = CACHE_LINE - COLO_PAYLOAD_OFF;
 
-/// Whether a topic of `type_size` bytes should use the colo layout.
+/// Whether a topic of `type_size` bytes and `type_align` alignment should use
+/// the colo layout.
 ///
 /// POD only: a serde topic carries its own in-slot length word and variable
 /// payload, so there is no fixed geometry to co-locate.
+///
+/// Alignment is a hard gate, not a preference, and it is the reason this
+/// function takes an alignment at all. A colo payload starts `COLO_PAYLOAD_OFF`
+/// bytes into a slot that itself starts on a cache line, so its address is
+/// `8 mod 16` in **every** slot of **every** colo region, and nothing anywhere
+/// rounds a slot up to `align_of::<T>()`. Selecting colo on `type_size` alone
+/// therefore handed a 16-byte, 16-aligned message (`#[repr(align(16))]`, a
+/// `u128` field, an SSE vector) a home it cannot legally occupy: a release
+/// build vectorised the 16-byte publish into `movaps %xmm0,(%rax)` with `rax`
+/// ending in 0x288 — 648, `HEADER_SIZE + COLO_PAYLOAD_OFF` — and took SIGSEGV
+/// on the first `send`, while debug builds emitted two 8-byte stores and
+/// passed.
+///
+/// Such a type falls back to the split layout, which is not unconditionally
+/// aligned either. Its data region starts at `data_region_offset(capacity)` =
+/// `640 + capacity * 8`, so it satisfies `type_align` exactly when
+/// `data_region_offset(capacity) % type_align == 0` — for align 16 that is
+/// every capacity but 1; for align 32, every capacity but 1 and 2; for align
+/// 256 it is no capacity at all, since 640 is not a multiple of 256. The gate
+/// is therefore only half the fix: `simd_aware_write` and `simd_aware_read`
+/// copy bytes on every branch, so a slot that is misaligned for `T` is still
+/// written and read legally.
 #[inline]
-pub const fn colo_eligible(is_pod: bool, type_size: usize) -> bool {
-    is_pod && type_size > 0 && type_size <= COLO_MAX_PAYLOAD
+pub const fn colo_eligible(is_pod: bool, type_size: usize, type_align: usize) -> bool {
+    is_pod
+        && type_size > 0
+        && type_size <= COLO_MAX_PAYLOAD
+        // `is_multiple_of` rather than `%`: `align_of` is never 0, but this is a
+        // `pub` predicate, and a 0 answers "not eligible" here instead of
+        // dividing by zero.
+        && COLO_PAYLOAD_OFF.is_multiple_of(type_align)
 }
 
 /// Bytes per colo slot: stamp + payload, rounded up to whole cache lines.

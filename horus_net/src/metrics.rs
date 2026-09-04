@@ -5,6 +5,7 @@
 //!
 //! See blueprint section 15.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -17,6 +18,20 @@ pub struct PeerMetrics {
     pub bytes_received: AtomicU64,
     pub packets_sent: AtomicU64,
     pub packets_received: AtomicU64,
+    /// Sends this machine's own socket refused — the datagram never left.
+    ///
+    /// Deliberately NOT a liveness signal for the peer. UDP is connectionless,
+    /// so `send_to` can report success for a destination that is gone: on one
+    /// Linux 7.0 host, 20000/20000 sends to an off-net address and 20000/20000
+    /// to a closed port both returned Ok. Other stacks may surface a routing
+    /// or ICMP error where that one did not, which is exactly why this counter
+    /// is not read as "the peer is unreachable".
+    ///
+    /// What it counts is local refusal — errors such as EINVAL, ENETUNREACH,
+    /// EHOSTUNREACH or EMSGSIZE — packets that `packets_sent` used to absorb
+    /// as delivered because the send result was discarded. Dead links are
+    /// `heartbeat::SafetyHeartbeat`'s job.
+    pub send_errors: AtomicU64,
     pub last_seen_ms: AtomicU64,
 }
 
@@ -52,6 +67,8 @@ pub struct PeerSnapshot {
     pub bytes_received: u64,
     pub packets_sent: u64,
     pub packets_received: u64,
+    /// See [`PeerMetrics::send_errors`] — local refusals, not lost packets.
+    pub send_errors: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +90,8 @@ pub struct NetMetrics {
     topics: HashMap<u32, TopicMetrics>,
     /// Count of rejected imports due to type hash mismatch.
     type_mismatches: AtomicU64,
+    /// Whether the "peer table full" warning has already been printed.
+    cap_warned: bool,
 }
 
 impl NetMetrics {
@@ -81,6 +100,7 @@ impl NetMetrics {
             peers: HashMap::new(),
             topics: HashMap::new(),
             type_mismatches: AtomicU64::new(0),
+            cap_warned: false,
         }
     }
 
@@ -94,16 +114,102 @@ impl NetMetrics {
         self.type_mismatches.load(Ordering::Relaxed)
     }
 
+    /// The row for `peer_hash`, or `None` when the table is full.
+    ///
+    /// Capped at [`netfilter::MAX_PEERS`](crate::netfilter::MAX_PEERS) — the
+    /// same ceiling `PeerTable::update_peer` and `SafetyHeartbeat::add_peer`
+    /// enforce, for the same reason. Every key that reaches this map comes off
+    /// the wire: `sender_id_hash` is two bytes the sender picks, and an
+    /// announcement's `peer_id` is unauthenticated. Uncapped, any host inside
+    /// `peer_filter`'s range could mint a fresh row per forged id: the key is a
+    /// u16, so that tops out at 65536 rows — 256x this ceiling, ≈9 MB of
+    /// counters this process never frees (`PeerMetrics` is 64 bytes, 72 in a
+    /// `HashMap` entry, in 131072 buckets), plus an O(rows) allocation and
+    /// `Vec` in every [`Self::snapshot`].
+    ///
+    /// This only became reachable when per-peer attribution replaced the
+    /// constant `self.peer_id_hash` key, which could produce exactly one row no
+    /// matter what arrived. `SafetyHeartbeat::add_peer` predicted this caller:
+    /// "the defence in depth so a future caller that forgets cannot re-open the
+    /// same hole".
+    ///
+    /// A key already present always resolves, so a real fleet never loses
+    /// counters it had; only unseen keys are refused once full.
+    ///
+    /// One hash and one probe, not two. The first draft asked
+    /// `contains_key` and then `entry`, which hashes the same key twice on
+    /// every call — and every call is a datagram this process just sent or
+    /// received, so the module's "near-zero overhead" claim has to mean the
+    /// cheaper one. `Entry` answers "present?" and "where does it go?" from a
+    /// single lookup. `len` is read before the borrow because `entry` holds
+    /// `self.peers` for the whole match; it is the length before any insert,
+    /// which is the same quantity the two-lookup form compared.
+    fn peer_entry(&mut self, peer_hash: u16) -> Option<&mut PeerMetrics> {
+        let peers_len = self.peers.len();
+        match self.peers.entry(peer_hash) {
+            Entry::Occupied(row) => Some(row.into_mut()),
+            Entry::Vacant(slot) if peers_len < crate::netfilter::MAX_PEERS => {
+                Some(slot.insert(PeerMetrics::default()))
+            }
+            Entry::Vacant(_) => {
+                if !self.cap_warned {
+                    self.cap_warned = true;
+                    horus_core::terminal::eprint_line(&format!(
+                        "[horus_net] Per-peer metrics table is full ({} peers); traffic from \
+                         further peers is uncounted. If this is not a real fleet of that size, \
+                         a host is forging sender ids — check HORUS_NET_ALLOW_PEERS. (Fires \
+                         once.)",
+                        crate::netfilter::MAX_PEERS
+                    ));
+                }
+                None
+            }
+        }
+    }
+
     /// Record bytes sent to a peer.
+    ///
+    /// `peer_hash` is the DESTINATION's id hash — the value that peer stamps
+    /// into the packets it sends us — never our own. Keying on ourselves
+    /// collapses every peer into one row filed under this node.
+    ///
+    /// Call this only for a send the socket accepted; a refused one goes to
+    /// [`Self::record_send_error`]. Silently a no-op once the table is full;
+    /// see `peer_entry`.
     pub fn record_send(&mut self, peer_hash: u16, bytes: usize) {
-        let pm = self.peers.entry(peer_hash).or_default();
+        let Some(pm) = self.peer_entry(peer_hash) else {
+            return;
+        };
         pm.bytes_sent.fetch_add(bytes as u64, Ordering::Relaxed);
         pm.packets_sent.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a send to a peer that the local socket refused.
+    ///
+    /// See [`PeerMetrics::send_errors`] for what this does and does not mean.
+    pub fn record_send_error(&mut self, peer_hash: u16) {
+        let Some(pm) = self.peer_entry(peer_hash) else {
+            return;
+        };
+        pm.send_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record bytes received from a peer.
+    ///
+    /// `peer_hash` is the SENDER's id hash, resolved from the datagram itself
+    /// — see [`Self::record_send`] for why our own id is the wrong key.
+    ///
+    /// Counts every datagram that cleared `peer_filter` and parsed, whether or
+    /// not the payload was ultimately acted on: an unimported topic, a
+    /// type-hash mismatch and a duplicate all still arrived from that peer and
+    /// still cost the link. Nothing on the receive path authenticates a sender
+    /// (see `Replicator::process_incoming_message`), so "accepted" is not a
+    /// state this counter could wait for; `peer_entry`'s cap is what
+    /// bounds a forged-id flood.
     pub fn record_recv(&mut self, peer_hash: u16, bytes: usize) {
-        let pm = self.peers.entry(peer_hash).or_default();
+        let Some(pm) = self.peer_entry(peer_hash) else {
+            return;
+        };
         pm.bytes_received.fetch_add(bytes as u64, Ordering::Relaxed);
         pm.packets_received.fetch_add(1, Ordering::Relaxed);
     }
@@ -155,6 +261,7 @@ impl NetMetrics {
                 bytes_received: pm.bytes_received.load(Ordering::Relaxed),
                 packets_sent: pm.packets_sent.load(Ordering::Relaxed),
                 packets_received: pm.packets_received.load(Ordering::Relaxed),
+                send_errors: pm.send_errors.load(Ordering::Relaxed),
             })
             .collect();
 
@@ -234,6 +341,65 @@ mod tests {
             "the 48 messages this topic published and never exported must be \
              visible somewhere"
         );
+    }
+
+    #[test]
+    fn a_refused_send_is_not_counted_as_a_delivered_one() {
+        let mut m = NetMetrics::new();
+        m.record_send(0x1234, 100);
+        m.record_send_error(0x1234);
+        m.record_send_error(0x1234);
+
+        let snap = m.snapshot();
+        assert_eq!(snap.peers.len(), 1);
+        assert_eq!(
+            snap.peers[0].packets_sent, 1,
+            "only the send the socket accepted may count as sent"
+        );
+        assert_eq!(snap.peers[0].bytes_sent, 100);
+        assert_eq!(snap.peers[0].send_errors, 2);
+    }
+
+    #[test]
+    fn a_forged_id_flood_cannot_grow_the_peer_table_without_bound() {
+        // `record_recv`'s key is `sender_id_hash`, two bytes off the wire that
+        // the sender chooses. Before per-peer attribution the key was a
+        // constant (our own id) and this map held one row; now an unbounded map
+        // would let any host inside `peer_filter`'s range mint 65536 of them.
+        let mut m = NetMetrics::new();
+        for id in 0..=u16::MAX {
+            m.record_recv(id, 64);
+        }
+        assert_eq!(
+            m.snapshot().peers.len(),
+            crate::netfilter::MAX_PEERS,
+            "the peer-metrics map must stop at the same ceiling PeerTable and \
+             SafetyHeartbeat enforce"
+        );
+    }
+
+    #[test]
+    fn a_peer_already_counted_keeps_counting_after_the_cap_is_hit() {
+        // The cap refuses unseen keys only. A real fleet that filled the table
+        // before a flood arrived must not have its own counters frozen.
+        let mut m = NetMetrics::new();
+        m.record_recv(0xAAAA, 10);
+        for id in 0..crate::netfilter::MAX_PEERS as u16 {
+            m.record_recv(id, 1);
+        }
+
+        m.record_recv(0xAAAA, 90);
+        m.record_send(0xAAAA, 5);
+
+        let snap = m.snapshot();
+        assert_eq!(snap.peers.len(), crate::netfilter::MAX_PEERS);
+        let known = snap
+            .peers
+            .iter()
+            .find(|p| p.peer_hash == 0xAAAA)
+            .expect("a peer counted before the cap keeps its row");
+        assert_eq!(known.bytes_received, 100, "still accruing after the cap");
+        assert_eq!(known.packets_sent, 1);
     }
 
     #[test]

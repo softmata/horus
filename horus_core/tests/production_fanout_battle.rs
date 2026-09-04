@@ -23,6 +23,7 @@ mod common;
 use common::cleanup_stale_shm;
 use horus_core::communication::Topic;
 use horus_core::core::{DurationExt, Node};
+use horus_core::error::{CommunicationError, HorusError};
 use horus_core::scheduling::Scheduler;
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
@@ -1869,14 +1870,15 @@ fn corrupt_magic_bytes(path: &std::path::Path) -> bool {
     f.write_all(&GARBAGE).is_ok()
 }
 
-/// SHM corruption detection: corrupted magic bytes must not cause SIGSEGV.
+/// SHM corruption detection: a region with corrupted magic must be refused.
 ///
-/// Production scenario: power failure corrupts the SHM backing file.
-/// On restart, Topic::new() attaches to the corrupted file. It must either
-/// return an error or work despite corruption — never SIGSEGV.
+/// Production scenario: power failure corrupts the SHM backing file. On
+/// restart, Topic::new() attaches to the orphan. It must return an error —
+/// never adopt the region by quietly reinitializing it, which would turn a
+/// damaged topic into one that looks healthy — and never SIGSEGV.
 ///
-/// Uses a child process to create orphan SHM files (child is killed,
-/// SHM persists), then parent corrupts the files and tries to attach.
+/// Uses a child process to create an orphan SHM file (child is killed, SHM
+/// persists), then the parent overwrites its magic and tries to attach.
 #[test]
 fn fault_shm_magic_corruption_rejected() {
     // Child mode dispatch
@@ -1911,40 +1913,96 @@ fn fault_shm_magic_corruption_rejected() {
     child.kill().expect("kill child");
     child.wait().expect("wait child");
 
-    // Corrupt the orphans the killed child left for THIS topic (see
-    // `orphan_topic_files` — never another namespace's files).
-    let mut corrupted_count = 0;
-    for path in orphan_topic_files(&name) {
-        if corrupt_magic_bytes(&path) {
-            corrupted_count += 1;
-            eprintln!("Corrupted: {}", path.display());
+    // Corrupt the magic of THIS test's own orphan region, and nothing else.
+    //
+    // The child resolves the same path we do: `shm_namespace()` publishes a test
+    // binary's per-target-dir namespace into the environment on first use, and
+    // the `cleanup_stale_shm()` above already triggered it, so the child
+    // inherited `HORUS_NAMESPACE` and created its topic where we are looking.
+    //
+    // This used to walk every `/dev/shm/horus_*/topics` on the machine. Two
+    // things were wrong with that. It overwrote the live regions of unrelated
+    // test binaries and robot processes sharing the host — 61 region files
+    // across 66 sibling namespaces on the machine where this was last measured.
+    // And it made the "did the fixture actually run?" question unanswerable: the
+    // file count it kept was satisfied by those other namespaces even on a run
+    // where our own child never got far enough to create anything, so the attach
+    // below would have been an ordinary first-creation of a fresh topic while
+    // still reporting a pass.
+    let orphan = horus_sys::shm::topic_shm_path(&name);
+    {
+        use std::io::Write;
+        let mut f = open_region_for_write(&orphan).unwrap_or_else(|e| {
+            panic!(
+                "orphan region {} does not exist — the child had 1000ms to create \
+                     it before the kill. Without it there is nothing corrupted to \
+                     attach to and this test proves nothing: {e}",
+                orphan.display()
+            )
+        });
+        f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE])
+            .expect("overwrite magic");
+        f.sync_all().expect("flush corrupted magic");
+    }
+
+    // The corrupted region must be refused, not adopted.
+    //
+    // The file exists, so `ShmRegion::new` takes the open-existing branch and
+    // `is_owner()` is false — it is set only on the `O_CREAT|O_EXCL` branch.
+    // `negotiate_shm_header` lets only an owner reinitialize a header whose
+    // magic it does not recognise; a joiner waits out the 2s deadline for an
+    // owner that will never stamp it (the child is dead) and errors, which is
+    // why this line costs ~2s. That asymmetry is the contract under test:
+    // were a joiner to take the owner's branch, a damaged region would come
+    // back looking healthy — corruption laundered into a silently reset topic
+    // rather than an error the operator can act on, and the ring bookkeeping of
+    // anyone still mapping the region wiped by a late arrival.
+    //
+    // A SIGSEGV — the regression this test was first written for — kills the
+    // process before this line, so that contract is still covered too.
+    let err = match Topic::<u64>::new(&name) {
+        Ok(_) => panic!(
+            "Topic::new adopted {}, whose magic is 0xDEADBEEFCAFEBABE; a joiner must \
+             refuse a header it does not recognise, not reinitialize it into one \
+             that looks healthy",
+            orphan.display()
+        ),
+        Err(e) => e,
+    };
+
+    // Pin the rejection to the mechanism, not just to `is_err()`. Anything that
+    // makes the region unopenable — a mode or ownership change on the file, an
+    // mmap or flock failure, ENOSPC inside `ShmRegion::new` — errors out before
+    // `negotiate_shm_header` is ever reached, and would satisfy a bare
+    // `is_err()` on a run where the joiner path never executed and the
+    // corruption was therefore never judged. The one error this test is about
+    // is the joiner waiting out the header-init deadline for an owner that is
+    // dead and will never stamp the magic, which is the observable end of the
+    // joiner branch in `Topic::negotiate_shm_header`
+    // (horus_core/src/communication/topic/mod.rs).
+    //
+    // Matched as a variant rather than by message text: the wording is free to
+    // change, but a rework that refuses an unrecognised header some other way —
+    // a fine change — retires `HeaderInitTimeout` and fails this match, which is
+    // what tells you to update the test rather than letting it quietly stop
+    // testing anything.
+    match &err {
+        HorusError::Communication(CommunicationError::HeaderInitTimeout { topic, .. }) => {
+            assert_eq!(
+                topic,
+                &name,
+                "header-init timeout names the wrong topic — {} is the region this \
+                 test corrupted",
+                orphan.display()
+            );
         }
+        other => panic!(
+            "Topic::new on {} was refused, but not by the joiner header-init timeout \
+             that magic rejection goes through — so nothing here exercised the \
+             corruption path and this run proves nothing. Got: {other}",
+            orphan.display()
+        ),
     }
-
-    eprintln!("Corrupted {corrupted_count} SHM files");
-
-    if corrupted_count == 0 {
-        // Even without files to corrupt, the test verifies the code path doesn't crash
-        eprintln!("No orphan SHM files found — testing fresh Topic creation only");
-    }
-
-    // Try to use corrupted topic — the key assertion is NO SIGSEGV
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Ok(topic) = Topic::<u64>::new(&name) {
-            topic.send(1);
-            let _ = topic.recv();
-            true
-        } else {
-            false
-        }
-    }));
-
-    match &result {
-        Ok(true) => eprintln!("Corrupted topic: Topic::new succeeded (works despite corruption)"),
-        Ok(false) => eprintln!("Corrupted topic: Topic::new returned Err (rejected corruption)"),
-        Err(_) => eprintln!("Corrupted topic: panicked (acceptable — no SIGSEGV)"),
-    }
-    // All three are acceptable. SIGSEGV would kill the process before we get here.
 
     // Cleanup for other tests
     let _shm_guard = cleanup_stale_shm();

@@ -1,7 +1,7 @@
 // RuntimeParams — dynamic configuration for nodes.
 //
 // Usage:
-//   auto params = horus::Params();
+//   auto params = horus::Params();          // throws horus::Error on a bad params.yaml
 //   params.set("max_speed", 1.5);
 //   params.set("enabled", true);
 //   params.set("name", "robot1");
@@ -9,6 +9,7 @@
 #pragma once
 
 #include "horus_c.h"
+#include "error.hpp"
 #include <cstdint>
 #include <string>
 #include <optional>
@@ -18,7 +19,18 @@ namespace horus {
 
 class Params {
 public:
-    Params() : handle_(horus_params_new()) {}
+    // A .horus/config/params.yaml that exists but does not parse is a hard
+    // error, the same as it already is in Rust (RuntimeParams::new returns Err)
+    // and Python (Params() raises). Constructing anyway would hand back the
+    // built-in limits — max_speed 1.0, emergency_stop_distance 0.3 — under the
+    // operator's name, and get<T>(key, default) gives the caller no way to tell
+    // those apart from the values in the file.
+    Params() : handle_(horus_params_new()) {
+        if (!handle_) {
+            throw Error(".horus/config/params.yaml exists but could not be read "
+                        "or parsed (reason on stderr) — fix the file or remove it");
+        }
+    }
     ~Params() { if (handle_) horus_params_destroy(handle_); }
 
     // Move only
