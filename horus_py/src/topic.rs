@@ -58,6 +58,7 @@ use pyo3::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::{Arc, Mutex};
 
+use crate::action_chunk::PyActionChunk;
 use crate::depth_image::PyDepthImage;
 use crate::image::PyImage;
 use crate::messages::{
@@ -178,7 +179,8 @@ fn unsupported_send_mode(call: &str, type_name: &str) -> PyErr {
 fn unsupported_send_mode_msg(call: &str, type_name: &str) -> String {
     format!(
         "{call}() is not available for {type_name} topics: pool-backed messages \
-         (Image, PointCloud, DepthImage, Tensor) are transported as descriptors \
+         (Image, PointCloud, DepthImage, Tensor, ActionChunk) are transported as \
+         descriptors \
          and horus_core provides no backpressure-aware send for them. Use send(), \
          which is drop-oldest, and watch stats()['missed_count'] on the subscriber."
     )
@@ -236,6 +238,7 @@ macro_rules! pod_topic_types {
             PointCloud(Arc<Mutex<Topic<PointCloud>>>),
             DepthImage(Arc<Mutex<Topic<DepthImage>>>),
             Tensor(Arc<Mutex<Topic<horus_core::types::Tensor>>>),
+            ActionChunk(Arc<Mutex<Topic<horus_core::types::ActionChunk>>>),
             Generic(Arc<Mutex<Topic<GenericMessage>>>),
         }
 
@@ -247,6 +250,7 @@ macro_rules! pod_topic_types {
                     TopicType::PointCloud($t) => $body,
                     TopicType::DepthImage($t) => $body,
                     TopicType::Tensor($t) => $body,
+                    TopicType::ActionChunk($t) => $body,
                     TopicType::Generic($t) => $body,
                 }
             };
@@ -638,6 +642,17 @@ impl PyTopic {
                         create_pool_topic::<horus_core::types::Tensor>(&effective_endpoint, cap)?;
                     TopicType::Tensor(Arc::new(Mutex::new(topic)))
                 }
+                // Missing this arm is the worst failure available here: the
+                // `_` fallback below builds a msgpack Generic topic, so
+                // `Topic(ActionChunk)` would raise nothing, panic nothing, and
+                // silently stop being pool-backed.
+                "ActionChunk" => {
+                    let topic = create_pool_topic::<horus_core::types::ActionChunk>(
+                        &effective_endpoint,
+                        cap,
+                    )?;
+                    TopicType::ActionChunk(Arc::new(Mutex::new(topic)))
+                }
                 _ => {
                     let topic = create_topic::<GenericMessage>(&effective_endpoint, cap)?;
                     TopicType::Generic(Arc::new(Mutex::new(topic)))
@@ -782,6 +797,67 @@ impl PyTopic {
                         dst_bytes[..n].copy_from_slice(&src_bytes[..n]);
                     }
                     t.send_handle(&dst);
+                    Ok(true)
+                })?;
+                if node.is_some() {
+                    log_ipc_event(
+                        py,
+                        &node,
+                        &self.name,
+                        log_msg,
+                        start.elapsed().as_nanos() as u64,
+                        "log_pub",
+                    );
+                }
+                success
+            }
+            TopicType::ActionChunk(topic) => {
+                let py_chunk: PyRef<PyActionChunk> = message.extract(py)?;
+                let handle = py_chunk.inner();
+                let chunk = *handle.chunk();
+                let log_msg = format!(
+                    "ActionChunk(horizon={}, action_dim={}, seq={})",
+                    chunk.horizon(),
+                    chunk.action_dim(),
+                    chunk.seq()
+                );
+                // Re-allocate into THIS topic's pool and copy, exactly as the
+                // Tensor arm above does and for the same reason: a chunk built
+                // in Python came from the process-local scratch pool, and
+                // `Topic<ActionChunk>::pool()` is name-keyed. Sending the source
+                // descriptor as-is would name a slot in a pool the receiver
+                // never opens, and `recv_chunk`'s retain would reject it — which
+                // surfaces as a topic that is simply never ready.
+                let topic_ref = topic.clone();
+                let horizon = chunk.horizon();
+                let action_dim = chunk.action_dim();
+                let dtype = handle.tensor().dtype();
+                let device = handle.tensor().device();
+                let t0_ns = chunk.t0_ns();
+                let dt_ns = chunk.dt_ns();
+                let seq = chunk.seq();
+                let frame_id = chunk.frame_id().to_string();
+                let src_bytes = handle
+                    .tensor()
+                    .data_slice()
+                    .map_err(|e| PyRuntimeError::new_err(format!("chunk read failed: {e}")))?;
+                let success = py.detach(|| -> PyResult<bool> {
+                    let t = topic_ref.lock().expect("topic lock poisoned");
+                    let mut dst = t
+                        .alloc_chunk(horizon, action_dim, dtype, device, t0_ns, dt_ns)
+                        .map_err(|e| PyRuntimeError::new_err(format!("pool alloc failed: {e}")))?;
+                    {
+                        let dst_bytes = dst.tensor().data_slice_mut().map_err(|e| {
+                            PyRuntimeError::new_err(format!("chunk write failed: {e}"))
+                        })?;
+                        let n = src_bytes.len().min(dst_bytes.len());
+                        dst_bytes[..n].copy_from_slice(&src_bytes[..n]);
+                    }
+                    // Metadata the allocation does not carry. Without these the
+                    // receiver gets the right actions under the wrong identity.
+                    dst.chunk_mut().set_seq(seq);
+                    dst.chunk_mut().set_frame_id(&frame_id);
+                    t.send_chunk(&dst);
                     Ok(true)
                 })?;
                 if node.is_some() {
@@ -952,6 +1028,7 @@ impl PyTopic {
                 Ok(sent)
             }
             TopicType::Tensor(_) => Err(unsupported_send_mode("try_send", "Tensor")),
+            TopicType::ActionChunk(_) => Err(unsupported_send_mode("try_send", "ActionChunk")),
             _ => unreachable!("try_send_pod handles all POD types"),
         }
     }
@@ -1040,6 +1117,7 @@ impl PyTopic {
             TopicType::PointCloud(_) => Err(unsupported_send_mode("send_blocking", "PointCloud")),
             TopicType::DepthImage(_) => Err(unsupported_send_mode("send_blocking", "DepthImage")),
             TopicType::Tensor(_) => Err(unsupported_send_mode("send_blocking", "Tensor")),
+            TopicType::ActionChunk(_) => Err(unsupported_send_mode("send_blocking", "ActionChunk")),
             _ => unreachable!("send_blocking_pod handles all POD types"),
         }
     }
@@ -1156,6 +1234,42 @@ impl PyTopic {
                             },
                         )?
                         .into_any(),
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
+            TopicType::ActionChunk(topic) => {
+                let topic_ref = topic.clone();
+                // `recv_chunk`, not `recv`: it sanitises the descriptor coming
+                // out of peer-writable shared memory before anything computes
+                // an offset from horizon/action_dim, and it takes a
+                // generation-guarded reference on the pool slot so the actions
+                // survive the next publish. A plain `recv()` here would hand
+                // Python a descriptor naming a slot that may already have been
+                // recycled — and a recycled slot is valid memory holding some
+                // other chunk's numbers, so the servo would track the wrong
+                // trajectory rather than fail.
+                let msg_opt =
+                    py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv_chunk());
+                if let Some(handle) = msg_opt {
+                    if node.is_some() {
+                        log_ipc_event(
+                            py,
+                            &node,
+                            &self.name,
+                            format!(
+                                "ActionChunk(horizon={}, action_dim={}, seq={})",
+                                handle.chunk().horizon(),
+                                handle.chunk().action_dim(),
+                                handle.chunk().seq()
+                            ),
+                            start.elapsed().as_nanos() as u64,
+                            "log_sub",
+                        );
+                    }
+                    Ok(Some(
+                        Py::new(py, PyActionChunk::from_inner(handle))?.into_any(),
                     ))
                 } else {
                     Ok(None)
@@ -1468,6 +1582,9 @@ impl PyTopic {
             TopicType::Tensor(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
+            TopicType::ActionChunk(t) => topic_lock(t)
+                .map(|g| g.backend_name().to_string())
+                .unwrap_or_default(),
             TopicType::Generic(t) => topic_lock(t)
                 .map(|g| g.backend_name().to_string())
                 .unwrap_or_default(),
@@ -1583,6 +1700,7 @@ impl PyTopic {
                 TopicType::CostMap(t) => topic_lock(t)?.metrics(),
                 TopicType::AudioFrame(t) => topic_lock(t)?.metrics(),
                 TopicType::Tensor(t) => topic_lock(t)?.metrics(),
+                TopicType::ActionChunk(t) => topic_lock(t)?.metrics(),
                 TopicType::Generic(t) => topic_lock(t)?.metrics(),
             };
 
@@ -1828,6 +1946,11 @@ impl PyTopic {
             TopicType::Image(_) | TopicType::PointCloud(_) | TopicType::DepthImage(_)
             | TopicType::OccupancyGrid(_) | TopicType::CostMap(_)
             | TopicType::Tensor(_)
+            // ActionChunk belongs with the pool-backed types, not the POD ones
+            // it resembles: read_latest maps to ring.read_latest(), which takes
+            // no pool reference, so handing back a chunk descriptor would name
+            // a slot that nothing is holding.
+            | TopicType::ActionChunk(_)
             | TopicType::CompressedImage(_) | TopicType::PlaneArray(_)
             | TopicType::TactileArray(_) | TopicType::Generic(_) => {
                 Err(PyRuntimeError::new_err(

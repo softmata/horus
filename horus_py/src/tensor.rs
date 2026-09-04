@@ -33,7 +33,10 @@ fn pool_allocator() -> horus::memory::PoolAllocator {
 ///
 /// When `config` is `None`, the pool uses the default mmap-backed host
 /// allocator. There is no hardware-dependent selection.
-fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResult<Arc<TensorPool>> {
+pub(crate) fn get_or_create_pool(
+    pool_id: u32,
+    config: Option<TensorPoolConfig>,
+) -> PyResult<Arc<TensorPool>> {
     // Check if pool already exists
     {
         let registry = POOL_REGISTRY.read();
