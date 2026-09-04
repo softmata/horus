@@ -3689,13 +3689,41 @@ fn run_command(command: Commands) -> HorusResult<()> {
     }
 }
 
+/// The directories a globally installed plugin binary can live in, in the order
+/// they are searched.
+///
+/// Split out from `which_monitor_binary` so it can be asserted against the
+/// directory the installer actually writes, rather than being a pair of
+/// hardcoded paths that drift apart silently — which is what happened:
+/// `horus install horus-monitor` symlinks into
+/// `PluginRegistry::global_bin_dir()`, the platform CONFIG dir
+/// (`~/.config/horus/bin` on Linux, `$XDG_CONFIG_HOME/horus/bin` when set),
+/// while this lookup checked `~/.horus/bin` and nothing else. Install
+/// succeeded, `horus monitor` reported the plugin as not installed, and the
+/// comment on the path it did check still called it "the plugin install
+/// location".
+fn plugin_bin_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(d) = horus_manager::plugins::PluginRegistry::global_bin_dir() {
+        dirs.push(d);
+    }
+    // The legacy location, kept so an existing install keeps working.
+    if let Some(home) = dirs::home_dir() {
+        let legacy = home.join(".horus/bin");
+        if !dirs.contains(&legacy) {
+            dirs.push(legacy);
+        }
+    }
+    dirs
+}
+
 /// Find the horus-monitor binary on known paths.
 fn which_monitor_binary() -> Option<std::path::PathBuf> {
-    // 1. Check ~/.horus/bin/ (plugin install location)
-    if let Some(home) = dirs::home_dir() {
-        let plugin_path = home.join(".horus/bin/horus-monitor");
-        if plugin_path.exists() {
-            return Some(plugin_path);
+    // 1. Global plugin install locations.
+    for dir in plugin_bin_dirs() {
+        let candidate = dir.join("horus-monitor");
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
 
@@ -3741,4 +3769,42 @@ fn which_monitor_binary() -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod monitor_lookup_tests {
+    use super::plugin_bin_dirs;
+
+    /// `horus monitor` must look where `horus install` writes.
+    ///
+    /// These were two hardcoded paths in two files about 800 lines apart, and
+    /// they disagreed: install symlinked into the platform config dir and the
+    /// lookup checked `~/.horus/bin`, so the documented two-step workflow
+    /// could not work and said only "Monitor plugin is not installed."
+    /// Asserting the relationship rather than the literal path means a change
+    /// to either side fails here instead of at a user's terminal.
+    #[test]
+    fn the_lookup_searches_the_directory_the_installer_writes() {
+        let install_dir = horus_manager::plugins::PluginRegistry::global_bin_dir()
+            .expect("global_bin_dir resolves");
+        let searched = plugin_bin_dirs();
+        assert!(
+            searched.contains(&install_dir),
+            "horus install writes {install_dir:?}, but horus monitor searches only \
+             {searched:?} — the install succeeds and the launcher then reports the \
+             plugin as missing"
+        );
+    }
+
+    /// The legacy path stays searched, so an existing install keeps working.
+    #[test]
+    fn the_legacy_location_is_still_searched() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(
+                plugin_bin_dirs().contains(&home.join(".horus/bin")),
+                "dropping ~/.horus/bin silently breaks anyone who installed before the \
+                 lookup was corrected"
+            );
+        }
+    }
 }
