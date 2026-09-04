@@ -173,37 +173,59 @@ jobs:
         set -uo pipefail
         mkdir -p benchmarks
 
-        # The newest successful run of THIS workflow on main, excluding the
-        # current one (a re-run of this same run id would restore its own
-        # output and freeze the window).
-        PREV=$(gh run list \
-                 --repo "$GITHUB_REPOSITORY" \
-                 --workflow "${{ github.workflow }}" \
-                 --branch main \
-                 --status success \
-                 --limit 20 \
-                 --json databaseId \
-                 --jq "[.[] | select(.databaseId != ${{ github.run_id }})] | .[0].databaseId" \
-               2>/dev/null || true)
+        # Trunk runs, newest first, taking the first that yields a usable
+        # history. Deliberately NOT filtered to successful runs: a trunk run
+        # that FAILS the gate has still recorded the regression that failed it,
+        # and the next run has to inherit that. The cache-based version got this
+        # right for the same reason ("a regression that lands on main is a
+        # regression the baseline has to know about; otherwise every subsequent
+        # build fails for the same reason and the gate gets disabled"), and it
+        # would be easy to lose here by asking only for green runs.
+        #
+        # The current run id is excluded: re-running a run would otherwise
+        # restore that run's own uploaded artifact and freeze the window at
+        # whatever it already held.
+        #
+        # Walking rather than taking the newest matters because a run can
+        # complete without a usable history — it may have failed before the
+        # benchmarks produced one — and that must fall through to an older run
+        # rather than silently emptying the window.
+        CANDIDATES=$(gh run list \
+                       --repo "$GITHUB_REPOSITORY" \
+                       --workflow "${{ github.workflow }}" \
+                       --branch main \
+                       --event push \
+                       --limit 30 \
+                       --json databaseId,conclusion \
+                       --jq "[.[] | select(.databaseId != ${{ github.run_id }})
+                                  | select(.conclusion == \"success\" or .conclusion == \"failure\")]
+                             | .[].databaseId" \
+                     2>/dev/null || true)
 
-        if [ -z "${PREV:-}" ] || [ "$PREV" = "null" ]; then
-          echo "No previous successful trunk run found; starting an empty window."
+        if [ -z "${CANDIDATES:-}" ]; then
+          echo "No previous trunk run found; starting an empty window."
           exit 0
         fi
 
-        echo "Restoring rolling baseline from run $PREV"
-        if gh run download "$PREV" \
-             --repo "$GITHUB_REPOSITORY" \
-             -n benchmark-results \
-             -D /tmp/prev-bench 2>/dev/null \
-           && [ -f "/tmp/prev-bench/$BENCH_HISTORY" ]; then
-          cp "/tmp/prev-bench/$BENCH_HISTORY" "benchmarks/$BENCH_HISTORY"
-          RUNS=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['runs']))" \
-                   "benchmarks/$BENCH_HISTORY" 2>/dev/null || echo "?")
-          echo "Recovered a window of $RUNS run(s) from run $PREV."
-        else
-          echo "Run $PREV has no usable $BENCH_HISTORY; starting an empty window."
-        fi
+        for PREV in $CANDIDATES; do
+          rm -rf /tmp/prev-bench
+          if gh run download "$PREV" \
+               --repo "$GITHUB_REPOSITORY" \
+               -n benchmark-results \
+               -D /tmp/prev-bench 2>/dev/null \
+             && [ -f "/tmp/prev-bench/$BENCH_HISTORY" ]; then
+            RUNS=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['runs']))" \
+                     "/tmp/prev-bench/$BENCH_HISTORY" 2>/dev/null || echo 0)
+            if [ "$RUNS" != "0" ] && [ "$RUNS" != "?" ]; then
+              cp "/tmp/prev-bench/$BENCH_HISTORY" "benchmarks/$BENCH_HISTORY"
+              echo "Recovered a window of $RUNS run(s) from run $PREV."
+              exit 0
+            fi
+            echo "Run $PREV carried an empty window; trying the one before it."
+          fi
+        done
+
+        echo "No trunk run in the last 30 carried a usable $BENCH_HISTORY; starting an empty window."
 
     - name: Setup Shared Memory
       run: |

@@ -120,6 +120,46 @@ fn the_restore_never_reuses_the_current_run() {
     );
 }
 
+/// A trunk run that FAILED the gate still recorded the regression that failed
+/// it, and the next run has to inherit that.
+///
+/// The cache version got this right — it saved `if: always()`, because
+/// "a regression that lands on main is a regression the baseline has to know
+/// about; otherwise every subsequent build fails for the same reason and the
+/// gate gets disabled". Moving the baseline into an artifact makes it easy to
+/// lose that by asking `gh run list` only for successful runs, which is exactly
+/// what the first draft of this change did.
+#[test]
+fn the_restore_inherits_from_failed_trunk_runs_too() {
+    let wf = workflow();
+    let restore = wf
+        .split("- name: Restore rolling baseline")
+        .nth(1)
+        .expect("there is a restore step")
+        .split("\n    - name:")
+        .next()
+        .expect("the step ends at the next one");
+
+    assert!(
+        !restore.contains("--status success"),
+        "the restore asks only for successful trunk runs. A run that failed the \
+         gate holds the recorded regression; skipping it means the next run \
+         compares against a pre-regression baseline and fails again for the same \
+         reason, which is how a gate gets switched off."
+    );
+    assert!(
+        restore.contains("failure"),
+        "the restore must consider trunk runs that failed the gate, not just \
+         green ones."
+    );
+    assert!(
+        restore.contains("for PREV in"),
+        "the restore must walk candidates rather than taking only the newest: a \
+         run can complete without producing a usable history, and that has to \
+         fall through to an older run instead of silently emptying the window."
+    );
+}
+
 #[test]
 fn reading_a_previous_artifact_needs_only_read_permissions() {
     let wf = workflow();
