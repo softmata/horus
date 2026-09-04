@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use crate::types::{OccupancyGridDescriptor, TensorDtype};
 
+use super::grid_transform;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -195,8 +196,29 @@ impl OccupancyGrid {
     pub fn world_to_grid(&self, x: f64, y: f64) -> Option<(u32, u32)> {
         const EPSILON: f64 = 1e-6;
         let res = (self.resolution() as f64).max(1e-9);
-        let grid_x = ((x - self.origin_x()) / res + EPSILON).floor() as i32;
-        let grid_y = ((y - self.origin_y()) / res + EPSILON).floor() as i32;
+
+        // Translate into the map frame, then UNDO the map's rotation before
+        // dividing by resolution. `origin_theta` is documented as "map origin
+        // orientation (radians)" and was stored, exposed by a getter, and read
+        // by neither transform -- so every lookup on a rotated map silently
+        // returned the wrong cell. Wrong, not absent: the indices stayed in
+        // range and looked entirely plausible, which for a costmap means a
+        // planner confidently avoids the wrong places.
+        //
+        // `grid_transform` holds the one copy of this arithmetic shared with
+        // the other grid type, short-circuits theta == 0 to the original
+        // translation (so unrotated maps are bit-identical and pay nothing),
+        // and returns None rather than a NaN that `as i32` would saturate
+        // into a plausible cell (0, 0).
+        let (rx, ry) = grid_transform::world_to_map(
+            self.origin_x(),
+            self.origin_y(),
+            self.origin_theta(),
+            x,
+            y,
+        )?;
+        let grid_x = (rx / res + EPSILON).floor() as i32;
+        let grid_y = (ry / res + EPSILON).floor() as i32;
 
         if grid_x >= 0
             && grid_x < self.width() as i32
@@ -212,9 +234,20 @@ impl OccupancyGrid {
     /// Convert grid indices to world coordinates (cell center).
     pub fn grid_to_world(&self, grid_x: u32, grid_y: u32) -> Option<(f64, f64)> {
         if grid_x < self.width() && grid_y < self.height() {
-            let x = self.origin_x() + (grid_x as f64 + 0.5) * self.resolution() as f64;
-            let y = self.origin_y() + (grid_y as f64 + 0.5) * self.resolution() as f64;
-            Some((x, y))
+            // Cell centre in the map frame, rotated INTO the world frame by
+            // `origin_theta` and then translated. Exact inverse of
+            // `world_to_grid` -- they share one implementation so they cannot
+            // drift apart -- including the theta == 0 short-circuit and the
+            // refusal of a non-finite origin.
+            let mx = (grid_x as f64 + 0.5) * self.resolution() as f64;
+            let my = (grid_y as f64 + 0.5) * self.resolution() as f64;
+            grid_transform::map_to_world(
+                self.origin_x(),
+                self.origin_y(),
+                self.origin_theta(),
+                mx,
+                my,
+            )
         } else {
             None
         }
@@ -418,5 +451,91 @@ mod tests {
         assert!(dbg.contains("OccupancyGrid"));
         assert!(dbg.contains("100"));
         assert!(dbg.contains("200"));
+    }
+}
+
+#[cfg(test)]
+mod origin_theta_tests {
+    use super::*;
+
+    const RES: f32 = 0.05;
+
+    /// A rotated map must round-trip: grid -> world -> grid returns the cell.
+    ///
+    /// `origin_theta` is documented as the map origin's orientation and was
+    /// read by neither transform. On a map rotated 90 degrees this returned a
+    /// cell that was in range and plausible and simply wrong, so a planner
+    /// avoided the wrong places with no error anywhere.
+    #[test]
+    fn rotated_map_round_trips_grid_to_world_to_grid() {
+        let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+        m.set_origin(1.0, -2.0, std::f64::consts::FRAC_PI_2);
+        for &(gx, gy) in &[(0u32, 0u32), (3, 7), (19, 11)] {
+            let (wx, wy) = m.grid_to_world(gx, gy).expect("in range");
+            let back = m.world_to_grid(wx, wy);
+            assert_eq!(
+                back,
+                Some((gx, gy)),
+                "cell ({gx},{gy}) -> world ({wx:.4},{wy:.4}) -> {back:?} on a \
+                 map rotated by origin_theta"
+            );
+        }
+    }
+
+    /// The rotation must actually be applied, not merely round-trip with
+    /// itself. A 90-degree map sends +x in the map frame to +y in the world.
+    #[test]
+    fn ninety_degrees_maps_map_x_onto_world_y() {
+        let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+        m.set_origin(1.0, -2.0, std::f64::consts::FRAC_PI_2);
+        let (wx, wy) = m.grid_to_world(4, 0).expect("in range");
+        // Cell (4,0) centre is (4.5*res, 0.5*res) in the map frame. Rotated by
+        // +90 degrees that is (-0.5*res, 4.5*res), then translated by the
+        // origin (1.0, -2.0).
+        let res = RES as f64;
+        let (ex, ey) = (1.0 + -0.5 * res, -2.0 + 4.5 * res);
+        assert!(
+            (wx - ex).abs() < 1e-6 && (wy - ey).abs() < 1e-6,
+            "expected map +x to become world +y: wanted ({ex:.6}, {ey:.6}), \
+             got ({wx:.6}, {wy:.6})"
+        );
+    }
+
+    /// theta == 0 must be bit-identical to the original translation-only
+    /// arithmetic, so unrotated maps -- every existing caller -- are untouched.
+    #[test]
+    fn unrotated_map_is_unchanged() {
+        let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+        m.set_origin(0.0, 0.0, 0.0);
+        let (wx, wy) = m.grid_to_world(6, 2).expect("in range");
+        let res = RES as f64;
+        assert!((wx - 6.5 * res).abs() < 1e-12, "x drifted: {wx}");
+        assert!((wy - 2.5 * res).abs() < 1e-12, "y drifted: {wy}");
+        assert_eq!(m.world_to_grid(wx, wy), Some((6, 2)));
+    }
+
+    /// A non-finite `origin_theta` must refuse the lookup, not answer it.
+    ///
+    /// `origin_theta` arrives in a Pod descriptor that travels through shared
+    /// memory, so any f64 bit pattern is reachable. `sin_cos()` on NaN is NaN,
+    /// and `(NaN.floor() as i32)` saturates to 0 -- so before the guard this
+    /// returned `Some((0, 0))`: in range, plausible, and wrong for every query
+    /// point on the map.
+    #[test]
+    fn non_finite_origin_theta_refuses_the_lookup() {
+        for theta in [f64::NAN, f64::INFINITY] {
+            let mut m = OccupancyGrid::new(32, 32, RES).expect("alloc");
+            m.set_origin(1.0, -2.0, theta);
+            assert_eq!(
+                m.world_to_grid(1.0, -2.0),
+                None,
+                "theta {theta} must not yield a cell"
+            );
+            assert_eq!(
+                m.grid_to_world(4, 4),
+                None,
+                "theta {theta} must not yield a world point"
+            );
+        }
     }
 }
