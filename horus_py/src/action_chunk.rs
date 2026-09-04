@@ -364,8 +364,28 @@ impl PyActionChunk {
             .inner
             .actions_f32()
             .ok_or_else(|| PyRuntimeError::new_err("action data is not readable as float32"))?;
+        // Take exactly horizon x action_dim, not the whole slice.
+        //
+        // `sanitize_from_shm` clamps horizon and action_dim DOWN to the
+        // tensor's real shape when a descriptor arrives from peer-writable
+        // memory with fields that overstate it. After such a clamp the
+        // descriptor covers fewer elements than the allocation holds, and
+        // reshaping the full slice to (horizon, action_dim) would fail inside
+        // numpy with a size mismatch that says nothing about what happened.
+        // Slicing to what the descriptor actually claims returns the readable
+        // prefix and cannot fail.
+        let wanted = (self.horizon() as usize).saturating_mul(self.action_dim() as usize);
+        let view = actions.get(..wanted).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "chunk claims {} x {} = {wanted} actions but only {} are allocated",
+                self.horizon(),
+                self.action_dim(),
+                actions.len()
+            ))
+        })?;
         let np = py.import("numpy")?;
-        let flat = np.call_method1("array", (actions.to_vec(),))?;
+        let flat = np.call_method1("array", (view.to_vec(),))?;
+        let flat = flat.call_method1("astype", ("float32",))?;
         let reshaped = flat.call_method1(
             "reshape",
             ((self.horizon() as usize, self.action_dim() as usize),),
