@@ -641,18 +641,11 @@ benchmarks/     Performance suite — latency, throughput, jitter, comparisons
 
 ---
 
-## Running HORUS on Real Hardware?
+## Contributing
 
-We'd love to hear from you. HORUS is validated in simulation — if you're running it on a real robot, your experience helps us improve.
-
-Tell us (via [GitHub Issues](https://github.com/softmata/horus/issues), [Discord](https://discord.gg/hEZC3ev2Nf), or [email](mailto:contact@softmata.dev)):
-- **What robot** — platform, actuators, sensors
-- **What control rate** you're achieving on real hardware
-- **What worked** out of the box
-- **What needed tuning** — PID gains, sensor dropout thresholds, timing budgets
-- **What broke** — anything that works in sim but fails on hardware
-
-We'll add validated hardware to the docs and credit contributors.
+- **Found a bug?** [Open an issue](https://github.com/softmata/horus/issues/new) — what you ran, what happened, what you expected. A reproducer is worth more than a description.
+- **Want a feature?** [Open an issue](https://github.com/softmata/horus/issues/new) and say what you are trying to build; the use case shapes the API more than the request does.
+- **Fixed something?** [Open a pull request](https://github.com/softmata/horus/compare). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
