@@ -356,3 +356,59 @@ def test_a_servo_loop_samples_inside_while_the_policy_keeps_up(unique_test_prefi
     assert inside >= ticks - publish_every, (
         f"the loop should have an action on essentially every tick, got {inside}"
     )
+
+
+# ── sample_into writes through a raw pointer, so it checks what it is given ──
+
+
+def test_sample_into_refuses_an_object_that_merely_fakes_array_interface():
+    """`__array_interface__` is an ordinary Python attribute.
+
+    Any object can define it and report an arbitrary integer as its data
+    pointer. `sample_into` builds a `&mut [f32]` from that integer and writes
+    through it, so trusting the protocol alone would turn a wrong argument into
+    memory corruption in the host process. The argument must actually be a
+    numpy.ndarray.
+    """
+
+    class FakeArray:
+        # Shaped to pass every other check: float32, 1-D, long enough,
+        # contiguous, writable. Only the type is wrong.
+        #
+        # The address is NULL on purpose. A wild pointer here would prove the
+        # same thing by segfaulting, which would take the whole pytest process
+        # down with it and tell the next person nothing about which assertion
+        # failed. Null is caught by a later guard, so if the ndarray check ever
+        # regresses this test fails cleanly with ValueError("null data
+        # pointer") instead — a different exception and message from the
+        # TypeError asserted below, so it cannot pass for the wrong reason.
+        __array_interface__ = {
+            "typestr": "<f4",
+            "shape": [ACTION_DIM],
+            "strides": None,
+            "data": (0, False),
+            "version": 3,
+        }
+
+    c = make()
+    with pytest.raises(TypeError, match="numpy.ndarray"):
+        c.sample_into(T0_NS + DT_NS, FakeArray())
+
+
+def test_sample_into_refuses_a_non_contiguous_view():
+    # A strided view's base pointer does not address the elements the caller
+    # means, so writing through it would scatter values into the wrong slots.
+    c = make()
+    backing = np.zeros(ACTION_DIM * 2, dtype=np.float32)
+    with pytest.raises(ValueError, match="contiguous"):
+        c.sample_into(T0_NS + DT_NS, backing[::2])
+
+
+def test_a_non_f32_chunk_is_refused_by_name_not_reported_as_stale():
+    # The distinction matters: returning None for a dtype error would look
+    # exactly like a policy that has stopped publishing.
+    c = horus.ActionChunk(HORIZON, ACTION_DIM, T0_NS, DT_NS, dtype="float64")
+    with pytest.raises(TypeError, match="float32"):
+        c.sample(T0_NS + DT_NS)
+    with pytest.raises(TypeError, match="float32"):
+        c.to_numpy()

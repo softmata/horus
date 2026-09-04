@@ -128,7 +128,11 @@ impl RtThreadStatus {
     /// One-line human summary, used by diagnostics and the CLI.
     pub fn summary(&self) -> String {
         let mut s = format!("{}: {}", self.thread_name, self.granted.as_str());
-        if self.granted.is_realtime() {
+        // Only SCHED_FIFO has a static priority. A SCHED_DEADLINE thread is
+        // admitted with a runtime/period budget and the kernel reports
+        // `sched_priority == 0`, so printing a priority for it would describe
+        // a knob that is not in effect.
+        if self.granted == RtPolicy::Fifo {
             s.push_str(&format!(" prio {}", self.priority));
         }
         if !self.cpus.is_empty() {

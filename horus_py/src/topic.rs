@@ -850,8 +850,26 @@ impl PyTopic {
                         let dst_bytes = dst.tensor().data_slice_mut().map_err(|e| {
                             PyRuntimeError::new_err(format!("chunk write failed: {e}"))
                         })?;
-                        let n = src_bytes.len().min(dst_bytes.len());
-                        dst_bytes[..n].copy_from_slice(&src_bytes[..n]);
+                        // A length mismatch is an error, not something to
+                        // truncate around. `alloc_chunk` was given this
+                        // chunk's own horizon, action_dim, dtype and device,
+                        // so the destination is exactly the source size or
+                        // something is wrong upstream — and a silent
+                        // `min(...)` would publish actions that are truncated
+                        // or zero-filled, with no error, to a servo loop.
+                        if src_bytes.len() != dst_bytes.len() {
+                            return Err(PyRuntimeError::new_err(format!(
+                                "ActionChunk send: source is {} bytes but the \
+                                 topic pool allocated {} for the same \
+                                 {}x{} {:?} shape — refusing a partial copy",
+                                src_bytes.len(),
+                                dst_bytes.len(),
+                                horizon,
+                                action_dim,
+                                dtype
+                            )));
+                        }
+                        dst_bytes.copy_from_slice(src_bytes);
                     }
                     // Metadata the allocation does not carry. Without these the
                     // receiver gets the right actions under the wrong identity.

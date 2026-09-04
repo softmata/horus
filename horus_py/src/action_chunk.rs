@@ -483,11 +483,32 @@ impl PyActionChunk {
     /// write.
     fn sample_into(
         &self,
-        _py: Python<'_>,
+        py: Python<'_>,
         query_ns: u64,
         out: &Bound<'_, PyAny>,
     ) -> PyResult<PyActionAt> {
         require_f32(&self.inner, "sample_into")?;
+
+        // `out` must BE a numpy.ndarray, not merely something that exposes
+        // `__array_interface__`.
+        //
+        // That attribute is an ordinary Python attribute: any object can
+        // define it and report an arbitrary integer as its data pointer. This
+        // function then builds a `&mut [f32]` from that integer and writes
+        // through it. Trusting the protocol alone turns a wrong argument into
+        // memory corruption in the host process, so the type is checked first
+        // and everything below only ever reads from a real ndarray.
+        let np = py.import("numpy")?;
+        let ndarray = np.getattr("ndarray")?;
+        if !out.is_instance(&ndarray)? {
+            return Err(PyTypeError::new_err(format!(
+                "sample_into(out=) requires a numpy.ndarray, got {}. The raw \
+                 data pointer is read from this object and written through, so \
+                 an arbitrary __array_interface__ provider is not accepted.",
+                out.get_type().name()?
+            )));
+        }
+
         let iface = out.getattr("__array_interface__").map_err(|_| {
             PyTypeError::new_err(
                 "sample_into(out=) requires a numpy array; the object has no \
@@ -539,11 +560,25 @@ impl PyActionChunk {
                 "sample_into(out=) got a null data pointer",
             ));
         }
+        // Alignment is not optional. `slice::from_raw_parts_mut` requires the
+        // pointer to be aligned for the element type, and constructing a
+        // misaligned `&mut [f32]` is immediate undefined behaviour — not a
+        // wrong answer later, but UB at the moment the slice exists. numpy's
+        // own allocations are suitably aligned, but a view into a buffer it
+        // does not own (a memoryview, a mmap at an odd offset) need not be.
+        if !addr.is_multiple_of(std::mem::align_of::<f32>()) {
+            return Err(PyValueError::new_err(
+                "sample_into(out=) requires a 4-byte aligned buffer; this array's \
+                 data pointer is not aligned for float32",
+            ));
+        }
 
-        // SAFETY: `addr` is numpy's contiguous buffer for a 1-D float32 array
-        // whose length was checked above to be at least `action_dim`, and the
-        // slice is used only for the duration of this call while `out` is
-        // alive and borrowed.
+        // SAFETY: `out` was checked to be a numpy.ndarray, so `addr` is numpy's
+        // own contiguous buffer rather than an attacker-chosen integer; the
+        // array is 1-D, C-contiguous, writable, float32, non-null, aligned for
+        // `f32`, and at least `needed` elements long — all verified above. The
+        // slice lives only for this call, during which `out` is borrowed and
+        // therefore kept alive.
         let dst: &mut [f32] =
             unsafe { std::slice::from_raw_parts_mut(addr as *mut f32, needed as usize) };
         Ok(to_py_action_at(self.inner.sample_into(query_ns, dst)))

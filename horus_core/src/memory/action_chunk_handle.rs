@@ -111,13 +111,27 @@ impl ActionChunkHandle {
         self.chunk.locate(query_ns)
     }
 
+    /// Whether this chunk's actions are actually stored as `f32`.
+    ///
+    /// Checked explicitly because `bytemuck` will not catch it. A cast from
+    /// `&[u8]` to `&[f32]` only fails on alignment or a length that is not a
+    /// multiple of four — an `f64` buffer satisfies both, so the cast SUCCEEDS
+    /// and reinterprets each pair of `f64` halves as two `f32`s. The numbers
+    /// that come out are garbage, and they are actuator commands.
+    fn is_f32(&self) -> bool {
+        self.tensor.dtype() == TensorDtype::F32
+    }
+
     /// Interpolate the action at `query_ns` into `out`.
     ///
     /// `out` is written if and only if [`ActionAt::Inside`] is returned — a
     /// stale chunk never extrapolates, which is the property the whole type
-    /// exists to preserve. Returns [`ActionAt::Malformed`] if the pooled data
-    /// cannot be read as `f32`.
+    /// exists to preserve. Returns [`ActionAt::Malformed`] if the chunk is not
+    /// `f32` or the pooled data cannot be read.
     pub fn sample_into(&self, query_ns: u64, out: &mut [f32]) -> ActionAt {
+        if !self.is_f32() {
+            return ActionAt::Malformed;
+        }
         let Ok(bytes) = self.tensor.data_slice() else {
             return ActionAt::Malformed;
         };
@@ -127,15 +141,27 @@ impl ActionChunkHandle {
         self.chunk.sample_into(query_ns, actions, out)
     }
 
-    /// The chunk's actions as `f32`, or `None` if the pooled data cannot be
-    /// read as such.
+    /// The chunk's actions as `f32`, or `None` if this chunk is not `f32` or
+    /// the pooled data cannot be read.
     pub fn actions_f32(&self) -> Option<&[f32]> {
+        if !self.is_f32() {
+            return None;
+        }
         let bytes = self.tensor.data_slice().ok()?;
         bytemuck::try_cast_slice::<u8, f32>(bytes).ok()
     }
 
     /// The chunk's actions as mutable `f32`, for filling after an allocation.
+    // `mut_from_ref`: the pool slot is shared memory with interior mutability,
+    // so a `&self` receiver handing out `&mut` is the established shape here —
+    // `OccupancyGrid::cells_mut` and the other pool-backed types do the same.
+    // The handle owns a reference on the slot for as long as it lives, and the
+    // caller is the only writer during an allocation-then-fill.
+    #[allow(clippy::mut_from_ref)]
     pub fn actions_f32_mut(&self) -> Option<&mut [f32]> {
+        if !self.is_f32() {
+            return None;
+        }
         let bytes = self.tensor.data_slice_mut().ok()?;
         bytemuck::try_cast_slice_mut::<u8, f32>(bytes).ok()
     }

@@ -248,3 +248,48 @@ fn a_chunk_and_a_handle_from_different_pools_are_refused() {
         "pairing a chunk with a handle in another pool must be refused, not accepted"
     );
 }
+
+/// A chunk that is not `f32` must refuse the f32 read paths.
+///
+/// `bytemuck` will not catch this on its own: casting `&[u8]` to `&[f32]`
+/// fails only on alignment or a length that is not a multiple of four, and an
+/// `f64` buffer satisfies both. The cast SUCCEEDS and reinterprets each pair of
+/// `f64` halves as two `f32`s. The numbers that come out are garbage, and on
+/// this type they are actuator commands — so the dtype is checked explicitly.
+#[test]
+fn a_non_f32_chunk_refuses_the_f32_paths_instead_of_reinterpreting_bytes() {
+    let _shm = cleanup_stale_shm();
+    let topic: Topic<ActionChunk> = Topic::new(&unique("ac.dtype")).unwrap();
+
+    let h = topic
+        .alloc_chunk(
+            HORIZON,
+            ACTION_DIM,
+            TensorDtype::F64,
+            Device::cpu(),
+            1_000,
+            DT_NS,
+        )
+        .expect("an f64 chunk allocates");
+
+    assert!(
+        h.actions_f32().is_none(),
+        "actions_f32 must refuse an f64 chunk rather than reinterpreting its bytes"
+    );
+    assert!(
+        h.actions_f32_mut().is_none(),
+        "actions_f32_mut must refuse an f64 chunk"
+    );
+
+    let mut out = [0.0f32; ACTION_DIM as usize];
+    assert_eq!(
+        h.sample_into(1_000, &mut out),
+        ActionAt::Malformed,
+        "sample_into must report Malformed for a chunk it cannot read as f32, \
+         not hand back reinterpreted f64 halves"
+    );
+    assert_eq!(
+        out, [0.0; ACTION_DIM as usize],
+        "and it must not have written anything"
+    );
+}

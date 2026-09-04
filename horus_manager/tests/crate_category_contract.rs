@@ -21,6 +21,18 @@ use std::path::{Path, PathBuf};
 /// The name of this source file, excluded from the `no_std` scan below.
 const SELF_FILE: &str = "crate_category_contract.rs";
 
+/// Directories neither walker descends into.
+///
+/// Shared by both so they cannot drift: if the `no_std` scan skipped fewer
+/// directories than the manifest scan, a Rust source vendored inside a
+/// repo-local virtualenv could make `tree_has_no_std()` true and turn the
+/// embedded guard below into a vacuous pass.
+macro_rules! skip_dirs {
+    () => {
+        "target" | ".git" | "node_modules" | "vendor" | ".venv" | "venv"
+    };
+}
+
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is <root>/horus_manager.
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -44,10 +56,7 @@ fn workspace_manifests() -> Vec<PathBuf> {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if path.is_dir() {
-                if matches!(
-                    name.as_ref(),
-                    "target" | ".git" | "node_modules" | "vendor" | ".venv" | "venv"
-                ) {
+                if matches!(name.as_ref(), skip_dirs!()) {
                     continue;
                 }
                 stack.push(path);
@@ -131,7 +140,7 @@ fn tree_has_no_std() -> bool {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if path.is_dir() {
-                if matches!(name.as_ref(), "target" | ".git" | "node_modules" | "vendor") {
+                if matches!(name.as_ref(), skip_dirs!()) {
                     continue;
                 }
                 stack.push(path);

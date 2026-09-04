@@ -1744,7 +1744,15 @@ impl RtExecutor {
                         "[RT-thread] Could not set SCHED_FIFO: {} (continuing with normal priority)",
                         e
                     ));
-                    refusal = Some(format!("SCHED_FIFO: {e}"));
+                    // Keep the SCHED_DEADLINE reason if there was one. The
+                    // report says `requested: SCHED_DEADLINE`, so a refusal
+                    // naming only SCHED_FIFO reads as a contradiction and
+                    // loses the reason the first choice was refused — which is
+                    // usually the more interesting of the two.
+                    refusal = Some(match refusal.take() {
+                        Some(first) => format!("{first}; then SCHED_FIFO: {e}"),
+                        None => format!("SCHED_FIFO: {e}"),
+                    });
                 }
             }
         }
@@ -1874,7 +1882,15 @@ impl RtExecutor {
                 chain_label: identity.chain_label,
                 requested,
                 granted,
-                priority: if rt_policy_active { thread_priority } else { 0 },
+                // Zero under SCHED_DEADLINE as well as SCHED_OTHER: a
+                // deadline task has no static priority (the kernel reports
+                // sched_priority == 0), and printing the FIFO priority that
+                // was never applied would misdescribe the thread.
+                priority: if deadline_active || !rt_policy_active {
+                    0
+                } else {
+                    thread_priority
+                },
                 refusal,
                 cpus: pinned_cpus,
                 memory_locked: identity.memory_locked,

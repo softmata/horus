@@ -1039,6 +1039,14 @@ impl Scheduler {
 
     /// Check if the scheduler has full RT capabilities (no high-severity degradations).
     #[doc(hidden)]
+    pub fn has_full_rt(&self) -> bool {
+        !self
+            .rt
+            .degradations
+            .iter()
+            .any(|d| d.severity == DegradationSeverity::High)
+    }
+
     /// What each RT tick thread actually got from the kernel.
     ///
     /// Empty before `run()` starts an RT executor, and on any scheduler with no
@@ -1075,14 +1083,6 @@ impl Scheduler {
     pub fn rt_threads_are_realtime(&self) -> bool {
         let statuses = self.rt_thread_status();
         !statuses.is_empty() && statuses.iter().all(|s| s.granted.is_realtime())
-    }
-
-    pub fn has_full_rt(&self) -> bool {
-        !self
-            .rt
-            .degradations
-            .iter()
-            .any(|d| d.severity == DegradationSeverity::High)
     }
 
     /// Get a reference to the BlackBox flight recorder.
@@ -1697,6 +1697,23 @@ impl Scheduler {
                 }
                 Ok(RtApplyResult::Degraded(ref degradations)) => {
                     use crate::core::rt_config::RtDegradation;
+                    // `Degraded` is returned for ANY degradation — a
+                    // non-PREEMPT_RT kernel, a refused affinity, a clamped
+                    // priority — several of which say nothing about mlockall.
+                    // Deriving the lock state from "was it requested and did
+                    // it specifically fail" rather than from "was everything
+                    // perfect" keeps a successful lock from being reported as
+                    // absent, which would emit a false "RT on unlocked memory"
+                    // warning on the commonest configuration there is: a
+                    // machine that locks memory fine and simply is not
+                    // PREEMPT_RT.
+                    self.rt_memory_locked = rt.memory_locking
+                        && !degradations
+                            .iter()
+                            .any(|d| matches!(d, RtDegradation::MemoryLockUnavailable(_)));
+                    if self.rt_memory_locked {
+                        print_line("[SCHEDULER] Memory locked (mlockall)");
+                    }
                     for d in degradations {
                         print_line(&format!("[SCHEDULER] RT degraded: {:?}", d));
                         // Store in RtState so degradations()/has_full_rt() work

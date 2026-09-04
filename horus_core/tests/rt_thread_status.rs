@@ -217,11 +217,15 @@ fn the_reported_policy_and_the_reported_reason_agree() {
     let s = &statuses[0];
 
     if s.granted.is_realtime() {
-        assert!(
-            s.priority > 0,
-            "a real-time policy must carry a real priority, got {}",
-            s.priority
-        );
+        // Only SCHED_FIFO carries a static priority; a SCHED_DEADLINE thread
+        // is admitted with a budget and reports priority 0.
+        if s.granted == RtPolicy::Fifo {
+            assert!(
+                s.priority > 0,
+                "a SCHED_FIFO thread must carry a real priority, got {}",
+                s.priority
+            );
+        }
         assert!(
             s.refusal.is_none(),
             "the kernel granted the policy, so there is nothing to explain: {:?}",
