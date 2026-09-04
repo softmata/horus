@@ -4557,6 +4557,11 @@ impl Scheduler {
 
     /// Process control commands — delegates to execution.rs topic-based implementation.
     fn process_control_commands(&mut self) {
+        // Names asked to restart. Collected rather than applied in place because
+        // the loop below holds a mutable borrow of `self.control_topic`, and
+        // clearing `initialized` needs `self.nodes`.
+        let mut restart_requests: Vec<String> = Vec::new();
+
         // Poll the control topic for commands from CLI (horus node kill/pause/resume)
         if let Some(ref mut ctl) = self.control_topic {
             while let Some(cmd) = ctl.recv() {
@@ -4583,7 +4588,41 @@ impl Scheduler {
                         self.running
                             .store(false, std::sync::atomic::Ordering::SeqCst);
                     }
+                    ControlCommand::RestartNode { ref name } => {
+                        restart_requests.push(name.clone());
+                    }
                     _ => {} // Other commands (SetNodeRate, etc.) — not yet implemented
+                }
+            }
+        }
+
+        // Clearing `initialized` is the whole mechanism: `reinit_pending_nodes`
+        // runs on the tick loop and re-runs `init()` for any node that is not
+        // stopped, not paused, and not initialised. Also lift an operator pause,
+        // since a wedged node is often paused before it is restarted and would
+        // otherwise be skipped by the very check that would have re-inited it.
+        for name in restart_requests {
+            if let Some(ref controls) = self.node_controls {
+                controls.set_paused(&name, false);
+            }
+            match self
+                .nodes
+                .iter_mut()
+                .find(|n| n.name.as_ref() == name.as_str())
+            {
+                Some(registered) => {
+                    registered.initialized = false;
+                    registered.is_paused = false;
+                    print_line(&format!(
+                        "[CONTROL] Node '{}' will re-initialize on the next tick",
+                        name
+                    ));
+                }
+                None => {
+                    print_line(&format!(
+                        "[CONTROL] Restart requested for unknown node '{}'",
+                        name
+                    ));
                 }
             }
         }

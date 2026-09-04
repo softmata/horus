@@ -580,7 +580,7 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     Ok(())
 }
 
-/// Restart a node (pause + resume via control topic to trigger re-init)
+/// Restart a node — asks the scheduler to re-run its `init()` on the next tick.
 pub fn restart_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
     let node = find_node(&nodes, name)?;
@@ -591,16 +591,13 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
         node.name.white().bold()
     );
 
-    // Pause then resume triggers re-init in the scheduler
+    // Pause+Resume was sent here and claimed to trigger re-init. It did not:
+    // both arms only toggle a shared atomic, and nothing cleared the flag that
+    // `reinit_pending_nodes` keys off, so the node kept running untouched while
+    // this printed success.
     send_control_command(
         node,
-        ControlCommand::PauseNode {
-            name: node.name.clone(),
-        },
-    )?;
-    send_control_command(
-        node,
-        ControlCommand::ResumeNode {
+        ControlCommand::RestartNode {
             name: node.name.clone(),
         },
     )?;
