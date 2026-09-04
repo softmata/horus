@@ -2055,19 +2055,26 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 0 => self.header().capacity,
                 cached => cached,
             };
-            let total_size =
-                shm_fanout::ShmFanoutRing::required_file_size(type_size, is_pod, capacity as usize);
             let fanout_name = format!("{}_fanout", self.name);
-            if let Ok(fanout_storage) =
-                crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size)
-            {
+            // `required_file_size` is `None` for a geometry this layout cannot
+            // carry — a POD `T` larger than the fanout slot cap. Taking the
+            // SpscShm fallback below is what keeps `try_send_pod`'s unbounded
+            // memcpy inside its slot; the ring used to be built anyway with the
+            // slot silently clamped.
+            let fanout_storage =
+                shm_fanout::ShmFanoutRing::required_file_size(type_size, is_pod, capacity as usize)
+                    .and_then(|total_size| {
+                        crate::memory::shm_region::ShmRegion::new(&fanout_name, total_size).ok()
+                    });
+            if let Some(fanout_storage) = fanout_storage {
                 let is_owner = fanout_storage.is_owner();
                 let shm_base = fanout_storage.as_ptr() as *mut u8;
                 let ring = unsafe {
                     if is_owner {
-                        Some(shm_fanout::ShmFanoutRing::init_owner(
-                            shm_base, type_size, is_pod, capacity,
-                        ))
+                        // `init_owner` refuses the same geometry `attach` refuses
+                        // (POD slots too small for the message) rather than
+                        // writing a region no peer would accept.
+                        shm_fanout::ShmFanoutRing::init_owner(shm_base, type_size, is_pod, capacity)
                     } else {
                         // COMM-H1: `attach` returns None when the region carries an
                         // older/incompatible layout version (the v3 meta bump) —
