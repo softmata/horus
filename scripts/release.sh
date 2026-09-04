@@ -57,6 +57,13 @@ fi
 # Get current version
 CURRENT_VERSION=$(grep -m1 '^version = ' horus/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
 
+# Every pattern below interpolates the version into a sed REGEX, where `.` is
+# any character. Unescaped, `0.4.0` matches `0x480` — and it did: a bump once
+# rewrote the `640x480` row of a benchmark table in README.md to `640.5.0`.
+# Use $CURRENT_RE wherever the version appears in a pattern; $CURRENT_VERSION
+# stays for messages a human reads.
+CURRENT_RE=${CURRENT_VERSION//./\\.}
+
 echo -e "${BLUE}============================================${NC}"
 echo -e "${BLUE}   HORUS Comprehensive Release Script${NC}"
 echo -e "${BLUE}============================================${NC}"
@@ -109,6 +116,7 @@ CARGO_FILES=(
     # AI crate
     "horus_ai/Cargo.toml"
     # Python bindings
+    "horus_types/Cargo.toml"
     "horus_py/Cargo.toml"
     # Benchmarks
     "benchmarks/Cargo.toml"
@@ -118,7 +126,7 @@ CARGO_FILES=(
 
 for file in "${CARGO_FILES[@]}"; do
     if [ -f "$file" ]; then
-        sed -i "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" "$file"
+        sed -i "s/^version = \"$CURRENT_RE\"/version = \"$NEW_VERSION\"/" "$file"
         echo -e "  ${GREEN}+${NC} $file"
     else
         echo -e "  ${YELLOW}-${NC} $file (not found)"
@@ -135,7 +143,7 @@ PYPROJECT_FILES=(
 
 for file in "${PYPROJECT_FILES[@]}"; do
     if [ -f "$file" ]; then
-        sed -i "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" "$file"
+        sed -i "s/^version = \"$CURRENT_RE\"/version = \"$NEW_VERSION\"/" "$file"
         echo -e "  ${GREEN}+${NC} $file"
     fi
 done
@@ -151,7 +159,7 @@ PYTHON_INIT_FILES=(
 
 for file in "${PYTHON_INIT_FILES[@]}"; do
     if [ -f "$file" ]; then
-        sed -i "s/__version__ = \"$CURRENT_VERSION\"/__version__ = \"$NEW_VERSION\"/" "$file"
+        sed -i "s/__version__ = \"$CURRENT_RE\"/__version__ = \"$NEW_VERSION\"/" "$file"
         echo -e "  ${GREEN}+${NC} $file"
     fi
 done
@@ -161,51 +169,51 @@ echo -e "${CYAN}[4/10] Updating Rust source code versions...${NC}"
 
 # main.rs - CLI version
 if [ -f "horus_manager/src/main.rs" ]; then
-    sed -i "s/#\[command(version = \"$CURRENT_VERSION\")]/#[command(version = \"$NEW_VERSION\")]/" horus_manager/src/main.rs
+    sed -i "s/#\[command(version = \"$CURRENT_RE\")]/#[command(version = \"$NEW_VERSION\")]/" horus_manager/src/main.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/main.rs (CLI version)"
 fi
 
 # run.rs - multiple version references
 if [ -f "horus_manager/src/commands/run.rs" ]; then
-    sed -i "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/g" horus_manager/src/commands/run.rs
-    sed -i "s/horus = \"$CURRENT_VERSION\"/horus = \"$NEW_VERSION\"/g" horus_manager/src/commands/run.rs
-    sed -i "s/version: $CURRENT_VERSION/version: $NEW_VERSION/g" horus_manager/src/commands/run.rs
+    sed -i "s/version = \"$CURRENT_RE\"/version = \"$NEW_VERSION\"/g" horus_manager/src/commands/run.rs
+    sed -i "s/horus = \"$CURRENT_RE\"/horus = \"$NEW_VERSION\"/g" horus_manager/src/commands/run.rs
+    sed -i "s/version: $CURRENT_RE/version: $NEW_VERSION/g" horus_manager/src/commands/run.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/commands/run.rs"
 fi
 
 # new.rs - template version
 if [ -f "horus_manager/src/commands/new.rs" ]; then
-    sed -i "s/version: $CURRENT_VERSION/version: $NEW_VERSION/g" horus_manager/src/commands/new.rs
+    sed -i "s/version: $CURRENT_RE/version: $NEW_VERSION/g" horus_manager/src/commands/new.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/commands/new.rs"
 fi
 
 # registry.rs - default version
 if [ -f "horus_manager/src/registry.rs" ]; then
-    sed -i "s/String::from(\"$CURRENT_VERSION\")/String::from(\"$NEW_VERSION\")/g" horus_manager/src/registry.rs
+    sed -i "s/String::from(\"$CURRENT_RE\")/String::from(\"$NEW_VERSION\")/g" horus_manager/src/registry.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/registry.rs"
 fi
 
 # monitor.rs - JSON version
 if [ -f "horus_manager/src/monitor.rs" ]; then
-    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/g" horus_manager/src/monitor.rs
+    sed -i "s/\"version\": \"$CURRENT_RE\"/\"version\": \"$NEW_VERSION\"/g" horus_manager/src/monitor.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/monitor.rs"
 fi
 
 # monitor_tui.rs - TUI version display
 if [ -f "horus_manager/src/monitor_tui.rs" ]; then
-    sed -i "s/v$CURRENT_VERSION/v$NEW_VERSION/g" horus_manager/src/monitor_tui.rs
+    sed -i "s/v$CURRENT_RE/v$NEW_VERSION/g" horus_manager/src/monitor_tui.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/monitor_tui.rs"
 fi
 
 # workspace.rs - workspace template
 if [ -f "horus_manager/src/workspace.rs" ]; then
-    sed -i "s/version: $CURRENT_VERSION/version: $NEW_VERSION/g" horus_manager/src/workspace.rs
+    sed -i "s/version: $CURRENT_RE/version: $NEW_VERSION/g" horus_manager/src/workspace.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/workspace.rs"
 fi
 
 # cargo_config.rs - cargo config defaults
 if [ -f "horus_manager/src/config/cargo_config.rs" ]; then
-    sed -i "s/\"$CURRENT_VERSION\"/\"$NEW_VERSION\"/g" horus_manager/src/config/cargo_config.rs
+    sed -i "s/\"$CURRENT_RE\"/\"$NEW_VERSION\"/g" horus_manager/src/config/cargo_config.rs
     echo -e "  ${GREEN}+${NC} horus_manager/src/config/cargo_config.rs"
 fi
 
@@ -230,7 +238,7 @@ TOML_FILES=(
 
 for file in "${TOML_FILES[@]}"; do
     if [ -f "$file" ]; then
-        sed -i "s/$CURRENT_VERSION/$NEW_VERSION/g" "$file"
+        sed -i "s/$CURRENT_RE/$NEW_VERSION/g" "$file"
         echo -e "  ${GREEN}+${NC} $file"
     fi
 done
@@ -244,18 +252,29 @@ echo -e "  ${YELLOW}-${NC} docs-site is now a standalone package (../horus-docs)
 echo ""
 echo -e "${CYAN}[7/10] Updating documentation files...${NC}"
 
-# Main README
-if [ -f "README.md" ]; then
-    sed -i "s/$CURRENT_VERSION/$NEW_VERSION/g" README.md
-    echo -e "  ${GREEN}+${NC} README.md"
-fi
+# Documentation carries the version in a handful of specific FORMS. Replace
+# those, not every occurrence: prose also refers to past releases, and a
+# blanket substitution rewrites history. A bump once turned "releases before
+# that floor existed, `v0.4.0` and earlier" into "`v0.5.0` and earlier",
+# which says the opposite of what was meant and is invisible in a diff full
+# of legitimate version churn.
+bump_doc_versions() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    sed -i \
+        -e "s|badge/v$CURRENT_RE-|badge/v$NEW_VERSION-|g" \
+        -e "s|HORUS_VERSION=v$CURRENT_RE|HORUS_VERSION=v$NEW_VERSION|g" \
+        -e "s|horus-robotics>=$CURRENT_RE|horus-robotics>=$NEW_VERSION|g" \
+        -e "s|horus-robotics==$CURRENT_RE|horus-robotics==$NEW_VERSION|g" \
+        -e "s|cache/horus@$CURRENT_RE|cache/horus@$NEW_VERSION|g" \
+        "$file"
+    echo -e "  ${GREEN}+${NC} $file"
+}
 
-# Component READMEs
-for readme in horus_py/README.md horus_manager/README.md horus_library/README.md; do
-    if [ -f "$readme" ]; then
-        sed -i "s/$CURRENT_VERSION/$NEW_VERSION/g" "$readme"
-        echo -e "  ${GREEN}+${NC} $readme"
-    fi
+for doc in README.md README.de.md README.es.md README.ja.md README.pt-BR.md \
+           README.zh-CN.md SECURITY.md \
+           horus_py/README.md horus_manager/README.md horus_library/README.md; do
+    bump_doc_versions "$doc"
 done
 
 # NOTE: docs-site content is now at ../horus-docs
@@ -267,13 +286,13 @@ echo ""
 echo -e "${CYAN}[8/10] Updating GitHub templates and CI...${NC}"
 
 if [ -f ".github/ISSUE_TEMPLATE/bug_report.yml" ]; then
-    sed -i "s/placeholder: \"$CURRENT_VERSION\"/placeholder: \"$NEW_VERSION\"/" .github/ISSUE_TEMPLATE/bug_report.yml
+    sed -i "s/placeholder: \"$CURRENT_RE\"/placeholder: \"$NEW_VERSION\"/" .github/ISSUE_TEMPLATE/bug_report.yml
     echo -e "  ${GREEN}+${NC} .github/ISSUE_TEMPLATE/bug_report.yml"
 fi
 
 # Update PYPI_SETUP.md semver examples
 if [ -f ".github/PYPI_SETUP.md" ]; then
-    sed -i "s/\`$CURRENT_VERSION\`/\`$NEW_VERSION\`/g" .github/PYPI_SETUP.md
+    sed -i "s/\`$CURRENT_RE\`/\`$NEW_VERSION\`/g" .github/PYPI_SETUP.md
     echo -e "  ${GREEN}+${NC} .github/PYPI_SETUP.md"
 fi
 
@@ -282,8 +301,8 @@ echo -e "${CYAN}[9/10] Updating test files...${NC}"
 
 # Python test files
 find . -path "*/tests/*.py" -not -path "*/target/*" -not -path "*/.horus/*" -type f | while read -r file; do
-    if grep -q "version = \"$CURRENT_VERSION\"" "$file" 2>/dev/null; then
-        sed -i "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/g" "$file"
+    if grep -q "version = \"$CURRENT_RE\"" "$file" 2>/dev/null; then
+        sed -i "s/version = \"$CURRENT_RE\"/version = \"$NEW_VERSION\"/g" "$file"
         echo -e "  ${GREEN}+${NC} $file"
     fi
 done
