@@ -1128,10 +1128,14 @@ pub struct HorusParams {
     _opaque: [u8; 0],
 }
 
-/// Create a new params store.
+/// Create a new params store. Returns null if `.horus/config/params.yaml`
+/// exists but could not be read or parsed; the reason is on stderr.
 #[no_mangle]
 pub extern "C" fn horus_params_new() -> *mut HorusParams {
-    Box::into_raw(params_ffi::params_new()) as *mut HorusParams
+    match params_ffi::params_new() {
+        Some(p) => Box::into_raw(p) as *mut HorusParams,
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// Destroy params store.

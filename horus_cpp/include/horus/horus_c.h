@@ -526,6 +526,8 @@ void             horus_pointcloud_destroy(HorusPointCloud* pc);
 
 typedef struct HorusParams HorusParams;
 
+/* Returns NULL if .horus/config/params.yaml exists but is unreadable or
+   malformed; the reason is written to stderr. */
 HorusParams* horus_params_new(void);
 void         horus_params_destroy(HorusParams* params);
 int          horus_params_get_f64(const HorusParams* params, const char* key, double* out);
