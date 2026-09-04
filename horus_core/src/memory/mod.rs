@@ -35,6 +35,7 @@ pub use platform::{
     NamespaceCleanupResult, NamespaceInfo,
 };
 #[doc(hidden)]
+pub mod action_chunk_handle;
 pub mod tensor_handle;
 #[doc(hidden)]
 pub mod tensor_pool;
@@ -241,8 +242,9 @@ pub mod image;
 pub mod occupancy_grid;
 pub mod pointcloud;
 
-pub use backend::{BackendAllocation, PoolBackend};
 #[doc(hidden)]
+pub use action_chunk_handle::ActionChunkHandle;
+pub use backend::{BackendAllocation, PoolBackend};
 pub use tensor_handle::TensorHandle;
 #[doc(hidden)]
 pub use tensor_pool::{PoolAllocator, TensorPool, TensorPoolConfig};

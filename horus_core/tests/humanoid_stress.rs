@@ -58,7 +58,7 @@ use horus_core::communication::topic::Topic;
 use horus_core::core::{DurationExt, Node};
 use horus_core::scheduling::Scheduler;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,94 @@ use common::{cleanup_stale_shm, unique};
 // ════════════════════════════════════════════════════════════════════════
 // Message types (all POD for zero-copy)
 // ════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════
+// End-to-end latency instrumentation
+// ════════════════════════════════════════════════════════════════════════
+//
+// The header of this file has always claimed the test answers "what's the
+// end-to-end latency (sensor -> actuator)?". It did not. `stamp_ns` was
+// written as `seq * 1_000_000` -- a synthetic counter derived from the tick
+// index, not a clock reading -- and then never read by anything. No latency
+// was computed anywhere in the file, or anywhere else in the tree.
+//
+// It is measured now. The IMU stamps a real monotonic reading, the state
+// estimator PROPAGATES that stamp instead of overwriting it with a counter,
+// and the balance controller differences it against the clock when the derived
+// state reaches it. What comes out is the age of the sensor sample at the
+// moment the actuator command is computed, across two topic hops and two
+// scheduler wakeups.
+
+/// Process-wide monotonic origin. All nodes here run in one process, so a
+/// shared `Instant` origin gives every stamp a common, monotonic base without
+/// depending on the wall clock or on clock synchronisation.
+fn clock_origin() -> &'static Instant {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    ORIGIN.get_or_init(Instant::now)
+}
+
+fn now_ns() -> u64 {
+    clock_origin().elapsed().as_nanos() as u64
+}
+
+/// Lock-free sink for latency samples.
+///
+/// Preallocated and written with relaxed atomics because it is used from inside
+/// a node's `tick()`: a `Mutex` there would add the very contention the number
+/// is supposed to measure, and on the RT path it would be a priority inversion.
+/// Samples past capacity are counted and dropped rather than growing the
+/// buffer, so the measurement cost stays constant.
+struct LatencySink {
+    samples: Vec<AtomicU64>,
+    len: AtomicUsize,
+    dropped: AtomicU64,
+}
+
+impl LatencySink {
+    fn new(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            samples: (0..capacity).map(|_| AtomicU64::new(0)).collect(),
+            len: AtomicUsize::new(0),
+            dropped: AtomicU64::new(0),
+        })
+    }
+
+    #[inline]
+    fn record(&self, ns: u64) {
+        let idx = self.len.fetch_add(1, Ordering::Relaxed);
+        if idx < self.samples.len() {
+            self.samples[idx].store(ns, Ordering::Relaxed);
+        } else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Sorted samples, for percentile reads.
+    fn sorted(&self) -> Vec<u64> {
+        let n = self.len.load(Ordering::Relaxed).min(self.samples.len());
+        let mut v: Vec<u64> = self.samples[..n]
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+}
+
+/// A percentile of a pre-sorted slice, or `None` when the sample count cannot
+/// support it.
+///
+/// The floor is not decoration. A p99 read off 12 samples is the 12th-largest
+/// of 12 and carries no information about the tail; reporting it as "p99" is
+/// how a number that means nothing ends up in a document. `None` says so.
+fn percentile(sorted: &[u64], q: f64) -> Option<u64> {
+    let min_n = (1.0 / (1.0 - q)).ceil() as usize;
+    if sorted.len() < min_n {
+        return None;
+    }
+    let idx = ((sorted.len() as f64) * q).ceil() as usize;
+    sorted.get(idx.saturating_sub(1)).copied()
+}
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[repr(C)]
@@ -170,7 +258,9 @@ impl Node for ImuNode {
             gyro: [(t * 5.0).sin() * 0.01, 0.0, 0.0],
             orientation: [0.0, 0.0, (t * 0.5).sin() * 0.01, 1.0],
             seq: self.seq,
-            stamp_ns: self.seq * 1_000_000, // 1ms intervals
+            // A real monotonic reading, not a tick index. This stamp is
+            // what the whole latency measurement rests on.
+            stamp_ns: now_ns(),
         };
         if let Some(ref t) = self.topic {
             t.send(data);
@@ -261,6 +351,9 @@ impl Node for StateEstimatorNode {
 
         // Simple fusion: just forward IMU orientation + compute ZMP from FT
         let mut state = RobotState::default();
+        // The origin stamp of the freshest sensor sample folded into this
+        // estimate. Zero means none arrived this tick.
+        let imu_stamp_ns = latest_imu.map(|d: ImuData| d.stamp_ns).unwrap_or(0);
         if let Some(imu) = latest_imu {
             state.base_orientation = imu.orientation;
             state.base_angular_vel = imu.gyro;
@@ -273,7 +366,12 @@ impl Node for StateEstimatorNode {
             }
         }
         state.seq = self.seq;
-        state.stamp_ns = self.seq * 1_000_000;
+        // Carry the SENSOR's stamp forward. Overwriting it here with the
+        // estimator's own counter -- which is what this line used to do --
+        // discards the origin time and makes end-to-end latency unmeasurable
+        // downstream. Zero when no IMU sample has arrived yet, which the
+        // consumer treats as "no measurement" rather than as a huge one.
+        state.stamp_ns = imu_stamp_ns;
 
         if let Some(ref t) = self.state_out {
             t.send(state);
@@ -295,6 +393,10 @@ struct BalanceControllerNode {
     seq: u64,
     ticks: Arc<AtomicU64>,
     state_received: Arc<AtomicU64>,
+    /// Age of the originating IMU sample when the command derived from it is
+    /// produced here -- the sensor-to-actuator latency the file header claims
+    /// to report.
+    latency: Arc<LatencySink>,
 }
 impl Node for BalanceControllerNode {
     fn name(&self) -> &str {
@@ -309,6 +411,20 @@ impl Node for BalanceControllerNode {
         if let Some(ref t) = self.state_in {
             while let Some(state) = t.recv() {
                 self.state_received.fetch_add(1, Ordering::Relaxed);
+                // Measured before any work in this tick, so the sample is the
+                // age of the sensor reading at the moment the actuator command
+                // is computed -- not that plus this node's own compute.
+                //
+                // A zero stamp means the estimate folded in no IMU sample, and
+                // a stamp ahead of `now` would mean the clock went backwards;
+                // both are skipped rather than recorded as an enormous or
+                // negative latency.
+                if state.stamp_ns > 0 {
+                    let now = now_ns();
+                    if now >= state.stamp_ns {
+                        self.latency.record(now - state.stamp_ns);
+                    }
+                }
                 // Simple balance: adjust ankle joints based on ZMP error
                 let mut cmd = JointCmd20::default();
                 cmd.targets[14] = -state.zmp[0] * 5.0; // left ankle
@@ -557,6 +673,13 @@ fn humanoid_20dof_31_nodes_50_topics() {
     let mux_cmd_topic = format!("{}.mux_cmd", prefix);
 
     // Counters
+    // Sensor→actuator latency samples. Declared out here with the other
+    // counters so the report below can read it after the scheduler's scope has
+    // closed. 200k slots covers a 10s run at 500 Hz with room to spare;
+    // overflow is counted rather than grown, so recording cost cannot drift
+    // during the run.
+    let latency = LatencySink::new(200_000);
+
     let imu_ticks = Arc::new(AtomicU64::new(0));
     let ft_l_ticks = Arc::new(AtomicU64::new(0));
     let ft_r_ticks = Arc::new(AtomicU64::new(0));
@@ -588,6 +711,9 @@ fn humanoid_20dof_31_nodes_50_topics() {
     let src = state_recv_count.clone();
     let jc: Vec<_> = joint_ticks.iter().map(Arc::clone).collect();
 
+    // The scheduler thread takes its own handle; the report below reads the
+    // original after the thread has joined.
+    let latency_for_nodes = Arc::clone(&latency);
     let handle = std::thread::spawn(move || {
         let mut sched = Scheduler::new().tick_rate(1000_u64.hz());
 
@@ -656,6 +782,7 @@ fn humanoid_20dof_31_nodes_50_topics() {
                 seq: 0,
                 ticks: bc,
                 state_received: src,
+                latency: Arc::clone(&latency_for_nodes),
             })
             .rate(500_u64.hz())
             .order(2)
@@ -934,6 +1061,72 @@ fn humanoid_20dof_31_nodes_50_topics() {
         },
         wbc_hz
     );
+    // ── End-to-end latency: IMU sample -> actuator command ──────────
+    //
+    // Two topic hops and two scheduler wakeups: the 1 kHz IMU publishes, the
+    // state estimator folds it into a RobotState carrying the sensor's own
+    // stamp, and the 500 Hz balance controller differences that stamp when the
+    // command derived from it is produced.
+    let lat = latency.sorted();
+    let lat_dropped = latency.dropped.load(Ordering::Relaxed);
+    println!("║ END-TO-END LATENCY (IMU sample → actuator command)      ║");
+    if lat.is_empty() {
+        println!("║   NO SAMPLES — the sensor→actuator path carried nothing  ║");
+        failures.push(
+            "No end-to-end latency samples: no IMU-derived state reached the balance \
+             controller with a usable stamp",
+        );
+    } else {
+        let mean = lat.iter().sum::<u64>() as f64 / lat.len() as f64;
+        println!(
+            "║   n={:6}  min {:7.1}us  mean {:7.1}us              ║",
+            lat.len(),
+            lat[0] as f64 / 1000.0,
+            mean / 1000.0
+        );
+        // Percentiles are printed only where the sample count supports them.
+        // A "p99" read off a dozen samples is the largest of a dozen and says
+        // nothing about a tail; printing it anyway is how such a number ends
+        // up quoted in a document.
+        for (label, q) in [("p50", 0.50), ("p99", 0.99), ("p99.9", 0.999)] {
+            match percentile(&lat, q) {
+                Some(v) => println!(
+                    "║   {:5}            {:9.1}us                            ║",
+                    label,
+                    v as f64 / 1000.0
+                ),
+                None => println!(
+                    "║   {:5}            unsupported at n={:<6}               ║",
+                    label,
+                    lat.len()
+                ),
+            }
+        }
+        println!(
+            "║   max              {:9.1}us                            ║",
+            lat[lat.len() - 1] as f64 / 1000.0
+        );
+        if lat_dropped > 0 {
+            println!(
+                "║   {:6} samples past buffer capacity (not counted)       ║",
+                lat_dropped
+            );
+        }
+
+        // A gate, not decoration. The balance controller runs at 500 Hz, so a
+        // sample older than several of its own periods by the time it is acted
+        // on means the pipeline -- not the arithmetic -- is the problem. Set
+        // wide deliberately: this is a 31-node debug-build stress test on a
+        // shared machine, and the value of the number here is that it EXISTS
+        // and is tracked, not that it is tight.
+        const MAX_MEAN_LATENCY_US: f64 = 50_000.0;
+        if mean / 1000.0 > MAX_MEAN_LATENCY_US {
+            failures.push(
+                "Mean sensor→actuator latency exceeded 50ms — the pipeline is not keeping up",
+            );
+        }
+    }
+
     println!("╚══════════════════════════════════════════════════════════╝");
 
     if !failures.is_empty() {

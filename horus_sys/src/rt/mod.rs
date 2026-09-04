@@ -361,7 +361,14 @@ pub fn can_set_rt_priority() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        true // macOS doesn't require special privileges for thread policy
+        // False because `macos::set_realtime_priority` is a stub that returns
+        // `Err` on every call -- there is no privilege question to answer while
+        // the operation is unimplemented. This said `true` ("macOS doesn't
+        // require special privileges for thread policy"), which was true about
+        // macOS and false about this crate: the call it was predicting could
+        // never succeed. Flip it back when THREAD_TIME_CONSTRAINT_POLICY is
+        // actually wired up.
+        false
     }
     #[cfg(target_os = "windows")]
     {

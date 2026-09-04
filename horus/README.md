@@ -28,7 +28,7 @@ The `horus` crate re-exports everything you need:
 ```rust
 use horus::prelude::*;
 
-message!(SensorData = (f64, u32));
+message! { SensorData { value: f64, seq: u32 } }
 
 pub struct MyNode {
     publisher: Topic<SensorData>,
@@ -39,7 +39,7 @@ impl Node for MyNode {
     fn name(&self) -> &str { "MyNode" }
 
     fn tick(&mut self) {
-        let data = SensorData(self.counter as f64 * 0.1, self.counter);
+        let data = SensorData { value: self.counter as f64 * 0.1, seq: self.counter };
         self.publisher.send(data);
         self.counter += 1;
     }
