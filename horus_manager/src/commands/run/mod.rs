@@ -73,24 +73,34 @@ enum ExecutionTarget {
 /// `AllowList` were unreachable in shipped code (the import guard was
 /// permanently `Auto`). The 2026-07-30 audit flagged that as a live safety gap.
 ///
+/// That remedy was then wired into ONE of the five paths that spawn a run
+/// child — `execute_multiple_files`, reached only when `horus run` is handed
+/// more than one file. A bare `horus run`, a `horus.toml` run, a directory run
+/// and a `[workspace]` run all resolve to a single executable, so on every
+/// invocation a real single-binary robot makes, the safety gap those comments
+/// describe was still open. Hence pairs rather than a `Command`: the same
+/// translation now feeds `build_child_env`, which every single-executable path
+/// already uses, so there is one answer and no path can quietly miss it.
+///
 /// An environment variable already set by the operator wins: an explicit
 /// `HORUS_NET_*=...` on the command line should not be silently overridden by
 /// a value in a project file.
-fn apply_network_config(cmd: &mut std::process::Command) {
+fn network_env() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
     let manifest_path = Path::new(HORUS_TOML);
     if !manifest_path.exists() {
-        return;
+        return out;
     }
     let Ok(manifest) = HorusManifest::load_from(manifest_path) else {
-        return;
+        return out;
     };
     let Some(net) = manifest.network.as_ref() else {
-        return;
+        return out;
     };
 
     let mut set = |key: &str, value: String| {
         if std::env::var_os(key).is_none() {
-            cmd.env(key, value);
+            out.push((key.to_string(), value));
         }
     };
 
@@ -138,6 +148,17 @@ fn apply_network_config(cmd: &mut std::process::Command) {
         if let Some(action) = safety.on_link_lost.as_ref() {
             set("HORUS_NET_ON_LINK_LOST", action.clone());
         }
+    }
+    out
+}
+
+/// Apply the `[network]` translation to a child `Command`.
+///
+/// For the paths that build a `Command` directly rather than going through
+/// `build_child_env`.
+fn apply_network_config(cmd: &mut std::process::Command) {
+    for (key, value) in network_env() {
+        cmd.env(key, value);
     }
 }
 
@@ -303,7 +324,13 @@ fn execute_workspace(
         let binary = crate::build_dirs::binary_path(&project_dir, profile, member);
         if binary.exists() {
             cli_output::success(&format!("Running {}", member));
-            let status = std::process::Command::new(&binary).args(&args).status()?;
+            let mut cmd = std::process::Command::new(&binary);
+            cmd.args(&args);
+            // This path builds its child `Command` by hand instead of going
+            // through `build_child_env`, so it needs the `[network]`
+            // translation applied explicitly.
+            apply_network_config(&mut cmd);
+            let status = cmd.status()?;
             if !status.success() {
                 let code = status.code().unwrap_or(1);
                 return Err(anyhow!("Process exited with code {}", code));
@@ -983,6 +1010,15 @@ pub(crate) fn build_child_env() -> Result<Vec<(String, String)>> {
     // that does not work. One builder, one answer.
     env_vars.push(("PYTHONPATH".to_string(), run_python::build_python_path()?));
 
+    // `[network]` from horus.toml. This belongs here, not at one spawn site:
+    // `safety.on_link_lost`, `import` and `deny_export` are safety controls,
+    // and they used to reach the runtime only when `horus run` was handed
+    // several files. Every path that runs a single executable — a bare
+    // `horus run`, a `horus.toml` run, a directory run — comes through this
+    // function, so wiring it here is what makes the table apply to the
+    // invocation a real robot actually uses.
+    env_vars.extend(network_env());
+
     Ok(env_vars)
 }
 
@@ -1233,6 +1269,108 @@ mod tests {
             "Must set LD_LIBRARY_PATH"
         );
         assert!(names.contains(&"PYTHONPATH"), "Must set PYTHONPATH");
+    }
+
+    /// `[network]` must reach the child on the path a single-binary robot runs.
+    ///
+    /// `safety.on_link_lost`, `import` and `deny_export` are safety controls.
+    /// The translation that arms them was wired into ONE of the five spawn
+    /// paths — `execute_multiple_files`, reached only when `horus run` is
+    /// handed more than one file. A bare `horus run`, a `horus.toml` run and a
+    /// directory run all resolve to a single executable and went through
+    /// `build_child_env`, which set `PATH`, `LD_LIBRARY_PATH` and `PYTHONPATH`
+    /// and nothing else. On those paths `NetConfig::default()` read an
+    /// environment nobody had populated: `import` stayed `Auto`, `deny_export`
+    /// stayed empty, and the documented comms-loss safe state never armed.
+    #[test]
+    fn build_child_env_carries_the_network_table_to_the_child() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/bin")).unwrap();
+        fs::create_dir_all(tmp.path().join(".horus/lib")).unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            r#"
+[project]
+name = "link_loss_robot"
+version = "0.1.0"
+
+[network]
+import = "deny"
+deny_export = ["/motor/cmd", "/estop"]
+
+[network.safety]
+on_link_lost = "safe_state"
+missed_threshold = 3
+"#,
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // The operator's environment wins over the manifest, so a stray
+        // HORUS_NET_* here would mask the thing under test.
+        let preset: Vec<&str> = [
+            "HORUS_NET_IMPORT",
+            "HORUS_NET_DENY_EXPORT",
+            "HORUS_NET_ON_LINK_LOST",
+        ]
+        .into_iter()
+        .filter(|k| std::env::var_os(k).is_some())
+        .collect();
+        let result = build_child_env();
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            preset.is_empty(),
+            "precondition: {:?} set in this environment would override the manifest",
+            preset
+        );
+
+        let env_vars = result.unwrap();
+        let get = |key: &str| {
+            env_vars
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+
+        assert_eq!(
+            get("HORUS_NET_ON_LINK_LOST"),
+            Some("safe_state"),
+            "the comms-loss safe state must arm on the path a single-binary \
+             robot actually runs, not only on a multi-file `horus run`"
+        );
+        assert_eq!(get("HORUS_NET_IMPORT"), Some("deny"));
+        assert_eq!(get("HORUS_NET_DENY_EXPORT"), Some("/motor/cmd,/estop"));
+        assert_eq!(get("HORUS_NET_MISSED_THRESHOLD"), Some("3"));
+    }
+
+    /// An explicit `HORUS_NET_*` in the operator's environment still wins.
+    #[test]
+    fn an_explicit_network_variable_beats_the_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[project]\nname = \"p\"\nversion = \"0.1.0\"\n\n[network]\nimport = \"deny\"\n",
+        )
+        .unwrap();
+
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        std::env::set_current_dir(tmp.path()).unwrap();
+        // SAFETY: the CWD lock serialises the tests that touch process globals.
+        unsafe { std::env::set_var("HORUS_NET_IMPORT", "auto") };
+        let pairs = network_env();
+        unsafe { std::env::remove_var("HORUS_NET_IMPORT") };
+        std::env::set_current_dir(original).unwrap();
+        drop(_guard);
+
+        assert!(
+            !pairs.iter().any(|(k, _)| k == "HORUS_NET_IMPORT"),
+            "the manifest must not override an explicit HORUS_NET_IMPORT"
+        );
     }
 
     #[test]

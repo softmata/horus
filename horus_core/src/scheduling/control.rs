@@ -34,6 +34,21 @@ pub enum ControlCommand {
     GracefulShutdown,
     /// Force a metrics flush to the SHM registry (useful for debugging).
     RequestMetricsFlush,
+    /// Re-run a node's `init()` on the next tick without stopping the scheduler.
+    ///
+    /// `horus node restart` used to send `PauseNode` followed immediately by
+    /// `ResumeNode` and claim that re-initialised the node. It did not: both
+    /// arms only toggle a shared atomic, and `reinit_pending_nodes` — the code
+    /// that actually re-runs `init()` — keys off `registered.initialized`,
+    /// which nothing outside registration ever set back to false. The command
+    /// printed "The scheduler will re-initialize this node on next tick" and
+    /// nothing happened.
+    ///
+    /// Added last so a command serialised by an older CLI still decodes.
+    RestartNode {
+        /// Name of the node to re-initialise.
+        name: String,
+    },
 }
 
 impl ControlCommand {
@@ -47,6 +62,7 @@ impl ControlCommand {
             }
             Self::GracefulShutdown => "Graceful shutdown".to_string(),
             Self::RequestMetricsFlush => "Flush metrics".to_string(),
+            Self::RestartNode { name } => format!("Restart node '{}'", name),
         }
     }
 }

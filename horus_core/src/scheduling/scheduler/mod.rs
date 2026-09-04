@@ -1,4 +1,5 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
+use crate::core::log_buffer::start_log_file_drain_once;
 use crate::core::tick_context::{clear_tick_context, set_tick_context};
 use crate::core::{DurationExt, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
@@ -633,6 +634,21 @@ impl Scheduler {
             s = s.with_recording();
         }
 
+        // Drain the log ring buffer to disk if HORUS_LOG_FILE is set.
+        //
+        // `start_log_file_drain` reads the variable itself and returns `None`
+        // when it is unset, so this call is unconditional and users who do not
+        // opt in pay nothing. That guard lives INSIDE the function precisely so
+        // a call site could be unconditional — but there was no call site. The
+        // symbol appeared four times in the tree: the definition, its
+        // re-export, and two lines of one integration test that invoked it by
+        // hand. So `HORUS_LOG_FILE=1 horus run` wrote no `.horus/logs/horus.log`
+        // and `HORUS_LOG_DIR`/`_MAX_SIZE`/`_MAX_FILES` were dead with it, while
+        // the test that proves the drain works kept it green. An operator who
+        // sets a documented variable to get a post-incident log and finds an
+        // empty disk is the exact failure that variable exists to prevent.
+        start_log_file_drain_once();
+
         s
     }
 
@@ -837,7 +853,17 @@ impl Scheduler {
 
     /// Set the maximum number of deadline misses before emergency stop.
     ///
-    /// Default: 100. Only meaningful when nodes have `.rate()` set.
+    /// Default: 100. Per node and consecutive: a tick that meets its deadline
+    /// clears the run, so a node that misses intermittently and recovers never
+    /// reaches the ceiling.
+    ///
+    /// The graduated degradation ladder (warn at 3 consecutive misses, half
+    /// rate at 5, isolate at 10) runs below this. Its terminal rung — killing
+    /// the node outright, normally at 20 — is moved above `n` when `n` is
+    /// higher, so this ceiling is always reachable; killing the node is
+    /// permanent, and a killed node cannot go on to miss anything.
+    ///
+    /// Only meaningful when nodes have `.rate()` set.
     ///
     /// # Example
     /// ```rust,ignore
@@ -4739,6 +4765,11 @@ impl Scheduler {
 
     /// Process control commands — delegates to execution.rs topic-based implementation.
     fn process_control_commands(&mut self) {
+        // Names asked to restart. Collected rather than applied in place because
+        // the loop below holds a mutable borrow of `self.control_topic`, and
+        // clearing `initialized` needs `self.nodes`.
+        let mut restart_requests: Vec<String> = Vec::new();
+
         // Poll the control topic for commands from CLI (horus node kill/pause/resume)
         if let Some(ref mut ctl) = self.control_topic {
             while let Some(cmd) = ctl.recv() {
@@ -4765,7 +4796,41 @@ impl Scheduler {
                         self.running
                             .store(false, std::sync::atomic::Ordering::SeqCst);
                     }
+                    ControlCommand::RestartNode { ref name } => {
+                        restart_requests.push(name.clone());
+                    }
                     _ => {} // Other commands (SetNodeRate, etc.) — not yet implemented
+                }
+            }
+        }
+
+        // Clearing `initialized` is the whole mechanism: `reinit_pending_nodes`
+        // runs on the tick loop and re-runs `init()` for any node that is not
+        // stopped, not paused, and not initialised. Also lift an operator pause,
+        // since a wedged node is often paused before it is restarted and would
+        // otherwise be skipped by the very check that would have re-inited it.
+        for name in restart_requests {
+            if let Some(ref controls) = self.node_controls {
+                controls.set_paused(&name, false);
+            }
+            match self
+                .nodes
+                .iter_mut()
+                .find(|n| n.name.as_ref() == name.as_str())
+            {
+                Some(registered) => {
+                    registered.initialized = false;
+                    registered.is_paused = false;
+                    print_line(&format!(
+                        "[CONTROL] Node '{}' will re-initialize on the next tick",
+                        name
+                    ));
+                }
+                None => {
+                    print_line(&format!(
+                        "[CONTROL] Restart requested for unknown node '{}'",
+                        name
+                    ));
                 }
             }
         }
@@ -5557,6 +5622,15 @@ impl Scheduler {
             if let Some(deadline) = self.nodes[i].deadline {
                 let miss =
                     TimingEnforcer::check_deadline(tick_start, deadline, self.nodes[i].miss_policy);
+                if miss.is_none() {
+                    // The tick met its deadline: end the consecutive-miss run.
+                    // This is the only path that clears it, and it has to run
+                    // for every RT node with a deadline — including one with no
+                    // tick budget, which never reaches the budget block above.
+                    if let Some(ref monitor) = self.monitor.safety {
+                        monitor.record_deadline_met(&node_name);
+                    }
+                }
                 if miss.is_none() && self.nodes[i].in_safe_mode {
                     // See the RT executor: a latch that never clears turns
                     // Miss::SafeMode into a one-shot for the process lifetime.
