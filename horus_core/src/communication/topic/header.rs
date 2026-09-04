@@ -5,9 +5,11 @@
 //! rendezvous. It contains participant tracking, topology detection, and
 //! migration coordination.
 
+use std::collections::HashMap;
 use std::mem;
 use std::mem::offset_of;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use crate::error::{HorusError, HorusResult};
 
@@ -765,6 +767,10 @@ impl TopicHeader {
         now_ms: u64,
         timeout_ms: u64,
     ) {
+        // The one place a thread takes ownership of a slot, so the one place to
+        // record it as a live owner: the last-resort pass in `register_role`
+        // refuses to reclaim an entry whose thread is still running.
+        mark_thread_live(thread_hash);
         p.pid.store(pid, Ordering::Release);
         p.thread_id_hash.store(thread_hash, Ordering::Release);
         p.role.store(role_bit, Ordering::Release);
@@ -846,10 +852,23 @@ impl TopicHeader {
         }
 
         // Pass 3, last resort: a stale entry belonging to a thread of THIS
-        // process. `Drop for Topic` does not deregister, so a finished thread's
-        // slot is never reclaimed by anything else — and the reaper skips our
-        // own pid deliberately, because it cannot tell a departed thread from a
-        // busy one. A foreign live pid is never stolen.
+        // process that has ENDED. `Drop for Topic` does not deregister, so a
+        // finished thread's slot is never reclaimed by anything else — and the
+        // reaper skips our own pid deliberately, because it cannot tell a
+        // departed thread from a busy one. A foreign live pid is never stolen.
+        //
+        // "Ended" is asked of `thread_is_live`, not of the lease. The lease was
+        // the whole bug the paragraph above describes, and passes 1-2 only
+        // removed it for the case where a free slot exists: leases refresh every
+        // `LEASE_CHECK_INTERVAL` = 64 polls (dispatch.rs), so a subscriber
+        // polling at 1 Hz sits expired for ~92% of every cycle while draining
+        // the ring normally. Stealing from it decrements `subscriber_count`
+        // under a live reader — the under-count direction, the dangerous one:
+        // `nothing_is_draining` then sees `sub_count() == 0` and the lossy
+        // `send` starts retiring slots the victim has not read yet, and the
+        // victim never recovers, because `ensure_role` short-circuits on the
+        // role it already believes it holds. Refusing the registration outright
+        // is the honest alternative.
         for (i, p) in self.participants.iter().enumerate() {
             if p.active.load(Ordering::Acquire) != 1 {
                 continue;
@@ -858,6 +877,15 @@ impl TopicHeader {
                 continue;
             }
             if p.source_host.load(Ordering::Acquire) != 0 || p.pid.load(Ordering::Acquire) != pid {
+                continue;
+            }
+            // Locked per candidate rather than once around the loop: the body
+            // below calls `finish_claim`, which takes this same lock through
+            // `mark_thread_live`, and `std::sync::Mutex` is not reentrant — a
+            // guard held across the loop would deadlock the registration it is
+            // meant to speed up. The cost it saves is at most MAX_PARTICIPANTS
+            // = 16 uncontended locks on a startup-shaped path.
+            if thread_is_live(p.thread_id_hash.load(Ordering::Acquire)) {
                 continue;
             }
             if p.active
@@ -1901,6 +1929,132 @@ pub(crate) fn hash_thread_id(id: std::thread::ThreadId) -> u64 {
     hasher.finish()
 }
 
+/// Thread hashes of THIS process that own a participant slot and are still
+/// running.
+///
+/// `register_role`'s last-resort pass reclaims a lease-expired slot from our own
+/// pid — nothing else can, because `Drop` does not deregister (see
+/// `tests/participant_count_leak.rs` for why that is still open) and the reaper
+/// skips our own pid deliberately. What it must not do is take one from a thread
+/// that is still using it, and the lease cannot tell it apart: leases are
+/// refreshed every `LEASE_CHECK_INTERVAL` = 64 polls (dispatch.rs), so a
+/// subscriber polling at 1 Hz — an ordinary robotics rate — is expired for most
+/// of every cycle while reading perfectly well.
+///
+/// Process-local rather than another shared-memory field, because the entries
+/// that pass can touch are already restricted to `pid == ours`: a foreign
+/// process's participants are judged by `is_process_alive` instead, and a
+/// process-local map needs no header version bump and no `ParticipantEntry`
+/// bytes.
+///
+/// # The key is a 32-bit hash, and 32-bit hashes collide — hence the count
+///
+/// `ParticipantEntry::thread_id_hash` is already `u32`, and already
+/// load-bearing: the FIRST pass of `register_role` matches on it to find this
+/// thread's own entry. A collision there is the dangerous direction — a new
+/// thread silently adopts a live thread's registration and its role bits.
+///
+/// Here a collision must be made the SAFE direction, and a plain set of hashes
+/// does not manage it. Two live threads sharing a hash would insert one key
+/// between them, and the first of the two to exit would take it back out —
+/// leaving the other still running, still holding its slot, and reading as
+/// dead. Pass 3 would then reclaim a live subscriber's slot, which is the
+/// entire bug this registry exists to prevent, merely made rarer.
+///
+/// So the value is a count of the live threads carrying that hash, not a
+/// membership bit: `retain_thread_hash` increments, `release_thread_hash`
+/// decrements and removes only at zero. The remaining collision effect is
+/// one-directional and benign — a live thread keeps an ENDED thread's slot
+/// looking live, which costs one reclaimable slot and surfaces as the existing
+/// "No available participant slots" error. Loud, and it says what to do.
+///
+/// (Rust's `ThreadId` itself is guaranteed never to be reused within a
+/// process, even after a thread terminates, so hash truncation to `u32` is the
+/// only source of collisions here.)
+///
+/// Widening is still not worth what it costs: `thread_id_hash` is a
+/// shared-memory field whose struct has `size_of::<ParticipantEntry>() == 24`
+/// asserted in two places (this module's tests and `topic/tests.rs`), and
+/// growing it means a `TOPIC_VERSION` bump that every already-mapped segment
+/// pays for. If the pass-0 collision is ever worth closing, widen the field
+/// once, for that reason, and this map follows for free.
+static LIVE_THREADS: OnceLock<Mutex<HashMap<u32, usize>>> = OnceLock::new();
+
+fn live_threads() -> &'static Mutex<HashMap<u32, usize>> {
+    LIVE_THREADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Count this thread in as an owner of slots keyed by `thread_hash`.
+fn retain_thread_hash(thread_hash: u32) {
+    *live_threads()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(thread_hash)
+        .or_insert(0) += 1;
+}
+
+/// Count one owner back out, dropping the key only when the last one goes.
+fn release_thread_hash(thread_hash: u32) {
+    let mut live = live_threads().lock().unwrap_or_else(|e| e.into_inner());
+    if let std::collections::hash_map::Entry::Occupied(mut slot) = live.entry(thread_hash) {
+        // Saturating for the same reason the role counters are: an unmatched
+        // decrement here would wrap to `usize::MAX` and pin the hash live for
+        // the rest of the process. Every `retain` is paired with exactly one
+        // `release` by `LiveThreadTicket`, so this floor should be unreachable.
+        let remaining = slot.get().saturating_sub(1);
+        if remaining == 0 {
+            slot.remove();
+        } else {
+            *slot.get_mut() = remaining;
+        }
+    }
+}
+
+/// Counts this thread back out of [`LIVE_THREADS`] when the thread ends.
+///
+/// Thread exit is the event that makes a slot genuinely reclaimable, and a
+/// thread-local's destructor is the only notification of it this crate gets:
+/// the participant table is in shared memory and the handles that registered
+/// against it are long gone by then.
+struct LiveThreadTicket(u32);
+
+impl Drop for LiveThreadTicket {
+    fn drop(&mut self) {
+        release_thread_hash(self.0);
+    }
+}
+
+thread_local! {
+    static LIVE_THREAD_TICKET: std::cell::RefCell<Option<LiveThreadTicket>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record this thread as a live owner of participant slots.
+///
+/// The hash is counted in only from inside the thread-local that will count it
+/// back out again: a retain with no ticket behind it would mark the thread live
+/// for the life of the process and make every slot it holds permanently
+/// unreclaimable — trading a wrong steal for a slow leak. `try_with` fails only
+/// while this thread's TLS is already being destroyed, and a thread that far
+/// into its exit has no slot worth protecting.
+fn mark_thread_live(thread_hash: u32) {
+    let _ = LIVE_THREAD_TICKET.try_with(|ticket| {
+        let mut ticket = ticket.borrow_mut();
+        if ticket.is_none() {
+            retain_thread_hash(thread_hash);
+            *ticket = Some(LiveThreadTicket(thread_hash));
+        }
+    });
+}
+
+/// True while a thread of this process carrying this hash is still running.
+fn thread_is_live(thread_hash: u32) -> bool {
+    live_threads()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&thread_hash)
+}
+
 /// Monotonic milliseconds — the timebase for every timestamp this header keeps.
 ///
 /// Participant leases, `last_topology_change_ms` and the drain-stall detector
@@ -2861,6 +3015,129 @@ mod tests {
         .join()
         .unwrap();
         result.unwrap_err();
+    }
+
+    /// A slot may only be taken from a thread that has ENDED.
+    ///
+    /// `register_role`'s last-resort pass reclaims a lease-expired slot held by
+    /// our own pid, and an expired lease proves nothing about the owner: leases
+    /// refresh every `LEASE_CHECK_INTERVAL` = 64 polls (dispatch.rs), so a
+    /// subscriber polling at 1 Hz is expired for ~92% of every cycle while
+    /// draining the ring normally. Taking its slot decremented
+    /// `subscriber_count` under a live reader, after which `nothing_is_draining`
+    /// reads `sub_count() == 0` and the lossy `send` retires slots that reader
+    /// has not taken yet — the same silent loss passes 1-2 were introduced to
+    /// eliminate, still reachable through pass 3 whenever the table is full.
+    #[test]
+    fn a_running_thread_never_loses_its_slot_to_a_new_registration() {
+        let h = make_header(8, 8, true, 16);
+
+        // `scope`, not `spawn`: the victim borrows `&h` directly, so the test
+        // needs no raw pointer and no `unsafe` — `TopicHeader` is all atomics
+        // and PODs, so it is `Sync` on its own. The scope's join is also what
+        // makes the borrow sound on the FAILURE path: with `spawn`, an assertion
+        // that fired below unwound the test frame and dropped `h` while the
+        // still-parked victim held a pointer into it.
+        std::thread::scope(|s| {
+            // The channels live inside the scope so that an assertion failure
+            // drops `release_tx` as it unwinds. That releases the victim, and
+            // the scope's join finishes instead of hanging on a parked thread.
+            let (registered_tx, registered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+            // A subscriber on another thread, parked for the whole test so there
+            // is no doubt it is still there.
+            let header = &h;
+            s.spawn(move || {
+                let slot = header.register_consumer().expect("subscriber registers");
+                let hash = hash_thread_id(std::thread::current().id()) as u32;
+                registered_tx.send((slot, hash)).unwrap();
+                release_rx.recv().ok();
+            });
+            let (victim_slot, victim_hash) = registered_rx.recv().expect("subscriber registered");
+            assert_eq!(h.sub_count(), 1);
+
+            // Its lease has run out — all that says is that it has been polling
+            // below the refresh rate.
+            h.participants[victim_slot]
+                .lease_expires_ms
+                .store(1, Ordering::Release);
+
+            // Every other slot is held, with a lease that is still good, so the
+            // two safe passes find nothing and the last resort runs.
+            let fresh = current_time_ms() + 60_000;
+            for i in 0..MAX_PARTICIPANTS {
+                if i != victim_slot {
+                    plant_participant(&h, i, std::process::id(), 1, fresh);
+                }
+            }
+
+            let result = h.register_producer();
+
+            assert!(
+                result.is_err(),
+                "the only reclaimable-looking slot belongs to a thread that is still \
+                 running, so there is no slot to hand out; got {result:?}"
+            );
+            assert_eq!(
+                h.sub_count(),
+                1,
+                "the running subscriber is still registered and still reading"
+            );
+            let entry = &h.participants[victim_slot];
+            assert_eq!(entry.thread_id_hash.load(Ordering::Acquire), victim_hash);
+            assert_eq!(
+                entry.role.load(Ordering::Acquire),
+                2,
+                "still exactly the bit `register_consumer` sets — `register_role(2, \
+                 &self.subscriber_count)` — not overwritten by the producer that \
+                 tried to take the slot"
+            );
+
+            release_tx.send(()).ok();
+        });
+    }
+
+    /// Two live threads sharing one truncated hash: the first to end must not
+    /// carry the second's slot out of the registry with it.
+    ///
+    /// `thread_id_hash` is a `u64` hash truncated to `u32`, so distinct threads
+    /// can collide. A plain `HashSet<u32>` stored one key for both, and the
+    /// first exit removed it — leaving a still-running thread reading as dead
+    /// and its slot reclaimable by pass 3, which is precisely the live-slot
+    /// steal this registry exists to prevent. The count is what makes the
+    /// collision one-directional.
+    ///
+    /// Driven through `retain`/`release` rather than two real threads because a
+    /// `u32` collision cannot be provoked from `ThreadId`s on demand. The key is
+    /// a sentinel no participant in this process carries: `mark_thread_live`
+    /// only ever inserts a real `hash_thread_id`, and `plant_participant` uses
+    /// `0xDEAD_BEEF`, so nothing else in the suite touches this entry.
+    #[test]
+    fn a_hash_shared_by_two_live_threads_survives_the_first_exit() {
+        const COLLIDING: u32 = 0x0BAD_5107;
+
+        assert!(!thread_is_live(COLLIDING), "sentinel starts unused");
+
+        retain_thread_hash(COLLIDING); // thread A claims a slot
+        retain_thread_hash(COLLIDING); // thread B collides, claims another
+        assert!(thread_is_live(COLLIDING));
+
+        release_thread_hash(COLLIDING); // A ends
+        assert!(
+            thread_is_live(COLLIDING),
+            "B is still running and still owns its slot, so the hash is still live"
+        );
+
+        release_thread_hash(COLLIDING); // B ends
+        assert!(
+            !thread_is_live(COLLIDING),
+            "the last owner is gone, so the slot is genuinely reclaimable"
+        );
+
+        // Unmatched release is floored, not wrapped to usize::MAX.
+        release_thread_hash(COLLIDING);
+        assert!(!thread_is_live(COLLIDING));
     }
 
     // ── Topology detection ──────────────────────────────────────────────
