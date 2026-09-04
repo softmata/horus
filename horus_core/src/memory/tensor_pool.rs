@@ -72,14 +72,38 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// This is what makes "is the creator still alive?" answerable: with every
 /// holder on `LOCK_SH`, a non-blocking `LOCK_EX` upgrade succeeds only when
 /// nobody else has the file open. See `TensorPool::validate_or_reclaim`.
-/// Best-effort — a filesystem without `flock` support simply means abandoned
-/// pools are never reclaimed, which is the behaviour that existed before.
+///
+/// `EINTR` is retried rather than swallowed. `flock` blocks while another
+/// process holds `LOCK_EX` — `is_shm_file_stale` takes exactly that, briefly,
+/// on every candidate it tests — so a signal delivered in that window used to
+/// leave the handle unlocked. That was harmless while the reaper never ran; now
+/// that it does, an unlocked live pool is a pool that gets unlinked an hour
+/// later, which is the failure this lock exists to prevent.
+///
+/// A failure that is not `EINTR` stays best-effort and is logged: it means the
+/// filesystem has no working `flock` (or the kernel lock table is full), and
+/// the alternative — failing `TensorPool::open` — would take a healthy robot's
+/// camera consumer down over a reclamation risk that is an hour away and
+/// conditional. Abandoned pools then simply go unreclaimed, the behaviour that
+/// existed before any of this.
 #[cfg(unix)]
 fn hold_shared_lock(file: &File) {
     use std::os::unix::io::AsRawFd;
-    // SAFETY: `file` is a valid open descriptor; LOCK_SH is a valid flock op.
-    unsafe {
-        libc::flock(file.as_raw_fd(), libc::LOCK_SH);
+    loop {
+        // SAFETY: `file` is a valid open descriptor; LOCK_SH is a valid flock op.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        if rc == 0 {
+            return;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        log::warn!(
+            "flock(LOCK_SH) failed on a tensor pool ({err}); the pool is unprotected \
+             against reap_abandoned_files and abandoned pools here cannot be reclaimed"
+        );
+        return;
     }
 }
 
@@ -492,6 +516,12 @@ impl TensorPool {
         }
 
         let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+        // The one path into a pool that took no lock. `new()` locks on both of
+        // its arms, so a pool with a live creator was protected and one whose
+        // creator had exited but whose consumers were still reading was not —
+        // and `reap_abandoned_files` reclaims exactly the unlocked files, so a
+        // 1 GB pool under active use could be unlinked out from under it.
+        hold_shared_lock(&file);
 
         let metadata = file.metadata()?;
         let total_size = metadata.len() as usize;
@@ -2893,6 +2923,49 @@ mod tests {
             .expect("allocate from the reclaimed pool");
         let _ = t;
         drop(pool);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A pool that a consumer has open is not abandoned.
+    ///
+    /// `open()` was the one way into a pool that took no `flock`; both arms of
+    /// `new()` take one. So a pool whose creator had exited while its consumers
+    /// were still reading looked exactly like a leaked file to
+    /// `is_shm_file_stale` — and `reap_abandoned_files` unlinks precisely the
+    /// files that test answers true for, which here is a gigabyte of live camera
+    /// or lidar data pulled out from under a running reader.
+    #[cfg(unix)]
+    #[test]
+    fn a_pool_a_consumer_has_open_is_not_reported_abandoned() {
+        let pool_id = 10106;
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+
+        let path = shm_base_dir()
+            .join("tensors")
+            .join(format!("tensor_pool_{}", pool_id));
+        let _ = std::fs::remove_file(&path);
+
+        // Create the pool, then let the creator go — the file outlives it,
+        // because `TensorPool::drop` deliberately unlinks nothing.
+        drop(TensorPool::new(pool_id, config).expect("create pool"));
+        assert!(
+            crate::memory::is_shm_file_stale(&path),
+            "precondition: with the creator gone and nobody else in, the file is unheld"
+        );
+
+        let consumer = TensorPool::open(pool_id).expect("open the existing pool");
+        assert!(
+            !crate::memory::is_shm_file_stale(&path),
+            "a pool this process has mapped through open() must read as held: the reaper \
+             deletes every unheld file older than an hour"
+        );
+
+        drop(consumer);
         let _ = std::fs::remove_file(&path);
     }
 
