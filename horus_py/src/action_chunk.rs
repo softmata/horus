@@ -76,34 +76,38 @@ pub(crate) fn to_py_action_at(at: ActionAt) -> PyActionAt {
 /// of actions, and a control loop running at 500-1000 Hz interpolates within
 /// the newest chunk instead of latching the last command.
 ///
-/// Publishing, from a policy::
+/// Publishing, from a policy:
 ///
-///     import numpy as np, horus
+/// ```python
+/// import numpy as np, horus
 ///
-///     topic = horus.Topic(horus.ActionChunk, endpoint="arm.actions")
-///     actions = policy(observation)          # (horizon, action_dim) float32
-///     topic.send(horus.ActionChunk.from_numpy(
-///         actions, t0_ns=now_ns(), dt_ns=20_000_000, frame_id="arm"))
+/// topic = horus.Topic(horus.ActionChunk, endpoint="arm.actions")
+/// actions = policy(observation)          # (horizon, action_dim) float32
+/// topic.send(horus.ActionChunk.from_numpy(
+///     actions, t0_ns=now_ns(), dt_ns=20_000_000, frame_id="arm"))
+/// ```
 ///
-/// Consuming, from a control loop::
+/// Consuming, from a control loop:
 ///
-///     held = None
-///     while running:
-///         chunk = topic.recv()
-///         if chunk is not None:
-///             held = chunk
-///         if held is not None:
-///             action = held.sample(now_ns())
-///             if action is not None:
-///                 servo.command(action)
-///             else:
-///                 # No action for this instant. Ask why before deciding what
-///                 # to do about it -- a chunk that has not started yet is not
-///                 # the same problem as a policy that has stopped.
-///                 at = held.locate(now_ns())
-///                 if isinstance(at, horus.ActionAt.Stale):
-///                     servo.hold()
-///                     watchdog.policy_late(at.by_ns)
+/// ```python
+/// held = None
+/// while running:
+///     chunk = topic.recv()
+///     if chunk is not None:
+///         held = chunk
+///     if held is not None:
+///         action = held.sample(now_ns())
+///         if action is not None:
+///             servo.command(action)
+///         else:
+///             # No action for this instant. Ask why before deciding what to
+///             # do about it -- a chunk that has not started yet is not the
+///             # same problem as a policy that has stopped.
+///             at = held.locate(now_ns())
+///             if isinstance(at, horus.ActionAt.Stale):
+///                 servo.hold()
+///                 watchdog.policy_late(at.by_ns)
+/// ```
 ///
 /// ``sample()`` returns an action **only** when the query falls inside the
 /// chunk. Past the last action it returns ``None`` rather than extrapolating a
