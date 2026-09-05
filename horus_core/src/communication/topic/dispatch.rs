@@ -1892,7 +1892,7 @@ pub(super) fn send_uninitialized<
         // indication that the cause is permanent for this handle.
         if should_report_endpoint_exhaustion(topic.name(), Exhausted::ParticipantTable) {
             tracing::warn!(
-                "topic '{}': this publisher is NOT registered and will deliver                  nothing — {}",
+                "topic '{}': this publisher is NOT registered and will deliver nothing — {}",
                 topic.name(),
                 e
             );
@@ -2634,7 +2634,7 @@ pub(super) fn recv_uninitialized<
         // SILENT no-comms endpoint".
         if should_report_endpoint_exhaustion(topic.name(), Exhausted::ParticipantTable) {
             tracing::warn!(
-                "topic '{}': this subscriber is NOT registered and will receive                  nothing — {}",
+                "topic '{}': this subscriber is NOT registered and will receive nothing — {}",
                 topic.name(),
                 e
             );

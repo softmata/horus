@@ -576,6 +576,94 @@ fn a_prefix_install_exports_horus_prefix_to_the_shell() {
     );
 }
 
+/// ...including on a re-install, where PATH is already configured.
+///
+/// This is the population the line exists for: a prefix install puts
+/// `${HORUS_PREFIX}/bin` on PATH, so every upgrade and re-install takes the
+/// "PATH already configured" arm. The export first landed inside the `else` arm
+/// of that check, which made it dead for exactly those users — the same mistake
+/// install.sh already records 60 lines above for the shell-integration block
+/// that used to live there.
+#[test]
+fn a_prefix_install_exports_horus_prefix_on_a_reinstall_too() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         PATH=\"$INSTALL_DIR:$PATH\"\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    // INSTALL_DIR is on PATH above, which is what every re-install of a prefix
+    // install looks like.
+    let out = sb.run(&script, "/bin/bash", false, &[]);
+    assert!(
+        out.contains("PATH already configured"),
+        "precondition: this test must exercise the already-configured arm:\n{out}"
+    );
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        rc.contains("export HORUS_PREFIX="),
+        "a re-install must still export HORUS_PREFIX — it is the population \
+         that most needs it, since a prefix install always puts its bin on \
+         PATH. rc was:\n{rc}"
+    );
+}
+
+/// A stale prefix line is replaced, not counted as already configured.
+#[test]
+fn a_changed_prefix_replaces_the_old_export() {
+    let sb = Sandbox::new();
+    std::fs::write(
+        sb.path().join(".bashrc"),
+        "export HORUS_PREFIX=\"/old/location\"\n",
+    )
+    .unwrap();
+
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         PATH=\"$INSTALL_DIR:$PATH\"\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, "/bin/bash", false, &[]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        rc.contains(&prefix.display().to_string()),
+        "the new prefix must be exported:\n{rc}"
+    );
+    assert!(
+        !rc.contains("/old/location"),
+        "a stale prefix line must be removed, not left to win by being first \
+         in the file:\n{rc}"
+    );
+}
+
 /// The `export HORUS_PREFIX` line must be fish-safe.
 ///
 /// fish has no `export` builtin, and a POSIX export line stops `config.fish`

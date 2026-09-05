@@ -167,7 +167,19 @@ impl ParticipantEntry {
 
     /// Clear this entry (use atomic for thread safety)
     pub(crate) fn clear(&self) {
-        self.active.store(0, Ordering::Release);
+        // Clear the identity BEFORE publishing `active = 0`: that store is what
+        // makes the slot claimable — `claim_free_slot` scans for
+        // `active == 0` and CASes it to the initializing sentinel — so anything
+        // written after it could be overwriting a NEW owner's fields.
+        //
+        // The order used to be the other way round, which was harmless while
+        // the only non-test caller was `TopicHeader::initialize`: that runs
+        // single-threaded before `magic` is published, so nothing could be
+        // scanning. Giving a registration back on `Drop` made this reachable
+        // from a live process on every last-handle release.
+        //
+        // `reap_dead_participants_now` writes the same sequence inline and
+        // carries the same reasoning; this is the one place it belongs.
         self.lease_expires_ms.store(0, Ordering::Release);
         self.role.store(0, Ordering::Release);
         self.pid.store(0, Ordering::Release);
@@ -175,6 +187,7 @@ impl ParticipantEntry {
         self.source_host.store(0, Ordering::Release);
         self.pub_handles.store(0, Ordering::Release);
         self.sub_handles.store(0, Ordering::Release);
+        self.active.store(0, Ordering::Release);
         // `generation` is deliberately NOT reset. Its whole purpose is to
         // outlive the registration it identifies, so that a handle holding a
         // stale (slot, generation) can be told apart from the current owner.

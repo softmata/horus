@@ -909,30 +909,50 @@ else
                     echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
                 ;;
         esac
-        # A prefix install hangs entirely on this variable being in the
-        # environment that runs `horus`. Both readers take it from there and
-        # from nowhere else -- version.rs says so outright: "HORUS_PREFIX is the
-        # whole interface ... there is no second name to read, and no way to
-        # discover a prefix install from outside its own tree". The installer
-        # never exported it or asked the user to, so `horus run`'s cache root
-        # fell back to ~/.horus/cache and the version gate read a state root
-        # holding none of this install's files. The half of that change that
-        # landed in Rust only worked for a user who guessed the variable.
-        if [ -n "${HORUS_PREFIX:-}" ]; then
-            case "$SHELL_RC" in
-                */config.fish)
-                    grep -qF "set -gx HORUS_PREFIX" "$SHELL_RC" 2>/dev/null || \
-                        echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
-                    ;;
-                *)
-                    grep -q "HORUS_PREFIX" "$SHELL_RC" 2>/dev/null || \
-                        echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
-                    ;;
-            esac
-        fi
     fi
     export PATH="${INSTALL_DIR}:$PATH"
     ok "Added to PATH"
+fi
+
+# A prefix install hangs entirely on this variable being in the environment that
+# runs `horus`. Both readers take it from there and from nowhere else --
+# version.rs says so outright: "HORUS_PREFIX is the whole interface ... there is
+# no second name to read, and no way to discover a prefix install from outside
+# its own tree". Without it `horus run`'s cache root falls back to
+# ~/.horus/cache and the version gate reads a state root holding none of this
+# install's files.
+#
+# OUTSIDE the PATH check, and deliberately. This first landed inside the else
+# arm, which made it dead for the population it exists to repair: a prefix
+# install puts ${HORUS_PREFIX}/bin on PATH, so every re-install and upgrade
+# takes the "PATH already configured" arm and would never have been given the
+# variable. That is the same mistake this file already records 60 lines above
+# for the shell-integration block that used to live there.
+#
+# The rc file and its directory may therefore not exist yet, and SHELL_RC is
+# only assigned in the else arm -- so re-detect nothing, just guard on it.
+if [ -n "${HORUS_PREFIX:-}" ] && [ -n "$SHELL_RC" ] && [ -z "$TARGET_USER" ]; then
+    mkdir -p "$(dirname "$SHELL_RC")" 2>/dev/null || true
+    case "$SHELL_RC" in
+        */config.fish)
+            grep -qF "set -gx HORUS_PREFIX" "$SHELL_RC" 2>/dev/null || \
+                echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+            ;;
+        *)
+            # Value-aware: a stale line naming a DIFFERENT prefix must be
+            # replaced, not treated as "already configured".
+            if grep -q "^\(export \)\?HORUS_PREFIX=" "$SHELL_RC" 2>/dev/null; then
+                grep -qF "HORUS_PREFIX=\"${HORUS_PREFIX}\"" "$SHELL_RC" 2>/dev/null || {
+                    sed -i.horusbak "\\|^\\(export \\)\\?HORUS_PREFIX=|d" "$SHELL_RC" 2>/dev/null || \
+                        sed -i '' "\\|^\\(export \\)\\?HORUS_PREFIX=|d" "$SHELL_RC" 2>/dev/null
+                    rm -f "${SHELL_RC}.horusbak" 2>/dev/null
+                    echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+                }
+            else
+                echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+            fi
+            ;;
+    esac
 fi
 
 # --- Shell integration ---
