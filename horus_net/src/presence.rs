@@ -98,7 +98,10 @@ fn json_escape(s: &str) -> String {
 /// line of defence behind `json_escape`).
 fn is_plain_node_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= 128
+        // The bound is horus_core's, not a second copy of the number. It used
+        // to be a bare 128 here against a bare 255 there, so a name in
+        // 129..=255 was minted locally and dropped here without a word.
+        && name.len() <= horus_core::core::presence::MAX_REPLICATED_NODE_NAME_LEN
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
