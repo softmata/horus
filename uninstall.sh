@@ -964,7 +964,7 @@ fi
 # In a function, with markers, for the same reason as the completion
 # removal above: the regression test runs this exact text.
 clean_shell_profiles() {
-    local profile fish_config
+    local profile fish_config prefix_path_line prefix_fish_line
     # Shell profiles: remove horus completion eval lines and shell integration
     for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
         # The block install.sh's add_zsh_fpath_block() writes. It is delimited by
@@ -1018,6 +1018,44 @@ clean_shell_profiles() {
             REMOVED=$((REMOVED + 1))
         fi
     done
+
+    # The PATH line install.sh writes for a --prefix install points at a
+    # directory this run has just deleted.
+    #
+    # Matched as an exact string, never as a pattern, and only for a prefix.
+    # A default install writes `export PATH="$HOME/.local/bin:$PATH"` for a
+    # directory pip, pipx, cargo and rustup also populate: deleting that line
+    # because horus happened to write it would take every one of those off the
+    # user's PATH. `$HORUS_PREFIX/bin` is a directory horus created and horus
+    # removed, so it is the only one safe to take back out.
+    if [ -n "${HORUS_PREFIX:-}" ] && [ "$HORUS_PREFIX" != "$HORUS_DIR" ]; then
+        prefix_path_line="export PATH=\"${HORUS_PREFIX}/bin:\$PATH\""
+        prefix_fish_line="fish_add_path ${HORUS_PREFIX}/bin"
+        for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" \
+                       "$HOME/.bash_profile" "$HOME/.config/fish/config.fish"; do
+            [ -f "$profile" ] || continue
+            if grep -qF "$prefix_path_line" "$profile" 2>/dev/null ||
+               grep -qF "$prefix_fish_line" "$profile" 2>/dev/null; then
+                cp "$profile" "${profile}.horus-backup" 2>/dev/null
+                # Deliberately NOT `... && mv`. grep exits 1 when it selects
+                # no lines, so an rc file whose only content was that PATH line
+                # would leave `&&` short-circuited and the line in place --
+                # precisely the file where the removal matters most.
+                # `|| true` because uninstall.sh runs under `set -e` (line 31)
+                # and grep exits 1 on selecting nothing. Without it, removing
+                # the last line of an rc file would abort the entire uninstall
+                # partway through.
+                { grep -vF "$prefix_path_line" "$profile" 2>/dev/null \
+                    | grep -vF "$prefix_fish_line" > "${profile}.horus-new" 2>/dev/null; } || true
+                if [ -f "${profile}.horus-new" ]; then
+                    mv "${profile}.horus-new" "$profile"
+                fi
+                rm -f "${profile}.horus-new" 2>/dev/null
+                echo -e "  ${GREEN}[+]${NC} Cleaned the prefix PATH line from $(basename $profile)"
+                REMOVED=$((REMOVED + 1))
+            fi
+        done
+    fi
 
     # fish keeps its own syntax in its own file, and the loop above does not
     # walk it. install.sh writes `set -gx HORUS_PREFIX "..."` into config.fish;

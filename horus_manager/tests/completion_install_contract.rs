@@ -191,7 +191,12 @@ impl Sandbox {
 
     fn uninstall(&self, xdg: &[(&str, &str)]) -> String {
         let script = format!(
-            "HORUS_DIR=\"$HOME/.horus\"\n\
+            // `set -e`, because uninstall.sh sets it at line 31. Without it the
+            // harness is more forgiving than the shipped script: a command that
+            // legitimately exits non-zero (grep selecting no lines, say) reads
+            // as harmless here and aborts the real uninstall partway through.
+            "set -e\n\
+             HORUS_DIR=\"$HOME/.horus\"\n\
              GREEN=''; YELLOW=''; NC=''\n\
              REMOVED=0; SKIPPED=0\n\
              {paths}\n{removal}\n{profiles}\n\
@@ -959,5 +964,100 @@ fn the_prefix_cleanup_leaves_similarly_named_variables_alone() {
         fish.contains("HORUS_PREFIX_OTHER"),
         "the fish cleanup has no end-of-name boundary and ate a neighbouring \
          variable:\n{fish}"
+    );
+}
+
+/// A prefix install's PATH line goes; the shared `~/.local/bin` line stays.
+///
+/// Both halves matter. The prefix line names a directory this uninstall just
+/// deleted, so leaving it is dead weight the user has to find themselves. The
+/// default line names `~/.local/bin` — which pip, pipx, cargo and rustup all
+/// install into — so removing it because horus happened to write it would take
+/// every one of those off PATH. That is why the removal matches an exact
+/// string built from `$HORUS_PREFIX` rather than anything resembling
+/// `export PATH=`.
+#[test]
+fn uninstalling_a_prefix_install_removes_only_its_own_path_line() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let p = prefix.display().to_string();
+    fs::write(
+        sb.path().join(".bashrc"),
+        format!(
+            "# bashrc\n\
+             export PATH=\"{p}/bin:$PATH\"\n\
+             export PATH=\"$HOME/.local/bin:$PATH\"\n\
+             export PATH=\"/opt/somebody-else/bin:$PATH\"\n"
+        ),
+    )
+    .unwrap();
+
+    sb.uninstall(&[("HORUS_PREFIX", &p)]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !rc.contains(&format!("{p}/bin")),
+        "the prefix PATH line points at a directory the uninstaller just \
+         deleted and must not survive it:\n{rc}"
+    );
+    assert!(
+        rc.contains("$HOME/.local/bin"),
+        "the uninstaller removed the shared ~/.local/bin PATH line. pip, pipx, \
+         cargo and rustup install there too; taking that line out over horus \
+         breaks all of them:\n{rc}"
+    );
+    assert!(
+        rc.contains("/opt/somebody-else/bin"),
+        "the uninstaller removed a PATH line that has nothing to do with \
+         horus:\n{rc}"
+    );
+}
+
+/// The default install must not trip the prefix branch at all.
+#[test]
+fn uninstalling_a_default_install_touches_no_path_line() {
+    let sb = Sandbox::new();
+    let original = "# bashrc\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+    fs::write(sb.path().join(".bashrc"), original).unwrap();
+
+    sb.uninstall(&[]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        rc.contains("$HOME/.local/bin"),
+        "a default uninstall (no HORUS_PREFIX) edited a PATH line it has no \
+         claim on:\n{rc}"
+    );
+}
+
+/// An rc file whose only content is the prefix PATH line.
+///
+/// Two ways this went wrong, both invisible in a multi-line fixture:
+/// `grep -v` exits 1 when it selects nothing, so gating the rewrite on `&&`
+/// left the line in the one file where removing it mattered most; and under
+/// `set -e` — which uninstall.sh sets at line 31 — that same exit status
+/// aborts the uninstaller partway through, leaving everything after this
+/// block undone.
+#[test]
+fn an_rc_file_that_is_only_the_prefix_path_line_is_emptied_not_skipped() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let p = prefix.display().to_string();
+    fs::write(
+        sb.path().join(".bashrc"),
+        format!("export PATH=\"{p}/bin:$PATH\"\n"),
+    )
+    .unwrap();
+
+    let out = sb.uninstall(&[("HORUS_PREFIX", &p)]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !rc.contains(&format!("{p}/bin")),
+        "the only line in the file was the one to remove, and it survived:\n{rc}"
+    );
+    assert!(
+        out.contains("Cleaned the prefix PATH line"),
+        "the uninstaller did not report cleaning the line:\n{out}"
     );
 }
