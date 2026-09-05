@@ -3,14 +3,20 @@
 //! These are the building blocks that the scheduler composes for different
 //! execution strategies (sequential, parallel, future RT-thread, etc.).
 //!
-//! # Everything above `run_tick` runs on an RT thread
+//! # Everything above `run_tick` can run on an RT thread
 //!
-//! `honor_safe_state_request` and `apply_degradation_action` are reached only
-//! from `rt_executor` -- the scheduler keeps its own main-thread copy of the
-//! degradation dispatch -- so they execute on a SCHED_FIFO thread, inside the
-//! tick. They therefore report through `rt_diag`, which formats into a
-//! statically allocated ring and never allocates, blocks or enters the kernel,
-//! rather than through `print_line`.
+//! `apply_degradation_action` is reached only from `rt_executor` -- the
+//! scheduler keeps its own main-thread copy of the degradation dispatch -- so
+//! it executes on a SCHED_FIFO thread, inside the tick.
+//!
+//! `honor_safe_state_request` is reached from ALL FOUR executors: its own
+//! doc-comment says "every executor must call this at the top of its per-node
+//! pass", and rt, compute, async and event all do. Only the RT one is
+//! SCHED_FIFO, but the function is shared, so it reports the way the strictest
+//! caller requires.
+//!
+//! That means `rt_diag`, which formats into a statically allocated ring and
+//! never allocates, blocks or enters the kernel, rather than `print_line`.
 //!
 //! `print_line` does `isatty` + `tcgetattr`, takes the process-global stdout
 //! lock, then `write` and `flush`. Pointed at a slow consumer -- a serial
@@ -20,8 +26,11 @@
 //! or shut down the node in the same breath: the worst possible place to wait
 //! on a terminal.
 //!
-//! The drain half is started by `RtExecutor::start` on the caller's thread
-//! before any RT thread exists, so a line queued from here always has a drainer.
+//! The drain half is started by every executor's `start`, on the caller's
+//! thread before any executor thread exists, so a line queued from here always
+//! has a drainer. It used to be started by `RtExecutor::start` alone, which
+//! made that last sentence false for any program without RT nodes: safing
+//! diagnostics went into the ring and nothing ever read them out.
 
 use std::time::{Duration, Instant};
 

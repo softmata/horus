@@ -336,15 +336,21 @@ fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
 
 /// Start the diagnostic drain thread, once per process.
 ///
-/// Called from `start_pool`, on the CALLER's thread. Never from an RT thread:
-/// spawning is a `clone(2)` plus a stack mapping, which is exactly the class of
-/// cost this whole mechanism exists to keep off the tick loop.
+/// Called from every executor's `start`, on the CALLER's thread. Never from an
+/// RT thread: spawning is a `clone(2)` plus a stack mapping, which is exactly
+/// the class of cost this whole mechanism exists to keep off the tick loop.
+///
+/// Not just `start_pool`. `honor_safe_state_request` reports through `rt_diag`
+/// and every executor calls it, so a program with no RT nodes at all queued
+/// safing diagnostics -- including "PANICKED in enter_safe_state" -- into a
+/// ring that nothing ever read. They were overwritten after `RT_DIAG_SLOTS`
+/// lines and never printed.
 ///
 /// The thread runs for the life of the process. It is one wakeup every
 /// `RT_DIAG_POLL` and it must outlive any individual executor, because an
 /// executor that is being torn down is precisely when its last diagnostics
 /// matter.
-fn start_rt_diag_drain() {
+pub(crate) fn start_rt_diag_drain() {
     RT_DIAG_DRAIN_STARTED.call_once(|| {
         let spawned = std::thread::Builder::new()
             .name("horus-rt-diag".to_string())

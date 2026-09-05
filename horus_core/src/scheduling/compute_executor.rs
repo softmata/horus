@@ -553,6 +553,12 @@ impl ComputeExecutor {
     ) -> Self {
         nodes.sort_by_key(|n| n.priority);
 
+        // `honor_safe_state_request` reports through `rt_diag`, so this
+        // executor needs the drain thread as much as the RT one does — without
+        // it, a safe-state panic on a compute node is queued into a ring nothing
+        // reads. Idempotent, and on the caller's thread.
+        super::rt_executor::start_rt_diag_drain();
+
         let handle = std::thread::Builder::new()
             .name("horus-compute".to_string())
             .spawn(move || Self::compute_thread_main(nodes, running, tick_period, monitors))
@@ -967,6 +973,70 @@ mod tests {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// A safing diagnostic from a non-RT executor must actually be printed.
+    ///
+    /// `honor_safe_state_request` reports through `rt_diag`, which only queues
+    /// into a static ring — a separate drain thread does the printing, and it
+    /// used to be started by `RtExecutor::start_pool` alone. A program whose
+    /// nodes are all Compute (or Async, or Event) therefore started no drainer,
+    /// so every safing line it queued sat in the ring until a later line
+    /// overwrote it. Nothing was printed and nothing said so.
+    ///
+    /// The drain writes to the process's real stdout, which libtest cannot
+    /// capture in-process, so this re-runs itself as a child and reads what the
+    /// child printed.
+    #[test]
+    fn a_compute_only_program_still_prints_its_safing_diagnostics() {
+        const CHILD: &str = "HORUS_COMPUTE_DIAG_CHILD";
+        const MARKER: &str = "compute-drain-marker";
+
+        if std::env::var_os(CHILD).is_some() {
+            // In the child: start a compute executor, which is the only thing
+            // that should be needed for a queued diagnostic to reach stdout.
+            let running = Arc::new(AtomicBool::new(true));
+            let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let exec = ComputeExecutor::start(
+                vec![make_compute_node("diag_node", count)],
+                running.clone(),
+                Duration::from_millis(5),
+                test_monitors(),
+            );
+
+            super::super::rt_executor::rt_diag(format_args!("{MARKER}"));
+
+            // Longer than one RT_DIAG_POLL, so a running drainer has emitted it.
+            std::thread::sleep(Duration::from_millis(200));
+
+            running.store(false, Ordering::SeqCst);
+            let _ = exec.stop();
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "scheduling::compute_executor::tests::a_compute_only_program_still_prints_its_safing_diagnostics",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("re-running the test binary should work");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test — was this test renamed?\n{stdout}"
+        );
+        assert!(
+            stdout.contains(MARKER),
+            "a diagnostic queued by a compute-only program never reached stdout: \
+             no drain thread was running.\n{stdout}"
+        );
     }
 
     fn make_compute_node(name: &str, count: Arc<std::sync::atomic::AtomicU64>) -> RegisteredNode {

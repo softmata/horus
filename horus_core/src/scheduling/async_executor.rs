@@ -54,6 +54,12 @@ impl AsyncExecutor {
     ) -> Self {
         nodes.sort_by_key(|n| n.priority);
 
+        // `honor_safe_state_request` reports through `rt_diag`, so this
+        // executor needs the drain thread as much as the RT one does — without
+        // it, a safe-state panic on a async I/O node is queued into a ring nothing
+        // reads. Idempotent, and on the caller's thread.
+        super::rt_executor::start_rt_diag_drain();
+
         let handle = std::thread::Builder::new()
             .name("horus-async-io".to_string())
             .spawn(move || Self::async_thread_main(nodes, running, tick_period, monitors))

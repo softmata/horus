@@ -164,6 +164,12 @@ impl EventExecutor {
         running: Arc<AtomicBool>,
         monitors: SharedMonitors,
     ) -> Self {
+        // `honor_safe_state_request` reports through `rt_diag`, so this
+        // executor needs the drain thread as much as the RT one does — without
+        // it, a safe-state panic on an event node is queued into a ring nothing
+        // reads. Idempotent, and on the caller's thread.
+        super::rt_executor::start_rt_diag_drain();
+
         let mut handles = Vec::with_capacity(nodes.len());
         let mut notifiers = Vec::with_capacity(nodes.len());
 
