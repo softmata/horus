@@ -523,3 +523,96 @@ fn the_uninstaller_lists_every_location_the_installer_writes() {
         "the marker install.sh writes into .zshrc and the one uninstall.sh deletes must match"
     );
 }
+
+/// A prefix install must export `HORUS_PREFIX`, not just `PATH`.
+///
+/// Both readers take the prefix from the environment of the running `horus`
+/// process and from nowhere else — `version.rs` says so outright: "HORUS_PREFIX
+/// is the whole interface ... there is no second name to read, and no way to
+/// discover a prefix install from outside its own tree". `run_rust`'s cache
+/// roots and the version gate's state root are both derived from it.
+///
+/// The installer never put it in the user's environment: the rc file got a PATH
+/// line only, `horus env --init` writes proxy functions and no exports, and the
+/// prefix epilogue told the user to export `PATH` and `HORUS_SOURCE`. So for
+/// every prefix user the cache root fell back to `~/.horus/cache` — deduped
+/// away as the legacy root, meaning the prefix cache was never searched — and
+/// the state root was `~/.horus`, which holds none of that install's files. The
+/// Rust half of the change worked only for someone who guessed the variable.
+#[test]
+fn a_prefix_install_exports_horus_prefix_to_the_shell() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, "/bin/bash", false, &[]);
+
+    let rc = sb
+        .read(".bashrc")
+        .expect("the installer must write to the rc file");
+    assert!(
+        rc.contains("export HORUS_PREFIX="),
+        "a prefix install must export HORUS_PREFIX — without it `horus run` \
+         never searches the prefix cache and the version gate reads a state \
+         root that holds none of this install's files. rc was:\n{rc}"
+    );
+    assert!(
+        rc.contains(&prefix.display().to_string()),
+        "the exported value must be the prefix that was installed to:\n{rc}"
+    );
+}
+
+/// The `export HORUS_PREFIX` line must be fish-safe.
+///
+/// fish has no `export` builtin, and a POSIX export line stops `config.fish`
+/// loading at that point — the exact failure this file already records for the
+/// PATH line, where a poisoned config stayed poisoned through every upgrade
+/// because the guard found the broken line and skipped writing a working one.
+#[test]
+fn the_prefix_export_uses_fish_syntax_in_config_fish() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, "/usr/bin/fish", false, &[]);
+
+    let rc = sb
+        .read(".config/fish/config.fish")
+        .expect("the installer must write config.fish for a fish shell");
+    assert!(
+        rc.contains("set -gx HORUS_PREFIX"),
+        "config.fish needs `set -gx`, not `export`:\n{rc}"
+    );
+    assert!(
+        !rc.contains("export HORUS_PREFIX"),
+        "a POSIX export line stops config.fish loading at that point:\n{rc}"
+    );
+}

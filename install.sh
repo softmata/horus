@@ -909,6 +909,27 @@ else
                     echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_RC"
                 ;;
         esac
+        # A prefix install hangs entirely on this variable being in the
+        # environment that runs `horus`. Both readers take it from there and
+        # from nowhere else -- version.rs says so outright: "HORUS_PREFIX is the
+        # whole interface ... there is no second name to read, and no way to
+        # discover a prefix install from outside its own tree". The installer
+        # never exported it or asked the user to, so `horus run`'s cache root
+        # fell back to ~/.horus/cache and the version gate read a state root
+        # holding none of this install's files. The half of that change that
+        # landed in Rust only worked for a user who guessed the variable.
+        if [ -n "${HORUS_PREFIX:-}" ]; then
+            case "$SHELL_RC" in
+                */config.fish)
+                    grep -qF "set -gx HORUS_PREFIX" "$SHELL_RC" 2>/dev/null || \
+                        echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+                    ;;
+                *)
+                    grep -q "HORUS_PREFIX" "$SHELL_RC" 2>/dev/null || \
+                        echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+                    ;;
+            esac
+        fi
     fi
     export PATH="${INSTALL_DIR}:$PATH"
     ok "Added to PATH"
@@ -1106,23 +1127,18 @@ if [ -n "$TARGET_USER" ]; then
 fi
 
 if [ -n "${HORUS_PREFIX:-}" ]; then
-    # find_horus_source_dir() (run_rust.rs) searches HORUS_SOURCE, a handful of
-    # fixed development paths, then the two cache roots — none of which is an
-    # arbitrary prefix. Say so rather than let the first `horus run` discover it.
-    warn "Installed under ${HORUS_PREFIX}, which 'horus run' does not search. Each user needs:"
+    # HORUS_PREFIX is what makes `horus run` search this prefix's cache and what
+    # points the version gate at this install's state root. Both read it from
+    # the environment of the running process, so it has to be exported --
+    # exporting HORUS_SOURCE instead only papered over the first of the two.
+    warn "Installed under ${HORUS_PREFIX}. Each user needs:"
     echo "      export PATH=\"${INSTALL_DIR}:\$PATH\""
-    echo "      export HORUS_SOURCE=\"${HORUS_SRC_DIR}\""
+    echo "      export HORUS_PREFIX=\"${HORUS_PREFIX}\""
     echo ""
     # Nothing outside the prefix records where the prefix was, so the uninstaller
     # cannot find it either — uninstall.sh reads HORUS_PREFIX from its own
     # environment for exactly this case (uninstall.sh:55-58).
     warn "To remove it later, pass the same prefix:"
     echo "      curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | HORUS_PREFIX=${HORUS_PREFIX} bash -s -- --yes"
-    echo ""
-    # version.rs reads ~/.horus/installed_version and ~/.horus/install_manifest.toml
-    # unconditionally, so the copies written under the prefix are state nothing
-    # reads back. The gate stays quiet rather than mis-firing, but it also cannot
-    # warn about drift on this install.
-    warn "The version gate is inactive for a prefix install: version.rs looks in ~/.horus, not ${HORUS_PREFIX}."
     echo ""
 fi
