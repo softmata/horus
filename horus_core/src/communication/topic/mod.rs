@@ -3440,8 +3440,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         T: Copy,
     {
         // Ensure we're registered as a consumer so the header is initialized
-        if self.local().role == TopicRole::Unregistered && self.ensure_consumer().is_err() {
-            return None;
+        if self.local().role == TopicRole::Unregistered {
+            if let Err(e) = self.ensure_consumer() {
+                // See `dispatch::recv_uninitialized`: silence here is a
+                // subscriber that reads `None` forever and looks idle.
+                if dispatch::should_report_endpoint_exhaustion(
+                    self.name(),
+                    dispatch::Exhausted::ParticipantTable,
+                ) {
+                    tracing::warn!(
+                        "topic '{}': this reader is NOT registered and will see nothing — {}",
+                        self.name(),
+                        e
+                    );
+                }
+                return None;
+            }
         }
 
         // Role==Both AND POD uses the local fast path (LocalState head/tail
