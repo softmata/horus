@@ -260,6 +260,9 @@ impl EventExecutor {
             "[Event] Stopped ({} nodes returning to scheduler)",
             nodes.len()
         ));
+        // The last diagnostics a torn-down executor queued are the ones worth
+        // having; the background drainer only wakes every RT_DIAG_POLL.
+        super::rt_executor::flush_rt_diag();
         nodes
     }
 

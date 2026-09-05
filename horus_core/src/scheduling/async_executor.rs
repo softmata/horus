@@ -93,12 +93,16 @@ impl AsyncExecutor {
         // node blocked inside `tick()`, because this loop only re-checks
         // `running` between ticks — and `run_with_filter` calls this before it
         // shuts down or safes any other node.
-        super::primitives::join_with_timeout(
+        let nodes = super::primitives::join_with_timeout(
             handle,
             "Async I/O",
             super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        // The last diagnostics a torn-down executor queued are the ones worth
+        // having; the background drainer only wakes every RT_DIAG_POLL.
+        super::rt_executor::flush_rt_diag();
+        nodes
     }
 
     /// Main function for the async I/O thread.

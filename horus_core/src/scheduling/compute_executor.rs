@@ -592,12 +592,16 @@ impl ComputeExecutor {
         // node blocked inside `tick()`, because this loop only re-checks
         // `running` between ticks — and `run_with_filter` calls this before it
         // shuts down or safes any other node.
-        super::primitives::join_with_timeout(
+        let nodes = super::primitives::join_with_timeout(
             handle,
             "Compute",
             super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        // The last diagnostics a torn-down executor queued are the ones worth
+        // having; the background drainer only wakes every RT_DIAG_POLL.
+        super::rt_executor::flush_rt_diag();
+        nodes
     }
 
     /// Main function for the compute coordinator thread.
@@ -1098,9 +1102,13 @@ mod tests {
 
             super::super::rt_executor::rt_diag(format_args!("{MARKER}"));
 
-            // Longer than one RT_DIAG_POLL, so a running drainer has emitted it.
-            std::thread::sleep(Duration::from_millis(200));
-
+            // No sleep. This used to wait out an RT_DIAG_POLL so the background
+            // drainer would have emitted the line, which made the test depend
+            // on that thread being scheduled inside a 200 ms window -- and on a
+            // loaded CI runner it was not, so the run failed with "never
+            // reached stdout" against code that was working. `stop()` now
+            // flushes the ring itself, so the line is emitted synchronously
+            // before this returns and no timing window is involved.
             running.store(false, Ordering::SeqCst);
             let _ = exec.stop();
             return;
@@ -1124,10 +1132,20 @@ mod tests {
             stdout.contains("1 passed"),
             "the child ran no test — was this test renamed?\n{stdout}"
         );
+        // Asserts only that the line reaches stdout, which is what this test is
+        // named for. It deliberately does NOT try to prove the line came from
+        // the flush in `stop()` rather than from the background drainer: the
+        // drainer's FIRST poll happens when its thread starts, which is inside
+        // the same few microseconds as the `rt_diag` above, so an ordering
+        // assertion here passes whether or not `stop()` flushes. Isolating the
+        // flush would need a way to keep that thread from running at all, and a
+        // guard that cannot fail for the reason it states is worse than no
+        // guard. What the flush buys is covered by the argument at
+        // `flush_rt_diag`, not by this assertion.
         assert!(
             stdout.contains(MARKER),
-            "a diagnostic queued by a compute-only program never reached stdout: \
-             no drain thread was running.\n{stdout}"
+            "a diagnostic queued by a compute-only program never reached \
+             stdout.\n{stdout}"
         );
     }
 

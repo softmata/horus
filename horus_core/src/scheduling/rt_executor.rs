@@ -350,6 +350,29 @@ fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
 /// `RT_DIAG_POLL` and it must outlive any individual executor, because an
 /// executor that is being torn down is precisely when its last diagnostics
 /// matter.
+/// Drain whatever is still in the diagnostic ring, now, on the calling thread.
+///
+/// Every executor's `stop()` owes its nodes this. The background drainer wakes
+/// only every `RT_DIAG_POLL`, so a program that queues a diagnostic and then
+/// shuts down inside that window exits with the line still in the ring — and
+/// the lines that arrive in the last milliseconds before a shutdown are the
+/// ones worth having: "PANICKED in enter_safe_state", a final deadline miss.
+///
+/// `RtExecutor::stop` has done this since the ring existed. Compute, Event and
+/// AsyncIo did not, though all three call `start_rt_diag_drain` and all three
+/// queue through `honor_safe_state_request` — so for a compute-only, event-only
+/// or async-only program the guarantee simply did not hold. Same class
+/// partition that keeps catching this code: fixed on the RT path, left on the
+/// other three.
+///
+/// It also makes the spawn-failure warning in `start_rt_diag_drain` true. That
+/// warning tells the operator diagnostics "will only be flushed at shutdown";
+/// with no shutdown flush on three of the four executors, they were not
+/// flushed at all.
+pub(crate) fn flush_rt_diag() {
+    rt_diag_drain(print_line);
+}
+
 pub(crate) fn start_rt_diag_drain() {
     RT_DIAG_DRAIN_STARTED.call_once(|| {
         let spawned = std::thread::Builder::new()
@@ -1213,7 +1236,7 @@ impl RtExecutor {
         // run shorter than `RT_DIAG_POLL` — or one whose last deadline miss came
         // in the final milliseconds, which is the interesting case — would exit
         // with its diagnostics still sitting in the ring.
-        rt_diag_drain(print_line);
+        flush_rt_diag();
         all_nodes
     }
 
