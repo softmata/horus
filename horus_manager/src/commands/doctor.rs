@@ -1803,9 +1803,18 @@ fn check_network() -> CheckResult {
     details.push(format!("Namespace: {}", namespace));
 
     // Check 3: horus_net enabled check
-    let net_enabled = std::env::var("HORUS_NET")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
+    //
+    // Asked the way the BUILD asks it. This used to read `HORUS_NET`, which
+    // nothing else in the tree reads — so the advice it printed
+    // ("use --net or HORUS_NET=1 to enable") handed the operator a remedy that
+    // changed nothing except that `doctor` then reported networking as enabled,
+    // confirming a state that did not exist. What actually puts horus_net in
+    // the binary is the `net` capability reaching cargo_gen, via `enable` in
+    // horus.toml or `HORUS_ENABLE`; `horus run --net` works because it appends
+    // to that list.
+    let manifest = crate::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml"))
+        .unwrap_or_default();
+    let net_enabled = crate::cargo_gen::net_capability_requested(&manifest);
     let no_net = std::env::var("HORUS_NO_NETWORK")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
@@ -1815,7 +1824,10 @@ fn check_network() -> CheckResult {
     } else if net_enabled {
         details.push("horus_net: enabled".to_string());
     } else {
-        details.push("horus_net: available (use --net or HORUS_NET=1 to enable)".to_string());
+        details.push(
+            "horus_net: available (enable it with `horus run --net`,              enable = [\"net\"] in horus.toml, or HORUS_ENABLE=net)"
+                .to_string(),
+        );
     }
 
     // Check 4: multicast reachability (basic socket test)

@@ -987,6 +987,28 @@ fn write_implicit_deps(cargo: &mut String, manifest: &HorusManifest) {
     }
 }
 
+/// Whether the `net` capability was asked for, by either route that works.
+///
+/// This is the condition that becomes `cargo --features net`, and therefore the
+/// only thing that decides whether the built binary contains horus_net at all.
+///
+/// Extracted so `horus doctor` can ask the same question the build asks.
+/// `doctor` used to answer it from `HORUS_NET`, which nothing else in the tree
+/// reads — so it told operators to set a variable that changed nothing except
+/// what `doctor` then said about it.
+pub fn net_capability_requested(manifest: &HorusManifest) -> bool {
+    std::env::var("HORUS_ENABLE")
+        .map(|v| {
+            v.split(',')
+                .any(|c| matches!(c.trim().to_lowercase().as_str(), "net" | "network"))
+        })
+        .unwrap_or(false)
+        || manifest
+            .enable
+            .iter()
+            .any(|c| matches!(c.to_lowercase().as_str(), "net" | "network"))
+}
+
 /// Features to enable on the `horus` dependency.
 ///
 /// `horus run --net` used to set `HORUS_NET=1` and stop there. That variable is
@@ -1022,16 +1044,7 @@ fn horus_dep_features(manifest: &HorusManifest) -> Vec<String> {
     // driver needs a feature on `horus`.
     let mut features: Vec<String> = Vec::new();
 
-    let requested_net = std::env::var("HORUS_ENABLE")
-        .map(|v| {
-            v.split(',')
-                .any(|c| matches!(c.trim().to_lowercase().as_str(), "net" | "network"))
-        })
-        .unwrap_or(false)
-        || manifest
-            .enable
-            .iter()
-            .any(|c| matches!(c.to_lowercase().as_str(), "net" | "network"));
+    let requested_net = net_capability_requested(manifest);
 
     if requested_net && !features.iter().any(|f| f == "net") {
         features.push("net".to_string());
@@ -2273,6 +2286,54 @@ mod horus_dep_feature_tests {
             with_enable(Some("network"), || horus_dep_features(&m)).contains(&"net".to_string())
         );
         assert!(with_enable(Some("NET"), || horus_dep_features(&m)).contains(&"net".to_string()));
+    }
+
+    /// `horus doctor` must answer from the same condition the build uses.
+    ///
+    /// It used to answer from `HORUS_NET`, which nothing in the tree reads, and
+    /// print "use --net or HORUS_NET=1 to enable" — advice whose second half
+    /// changed nothing except that `doctor` then reported networking as
+    /// enabled, confirming a state that did not exist. Worse than inert.
+    #[test]
+    fn horus_net_does_not_make_a_build_networked() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let m = HorusManifest::default();
+
+        let prev = std::env::var("HORUS_NET").ok();
+        // SAFETY: ENV_LOCK serialises the tests that touch process-global env.
+        unsafe { std::env::set_var("HORUS_NET", "1") };
+        let answered = net_capability_requested(&m);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HORUS_NET", v) },
+            None => unsafe { std::env::remove_var("HORUS_NET") },
+        }
+
+        assert!(
+            !answered,
+            "HORUS_NET=1 must not report a networked build — it reaches no \
+             build step, so reporting it as enabled tells the operator a \
+             falsehood they cannot act on"
+        );
+    }
+
+    /// ...and the routes that DO work must all answer yes.
+    #[test]
+    fn the_documented_routes_all_request_the_net_capability() {
+        let m = HorusManifest::default();
+        // `horus run --net` appends "net" to the capability list, which becomes
+        // HORUS_ENABLE.
+        assert!(with_enable(Some("net"), || net_capability_requested(&m)));
+        assert!(with_enable(Some("network"), || net_capability_requested(
+            &m
+        )));
+
+        // `enable = ["net"]` in horus.toml.
+        let mut manifest = HorusManifest::default();
+        manifest.enable = vec!["net".to_string()];
+        assert!(with_enable(None, || net_capability_requested(&manifest)));
+
+        // And nothing at all means no.
+        assert!(!with_enable(None, || net_capability_requested(&m)));
     }
 
     /// It must be opt-in: an ordinary build must not link the network stack.

@@ -2522,17 +2522,18 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 horus_manager::error_wrapper::set_json_diagnostics(true);
             }
 
-            // `--net` used to set this variable and stop there. HORUS_NET is
-            // read in exactly one place — `horus doctor` — so the flag never
-            // reached the build: the `net` Cargo feature is not in `default`,
-            // the generated manifest carried no `features = ["net"]`, and the
-            // resulting binary contained no horus_net symbols at all.
+            // `--net` used to set a `HORUS_NET` variable and stop there.
+            // Nothing read it but `horus doctor`, so the flag never reached the
+            // build: the `net` Cargo feature is not in `default`, the generated
+            // manifest carried no `features = ["net"]`, and the resulting
+            // binary contained no horus_net symbols at all.
             //
-            // Push it through the capability list as well, which is what
-            // actually turns into `cargo --features`.
+            // The capability list is what actually turns into
+            // `cargo --features`, so that is the only thing to push it through.
+            // `HORUS_NET` is gone: it never affected a build, and `doctor` now
+            // reads the same capability the build does.
             let mut enable = enable;
             if net {
-                std::env::set_var("HORUS_NET", "1");
                 let list = enable.get_or_insert_with(Vec::new);
                 if !list.iter().any(|c| c.eq_ignore_ascii_case("net")) {
                     list.push("net".to_string());
@@ -2911,16 +2912,20 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     ),
                 }
             }
-            result.map_err(HorusError::from)?;
-
-            if let Some(ref manifest) = hooks_manifest {
-                if let Err(e) = commands::hooks::run_hooks("post_test", manifest) {
-                    eprintln!("Hook failed: {}", e);
-                    return Err(HorusError::from(e));
+            // Teardown, on both paths — the same treatment `post_run` and
+            // `post_build` get. `post_test` used to sit after an early `?`, so a
+            // failing `horus test` skipped it entirely. That is backwards for
+            // the phase the hooks contract itself calls "the only phase with
+            // teardown": a `post_test = ["release-bench"]` exists to release
+            // the bench, and it was skipped precisely when the tests aborted
+            // mid-run and the hardware was most likely left live.
+            let result = result.map_err(HorusError::from);
+            match hooks_manifest {
+                Some(ref manifest) => {
+                    commands::hooks::run_teardown_hooks("post_test", manifest, result)
                 }
+                None => result,
             }
-
-            Ok(())
         }
 
         Commands::Monitor { args } => {
@@ -3189,8 +3194,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             let (pkg_name, pkg_ver) = split_name_version(name, ver);
 
             let result = if plugin {
-                let local = target.is_some();
-                commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), local)
+                commands::plugin::run_install(pkg_name.clone(), pkg_ver.clone(), target)
             } else {
                 commands::pkg::run_install_standalone(&pkg_name, pkg_ver.as_deref(), target)
             };
