@@ -1,0 +1,174 @@
+# Scheduler-tick jitter, recorded rather than gated.
+#
+# The five `stress_rt_*` / `shm_fanout_*` tests are deliberately skipped by
+# integration-tests.yml, and that decision is correct: on a shared GitHub
+# runner they measure the runner. That job saw 34.24% spread from neighbouring
+# workloads, which is evidence about the host, not about HORUS. Gating a merge
+# on it would block correct changes at random.
+#
+# The consequence, though, was that the numbers existed nowhere. The tests were
+# described as "developer-run gates", which in practice means nobody runs them
+# and nobody notices when the tick path regresses by an order of magnitude. The
+# in-tree figures they produce -- milliseconds of max jitter at 1 kHz -- differ
+# from what `horus doctor --rt` reports for the same rate by 30-100x, because
+# the two measure different things (the full Scheduler tick path versus the
+# CyclicWaiter primitive alone), and nothing was tracking either over time.
+#
+# So: run them nightly, upload the output, and assert NOTHING. A trend line
+# built from noisy samples still shows an order-of-magnitude regression, and
+# this workflow is not a required check, so a noisy night cannot block anyone.
+#
+# Read the artifact, not the job's colour. The job is green whenever the tests
+# ran to completion.
+name: RT Jitter (nightly, non-gating)
+
+on:
+  schedule:
+    # 04:00 UTC — before autopilot's 06:00 sweep, after the nightly crons.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this run was triggered (recorded in the artifact)'
+        required: false
+        default: 'manual'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rt-jitter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jitter:
+    name: Scheduler tick jitter
+    runs-on: ubuntu-latest
+    # Generous: five timing tests that each run for seconds, plus a release
+    # build of the workspace.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Record what this runner is
+        run: |
+          {
+            echo "## Runner"
+            echo
+            echo "These numbers are contaminated by whatever else is on this"
+            echo "host. They are recorded for TREND, not for absolute value."
+            echo
+            echo "- trigger: ${{ github.event_name }} (${{ github.event.inputs.reason || 'scheduled' }})"
+            echo "- commit: ${GITHUB_SHA}"
+            echo "- nproc: $(nproc)"
+            echo "- kernel: $(uname -r)"
+            echo "- preempt_rt: $(cat /sys/kernel/realtime 2>/dev/null || echo 'absent (not a PREEMPT_RT kernel)')"
+            echo "- rt_priority_soft_limit: $(ulimit -r)"
+            echo "- memlock_soft_limit_kb: $(ulimit -l)"
+            echo
+            echo "No CAP_SYS_NICE on a stock runner, so the tick threads run"
+            echo "SCHED_OTHER. That is the pessimistic configuration, and it is"
+            echo "the one most users will hit before tuning."
+          } | tee runner-environment.md
+
+      # `--release` because the in-tree figures these tests print were taken in
+      # a debug build, where the tick path is 10-50x slower and the numbers say
+      # more about rustc than about the scheduler.
+      # NOT `--ignored`: none of these carry `#[ignore]`. They are ordinary
+      # tests that integration-tests.yml excludes with `--skip`, so passing
+      # `--ignored` here would have matched nothing and produced an empty
+      # artifact every night while the job stayed green.
+      #
+      # Addressed by test binary rather than by name so the harness is asked
+      # for targets that exist. `stress_rt_contention` also holds the pure
+      # gate-logic tests (spread_gate_*, stall_rate_*, clean_timing_*), which
+      # are fast and carry no timing dependency; re-running them costs nothing.
+      - name: Run the RT jitter suites
+        id: run
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          : > rt-jitter-output.txt
+          : > rt-jitter-summary.txt
+          status=0
+          run_suite() {
+            local label="$1"; shift
+            echo "::group::$label"
+            {
+              echo "=================================================="
+              echo "== $label"
+              echo "=================================================="
+            } >> rt-jitter-output.txt
+            # A timing failure is recorded, not fatal: these assert on spreads
+            # that a shared runner routinely blows through, which is the whole
+            # reason they are not a gate.
+            if "$@" 2>&1 | tee -a rt-jitter-output.txt; then
+              echo "$label: completed" >> rt-jitter-summary.txt
+            else
+              echo "$label: FAILED (see output)" >> rt-jitter-summary.txt
+              status=1
+            fi
+            echo "::endgroup::"
+          }
+
+          run_suite "stress_rt_contention" \
+            cargo test -p horus_core --release --test stress_rt_contention -- \
+              --test-threads=1 --nocapture
+
+          run_suite "shm_fanout_latency_percentiles_cross_thread" \
+            cargo test -p horus_core --release --test production_fanout_battle -- \
+              --exact shm_fanout_latency_percentiles_cross_thread \
+              --test-threads=1 --nocapture
+
+          echo "suite_status=$status" >> "$GITHUB_OUTPUT"
+
+      # Every jitter line the suites printed, pulled out so the trend is
+      # readable without opening the full log.
+      - name: Extract the jitter lines
+        if: always()
+        run: |
+          {
+            echo "## Jitter lines"
+            echo
+            echo '```'
+            grep -iE 'jitter|spread|stall|p99|max ' rt-jitter-output.txt || \
+              echo '(no jitter lines matched — the suites may not have run)'
+            echo '```'
+          } > rt-jitter-report.md
+          cat runner-environment.md >> rt-jitter-report.md
+          cat rt-jitter-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rt-jitter-${{ github.run_id }}
+          path: |
+            rt-jitter-output.txt
+            rt-jitter-report.md
+            rt-jitter-summary.txt
+            runner-environment.md
+          retention-days: 90
+
+      # Deliberately does not fail the job on a timing assertion. It fails only
+      # if nothing ran at all, because an empty artifact every night for a month
+      # is the failure mode this workflow exists to avoid.
+      - name: Fail only if nothing ran
+        if: always()
+        run: |
+          if [ ! -s rt-jitter-output.txt ]; then
+            echo "::error::the jitter suites produced no output at all"
+            exit 1
+          fi
+          if ! grep -q "test result" rt-jitter-output.txt; then
+            echo "::error::no test harness result line — the suites did not run"
+            exit 1
+          fi
+          echo "recorded $(wc -l < rt-jitter-output.txt) lines"
+          if [ "${{ steps.run.outputs.suite_status }}" != "0" ]; then
+            echo "::warning::at least one suite failed its timing assertion — \
+            expected on a shared runner, see the artifact for the numbers"
+          fi

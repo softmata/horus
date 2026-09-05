@@ -206,10 +206,21 @@ pub fn execute_build_only(
         files
     };
 
-    // Bail out - execute_build_only doesn't support multiple files yet
-    // For multi-file execution, use execute_run which calls execute_multiple_files
+    // Several files: this is `execute_multiple_files`' Phase 1 - the same batch
+    // build, minus the spawn.
+    //
+    // This used to bail, telling the user build-only did not support several
+    // files and to use `horus run` instead, which was inverted twice over
+    // (#187). The multi-file
+    // builder already existed in this module - `build_rust_files_batch`, which
+    // the run path calls - so only the build verb was left unwired. And the
+    // advice sent the user to the one command that also EXECUTES the files,
+    // which is exactly what a build-only invocation exists to avoid on a robot,
+    // in CI, or when cross-compiling. clap already declares `files: Vec<PathBuf>`
+    // with "File(s) to build" (main.rs), so the parser and `--help` promised
+    // this all along; the runtime now honours it.
     if target_files.len() > 1 {
-        bail!("Build-only mode doesn't support multiple files. Use 'horus run' to execute multiple files concurrently.");
+        return build_files_only(&target_files, release, clean);
     }
 
     let target_file = &target_files[0];
@@ -637,6 +648,65 @@ pub(super) fn build_rust_files_batch(
     }
 
     Ok(executables)
+}
+
+/// Build several files and run none of them.
+///
+/// The Rust half is `build_rust_files_batch` - the same function
+/// `execute_multiple_files` calls - so `horus build a.rs b.rs` and
+/// `horus run a.rs b.rs` generate the same `.horus` workspace, one `[[bin]]`
+/// per file, and land the same artifacts in the same place. Sharing the builder
+/// is the point: two code paths that compile the same files differently is how
+/// `build` and `run` came to disagree in the first place.
+///
+/// Interpreted languages are reported and skipped rather than refused: `horus
+/// build one.py` has never demanded an interpreter, so a mixed list must not
+/// start to.
+pub(super) fn build_files_only(file_paths: &[PathBuf], release: bool, clean: bool) -> Result<()> {
+    println!(
+        "{} Building {} files:",
+        cli_output::ICON_INFO.cyan(),
+        file_paths.len()
+    );
+
+    // Classify everything first, so an unsupported extension fails before any
+    // cargo work rather than part-way through it.
+    let mut rust_files: Vec<PathBuf> = Vec::new();
+    let mut interpreted: Vec<PathBuf> = Vec::new();
+    for (i, file_path) in file_paths.iter().enumerate() {
+        let language = deps::detect_language(file_path)?;
+        println!(
+            "  {} {} ({})",
+            format!("{}.", i + 1).dimmed(),
+            file_path.display().to_string().green(),
+            language.yellow()
+        );
+        match language.as_str() {
+            "rust" => rust_files.push(file_path.clone()),
+            _ => interpreted.push(file_path.clone()),
+        }
+    }
+
+    if !rust_files.is_empty() {
+        let built = build_rust_files_batch(rust_files, release, clean)?;
+        for exe in &built {
+            println!(
+                "{} Built: {}",
+                cli_output::ICON_SUCCESS.green(),
+                exe.command.green()
+            );
+        }
+    }
+
+    for path in &interpreted {
+        println!(
+            "{} {} needs no build step",
+            cli_output::ICON_INFO.cyan(),
+            path.display()
+        );
+    }
+
+    Ok(())
 }
 
 pub(super) fn build_file_for_concurrent_execution(
@@ -1795,13 +1865,21 @@ version = "0.1.0"
 
     // ── execute_build_only ───────────────────────────────────────────────
 
+    /// `horus build a b` must not refuse what `horus run a b` accepts (#187).
+    ///
+    /// This test used to assert the refusal, which is how the bug stayed
+    /// pinned by a green required gate. Interpreted files are used so the
+    /// assertion is about the ARITY and nothing else: no cargo runs, so a
+    /// failure here means the multi-file path was rejected, not that a build
+    /// broke. Before the fix this returned Err for any two files whatever
+    /// their language.
     #[test]
-    fn execute_build_only_bails_on_multiple_files() {
+    fn execute_build_only_accepts_multiple_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let f1 = tmp.path().join("a.rs");
-        let f2 = tmp.path().join("b.rs");
-        fs::write(&f1, "fn main() {}").unwrap();
-        fs::write(&f2, "fn main() {}").unwrap();
+        let f1 = tmp.path().join("a.py");
+        let f2 = tmp.path().join("b.py");
+        fs::write(&f1, "print('a')").unwrap();
+        fs::write(&f2, "print('b')").unwrap();
 
         let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -1810,11 +1888,29 @@ version = "0.1.0"
         env::set_current_dir(original).unwrap();
         drop(_guard);
 
-        assert!(result.is_err());
-        let err = format!("{}", result.unwrap_err());
         assert!(
-            err.contains("multiple files") || err.contains("Build-only"),
-            "Expected multi-file error, got: {err}"
+            result.is_ok(),
+            "build-only must accept the file list clap already declares it takes; \
+             got: {:?}",
+            result.err()
+        );
+    }
+
+    /// The refusal message must not come back.
+    ///
+    /// It advised `horus run`, which EXECUTES the files — the one thing a
+    /// build-only invocation exists to avoid on a robot or in CI.
+    #[test]
+    fn build_only_no_longer_redirects_users_to_a_command_that_runs_their_code() {
+        let src = include_str!("run_rust.rs");
+        // Split so the needle does not appear contiguously in this file, which
+        // is the file being searched — otherwise the guard matches itself and
+        // fails no matter what the code does.
+        let needle = concat!("Build-only mode ", "doesn't support multiple files");
+        assert!(
+            !src.contains(needle),
+            "the multi-file refusal is back; `horus build` must not send users to \
+             `horus run`, which also starts their nodes"
         );
     }
 

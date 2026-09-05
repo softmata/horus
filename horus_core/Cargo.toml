@@ -10,7 +10,7 @@ repository = "https://github.com/softmata/horus"
 homepage = "https://horusrobotics.dev"
 documentation = "https://docs.horusrobotics.dev"
 keywords = ["robotics", "scheduler", "ipc", "real-time", "deterministic"]
-categories = ["science::robotics", "concurrency", "embedded"]
+categories = ["science::robotics", "concurrency", "os::unix-apis"]
 
 [lib]
 name = "horus_core"

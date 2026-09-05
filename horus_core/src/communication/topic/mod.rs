@@ -4933,6 +4933,88 @@ impl Topic<Tensor> {
     }
 }
 
+// ============================================================================
+// ActionChunk — Topic<ActionChunk> with pool-managed action handles
+// ============================================================================
+
+impl Topic<crate::types::ActionChunk> {
+    /// Get or create the auto-managed pool backing this topic's action data.
+    ///
+    /// Name-keyed exactly as the tensor pools are, so a chunk topic and a
+    /// tensor topic of the same name share one pool rather than racing to
+    /// create two.
+    #[doc(hidden)]
+    pub fn pool(&self) -> HorusResult<Arc<TensorPool>> {
+        pool_registry::get_or_create_pool(self.ring.name())
+    }
+
+    /// Allocate a `[horizon, action_dim]` chunk from this topic's pool.
+    #[doc(hidden)]
+    pub fn alloc_chunk(
+        &self,
+        horizon: u32,
+        action_dim: u32,
+        dtype: crate::types::TensorDtype,
+        device: crate::types::Device,
+        t0_ns: u64,
+        dt_ns: u64,
+    ) -> HorusResult<crate::memory::ActionChunkHandle> {
+        let pool = self.pool()?;
+        crate::memory::ActionChunkHandle::alloc(
+            pool, horizon, action_dim, dtype, device, t0_ns, dt_ns,
+        )
+    }
+
+    /// Send a chunk, transferring a pool reference to the receiver.
+    ///
+    /// This is the send that must be used. A bare `send()` of an
+    /// `ActionChunk` puts the descriptor on the wire with no reference taken,
+    /// so the actions it names can be recycled while a subscriber is still
+    /// reading them — and because a recycled slot is valid memory holding
+    /// somebody else's numbers, the result is a servo loop tracking the wrong
+    /// trajectory rather than a crash.
+    ///
+    /// The keepalive is one reference PER RING SLOT, not one in total: a chunk
+    /// still sitting unread in the ring must survive the next publish. That is
+    /// the same discipline `send_handle` uses for tensors, and it is delegated
+    /// to the same code.
+    #[doc(hidden)]
+    pub fn send_chunk(&self, handle: &crate::memory::ActionChunkHandle) {
+        self.register_pub("ActionChunk");
+        let tensor = *handle.chunk().tensor();
+        handle.pool().retain(&tensor);
+        self.publish_keepalive_on(handle.pool().clone(), tensor, None);
+        self.ring.send(*handle.chunk());
+    }
+
+    /// Receive a chunk together with a live reference on its actions.
+    ///
+    /// `None` means "nothing to receive" for either of two reasons: the ring
+    /// was empty, or the slot the descriptor named was superseded before this
+    /// call could take a reference on it. The second is a missed message under
+    /// drop-oldest, not a fault.
+    #[doc(hidden)]
+    pub fn recv_chunk(&self) -> Option<crate::memory::ActionChunkHandle> {
+        self.register_sub("ActionChunk");
+        let mut chunk = self.ring.recv()?;
+        // The descriptor came out of peer-writable shared memory, so its
+        // horizon/action_dim/dt fields are attacker- or corruption-reachable
+        // and are normalised before anything computes an offset from them.
+        chunk.sanitize_from_shm();
+        let pool = pool_registry::pool_or_report(self.ring.name())?;
+        let tensor = *chunk.tensor();
+        // Generation-guarded, so a co-subscriber dropping its handle cannot
+        // free the slot from under this one. `Err` => superseded before we
+        // read it => missed message. Also validates pool_id, discarding a
+        // descriptor published against a different pool.
+        if pool.try_retain(&tensor).is_err() {
+            return None;
+        }
+        let handle = crate::memory::TensorHandle::from_owned(tensor, pool).ok()?;
+        crate::memory::ActionChunkHandle::from_owned(chunk, handle).ok()
+    }
+}
+
 #[cfg(test)]
 mod type_name_tests {
     use super::strip_module_paths;

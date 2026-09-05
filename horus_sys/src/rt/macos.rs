@@ -14,11 +14,24 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         // restated here, so the two cannot drift if the macOS probe ever stops
         // being "no special privilege required". (`super::can_set_rt_priority`
         // does not dispatch back into this module, so there is no recursion.)
+        //
+        // Both this and `memory_locking` below used to report `true` while the
+        // functions they describe -- `set_realtime_priority` and `lock_memory`,
+        // twenty lines down in this same file -- returned `Err` on every call.
+        // That is not a cosmetic inconsistency. `Scheduler::require_rt()`
+        // asserts on `rt_priority_available || mlockall_permitted`, so two
+        // hardcoded `true`s made `require_rt()` pass unconditionally on macOS
+        // and then apply neither RT scheduling nor memory locking -- the exact
+        // "silently running non-RT while you believe otherwise" outcome
+        // `require_rt()` exists to prevent.
         rt_priority_permitted: super::can_set_rt_priority(),
         preempt_rt: false,
         max_priority: 99, // macOS supports thread priority via Mach
         min_priority: 1,
-        memory_locking: true, // mlock available
+        // `lock_memory()` below is unimplemented and always returns `Err`.
+        // Report that honestly; flip this back to `true` in the same commit
+        // that makes `lock_memory()` actually call `mlock`.
+        memory_locking: false,
         cpu_affinity: true,
         kernel_version: get_macos_version(),
         cpu_count,

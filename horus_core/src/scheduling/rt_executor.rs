@@ -1045,8 +1045,25 @@ fn check_core_collisions(chains: &[Vec<RegisteredNode>], cores: &[ChainCore]) ->
 ///
 /// Supports multiple RT threads for independent node chains — each chain
 /// gets its own thread with optional CPU pinning and priority.
+/// Startup facts an RT thread needs in order to describe itself, bundled so
+/// `rt_thread_main` does not grow three more positional parameters.
+pub(crate) struct RtThreadIdentity {
+    pub thread_name: String,
+    pub chain_label: String,
+    /// Whether `mlockall` was applied to the process before this thread
+    /// started. Resolved by the caller, which is the only side that can see the
+    /// result of the process-level RT configuration.
+    pub memory_locked: bool,
+}
+
 pub(crate) struct RtExecutor {
     handles: Vec<std::thread::JoinHandle<Vec<RegisteredNode>>>,
+    /// What each spawned thread actually got from the kernel.
+    ///
+    /// Held as an `Arc` because the threads outlive nothing here but publish
+    /// into it, and the `Scheduler` reads it after `stop()` has consumed the
+    /// executor — see `Scheduler::rt_thread_status`.
+    report: Arc<super::rt_status::RtThreadReport>,
 }
 
 impl RtExecutor {
@@ -1069,6 +1086,7 @@ impl RtExecutor {
         fallback_period: Duration,
         monitors: SharedMonitors,
         rt_cpus: Vec<usize>,
+        memory_locked: bool,
     ) -> Result<Self> {
         let mut chains = chains;
         let num_chains = chains.len();
@@ -1090,6 +1108,10 @@ impl RtExecutor {
         // The blocking half of RT diagnostics lives on its own thread, started
         // here — on the caller's thread, never on an RT thread.
         start_rt_diag_drain();
+
+        // One slot per chain, sized before any thread is spawned so
+        // `wait_for_all` knows what a complete report looks like.
+        let report = super::rt_status::RtThreadReport::new(num_chains);
 
         for (chain_idx, nodes) in chains.into_iter().enumerate() {
             // Determine tick period from the fastest node in this chain
@@ -1117,10 +1139,28 @@ impl RtExecutor {
             let running = running.clone();
             let monitors = monitors.clone();
 
+            // Named before the move so the thread can report under the same
+            // label the OS knows it by.
+            let reported_name = thread_name.clone();
+            let chain = chain_label(&nodes).to_string();
+            let thread_report = Arc::clone(&report);
+
             let handle = std::thread::Builder::new()
                 .name(thread_name)
                 .spawn(move || {
-                    Self::rt_thread_main(nodes, running, tick_period, monitors, thread_cpus)
+                    Self::rt_thread_main(
+                        nodes,
+                        running,
+                        tick_period,
+                        monitors,
+                        thread_cpus,
+                        RtThreadIdentity {
+                            thread_name: reported_name,
+                            chain_label: chain,
+                            memory_locked,
+                        },
+                        thread_report,
+                    )
                 })
                 .map_err(|e| Error::Internal {
                     message: format!("Failed to spawn RT thread: {e}"),
@@ -1131,7 +1171,12 @@ impl RtExecutor {
             handles.push(handle);
         }
 
-        Ok(Self { handles })
+        Ok(Self { handles, report })
+    }
+
+    /// The per-thread RT status report for this executor's threads.
+    pub fn report(&self) -> Arc<super::rt_status::RtThreadReport> {
+        Arc::clone(&self.report)
     }
 
     /// Stop the RT executor and reclaim its nodes.
@@ -1667,6 +1712,8 @@ impl RtExecutor {
         tick_period: Duration,
         monitors: SharedMonitors,
         rt_cpus: Vec<usize>,
+        identity: RtThreadIdentity,
+        report: Arc<super::rt_status::RtThreadReport>,
     ) -> Vec<RegisteredNode> {
         // Use per-node priority if any node in this chain has one, otherwise default 80
         let thread_priority = nodes
@@ -1678,6 +1725,10 @@ impl RtExecutor {
         // Try SCHED_DEADLINE first if any node in this chain requested it
         let use_deadline = nodes.iter().any(|n| n.use_sched_deadline);
         let mut deadline_active = false;
+        // Why the kernel said no, kept for the status report. A SCHED_DEADLINE
+        // refusal that then succeeds as SCHED_FIFO is overwritten below: the
+        // report describes the policy in force, and the fallback worked.
+        let mut refusal: Option<String> = None;
         if use_deadline {
             // Derive kernel params from the fastest node's budget/rate
             if let Some(node) = nodes
@@ -1707,6 +1758,7 @@ impl RtExecutor {
                             "[RT-thread] SCHED_DEADLINE failed: {} — falling back to SCHED_FIFO",
                             e
                         ));
+                        refusal = Some(format!("SCHED_DEADLINE: {e}"));
                     }
                 }
             }
@@ -1724,12 +1776,24 @@ impl RtExecutor {
         let mut rt_policy_active = deadline_active;
         if !deadline_active {
             match super::rt::set_realtime_priority(thread_priority) {
-                Ok(()) => rt_policy_active = true,
+                Ok(()) => {
+                    rt_policy_active = true;
+                    refusal = None;
+                }
                 Err(e) => {
                     print_line(&format!(
                         "[RT-thread] Could not set SCHED_FIFO: {} (continuing with normal priority)",
                         e
                     ));
+                    // Keep the SCHED_DEADLINE reason if there was one. The
+                    // report says `requested: SCHED_DEADLINE`, so a refusal
+                    // naming only SCHED_FIFO reads as a contradiction and
+                    // loses the reason the first choice was refused — which is
+                    // usually the more interesting of the two.
+                    refusal = Some(match refusal.take() {
+                        Some(first) => format!("{first}; then SCHED_FIFO: {e}"),
+                        None => format!("SCHED_FIFO: {e}"),
+                    });
                 }
             }
         }
@@ -1768,9 +1832,13 @@ impl RtExecutor {
         // decision back out of sync.
 
         // Pin to recommended RT CPU(s) to avoid cache thrashing and timer interrupts
+        // Reported as the thread's actual affinity, so a refused pin shows as
+        // unpinned rather than as whatever was requested.
+        let mut pinned_cpus: Vec<usize> = Vec::new();
         if !rt_cpus.is_empty() {
             match super::rt::set_thread_affinity(&rt_cpus) {
                 Ok(()) => {
+                    pinned_cpus = rt_cpus.clone();
                     if monitors.verbose {
                         print_line(&format!("[RT-thread] Pinned to CPU(s) {:?}", rt_cpus));
                     }
@@ -1826,6 +1894,48 @@ impl RtExecutor {
                 nodes.len(),
                 tick_period
             ));
+        }
+
+        // Publish what this thread actually got, before the first tick.
+        //
+        // Placed here, after every setup syscall and before the loop, for two
+        // reasons: the report then describes the thread as it will actually
+        // run, and `Scheduler` can wait on it during startup without racing the
+        // first tick. Taking the report's mutex is fine at this point — it is
+        // the same startup phase that just wrote to sysfs for the governor and
+        // moved IRQs; the no-locks discipline applies to the loop below.
+        {
+            use super::rt_status::{RtPolicy, RtThreadStatus};
+            let requested = if use_deadline {
+                RtPolicy::Deadline
+            } else {
+                RtPolicy::Fifo
+            };
+            let granted = if deadline_active {
+                RtPolicy::Deadline
+            } else if rt_policy_active {
+                RtPolicy::Fifo
+            } else {
+                RtPolicy::Other
+            };
+            report.publish(RtThreadStatus {
+                thread_name: identity.thread_name,
+                chain_label: identity.chain_label,
+                requested,
+                granted,
+                // Zero under SCHED_DEADLINE as well as SCHED_OTHER: a
+                // deadline task has no static priority (the kernel reports
+                // sched_priority == 0), and printing the FIFO priority that
+                // was never applied would misdescribe the thread.
+                priority: if deadline_active || !rt_policy_active {
+                    0
+                } else {
+                    thread_priority
+                },
+                refusal,
+                cpus: pinned_cpus,
+                memory_locked: identity.memory_locked,
+            });
         }
 
         // Per-node "has completed at least one tick" flags, aligned with `nodes`.
@@ -1964,6 +2074,22 @@ impl Drop for RtExecutor {
 
 #[cfg(test)]
 mod tests {
+
+    /// `start_pool` with the pre-`memory_locked` argument list.
+    ///
+    /// Every test here runs in an ordinary unprivileged test process, which
+    /// never calls `mlockall`, so the answer is always `false`. Threading a
+    /// literal through fifty call sites would say the same thing fifty times
+    /// and give each one an independent chance to say it wrong.
+    fn start_pool_for_test(
+        chains: Vec<Vec<RegisteredNode>>,
+        running: Arc<AtomicBool>,
+        fallback_period: Duration,
+        monitors: SharedMonitors,
+        rt_cpus: Vec<usize>,
+    ) -> Result<RtExecutor> {
+        RtExecutor::start_pool(chains, running, fallback_period, monitors, rt_cpus, false)
+    }
     use super::*;
     use crate::core::{Miss, Node};
     use std::sync::Mutex;
@@ -2471,7 +2597,7 @@ mod tests {
         let nodes = vec![make_rt_registered("test_rt", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -2507,7 +2633,7 @@ mod tests {
         node.rate_hz = Some(100.0);
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -2538,7 +2664,7 @@ mod tests {
         let nodes = vec![make_rt_registered("test_rt", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -2565,7 +2691,7 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -2631,7 +2757,7 @@ mod tests {
         };
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![registered]],
             running.clone(),
             1_u64.ms(),
@@ -2687,7 +2813,7 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             10_u64.ms(),
@@ -2741,7 +2867,7 @@ mod tests {
         ];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             10_u64.ms(),
@@ -2800,7 +2926,7 @@ mod tests {
         let nodes = vec![make_rt_registered("stress_profiler", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -2899,7 +3025,7 @@ mod tests {
         let normal_registered = make_rt_registered("survivor_node", normal_count.clone());
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![panic_registered, normal_registered]],
             running.clone(),
             1_u64.ms(),
@@ -3030,7 +3156,7 @@ mod tests {
         let nodes = vec![make_rt_registered("quiet_node", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -3113,7 +3239,7 @@ mod tests {
         };
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![panic_registered, normal_registered]],
             running.clone(),
             1_u64.ms(),
@@ -3148,7 +3274,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![chain_0, chain_1],
             running.clone(),
             1_u64.ms(),
@@ -3219,7 +3345,7 @@ mod tests {
         let chain_1 = vec![make_rt_registered("healthy", healthy_count.clone())];
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![chain_0, chain_1],
             running.clone(),
             1_u64.ms(),
@@ -3253,7 +3379,7 @@ mod tests {
             .collect();
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             chains,
             running.clone(),
             1_u64.ms(),
@@ -3355,7 +3481,7 @@ mod tests {
         );
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -3397,7 +3523,7 @@ mod tests {
         );
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -3432,7 +3558,7 @@ mod tests {
         );
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -3465,7 +3591,7 @@ mod tests {
     fn test_empty_executor_no_chains() {
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             Vec::new(),
             running.clone(),
             1_u64.ms(),
@@ -3484,7 +3610,7 @@ mod tests {
     fn test_single_empty_chain() {
         let running = Arc::new(AtomicBool::new(true));
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![Vec::new()],
             running.clone(),
             1_u64.ms(),
@@ -3507,7 +3633,7 @@ mod tests {
         let node = make_rt_registered("solo_node", count.clone());
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -3542,7 +3668,7 @@ mod tests {
             .collect();
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -3615,7 +3741,7 @@ mod tests {
         };
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![registered]],
             running.clone(),
             1_u64.ms(),
@@ -3713,7 +3839,7 @@ mod tests {
         ];
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![nodes],
             running.clone(),
             1_u64.ms(),
@@ -3769,7 +3895,7 @@ mod tests {
         ];
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![chain_0, chain_1, chain_2],
             running.clone(),
             1_u64.ms(),
@@ -3832,7 +3958,7 @@ mod tests {
         };
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![registered]],
             running.clone(),
             1_u64.ms(),
@@ -3879,7 +4005,7 @@ mod tests {
         let healthy_node = make_rt_registered("healthy", healthy_count.clone());
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![stopped_node, healthy_node]],
             running.clone(),
             1_u64.ms(),
@@ -3916,7 +4042,7 @@ mod tests {
         let normal_node = make_rt_registered("normal", normal_count.clone());
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![uninit_node, normal_node]],
             running.clone(),
             1_u64.ms(),
@@ -3951,7 +4077,7 @@ mod tests {
         node.is_paused = true;
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -3985,7 +4111,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(true));
         // Fallback period of 10ms → ~100Hz effective tick rate
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             10_u64.ms(),
@@ -4017,7 +4143,7 @@ mod tests {
         node.rt_stats = None;
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -4054,7 +4180,7 @@ mod tests {
         let running = Arc::new(AtomicBool::new(true));
         // Provide CPU cores — may fail to pin (requires root/capabilities) but
         // must not crash. The executor logs and continues unpinned.
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![chain_0, chain_1],
             running.clone(),
             1_u64.ms(),
@@ -4088,7 +4214,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(false)); // Already false!
 
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![chain],
             running.clone(),
             1_u64.ms(),
@@ -4125,7 +4251,7 @@ mod tests {
         let healthy = make_rt_registered("healthy", count_healthy.clone());
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![stopped, uninit, paused, healthy]],
             running.clone(),
             1_u64.ms(),
@@ -4210,7 +4336,7 @@ mod tests {
         reg.tick_budget = Some(Duration::from_micros(800));
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![reg]],
             running.clone(),
             1_u64.ms(),
@@ -4295,7 +4421,7 @@ mod tests {
         reg.rate_hz = Some(1000.0); // is_rt_node already true → critical
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![reg]],
             running.clone(),
             1_u64.ms(),
@@ -4344,7 +4470,7 @@ mod tests {
         reg.rate_hz = Some(1000.0);
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![reg]],
             running.clone(),
             1_u64.ms(),
@@ -4409,7 +4535,7 @@ mod tests {
         // No rate_hz → ticks immediately and hangs on the first tick.
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![reg]],
             running.clone(),
             1_u64.ms(),
@@ -4739,7 +4865,7 @@ mod tests {
 
         let before = RT_DIAG_HEAD.load(Ordering::Relaxed);
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![vec![node]],
             running.clone(),
             1_u64.ms(),
@@ -4790,7 +4916,7 @@ mod tests {
             return; // operator opted out of the check
         }
         let running = Arc::new(AtomicBool::new(true));
-        let started = RtExecutor::start_pool(
+        let started = start_pool_for_test(
             vec![pinned_chain("pin_a", 0), pinned_chain("pin_b", 0)],
             running.clone(),
             1_u64.ms(),
@@ -4820,7 +4946,7 @@ mod tests {
     #[test]
     fn test_two_chains_on_distinct_explicit_cores_start() {
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             vec![pinned_chain("pin_c", 0), pinned_chain("pin_d", 1)],
             running.clone(),
             1_u64.ms(),
@@ -4854,7 +4980,7 @@ mod tests {
             .collect();
 
         let running = Arc::new(AtomicBool::new(true));
-        let executor = RtExecutor::start_pool(
+        let executor = start_pool_for_test(
             chains,
             running.clone(),
             1_u64.ms(),

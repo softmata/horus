@@ -21,6 +21,7 @@ use pyo3::prelude::*;
 
 // Declared unconditionally so cargo compiles whatever `horus.msggen` writes
 // here. Without this the generator produced files nothing ever built.
+mod action_chunk;
 mod custom_messages;
 
 mod config;
@@ -62,6 +63,8 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core classes
     m.add_class::<PyNodeInfo>()?;
     m.add_class::<PyTopic>()?;
+    m.add_class::<crate::action_chunk::PyActionChunk>()?;
+    m.add_class::<crate::action_chunk::PyActionAt>()?;
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyNodeState>()?;
     m.add_class::<PySchedulerConfig>()?;

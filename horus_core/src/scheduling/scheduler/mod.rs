@@ -228,6 +228,37 @@ pub(crate) fn tick_grid_step(
     }
 }
 
+/// The tick rate a launch file asked for, parsed from `HORUS_NODE_RATE_HZ`.
+///
+/// `horus launch` exports a launch file's `rate_hz` into every child it spawns
+/// (horus_manager/src/commands/launch.rs). Nothing read it, so the key was
+/// inert: a launch file saying `rate_hz: 20` ran at whatever rate the binary
+/// was compiled with, and there was no error to notice (#185).
+///
+/// `None` means "leave the tick rate alone" — absent, empty, unparseable, or
+/// outside a range a tick period can represent. A bad value warns rather than
+/// failing the launch: the node is already running, and refusing to start it
+/// over a malformed environment key the operator cannot see is worse than
+/// running at the compiled-in rate and saying so.
+pub(crate) fn launch_tick_rate_hz(raw: Option<&str>) -> Option<f64> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<f64>() {
+        Ok(hz) if hz.is_finite() && (0.001..=1_000_000.0).contains(&hz) => Some(hz),
+        _ => {
+            crate::hlog!(
+                warn,
+                "ignoring HORUS_NODE_RATE_HZ={:?} from the launch file - rate_hz must be a \
+                 number between 0.001 and 1000000 Hz; the tick rate is unchanged",
+                trimmed
+            );
+            None
+        }
+    }
+}
+
 pub(crate) struct TickState {
     pub period: Duration,
     pub current: u64,
@@ -433,6 +464,16 @@ pub struct Scheduler {
     /// Set by finalize_config() when require_rt() was used but high-severity
     /// degradations occurred. Checked by run()/tick_once() to return Err.
     rt_require_failed: bool,
+    /// Whether `mlockall` actually took effect on this process.
+    ///
+    /// Distinct from `config.realtime.memory_locking`, which is only the
+    /// *request*. RT threads are told the resolved value so their status report
+    /// can flag the "real-time policy on unlocked memory" pairing.
+    rt_memory_locked: bool,
+    /// Per-thread RT status published by the RT executor's threads.
+    ///
+    /// `None` until an RT executor is started, and on any run with no RT nodes.
+    rt_thread_report: Option<std::sync::Arc<super::rt_status::RtThreadReport>>,
     /// A duplicate node name seen at registration, reported by `run()`.
     ///
     /// Node names key the watchdog map, the SHM registry slot and the
@@ -597,6 +638,8 @@ impl Scheduler {
             lifecycle_start_hooks: Vec::new(),
             lifecycle_handles: Vec::new(),
             rt_require_failed: false,
+            rt_memory_locked: false,
+            rt_thread_report: None,
             duplicate_node_name: None,
         };
 
@@ -1070,6 +1113,44 @@ impl Scheduler {
             .any(|d| d.severity == DegradationSeverity::High)
     }
 
+    /// What each RT tick thread actually got from the kernel.
+    ///
+    /// Empty before `run()` starts an RT executor, and on any scheduler with no
+    /// real-time nodes. After that there is one entry per RT thread, reporting
+    /// the policy it asked for, the policy it is running under, its priority and
+    /// pinning, and whether the process's memory was locked when it started.
+    ///
+    /// This is the answer to "did real-time actually apply?", which before this
+    /// existed could not be asked programmatically at all: the outcome lived in
+    /// a local variable inside the RT thread and reached nothing but the wait
+    /// strategy. A thread running SCHED_OTHER and a thread running SCHED_FIFO
+    /// looked identical to every query, stat and report.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut sched = Scheduler::new().prefer_rt();
+    /// // ... add nodes, run on another thread ...
+    /// for st in sched.rt_thread_status() {
+    ///     assert!(st.granted.is_realtime(), "not RT: {}", st.summary());
+    /// }
+    /// ```
+    pub fn rt_thread_status(&self) -> Vec<super::rt_status::RtThreadStatus> {
+        self.rt_thread_report
+            .as_ref()
+            .map(|r| r.statuses())
+            .unwrap_or_default()
+    }
+
+    /// Whether every RT tick thread that reported is running a real-time policy.
+    ///
+    /// `false` when there are no RT threads at all, so this is "RT is confirmed
+    /// working", not "nothing is wrong" — the two differ on a scheduler that
+    /// silently ended up with no real-time nodes.
+    pub fn rt_threads_are_realtime(&self) -> bool {
+        let statuses = self.rt_thread_status();
+        !statuses.is_empty() && statuses.iter().all(|s| s.granted.is_realtime())
+    }
+
     /// Get a reference to the BlackBox flight recorder.
     ///
     /// The BlackBox automatically records critical events for post-mortem crash analysis:
@@ -1418,6 +1499,17 @@ impl Scheduler {
         // whole struct would silently discard them.
         self.pending_config.realtime.watchdog_timeout_ms = config.realtime.watchdog_timeout_ms;
         self.pending_config.realtime.max_deadline_misses = config.realtime.max_deadline_misses;
+        // The three RT flags used to be read here and then dropped: they were
+        // handed to `apply_rt_optimizations` below and checked once, but never
+        // written to `pending_config`. Everything downstream — `finalize_config`,
+        // and the RT tick threads' own require check in `run_with_filter` —
+        // reads `pending_config`, so a `require_mode` arriving through this
+        // function (the sole sink for the Python configuration surface) was
+        // enforced against the thread that built the scheduler and then
+        // forgotten before the tick threads it was meant to govern existed.
+        self.pending_config.realtime.memory_locking = config.realtime.memory_locking;
+        self.pending_config.realtime.rt_scheduling_class = config.realtime.rt_scheduling_class;
+        self.pending_config.realtime.require_mode = config.realtime.require_mode;
         if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
             self.pending_config.timing.global_rate_hz = config.timing.global_rate_hz;
         }
@@ -1653,6 +1745,10 @@ impl Scheduler {
             match rt_config.apply() {
                 Ok(RtApplyResult::FullSuccess) => {
                     if rt.memory_locking {
+                        // Only here — on the full-success path — is the lock
+                        // known to have taken. The `Degraded` arm below leaves
+                        // this false, which is what the RT threads then report.
+                        self.rt_memory_locked = true;
                         print_line("[SCHEDULER] Memory locked (mlockall)");
                     }
                     if rt.rt_scheduling_class {
@@ -1667,6 +1763,23 @@ impl Scheduler {
                 }
                 Ok(RtApplyResult::Degraded(ref degradations)) => {
                     use crate::core::rt_config::RtDegradation;
+                    // `Degraded` is returned for ANY degradation — a
+                    // non-PREEMPT_RT kernel, a refused affinity, a clamped
+                    // priority — several of which say nothing about mlockall.
+                    // Deriving the lock state from "was it requested and did
+                    // it specifically fail" rather than from "was everything
+                    // perfect" keeps a successful lock from being reported as
+                    // absent, which would emit a false "RT on unlocked memory"
+                    // warning on the commonest configuration there is: a
+                    // machine that locks memory fine and simply is not
+                    // PREEMPT_RT.
+                    self.rt_memory_locked = rt.memory_locking
+                        && !degradations
+                            .iter()
+                            .any(|d| matches!(d, RtDegradation::MemoryLockUnavailable(_)));
+                    if self.rt_memory_locked {
+                        print_line("[SCHEDULER] Memory locked (mlockall)");
+                    }
                     for d in degradations {
                         print_line(&format!("[SCHEDULER] RT degraded: {:?}", d));
                         // Store in RtState so degradations()/has_full_rt() work
@@ -2737,6 +2850,20 @@ impl Scheduler {
                 Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
         }
 
+        // Env var: HORUS_NODE_RATE_HZ - the launch file's `rate_hz` for this
+        // node. `horus launch` has always exported it and nothing consumed it,
+        // so the key was accepted, validated and ignored (#185). It lands here
+        // rather than in the builder because this is the one function that
+        // turns configuration into `self.tick.period`, and it must come AFTER
+        // the deferred config above so the launch file wins over a compiled-in
+        // `tick_rate()` - that is the whole point of putting it in the launch
+        // file - and BEFORE `adjust_tick_period_for_node_rates()`, so a node
+        // that needs to tick faster than the launch file asked for still bumps
+        // the grid up rather than being silently starved.
+        if let Some(hz) = launch_tick_rate_hz(std::env::var("HORUS_NODE_RATE_HZ").ok().as_deref()) {
+            self.tick.period = Duration::from_micros((1_000_000.0 / hz) as u64);
+        }
+
         // Auto-derive: if any node's rate exceeds the global tick rate, bump it up.
         // This ensures the scheduler is always fast enough for its fastest node,
         // even when tick_hz() wasn't explicitly set high enough.
@@ -3200,16 +3327,116 @@ impl Scheduler {
                     let rt_chains: Vec<Vec<super::types::RegisteredNode>> =
                         groups.rt_nodes.into_iter().map(|n| vec![n]).collect();
 
-                    rt_executor = Some(
-                        super::rt_executor::RtExecutor::start_pool(
-                            rt_chains,
-                            self.running.clone(),
-                            self.tick.period,
-                            shared_monitors.clone(),
-                            rt_cpus,
-                        )
-                        .horus_context("starting RT executor thread pool")?,
-                    );
+                    let started = super::rt_executor::RtExecutor::start_pool(
+                        rt_chains,
+                        self.running.clone(),
+                        self.tick.period,
+                        shared_monitors.clone(),
+                        rt_cpus,
+                        self.rt_memory_locked,
+                    )
+                    .horus_context("starting RT executor thread pool")?;
+
+                    // Hold the report before the executor is moved into the
+                    // option: `stop()` consumes the executor, and the status is
+                    // wanted after that as much as during the run.
+                    let report = started.report();
+                    self.rt_thread_report = Some(std::sync::Arc::clone(&report));
+                    rt_executor = Some(started);
+
+                    // Wait for every RT thread to say what it got.
+                    //
+                    // Each publishes after its setup syscalls and before its
+                    // first tick, so this normally returns in microseconds. The
+                    // timeout exists so a thread wedged in sysfs cannot hang
+                    // startup; a partial report is still worth acting on, and
+                    // the count is stated rather than assumed.
+                    let complete = report.wait_for_all(std::time::Duration::from_secs(2));
+                    let statuses = report.statuses();
+                    if !complete {
+                        print_line(&format!(
+                            "[SCHEDULER] RT thread status incomplete: {} of {} \
+                             threads reported within 2s — the checks below cover \
+                             only those.",
+                            statuses.len(),
+                            report.expected()
+                        ));
+                    }
+
+                    // A real-time policy on unlocked memory is not a refusal —
+                    // the thread has its policy — so it warns rather than
+                    // failing. It is called out because a major fault in a
+                    // SCHED_FIFO thread stalls it for the duration of the I/O,
+                    // which is past any deadline the policy was taken for.
+                    let unlocked = report.realtime_without_locked_memory();
+                    if !unlocked.is_empty() {
+                        print_line(&format!(
+                            "[SCHEDULER] {} RT thread(s) hold a real-time policy \
+                             without locked memory: {}. A page fault can stall them \
+                             past their deadline. Use .require_rt() (which sets \
+                             mlockall) or raise RLIMIT_MEMLOCK.",
+                            unlocked.len(),
+                            unlocked
+                                .iter()
+                                .map(|s| s.thread_name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+
+                    // require_rt() enforcement for the TICK threads.
+                    //
+                    // The check in finalize_config covers the thread that built
+                    // the scheduler, at priority 50. These threads make their
+                    // own request at their own priority, and until this existed
+                    // a refusal here was printed and otherwise forgotten — so
+                    // require_rt() could return success while every tick thread
+                    // ran SCHED_OTHER.
+                    let degraded = report.degraded();
+                    if !degraded.is_empty() {
+                        for d in &degraded {
+                            self.rt.degradations.push(RtFeatureDegradation {
+                                feature: RtFeature::RtPriority,
+                                reason: format!(
+                                    "RT thread '{}' (chain '{}') requested {} and got {}{}",
+                                    d.thread_name,
+                                    d.chain_label,
+                                    d.requested.as_str(),
+                                    d.granted.as_str(),
+                                    d.refusal
+                                        .as_ref()
+                                        .map(|r| format!(": {r}"))
+                                        .unwrap_or_default()
+                                ),
+                                severity: DegradationSeverity::High,
+                            });
+                        }
+                        if self.pending_config.realtime.require_mode {
+                            let names: Vec<String> = degraded.iter().map(|d| d.summary()).collect();
+                            print_line(&format!(
+                                "[SCHEDULER] require_rt() FAILED: {} RT thread(s) \
+                                 did not get a real-time policy: {}",
+                                degraded.len(),
+                                names.join("; ")
+                            ));
+                            self.running
+                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                            return Err(crate::error::Error::Resource(
+                                crate::error::ResourceError::Unsupported {
+                                    feature: "Real-time scheduling".into(),
+                                    reason: format!(
+                                        "require_rt(): {} RT tick thread(s) run \
+                                         under a non-real-time policy: {}. Grant \
+                                         CAP_SYS_NICE (or run with a raised \
+                                         RLIMIT_RTPRIO), or use .prefer_rt() for \
+                                         graceful degradation.",
+                                        degraded.len(),
+                                        names.join("; ")
+                                    ),
+                                },
+                            ));
+                        }
+                    }
                 }
 
                 if !groups.compute_nodes.is_empty() {

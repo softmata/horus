@@ -332,6 +332,30 @@ pub struct MetricPolicy {
     /// Multiple of the baseline center beyond which the excursion is blocking
     /// regardless of `enforcement` or of how little baseline history exists.
     pub gross_multiplier: f64,
+    /// Whether this metric is a SINGLE observation rather than a distribution.
+    ///
+    /// `max` and `max_jitter` are the worst one sample of the run. Comparing
+    /// them across runs compares two single observations, so a ratio between
+    /// them carries no information about the code — there is no spread to be
+    /// outside of, and one host preemption produces any multiple you like.
+    ///
+    /// This is why the gross multiplier does not apply to them. The multiplier
+    /// means "past this, no runner-side effect explains it", and for a
+    /// single-sample order statistic that claim is simply false: a 36x
+    /// excursion in `max` while every percentile through p99.9 got *faster* is
+    /// exactly what one descheduled sample in 10,000 looks like. Observed on
+    /// 2026-09-04: median 90→80ns, p95 110→100, p99 150→140, p99.9 170→160,
+    /// max 230ns→8.47µs. A real regression moves the median.
+    ///
+    /// These metrics are still measured and still printed. What they cannot do
+    /// is fail a job on ONE run.
+    ///
+    /// They can still fail a **trunk** run by the streak rule: gross on
+    /// `consecutive_to_block` trunk runs in a row is sustained, because a
+    /// descheduled sample does not repeat on schedule. That path needs
+    /// `min_baseline_runs` of prior history at each step, so it cannot fire on
+    /// a thin window.
+    pub single_sample: bool,
 }
 
 /// The gate's configuration, with the reasoning for every number.
@@ -417,6 +441,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 25.0,
                     gross_multiplier: 3.0,
+                    single_sample: false,
                 },
                 MetricPolicy {
                     metric: Metric::P95,
@@ -425,6 +450,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 50.0,
                     gross_multiplier: 4.0,
+                    single_sample: false,
                 },
                 // Report-only: spread unmeasured. Gross at 4x, because no
                 // plausible combination of P-state (base-vs-turbo is under ~2x)
@@ -439,6 +465,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 100.0,
                     gross_multiplier: 4.0,
+                    single_sample: false,
                 },
                 MetricPolicy {
                     metric: Metric::P999,
@@ -447,6 +474,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 5.0,
                     abs_floor: 250.0,
                     gross_multiplier: 6.0,
+                    single_sample: false,
                 },
                 // Order statistics thin enough that one host preemption moves
                 // them. Advisory at any threshold on a shared runner.
@@ -457,6 +485,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 6.0,
                     abs_floor: 1_000.0,
                     gross_multiplier: 10.0,
+                    single_sample: false,
                 },
                 MetricPolicy {
                     metric: Metric::Max,
@@ -465,6 +494,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 6.0,
                     abs_floor: 5_000.0,
                     gross_multiplier: 10.0,
+                    single_sample: true,
                 },
                 MetricPolicy {
                     metric: Metric::MaxJitter,
@@ -473,6 +503,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 6.0,
                     abs_floor: 5_000.0,
                     gross_multiplier: 10.0,
+                    single_sample: true,
                 },
                 // The blocking tail metric. Dimensionless, so the dominant
                 // characterized noise term -- every sample being
@@ -488,6 +519,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 0.5,
                     gross_multiplier: 4.0,
+                    single_sample: false,
                 },
                 // Same construction one percentile further out, where the
                 // numerator is the 100th-worst of 100k rather than the
@@ -501,6 +533,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 5.0,
                     abs_floor: 1.0,
                     gross_multiplier: 6.0,
+                    single_sample: false,
                 },
                 // Throughput, as ns/msg so it shares the lower-is-better
                 // comparison. Report-only to begin with: unlike the latency
@@ -518,6 +551,7 @@ impl Default for RegressionPolicy {
                     noise_sigmas: 4.0,
                     abs_floor: 50.0,
                     gross_multiplier: 2.0,
+                    single_sample: false,
                 },
             ],
             min_baseline_runs: 5,
@@ -1009,12 +1043,48 @@ impl BaselineHistory {
 
             if gross {
                 cmp.verdict = Verdict::GrossRegression;
-                cmp.blocking = true;
-                cmp.note = Some(format!(
-                    "{:.1}x the baseline center; past {:.1}x no runner-side effect explains it",
-                    current / center,
-                    mp.gross_multiplier
-                ));
+                // A single-sample metric cannot block. See
+                // `MetricPolicy::single_sample`: `max` is the worst one
+                // observation of the run, so this ratio compares two single
+                // observations and no multiple of it rules out the runner.
+                cmp.blocking = !mp.single_sample;
+                cmp.note = Some(if mp.single_sample {
+                    format!(
+                        "{:.1}x the baseline center, but this metric is a single \
+                         observation — one descheduled sample produces any multiple, \
+                         so it is reported and not blocking. Check the median and \
+                         percentiles above: a real regression moves those too",
+                        current / center
+                    )
+                } else {
+                    format!(
+                        "{:.1}x the baseline center; past {:.1}x no runner-side effect explains it",
+                        current / center,
+                        mp.gross_multiplier
+                    )
+                });
+                // One preemption is noise; the same metric gross on N
+                // consecutive TRUNK runs is not. This is the streak rule the
+                // `over` branch below applies, extended to the single-sample
+                // metrics that skip that branch — without it a genuine tail
+                // regression that never moves the median could never fail
+                // anything, which would be the opposite mistake to the one
+                // this commit fixes.
+                //
+                // `above_band_streak` requires `min_baseline_runs` of prior
+                // history at each step, so a thin window yields 0 and this
+                // cannot fire on the very baseline that caused the trouble.
+                if mp.single_sample && is_trunk_run && policy.consecutive_to_block > 0 {
+                    cmp.streak = 1 + self.above_band_streak(key, metric, applicable, mp, policy);
+                    if cmp.streak >= policy.consecutive_to_block {
+                        cmp.blocking = !cpu_model_mismatch;
+                        cmp.note = Some(format!(
+                            "{:.1}x the baseline center on {} consecutive trunk runs; one                              descheduled sample does not repeat, so this is sustained",
+                            current / center,
+                            cmp.streak
+                        ));
+                    }
+                }
             } else if over {
                 cmp.verdict = Verdict::Regressed;
                 cmp.blocking = mp.enforcement == Enforcement::Blocking
@@ -2176,6 +2246,160 @@ mod tests {
         assert_eq!(report.exit_code(), 0);
     }
 
+    // ── A single sample is not a distribution ───────────────────────────
+    //
+    // 2026-09-04, the required "Run Benchmarks" check, one baseline run:
+    //
+    //   median   90.0 ns    80.0 ns   -11.1%   INCONCLUSIVE
+    //   p95     110.0 ns   100.0 ns    -9.1%   INCONCLUSIVE
+    //   p99     150.0 ns   140.0 ns    -6.7%   INCONCLUSIVE
+    //   p99.9   170.0 ns   160.0 ns    -5.9%   INCONCLUSIVE
+    //   max     230.0 ns   8.47 µs  +3583.5%   GROSS REGRESSION  [BLOCKING]
+    //
+    // Every percentile through p99.9 got FASTER and the job failed anyway. The
+    // gross multiplier is documented as "past this, no runner-side effect
+    // explains it", which is true of a distribution and false of `max`: it is
+    // the worst one sample of ten thousand, so one descheduled sample produces
+    // any multiple at all. The same job passed five times and failed once on
+    // an unchanged branch, which is what a coin-flip gate looks like.
+
+    /// A shape whose distribution is unchanged but whose single worst sample
+    /// was preempted.
+    fn one_preempted_sample(median: f64) -> Shape {
+        let mut shape = Shape::healthy(median);
+        shape.max = (median * 9_000.0) as u64;
+        shape
+    }
+
+    #[test]
+    fn a_preempted_max_does_not_fail_a_run_whose_distribution_held() {
+        let history = window(1, &[100.0]);
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        assert!(
+            !report.has_blocking_regressions(),
+            "max is a single observation: one descheduled sample must not fail \
+             a run whose median and every percentile are unchanged"
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_preempted_max_is_still_reported() {
+        // Not blocking is not the same as not measured. The excursion must
+        // still be visible, or the next person cannot tell a noisy runner from
+        // a quiet one.
+        let history = window(1, &[100.0]);
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+        let md = report.to_markdown();
+
+        assert!(
+            md.contains("max"),
+            "the max excursion must still appear in the report. Got:\n{md}"
+        );
+    }
+
+    #[test]
+    fn a_distribution_wide_regression_still_blocks() {
+        // The other half of the claim: making max advisory must not make the
+        // gate toothless. A run that is 20x worse EVERYWHERE still fails.
+        let history = window(5, &[100.0, 105.0, 98.0, 102.0, 100.0]);
+        let current = report_with(&Shape::healthy(2_000.0));
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        assert!(
+            report.has_blocking_regressions(),
+            "a 20x regression across the whole distribution must still block"
+        );
+        assert_ne!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_sustained_gross_max_blocks_on_trunk() {
+        // The other side of making max advisory. One preemption is noise; the
+        // same excursion on run after run of TRUNK is not, because a
+        // descheduled sample does not repeat on schedule. Without this a real
+        // tail regression that never moves the median could never fail
+        // anything.
+        let mut history = window(8, &[100.0]);
+        for _ in 0..4 {
+            history.push(&report_with(&one_preempted_sample(100.0)));
+        }
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.evaluate(&ComparisonInput {
+            current: &[&current],
+            policy: &RegressionPolicy::default(),
+            is_trunk_run: true,
+        });
+
+        assert!(
+            report.has_blocking_regressions(),
+            "a gross max sustained across consecutive trunk runs is drift, not \
+             a draw, and must block"
+        );
+    }
+
+    #[test]
+    fn a_sustained_gross_max_does_not_block_a_pull_request() {
+        // Same input, `is_trunk_run: false`. A PR author is not responsible
+        // for drift that landed on trunk before their branch — the same
+        // reasoning the streak rule already applies to every other metric.
+        let mut history = window(8, &[100.0]);
+        for _ in 0..4 {
+            history.push(&report_with(&one_preempted_sample(100.0)));
+        }
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.evaluate(&ComparisonInput {
+            current: &[&current],
+            policy: &RegressionPolicy::default(),
+            is_trunk_run: false,
+        });
+
+        assert!(
+            !report.has_blocking_regressions(),
+            "the consecutive-runs escalation must not apply to pull requests"
+        );
+    }
+
+    #[test]
+    fn a_single_gross_max_does_not_block_even_on_trunk() {
+        // One bad run against a clean history: the streak is 1, below the
+        // threshold, so this stays advisory on trunk too.
+        let history = window(8, &[100.0]);
+        let current = report_with(&one_preempted_sample(100.0));
+        let report = history.evaluate(&ComparisonInput {
+            current: &[&current],
+            policy: &RegressionPolicy::default(),
+            is_trunk_run: true,
+        });
+
+        assert!(
+            !report.has_blocking_regressions(),
+            "one preempted sample on trunk is still one preempted sample"
+        );
+    }
+
+    #[test]
+    fn only_max_and_max_jitter_are_treated_as_single_samples() {
+        // Pins the classification, so a future metric added to the policy
+        // table has to make this choice deliberately rather than inherit it.
+        let policy = RegressionPolicy::default();
+        let single: Vec<Metric> = policy
+            .metrics
+            .iter()
+            .filter(|mp| mp.single_sample)
+            .map(|mp| mp.metric)
+            .collect();
+        assert_eq!(
+            single,
+            vec![Metric::Max, Metric::MaxJitter],
+            "max and max_jitter are the only metrics that are one observation \
+             rather than an order statistic over many"
+        );
+    }
+
     #[test]
     fn the_pr_comment_discloses_a_vacuous_pass() {
         let history = window(0, &[100.0]);
@@ -2288,6 +2512,13 @@ mod tests {
         let history = window(10, &[100.0, 98.0, 103.0, 101.0, 99.0]);
         let mut shape = Shape::healthy(100.0);
         // Median and p99 shape held constant on purpose: only the far tail moves.
+        //
+        // `p9999` is what makes this block, and it has to be: it is ReportOnly
+        // but it is an order statistic over 100k samples, not one observation,
+        // so the gross multiplier still applies to it. `max` is set too but no
+        // longer blocks on its own — see `MetricPolicy::single_sample`. Do not
+        // "simplify" this by dropping the p9999 line; the test would keep its
+        // name and stop testing anything.
         shape.p9999 = 4_000_000;
         shape.max = 8_000_000;
         let current = report_with(&shape);
