@@ -373,6 +373,7 @@ jobs:
 
       - name: Setup Shared Memory
         run: |
+          rm -rf /dev/shm/horus_*
           # Create namespaced SHM directory structure
           SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
           # No sudo: sudo mkdir leaves these root-owned, which is what made

@@ -66,6 +66,7 @@ jobs:
       # Setup shared memory with proper permissions
       - name: Setup Shared Memory
         run: |
+          rm -rf /dev/shm/horus_*
           # Create namespaced SHM directory structure
           SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
           # No sudo: sudo mkdir leaves these root-owned, which is what made
@@ -124,7 +125,7 @@ jobs:
           # The gate-logic tests in that file (spread_gate_*, stall_rate_*,
           # clean_timing_*) are pure and fast, and DO run here -- they carry no
           # timing dependency, so the reasoning above does not apply to them.
-          cargo test --workspace --exclude horus_py --release --test '*' -- \
+          cargo test --workspace --exclude horus_py --release --no-fail-fast --test '*' -- \
             --test-threads=1 --nocapture \
             --skip shm_fanout_latency_percentiles_cross_thread \
             --skip stress_rt_isolation_from_compute_nodes \
