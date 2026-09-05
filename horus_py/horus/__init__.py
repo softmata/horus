@@ -11,7 +11,7 @@ Quick start::
     img = horus.Image(480, 640, "rgb8")
 
     # Send over a topic (zero-copy)
-    topic = horus.Topic("camera.rgb")
+    topic = horus.Topic(horus.Image, endpoint="camera.rgb")
     topic.send(img)
 
     # Receive (in another process)
@@ -34,9 +34,15 @@ Common Mistakes:
    'budget'``.
    The ``us`` and ``ms`` constants are available: ``from horus import us, ms``
 
-2. **Topic type** - ``Topic(int)`` or ``Topic(42)`` raises TypeError.
+2. **Topic type** - ``Topic(42)`` raises TypeError. ``Topic(int)`` does NOT:
+   an unrecognised class opens a generic MessagePack topic named after it
+   (here, ``"int"``), which is almost never what was meant.
    Wrong: ``topic = Topic(42)``
    Right: ``topic = Topic(CmdVel)`` or ``Topic("my_topic")``
+
+   A pool-backed type needs the type AND the name:
+   ``Topic(Image, endpoint="camera.rgb")``. Passing only the name gives an
+   untyped topic, and sending an ``Image`` over it raises.
 
 3. **Rate must be positive** - ``Node(rate=0)`` or ``Node(rate=-1)`` raises ValueError.
 

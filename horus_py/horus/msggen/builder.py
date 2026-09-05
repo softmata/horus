@@ -192,8 +192,14 @@ def build_messages(force: bool = False, verbose: bool = True) -> bool:
             print("\nBuild successful! Custom messages are now available.")
             print("\nUsage:")
             for msg in messages:
-                print(f"  from horus import {msg.name}, Topic")
+                # `from horus import <Name>` raises ImportError: the class is
+                # registered on the extension module and `horus/__init__.py`
+                # re-exports a fixed hard-coded list, which a generated name is
+                # not on. Import from `horus._horus`, where it actually lives.
+                print(f"  from horus._horus import {msg.name}")
+                print(f"  from horus import Topic")
                 print(f"  topic = Topic({msg.name})")
+                print(f"  topic.send({msg.name}(...))")
 
         return True
 

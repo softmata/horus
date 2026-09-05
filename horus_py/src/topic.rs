@@ -96,6 +96,56 @@ fn topic_lock<T>(lock: &Mutex<T>) -> PyResult<std::sync::MutexGuard<'_, T>> {
         .map_err(|e| PyRuntimeError::new_err(format!("Topic lock poisoned: {e}")))
 }
 
+/// A message object's public, non-callable attributes as a dict.
+///
+/// The Rust twin of `horus._message_to_dict`, and used the same way: only
+/// after a direct conversion has already been refused, so it needs no guess
+/// about which types are messages. Returns `None` for anything with nothing to
+/// extract, and for the built-in and array-like types a caller would never mean
+/// to flatten.
+fn message_object_as_dict<'py>(
+    py: Python<'py>,
+    obj: &pyo3::Bound<'py, PyAny>,
+) -> Option<pyo3::Bound<'py, pyo3::types::PyDict>> {
+    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+
+    // Anything pythonize already handles, or would mangle.
+    if obj.is_none()
+        || obj.is_instance_of::<pyo3::types::PyDict>()
+        || obj.is_instance_of::<pyo3::types::PyList>()
+        || obj.is_instance_of::<pyo3::types::PyTuple>()
+        || obj.is_instance_of::<pyo3::types::PySet>()
+        || obj.is_instance_of::<pyo3::types::PyString>()
+        || obj.is_instance_of::<pyo3::types::PyBytes>()
+        || obj.is_instance_of::<pyo3::types::PyBool>()
+        || obj.is_instance_of::<pyo3::types::PyInt>()
+        || obj.is_instance_of::<pyo3::types::PyFloat>()
+        || obj.hasattr("__array_interface__").unwrap_or(false)
+        || obj.hasattr("__array__").unwrap_or(false)
+    {
+        return None;
+    }
+
+    let dict = PyDict::new(py);
+    let names = obj.dir().ok()?;
+    for name in names.iter() {
+        let Ok(key) = name.extract::<String>() else {
+            continue;
+        };
+        if key.starts_with('_') {
+            continue;
+        }
+        let Ok(value) = obj.getattr(key.as_str()) else {
+            continue;
+        };
+        if value.is_callable() {
+            continue;
+        }
+        let _ = dict.set_item(key, value);
+    }
+    (!dict.is_empty()).then_some(dict)
+}
+
 /// Encode an arbitrary Python object as a `GenericMessage` (MessagePack payload).
 ///
 /// Shared by `send`, `try_send`, and `send_blocking` so an untyped
@@ -103,9 +153,31 @@ fn topic_lock<T>(lock: &Mutex<T>) -> PyResult<std::sync::MutexGuard<'_, T>> {
 /// matter which of the three the caller reached for.
 fn generic_message_from_py(py: Python, message: &Py<PyAny>) -> PyResult<GenericMessage> {
     let bound = message.bind(py);
-    let value: serde_json::Value = pythonize::depythonize(bound).map_err(|e| {
-        pyo3::exceptions::PyTypeError::new_err(format!("Failed to convert Python object: {}", e))
-    })?;
+    let value: serde_json::Value = match pythonize::depythonize(bound) {
+        Ok(v) => v,
+        // `depythonize` cannot read an opaque `#[pyclass]`, which is what every
+        // HORUS message class and every msggen-generated class is. So
+        // `Topic(RobotStatus).send(instance)` — the line `build_messages()`
+        // prints on success — raised `TypeError: Failed to convert Python
+        // object`, while `node.send("robot.status", instance)` worked, because
+        // `Node.send` catches that refusal and retries the object as a dict.
+        // Two spellings of one operation disagreeing is the defect; the
+        // conversion belongs here, where all three send paths share it.
+        Err(first) => {
+            let Some(as_dict) = message_object_as_dict(py, bound) else {
+                return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                    "Failed to convert Python object: {}",
+                    first
+                )));
+            };
+            pythonize::depythonize(&as_dict).map_err(|e| {
+                pyo3::exceptions::PyTypeError::new_err(format!(
+                    "Failed to convert Python object: {}",
+                    e
+                ))
+            })?
+        }
+    };
     let msgpack_bytes = rmp_serde::to_vec(&value).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
             "Failed to serialize to MessagePack: {}",
