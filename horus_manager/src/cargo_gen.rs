@@ -120,8 +120,8 @@ pub fn generate(
     // Add user deps from horus.toml
     write_deps_section(&mut cargo, &manifest.dependencies, project_dir, &horus_dir)?;
 
-    // Add driver dependencies from [drivers] config tables
-    write_driver_deps(&mut cargo, &manifest.drivers);
+    // Add driver dependencies from the [hardware]/[drivers] config tables
+    write_driver_deps(&mut cargo, &manifest.hardware_entries());
 
     // ── Dev dependencies ─────────────────────────────────────────────────
     if include_dev && !manifest.dev_dependencies.is_empty() {
@@ -871,7 +871,7 @@ fn writable_by_horus(config_path: &Path) -> bool {
 /// - `camera = "opencv"` / `gps = true` → no dependency (legacy, handled by feature flags)
 fn write_driver_deps(
     cargo: &mut String,
-    drivers: &std::collections::BTreeMap<String, crate::manifest::DriverValue>,
+    drivers: &std::collections::BTreeMap<&str, &crate::manifest::DriverValue>,
 ) {
     use crate::manifest::DriverValue;
 
@@ -882,7 +882,7 @@ fn write_driver_deps(
     let mut added_crates: BTreeMap<String, (Option<String>, Vec<String>)> = BTreeMap::new();
 
     for value in drivers.values() {
-        match value {
+        match *value {
             DriverValue::Config(cfg) => {
                 // Terra drivers: no longer auto-resolved — user adds terra-horus
                 // as a normal dependency in [dependencies]. Skip terra entries.
@@ -916,7 +916,7 @@ fn write_driver_deps(
     }
 
     if !added_crates.is_empty() {
-        writeln!(cargo, "\n# Driver dependencies (from [drivers])").unwrap();
+        writeln!(cargo, "\n# Driver dependencies (from [hardware])").unwrap();
         for (crate_name, (version, features)) in &added_crates {
             let ver = version.as_deref().unwrap_or("*");
             if features.is_empty() {
@@ -2876,6 +2876,71 @@ mod tests {
         assert!(
             !content.contains("libz-sys"),
             "system dep should be filtered"
+        );
+    }
+
+    /// `[hardware]` is the documented preferred spelling and `[drivers]` the
+    /// legacy one, yet only `[drivers]` used to reach the generator — so a
+    /// crates.io driver declared the preferred way produced no Cargo
+    /// dependency at all, and the project failed to build with an
+    /// unresolved-crate error naming something the user had already declared.
+    #[test]
+    fn a_driver_under_hardware_generates_the_same_dep_as_under_drivers() {
+        let cfg = DriverTableConfig {
+            crate_name: Some("rplidar-driver".into()),
+            ..Default::default()
+        };
+
+        let mut under_hardware = test_manifest(BTreeMap::new());
+        under_hardware
+            .hardware
+            .insert("lidar".into(), DriverValue::Config(cfg.clone()));
+
+        let mut under_drivers = test_manifest(BTreeMap::new());
+        under_drivers
+            .drivers
+            .insert("lidar".into(), DriverValue::Config(cfg));
+
+        let mut from_hardware = String::new();
+        write_driver_deps(&mut from_hardware, &under_hardware.hardware_entries());
+        let mut from_drivers = String::new();
+        write_driver_deps(&mut from_drivers, &under_drivers.hardware_entries());
+
+        assert!(
+            from_hardware.contains("rplidar-driver"),
+            "a [hardware] driver must generate its crate dep, got: {from_hardware:?}"
+        );
+        assert_eq!(
+            from_hardware, from_drivers,
+            "the preferred spelling must not do less than the legacy one"
+        );
+    }
+
+    /// A name in both tables is one piece of hardware, not two deps.
+    #[test]
+    fn hardware_wins_over_a_same_named_legacy_driver() {
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.hardware.insert(
+            "arm".into(),
+            DriverValue::Config(DriverTableConfig {
+                crate_name: Some("new-arm".into()),
+                ..Default::default()
+            }),
+        );
+        manifest.drivers.insert(
+            "arm".into(),
+            DriverValue::Config(DriverTableConfig {
+                crate_name: Some("old-arm".into()),
+                ..Default::default()
+            }),
+        );
+
+        let mut out = String::new();
+        write_driver_deps(&mut out, &manifest.hardware_entries());
+        assert!(out.contains("new-arm"), "got: {out:?}");
+        assert!(
+            !out.contains("old-arm"),
+            "the legacy entry must not shadow-add a second dep, got: {out:?}"
         );
     }
 

@@ -1267,6 +1267,28 @@ fn warn_unknown_keys_once(path: &Path, content: &str) {
 // ─── HorusManifest: loading ─────────────────────────────────────────────────
 
 impl HorusManifest {
+    /// Every hardware entry: `[hardware]` plus the legacy `[drivers]` behind it.
+    ///
+    /// `[hardware]` is the preferred spelling and `[drivers]` the compatibility
+    /// one, so a consumer that reads only `drivers` makes the *preferred*
+    /// spelling do strictly less than the legacy one. That is what happened:
+    /// `doctor` and `native_sync` merged the two, while `cargo_gen` and
+    /// `pyproject_gen` read `drivers` alone, so a driver declared under
+    /// `[hardware]` generated no Cargo dependency and no PyPI dependency.
+    /// Everything that wants "the hardware the project declares" goes through
+    /// here so the two spellings cannot drift apart again.
+    ///
+    /// A name present in both resolves to the `[hardware]` entry.
+    pub fn hardware_entries(&self) -> BTreeMap<&str, &DriverValue> {
+        let mut merged: BTreeMap<&str, &DriverValue> = BTreeMap::new();
+        for (name, value) in &self.hardware {
+            merged.insert(name.as_str(), value);
+        }
+        for (name, value) in &self.drivers {
+            merged.entry(name.as_str()).or_insert(value);
+        }
+        merged
+    }
     /// Load manifest from a TOML file path.
     ///
     /// Warns on stderr about keys HORUS does not understand, once per file per

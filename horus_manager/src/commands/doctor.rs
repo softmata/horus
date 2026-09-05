@@ -1153,15 +1153,7 @@ fn check_drivers(ctx: &dispatch::ProjectContext) -> CheckResult {
         }
     };
 
-    // Merge [hardware] and legacy [drivers] entries
-    let mut all_entries: std::collections::BTreeMap<String, &crate::manifest::DriverValue> =
-        std::collections::BTreeMap::new();
-    for (k, v) in &manifest.hardware {
-        all_entries.insert(k.clone(), v);
-    }
-    for (k, v) in &manifest.drivers {
-        all_entries.entry(k.clone()).or_insert(v);
-    }
+    let all_entries = manifest.hardware_entries();
 
     if all_entries.is_empty() {
         return CheckResult {
@@ -1209,7 +1201,7 @@ fn check_drivers(ctx: &dispatch::ProjectContext) -> CheckResult {
             let urdf_path = std::path::Path::new(desc);
             let sensors = crate::urdf::extract_sensors_from_urdf(urdf_path);
             if !sensors.is_empty() {
-                let hw_keys: Vec<&str> = all_entries.keys().map(|s| s.as_str()).collect();
+                let hw_keys: Vec<&str> = all_entries.keys().copied().collect();
                 let warnings = crate::urdf::validate_driver_keys(&hw_keys, &sensors);
                 for warning in warnings {
                     details.push(format!("  ! {}", warning));
