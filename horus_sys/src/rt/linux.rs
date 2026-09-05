@@ -1,6 +1,8 @@
 // Linux RT: SCHED_FIFO + mlockall + sched_setaffinity + /proc detection
 
-use super::{BestEffortReport, RtCapabilities};
+use super::{
+    BestEffortReport, Clocksource, PreemptInfo, PreemptModel, PreemptSource, RtCapabilities,
+};
 use std::time::Duration;
 
 /// Build a `sched_param` carrying just a priority.
@@ -24,7 +26,9 @@ fn sched_param_with_priority(priority: i32) -> libc::sched_param {
 /// Detect Linux RT capabilities.
 pub(super) fn detect_capabilities() -> RtCapabilities {
     let kernel_version = get_kernel_version();
-    let preempt_rt = detect_preempt_rt(&kernel_version);
+    let preempt = read_preempt_info();
+    let preempt_rt = preempt.model == PreemptModel::PreemptRt;
+    let clocksource = read_clocksource();
     let (min_priority, max_priority) = get_priority_range();
     let memory_locking = check_mlockall_permitted();
     let cpu_count = std::thread::available_parallelism()
@@ -42,11 +46,22 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         cpu_affinity: true,
         kernel_version,
         cpu_count,
-        estimated_jitter: if preempt_rt {
-            Duration::from_micros(10)
-        } else {
-            Duration::from_micros(100)
+        // Derived from the MODEL, not from the bool. The bool put a
+        // `preempt=none` kernel — worst-case scheduling latency in the
+        // milliseconds — in the same bucket as a fully preemptible one, and
+        // quoted 100 us for both.
+        estimated_jitter: match preempt.model {
+            PreemptModel::PreemptRt => Duration::from_micros(10),
+            PreemptModel::Full | PreemptModel::Lazy => Duration::from_micros(100),
+            PreemptModel::Voluntary => Duration::from_micros(1_000),
+            PreemptModel::None => Duration::from_micros(10_000),
+            // An unknown model is not a claim about latency. 100 us is what
+            // this reported before the model was read at all, so an
+            // undetectable kernel keeps the number it always had.
+            PreemptModel::Unknown | PreemptModel::NotApplicable => Duration::from_micros(100),
         },
+        preempt,
+        clocksource,
     }
 }
 
@@ -685,6 +700,203 @@ pub(super) fn set_affinity(cpus: &[usize]) -> anyhow::Result<Vec<usize>> {
     current_affinity()
 }
 
+// ── Preemption model: a ladder, with the rung recorded ──────────────────
+
+const DEBUGFS_PREEMPT: &str = "/sys/kernel/debug/sched/preempt";
+const REALTIME_SYSFS: &str = "/sys/kernel/realtime";
+const CLOCKSOURCE_PATH: &str = "/sys/devices/system/clocksource/clocksource0/current_clocksource";
+
+/// Parse `/sys/kernel/debug/sched/preempt`.
+///
+/// The kernel prints every mode with the ACTIVE one in parentheses:
+/// `none voluntary (full) lazy`. Returns `None` when nothing is parenthesised —
+/// a format change must read as "unknown", never as a guess.
+pub(crate) fn parse_debugfs_preempt(s: &str) -> Option<PreemptModel> {
+    s.split_whitespace()
+        .find_map(|tok| tok.strip_prefix('(')?.strip_suffix(')'))
+        .and_then(model_from_mode_name)
+}
+
+/// Map a kernel mode name to a model.
+fn model_from_mode_name(name: &str) -> Option<PreemptModel> {
+    match name {
+        "none" => Some(PreemptModel::None),
+        "voluntary" => Some(PreemptModel::Voluntary),
+        "full" => Some(PreemptModel::Full),
+        "lazy" => Some(PreemptModel::Lazy),
+        _ => None,
+    }
+}
+
+/// Parse a `preempt=` boot override out of `/proc/cmdline`.
+///
+/// Whole-token match on whitespace-split fields, so `nopreempt=full` cannot
+/// match.
+pub(crate) fn parse_cmdline_preempt(cmdline: &str) -> Option<PreemptModel> {
+    cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("preempt="))
+        .and_then(model_from_mode_name)
+}
+
+/// Map `CONFIG_PREEMPT_*` to the model the kernel boots with.
+///
+/// Follows the kernel's own `preempt_dynamic_init()` if/else chain exactly:
+/// RT > NONE > VOLUNTARY > LAZY > PREEMPT(full).
+///
+/// Matches whole `CONFIG_X=y` lines only. Both traps this avoids are live on an
+/// ordinary Ubuntu kernel: `# CONFIG_PREEMPT is not set` must not satisfy the
+/// `CONFIG_PREEMPT` arm, and `CONFIG_PREEMPT_BUILD=y` must not masquerade as
+/// `CONFIG_PREEMPT=y`.
+pub(crate) fn model_from_kernel_config(config: &str) -> Option<PreemptModel> {
+    let has = |key: &str| config.lines().any(|l| l.trim() == format!("{key}=y"));
+    if has("CONFIG_PREEMPT_RT") {
+        Some(PreemptModel::PreemptRt)
+    } else if has("CONFIG_PREEMPT_NONE") {
+        Some(PreemptModel::None)
+    } else if has("CONFIG_PREEMPT_VOLUNTARY") {
+        Some(PreemptModel::Voluntary)
+    } else if has("CONFIG_PREEMPT_LAZY") {
+        Some(PreemptModel::Lazy)
+    } else if has("CONFIG_PREEMPT") {
+        Some(PreemptModel::Full)
+    } else {
+        None
+    }
+}
+
+/// Whether the kernel config says the model is runtime-settable.
+pub(crate) fn config_is_dynamic(config: &str) -> bool {
+    config
+        .lines()
+        .any(|l| l.trim() == "CONFIG_PREEMPT_DYNAMIC=y")
+}
+
+/// The `PREEMPT*` token in `/proc/version`, for a kernel with no other source.
+///
+/// Returns `None` for a bare `PREEMPT_DYNAMIC` — that token announces
+/// runtime-settability, not a mode — and `None` for no token at all, because
+/// `none` and `voluntary` both emit nothing and are indistinguishable here.
+/// Guessing between them is exactly the one-bucket error this ladder exists to
+/// remove.
+pub(crate) fn model_from_version_token(v: &str) -> Option<PreemptModel> {
+    if version_says_rt(v) {
+        return Some(PreemptModel::PreemptRt);
+    }
+    let has = |t: &str| v.split_whitespace().any(|tok| tok == t);
+    if has("PREEMPT_LAZY") {
+        Some(PreemptModel::Lazy)
+    } else if has("PREEMPT") {
+        Some(PreemptModel::Full)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn version_says_dynamic(v: &str) -> bool {
+    v.split_whitespace().any(|tok| tok == "PREEMPT_DYNAMIC")
+}
+
+pub(crate) fn version_says_rt(v: &str) -> bool {
+    v.contains("PREEMPT_RT") || v.contains("PREEMPT RT")
+}
+
+/// `(model, dynamic)` from `/boot/config-<osrelease>`, read at most once.
+///
+/// `/proc/config.gz` is deliberately NOT read: it needs gzip, and adding a
+/// decompressor to a crate every HORUS binary links, for a diagnostic present
+/// on a minority of distros, is the wrong trade.
+fn kernel_config_facts() -> &'static Option<(Option<PreemptModel>, bool)> {
+    static FACTS: std::sync::OnceLock<Option<(Option<PreemptModel>, bool)>> =
+        std::sync::OnceLock::new();
+    FACTS.get_or_init(|| {
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
+        let config = std::fs::read_to_string(format!("/boot/config-{}", release.trim())).ok()?;
+        Some((
+            model_from_kernel_config(&config),
+            config_is_dynamic(&config),
+        ))
+    })
+}
+
+/// Establish the preemption model, recording which rung answered.
+pub(super) fn read_preempt_info() -> PreemptInfo {
+    let version = get_kernel_version();
+    let config = kernel_config_facts();
+    let dynamic = config.map(|(_, d)| d).unwrap_or(false) || version_says_dynamic(&version);
+
+    // 1. The running value. Root-only in practice, and the only rung that
+    //    survives a runtime `echo full > .../preempt`.
+    if let Some(model) = std::fs::read_to_string(DEBUGFS_PREEMPT)
+        .ok()
+        .and_then(|s| parse_debugfs_preempt(&s))
+    {
+        return PreemptInfo {
+            model,
+            dynamic,
+            source: PreemptSource::Debugfs,
+        };
+    }
+
+    // 2. PREEMPT_RT is not dynamic — a kernel either has sleeping spinlocks or
+    //    it does not — so these two rungs are conclusive wherever they fire.
+    if version_says_rt(&version) || std::path::Path::new(REALTIME_SYSFS).exists() {
+        return PreemptInfo {
+            model: PreemptModel::PreemptRt,
+            dynamic: false,
+            source: if version_says_rt(&version) {
+                PreemptSource::ProcVersion
+            } else {
+                PreemptSource::RealtimeSysfs
+            },
+        };
+    }
+
+    // 3. The boot override, if the operator set one.
+    if let Some(model) = std::fs::read_to_string("/proc/cmdline")
+        .ok()
+        .and_then(|s| parse_cmdline_preempt(&s))
+    {
+        return PreemptInfo {
+            model,
+            dynamic,
+            source: PreemptSource::Cmdline,
+        };
+    }
+
+    // 4. The build default.
+    if let Some((Some(model), _)) = config {
+        return PreemptInfo {
+            model: *model,
+            dynamic,
+            source: PreemptSource::KernelConfig,
+        };
+    }
+
+    // 5. The token, which can only distinguish full and lazy from each other.
+    if let Some(model) = model_from_version_token(&version) {
+        return PreemptInfo {
+            model,
+            dynamic,
+            source: PreemptSource::ProcVersion,
+        };
+    }
+
+    PreemptInfo {
+        model: PreemptModel::Unknown,
+        dynamic,
+        source: PreemptSource::Unavailable,
+    }
+}
+
+/// The clocksource currently serving `clock_gettime`.
+pub(super) fn read_clocksource() -> Clocksource {
+    match std::fs::read_to_string(CLOCKSOURCE_PATH) {
+        Ok(s) => Clocksource::from_name(s.trim()),
+        Err(_) => Clocksource::unknown(),
+    }
+}
+
 /// Detect isolated CPUs (isolcpus kernel parameter).
 pub(super) fn detect_isolated_cpus() -> Vec<usize> {
     match std::fs::read_to_string("/sys/devices/system/cpu/isolated") {
@@ -907,12 +1119,6 @@ fn get_kernel_version() -> String {
         .to_string()
 }
 
-fn detect_preempt_rt(kernel_version: &str) -> bool {
-    kernel_version.contains("PREEMPT_RT")
-        || kernel_version.contains("PREEMPT RT")
-        || std::path::Path::new("/sys/kernel/realtime").exists()
-}
-
 fn get_priority_range() -> (i32, i32) {
     // SAFETY: safe libc calls that query system limits
     unsafe {
@@ -939,6 +1145,175 @@ fn check_mlockall_permitted() -> bool {
 
 #[cfg(test)]
 mod tests {
+    // ── Preemption model: the parsers, each rung on its own ─────────────
+
+    #[test]
+    fn debugfs_names_the_active_mode_by_its_parentheses() {
+        assert_eq!(
+            parse_debugfs_preempt("none voluntary (full) lazy"),
+            Some(PreemptModel::Full)
+        );
+        assert_eq!(
+            parse_debugfs_preempt("(none) voluntary full lazy"),
+            Some(PreemptModel::None)
+        );
+        assert_eq!(
+            parse_debugfs_preempt("none voluntary full (lazy)\n"),
+            Some(PreemptModel::Lazy)
+        );
+        // A format change must read as "unknown", never as a guess: this file
+        // is the only authoritative source, so a wrong answer from it is worse
+        // than no answer.
+        assert_eq!(parse_debugfs_preempt("none voluntary full lazy"), None);
+        assert_eq!(parse_debugfs_preempt(""), None);
+        assert_eq!(parse_debugfs_preempt("(banana)"), None);
+    }
+
+    #[test]
+    fn a_boot_override_is_matched_as_a_whole_token() {
+        assert_eq!(
+            parse_cmdline_preempt("ro quiet preempt=voluntary splash"),
+            Some(PreemptModel::Voluntary)
+        );
+        assert_eq!(parse_cmdline_preempt("ro quiet splash"), None);
+        assert_eq!(
+            parse_cmdline_preempt("nopreempt=full"),
+            None,
+            "a substring match would read `nopreempt=full` as a request for full \
+             preemption, which is the opposite of what it says"
+        );
+    }
+
+    /// Both traps here are live on an ordinary Ubuntu kernel config.
+    #[test]
+    fn kernel_config_is_matched_line_wise_not_by_substring() {
+        // The real shape of /boot/config-* on the reference box.
+        let ubuntu = "\
+CONFIG_PREEMPT_BUILD=y
+# CONFIG_PREEMPT is not set
+CONFIG_PREEMPT_LAZY=y
+# CONFIG_PREEMPT_RT is not set
+CONFIG_PREEMPT_DYNAMIC=y
+";
+        assert_eq!(
+            model_from_kernel_config(ubuntu),
+            Some(PreemptModel::Lazy),
+            "`# CONFIG_PREEMPT is not set` must not satisfy the CONFIG_PREEMPT arm, \
+             and CONFIG_PREEMPT_BUILD=y must not masquerade as CONFIG_PREEMPT=y"
+        );
+        assert!(config_is_dynamic(ubuntu));
+
+        assert_eq!(
+            model_from_kernel_config("CONFIG_PREEMPT_RT=y\nCONFIG_PREEMPT=y\n"),
+            Some(PreemptModel::PreemptRt),
+            "the kernel's own preempt_dynamic_init() chain tries RT first"
+        );
+        assert_eq!(
+            model_from_kernel_config("CONFIG_PREEMPT_NONE=y\nCONFIG_PREEMPT_LAZY=y\n"),
+            Some(PreemptModel::None),
+            "NONE precedes LAZY in preempt_dynamic_init()"
+        );
+        assert_eq!(model_from_kernel_config("CONFIG_HZ=250\n"), None);
+        assert!(!config_is_dynamic("# CONFIG_PREEMPT_DYNAMIC is not set\n"));
+    }
+
+    #[test]
+    fn the_proc_version_token_refuses_to_guess() {
+        let dynamic = "Linux version 7.0.0-30-generic #30-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 31";
+        assert_eq!(
+            model_from_version_token(dynamic),
+            None,
+            "PREEMPT_DYNAMIC announces runtime-settability, not a mode — reading it \
+             as `full` is exactly the one-bucket error this ladder exists to remove"
+        );
+        assert!(version_says_dynamic(dynamic));
+
+        assert_eq!(
+            model_from_version_token("Linux version 6.1.0 #1 SMP PREEMPT Wed"),
+            Some(PreemptModel::Full)
+        );
+        assert_eq!(
+            model_from_version_token("Linux version 6.14.0 #1 SMP PREEMPT_LAZY Wed"),
+            Some(PreemptModel::Lazy)
+        );
+        assert_eq!(
+            model_from_version_token("Linux version 6.1.0-rt7 #1 SMP PREEMPT_RT Wed"),
+            Some(PreemptModel::PreemptRt)
+        );
+        assert_eq!(
+            model_from_version_token("Linux version 6.1.0 #1 SMP Wed"),
+            None,
+            "`none` and `voluntary` both emit no token and are indistinguishable here"
+        );
+    }
+
+    /// The ladder must not claim to know a runtime value it never read.
+    #[test]
+    fn an_inferred_dynamic_model_is_not_authoritative() {
+        let inferred = PreemptInfo {
+            model: PreemptModel::Lazy,
+            dynamic: true,
+            source: PreemptSource::KernelConfig,
+        };
+        assert!(!inferred.is_authoritative());
+        assert!(inferred.describe().contains("inferred"));
+
+        let running = PreemptInfo {
+            source: PreemptSource::Debugfs,
+            ..inferred
+        };
+        assert!(running.is_authoritative());
+
+        // A non-dynamic kernel cannot have its model changed underneath us, so
+        // the build default IS the running value.
+        let fixed = PreemptInfo {
+            model: PreemptModel::Full,
+            dynamic: false,
+            source: PreemptSource::KernelConfig,
+        };
+        assert!(fixed.is_authoritative());
+    }
+
+    #[test]
+    fn reading_the_preempt_model_on_this_machine_answers_something_defensible() {
+        let info = read_preempt_info();
+        // No assertion on WHICH model — that is a property of the test host.
+        // What must hold is that an unknown model never claims a source, and a
+        // known one always names where it came from.
+        if info.model == PreemptModel::Unknown {
+            assert_eq!(info.source, PreemptSource::Unavailable);
+        } else {
+            assert_ne!(info.source, PreemptSource::Unavailable);
+        }
+        assert!(!info.describe().is_empty());
+    }
+
+    // ── Clocksource ─────────────────────────────────────────────────────
+
+    #[test]
+    fn the_clocksource_table_separates_vdso_reads_from_syscalls() {
+        assert_eq!(Clocksource::from_name("tsc").vdso_fast(), Some(true));
+        assert_eq!(Clocksource::from_name("kvm-clock").vdso_fast(), Some(true));
+        assert_eq!(
+            Clocksource::from_name("arch_sys_counter").vdso_fast(),
+            Some(true)
+        );
+        // hpet lost its vDSO page in 4.20; acpi_pm never had one.
+        assert_eq!(Clocksource::from_name("hpet").vdso_fast(), Some(false));
+        assert_eq!(Clocksource::from_name("acpi_pm").vdso_fast(), Some(false));
+        // An unrecognised name has an unknown cost, and saying so beats
+        // guessing in either direction.
+        assert_eq!(Clocksource::from_name("something_new").vdso_fast(), None);
+        assert_eq!(Clocksource::unknown().name(), "unknown");
+        assert_eq!(Clocksource::unknown().vdso_fast(), None);
+    }
+
+    #[test]
+    fn reading_the_clocksource_on_this_machine_does_not_panic() {
+        let cs = read_clocksource();
+        assert!(!cs.describe().is_empty());
+    }
+
     /// The reset-on-fork bit must not break policy readback.
     ///
     /// The kernel ORs `SCHED_RESET_ON_FORK` INTO the value `sched_getscheduler`

@@ -1253,6 +1253,25 @@ impl Scheduler {
                 "  [{}] PREEMPT_RT kernel",
                 if caps.preempt_rt { "x" } else { " " }
             ));
+            // A fact only `horus doctor --rt` knows is a fact the operator does
+            // not have at the moment it matters.
+            lines.push(format!(
+                "  [{}] Preemption model: {}",
+                if caps.preempt.model.is_rt_friendly() {
+                    "x"
+                } else {
+                    " "
+                },
+                caps.preempt.describe()
+            ));
+            lines.push(format!(
+                "  [{}] Clocksource: {}",
+                match caps.clocksource.vdso_fast() {
+                    Some(true) => "x",
+                    _ => " ",
+                },
+                caps.clocksource.describe()
+            ));
             lines.push(format!(
                 "  [{}] RT Priority (max={})",
                 if caps.rt_priority_available { "x" } else { " " },

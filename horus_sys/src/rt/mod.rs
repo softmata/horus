@@ -14,6 +14,7 @@
 //! Higher-level types (RtConfig, RuntimeCapabilities) remain in horus_core.
 //! This module provides the raw platform primitives they call.
 
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -29,6 +30,219 @@ pub use pi_mutex::{priority_inheritance_available, PiMutex, PiMutexGuard};
 // ============================================================================
 // RT Capabilities (platform-aware detection)
 // ============================================================================
+
+// ── Preemption model and clocksource ────────────────────────────────────
+//
+// Neither removes a nanosecond of latency. They are here because every other
+// number this framework prints is conditional on them, and until now nothing
+// read either one.
+//
+// The preemption model was reduced to a single `bool` from a substring test on
+// `/proc/version`, so every non-PREEMPT_RT kernel landed in one bucket —
+// `none`, `voluntary`, `full` and `lazy` alike, whose worst-case scheduling
+// latencies differ by roughly two orders of magnitude end to end. And on a
+// `CONFIG_PREEMPT_DYNAMIC` kernel the effective model is a runtime setting that
+// `/proc/version` cannot report at all: the token there announces
+// runtime-settability, not a mode.
+//
+// The clocksource was never read. Only clocksources with a non-`NONE`
+// `vdso_clock_mode` are served from the vDSO — `tsc`, `kvm-clock`, the Hyper-V
+// TSC page, arm64's `arch_sys_counter`. `hpet` lost its vDSO page in 4.20 and
+// `acpi_pm` never had one, so on either every `clock_gettime` is a syscall plus
+// an uncached device read. The kernel demotes without asking
+// ("clocksource: Marking TSC unstable due to clocksource watchdog"), and the RT
+// guard spin reads the clock once per iteration.
+
+/// The preemption model a kernel is running under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PreemptModel {
+    /// `CONFIG_PREEMPT_NONE`. Kernel code yields only at explicit reschedule
+    /// points; worst-case scheduling latency is milliseconds.
+    None,
+    /// `CONFIG_PREEMPT_VOLUNTARY`. Adds `might_resched()` points. Hundreds of µs.
+    Voluntary,
+    /// `CONFIG_PREEMPT`. Preemptible outside critical sections. Tens of µs.
+    Full,
+    /// `CONFIG_PREEMPT_LAZY` (6.13+). Full preemption for RT and deadline tasks;
+    /// SCHED_OTHER gets a lazy reschedule instead. For an RT thread this
+    /// behaves as [`Full`](Self::Full).
+    Lazy,
+    /// `CONFIG_PREEMPT_RT`. Sleeping spinlocks, threaded IRQs. Single-digit µs.
+    PreemptRt,
+    /// Linux, but nothing readable said which model is in force.
+    ///
+    /// An admission, not a value — and deliberately distinct from
+    /// [`NotApplicable`](Self::NotApplicable).
+    #[default]
+    Unknown,
+    /// The platform has no preemption model to read (macOS, Windows).
+    NotApplicable,
+}
+
+impl PreemptModel {
+    /// The name the kernel itself uses.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Voluntary => "voluntary",
+            Self::Full => "full",
+            Self::Lazy => "lazy",
+            Self::PreemptRt => "preempt_rt",
+            Self::Unknown => "unknown",
+            Self::NotApplicable => "n/a",
+        }
+    }
+
+    /// Whether an RT thread is preemptible promptly under this model.
+    ///
+    /// `Lazy` counts: its laziness applies to SCHED_OTHER, and RT and deadline
+    /// tasks still preempt immediately.
+    pub fn is_rt_friendly(&self) -> bool {
+        matches!(self, Self::Full | Self::Lazy | Self::PreemptRt)
+    }
+}
+
+/// Where a [`PreemptModel`] came from — that is, how much to believe it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PreemptSource {
+    /// `/sys/kernel/debug/sched/preempt` — the RUNNING value, and the only
+    /// source that survives a runtime `echo full > .../preempt`. Root-only in
+    /// practice: `/sys/kernel/debug` is mode 0700, owned by root.
+    Debugfs,
+    /// `preempt=` on `/proc/cmdline` — the boot override. A later debugfs write
+    /// is invisible here.
+    Cmdline,
+    /// `CONFIG_PREEMPT_*` in `/boot/config-<release>` — the build default. On a
+    /// dynamic kernel this is only what the kernel booted with.
+    KernelConfig,
+    /// The `PREEMPT*` token in `/proc/version`.
+    ProcVersion,
+    /// `/sys/kernel/realtime` exists.
+    RealtimeSysfs,
+    /// Nothing readable said. Pairs only with [`PreemptModel::Unknown`] or
+    /// [`PreemptModel::NotApplicable`].
+    #[default]
+    Unavailable,
+}
+
+impl PreemptSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Debugfs => "/sys/kernel/debug/sched/preempt",
+            Self::Cmdline => "/proc/cmdline",
+            Self::KernelConfig => "kernel config",
+            Self::ProcVersion => "/proc/version",
+            Self::RealtimeSysfs => "/sys/kernel/realtime",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// The preemption model, and how it was established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PreemptInfo {
+    /// The effective model, as best as could be established.
+    pub model: PreemptModel,
+    /// `CONFIG_PREEMPT_DYNAMIC`: the model is a runtime setting that root can
+    /// change with one write, so anything but [`PreemptSource::Debugfs`] can be
+    /// stale.
+    pub dynamic: bool,
+    /// Which rung of the ladder answered.
+    pub source: PreemptSource,
+}
+
+impl PreemptInfo {
+    /// The platform has no preemption model.
+    pub fn not_applicable() -> Self {
+        Self {
+            model: PreemptModel::NotApplicable,
+            dynamic: false,
+            source: PreemptSource::Unavailable,
+        }
+    }
+
+    /// Whether this reports the RUNNING value rather than an inference.
+    ///
+    /// False on a dynamic kernel whose debugfs is closed — which is the common
+    /// unprivileged case, and the reason `source` is carried at all: it lets a
+    /// report say "this is the boot default, confirm with debugfs" instead of
+    /// asserting a runtime value it never read.
+    pub fn is_authoritative(&self) -> bool {
+        !self.dynamic || self.source == PreemptSource::Debugfs
+    }
+
+    /// One-line human summary.
+    pub fn describe(&self) -> String {
+        let mut s = self.model.as_str().to_string();
+        match (self.dynamic, self.is_authoritative()) {
+            (true, true) => s.push_str(" (dynamic, running value)"),
+            (true, false) => s.push_str(&format!(
+                " (dynamic, inferred from {})",
+                self.source.as_str()
+            )),
+            (false, _) if self.model == PreemptModel::Unknown => {}
+            (false, _) => s.push_str(&format!(" (from {})", self.source.as_str())),
+        }
+        s
+    }
+}
+
+/// The clocksource the kernel is using to serve `clock_gettime`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Clocksource(String);
+
+impl Clocksource {
+    /// Wrap a clocksource name as the kernel spells it.
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// Nothing could be read.
+    pub fn unknown() -> Self {
+        Self(String::new())
+    }
+
+    /// The kernel's name for it, or `"unknown"`.
+    pub fn name(&self) -> &str {
+        if self.0.is_empty() {
+            "unknown"
+        } else {
+            &self.0
+        }
+    }
+
+    /// Whether a `clock_gettime` on this clocksource is served from userspace.
+    ///
+    /// `Some(true)`: served from the vDSO — a ~25 ns read.
+    /// `Some(false)`: every read traps into the kernel AND does an uncached
+    /// device access. Measured on the reference box, 2M iterations each: 25.4 ns
+    /// through the vDSO against 187.3 ns for the bare syscall on the *same* tsc
+    /// clocksource — a 7.4x penalty before the device read is added on top.
+    /// `None`: not a name this table knows, so the cost is genuinely unknown
+    /// and saying so beats guessing.
+    pub fn vdso_fast(&self) -> Option<bool> {
+        match self.0.as_str() {
+            // Non-NONE `vdso_clock_mode` in the kernel's clocksource table.
+            "tsc"
+            | "kvm-clock"
+            | "hyperv_clocksource_tsc_page"
+            | "arch_sys_counter"
+            | "mach_absolute_time" => Some(true),
+            // `hpet` lost its vDSO page in 4.20; `acpi_pm` never had one.
+            "hpet" | "acpi_pm" | "jiffies" | "pit" | "xen" => Some(false),
+            _ => None,
+        }
+    }
+
+    /// One-line human summary.
+    pub fn describe(&self) -> String {
+        match self.vdso_fast() {
+            Some(true) => format!("{} (userspace read)", self.name()),
+            Some(false) => format!("{} (every read is a syscall)", self.name()),
+            None => format!("{} (read cost unknown)", self.name()),
+        }
+    }
+}
 
 /// Platform RT capabilities detected at startup.
 #[derive(Debug, Clone)]
@@ -66,6 +280,18 @@ pub struct RtCapabilities {
     pub cpu_count: usize,
     /// Estimated scheduling jitter
     pub estimated_jitter: Duration,
+    /// The kernel's preemption model, and how confident we are in it.
+    ///
+    /// [`preempt_rt`](Self::preempt_rt) is `preempt.model == PreemptRt`; both
+    /// are kept so no existing consumer breaks. The bool alone put `none`,
+    /// `voluntary`, `full` and `lazy` in one bucket spanning two orders of
+    /// magnitude of scheduling latency.
+    pub preempt: PreemptInfo,
+    /// The clocksource in force AT DETECTION TIME.
+    ///
+    /// The kernel can demote it mid-run without asking, which is why this is
+    /// dated rather than treated as a constant.
+    pub clocksource: Clocksource,
 }
 
 impl Default for RtCapabilities {
@@ -82,7 +308,51 @@ impl Default for RtCapabilities {
                 .map(|p| p.get())
                 .unwrap_or(1),
             estimated_jitter: Duration::from_millis(10),
+            preempt: PreemptInfo::not_applicable(),
+            clocksource: Clocksource::unknown(),
         }
+    }
+}
+
+/// The kernel's preemption model, and how it was established.
+///
+/// Not applicable off Linux: macOS and Windows have no such setting to read.
+pub fn preempt_info() -> PreemptInfo {
+    #[cfg(target_os = "linux")]
+    {
+        linux::read_preempt_info()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        PreemptInfo::not_applicable()
+    }
+}
+
+/// The clocksource serving `clock_gettime`.
+///
+/// The macOS and Windows names are OUR labels, not strings either OS returns —
+/// do not go looking for them in the platform headers. `mach_absolute_time` is
+/// a userspace read (commpage on x86, `CNTVCT_EL0` on Apple Silicon). `qpc` is
+/// reported as unknown-cost on purpose: QueryPerformanceCounter is usually
+/// served from `KUSER_SHARED_DATA`, but the HAL may select HPET or the PM
+/// timer, and Windows exposes that choice nowhere ordinary — so "unknown" is
+/// the only honest answer.
+pub fn clocksource() -> Clocksource {
+    #[cfg(target_os = "linux")]
+    {
+        linux::read_clocksource()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Clocksource::from_name("mach_absolute_time")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Clocksource::from_name("qpc")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Clocksource::unknown()
     }
 }
 

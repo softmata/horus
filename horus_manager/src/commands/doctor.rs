@@ -786,6 +786,37 @@ fn check_rt() -> CheckResult {
         details.push("For lower jitter, run: horus setup-rt".to_string());
     }
 
+    // "Not PREEMPT_RT" is one bucket holding `none`, `voluntary`, `full` and
+    // `lazy`, whose worst-case scheduling latencies differ by roughly two
+    // orders of magnitude. This is the surface an operator runs first and the
+    // one whose output gets pasted into a bug report, so it is where the
+    // distinction has to appear.
+    details.push(format!("Preemption model: {}", caps.preempt.describe()));
+    if !caps.preempt.is_authoritative() {
+        details.push(
+            "  (CONFIG_PREEMPT_DYNAMIC: the running value lives in \
+             /sys/kernel/debug/sched/preempt, which needs root — the model above is what \
+             this kernel booted with)"
+                .to_string(),
+        );
+    }
+    match caps.clocksource.vdso_fast() {
+        Some(true) => details.push(format!(
+            "Clocksource: {} (userspace read)",
+            caps.clocksource.name()
+        )),
+        Some(false) => details.push(format!(
+            "Clocksource: {} — every clock read is a syscall plus a device access. The RT \
+             tick loop reads the clock once per guard-spin iteration; check \
+             `dmesg | grep -i clocksource` for 'Marking TSC unstable'.",
+            caps.clocksource.name()
+        )),
+        None => details.push(format!(
+            "Clocksource: {} (unrecognised; read cost unknown)",
+            caps.clocksource.name()
+        )),
+    }
+
     // `max_priority` is a kernel constant, not a permission: it is non-zero
     // even where the call is refused with EPERM, so the old
     // `if caps.max_priority > 0` reported SCHED_FIFO as available on every

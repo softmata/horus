@@ -86,6 +86,14 @@ pub struct RtKernelInfo {
     /// Available CPU count (used in tests and for diagnostics)
     #[allow(dead_code)]
     pub cpu_count: usize,
+    /// The kernel's preemption model, and how confident we are in it.
+    ///
+    /// [`preempt_rt`](Self::preempt_rt) answers only "is this a PREEMPT_RT
+    /// kernel", which put `none`, `voluntary`, `full` and `lazy` in one bucket
+    /// spanning two orders of magnitude of worst-case scheduling latency.
+    pub preempt: horus_sys::rt::PreemptInfo,
+    /// The clocksource in force at detection time.
+    pub clocksource: horus_sys::rt::Clocksource,
 }
 
 impl RtKernelInfo {
@@ -99,6 +107,8 @@ impl RtKernelInfo {
             min_rt_priority: caps.min_priority,
             mlockall_permitted: caps.memory_locking,
             cpu_count: caps.cpu_count,
+            preempt: caps.preempt,
+            clocksource: caps.clocksource,
         }
     }
 }

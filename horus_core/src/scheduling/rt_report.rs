@@ -16,6 +16,14 @@ pub struct RtReport {
     // System capabilities
     pub kernel: String,
     pub preempt_rt: bool,
+    /// The kernel's preemption model, and how confident we are in it.
+    pub preempt: horus_sys::rt::PreemptInfo,
+    /// The clocksource in force when the report was generated.
+    ///
+    /// Read again after the benchmark: a clocksource that changed *during* the
+    /// measurement is the single most important thing this report can say, and
+    /// costs two file reads in a command that already runs for seconds.
+    pub clocksource: horus_sys::rt::Clocksource,
     /// Whether this process may actually obtain an RT policy.
     ///
     /// Not "the kernel defines RT priorities" — that is always true. Filling
@@ -71,7 +79,9 @@ impl RtReport {
         // Run jitter benchmark
         let target_hz = 1000u64; // 1kHz — standard RT benchmark rate
         let target_period_us = 1_000_000.0 / target_hz as f64;
+        let clocksource_before = horus_sys::rt::clocksource();
         let jitter = measure_jitter(target_hz, benchmark_duration);
+        let clocksource_after = horus_sys::rt::clocksource();
 
         // Run IPC benchmark
         let (ipc_lat, ipc_tput) = measure_ipc();
@@ -83,6 +93,85 @@ impl RtReport {
         if !caps.preempt_rt {
             issues.push("PREEMPT_RT kernel not detected".into());
             recs.push("Install PREEMPT_RT kernel for <20μs jitter: https://wiki.linuxfoundation.org/realtime".into());
+        }
+
+        // The preemption model, which `preempt_rt` alone could not distinguish.
+        // `none` and `voluntary` have worst-case scheduling latencies in the
+        // milliseconds — they are a different problem from "not PREEMPT_RT",
+        // and reporting only the latter left the operator with no idea which
+        // one they had.
+        match caps.preempt.model {
+            horus_sys::rt::PreemptModel::None | horus_sys::rt::PreemptModel::Voluntary => {
+                issues.push(format!(
+                    "Kernel preemption model is `{}`: worst-case scheduling latency is \
+                     milliseconds, not microseconds",
+                    caps.preempt.model.as_str()
+                ));
+                recs.push(if caps.preempt.dynamic {
+                    "Boot with `preempt=full` — this kernel is CONFIG_PREEMPT_DYNAMIC, so \
+                     the model is a runtime setting and needs no rebuild"
+                        .into()
+                } else {
+                    "Install a kernel built with CONFIG_PREEMPT or CONFIG_PREEMPT_RT".into()
+                });
+            }
+            horus_sys::rt::PreemptModel::Unknown => {
+                recs.push(
+                    "The preemption model could not be determined: \
+                     /sys/kernel/debug/sched/preempt needs root, no readable kernel config \
+                     was found, and /proc/version carries no distinguishing token — `none` \
+                     and `voluntary` are indistinguishable there"
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+        // Never an issue, always a recommendation: an inferred value is not
+        // evidence of a problem, only of a question this process could not
+        // answer without privilege.
+        if !caps.preempt.is_authoritative() {
+            recs.push(format!(
+                "The effective preemption mode is a runtime setting; this report inferred \
+                 `{}` from {}. Confirm with `sudo cat /sys/kernel/debug/sched/preempt`.",
+                caps.preempt.model.as_str(),
+                caps.preempt.source.as_str()
+            ));
+        }
+
+        // The clocksource. Every latency figure below is conditional on it.
+        match caps.clocksource.vdso_fast() {
+            Some(false) => {
+                issues.push(format!(
+                    "Clocksource is `{}`: every clock read is a syscall plus a device \
+                     access instead of a ~25ns vDSO read, and the RT tick loop reads the \
+                     clock once per guard-spin iteration. Every latency figure in this \
+                     report is inflated by it.",
+                    caps.clocksource.name()
+                ));
+                recs.push(
+                    "echo tsc | sudo tee \
+                     /sys/devices/system/clocksource/clocksource0/current_clocksource, and \
+                     check `dmesg | grep -i clocksource` for 'Marking TSC unstable'"
+                        .into(),
+                );
+            }
+            None => {
+                recs.push(format!(
+                    "Clocksource `{}` is not one this build recognises, so the cost of a \
+                     clock read is unknown rather than assumed",
+                    caps.clocksource.name()
+                ));
+            }
+            Some(true) => {}
+        }
+        if clocksource_before != clocksource_after {
+            issues.push(format!(
+                "The clocksource changed DURING this benchmark, from `{}` to `{}` — the \
+                 kernel demoted it mid-measurement (see `dmesg | grep -i clocksource`), so \
+                 the numbers below span two different clock-read costs",
+                clocksource_before.name(),
+                clocksource_after.name()
+            ));
         }
         // `max_priority` is a kernel constant and is never 0 on any supported
         // platform, so this issue and its recommendation could never fire — and
@@ -148,6 +237,8 @@ impl RtReport {
         RtReport {
             kernel: caps.kernel_version,
             preempt_rt: caps.preempt_rt,
+            preempt: caps.preempt,
+            clocksource: clocksource_after,
             sched_fifo: caps.rt_priority_permitted,
             memory_locking: caps.memory_locking,
             cpu_count: caps.cpu_count,
@@ -208,6 +299,15 @@ impl RtReport {
         crate::terminal::print_line(&format!(
             "║    PREEMPT_RT:     {}                                        ║",
             check(self.preempt_rt)
+        ));
+        // The two facts every other number in this report is conditional on.
+        crate::terminal::print_line(&format!(
+            "║    Preempt:        {:<40} ║",
+            self.preempt.describe()
+        ));
+        crate::terminal::print_line(&format!(
+            "║    Clocksource:    {:<40} ║",
+            self.clocksource.describe()
         ));
         crate::terminal::print_line(&format!(
             "║    SCHED_FIFO:     {}                                        ║",

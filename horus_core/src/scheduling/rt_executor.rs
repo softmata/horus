@@ -499,8 +499,26 @@ fn cyclic_now_ns() -> u64 {
     };
     // SAFETY: `ts` is a live, writable `timespec` and CLOCK_MONOTONIC is always
     // a valid clock id, so both documented failure modes (EFAULT for a bad
-    // pointer, EINVAL for a bad clock id) are unreachable. On Linux this
-    // resolves through the vDSO and does not enter the kernel.
+    // pointer, EINVAL for a bad clock id) are unreachable.
+    //
+    // COST — not part of the safety argument, and NOT a guarantee. This comment
+    // used to assert "resolves through the vDSO and does not enter the kernel"
+    // as unconditional fact. It is a runtime property the kernel changes
+    // without asking: "clocksource: Marking TSC unstable due to clocksource
+    // watchdog" demotes to hpet or acpi_pm mid-run. Only clocksources with a
+    // non-NONE `vdso_clock_mode` are served from the vDSO — `tsc`, `kvm-clock`,
+    // the Hyper-V TSC page, arm64's `arch_sys_counter`; `hpet` lost its vDSO
+    // page in 4.20 and `acpi_pm` never had one, so on either every call is a
+    // syscall PLUS an uncached device read. Measured on the reference box, 2M
+    // iterations each: 25.4 ns through the vDSO against 187.3 ns for the bare
+    // syscall on the SAME tsc clocksource — 7.4x, before the device access is
+    // added on top.
+    //
+    // The guard spin in `CyclicWaiter::wait` calls this once per iteration, so
+    // it is the loop that degrades first and by the most.
+    // `horus_sys::rt::clocksource()` reports what is actually in force, and
+    // `RtReport` reads it again after its benchmark so a mid-measurement
+    // demotion is named rather than silently folded into the numbers.
     unsafe {
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
     }

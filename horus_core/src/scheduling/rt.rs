@@ -343,6 +343,25 @@ pub struct RuntimeCapabilities {
     /// Whether this is a Linux system
     pub is_linux: bool,
 
+    /// The kernel's preemption model, and how confident we are in it.
+    ///
+    /// [`preempt_rt`](Self::preempt_rt) answers only "is this PREEMPT_RT",
+    /// which put `none`, `voluntary`, `full` and `lazy` in one bucket spanning
+    /// two orders of magnitude of worst-case scheduling latency. On a
+    /// `CONFIG_PREEMPT_DYNAMIC` kernel the effective model is a runtime setting
+    /// that `/proc/version` cannot report at all, so check
+    /// [`PreemptInfo::is_authoritative`](horus_sys::rt::PreemptInfo::is_authoritative)
+    /// before quoting this as the running value.
+    pub preempt: horus_sys::rt::PreemptInfo,
+
+    /// The clocksource serving `clock_gettime`, at detection time.
+    ///
+    /// Dated on purpose: the kernel demotes a misbehaving clocksource mid-run
+    /// without asking, and on a non-vDSO clocksource every clock read becomes a
+    /// syscall plus a device access — which the RT guard spin pays once per
+    /// iteration.
+    pub clocksource: horus_sys::rt::Clocksource,
+
     // =========================================================================
     // Detection Metadata
     // =========================================================================
@@ -367,6 +386,8 @@ impl Default for RuntimeCapabilities {
             numa_topology: HashMap::new(),
             kernel_version: String::new(),
             is_linux: cfg!(target_os = "linux"),
+            preempt: horus_sys::rt::PreemptInfo::not_applicable(),
+            clocksource: horus_sys::rt::Clocksource::unknown(),
             detection_time_us: 0,
         }
     }
@@ -408,6 +429,8 @@ impl RuntimeCapabilities {
 
         Self {
             preempt_rt: kernel_info.preempt_rt,
+            preempt: kernel_info.preempt,
+            clocksource: kernel_info.clocksource.clone(),
             rt_priority_available,
             max_rt_priority: kernel_info.max_rt_priority,
             min_rt_priority: kernel_info.min_rt_priority,
@@ -504,6 +527,8 @@ impl RuntimeCapabilities {
             },
             &self.kernel_version[..self.kernel_version.len().min(50)]
         ));
+        s.push_str(&format!("  Preemption: {}\n", self.preempt.describe()));
+        s.push_str(&format!("  Clocksource: {}\n", self.clocksource.describe()));
         s.push_str(&format!(
             "  RT Priority: {} (max: {})\n",
             if self.rt_priority_available {
@@ -739,5 +764,95 @@ mod capabilities_tests {
     fn test_detection_time() {
         let caps = RuntimeCapabilities::detect();
         assert!(caps.detection_time_us < 100_000);
+    }
+
+    // ── The two facts every other latency number is conditional on ──────
+    //
+    // These do not assert WHICH model or clocksource this host has; that is a
+    // property of the machine, and the parsers have their own tests in
+    // `horus_sys`. They assert the answer is carried honestly to the surfaces
+    // an operator reads, because the failure mode being guarded against is the
+    // wiring being dropped.
+
+    #[test]
+    fn detected_capabilities_carry_the_preemption_model_and_the_clocksource() {
+        use horus_sys::rt::{PreemptModel, PreemptSource};
+        let caps = RuntimeCapabilities::detect();
+
+        // An unknown model must never claim a source, and a known one must
+        // always name where it came from — otherwise a report could present an
+        // inference as a reading.
+        if caps.preempt.model == PreemptModel::Unknown {
+            assert_eq!(caps.preempt.source, PreemptSource::Unavailable);
+        } else {
+            assert_ne!(
+                caps.preempt.source,
+                PreemptSource::Unavailable,
+                "a model was established but nothing recorded which rung answered"
+            );
+        }
+
+        // The bool and the model must agree, or two consumers reading different
+        // fields would disagree about the same kernel.
+        assert_eq!(
+            caps.preempt_rt,
+            caps.preempt.model == PreemptModel::PreemptRt,
+            "preempt_rt and preempt.model describe the same kernel"
+        );
+
+        #[cfg(target_os = "linux")]
+        assert_ne!(
+            caps.preempt.model,
+            PreemptModel::NotApplicable,
+            "Linux always has a preemption model, even when it cannot be read — that \
+             case is Unknown, an admission; NotApplicable is a claim about the platform"
+        );
+
+        let summary = caps.summary();
+        assert!(
+            summary.contains("Preemption:"),
+            "the capability summary must name the preemption model: {summary}"
+        );
+        assert!(
+            summary.contains("Clocksource:"),
+            "the capability summary must name the clocksource: {summary}"
+        );
+    }
+
+    /// A dynamic kernel whose debugfs is closed is the common unprivileged
+    /// case, and the one where asserting a runtime value would be wrong.
+    #[test]
+    fn an_inferred_model_never_claims_to_be_the_running_value() {
+        use horus_sys::rt::PreemptSource;
+        let caps = RuntimeCapabilities::detect();
+        if caps.preempt.dynamic && caps.preempt.source != PreemptSource::Debugfs {
+            assert!(
+                !caps.preempt.is_authoritative(),
+                "the model was inferred on a CONFIG_PREEMPT_DYNAMIC kernel, so it is what \
+                 the kernel booted with — not necessarily what it is running now"
+            );
+            assert!(
+                caps.preempt.describe().contains("inferred"),
+                "the description must say so: {}",
+                caps.preempt.describe()
+            );
+        }
+    }
+
+    /// The clocksource decides whether a clock read is ~25 ns or a syscall plus
+    /// a device access, and the RT guard spin pays it once per iteration.
+    #[test]
+    fn the_clocksource_read_cost_is_reported_as_known_or_admitted() {
+        let caps = RuntimeCapabilities::detect();
+        let described = caps.clocksource.describe();
+        match caps.clocksource.vdso_fast() {
+            Some(true) => assert!(described.contains("userspace read"), "{described}"),
+            Some(false) => assert!(described.contains("syscall"), "{described}"),
+            None => assert!(
+                described.contains("unknown"),
+                "an unrecognised clocksource must admit that its read cost is unknown \
+                 rather than guess in either direction: {described}"
+            ),
+        }
     }
 }
