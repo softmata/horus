@@ -72,20 +72,17 @@ pub struct LaunchNode {
     #[serde(default)]
     pub args: Vec<String>,
 
-    /// INERT. Parsed and warned about; nothing reads it.
+    /// Shared-memory tree for THIS node, overriding the file-level one.
     ///
-    /// This said "Namespace prefix for topics", which the runtime cannot do:
-    /// there is no topic prefix or remap mechanism in horus_core. The
-    /// FILE-level `namespace:` works because `HORUS_NAMESPACE` names the shared
-    /// memory tree, which is isolation rather than prefixing, and horus_sys
-    /// states that granularity as "per robot" — the file-level key, not this
-    /// one. Composing this into a child's `HORUS_NAMESPACE` would put the node
-    /// in a different SHM tree from its siblings and break the launch it
-    /// belongs to.
+    /// Not a topic prefix. There is no prefix or remap mechanism in horus_core;
+    /// `HORUS_NAMESPACE` names the shared-memory tree, which is isolation. This
+    /// is exported after the file-level value so the more specific one wins.
     ///
-    /// Kept so an existing launch file still parses, and warned about at launch
-    /// so nobody keeps believing it does something. Giving it real meaning is a
-    /// horus_core design decision (topic remapping), not a launcher change.
+    /// **A node with its own namespace cannot see its siblings' topics, and
+    /// they cannot see its.** That is what a separate SHM tree means, and it is
+    /// the whole effect of this key — so set it when you want that node
+    /// isolated, and leave it unset otherwise. If you wanted a topic prefix,
+    /// this is not it, and HORUS does not have one.
     #[serde(default)]
     pub namespace: Option<String>,
 
@@ -1081,25 +1078,42 @@ fn should_restart_node(policy: &str, status: &std::process::ExitStatus) -> bool 
     }
 }
 
+/// The shared-memory tree a node is launched into: its own, else the file's.
+///
+/// One function so `run_launch` and `print_launch_plan` cannot disagree about
+/// which value wins — `--dry-run` describing a launch that does not happen is
+/// the defect this file has already had twice.
+fn effective_namespace<'a>(
+    file_level: Option<&'a str>,
+    node_level: Option<&'a str>,
+) -> Option<&'a str> {
+    node_level.or(file_level)
+}
+
 /// Print the launch plan (dry run)
 fn print_launch_plan(config: &LaunchConfig, global_namespace: &Option<String>) {
     for (i, node) in config.nodes.iter().enumerate() {
         // The name the child is actually given (`HORUS_NODE_NAME`), which is
         // the bare one. This used to compose `global/local/name` — an identity
         // no process ever receives, so `--dry-run` described a launch that does
-        // not happen. The file-level namespace is shown separately below,
-        // because it does do something: it names the SHM tree.
+        // not happen. Both namespaces are shown separately below, because they
+        // do something: each names an SHM tree, and a node-level one overrides
+        // the file-level value for that node alone.
         println!("  {}. {}", i + 1, node.name.white().bold());
-        if let Some(ref ns) = global_namespace {
-            println!("     {} {} (shared-memory tree)", "Namespace:".dimmed(), ns);
-        }
-        if let Some(ref ns) = node.namespace {
-            println!(
+        match (
+            effective_namespace(global_namespace.as_deref(), node.namespace.as_deref()),
+            node.namespace.is_some(),
+        ) {
+            (Some(ns), true) => println!(
                 "     {} {} {}",
                 "Namespace:".dimmed(),
                 ns,
-                "— IGNORED, see the warning at launch".yellow()
-            );
+                "(shared-memory tree — isolated from the other nodes)".yellow()
+            ),
+            (Some(ns), false) => {
+                println!("     {} {} (shared-memory tree)", "Namespace:".dimmed(), ns)
+            }
+            (None, _) => {}
         }
 
         if let Some(ref pkg) = node.package {
@@ -1269,10 +1283,7 @@ fn launch_node(
     //
     // Node-level last so it wins: a setting on the node is more specific than
     // the file's default, which is the only reason to write one.
-    if let Some(ref ns) = namespace {
-        cmd.env("HORUS_NAMESPACE", ns);
-    }
-    if let Some(ref ns) = node.namespace {
+    if let Some(ns) = effective_namespace(namespace.as_deref(), node.namespace.as_deref()) {
         cmd.env("HORUS_NAMESPACE", ns);
     }
 
@@ -1614,23 +1625,22 @@ nodes:
         );
     }
 
+    /// A node-level `namespace:` overrides the file-level one for that node.
+    ///
+    /// This test used to compute `global/local/node` from its own inputs and
+    /// assert the result equalled what it had just computed — it called nothing
+    /// from this module and would have passed against any implementation. The
+    /// composed identity it described is gone (no process was ever given it),
+    /// and what the key does now is select a shared-memory tree.
     #[test]
-    fn node_namespace_construction() {
-        // Mirrors the logic in run_launch/print_launch_plan
-        let cases = vec![
-            (Some("global"), Some("local"), "node", "global/local/node"),
-            (Some("global"), None, "node", "global/node"),
-            (None, Some("local"), "node", "local/node"),
-            (None, None, "node", "node"),
-        ];
-        for (global, local, name, expected) in cases {
-            let full = match (global, local) {
-                (Some(g), Some(l)) => format!("{}/{}/{}", g, l, name),
-                (Some(ns), None) | (None, Some(ns)) => format!("{}/{}", ns, name),
-                (None, None) => name.to_string(),
-            };
-            assert_eq!(full, expected);
-        }
+    fn a_node_level_namespace_overrides_the_file_level_one() {
+        assert_eq!(
+            effective_namespace(Some("/robot"), Some("/arm")),
+            Some("/arm")
+        );
+        assert_eq!(effective_namespace(Some("/robot"), None), Some("/robot"));
+        assert_eq!(effective_namespace(None, Some("/arm")), Some("/arm"));
+        assert_eq!(effective_namespace(None, None), None);
     }
 
     #[test]
