@@ -2082,7 +2082,7 @@ pub unsafe extern "C" fn horus_blackbox_record(category: *const c_char, message:
     let text = format!("[blackbox] {}", msg);
     let log_type = horus_core::core::log_buffer::LogType::Warning;
     let entry = horus_core::core::log_buffer::LogEntry {
-        timestamp: String::new(),
+        timestamp: String::new(), // publish_log stamps it
         tick_number: 0,
         node_name: cat.to_string(),
         log_type: log_type.clone(),
@@ -2130,7 +2130,7 @@ pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message:
         _ => horus_core::core::log_buffer::LogType::Info,
     };
     let entry = horus_core::core::log_buffer::LogEntry {
-        timestamp: String::new(), // filled by log_buffer if empty
+        timestamp: String::new(), // publish_log stamps it
         tick_number: 0,
         node_name: node.to_string(),
         log_type: log_type.clone(),
@@ -2169,6 +2169,58 @@ mod tests {
 
     fn in_emit_child() -> bool {
         std::env::var_os("HORUS_CPP_FFI_EMIT_CHILD").is_some()
+    }
+
+    /// A C++ log line must carry a time, like every other language's does.
+    ///
+    /// Both C++ entry points built their `LogEntry` with
+    /// `timestamp: String::new()` and the comment "filled by log_buffer if
+    /// empty". `publish_log` filled nothing, so `horus log` showed a blank time
+    /// column for every line a C++ node emitted while the identical `hlog!`
+    /// call from Rust carried one. Assert against a real Rust entry rather than
+    /// a hardcoded pattern, so the two cannot drift into different shapes.
+    #[test]
+    fn a_cpp_log_line_is_stamped_like_a_rust_one() {
+        use horus_core::core::log_buffer::{LogType, GLOBAL_LOG_BUFFER};
+
+        let node = format!("cpp_stamp_{}", std::process::id());
+        let name = CString::new(node.clone()).unwrap();
+        let msg = CString::new("from a C++ node").unwrap();
+        unsafe { horus_log(0, name.as_ptr(), msg.as_ptr()) };
+
+        let cat = CString::new(node.clone()).unwrap();
+        let event = CString::new("estop").unwrap();
+        unsafe { horus_blackbox_record(cat.as_ptr(), event.as_ptr()) };
+
+        // The Rust side of the comparison, through the real Rust path.
+        let rust_node = format!("rust_stamp_{}", std::process::id());
+        horus_core::core::hlog::log_as_node(LogType::Info, &rust_node, "from a Rust node");
+
+        let cpp = GLOBAL_LOG_BUFFER.for_node(&node);
+        assert_eq!(cpp.len(), 2, "both C++ entry points should have logged");
+        let rust = GLOBAL_LOG_BUFFER.for_node(&rust_node);
+        assert_eq!(rust.len(), 1);
+        let reference = &rust[0].timestamp;
+
+        for entry in &cpp {
+            assert!(
+                !entry.timestamp.is_empty(),
+                "a C++ log entry reached the buffer with no timestamp: {entry:?}"
+            );
+            assert_eq!(
+                entry.timestamp.len(),
+                reference.len(),
+                "C++ stamp {:?} is not the shape Rust writes ({reference:?})",
+                entry.timestamp
+            );
+            // HH:MM:SS.mmm — same separators in the same places.
+            let shape = |t: &str| {
+                t.chars()
+                    .map(|c| if c.is_ascii_digit() { 'd' } else { c })
+                    .collect::<String>()
+            };
+            assert_eq!(shape(&entry.timestamp), shape(reference));
+        }
     }
 
     /// Re-run `test_name` in a child process and hand back its stderr.

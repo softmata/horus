@@ -595,7 +595,18 @@ lazy_static::lazy_static! {
 /// Error and Warning entries are dual-written to both the main buffer and the
 /// dedicated error buffer for persistent retention. Info/Debug/Publish/Subscribe
 /// entries go to the main buffer only (zero overhead on the hot sensor path).
-pub fn publish_log(entry: LogEntry) {
+///
+/// An empty `timestamp` is stamped here. Both C++ entry points -- `horus_log`
+/// and `horus_blackbox_record` -- pass `String::new()` with the comment "filled
+/// by log_buffer if empty", and nothing filled it: every line a C++ node logged
+/// landed in `horus log` with a blank time column while the identical Rust call
+/// carried one. Callers that already have a timestamp keep it, so `hlog!` still
+/// reports the instant the log statement ran rather than the instant it reached
+/// the buffer.
+pub fn publish_log(mut entry: LogEntry) {
+    if entry.timestamp.is_empty() {
+        entry.timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    }
     if matches!(entry.log_type, LogType::Error | LogType::Warning) {
         GLOBAL_ERROR_BUFFER.push(entry.clone());
     }
