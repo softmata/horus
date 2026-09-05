@@ -223,6 +223,19 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
     if capacity == 0 {
         return false;
     }
+    // A non-power-of-two capacity, or a mask that is not `capacity - 1`, makes
+    // `seq & cap_mask` land outside [0, capacity) — and the per-branch length
+    // checks below are computed from `capacity`, so they pass while the index
+    // they are protecting does not. `horus_net::ShmRingWriter::open_path` has
+    // rejected this since it was written; this function is the same algorithm
+    // inlined, and the guard did not come with it.
+    //
+    // These fields come out of a header another local process wrote. A
+    // compromised or simply buggy node on the same /dev/shm can store any u32
+    // in either.
+    if !capacity.is_power_of_two() || cap_mask != capacity - 1 {
+        return false;
+    }
 
     let is_pod = is_pod_raw == layout::IS_POD_YES;
     let new_seq = seq.wrapping_add(1);
@@ -256,7 +269,15 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
             if slot_size < layout::COLO_PAYLOAD_OFF + type_size {
                 return false;
             }
-            if len < layout::colo_required_region_len(capacity, slot_size) {
+            // `_checked`: the unchecked form multiplies two header-supplied
+            // u32s, and a robot's release profile has no overflow-checks, so
+            // on a 32-bit controller the product can wrap to a small number
+            // and a truncated file passes a check for a ring that does not fit.
+            let Some(required) = layout::colo_required_region_len_checked(capacity, slot_size)
+            else {
+                return false;
+            };
+            if len < required {
                 return false;
             }
             (
@@ -264,7 +285,10 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
                 layout::colo_stamp_offset(index, slot_size),
             )
         } else {
-            if len < layout::required_region_len(capacity, type_size) {
+            let Some(required) = layout::required_region_len_checked(capacity, type_size) else {
+                return false;
+            };
+            if len < required {
                 return false;
             }
             // POD readiness lives in SEQ_ARRAY, not in the slot.
@@ -293,7 +317,10 @@ pub fn write_topic_slot_bytes(path: &std::path::Path, data: &[u8]) -> bool {
         if slot_size < layout::SERDE_SLOT_OVERHEAD {
             return false;
         }
-        if len < layout::required_region_len(capacity, slot_size) {
+        let Some(required) = layout::required_region_len_checked(capacity, slot_size) else {
+            return false;
+        };
+        if len < required {
             return false;
         }
         if data.len() > slot_size - layout::SERDE_SLOT_OVERHEAD {
