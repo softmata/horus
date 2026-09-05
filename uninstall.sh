@@ -1037,14 +1037,12 @@ clean_shell_profiles() {
             if grep -qF "$prefix_path_line" "$profile" 2>/dev/null ||
                grep -qF "$prefix_fish_line" "$profile" 2>/dev/null; then
                 cp "$profile" "${profile}.horus-backup" 2>/dev/null
-                # Deliberately NOT `... && mv`. grep exits 1 when it selects
-                # no lines, so an rc file whose only content was that PATH line
-                # would leave `&&` short-circuited and the line in place --
-                # precisely the file where the removal matters most.
-                # `|| true` because uninstall.sh runs under `set -e` (line 31)
-                # and grep exits 1 on selecting nothing. Without it, removing
-                # the last line of an rc file would abort the entire uninstall
-                # partway through.
+                # grep exits 1 when it selects no lines, which is exactly
+                # what happens to an rc file whose only content was that PATH
+                # line -- the file where the removal matters most. Gating the
+                # rewrite on `&&` would skip it there, and `set -e` (line 31)
+                # would abort the whole uninstall on the same status. Hence
+                # the braces and the `|| true` rather than `... && mv`.
                 { grep -vF "$prefix_path_line" "$profile" 2>/dev/null \
                     | grep -vF "$prefix_fish_line" > "${profile}.horus-new" 2>/dev/null; } || true
                 if [ -f "${profile}.horus-new" ]; then
@@ -1062,7 +1060,13 @@ clean_shell_profiles() {
     # the conf.d/horus.fish removed below is a different file entirely, so for
     # fish users the export survived no matter what the POSIX side did.
     fish_config="$HOME/.config/fish/config.fish"
-    if [ -f "$fish_config" ] && grep -q "HORUS_PREFIX" "$fish_config" 2>/dev/null; then
+    # Anchored the same way the sed below is. An unanchored "HORUS_PREFIX"
+    # also matches a user's HORUS_PREFIX_OTHER, and the sed would then delete
+    # nothing while this block still printed "Cleaned" and counted a removal --
+    # the same false success this script already records for the declined-sudo
+    # path in the RT cleanup above.
+    if [ -f "$fish_config" ] &&
+       grep -qE "^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)" "$fish_config" 2>/dev/null; then
         cp "$fish_config" "${fish_config}.horus-backup" 2>/dev/null
         sed -E -i.bak "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)/d" "$fish_config" 2>/dev/null || \
             sed -E -i '' "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)/d" "$fish_config" 2>/dev/null

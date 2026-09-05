@@ -1061,3 +1061,36 @@ fn an_rc_file_that_is_only_the_prefix_path_line_is_emptied_not_skipped() {
         "the uninstaller did not report cleaning the line:\n{out}"
     );
 }
+
+/// A config.fish holding only a *similarly named* variable must report nothing.
+///
+/// The guard grep and the sed that follows it have to agree. When the guard was
+/// unanchored it matched `HORUS_PREFIX_OTHER`, the anchored sed then correctly
+/// deleted nothing, and the block still printed "Cleaned HORUS_PREFIX from
+/// config.fish" and counted a removal. uninstall.sh already carries a comment
+/// about the last time it reported a cleanup that never happened (the declined
+/// -sudo path in the RT block); this is the same failure.
+#[test]
+fn a_config_fish_without_horus_prefix_reports_no_cleanup() {
+    let sb = Sandbox::new();
+    let fish_dir = sb.path().join(".config/fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(
+        fish_dir.join("config.fish"),
+        "# config.fish\nset -gx HORUS_PREFIX_OTHER \"keep me\"\n",
+    )
+    .unwrap();
+
+    let out = sb.uninstall(&[]);
+
+    let fish = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        fish.contains("HORUS_PREFIX_OTHER"),
+        "the unrelated variable was deleted:\n{fish}"
+    );
+    assert!(
+        !out.contains("Cleaned HORUS_PREFIX from config.fish"),
+        "the uninstaller reported cleaning a HORUS_PREFIX line that was never \
+         there and never removed:\n{out}"
+    );
+}
