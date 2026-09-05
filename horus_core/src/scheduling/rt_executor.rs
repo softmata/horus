@@ -1314,8 +1314,18 @@ impl RtExecutor {
                                 "[RT-thread] BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                 node.name, tr.duration, tick_budget * 2
                             ));
-                            let _ = node.node.shutdown();
-                            node.is_stopped = true;
+                            // Guarded: an unwind out of a node's own shutdown
+                            // would otherwise escape into the loop's outer
+                            // catch_unwind and skip everything after it.
+                            let target = &mut node.node;
+                            let panicked = super::primitives::guard_fault_callback(|| {
+                                let _ = target.shutdown();
+                            });
+                            if panicked {
+                                super::primitives::note_safing_failure(node, monitors, "shutdown");
+                            } else {
+                                node.is_stopped = true;
+                            }
                         }
                     }
                     BudgetPolicy::EmergencyStop => {
@@ -1324,15 +1334,21 @@ impl RtExecutor {
                             "[RT-thread] BUDGET E-STOP: '{}' budget violation ({:?} > {:?})",
                             node.name, tr.duration, tick_budget
                         ));
-                        let _ = node.node.shutdown();
-                        node.is_stopped = true;
-                        // Latch the SafetyMonitor before signalling the thread to
-                        // exit. `running.store(false)` alone is a plain shutdown
-                        // flag: it leaves get_state() reporting Normal, writes no
+                        // Latch the SafetyMonitor BEFORE calling into the node.
+                        // `running.store(false)` alone is a plain shutdown flag:
+                        // it leaves get_state() reporting Normal, writes no
                         // blackbox EmergencyStop, and never populates
                         // PENDING_LOCAL_ESTOP — so horus_net had nothing to
                         // broadcast and peer robots were never told this one
                         // emergency-stopped.
+                        //
+                        // Ordering matters as much as the latch. `shutdown()` is
+                        // user code on a node that is already failing; it used to
+                        // run first and unguarded, so a panic in it unwound past
+                        // the latch, the running flag and everything else into
+                        // the loop's outer catch_unwind — whose only action is to
+                        // stop the node. The e-stop this policy exists to fire
+                        // was silently cancelled by the callback it fired.
                         if let Some(ref estop) = monitors.estop {
                             estop.trigger(format!(
                                 "RT node '{}' budget violation ({:?} > {:?}) with BudgetPolicy::EmergencyStop",
@@ -1341,6 +1357,11 @@ impl RtExecutor {
                         }
                         // Signal stop via running flag — RT thread will exit
                         running.store(false, Ordering::SeqCst);
+                        node.is_stopped = true;
+                        let target = &mut node.node;
+                        let _ = super::primitives::guard_fault_callback(|| {
+                            let _ = target.shutdown();
+                        });
                     }
                 }
             }
@@ -1467,7 +1488,18 @@ impl RtExecutor {
                                     SuppressedSuffix(hidden)
                                 ));
                             }
-                            node.node.enter_safe_state();
+                            let target = &mut node.node;
+                            if super::primitives::guard_fault_callback(|| target.enter_safe_state())
+                            {
+                                // A critical node that cannot reach a safe state
+                                // is a system safety failure, not a node-local
+                                // one — the same escalation the main loop makes.
+                                super::primitives::note_safing_failure(
+                                    node,
+                                    monitors,
+                                    "enter_safe_state",
+                                );
+                            }
                         }
                     }
                     DeadlineAction::EmergencyStop => {
@@ -2274,6 +2306,108 @@ mod tests {
             monitor.consecutive_misses("arm_controller"),
             0,
             "a tick that met its deadline must clear the run"
+        );
+    }
+
+    /// A node whose safing callbacks panic — the failure both tests are about.
+    struct UnsafeableNode {
+        name: String,
+    }
+
+    impl Node for UnsafeableNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {}
+        fn enter_safe_state(&mut self) {
+            panic!("cannot reach a safe state");
+        }
+        fn shutdown(&mut self) -> crate::error::HorusResult<()> {
+            panic!("cannot shut down");
+        }
+    }
+
+    fn make_unsafeable(name: &str) -> RegisteredNode {
+        use crate::core::NodeInfo;
+        let mut node = make_rt_registered(name, Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        node.node = super::super::types::NodeKind::new(Box::new(UnsafeableNode {
+            name: name.to_string(),
+        }));
+        node.context = Some(NodeInfo::new(name.to_string()));
+        node
+    }
+
+    /// A panic in `shutdown()` must not cancel the emergency stop it was
+    /// called by.
+    ///
+    /// `BudgetPolicy::EmergencyStop` used to call `shutdown()` bare and BEFORE
+    /// latching. `shutdown()` is user code on a node that is already failing,
+    /// so an unwind out of it escaped past the latch, past `running.store`, and
+    /// into the loop's outer `catch_unwind` — whose only action is to stop the
+    /// node. `get_state()` kept reporting Normal, no blackbox EmergencyStop was
+    /// written, `PENDING_LOCAL_ESTOP` stayed empty so horus_net broadcast
+    /// nothing, and the other RT nodes kept ticking. The documented "e-stop on
+    /// any budget violation" was silently cancelled by the callback it fired.
+    #[test]
+    fn a_panicking_shutdown_does_not_cancel_the_budget_emergency_stop() {
+        let _estop_serial = super::super::safety_monitor::estop_queue_guard();
+        let mut node = make_unsafeable("budget_estop_node");
+        node.tick_budget = Some(Duration::from_nanos(1));
+        node.budget_policy = super::super::safety_monitor::BudgetPolicy::EmergencyStop;
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+        let mut monitors = test_monitors();
+        monitors.estop = Some(monitor.estop_trigger());
+        monitors.safety = Some(monitor.clone());
+        let running = Arc::new(AtomicBool::new(true));
+
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "the emergency stop must be latched even though shutdown() panicked"
+        );
+        assert!(
+            !running.load(Ordering::SeqCst),
+            "the RT thread must still be told to exit"
+        );
+    }
+
+    /// A critical node that cannot reach a safe state must halt the robot.
+    ///
+    /// The docs say so without qualification, and `note_safing_failure` states
+    /// it as a property of the system: "a node that cannot safe itself is a
+    /// safety failure — escalate to a system emergency stop for critical
+    /// nodes". Only the main loop did it. The executors got the ISOLATION half
+    /// of that (`guard_fault_callback`, added "so both halves of the framework
+    /// isolate recovery callbacks identically") and not the escalation, so the
+    /// identical event halted the robot on a BestEffort node and merely stopped
+    /// an RT one — and every RT node under a scheduler `.watchdog()` is
+    /// critical, so the class most likely to be critical was the one that was
+    /// omitted.
+    #[test]
+    fn a_critical_rt_node_that_cannot_safe_itself_triggers_an_emergency_stop() {
+        let _estop_serial = super::super::safety_monitor::estop_queue_guard();
+        let mut node = make_unsafeable("critical_safer");
+        node.deadline = Some(Duration::from_millis(1));
+        node.miss_policy = Miss::SafeMode;
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+        monitor.add_critical_node("critical_safer".to_string(), Duration::from_millis(100));
+        let mut monitors = test_monitors();
+        monitors.estop = Some(monitor.estop_trigger());
+        monitors.safety = Some(monitor.clone());
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Released 5 ms late against a 1 ms deadline: a miss, so SafeMode
+        // dispatches `enter_safe_state()` — which panics.
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 5_000_000);
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "a CRITICAL node that panicked trying to reach a safe state has not \
+             reached one; stopping just that node leaves the robot running with \
+             an unsafe actuator"
         );
     }
 

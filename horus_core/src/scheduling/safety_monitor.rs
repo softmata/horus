@@ -116,7 +116,7 @@ static PENDING_LOCAL_ESTOP: std::sync::Mutex<Option<String>> = std::sync::Mutex:
 static ESTOP_QUEUE_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-fn estop_queue_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn estop_queue_guard() -> std::sync::MutexGuard<'static, ()> {
     ESTOP_QUEUE_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 

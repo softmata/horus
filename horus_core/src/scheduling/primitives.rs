@@ -62,6 +62,47 @@ pub(crate) fn guard_fault_callback(f: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
 }
 
+/// A node's safing callback panicked on an executor, so the node did NOT reach
+/// a safe state. Stop ticking it, and — because a node that cannot safe itself
+/// is a safety failure — escalate to a system emergency stop for critical
+/// nodes.
+///
+/// The executor twin of `Scheduler::note_safing_failure`, which states the
+/// intent as a property of the system rather than of one dispatch path. The
+/// isolation half of that was ported to the executors (see
+/// [`guard_fault_callback`]); the ESCALATION half was not, so the identical
+/// event halted the robot on a BestEffort node and merely stopped an RT one —
+/// and every RT node under a scheduler `.watchdog()` is a critical node, so the
+/// class most likely to be critical was the one the escalation omitted.
+pub(crate) fn note_safing_failure(
+    node: &mut RegisteredNode,
+    monitors: &super::types::SharedMonitors,
+    action: &str,
+) {
+    node.is_stopped = true;
+    let critical = monitors
+        .safety
+        .as_ref()
+        .is_some_and(|m| m.is_critical_node(&node.name));
+    if critical {
+        super::rt_executor::rt_diag(format_args!(
+            "[RT-thread] '{}' PANICKED in {} and could NOT reach a safe state — EMERGENCY STOP",
+            node.name, action
+        ));
+        if let Some(ref estop) = monitors.estop {
+            estop.trigger(format!(
+                "critical node '{}' panicked in {} and could not reach a safe state",
+                node.name, action
+            ));
+        }
+    } else {
+        super::rt_executor::rt_diag(format_args!(
+            "[RT-thread] '{}' panicked in {} and could NOT reach a safe state — node stopped",
+            node.name, action
+        ));
+    }
+}
+
 /// Honour a pending safe-state request raised by the main thread's watchdog
 /// ladder, if this node has one.
 ///
@@ -168,13 +209,7 @@ pub(crate) fn apply_degradation_action(
         DegradationAction::Isolate(ref name) => {
             set_health(node, NodeHealthState::Isolated);
             let target = &mut node.node;
-            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                target.enter_safe_state()
-            }))
-            .is_err();
-            if panicked {
-                node.is_stopped = true;
-            }
+            let panicked = guard_fault_callback(|| target.enter_safe_state());
             super::rt_executor::rt_diag(format_args!(
                 " Degradation: '{name}' — isolated, entered safe state{}",
                 if panicked {
@@ -183,6 +218,9 @@ pub(crate) fn apply_degradation_action(
                     ""
                 }
             ));
+            if panicked {
+                note_safing_failure(node, monitors, "enter_safe_state");
+            }
             if let Some(ref monitor) = monitors.safety {
                 monitor.record_degrade_activation();
             }
@@ -190,15 +228,17 @@ pub(crate) fn apply_degradation_action(
         DegradationAction::Kill(ref name) => {
             set_health(node, NodeHealthState::Isolated);
             let target = &mut node.node;
-            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let panicked = guard_fault_callback(|| {
                 let _ = target.shutdown();
-            }))
-            .is_err();
+            });
             node.is_stopped = true;
             super::rt_executor::rt_diag(format_args!(
                 " KILL: '{name}' — permanently removed from execution after shutdown(){}",
                 if panicked { " (shutdown panicked)" } else { "" }
             ));
+            if panicked {
+                note_safing_failure(node, monitors, "shutdown");
+            }
             if let Some(ref monitor) = monitors.safety {
                 monitor.record_degrade_activation();
             }
