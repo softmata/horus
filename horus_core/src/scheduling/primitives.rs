@@ -103,6 +103,57 @@ pub(crate) fn note_safing_failure(
     }
 }
 
+/// Honour a pending restart request raised by `horus node restart`, if this
+/// node has one.
+///
+/// Same shape and same reason as [`honor_safe_state_request`]: `init()` needs
+/// `&mut dyn Node`, which the executor owns, so the main thread raises a flag
+/// and the owning executor consumes it here, once per raise.
+///
+/// Every executor must call this at the top of its per-node pass. Skipping it
+/// in one executor means `horus node restart` silently does nothing for that
+/// whole class of node — which is what the control-command handler alone did
+/// for all four executor classes, because after the class partition the
+/// scheduler's `nodes` vector holds only the main-thread group.
+///
+/// A restart also lifts an operator pause: a wedged node is usually paused
+/// before it is restarted, and leaving it paused would make the restart a
+/// no-op at the very next tick gate.
+pub(crate) fn honor_restart_request(
+    node: &mut RegisteredNode,
+    monitors: &super::types::SharedMonitors,
+) {
+    if !monitors
+        .node_controls
+        .take_restart_request(node.name.as_ref())
+    {
+        return;
+    }
+
+    monitors.node_controls.set_paused(node.name.as_ref(), false);
+    node.is_paused = false;
+
+    let target = &mut node.node;
+    let panicked = guard_fault_callback(|| {
+        let _ = target.init();
+    });
+
+    if panicked {
+        // A node that cannot initialise must not be ticked.
+        node.is_stopped = true;
+        super::rt_executor::rt_diag(format_args!(
+            " Restart: '{}' PANICKED in init() — node stopped",
+            node.name
+        ));
+    } else {
+        node.initialized = true;
+        super::rt_executor::rt_diag(format_args!(
+            " Restart: '{}' re-initialised on its executor",
+            node.name
+        ));
+    }
+}
+
 /// Honour a pending safe-state request raised by the main thread's watchdog
 /// ladder, if this node has one.
 ///

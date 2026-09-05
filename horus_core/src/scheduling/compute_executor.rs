@@ -672,6 +672,7 @@ impl ComputeExecutor {
             // pass — an Isolated node is precisely one that is not ticking.
             for node in nodes.iter_mut() {
                 super::primitives::honor_safe_state_request(node, &monitors);
+                super::primitives::honor_restart_request(node, &monitors);
             }
 
             // Update last_tick for rate-limited nodes

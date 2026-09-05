@@ -4876,6 +4876,16 @@ impl Scheduler {
             if let Some(ref controls) = self.node_controls {
                 controls.set_paused(&name, false);
             }
+            // The scheduler's own `nodes` holds ONLY the main-thread group
+            // after the class partition, so searching it alone reached
+            // BestEffort nodes and reported every RT, Compute, Event and
+            // AsyncIo node as unknown — that is, every node with a `.rate()`,
+            // which is exactly what an operator restarts.
+            //
+            // `init()` needs `&mut dyn Node`, owned by the executor, so a node
+            // this scheduler does not hold is asked through the shared control
+            // map and the owning executor honours it — the same handoff the
+            // watchdog ladder uses for `enter_safe_state()`.
             match self
                 .nodes
                 .iter_mut()
@@ -4890,10 +4900,21 @@ impl Scheduler {
                     ));
                 }
                 None => {
-                    print_line(&format!(
-                        "[CONTROL] Restart requested for unknown node '{}'",
-                        name
-                    ));
+                    let asked = self
+                        .node_controls
+                        .as_ref()
+                        .is_some_and(|c| c.request_restart(&name));
+                    if asked {
+                        print_line(&format!(
+                            "[CONTROL] Node '{}' will re-initialize on its executor",
+                            name
+                        ));
+                    } else {
+                        print_line(&format!(
+                            "[CONTROL] Restart requested for unknown node '{}'",
+                            name
+                        ));
+                    }
                 }
             }
         }

@@ -132,6 +132,7 @@ impl AsyncExecutor {
                 // is precisely one that is not in `ready_indices`.
                 for node in nodes.iter_mut() {
                     super::primitives::honor_safe_state_request(node, &monitors);
+                    super::primitives::honor_restart_request(node, &monitors);
                 }
 
                 for (i, node) in nodes.iter().enumerate() {

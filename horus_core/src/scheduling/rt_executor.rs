@@ -1222,6 +1222,12 @@ impl RtExecutor {
         is_first_tick: bool,
         release_late_ns: u64,
     ) {
+        // A pending `horus node restart` for a node this executor owns. At the
+        // top of the single per-node entry point, so every caller honours it
+        // and a suppressed node is still restartable — the whole point of
+        // restarting one is that it is not currently running well.
+        super::primitives::honor_restart_request(node, monitors);
+
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
         if !node.failure_policy_allows_tick() {
@@ -2108,6 +2114,115 @@ mod tests {
             estop: None,
             safety: None,
         }
+    }
+
+    /// A node whose init counts, so a restart is observable.
+    struct ReinitNode {
+        name: String,
+        inits: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl Node for ReinitNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            self.inits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        fn tick(&mut self) {}
+    }
+
+    /// `horus node restart` must reach a node living on an executor.
+    ///
+    /// The control-command handler searches `Scheduler::nodes`, and the class
+    /// partition leaves only the main-thread group in there. So restart reached
+    /// BestEffort nodes and reported every RT, Compute, Event and AsyncIo node
+    /// as unknown — that is, every node with a `.rate()`, which is exactly what
+    /// an operator restarts. `init()` needs `&mut dyn Node`, owned by the
+    /// executor, so the request crosses through the shared control map the same
+    /// way the watchdog ladder's safing request does.
+    #[test]
+    fn a_restart_request_reaches_a_node_on_an_executor() {
+        use crate::core::NodeInfo;
+        use std::sync::atomic::Ordering as AOrd;
+
+        let inits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered(
+            "executor_node",
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
+        node.node = super::super::types::NodeKind::new(Box::new(ReinitNode {
+            name: "executor_node".to_string(),
+            inits: inits.clone(),
+        }));
+        node.context = Some(NodeInfo::new("executor_node".to_string()));
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("executor_node");
+        let running = Arc::new(AtomicBool::new(true));
+
+        // No request pending: ticking must not re-initialise anything.
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        assert_eq!(
+            inits.load(AOrd::Relaxed),
+            0,
+            "a tick with no restart pending must not re-init"
+        );
+
+        // The main thread raises the request for a node it does not own.
+        assert!(
+            monitors.node_controls.request_restart("executor_node"),
+            "the control map is registered for all five groups, so the node is known"
+        );
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        assert_eq!(
+            inits.load(AOrd::Relaxed),
+            1,
+            "the executor that owns the node must honour the restart — searching \
+             the scheduler's own `nodes` cannot reach it after the class partition"
+        );
+
+        // Honoured exactly once per raise.
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        assert_eq!(
+            inits.load(AOrd::Relaxed),
+            1,
+            "the flag is consumed, so a restart happens once per request"
+        );
+    }
+
+    /// A restart lifts an operator pause.
+    ///
+    /// A wedged node is usually paused before it is restarted; leaving it
+    /// paused would make the restart a no-op at the very next tick gate.
+    #[test]
+    fn a_restart_clears_the_pause_that_preceded_it() {
+        let inits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered(
+            "paused_node",
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
+        node.node = super::super::types::NodeKind::new(Box::new(ReinitNode {
+            name: "paused_node".to_string(),
+            inits: inits.clone(),
+        }));
+        node.is_paused = true;
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("paused_node");
+        monitors.node_controls.set_paused("paused_node", true);
+        let running = Arc::new(AtomicBool::new(true));
+
+        monitors.node_controls.request_restart("paused_node");
+        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+
+        assert!(!node.is_paused, "the restart must lift the pause");
+        assert!(
+            !monitors.node_controls.is_paused("paused_node"),
+            "and clear it in the shared map the executors gate on"
+        );
     }
 
     /// The executor half of the graduated watchdog ladder.

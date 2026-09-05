@@ -330,6 +330,7 @@ impl EventExecutor {
             // before the gates below — an Isolated node is precisely one that
             // is not ticking, so gating this on tickability would never run it.
             super::primitives::honor_safe_state_request(&mut node, &monitors);
+            super::primitives::honor_restart_request(&mut node, &monitors);
 
             if !node.initialized
                 || node.is_stopped
