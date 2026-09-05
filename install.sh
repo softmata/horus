@@ -559,7 +559,28 @@ check_rust_version() {
     [ -n "$found" ] || return 0
 
     # Compare as version numbers, not as strings: 1.100 is newer than 1.9.
-    if [ "$(printf '%s\n%s\n' "$required" "$found" | sort -V | head -n1)" != "$required" ]; then
+    #
+    # Done in awk rather than with `sort -V`, because this gate has to fail
+    # OPEN. `sort -V` is not POSIX; where it is missing or errors, the command
+    # substitution is empty, `"" != "$required"` is true, and the installer
+    # aborts telling the user their toolchain is too old — an accusation it has
+    # not actually established, about a machine that may well be fine. The two
+    # guards directly above deliberately return 0 when they cannot determine an
+    # answer; this one used to be the odd one out. POSIX awk is everywhere
+    # rustc is, and it compares field by field, so 1.100 > 1.9 as intended.
+    if ! awk -v have="$found" -v want="$required" '
+        BEGIN {
+            nh = split(have, H, ".")
+            nw = split(want, W, ".")
+            n = (nh > nw ? nh : nw)
+            for (i = 1; i <= n; i++) {
+                h = (i <= nh ? H[i] + 0 : 0)
+                w = (i <= nw ? W[i] + 0 : 0)
+                if (h > w) exit 0
+                if (h < w) exit 1
+            }
+            exit 0
+        }' </dev/null 2>/dev/null; then
         fail "Rust $required or newer is required; found $found."
         echo "  Run: rustup update stable"
         exit 1

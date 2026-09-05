@@ -704,3 +704,123 @@ fn the_prefix_export_uses_fish_syntax_in_config_fish() {
         "a POSIX export line stops config.fish loading at that point:\n{rc}"
     );
 }
+
+/// The `check_rust_version` gate, verbatim from `install.sh`.
+fn rust_gate_slice() -> String {
+    let src = fs::read_to_string(repo_root().join("install.sh")).expect("install.sh must exist");
+    let begin = "check_rust_version() {";
+    let end = "    ok \"Rust $found (>= $required required)\"\n}";
+    let b = src
+        .find(begin)
+        .unwrap_or_else(|| panic!("install.sh lost the marker {begin:?}"));
+    let e = src
+        .find(end)
+        .unwrap_or_else(|| panic!("install.sh lost the marker {end:?}"));
+    assert!(b < e, "install.sh markers are out of order");
+    let slice = src[b..e + end.len()].to_string();
+    // Without these the harness would be exercising an empty shell function and
+    // every assertion below would hold vacuously.
+    for needed in [
+        "rust-version",
+        "rustc --version",
+        "$HORUS_SRC_DIR/Cargo.toml",
+    ] {
+        assert!(
+            slice.contains(needed),
+            "the check_rust_version slice no longer contains {needed:?} — this test would pass vacuously"
+        );
+    }
+    slice
+}
+
+/// Run the gate against a stub `rustc` reporting `rustc_version`, with the
+/// workspace floor set to `required`. `sort_has_dash_v` chooses whether the
+/// `sort` on PATH understands `-V`. Returns the gate's output plus a
+/// PROCEEDED/ABORTED verdict.
+fn run_rust_gate(rustc_version: &str, required: &str, sort_has_dash_v: bool) -> String {
+    let sb = Sandbox::new();
+    let stub = sb.path().join("stub");
+    fs::create_dir_all(&stub).unwrap();
+    fs::create_dir_all(sb.path().join("src")).unwrap();
+    fs::write(
+        sb.path().join("src/Cargo.toml"),
+        format!("[workspace.package]\nrust-version = \"{required}\"\n"),
+    )
+    .unwrap();
+
+    let rustc = stub.join("rustc");
+    fs::write(
+        &rustc,
+        format!("#!/bin/bash\necho 'rustc {rustc_version} (deadbeef 2026-01-01)'\n"),
+    )
+    .unwrap();
+    // A `sort` that rejects -V, the way any sort predating the GNU/BSD version
+    // extension does. The point is not one named platform: it is that the gate
+    // must not convict a toolchain on a comparison it was unable to perform.
+    if !sort_has_dash_v {
+        let sort = stub.join("sort");
+        fs::write(
+            &sort,
+            "#!/bin/bash\nfor a in \"$@\"; do case \"$a\" in -V|--version-sort)\n\
+             echo 'sort: illegal option -- V' >&2; exit 2 ;; esac; done\nexec /usr/bin/sort \"$@\"\n",
+        )
+        .unwrap();
+        set_exec(&sort);
+    }
+    set_exec(&rustc);
+
+    let script = format!(
+        "set -u\n\
+         PATH=\"$HOME/stub:$PATH\"\n\
+         HORUS_SRC_DIR=\"$HOME/src\"\n\
+         fail() {{ echo \"GATE_FAIL: $*\"; }}\n\
+         ok()   {{ echo \"GATE_OK: $*\"; }}\n\
+         {}\n\
+         if ( check_rust_version ); then echo PROCEEDED; else echo ABORTED; fi\n",
+        rust_gate_slice()
+    );
+    sb.run(&script, "/bin/bash", true, &[])
+}
+
+fn set_exec(p: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn the_rust_version_gate_does_not_abort_when_it_cannot_compare() {
+    let out = run_rust_gate("1.90.0", "1.85", false);
+    assert!(
+        out.contains("PROCEEDED"),
+        "a `sort` without -V made the version gate abort an install on a toolchain \
+         that satisfies the floor (1.90.0 >= 1.85). A gate that cannot perform its \
+         comparison must fail open, as the two guards above it already do:\n{out}"
+    );
+    assert!(
+        !out.contains("or newer is required"),
+        "the installer accused a perfectly good toolchain of being too old:\n{out}"
+    );
+}
+
+#[test]
+fn the_rust_version_gate_still_rejects_a_genuinely_old_toolchain() {
+    let out = run_rust_gate("1.70.0", "1.85", true);
+    assert!(
+        out.contains("ABORTED") && out.contains("or newer is required"),
+        "failing open must not mean failing blind: 1.70.0 is below the 1.85 floor \
+         and the gate has to say so:\n{out}"
+    );
+}
+
+#[test]
+fn the_rust_version_gate_compares_numerically_not_lexically() {
+    let out = run_rust_gate("1.100.0", "1.9", true);
+    assert!(
+        out.contains("PROCEEDED"),
+        "1.100 is newer than 1.9; a string compare says otherwise and would reject \
+         every toolchain once the minor version passes 9:\n{out}"
+    );
+}
