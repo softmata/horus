@@ -1727,13 +1727,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
 
         let header = self.header();
-        let slot = if is_producer {
-            header.register_producer()?
+        // A handle that has no participant entry yet is a NEW sharer of
+        // whichever entry it lands on; one that already has a slot is only
+        // adding a second role to the entry it owns, and must not be counted
+        // twice — see `ParticipantEntry::handles`.
+        let new_handle = local.slot_index < 0;
+        let (slot, generation) = if is_producer {
+            header.register_producer(new_handle)?
         } else {
-            header.register_consumer()?
+            header.register_consumer(new_handle)?
         };
 
         local.slot_index = slot as i32;
+        local.participant_generation = generation;
         local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Sync BEFORE deriving the data pointer, and derive it from the synced
@@ -3737,6 +3743,34 @@ impl<T> Drop for RingTopic<T> {
             // flock blocks any concurrent claim until the bit is already clear).
             local.fanout_pub_lock.take();
             local.fanout_sub_lock.take();
+        }
+
+        // Give the participant registration back.
+        //
+        // Nothing inside a living process used to do this, so the counts only
+        // ever grew — and `detect_optimal_backend` reads them, so one transient
+        // subscriber on a fresh thread permanently converted a backpressured
+        // command topic to overwrite-oldest, for the life of the segment.
+        //
+        // `release_participant` refuses unless the (slot, generation) still
+        // names THIS registration and this is the last handle sharing it. It
+        // has to: a slot is not owned for a handle's lifetime, and
+        // under-counting is the dangerous direction.
+        if local.slot_index >= 0 {
+            // `Drop` carries no bounds on `T`, so `header()` (which does) is
+            // not callable here. Same mapping, same invariant: storage was
+            // sized and aligned for a `TopicHeader` in the constructor.
+            let header = unsafe { &*(self.storage.as_ptr() as *const header::TopicHeader) };
+            // Give back only the roles this handle actually registered — one
+            // thread can hold a publisher and a subscriber handle on the same
+            // topic (that is the role=Both fast path), and they share an entry.
+            header.release_participant(
+                local.slot_index as usize,
+                local.participant_generation,
+                local.role.can_send(),
+                local.role.can_recv(),
+            );
+            local.slot_index = -1;
         }
 
         // Notify network layer (horus_net) that this topic instance is dropped

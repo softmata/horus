@@ -15,7 +15,7 @@
 use super::header::ParticipantEntry;
 use super::*;
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -4176,7 +4176,7 @@ fn detect_backend_cross_process_multi_p_0c_mpsc_shm() {
 fn register_producer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot = h.register_producer().expect("should succeed");
+    let slot = h.register_producer(true).expect("should succeed").0;
     assert!(slot < 16, "Slot index must be < MAX_PARTICIPANTS");
     assert_eq!(h.pub_count(), 1);
     assert_eq!(h.sub_count(), 0);
@@ -4186,7 +4186,7 @@ fn register_producer_returns_slot_index() {
 fn register_consumer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot = h.register_consumer().expect("should succeed");
+    let slot = h.register_consumer(true).expect("should succeed").0;
     assert!(slot < 16);
     assert_eq!(h.sub_count(), 1);
     assert_eq!(h.pub_count(), 0);
@@ -4196,8 +4196,8 @@ fn register_consumer_returns_slot_index() {
 fn register_both_roles_same_thread_reuses_slot() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot_pub = h.register_producer().expect("producer");
-    let slot_sub = h.register_consumer().expect("consumer");
+    let slot_pub = h.register_producer(true).expect("producer").0;
+    let slot_sub = h.register_consumer(true).expect("consumer").0;
     // Same thread should reuse the same participant entry
     assert_eq!(
         slot_pub, slot_sub,
@@ -4229,7 +4229,9 @@ fn register_16_producers_fills_all_slots() {
     // Now try registering from our actual thread — should fail since all slots taken
     // (our thread hash won't match any of the fake ones)
     // But our PID matches so it may find us by PID... let's use a distinct thread
-    let result = test_spawn(move || h.register_producer()).join().unwrap();
+    let result = test_spawn(move || h.register_producer(true))
+        .join()
+        .unwrap();
 
     assert!(
         result.is_err(),
@@ -4249,7 +4251,10 @@ fn participant_entry_lease_not_expired_when_fresh() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(current_time_ms() + 60_000),
     };
     assert!(!p.is_lease_expired(current_time_ms()));
@@ -4263,7 +4268,10 @@ fn participant_entry_lease_expired_after_timeout() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(current_time_ms().saturating_sub(1000)),
     };
     assert!(p.is_lease_expired(current_time_ms()));
@@ -4277,7 +4285,10 @@ fn participant_entry_zero_lease_is_expired() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(0),
     };
     assert!(p.is_lease_expired(current_time_ms()));
@@ -4291,7 +4302,10 @@ fn participant_entry_refresh_extends_lease() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(current_time_ms().saturating_sub(1000)),
     };
     assert!(p.is_lease_expired(current_time_ms()));
@@ -4326,8 +4340,9 @@ fn expired_slot_reclaimed_by_new_registration() {
     // expired, and evicting it silently deregistered working publishers and
     // subscribers. A new registration must take a free slot while one exists.
     let slot = h
-        .register_producer()
-        .expect("a free slot is available, so registration must succeed");
+        .register_producer(true)
+        .expect("a free slot is available, so registration must succeed")
+        .0;
     assert_ne!(slot, 0, "must not evict slot 0 while free slots remain");
     assert_eq!(
         p.pid.load(Ordering::Acquire),
@@ -4386,7 +4401,7 @@ fn concurrent_reclaim_exactly_one_winner() {
                 // shared read-access from multiple threads is sound.
                 let h = unsafe { &*(hptr as *const TopicHeader) };
                 b.wait();
-                if h.register_producer().is_ok() {
+                if h.register_producer(true).is_ok() {
                     sc.fetch_add(1, Ordering::Relaxed);
                 }
             })
@@ -4415,7 +4430,10 @@ fn participant_clear_resets_all_fields() {
         role: AtomicU8::new(3),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(999999),
     };
 
