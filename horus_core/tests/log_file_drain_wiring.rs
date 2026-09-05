@@ -35,23 +35,31 @@ fn setting_horus_log_file_makes_a_scheduler_write_logs_to_disk() {
     // here calls `start_log_file_drain`.
     let _scheduler = Scheduler::new();
 
-    for i in 0..20 {
-        GLOBAL_LOG_BUFFER.push(LogEntry {
-            timestamp: format!("2026-09-04T00:00:{:02}.000Z", i),
-            tick_number: GLOBAL_LOG_BUFFER.write_idx() + 1,
-            node_name: "wiring_probe".to_string(),
-            log_type: LogType::Info,
-            topic: None,
-            message: format!("entry {}", i),
-            tick_us: 0,
-            ipc_ns: 0,
-        });
-    }
-
-    // The drain polls every 500 ms.
+    // Keep pushing while polling, rather than pushing once up front.
+    //
+    // `log_drain_loop` snapshots `GLOBAL_LOG_BUFFER.write_idx()` when its
+    // thread starts and only ever writes entries newer than that. On a loaded
+    // machine the thread can reach that snapshot after a one-shot burst has
+    // already been pushed, and then there is nothing newer to write and the
+    // test waits out its whole window for a drain that is working correctly.
+    // (CI caught exactly that.) Pushing every round guarantees entries after
+    // the snapshot whenever the thread got going.
     let log_file = dir.join("horus.log");
     let mut content = String::new();
-    for _ in 0..40 {
+    for round in 0..40 {
+        for i in 0..5 {
+            GLOBAL_LOG_BUFFER.push(LogEntry {
+                timestamp: format!("2026-09-04T00:00:{:02}.000Z", i),
+                tick_number: GLOBAL_LOG_BUFFER.write_idx() + 1,
+                node_name: "wiring_probe".to_string(),
+                log_type: LogType::Info,
+                topic: None,
+                message: format!("round {} entry {}", round, i),
+                tick_us: 0,
+                ipc_ns: 0,
+            });
+        }
+        // The drain polls every 500 ms.
         std::thread::sleep(Duration::from_millis(250));
         if let Ok(c) = std::fs::read_to_string(&log_file) {
             if c.contains("wiring_probe") {
