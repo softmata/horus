@@ -629,7 +629,14 @@ impl ShmFanoutRing {
                 return None;
             }
             if spins > 1_000_000 {
-                // Yield after extensive spinning
+                // Yield after extensive spinning — but only with time left. The
+                // enclosing loop already re-checks `ATTACH_TIMEOUT` every
+                // `SPINS_PER_CLOCK_CHECK` spins, so this only tightens the
+                // overshoot of the last yield; it is here so that no unguarded
+                // `yield_now` remains on a deadline-bounded path.
+                if started.elapsed() >= ATTACH_TIMEOUT {
+                    return None;
+                }
                 std::thread::yield_now();
                 spins = 0;
             }

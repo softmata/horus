@@ -1921,6 +1921,15 @@ impl RtExecutor {
                 affinity_refusal: affinity_degraded,
                 memory_locked: identity.memory_locked,
             });
+
+            // Tell the publish path what this thread actually got. A SCHED_FIFO
+            // thread must never `sched_yield()` from a lossy `send()`: the yield
+            // goes to the tail of its own priority runqueue and returns only
+            // once every same-priority peer blocks, which is unbounded by
+            // construction rather than by load.
+            crate::communication::topic::send_budget::mark_current_thread_realtime(
+                granted.is_realtime(),
+            );
         }
 
         // Per-node "has completed at least one tick" flags, aligned with `nodes`.

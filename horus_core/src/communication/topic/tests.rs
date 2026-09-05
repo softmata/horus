@@ -9868,12 +9868,13 @@ fn topic_metrics_default_all_zero() {
 /// TopicMetrics clone preserves values.
 #[test]
 fn topic_metrics_clone_preserves_values() {
-    let m = metrics::TopicMetrics::new(100, 90, 5, 3);
+    let m = metrics::TopicMetrics::new(100, 90, 5, 3, 2);
     let c = m.clone();
     assert_eq!(c.messages_sent(), 100);
     assert_eq!(c.messages_received(), 90);
     assert_eq!(c.send_failures(), 5);
     assert_eq!(c.recv_failures(), 3);
+    assert_eq!(c.send_retry_overruns(), 2);
 }
 
 /// Topic::metrics() snapshot starts at zero (counters are not
@@ -12764,4 +12765,126 @@ fn a_mid_write_marker_is_not_a_lap() {
         tx.try_send(7).is_ok(),
         "the reclaimed slot must be writable after the escape"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The lossy publish retry budget: it must bound TIME, not a count of yields.
+// ---------------------------------------------------------------------------
+
+/// Serialises the tests that move the process-wide retry budget.
+///
+/// `set_send_retry_budget` is process-wide by design — it is an operator knob,
+/// not a per-topic one — and this binary runs its tests concurrently, so
+/// without this one test's zero budget would be read by another test's
+/// ablation arm.
+static SEND_BUDGET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Drive a small ring into the `send_lossy_retry` cold path.
+///
+/// The subscriber reads once immediately before the burst so the drain-stall
+/// grace period has NOT elapsed: `nothing_is_draining` is therefore false, the
+/// keep-last-N reclaim does not fire, and the send falls through to the spin
+/// and yield phases — which is the path under test.
+fn fill_a_ring_with_a_live_consumer(name: &str) -> (Topic<u64>, Topic<u64>) {
+    // (see `SEND_BUDGET_LOCK` — callers hold it)
+    let tx: Topic<u64> = Topic::with_capacity(name, 4, None).expect("publisher");
+    let sub: Topic<u64> = Topic::with_capacity(name, 4, None).expect("subscriber");
+    tx.send(0);
+    let _ = sub.try_recv();
+    (tx, sub)
+}
+
+/// A budget of zero must produce zero yields — a structural bound, not a
+/// timing one.
+///
+/// `yield_now` is a scheduling request with no upper bound on when the thread
+/// is rescheduled, so the only honest way to assert on it is to count the calls
+/// rather than time them. `send_yield_total()` is exact and needs no quiet
+/// machine to mean something.
+#[test]
+fn a_zero_budget_performs_no_yields_at_all() {
+    let _serial = SEND_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use super::send_budget;
+
+    let name = format!("sendbudget_zero_{}", std::process::id());
+    let (tx, _sub) = fill_a_ring_with_a_live_consumer(&name);
+
+    // Ablation first, and with the real default: if the loop below cannot reach
+    // the yield phase on this machine, the zero-budget assertion that follows
+    // would be vacuous, so this has to move before it is trusted.
+    send_budget::set_send_retry_budget(send_budget::DEFAULT_SEND_RETRY_BUDGET);
+    let before = send_budget::send_yield_total();
+    for i in 0..64u64 {
+        tx.send(i);
+    }
+    let with_budget = send_budget::send_yield_total() - before;
+    assert!(
+        with_budget > 0,
+        "ABLATION: with the default budget this burst must reach the yield phase. \
+         It performed {with_budget} yields, so the assertion below would prove nothing \
+         — the ring is not staying full, or the keep-last-N reclaim is absorbing it."
+    );
+
+    send_budget::set_send_retry_budget(std::time::Duration::ZERO);
+    let overruns_before = tx.send_retry_overruns();
+    let before = send_budget::send_yield_total();
+    for i in 0..64u64 {
+        tx.send(i);
+    }
+    assert_eq!(
+        send_budget::send_yield_total(),
+        before,
+        "a zero budget must yield exactly zero times"
+    );
+    assert!(
+        tx.send_retry_overruns() > overruns_before,
+        "a drop taken because the budget was gone must be counted separately from \
+         a drop taken because the consumer was behind — an oversubscribed box and \
+         a slow consumer call for opposite responses"
+    );
+
+    send_budget::set_send_retry_budget(send_budget::DEFAULT_SEND_RETRY_BUDGET);
+}
+
+/// A thread the kernel granted a real-time policy never yields here, whatever
+/// the process-wide budget says.
+///
+/// Under `SCHED_FIFO` a yield goes to the tail of the thread's own priority
+/// runqueue and returns only once every same-priority peer has blocked — a wait
+/// bounded by construction, not by load. The flag is set directly, so this
+/// needs no kernel privilege to test.
+#[test]
+fn a_realtime_thread_never_yields_from_a_lossy_send() {
+    let _serial = SEND_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use super::send_budget;
+
+    let name = format!("sendbudget_rt_{}", std::process::id());
+    std::thread::spawn(move || {
+        let (tx, _sub) = fill_a_ring_with_a_live_consumer(&name);
+        send_budget::set_send_retry_budget(send_budget::DEFAULT_SEND_RETRY_BUDGET);
+
+        let before = send_budget::send_yield_total();
+        for i in 0..64u64 {
+            tx.send(i);
+        }
+        assert!(
+            send_budget::send_yield_total() > before,
+            "ABLATION: this thread must reach the yield phase before it is marked \
+             real-time, or the assertion below proves nothing"
+        );
+
+        send_budget::mark_current_thread_realtime(true);
+        let before = send_budget::send_yield_total();
+        for i in 0..64u64 {
+            tx.send(i);
+        }
+        assert_eq!(
+            send_budget::send_yield_total(),
+            before,
+            "a real-time thread must never sched_yield from a lossy send"
+        );
+        send_budget::mark_current_thread_realtime(false);
+    })
+    .join()
+    .expect("the probe thread must not panic");
 }
