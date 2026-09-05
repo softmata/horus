@@ -227,6 +227,37 @@ pub(crate) fn tick_grid_step(
     }
 }
 
+/// The tick rate a launch file asked for, parsed from `HORUS_NODE_RATE_HZ`.
+///
+/// `horus launch` exports a launch file's `rate_hz` into every child it spawns
+/// (horus_manager/src/commands/launch.rs). Nothing read it, so the key was
+/// inert: a launch file saying `rate_hz: 20` ran at whatever rate the binary
+/// was compiled with, and there was no error to notice (#185).
+///
+/// `None` means "leave the tick rate alone" — absent, empty, unparseable, or
+/// outside a range a tick period can represent. A bad value warns rather than
+/// failing the launch: the node is already running, and refusing to start it
+/// over a malformed environment key the operator cannot see is worse than
+/// running at the compiled-in rate and saying so.
+pub(crate) fn launch_tick_rate_hz(raw: Option<&str>) -> Option<f64> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<f64>() {
+        Ok(hz) if hz.is_finite() && (0.001..=1_000_000.0).contains(&hz) => Some(hz),
+        _ => {
+            crate::hlog!(
+                warn,
+                "ignoring HORUS_NODE_RATE_HZ={:?} from the launch file - rate_hz must be a \
+                 number between 0.001 and 1000000 Hz; the tick rate is unchanged",
+                trimmed
+            );
+            None
+        }
+    }
+}
+
 pub(crate) struct TickState {
     pub period: Duration,
     pub current: u64,
@@ -2782,6 +2813,20 @@ impl Scheduler {
         if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
             self.tick.period =
                 Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
+        }
+
+        // Env var: HORUS_NODE_RATE_HZ - the launch file's `rate_hz` for this
+        // node. `horus launch` has always exported it and nothing consumed it,
+        // so the key was accepted, validated and ignored (#185). It lands here
+        // rather than in the builder because this is the one function that
+        // turns configuration into `self.tick.period`, and it must come AFTER
+        // the deferred config above so the launch file wins over a compiled-in
+        // `tick_rate()` - that is the whole point of putting it in the launch
+        // file - and BEFORE `adjust_tick_period_for_node_rates()`, so a node
+        // that needs to tick faster than the launch file asked for still bumps
+        // the grid up rather than being silently starved.
+        if let Some(hz) = launch_tick_rate_hz(std::env::var("HORUS_NODE_RATE_HZ").ok().as_deref()) {
+            self.tick.period = Duration::from_micros((1_000_000.0 / hz) as u64);
         }
 
         // Auto-derive: if any node's rate exceeds the global tick rate, bump it up.

@@ -3691,9 +3691,24 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
 /// Find the horus-monitor binary on known paths.
 fn which_monitor_binary() -> Option<std::path::PathBuf> {
-    // 1. Check ~/.horus/bin/ (plugin install location)
-    if let Some(home) = dirs::home_dir() {
-        let plugin_path = home.join(".horus/bin/horus-monitor");
+    // 1. The global plugin bin directory — the SAME accessor `horus install`
+    //    links into (commands::pkg::register_plugin_after_install), `horus
+    //    remove` unlinks from, `horus plugin trust` resolves against, and
+    //    plugins::executor::discover_plugin_binary searches for every other
+    //    plugin command.
+    //
+    //    This used to hardcode `~/.horus/bin`, which nothing writes to:
+    //    `global_bin_dir()` is `config_dir()/bin` (XDG), and `~/.horus` holds
+    //    installer STATE — installed_version, install_manifest.toml, cache/ —
+    //    not plugin binaries. So `horus install horus-monitor` followed by
+    //    `horus monitor` reported "not installed" on every platform (#184).
+    //
+    //    `monitor` is a declared clap subcommand, so it never reaches the
+    //    generic plugin dispatch in main() that resolves this correctly.
+    //    Call the accessor rather than restating the path, so the two cannot
+    //    drift again.
+    if let Ok(global_bin) = horus_manager::plugins::PluginRegistry::global_bin_dir() {
+        let plugin_path = global_bin.join("horus-monitor");
         if plugin_path.exists() {
             return Some(plugin_path);
         }
