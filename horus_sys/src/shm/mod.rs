@@ -1081,11 +1081,25 @@ pub fn write_topic_meta(name: &str, size: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The `.meta` sidecar path for a topic.
+///
+/// The single definition of this mapping, for the same reason `topic_shm_path`
+/// is the single definition of the region mapping. `sanitize_namespace` maps
+/// every byte outside `[A-Za-z0-9_]` to `_`, and topic names legally contain
+/// `-`, `/` and `.` — so a name like `robot-arm/imu` lands at
+/// `robot_arm_imu.meta`. horus_manager's stale-topic reaper used to compute
+/// this itself as `name.replace('.', "_")`, which agrees only for names whose
+/// sole special character is a dot: for anything with a `-` or `/` it produced
+/// a path that cannot exist, and those sidecars were never reaped.
+pub fn topic_meta_path(name: &str) -> PathBuf {
+    shm_topics_dir().join(format!("{}.meta", sanitize_namespace(name)))
+}
+
 /// Remove a topic metadata file. Best-effort — errors are silently ignored.
 ///
 /// Called by ShmRegion::drop when the owner releases the region.
 pub fn remove_topic_meta(name: &str) {
-    let path = shm_topics_dir().join(format!("{}.meta", sanitize_namespace(name)));
+    let path = topic_meta_path(name);
     if let Err(e) = std::fs::remove_file(&path) {
         if e.kind() != std::io::ErrorKind::NotFound {
             log::debug!("Failed to remove topic meta {}: {}", path.display(), e);
@@ -3261,5 +3275,47 @@ mod untrusted_meta_tests {
 
         let _ = std::fs::remove_file(&hostile);
         let _ = std::fs::remove_file(&good);
+    }
+}
+
+#[cfg(test)]
+mod meta_path_tests {
+    use super::*;
+
+    /// The sidecar mapping must handle every character a topic name may carry.
+    ///
+    /// horus_manager's reaper computed this as `name.replace('.', "_")`, which
+    /// agrees with `sanitize_namespace` only when the name's sole special
+    /// character is a dot. Topic names legally contain `-`, `/` and `.`
+    /// (horus_core topic name validation), and `horus_sys/tests/parity_shm.rs`
+    /// exercises `sensor.imu/v1`. For anything with a `-` or `/` the two
+    /// disagreed, the reaper looked for a path that cannot exist, and the
+    /// sidecar was never removed.
+    #[test]
+    fn the_sidecar_mapping_covers_every_legal_topic_character() {
+        for name in ["cmd_vel", "sensor.imu", "sensor.imu/v1", "robot-arm/imu"] {
+            let p = topic_meta_path(name);
+            let file = p.file_name().unwrap().to_str().unwrap();
+            assert!(
+                file.ends_with(".meta"),
+                "{name}: expected a .meta sidecar, got {file}"
+            );
+            let stem = file.strip_suffix(".meta").unwrap();
+            assert!(
+                stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{name}: the sidecar stem must be sanitised to [A-Za-z0-9_], got {stem:?} - \
+                 a stem carrying `/` names a directory that does not exist, which is how \
+                 these files stopped being reaped"
+            );
+        }
+
+        // The specific disagreement: dot-only replacement is not enough.
+        let naive = "robot-arm/imu".replace('.', "_");
+        let real = topic_meta_path("robot-arm/imu");
+        assert_ne!(
+            real.file_name().unwrap().to_str().unwrap(),
+            format!("{naive}.meta"),
+            "if these ever agree the test has stopped discriminating"
+        );
     }
 }
