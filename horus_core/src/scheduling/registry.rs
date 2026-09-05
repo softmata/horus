@@ -81,8 +81,14 @@ pub struct NodeSlot {
     pub deadline_misses: AtomicU32,
     /// Watchdog severity: 0=Ok, 1=Warning, 2=Expired, 3=Critical.
     pub watchdog_severity: AtomicU8,
-    /// Padding.
-    pub _pad1: [u8; 35],
+    /// Padding to the end of cache line 2.
+    ///
+    /// 43, not 35. The counters above occupy 8+4+4+4+1 = 21 bytes from offset
+    /// 64, so reaching 128 takes 43. With 35 this struct placed
+    /// `last_tick_ns` at 120 — inside cache line 2, sharing a line with the
+    /// counters the comments above deliberately separate it from, and 8 bytes
+    /// below where every accessor in this file actually reads and writes it.
+    pub _pad1: [u8; 43],
 
     // === Cache line 3: Timing (64 bytes) ===
     /// Duration of most recent tick (nanoseconds).
@@ -98,6 +104,31 @@ pub struct NodeSlot {
 }
 
 const _: () = assert!(std::mem::size_of::<NodeSlot>() == 192);
+
+// The size assert above passed for the whole time this struct disagreed with
+// the bytes on disk: `align(64)` absorbed the 8 missing bytes of `_pad1` into
+// tail padding, so 192 held either way while every timing field sat one slot
+// low. `register_node`, `update_node` and `read_all_slots_from_path` address
+// these four by literal offset, and those literals are the on-disk truth —
+// they are what every HORUS process has ever written. Bind the two together so
+// a future reorder is a build failure rather than a silent shift.
+//
+// This is the guard `shm_layout.rs` already applies to `TopicHeader`; this
+// region simply never got one.
+const _: () = {
+    assert!(std::mem::offset_of!(NodeSlot, tick_count) == 64);
+    assert!(std::mem::offset_of!(NodeSlot, last_tick_ns) == 128);
+    assert!(std::mem::offset_of!(NodeSlot, avg_tick_ns) == 136);
+    assert!(std::mem::offset_of!(NodeSlot, max_tick_ns) == 144);
+    assert!(std::mem::offset_of!(NodeSlot, p99_tick_ns) == 152);
+    // The counters and the timing block must not share a cache line — the
+    // separation those `=== Cache line N ===` comments describe is the whole
+    // reason for the padding, and it is what `_pad1: [u8; 35]` defeated.
+    assert!(
+        std::mem::offset_of!(NodeSlot, tick_count) / 64
+            != std::mem::offset_of!(NodeSlot, last_tick_ns) / 64
+    );
+};
 
 /// Non-atomic snapshot of a `NodeSlot` for external consumers.
 #[derive(Debug, Clone)]
