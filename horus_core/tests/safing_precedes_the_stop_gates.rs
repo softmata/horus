@@ -44,9 +44,9 @@ fn code_only(rel: &str) -> String {
 
 /// The slice of `code` between the first occurrence of `from` and of `to`.
 fn between(code: &str, from: &str, to: &str, what: &str) -> String {
-    let a = code
-        .find(from)
-        .unwrap_or_else(|| panic!("{what}: anchor {from:?} is gone; this guard would cover nothing"));
+    let a = code.find(from).unwrap_or_else(|| {
+        panic!("{what}: anchor {from:?} is gone; this guard would cover nothing")
+    });
     let b = code[a..]
         .find(to)
         .unwrap_or_else(|| panic!("{what}: anchor {to:?} is gone; this guard would cover nothing"));
@@ -91,7 +91,7 @@ fn the_compute_executor_safes_its_nodes_even_when_none_is_ready() {
     let body = between(
         &code,
         "if ready_indices.is_empty() {",
-        "Begin recording",
+        "let now = Instant::now();",
         "compute coordinator loop",
     );
 
