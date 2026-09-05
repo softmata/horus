@@ -3307,15 +3307,36 @@ mod meta_path_tests {
                  a stem carrying `/` names a directory that does not exist, which is how \
                  these files stopped being reaped"
             );
+            // `file_name()` alone cannot see the bug this test exists for.
+            // A mapping that let `/` through would produce
+            // `<topics>/robot-arm/imu.meta`, whose file_name is `imu.meta` and
+            // whose stem is `imu` - both assertions above pass. What actually
+            // breaks the reaper is the sidecar not being a direct child of the
+            // topics directory, so assert that.
+            assert_eq!(
+                p.parent(),
+                Some(shm_topics_dir().as_path()),
+                "{name}: the sidecar must sit directly in {}, not in a subdirectory of it; \
+                 got {}",
+                shm_topics_dir().display(),
+                p.display()
+            );
         }
 
         // The specific disagreement: dot-only replacement is not enough.
-        let naive = "robot-arm/imu".replace('.', "_");
+        //
+        // Compare whole paths. Comparing `file_name()` against `"robot-arm/imu.meta"`
+        // - which is what this used to do - can never fail: a file name cannot
+        // contain a path separator, so the assertion held no matter what
+        // `topic_meta_path` returned.
+        let naive = shm_topics_dir().join(format!("{}.meta", "robot-arm/imu".replace('.', "_")));
         let real = topic_meta_path("robot-arm/imu");
         assert_ne!(
-            real.file_name().unwrap().to_str().unwrap(),
-            format!("{naive}.meta"),
-            "if these ever agree the test has stopped discriminating"
+            real,
+            naive,
+            "topic_meta_path must not be the naive dot-only replacement; that mapping \
+             yields {} , a path under a directory that is never created",
+            naive.display()
         );
     }
 }
