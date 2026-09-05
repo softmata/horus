@@ -590,6 +590,31 @@ pub enum SendBlockingError {
     NoBackpressure,
 }
 
+/// Whether the backend named by [`Topic::backend_name`] refuses a send when its
+/// ring is full.
+///
+/// Keyed by NAME rather than by the private `BackendMode`, because the bindings
+/// are where this question actually gets asked and a name is all they can see:
+/// `backend_type` is a string over both the Python and C++ FFI. Answering it
+/// there by re-deriving the mapping is how a binding drifts from the runtime, so
+/// `provides_backpressure()` is defined in terms of this too and the two cannot
+/// disagree.
+///
+/// - `SpscShm`, `MpscShm`, `SpmcShm` — ring-full is a real `Err`: the send paths
+///   compare the claimed sequence against `header.tail` and refuse.
+/// - `PodShm`, `FanoutShm` — broadcast, overwrite-oldest by construction, so
+///   there is no full condition to report.
+/// - Anything else, including `Unknown`, fails closed. `Unknown` is the state
+///   EVERY topic is in until its first send or recv — including at the "assert
+///   this at startup" moment the doc comment above recommends. Answering `true`
+///   there made the assertion pass on a topic that was about to resolve to
+///   `PodShm` and silently drop, so the check a caller writes to catch a lossy
+///   e-stop channel could not catch one. An unresolved backend is not a promise
+///   of backpressure.
+pub fn backend_provides_backpressure(backend_name: &str) -> bool {
+    matches!(backend_name, "SpscShm" | "MpscShm" | "SpmcShm")
+}
+
 impl From<SendBlockingError> for crate::error::HorusError {
     fn from(err: SendBlockingError) -> Self {
         crate::error::HorusError::Communication(crate::error::CommunicationError::TopicFull {
@@ -3610,22 +3635,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// );
     /// ```
     pub fn provides_backpressure(&self) -> bool {
-        match self.mode() {
-            // Ring-full is a real Err on these: the mp/sp send paths compare the
-            // claimed sequence against `header.tail` and refuse.
-            BackendMode::SpscShm | BackendMode::MpscShm | BackendMode::SpmcShm => true,
-            // Broadcast: overwrite-oldest by construction, no full condition.
-            BackendMode::PodShm | BackendMode::FanoutShm => false,
-            // Fail closed. `Unknown` means the backend has not been resolved
-            // yet, which is the state EVERY topic is in until its first
-            // send/recv — including at the "assert this at startup" moment the
-            // doc comment above recommends. Answering `true` there made the
-            // assertion pass on a topic that was about to resolve to PodShm and
-            // silently drop, so the check a caller writes to catch a lossy
-            // e-stop channel could not catch one. An unresolved backend is not
-            // a promise of backpressure.
-            BackendMode::Unknown => false,
-        }
+        backend_provides_backpressure(self.backend_name())
     }
 
     #[cfg(test)]
@@ -5139,6 +5149,53 @@ mod untrusted_ring_geometry_tests {
 mod staleness_signal_tests {
     use super::{SendBlockingError, Topic};
     use std::time::Duration;
+
+    /// `backend_provides_backpressure` must answer for every backend there is,
+    /// and answer `false` for anything it does not recognise.
+    ///
+    /// The Python and C++ bindings only ever see the backend NAME, so this
+    /// string table is what they ask. A backend added without a row here would
+    /// silently report "no backpressure" — which fails closed, but would make
+    /// `send_blocking` refuse on a backend that actually supports it. The match
+    /// below is exhaustive over `BackendMode`, so adding a variant stops
+    /// compiling here rather than going unnoticed.
+    #[test]
+    fn every_backend_name_has_a_backpressure_answer() {
+        use super::backend_provides_backpressure;
+        use super::types::BackendMode;
+
+        let expected = [
+            (BackendMode::Unknown, false),
+            (BackendMode::PodShm, false),
+            (BackendMode::FanoutShm, false),
+            (BackendMode::SpscShm, true),
+            (BackendMode::SpmcShm, true),
+            (BackendMode::MpscShm, true),
+        ];
+
+        for (mode, provides) in expected {
+            // Mirrors `RingTopic::backend_name`; exhaustive on purpose.
+            let name = match mode {
+                BackendMode::Unknown => "Unknown",
+                BackendMode::PodShm => "PodShm",
+                BackendMode::SpscShm => "SpscShm",
+                BackendMode::SpmcShm => "SpmcShm",
+                BackendMode::MpscShm => "MpscShm",
+                BackendMode::FanoutShm => "FanoutShm",
+            };
+            assert_eq!(
+                backend_provides_backpressure(name),
+                provides,
+                "{name} is on the wrong side of the backpressure table"
+            );
+        }
+
+        assert!(
+            !backend_provides_backpressure("SomethingNewAndUnknown"),
+            "an unrecognised backend must fail closed — an unresolved backend \
+             is not a promise of backpressure"
+        );
+    }
 
     fn cleanup(name: &str) {
         if let Some(path) = horus_sys::shm::topic_shm_path_checked(name) {

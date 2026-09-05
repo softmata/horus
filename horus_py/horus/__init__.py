@@ -213,6 +213,7 @@ try:
         HorusNotFoundError,
         HorusTransformError,
         HorusTimeoutError,
+        HorusBackpressureError,
         # Coordinate transforms
         TransformFrame,
         Transform,
@@ -270,6 +271,14 @@ except ImportError:
 
     class HorusTimeoutError(Exception):
         """Raised when a blocking operation times out."""
+
+    class HorusBackpressureError(Exception):
+        """Raised when send_blocking() is refused for want of backpressure.
+
+        The topic's backend overwrites unread messages and has no full ring to
+        wait on, so the call was refused before any write. Unlike a timeout this
+        is not transient: it lasts as long as the topology that caused it.
+        """
 
 
 
@@ -1988,6 +1997,7 @@ __all__ = [
     "HorusNotFoundError",
     "HorusTransformError",
     "HorusTimeoutError",
+    "HorusBackpressureError",
     # Submodules
     "msggen",
     "perception",
