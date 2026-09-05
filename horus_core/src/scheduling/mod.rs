@@ -43,6 +43,7 @@ pub mod rt_report;
 // What the RT tick threads actually got from the kernel, as opposed to what
 // was asked for. `rt_report` above audits the *system*; this reports the
 // *running scheduler's own threads*.
+pub mod blackbox_ring;
 pub mod rt_bandwidth;
 pub mod rt_status;
 

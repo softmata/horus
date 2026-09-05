@@ -291,6 +291,12 @@ pub(crate) struct TickState {
 pub(crate) struct MonitorState {
     pub safety: Option<std::sync::Arc<SafetyMonitor>>,
     pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
+    /// The producer side of the flight recorder, handed to the executors.
+    ///
+    /// Separate from `blackbox` on purpose: the executors get a handle that can
+    /// only queue, and the recorder itself is reached from the cold paths and
+    /// the drain. See [`BbRing`](super::blackbox_ring::BbRing).
+    pub blackbox_ring: Option<Arc<super::blackbox_ring::BbRing>>,
     pub telemetry: Option<super::telemetry::TelemetryManager>,
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
@@ -647,6 +653,7 @@ impl Scheduler {
             monitor: MonitorState {
                 safety: None,
                 blackbox: None,
+                blackbox_ring: None,
                 telemetry: None,
                 profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
@@ -901,6 +908,10 @@ impl Scheduler {
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
         let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
         self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+        // The producer side, handed to the executors. Created with the recorder
+        // and never separately: an executor holding a ring the drain does not
+        // know about would queue events nothing ever reads.
+        self.monitor.blackbox_ring = Some(Arc::new(super::blackbox_ring::BbRing::new()));
         self
     }
 
@@ -1859,6 +1870,7 @@ impl Scheduler {
                 ),
             });
             self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+            self.monitor.blackbox_ring = Some(Arc::new(super::blackbox_ring::BbRing::new()));
             print_line(&format!(
                 "[SCHEDULER] Black box enabled ({}MB buffer)",
                 monitoring.black_box_size_mb
@@ -3412,7 +3424,7 @@ impl Scheduler {
                 // Shared monitors for all executor threads
                 let shared_monitors = super::types::SharedMonitors {
                     profiler: self.monitor.profiler.clone(),
-                    blackbox: self.monitor.blackbox.clone(),
+                    blackbox: self.monitor.blackbox_ring.clone(),
                     verbose: self.pending_config.monitoring.verbose,
                     registry: arc_registry,
                     registry_slots: arc_slots,
@@ -3668,6 +3680,19 @@ impl Scheduler {
                 self.dispatch = Some(dispatch::ReadyDispatch::new(self.nodes.len()));
             }
 
+            // The blackbox drain. On the main thread, so it cannot inherit
+            // SCHED_FIFO or the reserved CPU mask, and it is where the
+            // `serde_json` and the `write(2)` that used to run on the tick
+            // threads actually happen.
+            let bb_drain = match (&self.monitor.blackbox_ring, &self.monitor.blackbox) {
+                (Some(ring), Some(bb)) => super::blackbox_ring::start_drain(
+                    std::sync::Arc::clone(ring),
+                    std::sync::Arc::clone(bb),
+                    self.running.clone(),
+                ),
+                _ => None,
+            };
+
             // Main tick loop
             while self.is_running() {
                 if self.should_stop_loop(clock_start, duration) {
@@ -3695,6 +3720,13 @@ impl Scheduler {
             // early return above.
             if let Some(mut d) = self.dispatch.take() {
                 d.shutdown();
+            }
+
+            // `running` is already false, so the drain makes its final pass and
+            // exits. Joined before `finalize_run` so the two cannot interleave
+            // around the stop marker.
+            if let Some(handle) = bb_drain {
+                let _ = handle.join();
             }
             if let Some(executor) = rt_executor {
                 let rt_nodes = executor.stop();
@@ -4290,12 +4322,8 @@ impl Scheduler {
                     controls.request_safe_state_all();
                 }
 
-                if let Some(ref bb) = self.monitor.blackbox {
-                    bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                        super::blackbox::BlackBoxEvent::EmergencyStop {
-                            reason: "Safety monitor triggered emergency stop".to_string(),
-                        },
-                    );
+                if let Some(ref ring) = self.monitor.blackbox_ring {
+                    ring.emit_emergency_stop("Safety monitor triggered emergency stop");
                 }
 
                 return true;
@@ -4408,13 +4436,8 @@ impl Scheduler {
             // Log stopped nodes
             let stopped_count = self.nodes.iter().filter(|n| n.is_stopped).count();
             if stopped_count > 0 {
-                if let Some(ref bb) = self.monitor.blackbox {
-                    bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                        super::blackbox::BlackBoxEvent::Custom {
-                            category: "safety".to_string(),
-                            message: format!("{} nodes stopped", stopped_count),
-                        },
-                    );
+                if let Some(ref ring) = self.monitor.blackbox_ring {
+                    ring.emit_custom("safety", &format!("{stopped_count} nodes stopped"));
                 }
             }
         }
@@ -4768,6 +4791,12 @@ impl Scheduler {
         // Record scheduler stop to blackbox and save
         if let Some(ref bb) = self.monitor.blackbox {
             let mut bb = bb.lock().unwrap_or_else(|p| p.into_inner());
+            // Everything the run queued goes in FIRST, in order, ahead of the
+            // stop marker — otherwise the events describing why the run ended
+            // land after the record that it ended.
+            if let Some(ref ring) = self.monitor.blackbox_ring {
+                ring.drain_into(&mut bb);
+            }
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStop {
                 reason: "Normal shutdown".to_string(),
                 total_ticks,
@@ -5793,13 +5822,11 @@ impl Scheduler {
                     }
 
                     // Record in blackbox
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                            super::blackbox::BlackBoxEvent::BudgetViolation {
-                                name: node_name.to_string(),
-                                budget_us: violation.budget().as_micros() as u64,
-                                actual_us: violation.actual().as_micros() as u64,
-                            },
+                    if let Some(ref ring) = self.monitor.blackbox_ring {
+                        ring.emit_budget_violation(
+                            &node_name,
+                            violation.budget().as_micros() as u64,
+                            violation.actual().as_micros() as u64,
                         );
                     }
 
@@ -5876,13 +5903,11 @@ impl Scheduler {
                     }
 
                     // Record in blackbox
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                            super::blackbox::BlackBoxEvent::DeadlineMiss {
-                                name: node_name.to_string(),
-                                deadline_us: dm.deadline.as_micros() as u64,
-                                actual_us: dm.elapsed.as_micros() as u64,
-                            },
+                    if let Some(ref ring) = self.monitor.blackbox_ring {
+                        ring.emit_deadline_miss(
+                            &node_name,
+                            dm.deadline.as_micros() as u64,
+                            dm.elapsed.as_micros() as u64,
                         );
                     }
 
@@ -6119,14 +6144,8 @@ impl Scheduler {
         // The flight recorder previously had no NodeError call site outside
         // blackbox.rs's own tests, so a crash — the one thing it exists to
         // capture — left behind only budget and deadline events.
-        if let Some(ref bb) = self.monitor.blackbox {
-            bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                super::blackbox::BlackBoxEvent::NodeError {
-                    name: node_name.to_string(),
-                    error: error_msg.clone(),
-                    severity: crate::error::Severity::Fatal,
-                },
-            );
+        if let Some(ref ring) = self.monitor.blackbox_ring {
+            ring.emit_node_error(&node_name, &error_msg, crate::error::Severity::Fatal);
         }
 
         let registered = &mut self.nodes[i];

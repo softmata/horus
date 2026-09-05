@@ -1441,14 +1441,12 @@ impl RtExecutor {
                     stats.record_budget_violation();
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::BudgetViolation {
-                            name: node.name.to_string(),
-                            budget_us: tick_budget.as_micros() as u64,
-                            actual_us: tr.duration.as_micros() as u64,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_budget_violation(
+                        &node.name,
+                        tick_budget.as_micros() as u64,
+                        tr.duration.as_micros() as u64,
+                    );
                 }
                 // Budget enforcement based on per-node policy.
                 // Post-tick enforcement (safe — tick completed, no shared state issues).
@@ -1577,14 +1575,12 @@ impl RtExecutor {
                     }
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::DeadlineMiss {
-                            name: node.name.to_string(),
-                            deadline_us: deadline.as_micros() as u64,
-                            actual_us: dm.elapsed.as_micros() as u64,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_deadline_miss(
+                        &node.name,
+                        deadline.as_micros() as u64,
+                        dm.elapsed.as_micros() as u64,
+                    );
                 }
                 match dm.action {
                     DeadlineAction::Warn => {}
@@ -1725,14 +1721,8 @@ impl RtExecutor {
                 // `horus blackbox -e NodeError` after a panic returned
                 // "No blackbox events found" while `--help` advertised
                 // filtering by exactly that event.
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::NodeError {
-                            name: node.name.to_string(),
-                            error: error_msg.clone(),
-                            severity: crate::error::Severity::Fatal,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_node_error(&node.name, &error_msg, crate::error::Severity::Fatal);
                 }
 
                 // Call on_error handler, panic-guarded like every other

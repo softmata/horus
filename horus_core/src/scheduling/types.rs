@@ -758,7 +758,15 @@ pub enum StalePolicy {
 #[derive(Clone)]
 pub(crate) struct SharedMonitors {
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
-    pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
+    /// Producer handle only.
+    ///
+    /// Deliberately the RING and not the recorder: an executor may queue an
+    /// event, and cannot reach the recorder, its `VecDeque` or its WAL. That is
+    /// enforced by the type rather than by a comment — the six sites this
+    /// replaces each held `if let Ok(mut bb) = bb.try_lock()` with no `else`,
+    /// so a record was silently dropped whenever the main thread happened to
+    /// hold the lock, which it did on every loop iteration.
+    pub blackbox: Option<Arc<super::blackbox_ring::BbRing>>,
     /// When false, suppresses non-emergency print_line calls in executor threads.
     pub verbose: bool,
     /// Live SHM registry — updated every tick (~5ns atomic writes).

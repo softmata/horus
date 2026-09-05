@@ -484,14 +484,12 @@ impl EventExecutor {
 
                         // Record to the blackbox so the flight recorder can see a crash.
                         // try_lock mirrors the RT path: never block an executor on it.
-                        if let Some(ref bb) = monitors.blackbox {
-                            if let Ok(mut bb) = bb.try_lock() {
-                                bb.record(super::blackbox::BlackBoxEvent::NodeError {
-                                    name: node.name.to_string(),
-                                    error: error_msg.clone(),
-                                    severity: crate::error::Severity::Fatal,
-                                });
-                            }
+                        if let Some(ref ring) = monitors.blackbox {
+                            ring.emit_node_error(
+                                &node.name,
+                                &error_msg,
+                                crate::error::Severity::Fatal,
+                            );
                         }
 
                         // `record_tick_failure` above already logged this at error level, which
