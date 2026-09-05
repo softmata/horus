@@ -86,3 +86,36 @@ fn the_monitor_lookup_does_not_hardcode_a_home_relative_plugin_dir() {
         offenders.join("\n")
     );
 }
+
+/// And the project-local path stays behind its opt-in.
+///
+/// `.horus/bin/horus-monitor` is CWD-relative. It was once checked
+/// unconditionally and BEFORE `PATH`, so `cd`-ing into a cloned repository that
+/// ships that file and running `horus monitor` executed it directly — no trust
+/// gate, no signature check, none of the sandbox `plugins::executor` applies —
+/// and it SHADOWED a properly installed binary. Cloning a repository must not
+/// be sufficient to run its code.
+///
+/// The two tests above would both still pass with the gate deleted: one checks
+/// the accessor is used, the other that no HOME-relative path is built, and
+/// neither looks at the local branch. So the property is asserted here.
+#[test]
+fn the_project_local_lookup_stays_gated_behind_the_opt_in() {
+    let body = which_monitor_binary_body();
+
+    let mentions_local = body.contains(".horus/bin");
+    if !mentions_local {
+        // The local branch was removed entirely — the shadowing risk is gone
+        // with it, which satisfies the property this test exists to protect.
+        return;
+    }
+
+    assert!(
+        body.contains("HORUS_ALLOW_LOCAL_PLUGINS"),
+        "which_monitor_binary still consults the project-local .horus/bin, so \
+         that branch must remain gated behind HORUS_ALLOW_LOCAL_PLUGINS. \
+         Without the gate, cloning a repository that ships \
+         .horus/bin/horus-monitor is enough to execute it, ahead of PATH and \
+         ahead of a properly installed binary.\nBody was:\n{body}"
+    );
+}
